@@ -1,0 +1,31 @@
+package app.getknit.knit.di
+
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.preferencesDataStoreFile
+import app.getknit.knit.data.AvatarStore
+import app.getknit.knit.data.KnitDatabase
+import app.getknit.knit.data.MessageRepository
+import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.identity.Identity
+import org.koin.android.ext.koin.androidContext
+import org.koin.dsl.module
+
+val appModule = module {
+    single<DataStore<Preferences>> {
+        PreferenceDataStoreFactory.create {
+            androidContext().preferencesDataStoreFile("knit_settings")
+        }
+    }
+    single { SettingsStore(get()) }
+    single { Identity(get()) }
+    single { AvatarStore(androidContext()) }
+
+    single { KnitDatabase.build(androidContext()) }
+    single { get<KnitDatabase>().messageDao() }
+    single { get<KnitDatabase>().peerDao() }
+    single { MessageRepository(get()) }
+    single { PeerRepository(get()) }
+}

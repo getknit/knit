@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Knit</string>
+
+    <!-- Mesh foreground service -->
+    <string name="mesh_channel_name">Mesh networking</string>
+    <string name="mesh_notification_title">Knit mesh is active</string>
+    <string name="mesh_notification_text">Connecting to nearby devices</string>
+    <string name="mesh_notification_stop">Stop</string>
+</resources>
