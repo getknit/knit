@@ -40,6 +40,7 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +54,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.ui.components.Avatar
 import org.koin.androidx.compose.koinViewModel
@@ -67,6 +71,25 @@ fun ChatScreen(
     var input by remember { mutableStateOf("") }
     var menuOpen by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+
+    // Suppress message notifications while the chat is on screen, and clear any active one. Nav is a
+    // Crossfade over an enum (not real navigation), so leaving for Profile disposes this screen — the
+    // onDispose toggle re-enables notifications so a message arriving on Profile still notifies.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.onChatForeground()
+                Lifecycle.Event.ON_PAUSE -> viewModel.onChatBackground()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            viewModel.onChatBackground()
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     LaunchedEffect(state.rows.size) {
         if (state.rows.isNotEmpty()) listState.animateScrollToItem(state.rows.lastIndex)

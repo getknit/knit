@@ -6,4 +6,10 @@
     <string name="mesh_notification_title">Knit mesh is active</string>
     <string name="mesh_notification_text">Connecting to nearby devices</string>
     <string name="mesh_notification_stop">Stop</string>
+
+    <!-- New-message notifications -->
+    <string name="message_channel_name">Messages</string>
+    <string name="message_channel_description">Notifications for new messages from nearby people</string>
+    <string name="message_conversation_title">Knit mesh</string>
+    <string name="notif_self_name">You</string>
 </resources>

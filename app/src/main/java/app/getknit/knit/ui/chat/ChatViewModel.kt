@@ -7,6 +7,7 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.notifications.Notifier
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -37,6 +38,7 @@ class ChatViewModel(
     private val meshManager: MeshManager,
     private val identity: Identity,
     settings: SettingsStore,
+    private val notifier: Notifier,
 ) : ViewModel() {
 
     private val myNodeId = MutableStateFlow<String?>(null)
@@ -78,4 +80,10 @@ class ChatViewModel(
         if (trimmed.isEmpty()) return
         viewModelScope.launch { meshManager.sendChat(trimmed) }
     }
+
+    /** Chat is on screen: suppress notifications and clear any active one (the user is reading). */
+    fun onChatForeground() = notifier.setChatVisible(true)
+
+    /** Chat left the screen: resume notifying for incoming messages. */
+    fun onChatBackground() = notifier.setChatVisible(false)
 }

@@ -11,6 +11,8 @@ import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.Frame
 import app.getknit.knit.mesh.protocol.ProfileFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
+import app.getknit.knit.notifications.Notifier
+import app.getknit.knit.notifications.incomingNotification
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +37,7 @@ class MeshManager(
     private val identity: Identity,
     private val settings: SettingsStore,
     private val avatars: AvatarStore,
+    private val notifier: Notifier,
     private val scope: CoroutineScope,
 ) {
     private val router = MeshRouter(transport, scope, onDeliver = ::onDeliver)
@@ -171,6 +174,7 @@ class MeshManager(
                 received = false,
             ),
         )
+        notifyIncoming(frame)
         // Acknowledge only if the author is a direct neighbor (mirrors the legacy app: relays don't ack).
         val direct = transport.neighbors.value.firstOrNull { it.nodeId == frame.senderId } ?: return
         val ack = ReceiptFrame(
@@ -179,6 +183,21 @@ class MeshManager(
             ackId = frame.id,
         )
         transport.send(ack, direct)
+    }
+
+    /** Fires a "new message" notification for an inbound chat (skips our own and empty messages). */
+    private suspend fun notifyIncoming(frame: ChatFrame) {
+        val me = identity.nodeId()
+        val peer = peers.find(frame.senderId)
+        val incoming = incomingNotification(
+            senderId = frame.senderId,
+            body = frame.body,
+            sentAt = frame.sentAt,
+            selfId = me,
+            peerName = peer?.name,
+            peerAvatarPath = peer?.avatarPath ?: avatars.peerAvatarPath(frame.senderId),
+        ) ?: return
+        notifier.notify(incoming, me, settings.displayName.first(), avatars.ownAvatarPath())
     }
 
     private suspend fun handleProfile(frame: ProfileFrame) {

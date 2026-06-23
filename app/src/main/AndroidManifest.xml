@@ -53,6 +53,10 @@
             android:name=".mesh.MeshService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <receiver
+            android:name=".notifications.NotificationDismissReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>

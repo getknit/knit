@@ -10,6 +10,8 @@ import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.notifications.MessageNotifier
+import app.getknit.knit.notifications.Notifier
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
 
@@ -22,6 +24,7 @@ val appModule = module {
     single { SettingsStore(get()) }
     single { Identity(get()) }
     single { AvatarStore(androidContext()) }
+    single<Notifier> { MessageNotifier(androidContext()) }
 
     single { KnitDatabase.build(androidContext()) }
     single { get<KnitDatabase>().messageDao() }
