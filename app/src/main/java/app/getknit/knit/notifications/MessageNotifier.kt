@@ -1,13 +1,16 @@
 package app.getknit.knit.notifications
 
+import android.Manifest
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.IconCompat
 import app.getknit.knit.MainActivity
 import app.getknit.knit.R
@@ -39,6 +42,14 @@ class MessageNotifier(private val context: Context) : Notifier {
     override fun notify(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarPath: String?) {
         if (chatVisible) return
         if (!manager.areNotificationsEnabled()) return
+        // Explicit POST_NOTIFICATIONS check (runtime permission on API 33+; auto-granted below).
+        // areNotificationsEnabled() already implies this, but lint's flow analysis needs the
+        // explicit check on the path to manager.notify() below.
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
 
         val messages = synchronized(history) { history.add(incoming) }
         val me = personOf(selfId, selfName.ifBlank { context.getString(R.string.notif_self_name) }, selfAvatarPath)
@@ -59,7 +70,7 @@ class MessageNotifier(private val context: Context) : Notifier {
             .setOnlyAlertOnce(true)
             .build()
 
-        // areNotificationsEnabled() already gates this; runCatching guards a revoked POST_NOTIFICATIONS.
+        // Guarded above; runCatching still defends a permission revoked between the check and here.
         runCatching { manager.notify(NOTIFICATION_ID, notification) }
     }
 
