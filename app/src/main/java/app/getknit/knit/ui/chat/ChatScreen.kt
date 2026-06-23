@@ -282,8 +282,14 @@ private fun MessageInput(
             FilledIconButton(
                 onClick = onSend,
                 enabled = value.isNotBlank(),
+                shape = CircleShape,
+                modifier = Modifier.size(48.dp).align(Alignment.CenterVertically),
             ) {
-                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                Icon(
+                    Icons.AutoMirrored.Filled.Send,
+                    contentDescription = "Send",
+                    modifier = Modifier.size(24.dp),
+                )
             }
         }
     }
