@@ -1,0 +1,125 @@
+# Knit — GitLab CI. Stages: build -> test -> verify.
+# Bleeding-edge toolchain (AGP 9.2.1 / Kotlin 2.2.10 / JDK 21 / compileSdk 36.1):
+# all analysis runs as standalone tools so nothing new is added to the Gradle build.
+
+stages:
+  - build
+  - test
+  - verify
+
+variables:
+  # Keep Gradle's home in the project tree so the resolved-dependency jars are cached
+  # across jobs AND scannable by Trivy for CVEs (there is no lockfile/SBOM to scan).
+  GRADLE_USER_HOME: "${CI_PROJECT_DIR}/.gradle"
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  ANDROID_HOME: "${CI_PROJECT_DIR}/.android-sdk"
+  ANDROID_SDK_ROOT: "${CI_PROJECT_DIR}/.android-sdk"
+  # Pinned tool versions — bump deliberately (see .gitlab-ci notes in the repo plan).
+  CMDLINE_TOOLS_VERSION: "11076708"   # commandlinetools-linux revision
+  ANDROID_COMPILE_SDK: "36"
+  ANDROID_BUILD_TOOLS: "36.0.0"
+  DETEKT_VERSION: "1.23.8"
+
+workflow:
+  rules:                              # avoid duplicate branch+MR pipelines
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS == null
+    - if: $CI_COMMIT_TAG
+
+# ---- shared setup for Gradle/Android jobs ----
+.android:
+  image: eclipse-temurin:21-jdk
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq unzip wget > /dev/null
+    - export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
+    - |
+      if [ ! -d "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" ]; then
+        wget -q "https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_VERSION}_latest.zip" -O /tmp/clt.zip
+        mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+        unzip -q /tmp/clt.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
+        mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+      fi
+    - yes | sdkmanager --licenses > /dev/null 2>&1 || true
+    - sdkmanager "platform-tools" "platforms;android-${ANDROID_COMPILE_SDK}" "build-tools;${ANDROID_BUILD_TOOLS}" > /dev/null
+    - chmod +x ./gradlew
+  cache:
+    key:
+      files:
+        - gradle/libs.versions.toml
+        - gradle/wrapper/gradle-wrapper.properties
+    paths:
+      - .gradle/caches/
+      - .gradle/wrapper/
+      - .android-sdk/
+
+# ----------------- build -----------------
+build:debug:
+  extends: .android
+  stage: build
+  script:
+    - ./gradlew :app:assembleDebug --stacktrace --console=plain
+  artifacts:
+    name: "knit-debug-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - app/build/outputs/apk/debug/*.apk
+    expire_in: 1 week
+
+# ----------------- test ------------------
+test:unit:
+  extends: .android
+  stage: test
+  script:
+    - ./gradlew :app:testDebugUnitTest --stacktrace --console=plain
+  artifacts:
+    when: always
+    reports:
+      junit: app/build/test-results/testDebugUnitTest/**/TEST-*.xml
+    paths:
+      - app/build/reports/tests/testDebugUnitTest/
+    expire_in: 1 week
+
+# --------------- verify (advisory) -------
+verify:detekt:
+  image: eclipse-temurin:21-jdk
+  stage: verify
+  allow_failure: true
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq wget > /dev/null
+    - wget -q "https://github.com/detekt/detekt/releases/download/v${DETEKT_VERSION}/detekt-cli-${DETEKT_VERSION}-all.jar" -O /tmp/detekt.jar
+  script:
+    - >
+      java -jar /tmp/detekt.jar
+      --input app/src/main/java,app/src/test/java
+      --build-upon-default-config
+      --jvm-target 11
+      --report xml:detekt.xml --report html:detekt.html --report sarif:detekt.sarif
+  artifacts:
+    when: always
+    paths: [detekt.html, detekt.xml, detekt.sarif]
+    expire_in: 1 week
+
+verify:trivy:
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  stage: verify
+  allow_failure: true
+  needs: ["build:debug"]              # so resolved dependency jars exist in .gradle to scan
+  variables:
+    TRIVY_NO_PROGRESS: "true"
+    TRIVY_CACHE_DIR: ".trivycache/"
+  cache:
+    - key:
+        files: [gradle/libs.versions.toml, gradle/wrapper/gradle-wrapper.properties]
+      paths: [.gradle/caches/]
+      policy: pull
+    - key: trivy-db
+      paths: [.trivycache/]
+  script:
+    - trivy --version
+    - trivy fs --scanners vuln,secret,misconfig,license --exit-code 0 --format table .
+    - trivy fs --scanners vuln,secret,misconfig,license --format json --output trivy-report.json .
+  artifacts:
+    when: always
+    paths: [trivy-report.json]
+    expire_in: 1 week
