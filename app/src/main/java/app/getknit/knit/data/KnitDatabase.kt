@@ -11,7 +11,8 @@ import app.getknit.knit.data.peer.PeerEntity
 
 @Database(
     entities = [MessageEntity::class, PeerEntity::class],
-    version = 1,
+    // v2: messages gained attachmentHash/attachmentMime/attachmentPath (destructive migration).
+    version = 2,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

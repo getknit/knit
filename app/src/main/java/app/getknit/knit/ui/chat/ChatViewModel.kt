@@ -1,7 +1,9 @@
 package app.getknit.knit.ui.chat
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.settings.SettingsStore
@@ -11,6 +13,7 @@ import app.getknit.knit.notifications.Notifier
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -24,6 +27,9 @@ data class ChatRow(
     val avatarPath: String?,
     val sentAt: Long,
     val received: Boolean,
+    val attachmentHash: String? = null,
+    val attachmentMime: String? = null,
+    val attachmentPath: String? = null,
 )
 
 data class ChatUiState(
@@ -39,9 +45,14 @@ class ChatViewModel(
     private val identity: Identity,
     settings: SettingsStore,
     private val notifier: Notifier,
+    private val attachments: AttachmentStore,
 ) : ViewModel() {
 
     private val myNodeId = MutableStateFlow<String?>(null)
+
+    /** Image staged in the input bar, ready to send with the next message (null when none). */
+    private val _pendingAttachment = MutableStateFlow<AttachmentStore.Ingested?>(null)
+    val pendingAttachment: StateFlow<AttachmentStore.Ingested?> = _pendingAttachment.asStateFlow()
 
     init {
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
@@ -70,6 +81,9 @@ class ChatViewModel(
                 avatarPath = peersByNode[m.senderId]?.avatarPath,
                 sentAt = m.sentAt,
                 received = m.received,
+                attachmentHash = m.attachmentHash,
+                attachmentMime = m.attachmentMime,
+                attachmentPath = m.attachmentPath,
             )
         }
         ChatUiState(rows = rows, neighborCount = count, myNodeId = me.orEmpty())
@@ -77,8 +91,19 @@ class ChatViewModel(
 
     fun send(text: String) {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return
-        viewModelScope.launch { meshManager.sendChat(trimmed) }
+        val attachment = _pendingAttachment.value
+        if (trimmed.isEmpty() && attachment == null) return
+        _pendingAttachment.value = null
+        viewModelScope.launch { meshManager.sendChat(trimmed, attachment) }
+    }
+
+    /** Ingests a picked or keyboard-inserted image and stages it in the input bar. */
+    fun attach(uri: Uri) {
+        viewModelScope.launch { _pendingAttachment.value = attachments.ingest(uri) }
+    }
+
+    fun clearAttachment() {
+        _pendingAttachment.value = null
     }
 
     /** Chat is on screen: suppress notifications and clear any active one (the user is reading). */

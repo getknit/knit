@@ -1,11 +1,13 @@
 package app.getknit.knit
 
 import app.getknit.knit.mesh.FakeLoopTransport
+import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshRouter
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
+import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.Frame
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -34,7 +36,7 @@ class MeshRouterTest {
         override fun stop() = Unit
         override fun heal() = Unit
         override suspend fun send(frame: Frame, to: Peer?) { sent += frame to to }
-        override suspend fun sendFile(file: File, to: Peer) = Unit
+        override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) = Unit
     }
 
     private fun chat(id: String, ttl: Int = 8, hops: Int = 0) =
@@ -74,6 +76,18 @@ class MeshRouterTest {
         router.handleInbound(chat("m1", ttl = 3, hops = 3), fromNodeId = "b")
 
         assertEquals(0, transport.sent.size)
+    }
+
+    @Test
+    fun deliversButDoesNotRelayNonRelayableControlFrame() = runTest {
+        val transport = RecordingTransport(setOf("b", "c"))
+        val delivered = mutableListOf<Frame>()
+        val router = MeshRouter(transport, this) { f, _ -> delivered += f }
+
+        router.handleInbound(BlobRequestFrame(id = "req1", senderId = "a", hash = "h"), fromNodeId = "b")
+
+        assertEquals(1, delivered.size)      // handled locally
+        assertEquals(0, transport.sent.size) // but never flooded onward
     }
 
     @Test

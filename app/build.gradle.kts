@@ -75,6 +75,7 @@ dependencies {
 
     // Images
     implementation(libs.coil.compose)
+    implementation(libs.coil.gif) // animated GIF/WebP decoding (keyboard GIFs)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

@@ -5,7 +5,6 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.emptyFlow
 import java.io.File
 
 /**
@@ -21,7 +20,8 @@ class FakeLoopTransport(val nodeId: String) : MeshTransport {
     private val _inbound = MutableSharedFlow<InboundFrame>(extraBufferCapacity = 256)
     override val inbound = _inbound.asSharedFlow()
 
-    override val incomingFiles = emptyFlow<ReceivedFile>()
+    private val _incomingFiles = MutableSharedFlow<ReceivedFile>(extraBufferCapacity = 32)
+    override val incomingFiles = _incomingFiles.asSharedFlow()
 
     private val links = mutableMapOf<String, FakeLoopTransport>()
 
@@ -43,7 +43,12 @@ class FakeLoopTransport(val nodeId: String) : MeshTransport {
         targets.forEach { it.deliver(frame, nodeId) }
     }
 
-    override suspend fun sendFile(file: File, to: Peer) = Unit
+    override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) {
+        // In-process: hand the file straight to the linked peer's incomingFiles (same filesystem).
+        links[to.nodeId]?._incomingFiles?.emit(
+            ReceivedFile(nodeId, file.absolutePath, meta.kind, meta.key, meta.mime),
+        )
+    }
 
     private suspend fun deliver(frame: Frame, fromNodeId: String) {
         _inbound.emit(InboundFrame(frame, fromNodeId))

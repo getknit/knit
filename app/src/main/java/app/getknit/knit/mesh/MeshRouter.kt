@@ -47,6 +47,7 @@ class MeshRouter(
     }
 
     private suspend fun relay(frame: Frame, fromNodeId: String) {
+        if (!frame.relayable) return // point-to-point control frames propagate hop-by-hop, not flooded
         if (frame.hops >= frame.ttl) return
         val relayed = frame.incrementHop()
         transport.neighbors.value

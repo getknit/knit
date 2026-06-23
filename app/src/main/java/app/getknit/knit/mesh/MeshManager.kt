@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -7,6 +8,7 @@ import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.Frame
 import app.getknit.knit.mesh.protocol.ProfileFrame
@@ -37,10 +39,26 @@ class MeshManager(
     private val identity: Identity,
     private val settings: SettingsStore,
     private val avatars: AvatarStore,
+    private val attachments: AttachmentStore,
     private val notifier: Notifier,
     private val scope: CoroutineScope,
 ) {
     private val router = MeshRouter(transport, scope, onDeliver = ::onDeliver)
+
+    // Content-addressed image fetch over the mesh, backed by [AttachmentStore].
+    private val blobStore = object : BlobStore {
+        override fun has(hash: String) = attachments.has(hash)
+        override fun fileFor(hash: String) = attachments.fileFor(hash)
+        override fun mimeFor(hash: String) = attachments.mimeFor(hash)
+        override suspend fun saveIncoming(hash: String, mime: String, srcPath: String) =
+            attachments.saveIncoming(hash, mime, srcPath)
+    }
+    private val blobExchange = BlobExchange(
+        transport = transport,
+        store = blobStore,
+        selfId = { identity.nodeId() },
+        onObtained = { hash, path -> messages.setAttachmentPath(hash, path) },
+    )
 
     @Volatile
     private var started = false
@@ -64,7 +82,8 @@ class MeshManager(
         transport.start()
         watchNeighbors()
         watchProfileChanges()
-        watchIncomingAvatars()
+        watchIncomingFiles()
+        resumePendingFetches()
     }
 
     fun stop() {
@@ -85,19 +104,39 @@ class MeshManager(
         transport.start()
     }
 
-    /** Composes a chat message, stores it locally (unacked), and floods it to the mesh. */
-    suspend fun sendChat(text: String) {
+    /**
+     * Composes a chat message (optionally with an already-ingested image [attachment]), stores it
+     * locally (unacked), and floods it to the mesh. The sender already holds the blob, so direct
+     * neighbors will pull it by hash and it propagates outward from there.
+     */
+    suspend fun sendChat(text: String, attachment: AttachmentStore.Ingested? = null) {
         val me = identity.nodeId()
         val frame = ChatFrame(
             id = UUID.randomUUID().toString(),
             senderId = me,
             sentAt = System.currentTimeMillis(),
             body = text,
+            attachmentHash = attachment?.hash,
+            attachmentMime = attachment?.mime,
         )
         messages.save(
-            MessageEntity(id = frame.id, senderId = me, body = text, sentAt = frame.sentAt, received = false),
+            MessageEntity(
+                id = frame.id,
+                senderId = me,
+                body = text,
+                sentAt = frame.sentAt,
+                received = false,
+                attachmentHash = attachment?.hash,
+                attachmentMime = attachment?.mime,
+                attachmentPath = attachment?.path,
+            ),
         )
         router.originate(frame)
+    }
+
+    /** On startup, re-request any attachment blobs referenced by stored messages we don't yet have. */
+    private fun resumePendingFetches() {
+        scope.launch { messages.hashesNeedingFetch().forEach { blobExchange.want(it) } }
     }
 
     // --- Profile broadcasting ---
@@ -108,7 +147,10 @@ class MeshManager(
             transport.neighbors.collect { current ->
                 val newcomers = current.filter { it.nodeId !in known }
                 known = current.map { it.nodeId }.toSet()
-                newcomers.forEach { pushProfileTo(it) }
+                newcomers.forEach {
+                    pushProfileTo(it)
+                    blobExchange.onNeighborAdded(it) // re-ask the new neighbor for blobs we still need
+                }
             }
         }
     }
@@ -124,22 +166,31 @@ class MeshManager(
         }
     }
 
-    private fun watchIncomingAvatars() {
+    private fun watchIncomingFiles() {
         scope.launch {
-            transport.incomingFiles.collect { (nodeId, path) -> onAvatarReceived(nodeId, path) }
+            transport.incomingFiles.collect { file ->
+                when (file.kind) {
+                    FileKind.AVATAR -> onAvatarReceived(file.fromNodeId, file.path)
+                    FileKind.ATTACHMENT ->
+                        blobExchange.onReceived(file.key, file.mime, file.path, file.fromNodeId)
+                }
+            }
         }
     }
 
     private suspend fun pushProfileTo(peer: Peer) {
         router.sendOwn(currentProfileFrame(), peer)
-        avatars.ownAvatarFile.takeIf { it.exists() }?.let { transport.sendFile(it, peer) }
+        avatars.ownAvatarFile.takeIf { it.exists() }?.let { transport.sendFile(it, peer, avatarMeta()) }
     }
 
     private suspend fun broadcastProfile() {
         router.originate(currentProfileFrame())
         val avatar = avatars.ownAvatarFile.takeIf { it.exists() } ?: return
-        transport.neighbors.value.forEach { transport.sendFile(avatar, it) }
+        transport.neighbors.value.forEach { transport.sendFile(avatar, it, avatarMeta()) }
     }
+
+    private fun avatarMeta(): FileMeta =
+        FileMeta(FileKind.AVATAR, key = avatars.ownAvatarHash().orEmpty(), mime = "image/jpeg")
 
     private suspend fun currentProfileFrame(): ProfileFrame {
         val me = identity.nodeId()
@@ -160,10 +211,13 @@ class MeshManager(
             is ChatFrame -> handleChat(frame)
             is ProfileFrame -> handleProfile(frame)
             is ReceiptFrame -> messages.markReceived(frame.ackId)
+            is BlobRequestFrame -> blobExchange.onRequest(frame.hash, fromNodeId)
         }
     }
 
     private suspend fun handleChat(frame: ChatFrame) {
+        // If we already hold the referenced blob, link it now; otherwise start pulling it.
+        val localPath = frame.attachmentHash?.let { attachments.path(it) }
         messages.save(
             MessageEntity(
                 id = frame.id,
@@ -172,8 +226,12 @@ class MeshManager(
                 body = frame.body,
                 sentAt = frame.sentAt,
                 received = false,
+                attachmentHash = frame.attachmentHash,
+                attachmentMime = frame.attachmentMime,
+                attachmentPath = localPath,
             ),
         )
+        frame.attachmentHash?.let { if (localPath == null) blobExchange.want(it) }
         notifyIncoming(frame)
         // Acknowledge only if the author is a direct neighbor (mirrors the legacy app: relays don't ack).
         val direct = transport.neighbors.value.firstOrNull { it.nodeId == frame.senderId } ?: return
@@ -189,9 +247,11 @@ class MeshManager(
     private suspend fun notifyIncoming(frame: ChatFrame) {
         val me = identity.nodeId()
         val peer = peers.find(frame.senderId)
+        // Image-only messages have a blank body; show a placeholder so they still notify.
+        val body = frame.body.ifBlank { if (frame.attachmentHash != null) "📷 Photo" else frame.body }
         val incoming = incomingNotification(
             senderId = frame.senderId,
-            body = frame.body,
+            body = body,
             sentAt = frame.sentAt,
             selfId = me,
             peerName = peer?.name,

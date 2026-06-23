@@ -13,5 +13,5 @@ val meshModule = module {
     // Application-lifetime scope for the mesh engine.
     single<CoroutineScope> { CoroutineScope(SupervisorJob() + Dispatchers.Default) }
     single<MeshTransport> { NearbyTransport(androidContext(), get(), get()) }
-    single { MeshManager(get(), get(), get(), get(), get(), get(), get(), get()) }
+    single { MeshManager(get(), get(), get(), get(), get(), get(), get(), get(), get()) }
 }

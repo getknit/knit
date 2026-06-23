@@ -20,6 +20,14 @@ sealed interface Frame {
     val id: String
     val ttl: Int
     val hops: Int
+
+    /**
+     * Whether [MeshRouter] should flood this frame onward to other neighbors. True for the
+     * broadcast-room traffic (chat/profile/receipt); false for point-to-point control frames like
+     * [BlobRequestFrame] whose propagation is handled hop-by-hop by [MeshManager]. A computed getter
+     * (not a constructor property) so it never lands in the serialized wire form.
+     */
+    val relayable: Boolean get() = true
 }
 
 @Serializable
@@ -31,6 +39,9 @@ data class ChatFrame(
     val body: String,
     val recipientId: String? = null,
     val sig: String? = null,
+    // Reference to an out-of-band image blob (fetched by content hash); null for text-only messages.
+    val attachmentHash: String? = null,
+    val attachmentMime: String? = null,
     override val ttl: Int = DEFAULT_TTL,
     override val hops: Int = 0,
 ) : Frame
@@ -59,11 +70,30 @@ data class ReceiptFrame(
     override val hops: Int = 0,
 ) : Frame
 
+/**
+ * A point-to-point request for the image blob identified by [hash]. Sent only to direct neighbors
+ * and never flooded ([relayable] is false); a neighbor that holds the blob serves it back over the
+ * file channel, and one that doesn't recurses the request to its own neighbors. This hop-by-hop
+ * pull is how attachments reach peers beyond the originator's direct range.
+ */
+@Serializable
+@SerialName("blobreq")
+data class BlobRequestFrame(
+    override val id: String,
+    val senderId: String,
+    val hash: String,
+    override val ttl: Int = DEFAULT_TTL,
+    override val hops: Int = 0,
+) : Frame {
+    override val relayable: Boolean get() = false
+}
+
 /** Returns a copy of this frame with its hop count incremented (used when relaying). */
 fun Frame.incrementHop(): Frame = when (this) {
     is ChatFrame -> copy(hops = hops + 1)
     is ProfileFrame -> copy(hops = hops + 1)
     is ReceiptFrame -> copy(hops = hops + 1)
+    is BlobRequestFrame -> copy(hops = hops + 1)
 }
 
 /** Serializes [Frame]s to/from the bytes carried in a transport payload. */

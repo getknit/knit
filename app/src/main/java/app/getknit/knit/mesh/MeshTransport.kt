@@ -11,8 +11,23 @@ data class Peer(val nodeId: String)
 /** A frame received from a neighbor, tagged with the neighbor it arrived from. */
 data class InboundFrame(val frame: Frame, val fromNodeId: String)
 
-/** A file (e.g. an avatar) received from a neighbor, already saved at [path]. */
-data class ReceivedFile(val fromNodeId: String, val path: String)
+/** What a transferred file is, so the receiver can route an avatar apart from a chat attachment. */
+enum class FileKind { AVATAR, ATTACHMENT }
+
+/**
+ * Metadata sent alongside a file so the receiver can identify it: [kind] (avatar vs attachment),
+ * [key] (the avatar's node id, or an attachment's content hash), and the file's [mime] type.
+ */
+data class FileMeta(val kind: FileKind, val key: String, val mime: String)
+
+/** A file received from a neighbor, already saved at [path], tagged with its [FileMeta] fields. */
+data class ReceivedFile(
+    val fromNodeId: String,
+    val path: String,
+    val kind: FileKind,
+    val key: String,
+    val mime: String,
+)
 
 /**
  * Abstraction over the radio layer that discovers neighbors and exchanges [Frame]s with them.
@@ -27,7 +42,7 @@ interface MeshTransport {
     /** Frames received from neighbors (after transport-level delivery, before mesh dedup/relay). */
     val inbound: Flow<InboundFrame>
 
-    /** Files received from neighbors (avatars), emitted once fully transferred and saved. */
+    /** Files received from neighbors (avatars, attachments), emitted once fully transferred and saved. */
     val incomingFiles: Flow<ReceivedFile>
 
     fun start()
@@ -40,6 +55,6 @@ interface MeshTransport {
     /** Sends [frame] to one neighbor, or to all neighbors when [to] is null. */
     suspend fun send(frame: Frame, to: Peer? = null)
 
-    /** Sends a file (e.g. an avatar) to a single neighbor. */
-    suspend fun sendFile(file: File, to: Peer)
+    /** Sends a file (avatar or attachment) tagged with [meta] to a single neighbor. */
+    suspend fun sendFile(file: File, to: Peer, meta: FileMeta)
 }

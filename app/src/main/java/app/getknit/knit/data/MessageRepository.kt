@@ -14,4 +14,8 @@ class MessageRepository(private val dao: MessageDao) {
     suspend fun exists(id: String): Boolean = dao.exists(id)
 
     suspend fun markReceived(id: String) = dao.markReceived(id)
+
+    suspend fun setAttachmentPath(hash: String, path: String) = dao.setAttachmentPath(hash, path)
+
+    suspend fun hashesNeedingFetch(): List<String> = dao.hashesNeedingFetch()
 }

@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.FileKind
+import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
@@ -38,6 +40,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
@@ -74,6 +78,12 @@ class NearbyTransport(
 
     // In-flight FILE payloads: payloadId -> the source endpoint + destination content Uri.
     private val pendingFiles = ConcurrentHashMap<Long, PendingFile>()
+
+    // A FILE payload is described by a tiny header BYTES sent just ahead of it (keyed by the file's
+    // payload id, which Nearby preserves end-to-end). The file is finalized once both the header has
+    // arrived and the transfer has completed — either order is tolerated.
+    private val fileHeaders = ConcurrentHashMap<Long, FileMeta>()
+    private val completedFiles = ConcurrentHashMap.newKeySet<Long>()
 
     private data class PendingFile(val endpointId: String, val uri: android.net.Uri)
 
@@ -122,9 +132,13 @@ class NearbyTransport(
         targets.forEach { endpointId -> client.sendPayload(endpointId, payload) }
     }
 
-    override suspend fun sendFile(file: File, to: Peer) {
+    override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) {
         val endpointId = nodeToEndpoint[to.nodeId] ?: return
         val payload = Payload.fromFile(file)
+        // Announce the file (its payload id + kind/key/mime) just before the bytes so the receiver
+        // can tell an avatar from an attachment and name it correctly.
+        val header = FileHeaderWire(payload.id, meta.kind.name, meta.key, meta.mime)
+        client.sendPayload(endpointId, Payload.fromBytes(encodeFileHeader(header)))
         client.sendPayload(endpointId, payload)
     }
 
@@ -222,6 +236,18 @@ class NearbyTransport(
             when (payload.type) {
                 Payload.Type.BYTES -> {
                     val bytes = payload.asBytes() ?: return
+                    // A BYTES payload is either a file header (announcing the FILE that follows) or a
+                    // serialized mesh frame; the header magic prefix tells them apart.
+                    val header = decodeFileHeader(bytes)
+                    if (header != null) {
+                        fileHeaders[header.payloadId] = FileMeta(
+                            kind = runCatching { FileKind.valueOf(header.kind) }.getOrDefault(FileKind.ATTACHMENT),
+                            key = header.key,
+                            mime = header.mime,
+                        )
+                        tryFinalizeFile(header.payloadId)
+                        return
+                    }
                     val frame = WireCodec.decode(bytes) ?: return
                     val fromNode = endpointToNode[endpointId] ?: return
                     _inbound.tryEmit(InboundFrame(frame, fromNode))
@@ -237,28 +263,62 @@ class NearbyTransport(
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
             if (update.status != PayloadTransferUpdate.Status.SUCCESS) return
-            val pending = pendingFiles.remove(update.payloadId) ?: return
-            val nodeId = endpointToNode[pending.endpointId] ?: return
-            scope.launch(Dispatchers.IO) { saveIncomingAvatar(nodeId, pending.uri) }
+            if (!pendingFiles.containsKey(update.payloadId)) return // not a FILE we're tracking
+            completedFiles.add(update.payloadId)
+            tryFinalizeFile(update.payloadId)
         }
     }
 
-    /** Copies a completed FILE payload into the avatar cache and announces it. */
-    private fun saveIncomingAvatar(nodeId: String, uri: android.net.Uri) {
-        val dest = File(appContext.cacheDir, "$nodeId.jpg")
+    /** Once a FILE has both fully transferred and had its header announced, save and emit it. */
+    private fun tryFinalizeFile(payloadId: Long) {
+        if (payloadId !in completedFiles) return
+        val meta = fileHeaders[payloadId] ?: return
+        val pending = pendingFiles[payloadId] ?: return
+        // Win the race to finalize exactly once, then drop all tracking state for this payload.
+        if (!completedFiles.remove(payloadId)) return
+        pendingFiles.remove(payloadId)
+        fileHeaders.remove(payloadId)
+        val nodeId = endpointToNode[pending.endpointId] ?: return
+        scope.launch(Dispatchers.IO) { saveIncomingFile(nodeId, pending.uri, meta) }
+    }
+
+    /** Copies a completed FILE payload into the cache (avatar by node, attachment by hash) and announces it. */
+    private fun saveIncomingFile(nodeId: String, uri: android.net.Uri, meta: FileMeta) {
+        val dest = when (meta.kind) {
+            FileKind.AVATAR -> File(appContext.cacheDir, "$nodeId.jpg")
+            FileKind.ATTACHMENT -> File(appContext.cacheDir, "attach-${meta.key}.${extForMime(meta.mime)}")
+        }
         runCatching {
             appContext.contentResolver.openInputStream(uri)?.use { input ->
                 dest.outputStream().use { input.copyTo(it) }
             }
         }.onSuccess {
-            _incomingFiles.tryEmit(ReceivedFile(nodeId, dest.absolutePath))
+            _incomingFiles.tryEmit(ReceivedFile(nodeId, dest.absolutePath, meta.kind, meta.key, meta.mime))
         }.onFailure {
-            Log.w(TAG, "Failed saving avatar from $nodeId", it)
+            Log.w(TAG, "Failed saving ${meta.kind} file from $nodeId", it)
         }
     }
 
     private fun refreshNeighbors() {
         _neighbors.value = connected.mapNotNull { endpointToNode[it] }.map { Peer(it) }.toSet()
+    }
+
+    private fun encodeFileHeader(header: FileHeaderWire): ByteArray =
+        FILE_HEADER_MAGIC + headerJson.encodeToString(header).encodeToByteArray()
+
+    /** Decodes a magic-prefixed file header, or null if [bytes] is an ordinary mesh frame. */
+    private fun decodeFileHeader(bytes: ByteArray): FileHeaderWire? {
+        if (bytes.size <= FILE_HEADER_MAGIC.size) return null
+        if (!FILE_HEADER_MAGIC.indices.all { bytes[it] == FILE_HEADER_MAGIC[it] }) return null
+        val json = bytes.copyOfRange(FILE_HEADER_MAGIC.size, bytes.size).decodeToString()
+        return runCatching { headerJson.decodeFromString<FileHeaderWire>(json) }.getOrNull()
+    }
+
+    private fun extForMime(mime: String): String = when (mime.lowercase()) {
+        "image/gif" -> "gif"
+        "image/png" -> "png"
+        "image/webp" -> "webp"
+        else -> "jpg"
     }
 
     private companion object {
@@ -269,5 +329,18 @@ class NearbyTransport(
         const val DISCOVERY_WINDOW_MS = 12_000L
         const val DISCOVERY_INTERVAL_MS = 30_000L
         const val MAX_ENDPOINT_ERRORS = 10
+
+        // "KFH1" — distinguishes a file-header BYTES payload from a serialized frame (which starts '{').
+        val FILE_HEADER_MAGIC = byteArrayOf(0x4B, 0x46, 0x48, 0x31)
+        val headerJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     }
 }
+
+/** Transport-internal announcement sent ahead of a FILE payload so the receiver can route it. */
+@Serializable
+private data class FileHeaderWire(
+    val payloadId: Long,
+    val kind: String,
+    val key: String,
+    val mime: String,
+)
