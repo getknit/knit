@@ -4,9 +4,11 @@ import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
+import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.protocol.BlobRequestFrame
@@ -14,6 +16,7 @@ import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.Frame
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileFrame
+import app.getknit.knit.mesh.protocol.ReactionFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
 import app.getknit.knit.mesh.protocol.mention
 import app.getknit.knit.notifications.Notifier
@@ -39,6 +42,7 @@ import java.util.UUID
 class MeshManager(
     private val transport: MeshTransport,
     private val messages: MessageRepository,
+    private val reactions: ReactionRepository,
     private val peers: PeerRepository,
     private val identity: Identity,
     private val settings: SettingsStore,
@@ -144,6 +148,28 @@ class MeshManager(
         router.originate(frame)
     }
 
+    /**
+     * Toggles this device's emoji reaction on [messageId] and floods the change. Tapping the emoji you
+     * already chose retracts it; tapping a different one replaces it (one reaction per person). The
+     * change is stored optimistically and propagates as a [ReactionFrame]; [sentAt] is the wall clock
+     * used for last-writer-wins so concurrent reactors across the mesh converge.
+     */
+    suspend fun sendReaction(messageId: String, emoji: String) {
+        val me = identity.nodeId()
+        val next = if (reactions.currentEmoji(messageId, me) == emoji) null else emoji
+        val now = System.currentTimeMillis()
+        reactions.apply(ReactionEntity(messageId, me, next, now))
+        router.originate(
+            ReactionFrame(
+                id = UUID.randomUUID().toString(),
+                senderId = me,
+                messageId = messageId,
+                emoji = next,
+                sentAt = now,
+            ),
+        )
+    }
+
     /** On startup, re-request any attachment blobs referenced by stored messages we don't yet have. */
     private fun resumePendingFetches() {
         scope.launch { messages.hashesNeedingFetch().forEach { blobExchange.want(it) } }
@@ -221,8 +247,25 @@ class MeshManager(
             is ChatFrame -> handleChat(frame)
             is ProfileFrame -> handleProfile(frame)
             is ReceiptFrame -> messages.markReceived(frame.ackId)
+            is ReactionFrame -> handleReaction(frame)
             is BlobRequestFrame -> blobExchange.onRequest(frame.hash, fromNodeId)
         }
+    }
+
+    /**
+     * Applies an inbound reaction. [ReactionRepository.apply] is last-writer-wins, so duplicates and
+     * out-of-order add/retract/replace frames are idempotent. The target message may not exist yet
+     * (reactions can outrun the message over the mesh) — the row persists regardless and the UI joins.
+     */
+    private suspend fun handleReaction(frame: ReactionFrame) {
+        reactions.apply(
+            ReactionEntity(
+                messageId = frame.messageId,
+                reactorNodeId = frame.senderId,
+                emoji = frame.emoji,
+                updatedAt = frame.sentAt,
+            ),
+        )
     }
 
     private suspend fun handleChat(frame: ChatFrame) {

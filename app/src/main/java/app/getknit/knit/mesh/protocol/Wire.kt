@@ -88,6 +88,29 @@ data class ReceiptFrame(
 ) : Frame
 
 /**
+ * An emoji reaction to the message identified by [messageId]. Flooded like chat so every device that
+ * holds the message converges on the same reaction state. Each reactor ([senderId]) has at most one
+ * reaction per message: [emoji] is the chosen emoji, or null to retract. [sentAt] is the last-writer-
+ * wins clock — a receiver applies this frame only if it is newer than the reaction it already holds
+ * for ([messageId], [senderId]), so out-of-order add/retract/replace frames converge deterministically.
+ *
+ * [id] is a fresh random UUID per emit (NOT derived from messageId/senderId/emoji): the dedup
+ * [SeenSet] keys on it, so a later retract or replace must carry a new id to re-flood rather than be
+ * swallowed as a duplicate. State dedup is [sentAt]'s job, not the frame id's.
+ */
+@Serializable
+@SerialName("reaction")
+data class ReactionFrame(
+    override val id: String,
+    val senderId: String,
+    val messageId: String,
+    val emoji: String? = null,
+    val sentAt: Long,
+    override val ttl: Int = DEFAULT_TTL,
+    override val hops: Int = 0,
+) : Frame
+
+/**
  * A point-to-point request for the image blob identified by [hash]. Sent only to direct neighbors
  * and never flooded ([relayable] is false); a neighbor that holds the blob serves it back over the
  * file channel, and one that doesn't recurses the request to its own neighbors. This hop-by-hop
@@ -110,6 +133,7 @@ fun Frame.incrementHop(): Frame = when (this) {
     is ChatFrame -> copy(hops = hops + 1)
     is ProfileFrame -> copy(hops = hops + 1)
     is ReceiptFrame -> copy(hops = hops + 1)
+    is ReactionFrame -> copy(hops = hops + 1)
     is BlobRequestFrame -> copy(hops = hops + 1)
 }
 

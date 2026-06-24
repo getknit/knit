@@ -4,6 +4,7 @@ import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileFrame
+import app.getknit.knit.mesh.protocol.ReactionFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
 import app.getknit.knit.mesh.protocol.WireCodec
 import org.junit.Assert.assertEquals
@@ -67,6 +68,21 @@ class WireSerializationTest {
     fun receiptFrameRoundTrips() {
         val frame = ReceiptFrame(id = "r1", senderId = "carol", ackId = "m1")
         assertEquals(frame, WireCodec.decode(WireCodec.encode(frame)))
+    }
+
+    @Test
+    fun reactionFrameRoundTrips() {
+        val frame = ReactionFrame(id = "x1", senderId = "carol", messageId = "m1", emoji = "👍", sentAt = 42L)
+        assertEquals(frame, WireCodec.decode(WireCodec.encode(frame)))
+    }
+
+    @Test
+    fun reactionRetractFrameRoundTrips() {
+        // A retraction carries a null emoji; it must survive the round trip (not silently default away).
+        val frame = ReactionFrame(id = "x2", senderId = "carol", messageId = "m1", emoji = null, sentAt = 99L)
+        val decoded = WireCodec.decode(WireCodec.encode(frame)) as ReactionFrame
+        assertEquals(frame, decoded)
+        assertNull(decoded.emoji)
     }
 
     @Test

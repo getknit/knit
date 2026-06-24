@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
@@ -34,6 +35,18 @@ data class ChatRow(
     val attachmentMime: String? = null,
     val attachmentPath: String? = null,
     val mentions: List<Mention> = emptyList(),
+    val reactions: List<ReactionSummary> = emptyList(),
+)
+
+/**
+ * One emoji's tally on a message: the [emoji], how many people reacted with it ([count]), and whether
+ * the local user is one of them ([mine], to highlight the chip). Distinct emoji become distinct chips;
+ * the UI shows the count only when it exceeds 1.
+ */
+data class ReactionSummary(
+    val emoji: String,
+    val count: Int,
+    val mine: Boolean,
 )
 
 /** A person who can be "@"-mentioned: someone we've received a message from, resolved to a name. */
@@ -53,6 +66,7 @@ data class ChatUiState(
 class ChatViewModel(
     messages: MessageRepository,
     peers: PeerRepository,
+    reactions: ReactionRepository,
     private val meshManager: MeshManager,
     private val identity: Identity,
     settings: SettingsStore,
@@ -70,20 +84,37 @@ class ChatViewModel(
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
     }
 
-    val state: StateFlow<ChatUiState> = combine(
+    // Reactions are pre-combined into the messages stream so the outer combine below stays at the
+    // 5-flow typed overload (a 6th flow falls back to unchecked Array<*> casts).
+    private val messagesWithReactions = combine(
         messages.observeMessages(),
+        reactions.observeReactions(),
+    ) { msgs, reacts -> msgs to reacts }
+
+    val state: StateFlow<ChatUiState> = combine(
+        messagesWithReactions,
         peers.observePeers(),
         meshManager.neighborCount,
         myNodeId,
         settings.displayName,
-    ) { msgs, peerList, count, me, myName ->
+    ) { (msgs, reacts), peerList, count, me, myName ->
         val peersByNode = peerList.associateBy { it.nodeId }
+        // Group once, then tally per emoji within each message's bucket. Orphan reactions (no matching
+        // message yet) simply never produce a row until their message arrives.
+        val reactionsByMessage = reacts.groupBy { it.messageId }
         val rows = msgs.map { m ->
             val mine = m.senderId == me
             val name = when {
                 mine -> myName.ifBlank { "You" }
                 else -> displayNameFor(peersByNode[m.senderId]?.name, m.senderId)
             }
+            val tallies = reactionsByMessage[m.id].orEmpty()
+                .groupBy { it.emoji }
+                .mapNotNull { (emoji, group) ->
+                    // emoji is non-null in the stream (tombstones are filtered in the DAO); guard anyway.
+                    if (emoji == null) null
+                    else ReactionSummary(emoji, group.size, group.any { it.reactorNodeId == me })
+                }
             ChatRow(
                 id = m.id,
                 body = m.body,
@@ -97,6 +128,7 @@ class ChatViewModel(
                 attachmentMime = m.attachmentMime,
                 attachmentPath = m.attachmentPath,
                 mentions = MentionStore.decode(m.mentions),
+                reactions = tallies,
             )
         }
         // Autocomplete candidates: everyone we've received a message from, resolved to a display name.
@@ -127,6 +159,11 @@ class ChatViewModel(
         if (trimmed.isEmpty() && attachment == null) return
         _pendingAttachment.value = null
         viewModelScope.launch { meshManager.sendChat(trimmed, attachment, mentions) }
+    }
+
+    /** Toggles the local user's [emoji] reaction on [messageId] (add / replace / remove) and floods it. */
+    fun react(messageId: String, emoji: String) {
+        viewModelScope.launch { meshManager.sendReaction(messageId, emoji) }
     }
 
     /** Ingests a picked or keyboard-inserted image and stages it in the input bar. */

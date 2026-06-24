@@ -5,9 +5,12 @@ import android.text.format.DateUtils
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.content.MediaType
 import androidx.compose.foundation.content.ReceiveContentListener
 import androidx.compose.foundation.content.TransferableContent
@@ -19,6 +22,8 @@ import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -79,13 +84,21 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -231,7 +244,11 @@ fun ChatScreen(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 items(state.rows, key = { it.id }) { row ->
-                    MessageBubble(row, onImageClick = { fullscreenImage = it })
+                    MessageBubble(
+                        row,
+                        onImageClick = { fullscreenImage = it },
+                        onReact = viewModel::react,
+                    )
                 }
             }
         }
@@ -248,14 +265,23 @@ private fun connectionLabel(count: Int): String = when (count) {
     else -> "Connected to $count mesh nodes"
 }
 
+/** The short set of quick reactions offered when long-pressing a message. */
+private val REACTION_EMOJI = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(row: ChatRow, onImageClick: (String) -> Unit) {
+private fun MessageBubble(
+    row: ChatRow,
+    onImageClick: (String) -> Unit,
+    onReact: (messageId: String, emoji: String) -> Unit,
+) {
     val maxBubbleWidth = (LocalConfiguration.current.screenWidthDp * 0.8f).dp
     val bubbleShape = if (row.mine) {
         RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 4.dp, bottomStart = 16.dp)
     } else {
         RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 4.dp)
     }
+    var showPicker by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (row.mine) Arrangement.End else Arrangement.Start,
@@ -265,41 +291,165 @@ private fun MessageBubble(row: ChatRow, onImageClick: (String) -> Unit) {
             Avatar(avatarPath = row.avatarPath, name = row.senderName, size = 40.dp)
             Spacer(Modifier.width(8.dp))
         }
+        // Bubble + its reaction chips stack vertically, aligned to the message's side. The Box anchors
+        // the long-press picker popup directly above the bubble.
+        Column(horizontalAlignment = if (row.mine) Alignment.End else Alignment.Start) {
+            Box {
+                Surface(
+                    color = if (row.mine) MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = if (row.mine) MaterialTheme.colorScheme.onPrimaryContainer
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    shape = bubbleShape,
+                    modifier = Modifier
+                        .widthIn(max = maxBubbleWidth)
+                        .combinedClickable(
+                            // No tap action (and no ripple) — long-press opens the reaction picker.
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = {},
+                            onLongClick = { showPicker = true },
+                        ),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        if (!row.mine) {
+                            Text(
+                                text = row.senderName,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        if (row.attachmentHash != null) {
+                            AttachmentImage(row.attachmentPath, onImageClick)
+                            if (row.body.isNotBlank()) Spacer(Modifier.height(4.dp))
+                        }
+                        if (row.body.isNotBlank()) {
+                            val mentionStyle = SpanStyle(
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = highlightMentions(row.body, row.mentions, mentionStyle),
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                        }
+                        Text(
+                            text = timeLabel(row),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.align(Alignment.End),
+                        )
+                    }
+                }
+                if (showPicker) {
+                    ReactionPicker(
+                        onPick = { emoji ->
+                            onReact(row.id, emoji)
+                            showPicker = false
+                        },
+                        onDismiss = { showPicker = false },
+                    )
+                }
+            }
+            if (row.reactions.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                ReactionRow(reactions = row.reactions, onToggle = { emoji -> onReact(row.id, emoji) })
+            }
+        }
+    }
+}
+
+/** Floating bar of quick-reaction emoji, positioned just above the long-pressed bubble. */
+@Composable
+private fun ReactionPicker(onPick: (String) -> Unit, onDismiss: () -> Unit) {
+    val spacingPx = with(LocalDensity.current) { 8.dp.roundToPx() }
+    // Center the bar horizontally over the bubble and place it above; drop below only if it would clip
+    // the top of the window.
+    val positionProvider = remember(spacingPx) {
+        object : PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize,
+            ): IntOffset {
+                val x = anchorBounds.left + (anchorBounds.width - popupContentSize.width) / 2
+                val clampedX = x.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+                val above = anchorBounds.top - popupContentSize.height - spacingPx
+                val y = if (above >= 0) above else anchorBounds.bottom + spacingPx
+                return IntOffset(clampedX, y)
+            }
+        }
+    }
+    Popup(
+        popupPositionProvider = positionProvider,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true),
+    ) {
         Surface(
-            color = if (row.mine) MaterialTheme.colorScheme.primaryContainer
-            else MaterialTheme.colorScheme.surfaceVariant,
-            contentColor = if (row.mine) MaterialTheme.colorScheme.onPrimaryContainer
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-            shape = bubbleShape,
-            modifier = Modifier.widthIn(max = maxBubbleWidth),
+            shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 3.dp,
+            shadowElevation = 6.dp,
         ) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                if (!row.mine) {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                REACTION_EMOJI.forEach { emoji ->
                     Text(
-                        text = row.senderName,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
+                        text = emoji,
+                        style = MaterialTheme.typography.headlineSmall,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .clickable { onPick(emoji) }
+                            .padding(8.dp),
                     )
                 }
-                if (row.attachmentHash != null) {
-                    AttachmentImage(row.attachmentPath, onImageClick)
-                    if (row.body.isNotBlank()) Spacer(Modifier.height(4.dp))
-                }
-                if (row.body.isNotBlank()) {
-                    val mentionStyle = SpanStyle(
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text = highlightMentions(row.body, row.mentions, mentionStyle),
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                }
+            }
+        }
+    }
+}
+
+/** Aggregated reaction chips shown below a bubble; tapping a chip toggles the local user's reaction. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ReactionRow(reactions: List<ReactionSummary>, onToggle: (String) -> Unit) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        reactions.forEach { reaction ->
+            ReactionChip(reaction, onClick = { onToggle(reaction.emoji) })
+        }
+    }
+}
+
+@Composable
+private fun ReactionChip(reaction: ReactionSummary, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(12.dp)
+    Surface(
+        shape = shape,
+        color = if (reaction.mine) MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = if (reaction.mine) MaterialTheme.colorScheme.onPrimaryContainer
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+        border = if (reaction.mine) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
+        modifier = Modifier.clip(shape).clickable { onClick() },
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(text = reaction.emoji, style = MaterialTheme.typography.labelLarge)
+            // A lone reaction shows just the emoji (Signal-style); the count appears once it's shared.
+            if (reaction.count > 1) {
                 Text(
-                    text = timeLabel(row),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.align(Alignment.End),
+                    text = reaction.count.toString(),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium,
                 )
             }
         }

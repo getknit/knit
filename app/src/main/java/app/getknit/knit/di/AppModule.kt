@@ -9,6 +9,7 @@ import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.notifications.MessageNotifier
@@ -31,6 +32,8 @@ val appModule = module {
     single { KnitDatabase.build(androidContext()) }
     single { get<KnitDatabase>().messageDao() }
     single { get<KnitDatabase>().peerDao() }
+    single { get<KnitDatabase>().reactionDao() }
     single { MessageRepository(get()) }
     single { PeerRepository(get()) }
+    single { ReactionRepository(get()) }
 }
