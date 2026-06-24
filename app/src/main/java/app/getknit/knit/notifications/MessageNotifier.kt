@@ -66,7 +66,7 @@ class MessageNotifier(private val context: Context) : Notifier {
         }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_stat_mesh)
             .setStyle(style)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setContentIntent(openChatIntent())
@@ -92,7 +92,7 @@ class MessageNotifier(private val context: Context) : Notifier {
         // A mention is a targeted call-out, so it posts its own standalone notification (not the grouped
         // MessagingStyle the room uses) to avoid being buried among other senders.
         val notification = NotificationCompat.Builder(context, MENTION_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_stat_mesh)
             .setContentTitle(incoming.senderName)
             .setContentText(incoming.body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(incoming.body))

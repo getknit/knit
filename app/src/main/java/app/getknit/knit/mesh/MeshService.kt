@@ -123,7 +123,7 @@ class MeshService : LifecycleService() {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.mesh_notification_title))
             .setContentText(getString(R.string.mesh_notification_text))
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_stat_mesh)
             .setOngoing(true)
             .setContentIntent(openApp)
             .addAction(0, getString(R.string.mesh_notification_stop), stop)
