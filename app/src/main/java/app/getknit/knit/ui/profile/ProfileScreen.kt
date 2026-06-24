@@ -28,12 +28,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.getknit.knit.R
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.isIgnoringBatteryOptimizations
@@ -59,10 +61,10 @@ fun ProfileScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Profile") },
+                title = { Text(stringResource(R.string.profile_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
                     }
                 },
             )
@@ -94,7 +96,7 @@ fun ProfileScreen(
                 value = name,
                 onValueChange = viewModel::setDisplayName,
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Display name") },
+                label = { Text(stringResource(R.string.profile_display_name_label)) },
                 placeholder = { if (alias.isNotEmpty()) Text(alias) },
                 singleLine = true,
             )
@@ -102,11 +104,11 @@ fun ProfileScreen(
                 value = status,
                 onValueChange = viewModel::setStatus,
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Status") },
+                label = { Text(stringResource(R.string.profile_status_label)) },
                 singleLine = true,
             )
             Text(
-                text = "Node ID: $nodeId",
+                text = stringResource(R.string.profile_node_id, nodeId),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -139,9 +141,9 @@ private fun BatteryOptimizationRow() {
     ) {
         Text(
             text = if (exempt) {
-                "Background battery use: allowed"
+                stringResource(R.string.battery_allowed)
             } else {
-                "Background battery use: restricted — the mesh may drop when idle"
+                stringResource(R.string.battery_restricted)
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -149,7 +151,7 @@ private fun BatteryOptimizationRow() {
         )
         if (!exempt) {
             TextButton(onClick = { requestIgnoreBatteryOptimizations(context) }) {
-                Text("Allow background battery use")
+                Text(stringResource(R.string.battery_allow_button))
             }
         }
     }

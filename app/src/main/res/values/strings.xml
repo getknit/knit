@@ -16,4 +16,42 @@
     <!-- Mention notifications -->
     <string name="mention_channel_name">Mentions</string>
     <string name="mention_channel_description">Notifications when someone @-mentions you</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_title">Welcome to Knit</string>
+    <string name="onboarding_blurb">Knit connects to nearby phones over Bluetooth and Wi-Fi to relay encrypted messages — no internet, no servers. It needs nearby-device and location permissions to find peers, and works best when allowed to run in the background.</string>
+    <string name="onboarding_grant_permissions">Grant permissions</string>
+    <string name="onboarding_permissions_granted">Permissions granted</string>
+    <string name="onboarding_start">Start meshing</string>
+
+    <!-- Chat -->
+    <string name="chat_more_options">More options</string>
+    <string name="chat_connection_none">No mesh nodes connected</string>
+    <plurals name="chat_connection_count">
+        <item quantity="one">Connected to %d mesh node</item>
+        <item quantity="other">Connected to %d mesh nodes</item>
+    </plurals>
+    <string name="chat_empty">No messages yet.\nSay hello to nearby devices.</string>
+    <string name="chat_message_hint">Knit Message</string>
+    <string name="chat_loading_photo">Loading photo…</string>
+    <string name="chat_attachment_image_desc">Photo attachment</string>
+    <string name="chat_image_viewer_desc">Photo</string>
+    <string name="chat_attachment_preview_desc">Attachment preview</string>
+    <string name="chat_remove_attachment">Remove attachment</string>
+    <string name="chat_self_name">You</string>
+
+    <!-- Profile -->
+    <string name="profile_title">Profile</string>
+    <string name="profile_display_name_label">Display name</string>
+    <string name="profile_status_label">Status</string>
+    <string name="profile_node_id">Node ID: %1$s</string>
+    <string name="battery_allowed">Background battery use: allowed</string>
+    <string name="battery_restricted">Background battery use: restricted — the mesh may drop when idle</string>
+    <string name="battery_allow_button">Allow background battery use</string>
+
+    <!-- Generic actions / content descriptions -->
+    <string name="action_send">Send</string>
+    <string name="action_attach_photo">Attach photo</string>
+    <string name="action_back">Back</string>
+    <string name="action_close">Close</string>
 </resources>

@@ -1,8 +1,10 @@
 package app.getknit.knit.ui.chat
 
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.getknit.knit.R
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -72,6 +74,7 @@ class ChatViewModel(
     settings: SettingsStore,
     private val notifier: Notifier,
     private val attachments: AttachmentStore,
+    private val context: Context,
 ) : ViewModel() {
 
     private val myNodeId = MutableStateFlow<String?>(null)
@@ -105,7 +108,7 @@ class ChatViewModel(
         val rows = msgs.map { m ->
             val mine = m.senderId == me
             val name = when {
-                mine -> myName.ifBlank { "You" }
+                mine -> myName.ifBlank { context.getString(R.string.chat_self_name) }
                 else -> displayNameFor(peersByNode[m.senderId]?.name, m.senderId)
             }
             val tallies = reactionsByMessage[m.id].orEmpty()

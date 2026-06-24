@@ -19,8 +19,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import app.getknit.knit.R
 import app.getknit.knit.ui.hasAllMeshPermissions
 import app.getknit.knit.ui.requestIgnoreBatteryOptimizations
 import app.getknit.knit.ui.requiredMeshPermissions
@@ -49,13 +51,11 @@ fun OnboardingScreen(onReady: () -> Unit) {
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = "Welcome to Knit",
+            text = stringResource(R.string.onboarding_title),
             style = MaterialTheme.typography.headlineMedium,
         )
         Text(
-            text = "Knit connects to nearby phones over Bluetooth and Wi-Fi to relay encrypted " +
-                "messages — no internet, no servers. It needs nearby-device and location " +
-                "permissions to find peers, and works best when allowed to run in the background.",
+            text = stringResource(R.string.onboarding_blurb),
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(vertical = 24.dp),
@@ -65,7 +65,13 @@ fun OnboardingScreen(onReady: () -> Unit) {
             onClick = { launcher.launch(requiredMeshPermissions()) },
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text(if (granted) "Permissions granted" else "Grant permissions")
+            Text(
+                if (granted) {
+                    stringResource(R.string.onboarding_permissions_granted)
+                } else {
+                    stringResource(R.string.onboarding_grant_permissions)
+                },
+            )
         }
 
         OutlinedButton(
@@ -74,7 +80,7 @@ fun OnboardingScreen(onReady: () -> Unit) {
                 .fillMaxWidth()
                 .padding(top = 8.dp),
         ) {
-            Text("Allow background battery use")
+            Text(stringResource(R.string.battery_allow_button))
         }
 
         Button(
@@ -84,7 +90,7 @@ fun OnboardingScreen(onReady: () -> Unit) {
                 .fillMaxWidth()
                 .padding(top = 24.dp),
         ) {
-            Text("Start meshing")
+            Text(stringResource(R.string.onboarding_start))
         }
     }
 }

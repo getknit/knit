@@ -85,6 +85,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -103,6 +105,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.getknit.knit.R
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.components.Avatar
@@ -162,7 +165,7 @@ fun ChatScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Knit",
+                            text = stringResource(R.string.app_name),
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary,
@@ -192,14 +195,14 @@ fun ChatScreen(
                 actions = {
                     Box {
                         IconButton(onClick = { menuOpen = true }) {
-                            Icon(Icons.Filled.MoreVert, contentDescription = "More options")
+                            Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.chat_more_options))
                         }
                         DropdownMenu(
                             expanded = menuOpen,
                             onDismissRequest = { menuOpen = false },
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Profile") },
+                                text = { Text(stringResource(R.string.profile_title)) },
                                 leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null) },
                                 onClick = {
                                     menuOpen = false
@@ -259,11 +262,13 @@ fun ChatScreen(
     }
 }
 
-private fun connectionLabel(count: Int): String = when (count) {
-    0 -> "No mesh nodes connected"
-    1 -> "Connected to 1 mesh node"
-    else -> "Connected to $count mesh nodes"
-}
+@Composable
+private fun connectionLabel(count: Int): String =
+    if (count == 0) {
+        stringResource(R.string.chat_connection_none)
+    } else {
+        pluralStringResource(R.plurals.chat_connection_count, count, count)
+    }
 
 /** The short set of quick reactions offered when long-pressing a message. */
 private val REACTION_EMOJI = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
@@ -469,7 +474,7 @@ private fun AttachmentImage(path: String?, onImageClick: (String) -> Unit) {
         if (path != null) {
             AsyncImage(
                 model = File(path),
-                contentDescription = "Photo attachment",
+                contentDescription = stringResource(R.string.chat_attachment_image_desc),
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.sizeIn(maxWidth = 220.dp, maxHeight = 260.dp),
             )
@@ -483,7 +488,7 @@ private fun AttachmentImage(path: String?, onImageClick: (String) -> Unit) {
             ) {
                 CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.height(8.dp))
-                Text("Loading photo…", style = MaterialTheme.typography.labelSmall)
+                Text(stringResource(R.string.chat_loading_photo), style = MaterialTheme.typography.labelSmall)
             }
         }
     }
@@ -505,7 +510,7 @@ private fun FullscreenImageViewer(path: String, onDismiss: () -> Unit) {
         ) {
             AsyncImage(
                 model = File(path),
-                contentDescription = "Photo",
+                contentDescription = stringResource(R.string.chat_image_viewer_desc),
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxSize()
@@ -521,7 +526,7 @@ private fun FullscreenImageViewer(path: String, onDismiss: () -> Unit) {
                 onClick = onDismiss,
                 modifier = Modifier.align(Alignment.TopEnd).navigationBarsPadding().padding(8.dp),
             ) {
-                Icon(Icons.Filled.Close, contentDescription = "Close", tint = Color.White)
+                Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.action_close), tint = Color.White)
             }
         }
     }
@@ -538,7 +543,7 @@ private fun timeLabel(row: ChatRow): String {
 private fun EmptyState(modifier: Modifier = Modifier) {
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Text(
-            text = "No messages yet.\nSay hello to nearby devices.",
+            text = stringResource(R.string.chat_empty),
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -652,7 +657,7 @@ private fun MessageInput(
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     if (state.text.isEmpty()) {
-                        Text("Message", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(stringResource(R.string.chat_message_hint), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     BasicTextField(
                         state = state,
@@ -674,7 +679,11 @@ private fun MessageInput(
                 ) {
                     Icon(
                         imageVector = if (canSend) Icons.AutoMirrored.Filled.Send else Icons.Filled.AddPhotoAlternate,
-                        contentDescription = if (canSend) "Send" else "Attach photo",
+                        contentDescription = if (canSend) {
+                            stringResource(R.string.action_send)
+                        } else {
+                            stringResource(R.string.action_attach_photo)
+                        },
                         modifier = Modifier.size(24.dp),
                     )
                 }
@@ -689,7 +698,7 @@ private fun AttachmentPreview(path: String, onClear: () -> Unit) {
     Box {
         AsyncImage(
             model = File(path),
-            contentDescription = "Attachment preview",
+            contentDescription = stringResource(R.string.chat_attachment_preview_desc),
             contentScale = ContentScale.Crop,
             modifier = Modifier.size(72.dp).clip(RoundedCornerShape(12.dp)),
         )
@@ -701,7 +710,7 @@ private fun AttachmentPreview(path: String, onClear: () -> Unit) {
             IconButton(onClick = onClear, modifier = Modifier.size(24.dp)) {
                 Icon(
                     Icons.Filled.Close,
-                    contentDescription = "Remove attachment",
+                    contentDescription = stringResource(R.string.chat_remove_attachment),
                     modifier = Modifier.size(16.dp),
                 )
             }
