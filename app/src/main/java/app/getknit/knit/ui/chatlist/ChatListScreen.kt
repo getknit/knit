@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.util.compactTimeAgo
 import org.koin.androidx.compose.koinViewModel
 
@@ -66,12 +67,15 @@ fun ChatListScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = stringResource(R.string.app_name),
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
+                    Column {
+                        Text(
+                            text = stringResource(R.string.app_name),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        ConnectionStatusRow(state.neighborCount)
+                    }
                 },
                 actions = {
                     Box {

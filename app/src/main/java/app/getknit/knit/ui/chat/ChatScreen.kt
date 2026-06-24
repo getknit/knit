@@ -82,7 +82,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -106,6 +105,7 @@ import app.getknit.knit.R
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.ConnectionStatusRow
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.flow.collect
 import org.koin.androidx.compose.koinViewModel
@@ -174,26 +174,7 @@ fun ChatScreen(
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary,
                         )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .background(
-                                        color = if (state.neighborCount > 0) {
-                                            MaterialTheme.colorScheme.tertiary
-                                        } else {
-                                            MaterialTheme.colorScheme.outline
-                                        },
-                                        shape = CircleShape,
-                                    ),
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = connectionLabel(state.neighborCount),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                        ConnectionStatusRow(state.neighborCount)
                     }
                 },
             )
@@ -245,14 +226,6 @@ fun ChatScreen(
         FullscreenImageViewer(path = path, onDismiss = { fullscreenImage = null })
     }
 }
-
-@Composable
-private fun connectionLabel(count: Int): String =
-    if (count == 0) {
-        stringResource(R.string.chat_connection_none)
-    } else {
-        pluralStringResource(R.plurals.chat_connection_count, count, count)
-    }
 
 /** The short set of quick reactions offered when long-pressing a message. */
 private val REACTION_EMOJI = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")

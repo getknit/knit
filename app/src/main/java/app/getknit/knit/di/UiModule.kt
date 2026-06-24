@@ -9,6 +9,6 @@ import org.koin.dsl.module
 
 val uiModule = module {
     viewModel { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
-    viewModel { ChatListViewModel(get(), get(), get(), get(), androidContext()) }
+    viewModel { ChatListViewModel(get(), get(), get(), get(), get(), androidContext()) }
     viewModel { ProfileViewModel(get(), get(), get()) }
 }

@@ -11,6 +11,7 @@ import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
+import app.getknit.knit.mesh.MeshManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -38,6 +39,7 @@ data class ConversationRow(
 
 data class ChatListUiState(
     val conversations: List<ConversationRow> = emptyList(),
+    val neighborCount: Int = 0,
 )
 
 /**
@@ -50,6 +52,7 @@ class ChatListViewModel(
     peers: PeerRepository,
     settings: SettingsStore,
     identity: Identity,
+    meshManager: MeshManager,
     private val context: Context,
 ) : ViewModel() {
 
@@ -64,7 +67,8 @@ class ChatListViewModel(
         peers.observePeers(),
         settings.nearbyLastReadAt,
         myNodeId,
-    ) { msgs, peerList, lastReadAt, me ->
+        meshManager.neighborCount,
+    ) { msgs, peerList, lastReadAt, me, neighborCount ->
         val peersByNode = peerList.associateBy { it.nodeId }
         val last = msgs.lastOrNull()
         // Until our own id resolves, count nothing as unread so our own messages aren't miscounted.
@@ -78,7 +82,10 @@ class ChatListViewModel(
             lastMessageAt = last?.sentAt,
             unreadCount = unread,
         )
-        ChatListUiState(listOf(nearby).sortedByDescending { it.lastMessageAt ?: 0L })
+        ChatListUiState(
+            conversations = listOf(nearby).sortedByDescending { it.lastMessageAt ?: 0L },
+            neighborCount = neighborCount,
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatListUiState())
 
     /** "Sender: body" preview, mirroring how ChatViewModel resolves names and labels own messages. */
