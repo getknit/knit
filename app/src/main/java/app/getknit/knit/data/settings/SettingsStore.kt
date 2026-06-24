@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import app.getknit.knit.identity.DeviceIdSource
+import app.getknit.knit.identity.NodeId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -15,7 +17,10 @@ import kotlin.random.Random
  * User/device settings backed by a Preferences DataStore (replaces the legacy
  * SharedPreferences). Holds the stable node identity and the profile/mesh toggles.
  */
-class SettingsStore(private val dataStore: DataStore<Preferences>) {
+class SettingsStore(
+    private val dataStore: DataStore<Preferences>,
+    private val deviceIdSource: DeviceIdSource,
+) {
 
     val displayName: Flow<String> = dataStore.data.map { it[KEY_NAME] ?: "" }
     val status: Flow<String> = dataStore.data.map { it[KEY_STATUS] ?: "" }
@@ -25,10 +30,14 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
     /** Bumped whenever the avatar image changes, so profile re-broadcasts can be triggered. */
     val avatarUpdatedAt: Flow<Long> = dataStore.data.map { it[KEY_AVATAR_UPDATED_AT] ?: 0L }
 
-    /** Returns the persisted 8-char node id, generating and storing one on first call. */
+    /**
+     * Returns the persisted 8-char node id, generating and storing one on first call. New ids are
+     * derived deterministically from the device id (see [NodeId]), so clearing app data regenerates
+     * the same id instead of a fresh random one. An already-persisted id is always returned as-is.
+     */
     suspend fun getOrCreateNodeId(): String {
         dataStore.data.first()[KEY_NODE_ID]?.let { return it }
-        val generated = randomNodeId()
+        val generated = newNodeId()
         dataStore.edit { prefs ->
             // Re-check inside the transaction to avoid a race generating two ids.
             prefs[KEY_NODE_ID] ?: run { prefs[KEY_NODE_ID] = generated }
@@ -42,13 +51,17 @@ class SettingsStore(private val dataStore: DataStore<Preferences>) {
     suspend fun setDiscoveryEnabled(value: Boolean) = dataStore.edit { it[KEY_DISCOVERY] = value }
     suspend fun setAvatarUpdatedAt(value: Long) = dataStore.edit { it[KEY_AVATAR_UPDATED_AT] = value }
 
+    /** Device-derived id, or a random fallback when the platform reports no stable device id. */
+    private fun newNodeId(): String =
+        deviceIdSource.rawDeviceId()?.takeIf { it.isNotBlank() }
+            ?.let { NodeId.derive(it) }
+            ?: randomNodeId()
+
     private fun randomNodeId(): String =
-        (1..NODE_ID_LENGTH).map { ALPHABET[Random.nextInt(ALPHABET.length)] }.joinToString("")
+        (1..NodeId.LENGTH).map { NodeId.ALPHABET[Random.nextInt(NodeId.ALPHABET.length)] }
+            .joinToString("")
 
     private companion object {
-        const val NODE_ID_LENGTH = 8
-        const val ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
-
         val KEY_NODE_ID = stringPreferencesKey("node_id")
         val KEY_NAME = stringPreferencesKey("display_name")
         val KEY_STATUS = stringPreferencesKey("status")

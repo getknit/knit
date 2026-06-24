@@ -11,6 +11,8 @@ import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.identity.AndroidDeviceIdSource
+import app.getknit.knit.identity.DeviceIdSource
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.notifications.MessageNotifier
 import app.getknit.knit.notifications.Notifier
@@ -23,7 +25,8 @@ val appModule = module {
             androidContext().preferencesDataStoreFile("knit_settings")
         }
     }
-    single { SettingsStore(get()) }
+    single<DeviceIdSource> { AndroidDeviceIdSource(androidContext()) }
+    single { SettingsStore(get(), get()) }
     single { Identity(get()) }
     single { AvatarStore(androidContext()) }
     single { AttachmentStore(androidContext()) }

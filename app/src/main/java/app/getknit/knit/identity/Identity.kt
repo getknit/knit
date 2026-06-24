@@ -6,8 +6,10 @@ import app.getknit.knit.data.settings.SettingsStore
  * The device's stable mesh identity.
  *
  * For now this is just the persisted 8-char [nodeId] (used as the Nearby endpoint name and the
- * author of messages/profiles). A long-term signing/encryption keypair will be added here when
- * app-level end-to-end encryption lands; the wire format already reserves a `pubKey` field for it.
+ * author of messages/profiles). On first launch it is derived deterministically from the device id
+ * (see [NodeId] / [DeviceIdSource]), so clearing app data regenerates the same id. A long-term
+ * signing/encryption keypair will be added here when app-level end-to-end encryption lands; the
+ * wire format already reserves a `pubKey` field for it.
  */
 class Identity(private val settings: SettingsStore) {
 
