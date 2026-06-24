@@ -40,6 +40,16 @@
     <string name="chat_remove_attachment">Remove attachment</string>
     <string name="chat_self_name">You</string>
 
+    <!-- Chat list -->
+    <string name="nearby_title">Nearby</string>
+    <string name="chat_list_empty_preview">No messages yet</string>
+    <string name="chat_list_preview_photo">📷 Photo</string>
+    <string name="chat_list_preview_with_sender">%1$s: %2$s</string>
+    <plurals name="chat_list_unread_count">
+        <item quantity="one">%d unread message</item>
+        <item quantity="other">%d unread messages</item>
+    </plurals>
+
     <!-- Profile -->
     <string name="profile_title">Profile</string>
     <string name="profile_display_name_label">Display name</string>

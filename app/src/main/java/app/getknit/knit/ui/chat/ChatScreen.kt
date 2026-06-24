@@ -48,14 +48,11 @@ import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
@@ -117,7 +114,7 @@ import java.io.File
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
-    onOpenProfile: () -> Unit,
+    onBack: () -> Unit,
     viewModel: ChatViewModel = koinViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -127,7 +124,6 @@ fun ChatScreen(
     // gotcha, draft state stays in the screen, not the ViewModel/DataStore). Filtered against the final
     // text on send so a mention whose "@name" was deleted doesn't ship.
     val pendingMentions = remember { mutableStateListOf<Mention>() }
-    var menuOpen by remember { mutableStateOf(false) }
     var fullscreenImage by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
 
@@ -136,9 +132,9 @@ fun ChatScreen(
         uri?.let(viewModel::attach)
     }
 
-    // Suppress message notifications while the chat is on screen, and clear any active one. Nav is a
-    // Crossfade over an enum (not real navigation), so leaving for Profile disposes this screen — the
-    // onDispose toggle re-enables notifications so a message arriving on Profile still notifies.
+    // Suppress message notifications while the chat is on screen, and clear any active one. The NavHost
+    // back-stack entry is this composable's LifecycleOwner, so navigating away pauses (and popping
+    // disposes) the screen — both paths re-enable notifications so messages arriving elsewhere notify.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -162,10 +158,18 @@ fun ChatScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.action_back),
+                        )
+                    }
+                },
                 title = {
                     Column {
                         Text(
-                            text = stringResource(R.string.app_name),
+                            text = stringResource(R.string.nearby_title),
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary,
@@ -188,26 +192,6 @@ fun ChatScreen(
                                 text = connectionLabel(state.neighborCount),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                },
-                actions = {
-                    Box {
-                        IconButton(onClick = { menuOpen = true }) {
-                            Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.chat_more_options))
-                        }
-                        DropdownMenu(
-                            expanded = menuOpen,
-                            onDismissRequest = { menuOpen = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.profile_title)) },
-                                leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null) },
-                                onClick = {
-                                    menuOpen = false
-                                    onOpenProfile()
-                                },
                             )
                         }
                     }

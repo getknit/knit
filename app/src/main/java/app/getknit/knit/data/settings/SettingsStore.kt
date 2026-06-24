@@ -31,6 +31,14 @@ class SettingsStore(
     val avatarUpdatedAt: Flow<Long> = dataStore.data.map { it[KEY_AVATAR_UPDATED_AT] ?: 0L }
 
     /**
+     * Read watermark for the "Nearby" broadcast room: the [MessageEntity.sentAt] of the newest
+     * message the local user has seen. The chat list counts messages newer than this (from other
+     * senders) as unread. A single per-device scalar today; generalises to a per-conversation map
+     * once 1:1 DMs land.
+     */
+    val nearbyLastReadAt: Flow<Long> = dataStore.data.map { it[KEY_NEARBY_LAST_READ_AT] ?: 0L }
+
+    /**
      * Returns the persisted 8-char node id, generating and storing one on first call. New ids are
      * derived deterministically from the device id (see [NodeId]), so clearing app data regenerates
      * the same id instead of a fresh random one. An already-persisted id is always returned as-is.
@@ -50,6 +58,7 @@ class SettingsStore(
     suspend fun setAdvertisingEnabled(value: Boolean) = dataStore.edit { it[KEY_ADVERTISING] = value }
     suspend fun setDiscoveryEnabled(value: Boolean) = dataStore.edit { it[KEY_DISCOVERY] = value }
     suspend fun setAvatarUpdatedAt(value: Long) = dataStore.edit { it[KEY_AVATAR_UPDATED_AT] = value }
+    suspend fun setNearbyLastReadAt(value: Long) = dataStore.edit { it[KEY_NEARBY_LAST_READ_AT] = value }
 
     /** Device-derived id, or a random fallback when the platform reports no stable device id. */
     private fun newNodeId(): String =
@@ -68,5 +77,6 @@ class SettingsStore(
         val KEY_ADVERTISING = booleanPreferencesKey("advertising_enabled")
         val KEY_DISCOVERY = booleanPreferencesKey("discovery_enabled")
         val KEY_AVATAR_UPDATED_AT = longPreferencesKey("avatar_updated_at")
+        val KEY_NEARBY_LAST_READ_AT = longPreferencesKey("nearby_last_read_at")
     }
 }

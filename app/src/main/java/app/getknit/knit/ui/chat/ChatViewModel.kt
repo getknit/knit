@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -79,12 +80,24 @@ class ChatViewModel(
 
     private val myNodeId = MutableStateFlow<String?>(null)
 
+    /** True while the chat is on screen; drives the read watermark below. */
+    private val chatForeground = MutableStateFlow(false)
+
     /** Image staged in the input bar, ready to send with the next message (null when none). */
     private val _pendingAttachment = MutableStateFlow<AttachmentStore.Ingested?>(null)
     val pendingAttachment: StateFlow<AttachmentStore.Ingested?> = _pendingAttachment.asStateFlow()
 
     init {
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
+        // Advance the Nearby read watermark while the chat is on screen: on every stream emission
+        // (so messages arriving while you read don't reappear as unread), stamp the newest sentAt.
+        viewModelScope.launch {
+            combine(chatForeground, messages.observeMessages()) { foreground, msgs ->
+                if (foreground) msgs.maxOfOrNull { it.sentAt } else null
+            }.distinctUntilChanged().collect { watermark ->
+                if (watermark != null) settings.setNearbyLastReadAt(watermark)
+            }
+        }
     }
 
     // Reactions are pre-combined into the messages stream so the outer combine below stays at the
@@ -179,8 +192,14 @@ class ChatViewModel(
     }
 
     /** Chat is on screen: suppress notifications and clear any active one (the user is reading). */
-    fun onChatForeground() = notifier.setChatVisible(true)
+    fun onChatForeground() {
+        chatForeground.value = true
+        notifier.setChatVisible(true)
+    }
 
     /** Chat left the screen: resume notifying for incoming messages. */
-    fun onChatBackground() = notifier.setChatVisible(false)
+    fun onChatBackground() {
+        chatForeground.value = false
+        notifier.setChatVisible(false)
+    }
 }
