@@ -2,11 +2,13 @@ package app.getknit.knit
 
 import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
+import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
 import app.getknit.knit.mesh.protocol.WireCodec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WireSerializationTest {
@@ -24,6 +26,26 @@ class WireSerializationTest {
             attachmentHash = "abc123", attachmentMime = "image/gif",
         )
         assertEquals(frame, WireCodec.decode(WireCodec.encode(frame)))
+    }
+
+    @Test
+    fun chatFrameWithMentionsRoundTrips() {
+        val frame = ChatFrame(
+            id = "m3", senderId = "alice", sentAt = 7L, body = "hey @Bob Jones and @ab12cd34",
+            mentions = listOf(
+                Mention(nodeId = "bob00000", name = "Bob Jones"),
+                Mention(nodeId = "ab12cd34", name = "ab12cd34"),
+            ),
+        )
+        assertEquals(frame, WireCodec.decode(WireCodec.encode(frame)))
+    }
+
+    @Test
+    fun chatFrameWithoutMentionsKeyDecodesToEmptyList() {
+        // An older peer's frame has no "mentions" key; the defaulted field must fill in.
+        val legacy = """{"t":"chat","id":"m4","senderId":"alice","sentAt":1,"body":"hi"}"""
+        val decoded = WireCodec.decode(legacy.encodeToByteArray()) as ChatFrame
+        assertTrue(decoded.mentions.isEmpty())
     }
 
     @Test

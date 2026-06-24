@@ -4,6 +4,7 @@ import app.getknit.knit.identity.Alias
 import app.getknit.knit.notifications.NotifMessage
 import app.getknit.knit.notifications.NotificationHistory
 import app.getknit.knit.notifications.incomingNotification
+import app.getknit.knit.notifications.mentionNotification
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -111,6 +112,33 @@ class NotificationTest {
                 avatarPath = "/cache/bob.jpg",
             ),
             result,
+        )
+    }
+
+    @Test
+    fun mentionNotificationMatchesIncomingNotification() {
+        // The mention path delegates to the same resolution rules; assert parity on the key cases.
+        assertNull(
+            mentionNotification(
+                senderId = "me", body = "yo @me", sentAt = 1L, selfId = "me",
+                peerName = "Me", peerAvatarPath = null,
+            ),
+        )
+        assertNull(
+            mentionNotification(
+                senderId = "bob", body = "  ", sentAt = 1L, selfId = "me",
+                peerName = "Bob", peerAvatarPath = null,
+            ),
+        )
+        assertEquals(
+            incomingNotification(
+                senderId = "bob", body = "hi @me", sentAt = 5L, selfId = "me",
+                peerName = "Bob", peerAvatarPath = "/cache/bob.jpg",
+            ),
+            mentionNotification(
+                senderId = "bob", body = "hi @me", sentAt = 5L, selfId = "me",
+                peerName = "Bob", peerAvatarPath = "/cache/bob.jpg",
+            ),
         )
     }
 }

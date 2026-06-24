@@ -6,10 +6,12 @@ import androidx.lifecycle.viewModelScope
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.notifications.Notifier
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -31,12 +33,21 @@ data class ChatRow(
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,
     val attachmentPath: String? = null,
+    val mentions: List<Mention> = emptyList(),
+)
+
+/** A person who can be "@"-mentioned: someone we've received a message from, resolved to a name. */
+data class MentionCandidate(
+    val nodeId: String,
+    val displayName: String,
+    val avatarPath: String?,
 )
 
 data class ChatUiState(
     val rows: List<ChatRow> = emptyList(),
     val neighborCount: Int = 0,
     val myNodeId: String = "",
+    val mentionCandidates: List<MentionCandidate> = emptyList(),
 )
 
 class ChatViewModel(
@@ -85,17 +96,37 @@ class ChatViewModel(
                 attachmentHash = m.attachmentHash,
                 attachmentMime = m.attachmentMime,
                 attachmentPath = m.attachmentPath,
+                mentions = MentionStore.decode(m.mentions),
             )
         }
-        ChatUiState(rows = rows, neighborCount = count, myNodeId = me.orEmpty())
+        // Autocomplete candidates: everyone we've received a message from, resolved to a display name.
+        val candidates = msgs.asSequence()
+            .map { it.senderId }
+            .filter { it != me }
+            .distinct()
+            .map { id ->
+                MentionCandidate(
+                    nodeId = id,
+                    displayName = displayNameFor(peersByNode[id]?.name, id),
+                    avatarPath = peersByNode[id]?.avatarPath,
+                )
+            }
+            .sortedBy { it.displayName.lowercase() }
+            .toList()
+        ChatUiState(
+            rows = rows,
+            neighborCount = count,
+            myNodeId = me.orEmpty(),
+            mentionCandidates = candidates,
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState())
 
-    fun send(text: String) {
+    fun send(text: String, mentions: List<Mention> = emptyList()) {
         val trimmed = text.trim()
         val attachment = _pendingAttachment.value
         if (trimmed.isEmpty() && attachment == null) return
         _pendingAttachment.value = null
-        viewModelScope.launch { meshManager.sendChat(trimmed, attachment) }
+        viewModelScope.launch { meshManager.sendChat(trimmed, attachment, mentions) }
     }
 
     /** Ingests a picked or keyboard-inserted image and stages it in the input bar. */

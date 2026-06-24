@@ -12,7 +12,8 @@ import app.getknit.knit.data.peer.PeerEntity
 @Database(
     entities = [MessageEntity::class, PeerEntity::class],
     // v2: messages gained attachmentHash/attachmentMime/attachmentPath (destructive migration).
-    version = 2,
+    // v3: messages gained a mentions JSON column (destructive migration; app not yet public).
+    version = 3,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

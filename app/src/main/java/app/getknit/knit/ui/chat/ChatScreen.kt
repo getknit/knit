@@ -65,9 +65,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -77,6 +79,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -88,8 +91,10 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.data.AttachmentStore
+import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.components.Avatar
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.flow.collect
 import org.koin.androidx.compose.koinViewModel
 import java.io.File
 
@@ -102,6 +107,10 @@ fun ChatScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val pendingAttachment by viewModel.pendingAttachment.collectAsStateWithLifecycle()
     val inputState = rememberTextFieldState()
+    // Mentions the user inserted via autocomplete, draft-local alongside inputState (per the AGENTS.md
+    // gotcha, draft state stays in the screen, not the ViewModel/DataStore). Filtered against the final
+    // text on send so a mention whose "@name" was deleted doesn't ship.
+    val pendingMentions = remember { mutableStateListOf<Mention>() }
     var menuOpen by remember { mutableStateOf(false) }
     var fullscreenImage by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
@@ -193,6 +202,8 @@ fun ChatScreen(
             MessageInput(
                 state = inputState,
                 pendingAttachment = pendingAttachment,
+                candidates = state.mentionCandidates,
+                onMentionAdded = { m -> if (pendingMentions.none { it == m }) pendingMentions.add(m) },
                 onAttachClick = {
                     picker.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
@@ -201,8 +212,11 @@ fun ChatScreen(
                 onClearAttachment = viewModel::clearAttachment,
                 onReceiveImage = viewModel::attach,
                 onSend = {
-                    viewModel.send(inputState.text.toString())
+                    val text = inputState.text.toString()
+                    val applied = pendingMentions.filter { text.contains("@${it.name}") }
+                    viewModel.send(text, applied)
                     inputState.clearText()
+                    pendingMentions.clear()
                 },
             )
         },
@@ -272,7 +286,14 @@ private fun MessageBubble(row: ChatRow, onImageClick: (String) -> Unit) {
                     if (row.body.isNotBlank()) Spacer(Modifier.height(4.dp))
                 }
                 if (row.body.isNotBlank()) {
-                    Text(text = row.body, style = MaterialTheme.typography.bodyLarge)
+                    val mentionStyle = SpanStyle(
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = highlightMentions(row.body, row.mentions, mentionStyle),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
                 }
                 Text(
                     text = timeLabel(row),
@@ -379,6 +400,8 @@ private fun EmptyState(modifier: Modifier = Modifier) {
 private fun MessageInput(
     state: TextFieldState,
     pendingAttachment: AttachmentStore.Ingested?,
+    candidates: List<MentionCandidate>,
+    onMentionAdded: (Mention) -> Unit,
     onAttachClick: () -> Unit,
     onClearAttachment: () -> Unit,
     onReceiveImage: (Uri) -> Unit,
@@ -406,12 +429,65 @@ private fun MessageInput(
     // The trailing button doubles as Attach when there's nothing to send, and Send once there is.
     val canSend = state.text.isNotBlank() || pendingAttachment != null
 
+    // Track the "@token" the cursor is inside to drive the autocomplete dropdown. snapshotFlow observes
+    // the field reactively; the LaunchedEffect ties the collector to composition (cancels on dispose).
+    var activeQuery by remember { mutableStateOf<MentionQuery?>(null) }
+    LaunchedEffect(state) {
+        snapshotFlow { state.text.toString() to state.selection }
+            .collect { (text, sel) ->
+                activeQuery = if (sel.collapsed) activeMentionQuery(text, sel.end) else null
+            }
+    }
+    val filtered = remember(activeQuery, candidates) {
+        activeQuery?.let { filterCandidates(candidates, it.query) }.orEmpty()
+    }
+    val showSuggestions = activeQuery != null && filtered.isNotEmpty()
+
+    fun insertMention(query: MentionQuery, candidate: MentionCandidate) {
+        val replacement = "@${candidate.displayName} "
+        state.edit {
+            replace(query.start, query.end, replacement)
+            placeCursorBeforeCharAt(query.start + replacement.length)
+        }
+        onMentionAdded(Mention(nodeId = candidate.nodeId, name = candidate.displayName))
+        activeQuery = null
+    }
+
     Surface(
         tonalElevation = 2.dp,
         // Edge-to-edge: lift the input bar above the IME and the navigation bar.
         modifier = Modifier.imePadding().navigationBarsPadding(),
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            if (showSuggestions) {
+                // Sits above the input row (and so above the keyboard, since the whole Surface is
+                // imePadding-lifted). A plain Column grows upward; a DropdownMenu would open downward.
+                Surface(
+                    tonalElevation = 3.dp,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                ) {
+                    Column {
+                        filtered.take(5).forEach { candidate ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { activeQuery?.let { insertMention(it, candidate) } }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Avatar(avatarPath = candidate.avatarPath, name = candidate.displayName, size = 32.dp)
+                                Spacer(Modifier.width(12.dp))
+                                Text(
+                                    text = candidate.displayName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             if (pendingAttachment != null) {
                 AttachmentPreview(path = pendingAttachment.path, onClear = onClearAttachment)
                 Spacer(Modifier.height(8.dp))

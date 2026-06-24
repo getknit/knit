@@ -32,11 +32,16 @@ class MessageNotifier(private val context: Context) : Notifier {
     private var chatVisible = false
 
     override fun createChannel() {
-        val channel = NotificationChannelCompat.Builder(CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_HIGH)
+        val messages = NotificationChannelCompat.Builder(CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_HIGH)
             .setName(context.getString(R.string.message_channel_name))
             .setDescription(context.getString(R.string.message_channel_description))
             .build()
-        manager.createNotificationChannel(channel)
+        val mentions = NotificationChannelCompat.Builder(MENTION_CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_HIGH)
+            .setName(context.getString(R.string.mention_channel_name))
+            .setDescription(context.getString(R.string.mention_channel_description))
+            .build()
+        manager.createNotificationChannel(messages)
+        manager.createNotificationChannel(mentions)
     }
 
     override fun notify(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarPath: String?) {
@@ -74,6 +79,33 @@ class MessageNotifier(private val context: Context) : Notifier {
         runCatching { manager.notify(NOTIFICATION_ID, notification) }
     }
 
+    override fun notifyMention(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarPath: String?) {
+        if (chatVisible) return
+        if (!manager.areNotificationsEnabled()) return
+        // Same explicit POST_NOTIFICATIONS guard as notify() (lint needs it on the path to notify()).
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        // A mention is a targeted call-out, so it posts its own standalone notification (not the grouped
+        // MessagingStyle the room uses) to avoid being buried among other senders.
+        val notification = NotificationCompat.Builder(context, MENTION_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle(incoming.senderName)
+            .setContentText(incoming.body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(incoming.body))
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(mentionOpenIntent())
+            .setAutoCancel(true)
+            .build()
+
+        // Guarded above; runCatching still defends a permission revoked between the check and here.
+        runCatching { manager.notify(MENTION_NOTIFICATION_ID, notification) }
+    }
+
     override fun setChatVisible(visible: Boolean) {
         chatVisible = visible
         if (visible) clear()
@@ -82,6 +114,7 @@ class MessageNotifier(private val context: Context) : Notifier {
     override fun clear() {
         synchronized(history) { history.clear() }
         manager.cancel(NOTIFICATION_ID)
+        manager.cancel(MENTION_NOTIFICATION_ID)
     }
 
     override fun onDismissed() {
@@ -111,6 +144,11 @@ class MessageNotifier(private val context: Context) : Notifier {
         return PendingIntent.getBroadcast(context, REQUEST_DISMISS, intent, PendingIntent.FLAG_IMMUTABLE)
     }
 
+    private fun mentionOpenIntent(): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        return PendingIntent.getActivity(context, REQUEST_OPEN_MENTION, intent, PendingIntent.FLAG_IMMUTABLE)
+    }
+
     companion object {
         const val ACTION_DISMISS = "app.getknit.knit.MESSAGE_NOTIFICATION_DISMISSED"
 
@@ -118,5 +156,9 @@ class MessageNotifier(private val context: Context) : Notifier {
         private const val NOTIFICATION_ID = 2
         private const val REQUEST_OPEN_CHAT = 3
         private const val REQUEST_DISMISS = 4
+
+        private const val MENTION_CHANNEL_ID = "knit_mentions"
+        private const val MENTION_NOTIFICATION_ID = 3
+        private const val REQUEST_OPEN_MENTION = 5
     }
 }

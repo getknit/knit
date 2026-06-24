@@ -30,6 +30,22 @@ sealed interface Frame {
     val relayable: Boolean get() = true
 }
 
+/**
+ * A structured "@" mention inside a [ChatFrame.body]. [nodeId] is the canonical 8-char id used for
+ * reliable "did this mention me" detection (display names aren't unique); [name] is the exact display
+ * name string the sender rendered, so the receiver can locate the "@name" span in the body for
+ * highlighting (handles names containing spaces, which a whitespace split would miss). A plain nested
+ * `@Serializable` value — never a [Frame] on its own, so no [SerialName] discriminator.
+ */
+@Serializable
+data class Mention(
+    val nodeId: String,
+    val name: String,
+)
+
+/** True when these mentions target [nodeId] (typically the receiver's own id). */
+fun List<Mention>.mention(nodeId: String): Boolean = any { it.nodeId == nodeId }
+
 @Serializable
 @SerialName("chat")
 data class ChatFrame(
@@ -39,6 +55,7 @@ data class ChatFrame(
     val body: String,
     val recipientId: String? = null,
     val sig: String? = null,
+    val mentions: List<Mention> = emptyList(),
     // Reference to an out-of-band image blob (fetched by content hash); null for text-only messages.
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,

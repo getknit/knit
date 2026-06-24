@@ -4,6 +4,7 @@ import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.settings.SettingsStore
@@ -11,10 +12,13 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.Frame
+import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
+import app.getknit.knit.mesh.protocol.mention
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.incomingNotification
+import app.getknit.knit.notifications.mentionNotification
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -109,13 +113,18 @@ class MeshManager(
      * locally (unacked), and floods it to the mesh. The sender already holds the blob, so direct
      * neighbors will pull it by hash and it propagates outward from there.
      */
-    suspend fun sendChat(text: String, attachment: AttachmentStore.Ingested? = null) {
+    suspend fun sendChat(
+        text: String,
+        attachment: AttachmentStore.Ingested? = null,
+        mentions: List<Mention> = emptyList(),
+    ) {
         val me = identity.nodeId()
         val frame = ChatFrame(
             id = UUID.randomUUID().toString(),
             senderId = me,
             sentAt = System.currentTimeMillis(),
             body = text,
+            mentions = mentions,
             attachmentHash = attachment?.hash,
             attachmentMime = attachment?.mime,
         )
@@ -126,6 +135,7 @@ class MeshManager(
                 body = text,
                 sentAt = frame.sentAt,
                 received = false,
+                mentions = MentionStore.encode(mentions),
                 attachmentHash = attachment?.hash,
                 attachmentMime = attachment?.mime,
                 attachmentPath = attachment?.path,
@@ -226,13 +236,21 @@ class MeshManager(
                 body = frame.body,
                 sentAt = frame.sentAt,
                 received = false,
+                mentions = MentionStore.encode(frame.mentions),
                 attachmentHash = frame.attachmentHash,
                 attachmentMime = frame.attachmentMime,
                 attachmentPath = localPath,
             ),
         )
         frame.attachmentHash?.let { if (localPath == null) blobExchange.want(it) }
-        notifyIncoming(frame)
+        // A message that @-mentions us notifies on the dedicated Mentions channel only; everything else
+        // takes the normal room notification path.
+        val me = identity.nodeId()
+        if (frame.senderId != me && frame.mentions.mention(me)) {
+            notifyMention(frame)
+        } else {
+            notifyIncoming(frame)
+        }
         // Acknowledge only if the author is a direct neighbor (mirrors the legacy app: relays don't ack).
         val direct = transport.neighbors.value.firstOrNull { it.nodeId == frame.senderId } ?: return
         val ack = ReceiptFrame(
@@ -258,6 +276,22 @@ class MeshManager(
             peerAvatarPath = peer?.avatarPath ?: avatars.peerAvatarPath(frame.senderId),
         ) ?: return
         notifier.notify(incoming, me, settings.displayName.first(), avatars.ownAvatarPath())
+    }
+
+    /** Fires a "you were mentioned" notification on the Mentions channel for an inbound chat. */
+    private suspend fun notifyMention(frame: ChatFrame) {
+        val me = identity.nodeId()
+        val peer = peers.find(frame.senderId)
+        val body = frame.body.ifBlank { if (frame.attachmentHash != null) "📷 Photo" else frame.body }
+        val incoming = mentionNotification(
+            senderId = frame.senderId,
+            body = body,
+            sentAt = frame.sentAt,
+            selfId = me,
+            peerName = peer?.name,
+            peerAvatarPath = peer?.avatarPath ?: avatars.peerAvatarPath(frame.senderId),
+        ) ?: return
+        notifier.notifyMention(incoming, me, settings.displayName.first(), avatars.ownAvatarPath())
     }
 
     private suspend fun handleProfile(frame: ProfileFrame) {

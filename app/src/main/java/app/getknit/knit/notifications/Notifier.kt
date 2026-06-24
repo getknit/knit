@@ -24,6 +24,9 @@ interface Notifier {
     /** Records [incoming] and (re)posts the single room notification. */
     fun notify(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarPath: String?)
 
+    /** Posts a high-priority "you were mentioned" notification on the separate Mentions channel. */
+    fun notifyMention(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarPath: String?)
+
     /** Toggles whether the chat is on screen; turning it on cancels + clears the notification. */
     fun setChatVisible(visible: Boolean)
 
@@ -58,3 +61,17 @@ fun incomingNotification(
         avatarPath = peerAvatarPath,
     )
 }
+
+/**
+ * Builds the payload for a "you were mentioned" notification, or `null` when it must not notify. The
+ * null/alias rules are identical to [incomingNotification] (skip own messages and blank bodies); kept
+ * as a distinct, named symbol so the mention path stays independently unit-testable.
+ */
+fun mentionNotification(
+    senderId: String,
+    body: String,
+    sentAt: Long,
+    selfId: String,
+    peerName: String?,
+    peerAvatarPath: String?,
+): NotifMessage? = incomingNotification(senderId, body, sentAt, selfId, peerName, peerAvatarPath)
