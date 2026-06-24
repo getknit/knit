@@ -1,9 +1,11 @@
 package app.getknit.knit
 
+import app.getknit.knit.identity.Alias
 import app.getknit.knit.notifications.NotifMessage
 import app.getknit.knit.notifications.NotificationHistory
 import app.getknit.knit.notifications.incomingNotification
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -64,7 +66,11 @@ class NotificationTest {
     }
 
     @Test
-    fun incomingNotificationFallsBackToNodeIdWhenNameMissingOrBlank() {
+    fun incomingNotificationFallsBackToAliasWhenNameMissingOrBlank() {
+        val expectedAlias = Alias.aliasFor("node123")
+        // The alias replaces the raw id and is never the id itself.
+        assertNotEquals("node123", expectedAlias)
+
         val unknown = incomingNotification(
             senderId = "node123",
             body = "hi",
@@ -73,7 +79,7 @@ class NotificationTest {
             peerName = null,
             peerAvatarPath = null,
         )
-        assertEquals("node123", unknown?.senderName)
+        assertEquals(expectedAlias, unknown?.senderName)
 
         val blankNamed = incomingNotification(
             senderId = "node123",
@@ -83,7 +89,7 @@ class NotificationTest {
             peerName = "",
             peerAvatarPath = null,
         )
-        assertEquals("node123", blankNamed?.senderName)
+        assertEquals(expectedAlias, blankNamed?.senderName)
     }
 
     @Test

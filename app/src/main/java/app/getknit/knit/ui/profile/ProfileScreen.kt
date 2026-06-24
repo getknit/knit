@@ -34,6 +34,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.isIgnoringBatteryOptimizations
 import app.getknit.knit.ui.requestIgnoreBatteryOptimizations
@@ -48,6 +49,7 @@ fun ProfileScreen(
     val name by viewModel.displayName.collectAsStateWithLifecycle()
     val status by viewModel.status.collectAsStateWithLifecycle()
     val nodeId by viewModel.nodeId.collectAsStateWithLifecycle()
+    val alias by viewModel.alias.collectAsStateWithLifecycle()
     val avatarPath by viewModel.avatarPath.collectAsStateWithLifecycle()
 
     val picker = rememberLauncherForActivityResult(
@@ -76,7 +78,7 @@ fun ProfileScreen(
         ) {
             Avatar(
                 avatarPath = avatarPath,
-                name = name.ifBlank { nodeId },
+                name = displayNameFor(name, nodeId),
                 size = 96.dp,
                 background = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -93,6 +95,7 @@ fun ProfileScreen(
                 onValueChange = viewModel::setDisplayName,
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("Display name") },
+                placeholder = { if (alias.isNotEmpty()) Text(alias) },
                 singleLine = true,
             )
             OutlinedTextField(

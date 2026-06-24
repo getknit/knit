@@ -1,5 +1,7 @@
 package app.getknit.knit.notifications
 
+import app.getknit.knit.identity.displayNameFor
+
 /** One inbound message, resolved into the fields a MessagingStyle line needs. */
 data class NotifMessage(
     val senderId: String,
@@ -35,7 +37,8 @@ interface Notifier {
 /**
  * Builds the notification payload for an inbound chat message, or `null` when it must not notify —
  * the message is our own ([senderId] == [selfId]) or has a blank body. The sender name falls back to
- * the raw node id when the peer profile is unknown or blank, mirroring the chat UI's resolution.
+ * a friendly alias derived from the node id when the peer profile is unknown or blank, mirroring the
+ * chat UI's resolution.
  */
 fun incomingNotification(
     senderId: String,
@@ -49,7 +52,7 @@ fun incomingNotification(
     if (body.isBlank()) return null
     return NotifMessage(
         senderId = senderId,
-        senderName = peerName?.ifBlank { senderId } ?: senderId,
+        senderName = displayNameFor(peerName, senderId),
         body = body,
         sentAt = sentAt,
         avatarPath = peerAvatarPath,

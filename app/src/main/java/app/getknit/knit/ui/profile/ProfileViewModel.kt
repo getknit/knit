@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -23,6 +24,13 @@ class ProfileViewModel(
 
     val nodeId = MutableStateFlow("")
 
+    /**
+     * The auto-generated alias for this device, shown as the display-name field's placeholder until
+     * the user sets a name. Derived from [nodeId]; never persisted, so the stored name stays blank
+     * (and the profile broadcast stays "unset") until the user actually types one.
+     */
+    val alias = MutableStateFlow("")
+
     // Editable text is held locally and updated synchronously on each keystroke; persistence to
     // DataStore happens in the background. Binding the field directly to the DataStore flow would
     // lag a keystroke behind and reset the field (you could only type one character).
@@ -40,7 +48,9 @@ class ProfileViewModel(
 
     init {
         viewModelScope.launch {
-            nodeId.value = identity.nodeId()
+            val id = identity.nodeId()
+            nodeId.value = id
+            alias.value = Alias.aliasFor(id)
             _displayName.value = settings.displayName.first()
             _status.value = settings.status.first()
         }

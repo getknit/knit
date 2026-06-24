@@ -8,6 +8,7 @@ import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.notifications.Notifier
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -70,7 +71,7 @@ class ChatViewModel(
             val mine = m.senderId == me
             val name = when {
                 mine -> myName.ifBlank { "You" }
-                else -> peersByNode[m.senderId]?.name?.ifBlank { m.senderId } ?: m.senderId
+                else -> displayNameFor(peersByNode[m.senderId]?.name, m.senderId)
             }
             ChatRow(
                 id = m.id,
