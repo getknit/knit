@@ -7,6 +7,7 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
@@ -62,6 +63,7 @@ class NearbyTransport(
     context: Context,
     private val identity: Identity,
     private val scope: CoroutineScope,
+    private val metrics: MeshMetrics,
 ) : MeshTransport {
 
     private val appContext = context.applicationContext
@@ -123,13 +125,15 @@ class NearbyTransport(
     }
 
     override suspend fun send(frame: Frame, to: Peer?) {
-        val payload = Payload.fromBytes(WireCodec.encode(frame))
+        val bytes = WireCodec.encode(frame)
+        val payload = Payload.fromBytes(bytes)
         val targets = if (to == null) {
             connected.toList()
         } else {
             listOfNotNull(nodeToEndpoint[to.nodeId]).filter { it in connected }
         }
         targets.forEach { endpointId -> client.sendPayload(endpointId, payload) }
+        metrics.onBytesSent(bytes.size.toLong() * targets.size)
     }
 
     override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) {
@@ -237,7 +241,8 @@ class NearbyTransport(
                 Payload.Type.BYTES -> {
                     val bytes = payload.asBytes() ?: return
                     // A BYTES payload is either a file header (announcing the FILE that follows) or a
-                    // serialized mesh frame; the header magic prefix tells them apart.
+                    // CBOR-serialized mesh frame; the header magic prefix tells them apart (a CBOR
+                    // frame never starts with the magic bytes).
                     val header = decodeFileHeader(bytes)
                     if (header != null) {
                         fileHeaders[header.payloadId] = FileMeta(
@@ -330,7 +335,8 @@ class NearbyTransport(
         const val DISCOVERY_INTERVAL_MS = 30_000L
         const val MAX_ENDPOINT_ERRORS = 10
 
-        // "KFH1" — distinguishes a file-header BYTES payload from a serialized frame (which starts '{').
+        // "KFH1" — distinguishes a file-header BYTES payload from a CBOR mesh frame (which never
+        // begins with these bytes; a guard test in WireSerializationTest pins this down).
         val FILE_HEADER_MAGIC = byteArrayOf(0x4B, 0x46, 0x48, 0x31)
         val headerJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     }

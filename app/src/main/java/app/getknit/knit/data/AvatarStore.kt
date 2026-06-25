@@ -7,6 +7,7 @@ import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.security.MessageDigest
 import kotlin.math.min
 
 /**
@@ -20,9 +21,16 @@ class AvatarStore(private val context: Context) {
 
     fun ownAvatarPath(): String? = ownAvatarFile.takeIf(File::exists)?.absolutePath
 
-    /** Cheap content fingerprint so peers can tell when an avatar changed. */
+    /**
+     * SHA-256 content hash of the avatar bytes, so peers (and our own send-dedup) can tell when the
+     * avatar actually changed — stable across devices and unaffected by a no-op rewrite, unlike a
+     * length/mtime fingerprint. The file is small (a 256² JPEG), so hashing on demand is cheap.
+     */
     fun ownAvatarHash(): String? =
-        ownAvatarFile.takeIf(File::exists)?.let { "${it.length()}-${it.lastModified()}" }
+        ownAvatarFile.takeIf(File::exists)?.let { sha256(it.readBytes()) }
+
+    private fun sha256(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     fun peerAvatarFile(nodeId: String): File = File(context.cacheDir, "$nodeId.jpg")
 

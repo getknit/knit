@@ -1,6 +1,7 @@
 package app.getknit.knit.di
 
 import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.nearby.NearbyTransport
 import kotlinx.coroutines.CoroutineScope
@@ -12,6 +13,7 @@ import org.koin.dsl.module
 val meshModule = module {
     // Application-lifetime scope for the mesh engine.
     single<CoroutineScope> { CoroutineScope(SupervisorJob() + Dispatchers.Default) }
-    single<MeshTransport> { NearbyTransport(androidContext(), get(), get()) }
-    single { MeshManager(get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
+    single { MeshMetrics() }
+    single<MeshTransport> { NearbyTransport(androidContext(), get(), get(), get()) }
+    single { MeshManager(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
 }

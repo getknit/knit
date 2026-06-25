@@ -20,10 +20,12 @@ import app.getknit.knit.mesh.protocol.ProfileFrame
 import app.getknit.knit.mesh.protocol.ReactionFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
 import app.getknit.knit.mesh.protocol.mention
+import android.util.Log
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.incomingNotification
 import app.getknit.knit.notifications.mentionNotification
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -33,6 +35,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Orchestrates the mesh: owns the [MeshTransport] and [MeshRouter], handles delivery of new frames
@@ -51,8 +54,9 @@ class MeshManager(
     private val attachments: AttachmentStore,
     private val notifier: Notifier,
     private val scope: CoroutineScope,
+    private val metrics: MeshMetrics,
 ) {
-    private val router = MeshRouter(transport, scope, onDeliver = ::onDeliver)
+    private val router = MeshRouter(transport, scope, metrics = metrics, onDeliver = ::onDeliver)
 
     // Content-addressed image fetch over the mesh, backed by [AttachmentStore].
     private val blobStore = object : BlobStore {
@@ -77,6 +81,10 @@ class MeshManager(
     @Volatile
     private var profileVersion = 0L
 
+    // nodeId -> avatar hash we last sent that neighbor, so we don't re-push an unchanged avatar on
+    // every profile edit or reconnect. Cleared per-peer when they disconnect (see watchNeighbors).
+    private val sentAvatarHashes = ConcurrentHashMap<String, String>()
+
     /** Number of directly-connected neighbors, for the UI status header. */
     val neighborCount: StateFlow<Int> =
         transport.neighbors
@@ -96,12 +104,14 @@ class MeshManager(
         watchProfileChanges()
         watchIncomingFiles()
         resumePendingFetches()
+        logMetricsPeriodically()
     }
 
     fun stop() {
         if (!started) return
         started = false
         transport.stop()
+        scope.launch { router.stop() } // cancel any relays still waiting out their jitter window
     }
 
     /** Triggers an immediate rescan/reconnect (heartbeat alarm, device motion). */
@@ -193,8 +203,10 @@ class MeshManager(
         scope.launch {
             var known = emptySet<String>()
             transport.neighbors.collect { current ->
+                val currentIds = current.map { it.nodeId }.toSet()
                 val newcomers = current.filter { it.nodeId !in known }
-                known = current.map { it.nodeId }.toSet()
+                (known - currentIds).forEach { sentAvatarHashes.remove(it) } // forget departed peers
+                known = currentIds
                 newcomers.forEach {
                     pushProfileTo(it)
                     blobExchange.onNeighborAdded(it) // re-ask the new neighbor for blobs we still need
@@ -228,17 +240,29 @@ class MeshManager(
 
     private suspend fun pushProfileTo(peer: Peer) {
         router.sendOwn(currentProfileFrame(), peer)
-        avatars.ownAvatarFile.takeIf { it.exists() }?.let { transport.sendFile(it, peer, avatarMeta()) }
+        sendAvatarIfNeeded(peer)
     }
 
     private suspend fun broadcastProfile() {
         router.originate(currentProfileFrame())
-        val avatar = avatars.ownAvatarFile.takeIf { it.exists() } ?: return
-        transport.neighbors.value.forEach { transport.sendFile(avatar, it, avatarMeta()) }
+        transport.neighbors.value.forEach { sendAvatarIfNeeded(it) }
     }
 
-    private fun avatarMeta(): FileMeta =
-        FileMeta(FileKind.AVATAR, key = avatars.ownAvatarHash().orEmpty(), mime = "image/jpeg")
+    /**
+     * Sends our avatar file to [peer] only if we haven't already sent them this exact avatar. Profile
+     * edits that don't touch the avatar (e.g. a status change) re-broadcast the [ProfileFrame] but no
+     * longer re-ship the (unchanged) avatar JPEG to every neighbor.
+     */
+    private suspend fun sendAvatarIfNeeded(peer: Peer) {
+        val avatar = avatars.ownAvatarFile.takeIf { it.exists() } ?: return
+        val hash = avatars.ownAvatarHash() ?: return
+        if (sentAvatarHashes[peer.nodeId] == hash) return
+        transport.sendFile(avatar, peer, avatarMeta(hash))
+        sentAvatarHashes[peer.nodeId] = hash
+    }
+
+    private fun avatarMeta(hash: String): FileMeta =
+        FileMeta(FileKind.AVATAR, key = hash, mime = "image/jpeg")
 
     private suspend fun currentProfileFrame(): ProfileFrame {
         val me = identity.nodeId()
@@ -377,5 +401,26 @@ class MeshManager(
     private suspend fun onAvatarReceived(nodeId: String, path: String) {
         val existing = peers.find(nodeId)
         peers.upsert((existing ?: PeerEntity(nodeId)).copy(avatarPath = path))
+    }
+
+    /** Periodically logs a transmission snapshot so flood-suppression and byte savings are visible. */
+    private fun logMetricsPeriodically() {
+        scope.launch {
+            while (true) {
+                delay(METRICS_LOG_INTERVAL_MS)
+                val s = metrics.snapshot()
+                Log.d(
+                    TAG,
+                    "metrics: originated=${s.framesOriginated} delivered=${s.framesDelivered} " +
+                        "relayed=${s.framesRelayed} suppressed=${s.framesSuppressed} " +
+                        "deduped=${s.framesDeduped} bytesSent=${s.bytesSent}",
+                )
+            }
+        }
+    }
+
+    private companion object {
+        const val TAG = "MeshManager"
+        const val METRICS_LOG_INTERVAL_MS = 60_000L
     }
 }

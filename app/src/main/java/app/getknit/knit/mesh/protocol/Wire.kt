@@ -1,8 +1,11 @@
 package app.getknit.knit.mesh.protocol
 
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.cbor.Cbor
+import kotlinx.serialization.decodeFromByteArray
+import kotlinx.serialization.encodeToByteArray
 
 /** Default hop limit for a flooded frame before relays stop forwarding it. */
 const val DEFAULT_TTL: Int = 8
@@ -137,19 +140,27 @@ fun Frame.incrementHop(): Frame = when (this) {
     is BlobRequestFrame -> copy(hops = hops + 1)
 }
 
-/** Serializes [Frame]s to/from the bytes carried in a transport payload. */
+/**
+ * Serializes [Frame]s to/from the bytes carried in a transport payload, using compact binary CBOR
+ * rather than JSON text. CBOR encodes numbers as binary, length-prefixes strings (no quotes/braces),
+ * and — with [CborBuilder.encodeDefaults] off — omits defaulted fields entirely, so a typical text
+ * frame loses the ~150 bytes of `"recipientId":null,…,"ttl":8,"hops":0` framing JSON carried on the
+ * wire. Polymorphism is carried by CBOR's own structure (the [SerialName] discriminators are
+ * preserved); the JSON-only `classDiscriminator` option no longer applies.
+ *
+ * This is a deliberate wire-format break: all nodes must run a CBOR-speaking build to interoperate.
+ */
+@OptIn(ExperimentalSerializationApi::class) // Cbor is an experimental kotlinx-serialization API
 object WireCodec {
-    private val json = Json {
-        classDiscriminator = "t"
-        ignoreUnknownKeys = true
-        encodeDefaults = true
+    private val cbor = Cbor {
+        ignoreUnknownKeys = true // forward-compat: tolerate fields added by newer peers
+        encodeDefaults = false   // drop default ttl/hops, empty mentions, and null reserved fields
     }
 
-    fun encode(frame: Frame): ByteArray =
-        json.encodeToString<Frame>(frame).encodeToByteArray()
+    fun encode(frame: Frame): ByteArray = cbor.encodeToByteArray<Frame>(frame)
 
     /** Decodes a frame, or returns null if the bytes are malformed/unrecognized. */
     fun decode(bytes: ByteArray): Frame? = runCatching {
-        json.decodeFromString<Frame>(bytes.decodeToString())
+        cbor.decodeFromByteArray<Frame>(bytes)
     }.getOrNull()
 }

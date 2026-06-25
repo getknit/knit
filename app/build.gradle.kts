@@ -65,8 +65,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.play.services)
 
-    // Serialization (wire protocol)
+    // Serialization (wire protocol: CBOR for compact mesh frames; JSON for the file-header sidecar)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.kotlinx.serialization.cbor)
 
     // Persistence
     implementation(libs.androidx.room.runtime)

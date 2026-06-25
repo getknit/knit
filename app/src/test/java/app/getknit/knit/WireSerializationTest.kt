@@ -8,6 +8,7 @@ import app.getknit.knit.mesh.protocol.ReactionFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
 import app.getknit.knit.mesh.protocol.WireCodec
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -42,11 +43,29 @@ class WireSerializationTest {
     }
 
     @Test
-    fun chatFrameWithoutMentionsKeyDecodesToEmptyList() {
-        // An older peer's frame has no "mentions" key; the defaulted field must fill in.
-        val legacy = """{"t":"chat","id":"m4","senderId":"alice","sentAt":1,"body":"hi"}"""
-        val decoded = WireCodec.decode(legacy.encodeToByteArray()) as ChatFrame
+    fun chatFrameWithoutMentionsDecodesToEmptyList() {
+        // With encodeDefaults off, a no-mentions frame omits the field on the wire; decode refills it.
+        val frame = ChatFrame(id = "m4", senderId = "alice", sentAt = 1L, body = "hi")
+        val decoded = WireCodec.decode(WireCodec.encode(frame)) as ChatFrame
         assertTrue(decoded.mentions.isEmpty())
+    }
+
+    @Test
+    fun encodedFramesNeverCollideWithFileHeaderMagic() {
+        // NearbyTransport tells a file-header BYTES payload from a frame by this 4-byte prefix; a CBOR
+        // frame must never begin with it (mirrors NearbyTransport.FILE_HEADER_MAGIC = "KFH1").
+        val magic = byteArrayOf(0x4B, 0x46, 0x48, 0x31)
+        val frames = listOf(
+            ChatFrame(id = "m", senderId = "a", sentAt = 1L, body = "hi"),
+            ProfileFrame(id = "p", senderId = "b", sentAt = 2L, name = "Bob", status = "ok"),
+            ReceiptFrame(id = "r", senderId = "c", ackId = "m"),
+            ReactionFrame(id = "x", senderId = "c", messageId = "m", emoji = "👍", sentAt = 3L),
+            BlobRequestFrame(id = "q", senderId = "b", hash = "abc"),
+        )
+        frames.forEach { frame ->
+            val bytes = WireCodec.encode(frame)
+            assertFalse(bytes.size >= magic.size && magic.indices.all { bytes[it] == magic[it] })
+        }
     }
 
     @Test
