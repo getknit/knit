@@ -254,7 +254,7 @@ class MeshManager(
      * longer re-ship the (unchanged) avatar JPEG to every neighbor.
      */
     private suspend fun sendAvatarIfNeeded(peer: Peer) {
-        val avatar = avatars.ownAvatarFile.takeIf { it.exists() } ?: return
+        val avatar = avatars.ownAvatarFile() ?: return
         val hash = avatars.ownAvatarHash() ?: return
         if (sentAvatarHashes[peer.nodeId] == hash) return
         transport.sendFile(avatar, peer, avatarMeta(hash))

@@ -3,6 +3,7 @@ package app.getknit.knit.mesh.nearby
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
+import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.FileMeta
@@ -290,7 +291,16 @@ class NearbyTransport(
     /** Copies a completed FILE payload into the cache (avatar by node, attachment by hash) and announces it. */
     private fun saveIncomingFile(nodeId: String, uri: android.net.Uri, meta: FileMeta) {
         val dest = when (meta.kind) {
-            FileKind.AVATAR -> File(appContext.cacheDir, "$nodeId.jpg")
+            FileKind.AVATAR -> {
+                // Content-address the peer's avatar by its hash so a changed one lands at a new path
+                // (Coil caches by path); drop any avatar we'd cached for this peer first — including a
+                // legacy fixed-name file — so they don't accumulate.
+                appContext.cacheDir
+                    .listFiles { f -> f.name.startsWith("avatar-$nodeId-") }
+                    ?.forEach { it.delete() }
+                File(appContext.cacheDir, "$nodeId.jpg").delete()
+                File(appContext.cacheDir, AvatarStore.peerAvatarFileName(nodeId, meta.key))
+            }
             FileKind.ATTACHMENT -> File(appContext.cacheDir, "attach-${meta.key}.${extForMime(meta.mime)}")
         }
         runCatching {
