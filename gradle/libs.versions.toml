@@ -19,6 +19,9 @@ playServicesNearby = "18.5.0"
 # Coil 3.4.0+ is built with Kotlin 2.4.0 (metadata unreadable by AGP 9.2.1's bundled
 # Kotlin 2.2 compiler). 3.3.0 predates Kotlin 2.4.0 and stays compatible.
 coil = "3.3.0"
+# detekt runs as a standalone CLI off the build classpath (never applied as a Gradle plugin) —
+# keep this in lockstep with DETEKT_VERSION in .gitlab-ci.yml so local and CI use the same rules.
+detekt = "1.23.8"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -62,6 +65,10 @@ play-services-nearby = { group = "com.google.android.gms", name = "play-services
 
 coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }
 coil-gif = { group = "io.coil-kt.coil3", name = "coil-gif", version.ref = "coil" }
+
+# Resolved only into the isolated `detektCli` configuration in the root build (the runnable
+# classpath for the standalone analyzer) — never onto :app's compile/runtime classpath.
+detekt-cli = { group = "io.gitlab.arturbosch.detekt", name = "detekt-cli", version.ref = "detekt" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

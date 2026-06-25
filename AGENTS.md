@@ -18,7 +18,14 @@ with profiles, emoji reactions, @-mentions, and content-addressed image attachme
 ./gradlew :app:compileDebugKotlin   # fast compile check of main sources
 ./gradlew :app:testDebugUnitTest    # JVM unit tests — run these after touching mesh/protocol/data
 ./gradlew installDebug              # install on a connected device
+./gradlew detekt                    # static analysis via the standalone detekt CLI (reports in build/reports/detekt/)
 ```
+
+`detekt` runs the standalone CLI (NOT the Gradle plugin) from an isolated `detektCli` configuration
+in the root build, mirroring CI's `verify:detekt` job — same jar version (`detekt` in the version
+catalog ↔ `DETEKT_VERSION` in `.gitlab-ci.yml`), same `config/detekt/detekt.yml`, same flags. It
+never touches `:app`'s classpath, so it can't perturb the app build. The task exits non-zero when
+detekt finds issues; HTML/XML/SARIF reports land in `build/reports/detekt/`.
 
 - **JDK 21** is required (the Gradle daemon toolchain is pinned to 21).
 - After changing the `MeshTransport` interface, run `testDebugUnitTest` — a test double
