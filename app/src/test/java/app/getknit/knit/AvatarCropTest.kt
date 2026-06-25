@@ -61,16 +61,17 @@ class AvatarCropTest {
         val sizes = listOf(640 to 480, 480 to 640, 1024 to 1024, 1920 to 1080, 300 to 900)
         val scales = listOf(1f, 1.5f, 2.7f, 5f)
         val offsets = listOf(-5000f, -300f, 0f, 300f, 5000f)
+        // Flatten the two offset axes into one list so the sweep nests three loops, not four
+        // (keeps detekt's NestedBlockDepth happy without dropping any ox×oy combination).
+        val offsetPairs = offsets.flatMap { ox -> offsets.map { oy -> ox to oy } }
         for ((w, h) in sizes) {
             for (s in scales) {
-                for (ox in offsets) {
-                    for (oy in offsets) {
-                        val r = computeAvatarCrop(w, h, d, s, ox, oy)
-                        assertTrue("square", r.width == r.height)
-                        assertTrue("left in bounds", r.left >= 0 && r.left + r.width <= w)
-                        assertTrue("top in bounds", r.top >= 0 && r.top + r.height <= h)
-                        assertTrue("non-empty", r.width >= 1)
-                    }
+                for ((ox, oy) in offsetPairs) {
+                    val r = computeAvatarCrop(w, h, d, s, ox, oy)
+                    assertTrue("square", r.width == r.height)
+                    assertTrue("left in bounds", r.left >= 0 && r.left + r.width <= w)
+                    assertTrue("top in bounds", r.top >= 0 && r.top + r.height <= h)
+                    assertTrue("non-empty", r.width >= 1)
                 }
             }
         }

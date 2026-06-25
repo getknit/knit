@@ -3,9 +3,6 @@ package app.getknit.knit.ui.util
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-/** Square pixel rectangle in source-bitmap coordinates. [width] always equals [height]. */
-data class CropRect(val left: Int, val top: Int, val width: Int, val height: Int)
-
 /**
  * Computes the square region of a source bitmap that falls inside a centered circular crop window,
  * given the user's pinch [scale] and drag [offsetX]/[offsetY] as produced by a Compose
@@ -36,3 +33,8 @@ fun computeAvatarCrop(
     val top = (cy - side / 2f).roundToInt().coerceIn(0, srcH - side)
     return CropRect(left, top, side, side)
 }
+
+// Declared after computeAvatarCrop so the file's only type isn't its first declaration — that keeps
+// the meaningful file name AvatarCrop.kt instead of detekt's MatchingDeclarationName forcing CropRect.kt.
+/** Square pixel rectangle in source-bitmap coordinates. [width] always equals [height]. */
+data class CropRect(val left: Int, val top: Int, val width: Int, val height: Int)

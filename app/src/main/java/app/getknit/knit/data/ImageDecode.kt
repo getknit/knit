@@ -19,7 +19,6 @@ import kotlin.math.min
  * just above [maxDim] on each pre-rotation edge. Pair with [downscale] for an exact bound. Returns
  * null if the stream can't be read.
  */
-@Suppress("MagicNumber") // rotation degrees (90/180/270) mirror the named ORIENTATION_ROTATE_* constants
 internal fun decodeOrientedBounded(context: Context, uri: Uri, maxDim: Int): Bitmap? {
     // inJustDecodeBounds populates bounds.outWidth/outHeight and returns null by design, so the
     // null check must be on openInputStream, not on decodeStream's (always-null) result.
@@ -38,13 +37,19 @@ internal fun decodeOrientedBounded(context: Context, uri: Uri, maxDim: Int): Bit
     val orientation = context.contentResolver.openInputStream(uri)?.use {
         ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
     } ?: ExifInterface.ORIENTATION_NORMAL
-    val matrix = Matrix()
-    when (orientation) {
-        ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-        ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-        ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+    return rotatedForExif(bitmap, orientation)
+}
+
+/** Rotates [bitmap] upright per its EXIF [orientation]; returns it unchanged when no rotation applies. */
+@Suppress("MagicNumber") // rotation degrees (90/180/270) mirror the named ORIENTATION_ROTATE_* constants
+private fun rotatedForExif(bitmap: Bitmap, orientation: Int): Bitmap {
+    val degrees = when (orientation) {
+        ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+        ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+        ExifInterface.ORIENTATION_ROTATE_270 -> 270f
         else -> return bitmap
     }
+    val matrix = Matrix().apply { postRotate(degrees) }
     return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
 }
 
