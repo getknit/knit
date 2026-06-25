@@ -1,0 +1,47 @@
+# Project detekt config — a thin OVERLAY applied with `--build-upon-default-config` (CI: verify:detekt).
+# Only rules whose defaults misfire on this Jetpack Compose + Koin codebase are listed; everything else
+# keeps detekt's bundled defaults. Goal: silence framework-shaped false positives so the report is
+# signal, not noise. Genuine nits are fixed in code instead (see the MR that introduced this file).
+#
+# Rationale per rule:
+#  - @Composable functions are PascalCase by Compose convention, are naturally long (declarative UI
+#    trees), and take many hoisted-state/callback params — so FunctionNaming/LongMethod/LongParameterList/
+#    CyclomaticComplexMethod/TooManyFunctions exempt them.
+#  - Koin DI constructors legitimately take one param per injected collaborator (MeshManager/ChatViewModel
+#    have 10) — raise constructorThreshold rather than inventing parameter-objects that just relocate wiring.
+#  - The mesh orchestrator (MeshManager, 22 fns) and the single GMS adapter (NearbyTransport, 14 fns) are
+#    by-design per AGENTS.md — raise thresholdInClasses rather than split them.
+#  - MagicNumber: theme color/typography literals live in property declarations; ignore those.
+#  - ReturnCount: the flagged functions are guard-clause early-returns (some lint-mandated).
+
+complexity:
+  CyclomaticComplexMethod:
+    ignoreAnnotated: ['Composable']
+  LongMethod:
+    ignoreAnnotated: ['Composable']
+  LongParameterList:
+    ignoreAnnotated: ['Composable']
+    constructorThreshold: 12   # Koin DI constructors (MeshManager / ChatViewModel = 10 args)
+    functionThreshold: 8       # the 6-arg Notifier functions are fine
+  TooManyFunctions:
+    ignoreAnnotatedFunctions: ['Composable', 'Preview']  # Compose screen files are many small composables
+    thresholdInClasses: 25     # MeshManager 22, NearbyTransport 14, AttachmentStore 13
+    thresholdInFiles: 20
+    thresholdInObjects: 15
+
+naming:
+  FunctionNaming:
+    ignoreAnnotated: ['Composable']
+
+style:
+  MagicNumber:
+    ignorePropertyDeclaration: true        # theme/Color.kt + Type.kt literals
+    ignoreLocalVariableDeclaration: true
+    ignoreNamedArgument: true
+    ignoreRanges: true                     # self-evident range buckets, e.g. `in 2L..6L` in RelativeTime
+    ignoreAnnotated: ['Composable']
+  MaxLineLength:
+    maxLineLength: 140                      # the codebase style runs to ~130
+  ReturnCount:
+    max: 4
+    excludeGuardClauses: true

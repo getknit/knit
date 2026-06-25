@@ -83,6 +83,7 @@ class AttachmentStore(private val context: Context) {
         }
 
     /** Decodes [uri] applying its EXIF orientation so portrait photos aren't stored sideways. */
+    @Suppress("MagicNumber") // rotation degrees (90/180/270) mirror the named ORIENTATION_ROTATE_* constants
     private fun decodeOriented(uri: Uri): Bitmap? {
         val bitmap = context.contentResolver.openInputStream(uri)?.use {
             BitmapFactory.decodeStream(it)

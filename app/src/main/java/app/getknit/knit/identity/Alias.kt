@@ -42,6 +42,7 @@ object Alias {
         return combine(h)
     }
 
+    @Suppress("MagicNumber") // shr 32 splits the 64-bit hash into independent high/low 32-bit halves
     private fun combine(h: ULong): String {
         val adjIdx = ((h and 0xFFFFFFFFuL) % ADJECTIVES.size.toULong()).toInt()
         val nounIdx = ((h shr 32) % NOUNS.size.toULong()).toInt()

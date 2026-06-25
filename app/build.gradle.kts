@@ -39,6 +39,13 @@ android {
     }
 }
 
+dependencyLocking {
+    // Lock resolved versions to app/gradle.lockfile so Trivy (and reproducible builds) have a concrete
+    // dependency manifest to scan — there is no other lockfile/SBOM. Native Gradle, no plugin. Regenerate
+    // with `./gradlew :app:dependencies --write-locks` after bumping versions in libs.versions.toml.
+    lockAllConfigurations()
+}
+
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)

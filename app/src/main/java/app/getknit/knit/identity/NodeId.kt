@@ -18,6 +18,7 @@ object NodeId {
     const val ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
 
     /** Deterministic 8-char `[a-z0-9]` id derived from a stable device [seed]. */
+    @Suppress("MagicNumber") // 0xFF masks a signed byte to its unsigned 0–255 value before indexing
     fun derive(seed: String): String {
         val digest = MessageDigest.getInstance("SHA-256")
             .digest((SALT + seed).encodeToByteArray())

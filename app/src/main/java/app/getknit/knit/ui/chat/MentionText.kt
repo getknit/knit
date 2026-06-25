@@ -1,3 +1,5 @@
+@file:Suppress("MatchingDeclarationName") // intentional grab-bag of mention helpers, not one declaration
+
 package app.getknit.knit.ui.chat
 
 import androidx.compose.ui.text.AnnotatedString

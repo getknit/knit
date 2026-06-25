@@ -9,7 +9,7 @@ package app.getknit.knit.mesh
  */
 class SeenSet(
     private val maxSize: Int = 4096,
-    private val ttlMillis: Long = 10 * 60_000L,
+    private val ttlMillis: Long = DEFAULT_TTL_MS,
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
     private val seen = object : LinkedHashMap<String, Long>(64, 0.75f, false) {
@@ -33,5 +33,10 @@ class SeenSet(
     fun contains(id: String): Boolean {
         val last = seen[id] ?: return false
         return clock() - last < ttlMillis
+    }
+
+    private companion object {
+        /** Default flood-suppression window: an id counts as new again after 10 minutes. */
+        const val DEFAULT_TTL_MS = 10 * 60_000L
     }
 }

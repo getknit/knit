@@ -8,8 +8,8 @@ stages:
   - verify
 
 variables:
-  # Keep Gradle's home in the project tree so the resolved-dependency jars are cached
-  # across jobs AND scannable by Trivy for CVEs (there is no lockfile/SBOM to scan).
+  # Keep Gradle's home in the project tree so the resolved-dependency jars are cached across jobs.
+  # (Trivy CVE scanning now reads the committed app/gradle.lockfile, not these jars — see verify:trivy.)
   GRADLE_USER_HOME: "${CI_PROJECT_DIR}/.gradle"
   # daemon=false keeps no daemon alive between jobs; it does NOT stop Gradle forking a
   # single-use worker JVM (it does, to honour org.gradle.jvmargs). That worker's heap is
@@ -108,6 +108,7 @@ verify:detekt:
     - >
       java -jar /tmp/detekt.jar
       --input app/src/main/java,app/src/test/java
+      --config config/detekt/detekt.yml
       --build-upon-default-config
       --jvm-target 11
       --report xml:detekt.xml --report html:detekt.html --report sarif:detekt.sarif
@@ -122,15 +123,11 @@ verify:trivy:
     entrypoint: [""]
   stage: verify
   allow_failure: true
-  needs: ["build:debug"]              # so resolved dependency jars exist in .gradle to scan
+  # No `needs:` — Trivy scans the committed app/gradle.lockfile, so it's independent of the build job.
   variables:
     TRIVY_NO_PROGRESS: "true"
     TRIVY_CACHE_DIR: ".trivycache/"
   cache:
-    - key:
-        files: [gradle/libs.versions.toml, gradle/wrapper/gradle-wrapper.properties]
-      paths: [.gradle/caches/]
-      policy: pull
     - key: trivy-db
       paths: [.trivycache/]
   script:
