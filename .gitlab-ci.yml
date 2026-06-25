@@ -36,16 +36,18 @@ workflow:
   before_script:
     - apt-get update -qq && apt-get install -y -qq unzip wget > /dev/null
     - export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
-    # CI-only memory tuning for the 2 GB runner. Written to $GRADLE_USER_HOME so it overrides
-    # the project gradle.properties (GRADLE_USER_HOME wins). A smaller heap + capped metaspace
-    # + single-threaded SerialGC keep the worker JVM's RSS low enough that the kernel OOM
-    # killer no longer reaps it mid-compileDebugKotlin. Keys not set here (e.g. the in-process
-    # Kotlin strategy) are inherited from the project gradle.properties.
+    # CI memory profile for the 1 vCPU / 2 GB runner — relies on the host's 2 GB swap being
+    # active. Written to $GRADLE_USER_HOME so it overrides the project gradle.properties.
+    # NO metaspace cap: a 384m cap starved Metaspace and crashed the daemon (job 462). Heap is
+    # 1280m — big enough for Kotlin/Compose yet small enough to stay resident in 1.9 GiB of RAM
+    # so GC pages don't thrash; Metaspace/native/launcher-JVM spikes spill to swap instead of
+    # tripping the OOM killer. SerialGC because there is only one core to GC on. Self-contained.
     - |
       mkdir -p "$GRADLE_USER_HOME"
       cat > "$GRADLE_USER_HOME/gradle.properties" <<'EOF'
-      org.gradle.jvmargs=-Xmx1024m -XX:MaxMetaspaceSize=384m -XX:+UseSerialGC -Dfile.encoding=UTF-8
+      org.gradle.jvmargs=-Xmx1280m -XX:+UseSerialGC -Dfile.encoding=UTF-8
       org.gradle.workers.max=1
+      kotlin.compiler.execution.strategy=in-process
       org.gradle.daemon=false
       EOF
     - |
