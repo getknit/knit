@@ -65,10 +65,14 @@
     <string name="battery_allowed">Background battery use: allowed</string>
     <string name="battery_restricted">Background battery use: restricted — the mesh may drop when idle</string>
     <string name="battery_allow_button">Allow background battery use</string>
+    <string name="profile_avatar_crop_hint">Drag and pinch to adjust</string>
+    <string name="profile_avatar_crop_desc">Adjust profile photo</string>
 
     <!-- Generic actions / content descriptions -->
     <string name="action_send">Send</string>
     <string name="action_attach_photo">Attach photo</string>
     <string name="action_back">Back</string>
     <string name="action_close">Close</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_save">Save</string>
 </resources>

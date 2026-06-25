@@ -1,12 +1,15 @@
 package app.getknit.knit.ui.profile
 
+import android.graphics.Bitmap
 import android.net.Uri
+import androidx.compose.ui.geometry.Offset
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.ui.util.computeAvatarCrop
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -66,11 +69,37 @@ class ProfileViewModel(
         viewModelScope.launch { settings.setStatus(value) }
     }
 
+    // The picked image awaiting crop. Held here (not in SavedStateHandle — a Bitmap is large and not
+    // parcel-friendly) so the crop survives configuration changes without re-decoding. Not recycled:
+    // the crop dialog wraps these same pixels via asImageBitmap(), so we just drop the reference.
+    private val _cropTarget = MutableStateFlow<Bitmap?>(null)
+    val cropTarget: StateFlow<Bitmap?> = _cropTarget.asStateFlow()
+
+    /** Picks an image and shows the crop UI; the actual save happens in [confirmCrop]. */
     fun pickAvatar(uri: Uri) {
         viewModelScope.launch {
-            if (avatars.saveOwnAvatar(uri)) {
+            _cropTarget.value = avatars.loadForCrop(uri)
+        }
+    }
+
+    /** Persists the cropped avatar. [scale]/[offset]/[diameter] come from the crop dialog's transform. */
+    fun confirmCrop(scale: Float, offset: Offset, diameter: Float) {
+        val source = _cropTarget.value ?: return
+        _cropTarget.value = null
+        viewModelScope.launch {
+            val crop = computeAvatarCrop(source.width, source.height, diameter, scale, offset.x, offset.y)
+            if (avatars.saveOwnAvatar(source, crop)) {
                 settings.setAvatarUpdatedAt(System.currentTimeMillis())
             }
         }
+    }
+
+    fun cancelCrop() {
+        _cropTarget.value = null
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        _cropTarget.value = null
     }
 }

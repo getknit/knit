@@ -27,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
@@ -53,10 +54,20 @@ fun ProfileScreen(
     val nodeId by viewModel.nodeId.collectAsStateWithLifecycle()
     val alias by viewModel.alias.collectAsStateWithLifecycle()
     val avatarPath by viewModel.avatarPath.collectAsStateWithLifecycle()
+    val cropTarget by viewModel.cropTarget.collectAsStateWithLifecycle()
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri -> uri?.let(viewModel::pickAvatar) }
+
+    cropTarget?.let { bmp ->
+        val image = remember(bmp) { bmp.asImageBitmap() }
+        AvatarCropDialog(
+            bitmap = image,
+            onCancel = viewModel::cancelCrop,
+            onConfirm = viewModel::confirmCrop,
+        )
+    }
 
     Scaffold(
         topBar = {

@@ -2,9 +2,6 @@ package app.getknit.knit.data
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
-import android.media.ExifInterface
 import android.net.Uri
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -12,7 +9,6 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
-import kotlin.math.min
 
 /**
  * Stores message image attachments as content-addressed files in `filesDir/attachments/<hash>.<ext>`
@@ -52,7 +48,7 @@ class AttachmentStore(private val context: Context) {
             "image/gif" to (context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: return@withContext null)
         } else {
-            val bitmap = decodeOriented(uri) ?: return@withContext null
+            val bitmap = decodeOrientedBounded(context, uri, MAX_DIMENSION) ?: return@withContext null
             val scaled = downscale(bitmap, MAX_DIMENSION)
             val jpeg = ByteArrayOutputStream().use { out ->
                 scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
@@ -81,33 +77,6 @@ class AttachmentStore(private val context: Context) {
                 .onFailure { Log.w(TAG, "Failed saving incoming attachment $hash", it) }
                 .getOrNull()
         }
-
-    /** Decodes [uri] applying its EXIF orientation so portrait photos aren't stored sideways. */
-    @Suppress("MagicNumber") // rotation degrees (90/180/270) mirror the named ORIENTATION_ROTATE_* constants
-    private fun decodeOriented(uri: Uri): Bitmap? {
-        val bitmap = context.contentResolver.openInputStream(uri)?.use {
-            BitmapFactory.decodeStream(it)
-        } ?: return null
-        val orientation = context.contentResolver.openInputStream(uri)?.use {
-            ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
-        } ?: ExifInterface.ORIENTATION_NORMAL
-        val matrix = Matrix()
-        when (orientation) {
-            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
-            else -> return bitmap
-        }
-        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-    }
-
-    private fun downscale(src: Bitmap, max: Int): Bitmap {
-        if (src.width <= max && src.height <= max) return src
-        val ratio = min(max.toFloat() / src.width, max.toFloat() / src.height)
-        val w = (src.width * ratio).toInt().coerceAtLeast(1)
-        val h = (src.height * ratio).toInt().coerceAtLeast(1)
-        return Bitmap.createScaledBitmap(src, w, h, true)
-    }
 
     private fun sha256(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
