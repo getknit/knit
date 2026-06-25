@@ -11,6 +11,10 @@ variables:
   # Keep Gradle's home in the project tree so the resolved-dependency jars are cached
   # across jobs AND scannable by Trivy for CVEs (there is no lockfile/SBOM to scan).
   GRADLE_USER_HOME: "${CI_PROJECT_DIR}/.gradle"
+  # daemon=false keeps no daemon alive between jobs; it does NOT stop Gradle forking a
+  # single-use worker JVM (it does, to honour org.gradle.jvmargs). That worker's heap is
+  # what the OOM killer reaps on this 2 GB VM — it's capped in the CI gradle.properties
+  # written by before_script below, which overrides the project gradle.properties.
   GRADLE_OPTS: "-Dorg.gradle.daemon=false"
   ANDROID_HOME: "${CI_PROJECT_DIR}/.android-sdk"
   ANDROID_SDK_ROOT: "${CI_PROJECT_DIR}/.android-sdk"
@@ -32,6 +36,18 @@ workflow:
   before_script:
     - apt-get update -qq && apt-get install -y -qq unzip wget > /dev/null
     - export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
+    # CI-only memory tuning for the 2 GB runner. Written to $GRADLE_USER_HOME so it overrides
+    # the project gradle.properties (GRADLE_USER_HOME wins). A smaller heap + capped metaspace
+    # + single-threaded SerialGC keep the worker JVM's RSS low enough that the kernel OOM
+    # killer no longer reaps it mid-compileDebugKotlin. Keys not set here (e.g. the in-process
+    # Kotlin strategy) are inherited from the project gradle.properties.
+    - |
+      mkdir -p "$GRADLE_USER_HOME"
+      cat > "$GRADLE_USER_HOME/gradle.properties" <<'EOF'
+      org.gradle.jvmargs=-Xmx1024m -XX:MaxMetaspaceSize=384m -XX:+UseSerialGC -Dfile.encoding=UTF-8
+      org.gradle.workers.max=1
+      org.gradle.daemon=false
+      EOF
     - |
       if [ ! -d "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" ]; then
         wget -q "https://dl.google.com/android/repository/commandlinetools-linux-${CMDLINE_TOOLS_VERSION}_latest.zip" -O /tmp/clt.zip
