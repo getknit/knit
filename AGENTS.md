@@ -8,7 +8,8 @@ build config, the mesh layer, or the DI graph. For full design detail see
 
 An Android app (Kotlin/Compose) implementing an offline Bluetooth/Wi-Fi **mesh messenger** on top of
 Google Nearby Connections. Single Gradle module `:app`, package `app.getknit.knit`,
-minSdk 29 / targetSdk 36 / compileSdk 36.1.
+minSdk 29 / targetSdk 36 / compileSdk 36.1. It surfaces a "Nearby" broadcast room plus 1:1 DMs,
+with profiles, emoji reactions, @-mentions, and content-addressed image attachments.
 
 ## Commands
 
@@ -46,18 +47,23 @@ Compose BOM 2026.02). That forces several non-obvious choices:
 ## Architecture in one screen
 
 ```
-ui/            Compose screens (onboarding, chat, profile) + ViewModels (Koin koinViewModel())
-mesh/          MeshTransport (interface) · MeshRouter (dedup/TTL/relay) · MeshManager (orchestrator)
-               · MeshService (foreground service) · protocol/Wire.kt (serialized Frame)
+ui/            Compose screens (onboarding, chatlist, chat, contacts, profile) + ViewModels
+               (Koin koinViewModel()) · KnitApp (Navigation Compose)
+mesh/          MeshTransport (interface) · MeshRouter (dedup + jittered/suppressed flood)
+               · MeshManager (orchestrator) · MeshService (foreground service) · MeshMetrics
+               · BlobExchange/BlobStore (content-addressed pull) · protocol/Wire.kt (CBOR Frame)
 mesh/nearby/   NearbyTransport — the ONLY place that imports com.google.android.gms.*
-data/          Room (messages, peers) + repositories · settings/SettingsStore (DataStore)
-               · AvatarStore (image files)
-identity/      Identity (stable nodeId; future keypair)
+data/          Room (messages, peers, reactions) + repositories · settings/SettingsStore (DataStore)
+               · AvatarStore + AttachmentStore (image files) · message/Conversations (DM keys)
+identity/      Identity (stable nodeId) · NodeId (derive) · DeviceIdSource · Alias (name fallback)
+notifications/ Notifier + MessageNotifier (messages + dedicated mentions channel)
 di/            Koin modules: appModule, meshModule, uiModule
 ```
 
-Data flow: UI → `MeshManager` → `MeshRouter` (dedup + flood) → `MeshTransport` → radios; inbound
-frames flow back `MeshTransport.inbound` → `MeshRouter` → repositories → Compose `StateFlow`s.
+Data flow: UI → `MeshManager` → `MeshRouter` (dedup + jittered relay) → `MeshTransport` → radios;
+inbound frames flow back `MeshTransport.inbound` → `MeshRouter` → repositories → Compose
+`StateFlow`s. Avatars/attachments travel out of band as file payloads (`incomingFiles`), not in
+frames.
 
 ## Conventions
 
@@ -67,11 +73,16 @@ frames flow back `MeshTransport.inbound` → `MeshRouter` → repositories → C
 - **DI:** declare singletons/ViewModels in the `di/` modules; resolve ViewModels in Compose with
   `org.koin.androidx.compose.koinViewModel()` and the ViewModel DSL from
   `org.koin.core.module.dsl.viewModel` (not the deprecated `androidx.viewmodel.dsl` one).
-- **Wire format** (`mesh/protocol/Wire.kt`) is a `@Serializable sealed interface Frame`. New frame
-  types are added as sealed subclasses with a `@SerialName`. Fields `recipientId`, `sig`, `pubKey`
-  are reserved for future DMs/E2E — keep them.
-- **Pure, testable mesh logic.** `MeshRouter`, `SeenSet`, and `WireCodec` have no Android
-  dependencies and are unit-tested with `FakeLoopTransport`. Keep them that way.
+- **Wire format** (`mesh/protocol/Wire.kt`) is a `@Serializable sealed interface Frame` serialized as
+  **binary CBOR** (`WireCodec`, `encodeDefaults = false`) — not JSON. New frame types are added as
+  sealed subclasses with a `@SerialName` (current set: `chat`, `profile`, `receipt`, `reaction`,
+  `blobreq`); a non-flooded control frame overrides `relayable` to `false`. `ChatFrame.recipientId`
+  addresses DMs; `sig` / `pubKey` are reserved for future E2E — keep them. Changing the encoding or a
+  frame's shape is a coordinated wire-format break (no version negotiation yet).
+- **Pure, testable mesh logic.** `MeshRouter`, `SeenSet`, `WireCodec`, `MeshMetrics`, `BlobExchange`,
+  and `Conversations` have no Android dependencies and are unit-tested with `FakeLoopTransport`/fakes.
+  Keep them that way. `MeshRouter` relay timing is driven by an injectable `jitter` lambda so tests
+  use a fixed delay + virtual time.
 - Match the surrounding Kotlin style (official Kotlin style; 4-space indent; trailing commas).
 
 ## Gotchas that have already bitten us
@@ -86,6 +97,10 @@ frames flow back `MeshTransport.inbound` → `MeshRouter` → repositories → C
   `await()` — see `NearbyTransport.connectTo`.
 - **Nearby needs physical devices.** An emulator generally can't mesh with a real phone (NAT'd
   network). Use `FakeLoopTransport` for logic tests and two physical phones for connectivity.
+- **Keep the `<Frame>` type argument on the CBOR codec.** `WireCodec` calls
+  `cbor.encodeToByteArray<Frame>(frame)` / `decodeFromByteArray<Frame>(bytes)` — the explicit
+  `<Frame>` selects polymorphic encoding (the `@SerialName` discriminator). Dropping it serializes the
+  concrete subtype without the discriminator and breaks decode on the other end.
 
 ## Verifying changes
 
@@ -100,6 +115,7 @@ into `/sdcard/Pictures` if you need an image to select.
 
 ## Out of scope (deferred, by design)
 
-Alternate transports (Wi-Fi Aware/BLE), 1:1 DMs, app-level end-to-end encryption + identity
-verification, and at-rest DB encryption (SQLCipher). Don't start these without explicit direction;
-the wire format and identity layer already leave room for them.
+Alternate transports (Wi-Fi Aware/BLE), **true DM routing** (DMs currently flood — only the addressed
+recipient delivers/acks), app-level end-to-end encryption + identity verification, and at-rest DB
+encryption (SQLCipher). Don't start these without explicit direction; the wire format
+(`recipientId`/`sig`/`pubKey`) and identity layer already leave room for them.

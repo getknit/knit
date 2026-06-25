@@ -7,18 +7,25 @@ send a message, it's transmitted to every device in range, each of which re-tran
 messages can "leap-frog" hop-by-hop across many devices with no internet, cell service, accounts, or
 servers. Duplicate copies are discarded. The interface is a modern Signal-style messenger.
 
-> **Status:** MVP. The current build is a single **public broadcast room** with profiles
-> (name / status / avatar). Encryption is currently **transport-level only** (Nearby's per-link
-> encryption). 1:1 DMs and end-to-end encryption are designed-in but not yet implemented — see
-> [Roadmap](#roadmap).
+> **Status:** MVP. The current build has a **"Nearby" public broadcast room** and **1:1 direct
+> messages**, with profiles (name / status / avatar), emoji reactions, @-mentions, and image
+> attachments. Encryption is currently **transport-level only** (Nearby's per-link encryption) — DMs
+> flood the mesh today, so they aren't yet confidential from relays. End-to-end encryption is
+> designed-in but not yet implemented — see [Roadmap](#roadmap).
 
 ## Features
 
 - **Mesh relay** over Nearby Connections (`P2P_CLUSTER`): advertise + discover, auto-connect to all
-  nearby peers, flood messages with hop-count/TTL bounds and deduplication.
-- **Public broadcast chat** with message bubbles, relative timestamps, and a delivery tick (✓).
+  nearby peers, flood messages with hop-count/TTL bounds and deduplication. Relays use **jittered,
+  overhear-suppressed** flooding so a dense cluster isn't stormed with redundant rebroadcasts.
+- **Public broadcast chat** plus **1:1 direct messages** — a conversation list and contact picker,
+  message bubbles, relative timestamps, unread badges, and a delivery tick (✓).
+- **Reactions, @-mentions, and image attachments** — emoji reactions converge across the mesh
+  (last-writer-wins); mentions get a dedicated notification; images (GIF/JPEG/PNG/WebP) are
+  content-addressed and pulled on demand so the bytes don't ride the flood.
 - **Profiles** — display name, status, and avatar — flooded across the mesh; avatars transferred as
-  files and shown next to messages.
+  files (and re-pushed only when they actually change) and shown next to messages.
+- **Messaging-style notifications** with a separate channel for mentions.
 - **Always-on background mesh** via a foreground service, kept healthy by a heartbeat alarm,
   significant-motion re-scan, and Bluetooth-recovery; prompts to disable battery optimization.
 - **Material 3** UI with a coral brand theme and full dark mode.
@@ -31,14 +38,15 @@ servers. Duplicate copies are discarded. The interface is a modern Signal-style 
 
 ## Tech stack
 
-Kotlin 2.2.10 · Jetpack Compose (Material 3) · AGP 9.2.1 / Gradle 9.4.1 · Koin (DI) · Room ·
-DataStore · kotlinx.serialization · Coil 3 · `play-services-nearby`.
+Kotlin 2.2.10 · Jetpack Compose (Material 3) + Navigation Compose · AGP 9.2.1 / Gradle 9.4.1 ·
+Koin (DI) · Room · DataStore · kotlinx.serialization (**CBOR** wire format) · Coil 3 ·
+`play-services-nearby`.
 
 ## Build
 
 ```bash
 ./gradlew :app:assembleDebug          # build the debug APK
-./gradlew :app:testDebugUnitTest      # run JVM unit tests (mesh router, dedup, wire codec)
+./gradlew :app:testDebugUnitTest      # run JVM unit tests (mesh router + flood suppression, dedup, CBOR codec, …)
 ./gradlew installDebug                # install on a connected device
 ```
 
@@ -66,18 +74,21 @@ physical phone (its network is NAT'd), so use real devices for connectivity test
 
 ## Roadmap
 
-Implemented and verified through the MVP. Explicitly deferred:
+Implemented and verified through the MVP (broadcast room, 1:1 DMs, profiles, reactions, mentions,
+attachments). Explicitly deferred:
 
 - **Alternate transports** (Wi-Fi Aware / BLE) behind the existing `MeshTransport` abstraction —
   removes the Google Play services dependency.
-- **1:1 direct messages** — the wire format already reserves `recipientId`.
+- **True DM routing** — DMs currently flood the whole mesh and only the addressed recipient delivers/
+  acks them; targeted multi-hop routing is future work.
 - **End-to-end encryption + identity verification** — wire format reserves `sig` / `pubKey`; today
-  relays can read message contents (transport-only encryption).
+  relays can read message contents, including DMs (transport-only encryption).
 - **At-rest database encryption** (SQLCipher).
 
 ## Security note
 
 In-transit confidentiality currently relies on Nearby Connections' per-link encryption. Because
-messages are flooded and re-encrypted at each hop, **relay devices can read message contents**, and
-sender identity is not cryptographically authenticated. Do not treat the current build as
-end-to-end secure. E2E is the top item on the roadmap.
+messages are flooded and re-encrypted at each hop, **relay devices can read message contents** — and
+this includes 1:1 DMs, which flood the mesh today — and sender identity is not cryptographically
+authenticated. Do not treat the current build as end-to-end secure. E2E is the top item on the
+roadmap.
