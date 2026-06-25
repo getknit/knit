@@ -8,6 +8,8 @@ import androidx.core.content.ContextCompat
 
 /** Runtime permissions Nearby Connections needs, varying by SDK level. */
 fun requiredMeshPermissions(): Array<String> = buildList {
+    // Nearby Connections discovery requires location on every supported API level (neverForLocation
+    // does not exempt it), so always request it — see the note in AndroidManifest.xml.
     add(Manifest.permission.ACCESS_FINE_LOCATION)
     add(Manifest.permission.ACCESS_COARSE_LOCATION)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

@@ -16,7 +16,9 @@
     <!-- Android 13+ nearby Wi-Fi -->
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
 
-    <!-- Location: Nearby Connections requires it for BLE discovery (mandatory pre-Android 12) -->
+    <!-- Location: Nearby Connections' discovery requires location at runtime on ALL supported API
+         levels, including Android 13+. neverForLocation does NOT exempt it (verified: capping these
+         to maxSdkVersion=32 caused error 8034 on API 36). Keep them uncapped and granted. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
