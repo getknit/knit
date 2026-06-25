@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
@@ -25,6 +26,7 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -57,6 +59,7 @@ import org.koin.androidx.compose.koinViewModel
 @Composable
 fun ChatListScreen(
     onOpenConversation: (conversationId: String) -> Unit,
+    onNewMessage: () -> Unit,
     onOpenProfile: () -> Unit,
     viewModel: ChatListViewModel = koinViewModel(),
 ) {
@@ -98,6 +101,14 @@ fun ChatListScreen(
                     }
                 },
             )
+        },
+        floatingActionButton = {
+            FloatingActionButton(onClick = onNewMessage) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Message,
+                    contentDescription = stringResource(R.string.contacts_new_message),
+                )
+            }
         },
     ) { padding ->
         LazyColumn(

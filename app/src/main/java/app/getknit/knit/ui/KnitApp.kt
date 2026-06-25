@@ -10,25 +10,27 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.MeshService
 import app.getknit.knit.ui.chat.ChatScreen
 import app.getknit.knit.ui.chatlist.ChatListScreen
+import app.getknit.knit.ui.contacts.ContactsScreen
 import app.getknit.knit.ui.onboarding.OnboardingScreen
 import app.getknit.knit.ui.profile.ProfileScreen
 
 private object Routes {
     const val ONBOARDING = "onboarding"
     const val CHAT_LIST = "chatlist"
+    const val CONTACTS = "contacts"
     const val PROFILE = "profile"
     const val CHAT = "chat/{conversationId}"
     fun chat(conversationId: String) = "chat/$conversationId"
 }
 
 /**
- * App root: gates on permissions, then hosts the screen graph (chat list ⇄ chat ⇄ profile) with
- * Navigation Compose. The chat route carries a `conversationId` so 1:1 DM threads slot in later;
- * today the only value is the "Nearby" broadcast room. Starts the mesh foreground service once the
- * user is past onboarding.
+ * App root: gates on permissions, then hosts the screen graph (chat list ⇄ contacts ⇄ chat ⇄ profile)
+ * with Navigation Compose. The chat route carries a `conversationId` — the "Nearby" broadcast room or
+ * a peer's node id for a 1:1 DM. Starts the mesh foreground service once the user is past onboarding.
  */
 @Composable
 fun KnitApp() {
@@ -56,16 +58,30 @@ fun KnitApp() {
         composable(Routes.CHAT_LIST) {
             ChatListScreen(
                 onOpenConversation = { id -> navController.navigate(Routes.chat(id)) },
+                onNewMessage = { navController.navigate(Routes.CONTACTS) },
                 onOpenProfile = { navController.navigate(Routes.PROFILE) },
+            )
+        }
+        composable(Routes.CONTACTS) {
+            ContactsScreen(
+                onBack = { navController.popBackStack() },
+                // Open the DM thread (keyed by the peer's node id) and drop the picker from the back
+                // stack, so Back from the chat returns to the conversation list.
+                onPick = { peerId ->
+                    navController.navigate(Routes.chat(peerId)) {
+                        popUpTo(Routes.CONTACTS) { inclusive = true }
+                    }
+                },
             )
         }
         composable(
             route = Routes.CHAT,
             arguments = listOf(navArgument("conversationId") { type = NavType.StringType }),
-        ) {
-            // conversationId (currently always the Nearby room) will route ChatViewModel to a specific
-            // DM thread once DMs land; for now the chat always shows the broadcast room.
-            ChatScreen(onBack = { navController.popBackStack() })
+        ) { backStackEntry ->
+            // conversationId is the Nearby room or a peer's node id (a 1:1 DM thread).
+            val conversationId =
+                backStackEntry.arguments?.getString("conversationId") ?: Conversations.NEARBY
+            ChatScreen(conversationId = conversationId, onBack = { navController.popBackStack() })
         }
         composable(Routes.PROFILE) {
             ProfileScreen(onBack = { navController.popBackStack() })

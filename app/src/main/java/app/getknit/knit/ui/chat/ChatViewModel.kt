@@ -9,6 +9,7 @@ import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
@@ -64,9 +65,14 @@ data class ChatUiState(
     val neighborCount: Int = 0,
     val myNodeId: String = "",
     val mentionCandidates: List<MentionCandidate> = emptyList(),
+    // Conversation header: the room ([isRoom] true) or a 1:1 DM with [title]/[avatarPath] of the peer.
+    val isRoom: Boolean = true,
+    val title: String = "",
+    val avatarPath: String? = null,
 )
 
 class ChatViewModel(
+    private val conversationId: String,
     messages: MessageRepository,
     peers: PeerRepository,
     reactions: ReactionRepository,
@@ -77,6 +83,9 @@ class ChatViewModel(
     private val attachments: AttachmentStore,
     private val context: Context,
 ) : ViewModel() {
+
+    /** This thread is the broadcast room (vs a 1:1 DM keyed by the peer's node id). */
+    private val isRoom = conversationId == Conversations.NEARBY
 
     private val myNodeId = MutableStateFlow<String?>(null)
 
@@ -89,13 +98,13 @@ class ChatViewModel(
 
     init {
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
-        // Advance the Nearby read watermark while the chat is on screen: on every stream emission
-        // (so messages arriving while you read don't reappear as unread), stamp the newest sentAt.
+        // Advance this conversation's read watermark while the chat is on screen: on every stream
+        // emission (so messages arriving while you read don't reappear as unread), stamp newest sentAt.
         viewModelScope.launch {
-            combine(chatForeground, messages.observeMessages()) { foreground, msgs ->
+            combine(chatForeground, messages.observeMessages(conversationId)) { foreground, msgs ->
                 if (foreground) msgs.maxOfOrNull { it.sentAt } else null
             }.distinctUntilChanged().collect { watermark ->
-                if (watermark != null) settings.setNearbyLastReadAt(watermark)
+                if (watermark != null) settings.setLastReadAt(conversationId, watermark)
             }
         }
     }
@@ -103,7 +112,7 @@ class ChatViewModel(
     // Reactions are pre-combined into the messages stream so the outer combine below stays at the
     // 5-flow typed overload (a 6th flow falls back to unchecked Array<*> casts).
     private val messagesWithReactions = combine(
-        messages.observeMessages(),
+        messages.observeMessages(conversationId),
         reactions.observeReactions(),
     ) { msgs, reacts -> msgs to reacts }
 
@@ -166,15 +175,24 @@ class ChatViewModel(
             neighborCount = count,
             myNodeId = me.orEmpty(),
             mentionCandidates = candidates,
+            isRoom = isRoom,
+            title = if (isRoom) {
+                context.getString(R.string.nearby_title)
+            } else {
+                displayNameFor(peersByNode[conversationId]?.name, conversationId)
+            },
+            avatarPath = if (isRoom) null else peersByNode[conversationId]?.avatarPath,
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom))
 
     fun send(text: String, mentions: List<Mention> = emptyList()) {
         val trimmed = text.trim()
         val attachment = _pendingAttachment.value
         if (trimmed.isEmpty() && attachment == null) return
         _pendingAttachment.value = null
-        viewModelScope.launch { meshManager.sendChat(trimmed, attachment, mentions) }
+        // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
+        val recipientId = if (isRoom) null else conversationId
+        viewModelScope.launch { meshManager.sendChat(trimmed, attachment, mentions, recipientId) }
     }
 
     /** Toggles the local user's [emoji] reaction on [messageId] (add / replace / remove) and floods it. */

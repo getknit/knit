@@ -11,6 +11,9 @@ interface MessageDao {
     @Query("SELECT * FROM messages ORDER BY sentAt ASC")
     fun observeAll(): Flow<List<MessageEntity>>
 
+    @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY sentAt ASC")
+    fun observeForConversation(conversationId: String): Flow<List<MessageEntity>>
+
     @Upsert
     suspend fun upsert(message: MessageEntity)
 

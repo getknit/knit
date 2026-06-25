@@ -31,12 +31,21 @@ class SettingsStore(
     val avatarUpdatedAt: Flow<Long> = dataStore.data.map { it[KEY_AVATAR_UPDATED_AT] ?: 0L }
 
     /**
-     * Read watermark for the "Nearby" broadcast room: the [MessageEntity.sentAt] of the newest
-     * message the local user has seen. The chat list counts messages newer than this (from other
-     * senders) as unread. A single per-device scalar today; generalises to a per-conversation map
-     * once 1:1 DMs land.
+     * Per-conversation read watermarks: for each conversation id, the [MessageEntity.sentAt] of the
+     * newest message the local user has seen there. The chat list counts messages newer than the
+     * watermark (from other senders) as that conversation's unread badge. Stored under one dynamic
+     * key per conversation (see [lastReadKey]); [lastReadAll] reads them back as a map for the list.
      */
-    val nearbyLastReadAt: Flow<Long> = dataStore.data.map { it[KEY_NEARBY_LAST_READ_AT] ?: 0L }
+    val lastReadAll: Flow<Map<String, Long>> = dataStore.data.map { prefs ->
+        prefs.asMap()
+            .filterKeys { it.name.startsWith(LAST_READ_PREFIX) }
+            .entries
+            .associate { (key, value) -> key.name.removePrefix(LAST_READ_PREFIX) to (value as? Long ?: 0L) }
+    }
+
+    /** Read watermark for a single conversation (0 until the user has read anything there). */
+    fun lastReadAt(conversationId: String): Flow<Long> =
+        dataStore.data.map { it[lastReadKey(conversationId)] ?: 0L }
 
     /**
      * Returns the persisted 8-char node id, generating and storing one on first call. New ids are
@@ -58,7 +67,9 @@ class SettingsStore(
     suspend fun setAdvertisingEnabled(value: Boolean) = dataStore.edit { it[KEY_ADVERTISING] = value }
     suspend fun setDiscoveryEnabled(value: Boolean) = dataStore.edit { it[KEY_DISCOVERY] = value }
     suspend fun setAvatarUpdatedAt(value: Long) = dataStore.edit { it[KEY_AVATAR_UPDATED_AT] = value }
-    suspend fun setNearbyLastReadAt(value: Long) = dataStore.edit { it[KEY_NEARBY_LAST_READ_AT] = value }
+
+    suspend fun setLastReadAt(conversationId: String, value: Long) =
+        dataStore.edit { it[lastReadKey(conversationId)] = value }
 
     /** Device-derived id, or a random fallback when the platform reports no stable device id. */
     private fun newNodeId(): String =
@@ -70,13 +81,18 @@ class SettingsStore(
         (1..NodeId.LENGTH).map { NodeId.ALPHABET[Random.nextInt(NodeId.ALPHABET.length)] }
             .joinToString("")
 
+    /** Dynamic per-conversation read-watermark key, e.g. "last_read_nearby" / "last_read_<nodeId>". */
+    private fun lastReadKey(conversationId: String) =
+        longPreferencesKey(LAST_READ_PREFIX + conversationId)
+
     private companion object {
+        const val LAST_READ_PREFIX = "last_read_"
+
         val KEY_NODE_ID = stringPreferencesKey("node_id")
         val KEY_NAME = stringPreferencesKey("display_name")
         val KEY_STATUS = stringPreferencesKey("status")
         val KEY_ADVERTISING = booleanPreferencesKey("advertising_enabled")
         val KEY_DISCOVERY = booleanPreferencesKey("discovery_enabled")
         val KEY_AVATAR_UPDATED_AT = longPreferencesKey("avatar_updated_at")
-        val KEY_NEARBY_LAST_READ_AT = longPreferencesKey("nearby_last_read_at")
     }
 }

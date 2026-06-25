@@ -39,6 +39,13 @@
     <string name="chat_attachment_preview_desc">Attachment preview</string>
     <string name="chat_remove_attachment">Remove attachment</string>
     <string name="chat_self_name">You</string>
+    <string name="chat_status_sent">Sent</string>
+    <string name="chat_status_delivered">Delivered</string>
+
+    <!-- Direct messages / contacts -->
+    <string name="contacts_title">New message</string>
+    <string name="contacts_new_message">New message</string>
+    <string name="contacts_empty">No one to message yet.\nConnect with nearby people first.</string>
 
     <!-- Chat list -->
     <string name="nearby_title">Nearby</string>

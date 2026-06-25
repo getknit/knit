@@ -2,13 +2,16 @@ package app.getknit.knit.di
 
 import app.getknit.knit.ui.chat.ChatViewModel
 import app.getknit.knit.ui.chatlist.ChatListViewModel
+import app.getknit.knit.ui.contacts.ContactsViewModel
 import app.getknit.knit.ui.profile.ProfileViewModel
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.module.dsl.viewModel
 import org.koin.dsl.module
 
 val uiModule = module {
-    viewModel { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
+    // ChatViewModel takes the conversationId (the Nearby room or a peer's node id) as a runtime param.
+    viewModel { params -> ChatViewModel(params.get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext()) }
     viewModel { ChatListViewModel(get(), get(), get(), get(), get(), androidContext()) }
+    viewModel { ContactsViewModel(get(), get(), get()) }
     viewModel { ProfileViewModel(get(), get(), get()) }
 }

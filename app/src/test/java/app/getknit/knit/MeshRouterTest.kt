@@ -39,8 +39,8 @@ class MeshRouterTest {
         override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) = Unit
     }
 
-    private fun chat(id: String, ttl: Int = 8, hops: Int = 0) =
-        ChatFrame(id = id, senderId = "a", sentAt = 0L, body = "hi", ttl = ttl, hops = hops)
+    private fun chat(id: String, ttl: Int = 8, hops: Int = 0, recipientId: String? = null) =
+        ChatFrame(id = id, senderId = "a", sentAt = 0L, body = "hi", recipientId = recipientId, ttl = ttl, hops = hops)
 
     @Test
     fun deliversNewFrameOnceAndDropsDuplicates() = runTest {
@@ -63,6 +63,21 @@ class MeshRouterTest {
         router.handleInbound(chat("m1"), fromNodeId = "b")
 
         assertEquals(1, transport.sent.size)
+        val (relayed, to) = transport.sent.single()
+        assertEquals("c", to?.nodeId)
+        assertEquals(1, relayed.hops)
+    }
+
+    @Test
+    fun floodsAddressedDmFramesSoTheyReachAnOutOfRangeRecipient() = runTest {
+        // DMs have no routing table: an addressed ChatFrame must still flood like room traffic, or it
+        // could never reach a recipient that isn't a direct neighbor. (Recipient-only local delivery
+        // is enforced in MeshManager, not the router.)
+        val transport = RecordingTransport(setOf("b", "c"))
+        val router = MeshRouter(transport, this) { _, _ -> }
+
+        router.handleInbound(chat("dm1", recipientId = "z"), fromNodeId = "b")
+
         val (relayed, to) = transport.sent.single()
         assertEquals("c", to?.nodeId)
         assertEquals(1, relayed.hops)

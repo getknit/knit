@@ -52,6 +52,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Done
+import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
@@ -109,13 +111,15 @@ import app.getknit.knit.ui.components.ConnectionStatusRow
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.flow.collect
 import org.koin.androidx.compose.koinViewModel
+import org.koin.core.parameter.parametersOf
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
+    conversationId: String,
     onBack: () -> Unit,
-    viewModel: ChatViewModel = koinViewModel(),
+    viewModel: ChatViewModel = koinViewModel { parametersOf(conversationId) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val pendingAttachment by viewModel.pendingAttachment.collectAsStateWithLifecycle()
@@ -167,14 +171,28 @@ fun ChatScreen(
                     }
                 },
                 title = {
-                    Column {
-                        Text(
-                            text = stringResource(R.string.nearby_title),
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        ConnectionStatusRow(state.neighborCount)
+                    if (state.isRoom) {
+                        Column {
+                            Text(
+                                text = stringResource(R.string.nearby_title),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            ConnectionStatusRow(state.neighborCount)
+                        }
+                    } else {
+                        // 1:1 DM: peer avatar + name, Signal-style.
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Avatar(avatarPath = state.avatarPath, name = state.title, size = 36.dp)
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                text = state.title,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                     }
                 },
             )
@@ -295,12 +313,29 @@ private fun MessageBubble(
                                 style = MaterialTheme.typography.bodyLarge,
                             )
                         }
-                        Text(
-                            text = timeLabel(row),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        Row(
                             modifier = Modifier.align(Alignment.End),
-                        )
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Text(
+                                text = timeLabel(row),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            // Our own messages show a delivery tick: one check sent, two checks acked.
+                            if (row.mine) {
+                                Icon(
+                                    imageVector = if (row.received) Icons.Filled.DoneAll else Icons.Filled.Done,
+                                    contentDescription = stringResource(
+                                        if (row.received) R.string.chat_status_delivered
+                                        else R.string.chat_status_sent,
+                                    ),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                            }
+                        }
                     }
                 }
                 if (showPicker) {
@@ -489,12 +524,10 @@ private fun FullscreenImageViewer(path: String, onDismiss: () -> Unit) {
     }
 }
 
-private fun timeLabel(row: ChatRow): String {
-    val time = DateUtils.getRelativeTimeSpanString(
+private fun timeLabel(row: ChatRow): String =
+    DateUtils.getRelativeTimeSpanString(
         row.sentAt, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS,
     ).toString()
-    return if (row.mine && row.received) "$time ✓" else time
-}
 
 @Composable
 private fun EmptyState(modifier: Modifier = Modifier) {

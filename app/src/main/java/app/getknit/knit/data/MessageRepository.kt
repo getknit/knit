@@ -9,6 +9,10 @@ class MessageRepository(private val dao: MessageDao) {
 
     fun observeMessages(): Flow<List<MessageEntity>> = dao.observeAll()
 
+    /** Messages in a single thread (the broadcast room or a 1:1 DM), oldest first. */
+    fun observeMessages(conversationId: String): Flow<List<MessageEntity>> =
+        dao.observeForConversation(conversationId)
+
     suspend fun save(message: MessageEntity) = dao.upsert(message)
 
     suspend fun exists(id: String): Boolean = dao.exists(id)

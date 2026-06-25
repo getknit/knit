@@ -5,6 +5,7 @@ import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
@@ -35,9 +36,9 @@ import java.util.UUID
 
 /**
  * Orchestrates the mesh: owns the [MeshTransport] and [MeshRouter], handles delivery of new frames
- * (persist chat, ack the direct sender, cache profiles/avatars, mark receipts), broadcasts this
- * device's profile, and exposes the send/start API used by the foreground service and UI. A process
- * singleton (provided by Koin) so the bound service and the UI share one instance.
+ * (persist chat, ack delivery, cache profiles/avatars, mark receipts), broadcasts this device's
+ * profile, and exposes the send/start API used by the foreground service and UI. A process singleton
+ * (provided by Koin) so the bound service and the UI share one instance.
  */
 class MeshManager(
     private val transport: MeshTransport,
@@ -82,6 +83,9 @@ class MeshManager(
             .map { it.size }
             .stateIn(scope, SharingStarted.Eagerly, 0)
 
+    /** Currently-connected direct neighbors, for the contact picker (message someone on connect). */
+    val neighbors: StateFlow<Set<Peer>> get() = transport.neighbors
+
     fun start() {
         if (started) return
         started = true
@@ -116,11 +120,16 @@ class MeshManager(
      * Composes a chat message (optionally with an already-ingested image [attachment]), stores it
      * locally (unacked), and floods it to the mesh. The sender already holds the blob, so direct
      * neighbors will pull it by hash and it propagates outward from there.
+     *
+     * [recipientId] null sends to the broadcast room; a node id sends a 1:1 DM addressed to that
+     * peer. DMs still flood (no routing table yet) — only the addressed recipient delivers/acks them
+     * locally; relays forward the frame untouched.
      */
     suspend fun sendChat(
         text: String,
         attachment: AttachmentStore.Ingested? = null,
         mentions: List<Mention> = emptyList(),
+        recipientId: String? = null,
     ) {
         val me = identity.nodeId()
         val frame = ChatFrame(
@@ -128,6 +137,7 @@ class MeshManager(
             senderId = me,
             sentAt = System.currentTimeMillis(),
             body = text,
+            recipientId = recipientId,
             mentions = mentions,
             attachmentHash = attachment?.hash,
             attachmentMime = attachment?.mime,
@@ -136,6 +146,8 @@ class MeshManager(
             MessageEntity(
                 id = frame.id,
                 senderId = me,
+                recipientId = recipientId,
+                conversationId = Conversations.idFor(me, recipientId, me),
                 body = text,
                 sentAt = frame.sentAt,
                 received = false,
@@ -269,6 +281,11 @@ class MeshManager(
     }
 
     private suspend fun handleChat(frame: ChatFrame) {
+        val me = identity.nodeId()
+        // A DM addressed to someone else: we're only relaying it (the router floods it onward). It
+        // isn't ours, so don't persist, notify, or ack it.
+        if (!Conversations.isForMe(frame.recipientId, me)) return
+
         // If we already hold the referenced blob, link it now; otherwise start pulling it.
         val localPath = frame.attachmentHash?.let { attachments.path(it) }
         messages.save(
@@ -276,6 +293,7 @@ class MeshManager(
                 id = frame.id,
                 senderId = frame.senderId,
                 recipientId = frame.recipientId,
+                conversationId = Conversations.idFor(frame.senderId, frame.recipientId, me),
                 body = frame.body,
                 sentAt = frame.sentAt,
                 received = false,
@@ -288,20 +306,27 @@ class MeshManager(
         frame.attachmentHash?.let { if (localPath == null) blobExchange.want(it) }
         // A message that @-mentions us notifies on the dedicated Mentions channel only; everything else
         // takes the normal room notification path.
-        val me = identity.nodeId()
         if (frame.senderId != me && frame.mentions.mention(me)) {
             notifyMention(frame)
         } else {
             notifyIncoming(frame)
         }
-        // Acknowledge only if the author is a direct neighbor (mirrors the legacy app: relays don't ack).
-        val direct = transport.neighbors.value.firstOrNull { it.nodeId == frame.senderId } ?: return
-        val ack = ReceiptFrame(
-            id = UUID.randomUUID().toString(),
-            senderId = identity.nodeId(),
-            ackId = frame.id,
-        )
-        transport.send(ack, direct)
+        acknowledge(frame, me)
+    }
+
+    /**
+     * Sends a delivery receipt for [frame]. A DM addressed to us floods its receipt via the router so
+     * it reaches the sender across multiple hops (the recipient is the only one who acks). Broadcast
+     * messages keep the legacy behaviour: ack only if the author is a direct neighbor (relays don't).
+     */
+    private suspend fun acknowledge(frame: ChatFrame, me: String) {
+        val ack = ReceiptFrame(id = UUID.randomUUID().toString(), senderId = me, ackId = frame.id)
+        if (frame.recipientId == me) {
+            router.originate(ack)
+        } else {
+            val direct = transport.neighbors.value.firstOrNull { it.nodeId == frame.senderId } ?: return
+            transport.send(ack, direct)
+        }
     }
 
     /** Fires a "new message" notification for an inbound chat (skips our own and empty messages). */

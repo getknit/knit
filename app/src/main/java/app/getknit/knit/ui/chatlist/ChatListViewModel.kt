@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import app.getknit.knit.R
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.settings.SettingsStore
@@ -19,13 +20,10 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-/** Stable id of the public broadcast room, surfaced in the chat list as "Nearby". */
-const val NEARBY_CONVERSATION_ID = "nearby"
-
 /**
- * One row in the conversation list. Today the list holds only the [NEARBY_CONVERSATION_ID] room
- * ([isRoom] true); the shape carries [avatarPath]/[title] so future 1:1 DM rows slot in unchanged.
- * [lastPreview]/[lastMessageAt] are null when the conversation has no messages yet.
+ * One row in the conversation list: the [Conversations.NEARBY] broadcast room ([isRoom] true) or a
+ * 1:1 DM keyed by the peer's node id, with the peer's [title]/[avatarPath]. [lastPreview]/
+ * [lastMessageAt] are null when the conversation has no messages yet.
  */
 data class ConversationRow(
     val id: String,
@@ -43,9 +41,9 @@ data class ChatListUiState(
 )
 
 /**
- * Read-only projection of the conversation list. The unread watermark
- * ([SettingsStore.nearbyLastReadAt]) is written by [app.getknit.knit.ui.chat.ChatViewModel] while the
- * chat is on screen; this VM only reads it.
+ * Read-only projection of the conversation list. The per-conversation read watermarks
+ * ([SettingsStore.lastReadAll]) are written by [app.getknit.knit.ui.chat.ChatViewModel] while a chat
+ * is on screen; this VM only reads them to compute unread badges.
  */
 class ChatListViewModel(
     messages: MessageRepository,
@@ -65,25 +63,42 @@ class ChatListViewModel(
     val state: StateFlow<ChatListUiState> = combine(
         messages.observeMessages(), // ORDER BY sentAt ASC -> newest is last()
         peers.observePeers(),
-        settings.nearbyLastReadAt,
+        settings.lastReadAll,
         myNodeId,
         meshManager.neighborCount,
-    ) { msgs, peerList, lastReadAt, me, neighborCount ->
+    ) { msgs, peerList, lastReadAll, me, neighborCount ->
         val peersByNode = peerList.associateBy { it.nodeId }
-        val last = msgs.lastOrNull()
-        // Until our own id resolves, count nothing as unread so our own messages aren't miscounted.
-        val unread = if (me == null) 0 else msgs.count { it.sentAt > lastReadAt && it.senderId != me }
-        val nearby = ConversationRow(
-            id = NEARBY_CONVERSATION_ID,
-            title = context.getString(R.string.nearby_title),
-            avatarPath = null,
-            isRoom = true,
-            lastPreview = last?.let { previewFor(it, peersByNode, me) },
-            lastMessageAt = last?.sentAt,
-            unreadCount = unread,
-        )
+        val byConversation = msgs.groupBy { it.conversationId }
+
+        fun rowFor(conversationId: String, threadMsgs: List<MessageEntity>): ConversationRow {
+            val last = threadMsgs.lastOrNull()
+            val lastReadAt = lastReadAll[conversationId] ?: 0L
+            // Until our own id resolves, count nothing as unread so our own messages aren't miscounted.
+            val unread = if (me == null) 0 else threadMsgs.count { it.sentAt > lastReadAt && it.senderId != me }
+            val isRoom = conversationId == Conversations.NEARBY
+            return ConversationRow(
+                id = conversationId,
+                title = if (isRoom) {
+                    context.getString(R.string.nearby_title)
+                } else {
+                    displayNameFor(peersByNode[conversationId]?.name, conversationId)
+                },
+                avatarPath = if (isRoom) null else peersByNode[conversationId]?.avatarPath,
+                isRoom = isRoom,
+                lastPreview = last?.let { previewFor(it, peersByNode, me) },
+                lastMessageAt = last?.sentAt,
+                unreadCount = unread,
+            )
+        }
+
+        // The Nearby room is always present (even with no messages yet); DM threads appear once they
+        // have a message. Most-recent conversation first.
+        val nearby = rowFor(Conversations.NEARBY, byConversation[Conversations.NEARBY].orEmpty())
+        val dms = byConversation
+            .filterKeys { it != Conversations.NEARBY }
+            .map { (conversationId, threadMsgs) -> rowFor(conversationId, threadMsgs) }
         ChatListUiState(
-            conversations = listOf(nearby).sortedByDescending { it.lastMessageAt ?: 0L },
+            conversations = (listOf(nearby) + dms).sortedByDescending { it.lastMessageAt ?: 0L },
             neighborCount = neighborCount,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatListUiState())
