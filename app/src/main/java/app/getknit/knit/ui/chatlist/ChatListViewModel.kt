@@ -60,13 +60,20 @@ class ChatListViewModel(
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
     }
 
-    val state: StateFlow<ChatListUiState> = combine(
+    // Messages and the blocklist are pre-combined so the outer combine stays at the 5-flow typed
+    // overload. Blocked senders' messages are filtered out, and their DM thread is dropped below.
+    private val messagesAndBlocks = combine(
         messages.observeMessages(), // ORDER BY sentAt ASC -> newest is last()
+        settings.blockedNodeIds,
+    ) { msgs, blocked -> msgs.filter { it.senderId !in blocked } to blocked }
+
+    val state: StateFlow<ChatListUiState> = combine(
+        messagesAndBlocks,
         peers.observePeers(),
         settings.lastReadAll,
         myNodeId,
         meshManager.neighborCount,
-    ) { msgs, peerList, lastReadAll, me, neighborCount ->
+    ) { (msgs, blocked), peerList, lastReadAll, me, neighborCount ->
         val peersByNode = peerList.associateBy { it.nodeId }
         val byConversation = msgs.groupBy { it.conversationId }
 
@@ -95,7 +102,7 @@ class ChatListViewModel(
         // have a message. Most-recent conversation first.
         val nearby = rowFor(Conversations.NEARBY, byConversation[Conversations.NEARBY].orEmpty())
         val dms = byConversation
-            .filterKeys { it != Conversations.NEARBY }
+            .filterKeys { it != Conversations.NEARBY && it !in blocked }
             .map { (conversationId, threadMsgs) -> rowFor(conversationId, threadMsgs) }
         ChatListUiState(
             conversations = (listOf(nearby) + dms).sortedByDescending { it.lastMessageAt ?: 0L },

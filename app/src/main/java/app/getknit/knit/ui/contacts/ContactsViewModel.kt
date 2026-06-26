@@ -3,6 +3,7 @@ package app.getknit.knit.ui.contacts
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.MeshManager
@@ -30,6 +31,7 @@ class ContactsViewModel(
     peers: PeerRepository,
     meshManager: MeshManager,
     identity: Identity,
+    settings: SettingsStore,
 ) : ViewModel() {
 
     private val myNodeId = MutableStateFlow<String?>(null)
@@ -38,15 +40,16 @@ class ContactsViewModel(
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
     }
 
-    /** Known peers ∪ live neighbors, minus ourselves; connected contacts first, then alphabetical. */
+    /** Known peers ∪ live neighbors, minus ourselves and blocked ids; connected first, then alphabetical. */
     val contacts: StateFlow<List<Contact>> = combine(
         peers.observePeers(),
         meshManager.neighbors,
         myNodeId,
-    ) { peerList, neighbors, me ->
+        settings.blockedNodeIds,
+    ) { peerList, neighbors, me, blocked ->
         val online = neighbors.map { it.nodeId }.toSet()
         val byNode = peerList.associateBy { it.nodeId }
-        val nodeIds = (peerList.map { it.nodeId } + online).toSet() - setOfNotNull(me)
+        val nodeIds = (peerList.map { it.nodeId } + online).toSet() - setOfNotNull(me) - blocked
         nodeIds
             .map { id ->
                 Contact(

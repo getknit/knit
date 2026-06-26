@@ -294,6 +294,8 @@ class MeshManager(
      * (reactions can outrun the message over the mesh) — the row persists regardless and the UI joins.
      */
     private suspend fun handleReaction(frame: ReactionFrame) {
+        // Blocked sender: drop the reaction (the router still relays it onward to other peers).
+        if (frame.senderId in settings.blockedNodeIds.first()) return
         reactions.apply(
             ReactionEntity(
                 messageId = frame.messageId,
@@ -306,6 +308,9 @@ class MeshManager(
 
     private suspend fun handleChat(frame: ChatFrame) {
         val me = identity.nodeId()
+        // Blocked sender: never persist, notify, or ack — but the router still relays it onward, so a
+        // blocked user stays a working mesh peer (we just don't surface anything from them).
+        if (frame.senderId in settings.blockedNodeIds.first()) return
         // A DM addressed to someone else: we're only relaying it (the router floods it onward). It
         // isn't ours, so don't persist, notify, or ack it.
         if (!Conversations.isForMe(frame.recipientId, me)) return

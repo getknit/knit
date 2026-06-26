@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import app.getknit.knit.identity.DeviceIdSource
 import app.getknit.knit.identity.NodeId
 import kotlinx.coroutines.flow.Flow
@@ -48,6 +49,13 @@ class SettingsStore(
         dataStore.data.map { it[lastReadKey(conversationId)] ?: 0L }
 
     /**
+     * Node ids the local user has blocked. Their messages/reactions are never stored, shown, or
+     * notified, and they're hidden from the new-DM picker. Blocking is local-only and keyed by the
+     * stable device-derived node id (see [NodeId]), so it survives the blocked user reinstalling.
+     */
+    val blockedNodeIds: Flow<Set<String>> = dataStore.data.map { it[KEY_BLOCKED] ?: emptySet() }
+
+    /**
      * Returns the persisted 8-char node id, generating and storing one on first call. New ids are
      * derived deterministically from the device id (see [NodeId]), so clearing app data regenerates
      * the same id instead of a fresh random one. An already-persisted id is always returned as-is.
@@ -70,6 +78,12 @@ class SettingsStore(
 
     suspend fun setLastReadAt(conversationId: String, value: Long) =
         dataStore.edit { it[lastReadKey(conversationId)] = value }
+
+    suspend fun block(nodeId: String) =
+        dataStore.edit { it[KEY_BLOCKED] = (it[KEY_BLOCKED] ?: emptySet()) + nodeId }
+
+    suspend fun unblock(nodeId: String) =
+        dataStore.edit { it[KEY_BLOCKED] = (it[KEY_BLOCKED] ?: emptySet()) - nodeId }
 
     /** Device-derived id, or a random fallback when the platform reports no stable device id. */
     private fun newNodeId(): String =
@@ -94,5 +108,6 @@ class SettingsStore(
         val KEY_ADVERTISING = booleanPreferencesKey("advertising_enabled")
         val KEY_DISCOVERY = booleanPreferencesKey("discovery_enabled")
         val KEY_AVATAR_UPDATED_AT = longPreferencesKey("avatar_updated_at")
+        val KEY_BLOCKED = stringSetPreferencesKey("blocked_node_ids")
     }
 }

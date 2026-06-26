@@ -56,6 +56,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -148,6 +149,7 @@ fun ChatScreen(
     // text on send so a mention whose "@name" was deleted doesn't ship.
     val pendingMentions = remember { mutableStateListOf<Mention>() }
     var fullscreenImage by remember { mutableStateOf<String?>(null) }
+    var headerMenuOpen by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     // Modern Android Photo Picker — needs no runtime permission. ImageOnly still includes GIFs.
@@ -183,6 +185,10 @@ fun ChatScreen(
     val context = LocalContext.current
     LaunchedEffect(Unit) {
         viewModel.events.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    }
+    // Blocking the peer of a DM hides this whole thread, so leave the now-empty screen.
+    LaunchedEffect(Unit) {
+        viewModel.closeChat.collect { onBack() }
     }
     val clipboard = LocalClipboard.current
     val copyScope = rememberCoroutineScope()
@@ -220,6 +226,40 @@ fun ChatScreen(
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.primary,
                             )
+                        }
+                    }
+                },
+                actions = {
+                    // Block/Unblock lives only on DM threads — blocking the broadcast room is meaningless.
+                    if (!state.isRoom) {
+                        Box {
+                            IconButton(onClick = { headerMenuOpen = true }) {
+                                Icon(
+                                    Icons.Filled.MoreVert,
+                                    contentDescription = stringResource(R.string.chat_more_options),
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = headerMenuOpen,
+                                onDismissRequest = { headerMenuOpen = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            stringResource(
+                                                if (state.isBlocked) R.string.chat_action_unblock
+                                                else R.string.chat_action_block,
+                                            ),
+                                        )
+                                    },
+                                    leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
+                                    onClick = {
+                                        headerMenuOpen = false
+                                        if (state.isBlocked) viewModel.unblock(conversationId)
+                                        else viewModel.block(conversationId)
+                                    },
+                                )
+                            }
                         }
                     }
                 },
@@ -263,6 +303,7 @@ fun ChatScreen(
                         onImageClick = { fullscreenImage = it },
                         onReact = viewModel::react,
                         onDelete = viewModel::deleteMessage,
+                        onBlock = viewModel::block,
                         onCopy = { text ->
                             copyScope.launch {
                                 clipboard.setClipEntry(
@@ -300,6 +341,7 @@ private fun MessageBubble(
     onImageClick: (String) -> Unit,
     onReact: (messageId: String, emoji: String) -> Unit,
     onDelete: (messageId: String) -> Unit,
+    onBlock: (nodeId: String) -> Unit,
     onCopy: (text: String) -> Unit,
 ) {
     val maxBubbleWidth = (LocalConfiguration.current.screenWidthDp * 0.8f).dp
@@ -405,6 +447,15 @@ private fun MessageBubble(
                             showPicker = false
                             showDeleteConfirm = true
                         },
+                        // You can only block other people, not yourself.
+                        onBlock = if (!row.mine) {
+                            {
+                                onBlock(row.senderNodeId)
+                                showPicker = false
+                            }
+                        } else {
+                            null
+                        },
                         onDismiss = { showPicker = false },
                     )
                 }
@@ -442,14 +493,16 @@ private fun MessageBubble(
 
 /**
  * Floating menu shown just above a long-pressed bubble: a row of quick-reaction emoji, an optional
- * "Copy text" action ([onCopy] is null for messages with no copyable text), and an always-present
- * "Delete message" action that removes the message from this device only.
+ * "Copy text" action ([onCopy] is null for messages with no copyable text), an optional "Block user"
+ * action ([onBlock] is null for your own messages), and an always-present "Delete message" action that
+ * removes the message from this device only.
  */
 @Composable
 private fun ReactionPicker(
     onPick: (String) -> Unit,
     onCopy: (() -> Unit)?,
     onDelete: () -> Unit,
+    onBlock: (() -> Unit)?,
     onDismiss: () -> Unit,
 ) {
     val spacingPx = with(LocalDensity.current) { 8.dp.roundToPx() }
@@ -518,6 +571,26 @@ private fun ReactionPicker(
                         )
                         Text(
                             text = stringResource(R.string.chat_action_copy),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+                if (onBlock != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onBlock() }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Block,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.chat_action_block),
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }

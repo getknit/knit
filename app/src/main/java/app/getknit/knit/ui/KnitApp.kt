@@ -12,6 +12,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.MeshService
+import app.getknit.knit.ui.blocked.BlockedUsersScreen
 import app.getknit.knit.ui.chat.ChatScreen
 import app.getknit.knit.ui.chatlist.ChatListScreen
 import app.getknit.knit.ui.contacts.ContactsScreen
@@ -25,6 +26,7 @@ private object Routes {
     const val CONTACTS = "contacts"
     const val PROFILE = "profile"
     const val DIAGNOSTICS = "diagnostics"
+    const val BLOCKED_USERS = "blocked"
     const val CHAT = "chat/{conversationId}"
     fun chat(conversationId: String) = "chat/$conversationId"
 }
@@ -63,6 +65,7 @@ fun KnitApp() {
                 onNewMessage = { navController.navigate(Routes.CONTACTS) },
                 onOpenProfile = { navController.navigate(Routes.PROFILE) },
                 onOpenDiagnostics = { navController.navigate(Routes.DIAGNOSTICS) },
+                onOpenBlockedUsers = { navController.navigate(Routes.BLOCKED_USERS) },
             )
         }
         composable(Routes.CONTACTS) {
@@ -91,6 +94,9 @@ fun KnitApp() {
         }
         composable(Routes.DIAGNOSTICS) {
             DiagnosticsScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Routes.BLOCKED_USERS) {
+            BlockedUsersScreen(onBack = { navController.popBackStack() })
         }
     }
 }

@@ -74,6 +74,8 @@ data class ChatUiState(
     val isRoom: Boolean = true,
     val title: String = "",
     val avatarPath: String? = null,
+    // True when this DM's peer is blocked, so the header offers "Unblock" instead of "Block".
+    val isBlocked: Boolean = false,
 )
 
 class ChatViewModel(
@@ -83,7 +85,7 @@ class ChatViewModel(
     private val reactions: ReactionRepository,
     private val meshManager: MeshManager,
     private val identity: Identity,
-    settings: SettingsStore,
+    private val settings: SettingsStore,
     private val notifier: Notifier,
     private val attachments: AttachmentStore,
     private val gallerySaver: GallerySaver,
@@ -106,6 +108,10 @@ class ChatViewModel(
     private val _events = MutableSharedFlow<Int>(extraBufferCapacity = 1)
     val events: SharedFlow<Int> = _events.asSharedFlow()
 
+    /** Emitted once the DM's peer is blocked, so the screen can close (the thread is now hidden). */
+    private val _closeChat = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val closeChat: SharedFlow<Unit> = _closeChat.asSharedFlow()
+
     init {
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
         // Advance this conversation's read watermark while the chat is on screen: on every stream
@@ -119,12 +125,14 @@ class ChatViewModel(
         }
     }
 
-    // Reactions are pre-combined into the messages stream so the outer combine below stays at the
-    // 5-flow typed overload (a 6th flow falls back to unchecked Array<*> casts).
+    // Reactions and the blocklist are pre-combined into the messages stream so the outer combine below
+    // stays at the 5-flow typed overload (a 6th flow falls back to unchecked Array<*> casts). Blocked
+    // senders' messages are filtered out here, so they also drop out of rows and mention candidates.
     private val messagesWithReactions = combine(
         messages.observeMessages(conversationId),
         reactions.observeReactions(),
-    ) { msgs, reacts -> msgs to reacts }
+        settings.blockedNodeIds,
+    ) { msgs, reacts, blocked -> Triple(msgs.filter { it.senderId !in blocked }, reacts, blocked) }
 
     val state: StateFlow<ChatUiState> = combine(
         messagesWithReactions,
@@ -132,7 +140,7 @@ class ChatViewModel(
         meshManager.neighborCount,
         myNodeId,
         settings.displayName,
-    ) { (msgs, reacts), peerList, count, me, myName ->
+    ) { (msgs, reacts, blocked), peerList, count, me, myName ->
         val peersByNode = peerList.associateBy { it.nodeId }
         // Group once, then tally per emoji within each message's bucket. Orphan reactions (no matching
         // message yet) simply never produce a row until their message arrives.
@@ -192,6 +200,7 @@ class ChatViewModel(
                 displayNameFor(peersByNode[conversationId]?.name, conversationId)
             },
             avatarPath = if (isRoom) null else peersByNode[conversationId]?.avatarPath,
+            isBlocked = !isRoom && conversationId in blocked,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom))
 
@@ -221,6 +230,26 @@ class ChatViewModel(
             reactions.deleteForMessage(messageId)
             if (hash != null && messages.countByAttachmentHash(hash) == 0) attachments.delete(hash)
             _events.tryEmit(R.string.chat_message_deleted)
+        }
+    }
+
+    /** Blocks [nodeId] locally: their messages/reactions stop being stored, shown, and notified. */
+    fun block(nodeId: String) {
+        viewModelScope.launch {
+            settings.block(nodeId)
+            _events.tryEmit(R.string.chat_user_blocked)
+            // Blocking the peer of a DM empties this thread (and hides it from the list), so close the
+            // now-confusing screen. Emitted only after the block persists, so navigating away can't
+            // cancel the write. Blocking from the Nearby room leaves the room open.
+            if (!isRoom) _closeChat.tryEmit(Unit)
+        }
+    }
+
+    /** Unblocks [nodeId], restoring their (never-deleted) message history. */
+    fun unblock(nodeId: String) {
+        viewModelScope.launch {
+            settings.unblock(nodeId)
+            _events.tryEmit(R.string.chat_user_unblocked)
         }
     }
 

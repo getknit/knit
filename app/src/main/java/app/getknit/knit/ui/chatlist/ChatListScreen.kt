@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Message
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NetworkCheck
@@ -63,6 +64,7 @@ fun ChatListScreen(
     onNewMessage: () -> Unit,
     onOpenProfile: () -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onOpenBlockedUsers: () -> Unit,
     viewModel: ChatListViewModel = koinViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -105,6 +107,14 @@ fun ChatListScreen(
                                 onClick = {
                                     menuOpen = false
                                     onOpenDiagnostics()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.blocked_users_title)) },
+                                leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    onOpenBlockedUsers()
                                 },
                             )
                         }
