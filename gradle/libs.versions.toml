@@ -1,12 +1,15 @@
 [versions]
 agp = "9.2.1"
-coreKtx = "1.10.1"
+# 1.19.0 exists but its AAR sets minCompileSdk=37; we deliberately stay on compileSdk 36.1, so this is
+# the newest core that still targets API 36 (activity-compose 1.13.0 also pins core-ktx to exactly 1.18.0).
+coreKtx = "1.18.0"
 junit = "4.13.2"
-junitVersion = "1.1.5"
-espressoCore = "3.5.1"
-lifecycle = "2.9.4"
-activityCompose = "1.11.0"
-navigationCompose = "2.9.4"
+junitVersion = "1.3.0"
+espressoCore = "3.7.0"
+# 2.11.0 requires minCompileSdk=37; 2.10.0 is the newest lifecycle that still targets API 36 (compileSdk 36.1).
+lifecycle = "2.10.0"
+activityCompose = "1.13.0"
+navigationCompose = "2.9.8"
 kotlin = "2.4.0"
 composeBom = "2026.06.00"
 # KSP adopted independent (KSP2) versioning at 2.3.0 — no longer the old <kotlin>-<ksp> scheme. It is
