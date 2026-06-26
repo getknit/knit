@@ -70,6 +70,22 @@
     <string name="profile_avatar_crop_hint">Drag and pinch to adjust</string>
     <string name="profile_avatar_crop_desc">Adjust profile photo</string>
 
+    <!-- Diagnostics -->
+    <string name="diagnostics_title">Diagnostics</string>
+    <string name="diagnostics_self">This device</string>
+    <string name="diagnostics_metrics">Mesh metrics</string>
+    <string name="diagnostics_directly_connected">Directly connected (%1$d)</string>
+    <string name="diagnostics_via_relay">Reachable via relay (%1$d)</string>
+    <string name="diagnostics_none_direct">No direct connections</string>
+    <string name="diagnostics_none_relay">No relay-only nodes</string>
+    <string name="diagnostics_profile_age">Profile %1$s</string>
+    <string name="diagnostics_metric_originated">Originated</string>
+    <string name="diagnostics_metric_delivered">Delivered</string>
+    <string name="diagnostics_metric_relayed">Relayed</string>
+    <string name="diagnostics_metric_suppressed">Suppressed</string>
+    <string name="diagnostics_metric_deduped">Deduped</string>
+    <string name="diagnostics_metric_bytes_sent">Bytes sent</string>
+
     <!-- Generic actions / content descriptions -->
     <string name="action_send">Send</string>
     <string name="action_attach_photo">Attach photo</string>

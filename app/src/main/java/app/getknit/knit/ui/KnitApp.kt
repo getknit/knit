@@ -15,6 +15,7 @@ import app.getknit.knit.mesh.MeshService
 import app.getknit.knit.ui.chat.ChatScreen
 import app.getknit.knit.ui.chatlist.ChatListScreen
 import app.getknit.knit.ui.contacts.ContactsScreen
+import app.getknit.knit.ui.diagnostics.DiagnosticsScreen
 import app.getknit.knit.ui.onboarding.OnboardingScreen
 import app.getknit.knit.ui.profile.ProfileScreen
 
@@ -23,6 +24,7 @@ private object Routes {
     const val CHAT_LIST = "chatlist"
     const val CONTACTS = "contacts"
     const val PROFILE = "profile"
+    const val DIAGNOSTICS = "diagnostics"
     const val CHAT = "chat/{conversationId}"
     fun chat(conversationId: String) = "chat/$conversationId"
 }
@@ -60,6 +62,7 @@ fun KnitApp() {
                 onOpenConversation = { id -> navController.navigate(Routes.chat(id)) },
                 onNewMessage = { navController.navigate(Routes.CONTACTS) },
                 onOpenProfile = { navController.navigate(Routes.PROFILE) },
+                onOpenDiagnostics = { navController.navigate(Routes.DIAGNOSTICS) },
             )
         }
         composable(Routes.CONTACTS) {
@@ -85,6 +88,9 @@ fun KnitApp() {
         }
         composable(Routes.PROFILE) {
             ProfileScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Routes.DIAGNOSTICS) {
+            DiagnosticsScreen(onBack = { navController.popBackStack() })
         }
     }
 }

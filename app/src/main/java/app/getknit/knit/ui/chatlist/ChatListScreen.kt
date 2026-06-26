@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Badge
 import androidx.compose.material3.DropdownMenu
@@ -61,6 +62,7 @@ fun ChatListScreen(
     onOpenConversation: (conversationId: String) -> Unit,
     onNewMessage: () -> Unit,
     onOpenProfile: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
     viewModel: ChatListViewModel = koinViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -95,6 +97,14 @@ fun ChatListScreen(
                                 onClick = {
                                     menuOpen = false
                                     onOpenProfile()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.diagnostics_title)) },
+                                leadingIcon = { Icon(Icons.Filled.NetworkCheck, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    onOpenDiagnostics()
                                 },
                             )
                         }
