@@ -6,6 +6,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.data.AvatarStore
+import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
@@ -15,7 +16,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -23,6 +23,7 @@ class ProfileViewModel(
     private val settings: SettingsStore,
     identity: Identity,
     private val avatars: AvatarStore,
+    private val blobs: BlobRepository,
 ) : ViewModel() {
 
     val nodeId = MutableStateFlow("")
@@ -43,11 +44,10 @@ class ProfileViewModel(
     private val _status = MutableStateFlow("")
     val status: StateFlow<String> = _status.asStateFlow()
 
-    /** Path to the current avatar JPEG, recomputed whenever it changes. */
-    val avatarPath: StateFlow<String?> =
-        settings.avatarUpdatedAt
-            .map { avatars.ownAvatarPath() }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), avatars.ownAvatarPath())
+    /** Content hash of the current own avatar (keys the blob Coil renders), or null if none is set. */
+    val avatarHash: StateFlow<String?> =
+        settings.ownAvatarHash
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     init {
         viewModelScope.launch {
@@ -88,9 +88,11 @@ class ProfileViewModel(
         _cropTarget.value = null
         viewModelScope.launch {
             val crop = computeAvatarCrop(source.width, source.height, diameter, scale, offset.x, offset.y)
-            if (avatars.saveOwnAvatar(source, crop)) {
-                settings.setAvatarUpdatedAt(System.currentTimeMillis())
-            }
+            val oldHash = settings.ownAvatarHash.first()
+            val newHash = avatars.saveOwnAvatar(source, crop) ?: return@launch
+            settings.setOwnAvatarHash(newHash)
+            settings.setAvatarUpdatedAt(System.currentTimeMillis()) // triggers a profile re-broadcast
+            if (oldHash != newHash) blobs.deleteIfUnreferenced(oldHash)
         }
     }
 

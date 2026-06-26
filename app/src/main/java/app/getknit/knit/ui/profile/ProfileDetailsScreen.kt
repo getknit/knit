@@ -109,7 +109,7 @@ fun ProfileDetailsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Avatar(
-                avatarPath = state.avatarPath,
+                avatarHash = state.avatarHash,
                 name = state.displayName,
                 size = 96.dp,
                 background = MaterialTheme.colorScheme.primaryContainer,

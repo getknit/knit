@@ -18,7 +18,7 @@ import kotlinx.coroutines.launch
 data class Contact(
     val nodeId: String,
     val displayName: String,
-    val avatarPath: String?,
+    val avatarHash: String?,
     val online: Boolean,
 )
 
@@ -55,7 +55,7 @@ class ContactsViewModel(
                 Contact(
                     nodeId = id,
                     displayName = displayNameFor(byNode[id]?.name, id),
-                    avatarPath = byNode[id]?.avatarPath,
+                    avatarHash = byNode[id]?.avatarHash,
                     online = id in online,
                 )
             }

@@ -13,8 +13,10 @@ import org.junit.Test
 
 class NotificationTest {
 
+    private val bobAvatar = byteArrayOf(1, 2, 3, 4)
+
     private fun msg(id: String) =
-        NotifMessage(senderId = id, senderName = id, body = "hi $id", sentAt = 0L, avatarPath = null)
+        NotifMessage(senderId = id, senderName = id, body = "hi $id", sentAt = 0L, avatarBytes = null)
 
     @Test
     fun historyKeepsOnlyMostRecentInOrder() {
@@ -48,7 +50,7 @@ class NotificationTest {
             sentAt = 1L,
             selfId = "me",
             peerName = "Me",
-            peerAvatarPath = null,
+            peerAvatarBytes = null,
         )
         assertNull(result)
     }
@@ -61,7 +63,7 @@ class NotificationTest {
             sentAt = 1L,
             selfId = "me",
             peerName = "Bob",
-            peerAvatarPath = null,
+            peerAvatarBytes = null,
         )
         assertNull(result)
     }
@@ -78,7 +80,7 @@ class NotificationTest {
             sentAt = 1L,
             selfId = "me",
             peerName = null,
-            peerAvatarPath = null,
+            peerAvatarBytes = null,
         )
         assertEquals(expectedAlias, unknown?.senderName)
 
@@ -88,7 +90,7 @@ class NotificationTest {
             sentAt = 1L,
             selfId = "me",
             peerName = "",
-            peerAvatarPath = null,
+            peerAvatarBytes = null,
         )
         assertEquals(expectedAlias, blankNamed?.senderName)
     }
@@ -101,7 +103,7 @@ class NotificationTest {
             sentAt = 42L,
             selfId = "me",
             peerName = "Bob",
-            peerAvatarPath = "/cache/bob.jpg",
+            peerAvatarBytes = bobAvatar,
         )
         assertEquals(
             NotifMessage(
@@ -109,7 +111,7 @@ class NotificationTest {
                 senderName = "Bob",
                 body = "hey there",
                 sentAt = 42L,
-                avatarPath = "/cache/bob.jpg",
+                avatarBytes = bobAvatar,
             ),
             result,
         )
@@ -121,23 +123,23 @@ class NotificationTest {
         assertNull(
             mentionNotification(
                 senderId = "me", body = "yo @me", sentAt = 1L, selfId = "me",
-                peerName = "Me", peerAvatarPath = null,
+                peerName = "Me", peerAvatarBytes = null,
             ),
         )
         assertNull(
             mentionNotification(
                 senderId = "bob", body = "  ", sentAt = 1L, selfId = "me",
-                peerName = "Bob", peerAvatarPath = null,
+                peerName = "Bob", peerAvatarBytes = null,
             ),
         )
         assertEquals(
             incomingNotification(
                 senderId = "bob", body = "hi @me", sentAt = 5L, selfId = "me",
-                peerName = "Bob", peerAvatarPath = "/cache/bob.jpg",
+                peerName = "Bob", peerAvatarBytes = bobAvatar,
             ),
             mentionNotification(
                 senderId = "bob", body = "hi @me", sentAt = 5L, selfId = "me",
-                peerName = "Bob", peerAvatarPath = "/cache/bob.jpg",
+                peerName = "Bob", peerAvatarBytes = bobAvatar,
             ),
         )
     }

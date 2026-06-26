@@ -17,18 +17,19 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
+import app.getknit.knit.ui.image.BlobImage
 import coil3.compose.AsyncImage
-import java.io.File
 
 /**
- * A circular avatar shared by the chat rows and the profile screen. Renders the image at
- * [avatarPath] (a local file) when present, otherwise a colored circle with the first letter of
- * [name]. Source avatars are stored 256² (see AvatarStore), so larger [size]s stay crisp.
- * When [onClick] is non-null the whole circle is tappable, with a circular ripple.
+ * A circular avatar shared by the chat rows and the profile screen. Renders the avatar blob with
+ * content hash [avatarHash] (loaded from the encrypted store via Coil) when present, otherwise a
+ * colored circle with the first letter of [name]. Source avatars are stored 256² (see AvatarStore),
+ * so larger [size]s stay crisp. When [onClick] is non-null the whole circle is tappable, with a
+ * circular ripple.
  */
 @Composable
 fun Avatar(
-    avatarPath: String?,
+    avatarHash: String?,
     name: String,
     size: Dp,
     modifier: Modifier = Modifier,
@@ -45,9 +46,9 @@ fun Avatar(
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        if (avatarPath != null) {
+        if (avatarHash != null) {
             AsyncImage(
-                model = File(avatarPath),
+                model = BlobImage(avatarHash),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),

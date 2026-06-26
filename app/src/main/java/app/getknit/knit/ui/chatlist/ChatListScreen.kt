@@ -217,6 +217,6 @@ private fun LeadingVisual(row: ConversationRow) {
             )
         }
     } else {
-        Avatar(avatarPath = row.avatarPath, name = row.title, size = size)
+        Avatar(avatarHash = row.avatarHash, name = row.title, size = size)
     }
 }

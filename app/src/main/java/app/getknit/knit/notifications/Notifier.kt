@@ -2,14 +2,39 @@ package app.getknit.knit.notifications
 
 import app.getknit.knit.identity.displayNameFor
 
-/** One inbound message, resolved into the fields a MessagingStyle line needs. */
+/**
+ * One inbound message, resolved into the fields a MessagingStyle line needs. [avatarBytes] are the
+ * sender's avatar image bytes (read from the encrypted blob store), or null for the letter fallback —
+ * notifications can't go through Coil, so the raw bytes are carried and decoded directly.
+ */
 data class NotifMessage(
     val senderId: String,
     val senderName: String,
     val body: String,
     val sentAt: Long,
-    val avatarPath: String?,
-)
+    val avatarBytes: ByteArray?,
+) {
+    // ByteArray needs content-based equals/hashCode (the generated reference comparison would make two
+    // otherwise-identical messages unequal).
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is NotifMessage) return false
+        return senderId == other.senderId &&
+            senderName == other.senderName &&
+            body == other.body &&
+            sentAt == other.sentAt &&
+            avatarBytes.contentEquals(other.avatarBytes)
+    }
+
+    override fun hashCode(): Int {
+        var result = senderId.hashCode()
+        result = 31 * result + senderName.hashCode()
+        result = 31 * result + body.hashCode()
+        result = 31 * result + sentAt.hashCode()
+        result = 31 * result + (avatarBytes?.contentHashCode() ?: 0)
+        return result
+    }
+}
 
 /**
  * Posts "new message" notifications. Kept behind an interface so [app.getknit.knit.mesh.MeshManager]
@@ -22,10 +47,10 @@ interface Notifier {
     fun createChannel()
 
     /** Records [incoming] and (re)posts the single room notification. */
-    fun notify(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarPath: String?)
+    fun notify(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?)
 
     /** Posts a high-priority "you were mentioned" notification on the separate Mentions channel. */
-    fun notifyMention(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarPath: String?)
+    fun notifyMention(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?)
 
     /** Toggles whether the chat is on screen; turning it on cancels + clears the notification. */
     fun setChatVisible(visible: Boolean)
@@ -49,7 +74,7 @@ fun incomingNotification(
     sentAt: Long,
     selfId: String,
     peerName: String?,
-    peerAvatarPath: String?,
+    peerAvatarBytes: ByteArray?,
 ): NotifMessage? {
     if (senderId == selfId) return null
     if (body.isBlank()) return null
@@ -58,7 +83,7 @@ fun incomingNotification(
         senderName = displayNameFor(peerName, senderId),
         body = body,
         sentAt = sentAt,
-        avatarPath = peerAvatarPath,
+        avatarBytes = peerAvatarBytes,
     )
 }
 
@@ -73,5 +98,5 @@ fun mentionNotification(
     sentAt: Long,
     selfId: String,
     peerName: String?,
-    peerAvatarPath: String?,
-): NotifMessage? = incomingNotification(senderId, body, sentAt, selfId, peerName, peerAvatarPath)
+    peerAvatarBytes: ByteArray?,
+): NotifMessage? = incomingNotification(senderId, body, sentAt, selfId, peerName, peerAvatarBytes)

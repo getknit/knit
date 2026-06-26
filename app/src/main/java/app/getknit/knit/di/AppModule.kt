@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStoreFile
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.AvatarStore
+import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GallerySaver
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MessageRepository
@@ -30,8 +31,8 @@ val appModule = module {
     single<DeviceIdSource> { AndroidDeviceIdSource(androidContext()) }
     single { SettingsStore(get(), get()) }
     single { Identity(get()) }
-    single { AvatarStore(androidContext()) }
-    single { AttachmentStore(androidContext()) }
+    single { AvatarStore(androidContext(), get()) }
+    single { AttachmentStore(androidContext(), get()) }
     single { GallerySaver(androidContext()) }
     single<Notifier> { MessageNotifier(androidContext()) }
 
@@ -40,7 +41,9 @@ val appModule = module {
     single { get<KnitDatabase>().messageDao() }
     single { get<KnitDatabase>().peerDao() }
     single { get<KnitDatabase>().reactionDao() }
+    single { get<KnitDatabase>().blobDao() }
     single { MessageRepository(get()) }
     single { PeerRepository(get()) }
     single { ReactionRepository(get()) }
+    single { BlobRepository(get(), get(), get(), get()) }
 }

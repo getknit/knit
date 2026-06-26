@@ -4,17 +4,20 @@ import java.io.File
 
 /**
  * Content-addressed image-blob storage, abstracted so [BlobExchange] stays free of Android/Room
- * dependencies (and unit-testable). Implemented for the app by an adapter over `AttachmentStore`.
+ * dependencies (and unit-testable). The app's implementation is backed by the encrypted database (see
+ * `MeshBlobStore`); the methods are `suspend` because they read/write that database. Nearby transfers
+ * are inherently file-based, so [fileFor]/[saveIncoming] still trade in [File]s — the implementation
+ * materializes short-lived temp files for in-flight transfers.
  */
 interface BlobStore {
-    fun has(hash: String): Boolean
+    suspend fun has(hash: String): Boolean
 
-    /** The local file for [hash], or null if not held. */
-    fun fileFor(hash: String): File?
+    /** A local (temp) file for [hash] suitable for sending, or null if not held. */
+    suspend fun fileFor(hash: String): File?
 
     /** The mime type of the held blob [hash], or null if not held. */
-    fun mimeFor(hash: String): String?
+    suspend fun mimeFor(hash: String): String?
 
-    /** Persists a received blob (copying from [srcPath]) and returns the stored file, or null on failure. */
+    /** Persists a received blob (read from [srcPath]) and returns a file the transport can forward, or null. */
     suspend fun saveIncoming(hash: String, mime: String, srcPath: String): File?
 }

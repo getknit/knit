@@ -17,7 +17,7 @@ data class ProfileDetailsUiState(
     val nodeId: String,
     val displayName: String,
     val status: String,
-    val avatarPath: String?,
+    val avatarHash: String?,
     val online: Boolean,
     val isBlocked: Boolean,
 )
@@ -45,7 +45,7 @@ class ProfileDetailsViewModel(
             nodeId = nodeId,
             displayName = displayNameFor(peer?.name, nodeId),
             status = peer?.status.orEmpty(),
-            avatarPath = peer?.avatarPath,
+            avatarHash = peer?.avatarHash,
             online = neighbors.any { it.nodeId == nodeId },
             isBlocked = nodeId in blocked,
         )
@@ -56,7 +56,7 @@ class ProfileDetailsViewModel(
             nodeId = nodeId,
             displayName = displayNameFor(null, nodeId),
             status = "",
-            avatarPath = null,
+            avatarHash = null,
             online = false,
             isBlocked = false,
         ),

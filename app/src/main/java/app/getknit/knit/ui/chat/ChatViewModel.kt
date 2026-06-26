@@ -6,12 +6,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.R
 import app.getknit.knit.data.AttachmentStore
+import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GallerySaver
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MentionStore
+import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
@@ -29,7 +32,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.io.File
 
 data class ChatRow(
     val id: String,
@@ -37,12 +39,14 @@ data class ChatRow(
     val mine: Boolean,
     val senderName: String,
     val senderNodeId: String,
-    val avatarPath: String?,
+    val avatarHash: String?,
     val sentAt: Long,
     val received: Boolean,
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,
-    val attachmentPath: String? = null,
+    // True once the attachment blob is present locally; false while it's still being pulled (the bubble
+    // shows a loading placeholder). Only meaningful when [attachmentHash] is non-null.
+    val attachmentReady: Boolean = false,
     val mentions: List<Mention> = emptyList(),
     val reactions: List<ReactionSummary> = emptyList(),
 )
@@ -62,7 +66,7 @@ data class ReactionSummary(
 data class MentionCandidate(
     val nodeId: String,
     val displayName: String,
-    val avatarPath: String?,
+    val avatarHash: String?,
 )
 
 data class ChatUiState(
@@ -70,10 +74,10 @@ data class ChatUiState(
     val neighborCount: Int = 0,
     val myNodeId: String = "",
     val mentionCandidates: List<MentionCandidate> = emptyList(),
-    // Conversation header: the room ([isRoom] true) or a 1:1 DM with [title]/[avatarPath] of the peer.
+    // Conversation header: the room ([isRoom] true) or a 1:1 DM with [title]/[avatarHash] of the peer.
     val isRoom: Boolean = true,
     val title: String = "",
-    val avatarPath: String? = null,
+    val avatarHash: String? = null,
     // True when this DM's peer is blocked, so the header offers "Unblock" instead of "Block".
     val isBlocked: Boolean = false,
 )
@@ -88,6 +92,7 @@ class ChatViewModel(
     private val settings: SettingsStore,
     private val notifier: Notifier,
     private val attachments: AttachmentStore,
+    private val blobs: BlobRepository,
     private val gallerySaver: GallerySaver,
     private val context: Context,
 ) : ViewModel() {
@@ -125,14 +130,25 @@ class ChatViewModel(
         }
     }
 
-    // Reactions and the blocklist are pre-combined into the messages stream so the outer combine below
-    // stays at the 5-flow typed overload (a 6th flow falls back to unchecked Array<*> casts). Blocked
-    // senders' messages are filtered out here, so they also drop out of rows and mention candidates.
+    // Bundles the four message-related streams so the outer combine below stays at the 5-flow typed
+    // overload (a 6th flow falls back to unchecked Array<*> casts). Blocked senders' messages are
+    // filtered out here, so they also drop out of rows and mention candidates. Observing the blob
+    // hashes here is what flips an attachment from "loading" to shown when its bytes arrive.
+    private data class MessagesBundle(
+        val messages: List<MessageEntity>,
+        val reactions: List<ReactionEntity>,
+        val blocked: Set<String>,
+        val presentHashes: Set<String>,
+    )
+
     private val messagesWithReactions = combine(
         messages.observeMessages(conversationId),
         reactions.observeReactions(),
         settings.blockedNodeIds,
-    ) { msgs, reacts, blocked -> Triple(msgs.filter { it.senderId !in blocked }, reacts, blocked) }
+        blobs.observeHashes(),
+    ) { msgs, reacts, blocked, hashes ->
+        MessagesBundle(msgs.filter { it.senderId !in blocked }, reacts, blocked, hashes.toSet())
+    }
 
     val state: StateFlow<ChatUiState> = combine(
         messagesWithReactions,
@@ -140,7 +156,11 @@ class ChatViewModel(
         meshManager.neighborCount,
         myNodeId,
         settings.displayName,
-    ) { (msgs, reacts, blocked), peerList, count, me, myName ->
+    ) { bundle, peerList, count, me, myName ->
+        val msgs = bundle.messages
+        val reacts = bundle.reactions
+        val blocked = bundle.blocked
+        val presentHashes = bundle.presentHashes
         val peersByNode = peerList.associateBy { it.nodeId }
         // Group once, then tally per emoji within each message's bucket. Orphan reactions (no matching
         // message yet) simply never produce a row until their message arrives.
@@ -164,12 +184,12 @@ class ChatViewModel(
                 mine = mine,
                 senderName = name,
                 senderNodeId = m.senderId,
-                avatarPath = peersByNode[m.senderId]?.avatarPath,
+                avatarHash = peersByNode[m.senderId]?.avatarHash,
                 sentAt = m.sentAt,
                 received = m.received,
                 attachmentHash = m.attachmentHash,
                 attachmentMime = m.attachmentMime,
-                attachmentPath = m.attachmentPath,
+                attachmentReady = m.attachmentHash != null && m.attachmentHash in presentHashes,
                 mentions = MentionStore.decode(m.mentions),
                 reactions = tallies,
             )
@@ -183,7 +203,7 @@ class ChatViewModel(
                 MentionCandidate(
                     nodeId = id,
                     displayName = displayNameFor(peersByNode[id]?.name, id),
-                    avatarPath = peersByNode[id]?.avatarPath,
+                    avatarHash = peersByNode[id]?.avatarHash,
                 )
             }
             .sortedBy { it.displayName.lowercase() }
@@ -199,7 +219,7 @@ class ChatViewModel(
             } else {
                 displayNameFor(peersByNode[conversationId]?.name, conversationId)
             },
-            avatarPath = if (isRoom) null else peersByNode[conversationId]?.avatarPath,
+            avatarHash = if (isRoom) null else peersByNode[conversationId]?.avatarHash,
             isBlocked = !isRoom && conversationId in blocked,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom))
@@ -228,7 +248,7 @@ class ChatViewModel(
         viewModelScope.launch {
             messages.delete(messageId)
             reactions.deleteForMessage(messageId)
-            if (hash != null && messages.countByAttachmentHash(hash) == 0) attachments.delete(hash)
+            blobs.deleteIfUnreferenced(hash)
             _events.tryEmit(R.string.chat_message_deleted)
         }
     }
@@ -258,14 +278,19 @@ class ChatViewModel(
         viewModelScope.launch { _pendingAttachment.value = attachments.ingest(uri) }
     }
 
+    /** Discards the staged image; its blob (ingested on pick) is GC'd unless a sent message references it. */
     fun clearAttachment() {
+        val pending = _pendingAttachment.value ?: return
         _pendingAttachment.value = null
+        viewModelScope.launch { blobs.deleteIfUnreferenced(pending.hash) }
     }
 
-    /** Exports the attachment at [path] to the public `Pictures/Knit` folder and toasts the result. */
-    fun saveAttachment(path: String) {
+    /** Exports the attachment blob [hash] to the public `Pictures/Knit` folder and toasts the result. */
+    fun saveAttachment(hash: String) {
         viewModelScope.launch {
-            val ok = gallerySaver.saveToPictures(File(path))
+            val bytes = blobs.bytes(hash)
+            val mime = blobs.mimeFor(hash)
+            val ok = bytes != null && mime != null && gallerySaver.saveToPictures(bytes, hash, mime)
             _events.tryEmit(if (ok) R.string.chat_image_saved else R.string.chat_image_save_failed)
         }
     }

@@ -90,7 +90,7 @@ private fun BlockedUserRow(user: BlockedUser, onUnblock: () -> Unit) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(avatarPath = user.avatarPath, name = user.displayName, size = 40.dp)
+        Avatar(avatarHash = user.avatarHash, name = user.displayName, size = 40.dp)
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(

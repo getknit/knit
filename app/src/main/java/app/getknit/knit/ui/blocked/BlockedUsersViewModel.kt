@@ -15,7 +15,7 @@ import kotlinx.coroutines.launch
 data class BlockedUser(
     val nodeId: String,
     val displayName: String,
-    val avatarPath: String?,
+    val avatarHash: String?,
 )
 
 /**
@@ -38,7 +38,7 @@ class BlockedUsersViewModel(
                 BlockedUser(
                     nodeId = id,
                     displayName = displayNameFor(byNode[id]?.name, id),
-                    avatarPath = byNode[id]?.avatarPath,
+                    avatarHash = byNode[id]?.avatarHash,
                 )
             }
             .sortedBy { it.displayName.lowercase() }

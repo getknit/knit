@@ -16,8 +16,9 @@ import kotlinx.serialization.json.Json
  * [mentions] is a JSON-encoded `List<Mention>` ("[]" when none); kept as a string so Room stays a
  * plain TEXT column and (de)serialization lives with the [Mention] type via [MentionStore].
  *
- * [attachmentHash]/[attachmentMime] reference an out-of-band image blob (fetched by content hash);
- * [attachmentPath] is the local file once the bytes are available (null while still being pulled).
+ * [attachmentHash]/[attachmentMime] reference an out-of-band image blob fetched by content hash; the
+ * bytes live in the encrypted `blobs` table (see [app.getknit.knit.data.blob.BlobEntity]), keyed by
+ * [attachmentHash], and are null until the blob has been pulled from the mesh.
  */
 @Entity(tableName = "messages", indices = [Index("conversationId")])
 data class MessageEntity(
@@ -31,7 +32,6 @@ data class MessageEntity(
     val mentions: String = "[]",
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,
-    val attachmentPath: String? = null,
 )
 
 /**

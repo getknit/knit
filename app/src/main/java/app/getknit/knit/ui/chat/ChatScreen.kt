@@ -127,12 +127,12 @@ import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
+import app.getknit.knit.ui.image.BlobImage
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
-import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -149,7 +149,7 @@ fun ChatScreen(
     // gotcha, draft state stays in the screen, not the ViewModel/DataStore). Filtered against the final
     // text on send so a mention whose "@name" was deleted doesn't ship.
     val pendingMentions = remember { mutableStateListOf<Mention>() }
-    var fullscreenImage by remember { mutableStateOf<String?>(null) }
+    var fullscreenImage by remember { mutableStateOf<BlobImage?>(null) }
     var headerMenuOpen by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
@@ -220,7 +220,7 @@ fun ChatScreen(
                         // 1:1 DM: peer avatar + name, Signal-style.
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Avatar(
-                                avatarPath = state.avatarPath,
+                                avatarHash = state.avatarHash,
                                 name = state.title,
                                 size = 36.dp,
                                 onClick = { onOpenProfile(conversationId) },
@@ -329,11 +329,11 @@ fun ChatScreen(
         }
     }
 
-    fullscreenImage?.let { path ->
+    fullscreenImage?.let { image ->
         FullscreenImageViewer(
-            path = path,
+            image = image,
             onDismiss = { fullscreenImage = null },
-            onSave = { viewModel.saveAttachment(path) },
+            onSave = { viewModel.saveAttachment(image.hash) },
         )
     }
 }
@@ -345,7 +345,7 @@ private val REACTION_EMOJI = listOf("👍", "❤️", "😂", "😮", "😢", "�
 @Composable
 private fun MessageBubble(
     row: ChatRow,
-    onImageClick: (String) -> Unit,
+    onImageClick: (BlobImage) -> Unit,
     onOpenProfile: (nodeId: String) -> Unit,
     onReact: (messageId: String, emoji: String) -> Unit,
     onDelete: (messageId: String) -> Unit,
@@ -367,7 +367,7 @@ private fun MessageBubble(
     ) {
         if (!row.mine) {
             Avatar(
-                avatarPath = row.avatarPath,
+                avatarHash = row.avatarHash,
                 name = row.senderName,
                 size = 40.dp,
                 onClick = { onOpenProfile(row.senderNodeId) },
@@ -403,7 +403,7 @@ private fun MessageBubble(
                             )
                         }
                         if (row.attachmentHash != null) {
-                            AttachmentImage(row.attachmentPath, onImageClick)
+                            AttachmentImage(row.attachmentHash, row.attachmentMime, row.attachmentReady, onImageClick)
                             if (row.body.isNotBlank()) Spacer(Modifier.height(4.dp))
                         }
                         if (row.body.isNotBlank()) {
@@ -679,17 +679,23 @@ private fun ReactionChip(reaction: ReactionSummary, onClick: () -> Unit) {
 
 /** The image inside a bubble: the photo/GIF once fetched (tap to open fullscreen), or a loading placeholder. */
 @Composable
-private fun AttachmentImage(path: String?, onImageClick: (String) -> Unit) {
+private fun AttachmentImage(
+    hash: String?,
+    mime: String?,
+    ready: Boolean,
+    onImageClick: (BlobImage) -> Unit,
+) {
+    val image = if (ready && hash != null) BlobImage(hash, mime) else null
     Box(
         modifier = Modifier
             .padding(vertical = 2.dp)
             .clip(RoundedCornerShape(12.dp))
-            .then(if (path != null) Modifier.clickable { onImageClick(path) } else Modifier),
+            .then(if (image != null) Modifier.clickable { onImageClick(image) } else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        if (path != null) {
+        if (image != null) {
             AsyncImage(
-                model = File(path),
+                model = image,
                 contentDescription = stringResource(R.string.chat_attachment_image_desc),
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.sizeIn(maxWidth = 220.dp, maxHeight = 260.dp),
@@ -716,7 +722,7 @@ private fun AttachmentImage(path: String?, onImageClick: (String) -> Unit) {
  * white over the black backdrop, Signal-style.
  */
 @Composable
-private fun FullscreenImageViewer(path: String, onDismiss: () -> Unit, onSave: () -> Unit) {
+private fun FullscreenImageViewer(image: BlobImage, onDismiss: () -> Unit, onSave: () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         var scale by remember { mutableFloatStateOf(1f) }
         var offset by remember { mutableStateOf(Offset.Zero) }
@@ -730,7 +736,7 @@ private fun FullscreenImageViewer(path: String, onDismiss: () -> Unit, onSave: (
             contentAlignment = Alignment.Center,
         ) {
             AsyncImage(
-                model = File(path),
+                model = image,
                 contentDescription = stringResource(R.string.chat_image_viewer_desc),
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
@@ -873,7 +879,7 @@ private fun MessageInput(
                                     .padding(horizontal = 12.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Avatar(avatarPath = candidate.avatarPath, name = candidate.displayName, size = 32.dp)
+                                Avatar(avatarHash = candidate.avatarHash, name = candidate.displayName, size = 32.dp)
                                 Spacer(Modifier.width(12.dp))
                                 Text(
                                     text = candidate.displayName,
@@ -886,7 +892,10 @@ private fun MessageInput(
                 }
             }
             if (pendingAttachment != null) {
-                AttachmentPreview(path = pendingAttachment.path, onClear = onClearAttachment)
+                AttachmentPreview(
+                    image = BlobImage(pendingAttachment.hash, pendingAttachment.mime),
+                    onClear = onClearAttachment,
+                )
                 Spacer(Modifier.height(8.dp))
             }
             Row(verticalAlignment = Alignment.Bottom) {
@@ -936,10 +945,10 @@ private fun MessageInput(
 
 /** Thumbnail of the staged attachment with a button to remove it before sending. */
 @Composable
-private fun AttachmentPreview(path: String, onClear: () -> Unit) {
+private fun AttachmentPreview(image: BlobImage, onClear: () -> Unit) {
     Box {
         AsyncImage(
-            model = File(path),
+            model = image,
             contentDescription = stringResource(R.string.chat_attachment_preview_desc),
             contentScale = ContentScale.Crop,
             modifier = Modifier.size(72.dp).clip(RoundedCornerShape(12.dp)),

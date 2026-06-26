@@ -22,13 +22,13 @@ import kotlinx.coroutines.launch
 
 /**
  * One row in the conversation list: the [Conversations.NEARBY] broadcast room ([isRoom] true) or a
- * 1:1 DM keyed by the peer's node id, with the peer's [title]/[avatarPath]. [lastPreview]/
+ * 1:1 DM keyed by the peer's node id, with the peer's [title]/[avatarHash]. [lastPreview]/
  * [lastMessageAt] are null when the conversation has no messages yet.
  */
 data class ConversationRow(
     val id: String,
     val title: String,
-    val avatarPath: String?,
+    val avatarHash: String?,
     val isRoom: Boolean,
     val lastPreview: String?,
     val lastMessageAt: Long?,
@@ -90,7 +90,7 @@ class ChatListViewModel(
                 } else {
                     displayNameFor(peersByNode[conversationId]?.name, conversationId)
                 },
-                avatarPath = if (isRoom) null else peersByNode[conversationId]?.avatarPath,
+                avatarHash = if (isRoom) null else peersByNode[conversationId]?.avatarHash,
                 isRoom = isRoom,
                 lastPreview = last?.let { previewFor(it, peersByNode, me) },
                 lastMessageAt = last?.sentAt,

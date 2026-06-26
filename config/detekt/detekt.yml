@@ -21,7 +21,7 @@ complexity:
     ignoreAnnotated: ['Composable']
   LongParameterList:
     ignoreAnnotated: ['Composable']
-    constructorThreshold: 12   # Koin DI constructors (MeshManager / ChatViewModel = 10 args)
+    constructorThreshold: 13   # Koin DI constructors (ChatViewModel = 12 args incl. the encrypted blob store)
     functionThreshold: 8       # the 6-arg Notifier functions are fine
   TooManyFunctions:
     ignoreAnnotatedFunctions: ['Composable', 'Preview']  # Compose screen files are many small composables

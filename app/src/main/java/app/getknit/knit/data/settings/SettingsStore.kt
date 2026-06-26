@@ -32,6 +32,13 @@ class SettingsStore(
     val avatarUpdatedAt: Flow<Long> = dataStore.data.map { it[KEY_AVATAR_UPDATED_AT] ?: 0L }
 
     /**
+     * Content hash of the device's own avatar, or null if none is set. The avatar bytes live in the
+     * encrypted `blobs` table keyed by this hash; the hash is what the profile frame advertises and
+     * what the UI/notifications resolve against. (Pre-v6 this was derived from the avatar's filename.)
+     */
+    val ownAvatarHash: Flow<String?> = dataStore.data.map { it[KEY_OWN_AVATAR_HASH] }
+
+    /**
      * Per-conversation read watermarks: for each conversation id, the [MessageEntity.sentAt] of the
      * newest message the local user has seen there. The chat list counts messages newer than the
      * watermark (from other senders) as that conversation's unread badge. Stored under one dynamic
@@ -75,6 +82,7 @@ class SettingsStore(
     suspend fun setAdvertisingEnabled(value: Boolean) = dataStore.edit { it[KEY_ADVERTISING] = value }
     suspend fun setDiscoveryEnabled(value: Boolean) = dataStore.edit { it[KEY_DISCOVERY] = value }
     suspend fun setAvatarUpdatedAt(value: Long) = dataStore.edit { it[KEY_AVATAR_UPDATED_AT] = value }
+    suspend fun setOwnAvatarHash(value: String) = dataStore.edit { it[KEY_OWN_AVATAR_HASH] = value }
 
     suspend fun setLastReadAt(conversationId: String, value: Long) =
         dataStore.edit { it[lastReadKey(conversationId)] = value }
@@ -108,6 +116,7 @@ class SettingsStore(
         val KEY_ADVERTISING = booleanPreferencesKey("advertising_enabled")
         val KEY_DISCOVERY = booleanPreferencesKey("discovery_enabled")
         val KEY_AVATAR_UPDATED_AT = longPreferencesKey("avatar_updated_at")
+        val KEY_OWN_AVATAR_HASH = stringPreferencesKey("own_avatar_hash")
         val KEY_BLOCKED = stringSetPreferencesKey("blocked_node_ids")
     }
 }

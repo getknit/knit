@@ -1,7 +1,8 @@
 package app.getknit.knit.mesh
 
 import app.getknit.knit.data.AttachmentStore
-import app.getknit.knit.data.AvatarStore
+import app.getknit.knit.data.BlobRepository
+import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
@@ -34,6 +35,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -50,27 +52,22 @@ class MeshManager(
     private val peers: PeerRepository,
     private val identity: Identity,
     private val settings: SettingsStore,
-    private val avatars: AvatarStore,
-    private val attachments: AttachmentStore,
+    private val blobs: BlobRepository,
+    private val blobStore: MeshBlobStore,
     private val notifier: Notifier,
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
 ) {
     private val router = MeshRouter(transport, scope, metrics = metrics, onDeliver = ::onDeliver)
 
-    // Content-addressed image fetch over the mesh, backed by [AttachmentStore].
-    private val blobStore = object : BlobStore {
-        override fun has(hash: String) = attachments.has(hash)
-        override fun fileFor(hash: String) = attachments.fileFor(hash)
-        override fun mimeFor(hash: String) = attachments.mimeFor(hash)
-        override suspend fun saveIncoming(hash: String, mime: String, srcPath: String) =
-            attachments.saveIncoming(hash, mime, srcPath)
-    }
+    // Content-addressed image fetch over the mesh, backed by the encrypted blob store.
     private val blobExchange = BlobExchange(
         transport = transport,
         store = blobStore,
         selfId = { identity.nodeId() },
-        onObtained = { hash, path -> messages.setAttachmentPath(hash, path) },
+        // The chat list observes the blobs table for presence, so no per-message path write is needed
+        // when a blob arrives; the new row makes the attachment flip from "loading" to shown.
+        onObtained = { _, _ -> },
     )
 
     @Volatile
@@ -98,6 +95,7 @@ class MeshManager(
         if (started) return
         started = true
         profileVersion = System.currentTimeMillis()
+        blobStore.clearTransfers() // drop any plaintext transfer temp files left by a previous session
         router.start()
         transport.start()
         watchNeighbors()
@@ -164,7 +162,6 @@ class MeshManager(
                 mentions = MentionStore.encode(mentions),
                 attachmentHash = attachment?.hash,
                 attachmentMime = attachment?.mime,
-                attachmentPath = attachment?.path,
             ),
         )
         router.originate(frame)
@@ -194,7 +191,10 @@ class MeshManager(
 
     /** On startup, re-request any attachment blobs referenced by stored messages we don't yet have. */
     private fun resumePendingFetches() {
-        scope.launch { messages.hashesNeedingFetch().forEach { blobExchange.want(it) } }
+        scope.launch {
+            blobs.deleteOrphans() // reclaim blobs left by attachments staged but never sent
+            messages.hashesNeedingFetch().forEach { blobExchange.want(it) }
+        }
     }
 
     // --- Profile broadcasting ---
@@ -230,7 +230,7 @@ class MeshManager(
         scope.launch {
             transport.incomingFiles.collect { file ->
                 when (file.kind) {
-                    FileKind.AVATAR -> onAvatarReceived(file.fromNodeId, file.path)
+                    FileKind.AVATAR -> onAvatarReceived(file.fromNodeId, file.key, file.mime, file.path)
                     FileKind.ATTACHMENT ->
                         blobExchange.onReceived(file.key, file.mime, file.path, file.fromNodeId)
                 }
@@ -254,9 +254,9 @@ class MeshManager(
      * longer re-ship the (unchanged) avatar JPEG to every neighbor.
      */
     private suspend fun sendAvatarIfNeeded(peer: Peer) {
-        val avatar = avatars.ownAvatarFile() ?: return
-        val hash = avatars.ownAvatarHash() ?: return
+        val hash = settings.ownAvatarHash.first() ?: return
         if (sentAvatarHashes[peer.nodeId] == hash) return
+        val avatar = blobStore.fileFor(hash) ?: return
         transport.sendFile(avatar, peer, avatarMeta(hash))
         sentAvatarHashes[peer.nodeId] = hash
     }
@@ -272,7 +272,7 @@ class MeshManager(
             sentAt = profileVersion,
             name = settings.displayName.first(),
             status = settings.status.first(),
-            avatarHash = avatars.ownAvatarHash(),
+            avatarHash = settings.ownAvatarHash.first(),
         )
     }
 
@@ -315,8 +315,7 @@ class MeshManager(
         // isn't ours, so don't persist, notify, or ack it.
         if (!Conversations.isForMe(frame.recipientId, me)) return
 
-        // If we already hold the referenced blob, link it now; otherwise start pulling it.
-        val localPath = frame.attachmentHash?.let { attachments.path(it) }
+        val hash = frame.attachmentHash
         messages.save(
             MessageEntity(
                 id = frame.id,
@@ -327,12 +326,13 @@ class MeshManager(
                 sentAt = frame.sentAt,
                 received = false,
                 mentions = MentionStore.encode(frame.mentions),
-                attachmentHash = frame.attachmentHash,
+                attachmentHash = hash,
                 attachmentMime = frame.attachmentMime,
-                attachmentPath = localPath,
             ),
         )
-        frame.attachmentHash?.let { if (localPath == null) blobExchange.want(it) }
+        // Start pulling the referenced blob unless we already hold it (the UI observes the blobs table
+        // and flips the attachment from "loading" to shown once the bytes land).
+        if (hash != null && !blobStore.has(hash)) blobExchange.want(hash)
         // A message that @-mentions us notifies on the dedicated Mentions channel only; everything else
         // takes the normal room notification path.
         if (frame.senderId != me && frame.mentions.mention(me)) {
@@ -370,9 +370,10 @@ class MeshManager(
             sentAt = frame.sentAt,
             selfId = me,
             peerName = peer?.name,
-            peerAvatarPath = peer?.avatarPath ?: avatars.peerAvatarPath(frame.senderId),
+            peerAvatarBytes = peer?.avatarHash?.let { blobs.bytes(it) },
         ) ?: return
-        notifier.notify(incoming, me, settings.displayName.first(), avatars.ownAvatarPath())
+        val selfAvatar = settings.ownAvatarHash.first()?.let { blobs.bytes(it) }
+        notifier.notify(incoming, me, settings.displayName.first(), selfAvatar)
     }
 
     /** Fires a "you were mentioned" notification on the Mentions channel for an inbound chat. */
@@ -386,9 +387,10 @@ class MeshManager(
             sentAt = frame.sentAt,
             selfId = me,
             peerName = peer?.name,
-            peerAvatarPath = peer?.avatarPath ?: avatars.peerAvatarPath(frame.senderId),
+            peerAvatarBytes = peer?.avatarHash?.let { blobs.bytes(it) },
         ) ?: return
-        notifier.notifyMention(incoming, me, settings.displayName.first(), avatars.ownAvatarPath())
+        val selfAvatar = settings.ownAvatarHash.first()?.let { blobs.bytes(it) }
+        notifier.notifyMention(incoming, me, settings.displayName.first(), selfAvatar)
     }
 
     private suspend fun handleProfile(frame: ProfileFrame) {
@@ -403,9 +405,18 @@ class MeshManager(
         )
     }
 
-    private suspend fun onAvatarReceived(nodeId: String, path: String) {
+    /**
+     * Ingests a peer's received avatar into the encrypted blob store, points the peer row at it by
+     * [hash], deletes the decrypted staging copy, and garbage-collects the peer's previous avatar blob.
+     */
+    private suspend fun onAvatarReceived(nodeId: String, hash: String, mime: String, srcPath: String) {
+        val bytes = runCatching { File(srcPath).readBytes() }.getOrNull() ?: return
+        blobs.insert(hash, mime, bytes)
+        File(srcPath).delete()
         val existing = peers.find(nodeId)
-        peers.upsert((existing ?: PeerEntity(nodeId)).copy(avatarPath = path))
+        val oldHash = existing?.avatarHash
+        peers.upsert((existing ?: PeerEntity(nodeId)).copy(avatarHash = hash))
+        if (oldHash != hash) blobs.deleteIfUnreferenced(oldHash)
     }
 
     /** Periodically logs a transmission snapshot so flood-suppression and byte savings are visible. */

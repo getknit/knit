@@ -4,6 +4,9 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.sqlite.db.SupportSQLiteDatabase
+import app.getknit.knit.data.blob.BlobDao
+import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerDao
@@ -11,20 +14,25 @@ import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.reaction.ReactionDao
 import app.getknit.knit.data.reaction.ReactionEntity
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
+import java.io.File
 
 @Database(
-    entities = [MessageEntity::class, PeerEntity::class, ReactionEntity::class],
+    entities = [MessageEntity::class, PeerEntity::class, ReactionEntity::class, BlobEntity::class],
     // v2: messages gained attachmentHash/attachmentMime/attachmentPath (destructive migration).
     // v3: messages gained a mentions JSON column (destructive migration; app not yet public).
     // v4: added the reactions table (destructive migration; app not yet public).
     // v5: messages gained an indexed conversationId for 1:1 DMs (destructive migration; not public).
-    version = 5,
+    // v6: images moved into the encrypted `blobs` table; messages dropped attachmentPath, peers
+    //     swapped avatarPath for avatarHash. Destructive migration; the now-orphaned plaintext image
+    //     files are purged on upgrade (see [purgeLegacyImageFiles]).
+    version = 6,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun peerDao(): PeerDao
     abstract fun reactionDao(): ReactionDao
+    abstract fun blobDao(): BlobDao
 
     companion object {
         /**
@@ -37,7 +45,27 @@ abstract class KnitDatabase : RoomDatabase() {
             return Room.databaseBuilder(context, KnitDatabase::class.java, "knit.db")
                 .openHelperFactory(SupportOpenHelperFactory(passphrase))
                 .fallbackToDestructiveMigration(dropAllTables = true)
+                .addCallback(object : Callback() {
+                    override fun onDestructiveMigration(db: SupportSQLiteDatabase) {
+                        // The v6 destructive migration drops the rows that referenced on-disk images,
+                        // so those plaintext files are now orphaned. Delete them — leaving decrypted
+                        // images on disk would defeat the point of moving them into the encrypted DB.
+                        purgeLegacyImageFiles(context)
+                    }
+                })
                 .build()
+        }
+
+        /** Removes the pre-v6 plaintext avatar/attachment files (own + peer avatars, attachments, staging). */
+        private fun purgeLegacyImageFiles(context: Context) {
+            val files = context.filesDir
+            files.listFiles { f -> f.name.startsWith("avatar-") && f.name.endsWith(".jpg") }
+                ?.forEach { it.delete() }
+            File(files, "avatar.jpg").delete() // legacy pre-content-addressing own avatar
+            File(files, "attachments").deleteRecursively()
+            context.cacheDir.listFiles { f ->
+                (f.name.startsWith("avatar-") && f.name.endsWith(".jpg")) || f.name.startsWith("attach-")
+            }?.forEach { it.delete() }
         }
     }
 }

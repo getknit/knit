@@ -44,7 +44,7 @@ class MessageNotifier(private val context: Context) : Notifier {
         manager.createNotificationChannel(mentions)
     }
 
-    override fun notify(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarPath: String?) {
+    override fun notify(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?) {
         if (chatVisible) return
         if (!manager.areNotificationsEnabled()) return
         // Explicit POST_NOTIFICATIONS check (runtime permission on API 33+; auto-granted below).
@@ -57,12 +57,12 @@ class MessageNotifier(private val context: Context) : Notifier {
         }
 
         val messages = synchronized(history) { history.add(incoming) }
-        val me = personOf(selfId, selfName.ifBlank { context.getString(R.string.notif_self_name) }, selfAvatarPath)
+        val me = personOf(selfId, selfName.ifBlank { context.getString(R.string.notif_self_name) }, selfAvatarBytes)
         val style = NotificationCompat.MessagingStyle(me)
             .setGroupConversation(true)
             .setConversationTitle(context.getString(R.string.message_conversation_title))
         messages.forEach { m ->
-            style.addMessage(m.body, m.sentAt, personOf(m.senderId, m.senderName, m.avatarPath))
+            style.addMessage(m.body, m.sentAt, personOf(m.senderId, m.senderName, m.avatarBytes))
         }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
@@ -79,7 +79,7 @@ class MessageNotifier(private val context: Context) : Notifier {
         runCatching { manager.notify(NOTIFICATION_ID, notification) }
     }
 
-    override fun notifyMention(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarPath: String?) {
+    override fun notifyMention(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?) {
         if (chatVisible) return
         if (!manager.areNotificationsEnabled()) return
         // Same explicit POST_NOTIFICATIONS guard as notify() (lint needs it on the path to notify()).
@@ -121,16 +121,17 @@ class MessageNotifier(private val context: Context) : Notifier {
         synchronized(history) { history.clear() }
     }
 
-    private fun personOf(id: String, name: String, avatarPath: String?): Person =
+    private fun personOf(id: String, name: String, avatarBytes: ByteArray?): Person =
         Person.Builder()
             .setKey(id)
             .setName(name.ifBlank { id })
-            .apply { iconFor(avatarPath)?.let { setIcon(it) } }
+            .apply { iconFor(avatarBytes)?.let { setIcon(it) } }
             .build()
 
-    /** Decodes a cached avatar file into an adaptive-bitmap icon; null (missing/evicted) -> no icon. */
-    private fun iconFor(path: String?): IconCompat? {
-        val bitmap = path?.let { runCatching { BitmapFactory.decodeFile(it) }.getOrNull() } ?: return null
+    /** Decodes avatar [bytes] (from the encrypted blob store) into an adaptive-bitmap icon; null -> no icon. */
+    private fun iconFor(bytes: ByteArray?): IconCompat? {
+        val bitmap = bytes?.let { runCatching { BitmapFactory.decodeByteArray(it, 0, it.size) }.getOrNull() }
+            ?: return null
         return IconCompat.createWithAdaptiveBitmap(bitmap)
     }
 

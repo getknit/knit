@@ -98,7 +98,7 @@ private fun ContactRow(contact: Contact, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Avatar(avatarPath = contact.avatarPath, name = contact.displayName, size = 48.dp)
+        Avatar(avatarHash = contact.avatarHash, name = contact.displayName, size = 48.dp)
         Spacer(Modifier.width(12.dp))
         Text(
             text = contact.displayName,

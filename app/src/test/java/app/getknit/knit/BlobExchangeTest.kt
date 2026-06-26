@@ -30,9 +30,9 @@ class BlobExchangeTest {
             mimes[hash] = mime
         }
 
-        override fun has(hash: String): Boolean = File(dir, hash).exists()
-        override fun fileFor(hash: String): File? = File(dir, hash).takeIf { it.exists() }
-        override fun mimeFor(hash: String): String? = mimes[hash]
+        override suspend fun has(hash: String): Boolean = File(dir, hash).exists()
+        override suspend fun fileFor(hash: String): File? = File(dir, hash).takeIf { it.exists() }
+        override suspend fun mimeFor(hash: String): String? = mimes[hash]
         override suspend fun saveIncoming(hash: String, mime: String, srcPath: String): File {
             val dest = File(dir, hash)
             File(srcPath).copyTo(dest, overwrite = true)

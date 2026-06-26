@@ -25,7 +25,5 @@ class MessageRepository(private val dao: MessageDao) {
     /** Number of messages still referencing [hash] (0 once an attachment's last message is gone). */
     suspend fun countByAttachmentHash(hash: String): Int = dao.countByAttachmentHash(hash)
 
-    suspend fun setAttachmentPath(hash: String, path: String) = dao.setAttachmentPath(hash, path)
-
     suspend fun hashesNeedingFetch(): List<String> = dao.hashesNeedingFetch()
 }

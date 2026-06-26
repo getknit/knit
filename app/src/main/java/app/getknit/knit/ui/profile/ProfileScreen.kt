@@ -53,7 +53,7 @@ fun ProfileScreen(
     val status by viewModel.status.collectAsStateWithLifecycle()
     val nodeId by viewModel.nodeId.collectAsStateWithLifecycle()
     val alias by viewModel.alias.collectAsStateWithLifecycle()
-    val avatarPath by viewModel.avatarPath.collectAsStateWithLifecycle()
+    val avatarHash by viewModel.avatarHash.collectAsStateWithLifecycle()
     val cropTarget by viewModel.cropTarget.collectAsStateWithLifecycle()
 
     val picker = rememberLauncherForActivityResult(
@@ -90,7 +90,7 @@ fun ProfileScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Avatar(
-                avatarPath = avatarPath,
+                avatarHash = avatarHash,
                 name = displayNameFor(name, nodeId),
                 size = 96.dp,
                 background = MaterialTheme.colorScheme.primaryContainer,
