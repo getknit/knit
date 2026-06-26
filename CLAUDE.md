@@ -10,8 +10,9 @@ design notes are in `docs/ARCHITECTURE.md`.
 
 - Run `./gradlew :app:testDebugUnitTest` after touching `mesh/`, `protocol/`, or `data/`; run
   `./gradlew :app:assembleDebug` to validate a build (it does **not** compile test sources).
-- This is bleeding-edge tooling (AGP 9.2.1 / Kotlin 2.2.10): **Koin not Hilt**, **Coil pinned to
-  3.3.0**, and `android.disallowKotlinSourceSets=false` is required — see `AGENTS.md` for why before
-  changing dependencies or build config.
+- This is bleeding-edge tooling (AGP 9.2.1 / Kotlin 2.4.0): **Koin not Hilt**, **built-in Kotlin
+  overridden to 2.4.0** (KGP on the root buildscript classpath, since AGP bundles 2.2.10), and
+  `android.disallowKotlinSourceSets=false` is required — see `AGENTS.md` for why before changing
+  dependencies or build config.
 - Keep all `com.google.android.gms.*` imports inside `mesh/nearby/`; everything else talks to the
   `MeshTransport` interface.

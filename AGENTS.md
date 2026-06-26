@@ -34,16 +34,21 @@ detekt finds issues; HTML/XML/SARIF reports land in `build/reports/detekt/`.
 
 ## Bleeding-edge toolchain constraints (do not "fix" these without reading why)
 
-This project intentionally runs on very new tooling (AGP 9.2.1, Gradle 9.4.1, Kotlin 2.2.10,
-Compose BOM 2026.02). That forces several non-obvious choices:
+This project intentionally runs on very new tooling (AGP 9.2.1, Gradle 9.4.1, Kotlin 2.4.0,
+Compose BOM 2026.06). That forces several non-obvious choices:
 
 - **DI is Koin, not Hilt.** Hilt's Gradle plugin is broken on AGP 9.x in this window
   (dagger#5083 / #5099). Koin is pure-Kotlin runtime DI with no Gradle plugin / no annotation
   processor, so it can't be broken by AGP. Koin is started in `KnitApplication`; modules live in
   `app/src/main/java/app/getknit/knit/di/`.
-- **Coil is pinned to 3.3.0.** Coil 3.4.0+ is compiled with Kotlin 2.4.0, whose class metadata the
-  AGP-9.2.1-bundled Kotlin 2.2 compiler cannot read. Any dependency built with Kotlin > 2.3 will
-  fail to compile here — prefer older releases or check before bumping.
+- **Built-in Kotlin is overridden to 2.4.0, not AGP's bundled 2.2.10.** AGP 9.2.1 ships KGP 2.2.10,
+  whose Kotlin-2.2 compiler cannot read class metadata produced by Kotlin 2.4 (this is what used to
+  pin Coil to 3.3.0). The root `build.gradle.kts` puts KGP 2.4.0 on the buildscript classpath
+  (`classpath(libs.kotlin.gradle.plugin)`) so built-in Kotlin compiles with 2.4.0 — a supported combo
+  (Kotlin 2.4 requires AGP 9.1+ per Google's AGP/Kotlin matrix). **Bumping AGP does not move Kotlin**:
+  the 9.3 line (now at RC) and 9.4-alpha still bundle 2.2.10, so the override — not an AGP bump — is
+  the lever. Keep KGP and the `ksp` version in lockstep with `kotlin`; KSP adopted independent (KSP2)
+  versioning at 2.3.0 (decoupled, Kotlin 2.2+), so it no longer uses the old `<kotlin>-<ksp>` scheme.
 - **`android.disallowKotlinSourceSets=false`** is set in `gradle.properties`. AGP 9's built-in
   Kotlin otherwise rejects the `kotlin.sourceSets` DSL that KSP (Room's processor) uses.
 - **No explicit `kotlin-android` plugin.** AGP 9's built-in Kotlin handles compilation; only the
@@ -108,6 +113,15 @@ frames.
   `cbor.encodeToByteArray<Frame>(frame)` / `decodeFromByteArray<Frame>(bytes)` — the explicit
   `<Frame>` selects polymorphic encoding (the `@SerialName` discriminator). Dropping it serializes the
   concrete subtype without the discriminator and breaks decode on the other end.
+- **After a version bump, regenerate the lockfile for ALL configurations, not just the ones your
+  build resolves.** `app/build.gradle.kts` sets `dependencyLocking { lockAllConfigurations() }`, so
+  `app/gradle.lockfile` pins every configuration. `--write-locks` only rewrites the configs a given
+  task actually resolves: `:app:assembleDebug` + `:app:testDebugUnitTest` leave the *instrumented*-test
+  configs (`debugAndroidTestCompileClasspath`, …) at their old locked versions. `./gradlew lint`
+  (which the repo's stop-hook runs) builds the androidTest lint model, hits those stale locks, and
+  fails with a wall of "Cannot find a version … {strictly <old>} … enforced by Dependency Locking"
+  errors — which look like a resolution break but are just a half-updated lockfile. Always regenerate
+  with `./gradlew :app:dependencies --write-locks` (resolves every configuration), then `./gradlew lint`.
 
 ## Verifying changes
 
