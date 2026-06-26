@@ -11,6 +11,10 @@ kotlin = "2.2.10"
 composeBom = "2026.02.01"
 ksp = "2.2.10-2.0.2"
 room = "2.8.2"
+# SQLCipher for Android: at-rest encryption for the Room DB. Java + native .so (no Kotlin metadata),
+# so it is immune to the AGP-9.2.1/Kotlin-2.2 metadata constraint that pins Coil. Its only transitive
+# dep is androidx.sqlite (already pulled at 2.6.1 by Room, which wins).
+sqlcipher = "4.9.0"
 coroutines = "1.10.2"
 kotlinxSerializationJson = "1.8.1"
 datastore = "1.2.1"
@@ -50,6 +54,8 @@ androidx-room-compiler = { group = "androidx.room", name = "room-compiler", vers
 androidx-room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
 
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+
+sqlcipher-android = { group = "net.zetetic", name = "sqlcipher-android", version.ref = "sqlcipher" }
 
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-play-services = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-play-services", version.ref = "coroutines" }

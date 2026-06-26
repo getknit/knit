@@ -74,6 +74,7 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.sqlcipher.android) // at-rest encryption for the Room DB (SQLCipher)
 
     // Dependency injection (Koin — pure-Kotlin, no Gradle plugin / no AGP coupling)
     implementation(libs.koin.android)

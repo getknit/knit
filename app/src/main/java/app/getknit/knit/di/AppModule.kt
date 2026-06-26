@@ -11,6 +11,7 @@ import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.AndroidDeviceIdSource
 import app.getknit.knit.identity.DeviceIdSource
@@ -34,7 +35,8 @@ val appModule = module {
     single { GallerySaver(androidContext()) }
     single<Notifier> { MessageNotifier(androidContext()) }
 
-    single { KnitDatabase.build(androidContext()) }
+    single { DatabaseKey(androidContext()) }
+    single { KnitDatabase.build(androidContext(), get<DatabaseKey>().getOrCreate()) }
     single { get<KnitDatabase>().messageDao() }
     single { get<KnitDatabase>().peerDao() }
     single { get<KnitDatabase>().reactionDao() }

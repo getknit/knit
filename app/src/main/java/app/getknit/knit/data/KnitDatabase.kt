@@ -10,6 +10,7 @@ import app.getknit.knit.data.peer.PeerDao
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.reaction.ReactionDao
 import app.getknit.knit.data.reaction.ReactionEntity
+import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 @Database(
     entities = [MessageEntity::class, PeerEntity::class, ReactionEntity::class],
@@ -26,9 +27,17 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun reactionDao(): ReactionDao
 
     companion object {
-        fun build(context: Context): KnitDatabase =
-            Room.databaseBuilder(context, KnitDatabase::class.java, "knit.db")
+        /**
+         * Builds the encrypted database. [passphrase] is the SQLCipher key (see
+         * [app.getknit.knit.data.crypto.DatabaseKey]); SQLCipher zeroes it once the DB is opened.
+         * The native `libsqlcipher.so` must be loaded explicitly before the factory is created.
+         */
+        fun build(context: Context, passphrase: ByteArray): KnitDatabase {
+            System.loadLibrary("sqlcipher")
+            return Room.databaseBuilder(context, KnitDatabase::class.java, "knit.db")
+                .openHelperFactory(SupportOpenHelperFactory(passphrase))
                 .fallbackToDestructiveMigration(dropAllTables = true)
                 .build()
+        }
     }
 }

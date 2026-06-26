@@ -139,6 +139,7 @@ import java.io.File
 fun ChatScreen(
     conversationId: String,
     onBack: () -> Unit,
+    onOpenProfile: (nodeId: String) -> Unit,
     viewModel: ChatViewModel = koinViewModel { parametersOf(conversationId) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -218,7 +219,12 @@ fun ChatScreen(
                     } else {
                         // 1:1 DM: peer avatar + name, Signal-style.
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Avatar(avatarPath = state.avatarPath, name = state.title, size = 36.dp)
+                            Avatar(
+                                avatarPath = state.avatarPath,
+                                name = state.title,
+                                size = 36.dp,
+                                onClick = { onOpenProfile(conversationId) },
+                            )
                             Spacer(Modifier.width(10.dp))
                             Text(
                                 text = state.title,
@@ -301,6 +307,7 @@ fun ChatScreen(
                     MessageBubble(
                         row,
                         onImageClick = { fullscreenImage = it },
+                        onOpenProfile = onOpenProfile,
                         onReact = viewModel::react,
                         onDelete = viewModel::deleteMessage,
                         onBlock = viewModel::block,
@@ -339,6 +346,7 @@ private val REACTION_EMOJI = listOf("👍", "❤️", "😂", "😮", "😢", "�
 private fun MessageBubble(
     row: ChatRow,
     onImageClick: (String) -> Unit,
+    onOpenProfile: (nodeId: String) -> Unit,
     onReact: (messageId: String, emoji: String) -> Unit,
     onDelete: (messageId: String) -> Unit,
     onBlock: (nodeId: String) -> Unit,
@@ -358,7 +366,12 @@ private fun MessageBubble(
         verticalAlignment = Alignment.Bottom,
     ) {
         if (!row.mine) {
-            Avatar(avatarPath = row.avatarPath, name = row.senderName, size = 40.dp)
+            Avatar(
+                avatarPath = row.avatarPath,
+                name = row.senderName,
+                size = 40.dp,
+                onClick = { onOpenProfile(row.senderNodeId) },
+            )
             Spacer(Modifier.width(8.dp))
         }
         // Bubble + its reaction chips stack vertically, aligned to the message's side. The Box anchors

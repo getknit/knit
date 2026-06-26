@@ -84,6 +84,12 @@
     <string name="profile_avatar_crop_hint">Drag and pinch to adjust</string>
     <string name="profile_avatar_crop_desc">Adjust profile photo</string>
 
+    <!-- Profile details (another peer) -->
+    <string name="profile_details_title">Profile</string>
+    <string name="profile_details_message">Message</string>
+    <string name="profile_details_online">Online</string>
+    <string name="profile_details_offline">Offline</string>
+
     <!-- Diagnostics -->
     <string name="diagnostics_title">Diagnostics</string>
     <string name="diagnostics_self">This device</string>

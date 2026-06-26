@@ -18,6 +18,7 @@ import app.getknit.knit.ui.chatlist.ChatListScreen
 import app.getknit.knit.ui.contacts.ContactsScreen
 import app.getknit.knit.ui.diagnostics.DiagnosticsScreen
 import app.getknit.knit.ui.onboarding.OnboardingScreen
+import app.getknit.knit.ui.profile.ProfileDetailsScreen
 import app.getknit.knit.ui.profile.ProfileScreen
 
 private object Routes {
@@ -29,6 +30,8 @@ private object Routes {
     const val BLOCKED_USERS = "blocked"
     const val CHAT = "chat/{conversationId}"
     fun chat(conversationId: String) = "chat/$conversationId"
+    const val PROFILE_DETAILS = "profileDetails/{nodeId}"
+    fun profileDetails(nodeId: String) = "profileDetails/$nodeId"
 }
 
 /**
@@ -87,7 +90,29 @@ fun KnitApp() {
             // conversationId is the Nearby room or a peer's node id (a 1:1 DM thread).
             val conversationId =
                 backStackEntry.arguments?.getString("conversationId") ?: Conversations.NEARBY
-            ChatScreen(conversationId = conversationId, onBack = { navController.popBackStack() })
+            ChatScreen(
+                conversationId = conversationId,
+                onBack = { navController.popBackStack() },
+                onOpenProfile = { id -> navController.navigate(Routes.profileDetails(id)) },
+            )
+        }
+        composable(
+            route = Routes.PROFILE_DETAILS,
+            arguments = listOf(navArgument("nodeId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val nodeId = backStackEntry.arguments?.getString("nodeId") ?: return@composable
+            ProfileDetailsScreen(
+                nodeId = nodeId,
+                onBack = { navController.popBackStack() },
+                onMessage = { id ->
+                    navController.navigate(Routes.chat(id)) {
+                        // Replace this details screen so Back from the DM returns to the chat you came
+                        // from, and don't stack a duplicate DM if it was opened from that same thread.
+                        popUpTo(Routes.PROFILE_DETAILS) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
+            )
         }
         composable(Routes.PROFILE) {
             ProfileScreen(onBack = { navController.popBackStack() })
