@@ -7,9 +7,11 @@ espressoCore = "3.5.1"
 lifecycle = "2.9.4"
 activityCompose = "1.11.0"
 navigationCompose = "2.9.4"
-kotlin = "2.2.10"
-composeBom = "2026.02.01"
-ksp = "2.2.10-2.0.2"
+kotlin = "2.4.0"
+composeBom = "2026.06.00"
+# KSP adopted independent (KSP2) versioning at 2.3.0 — no longer the old <kotlin>-<ksp> scheme. It is
+# decoupled from the compiler and supports Kotlin 2.2+, so this single version tracks Kotlin 2.4.0.
+ksp = "2.3.9"
 room = "2.8.2"
 # SQLCipher for Android: at-rest encryption for the Room DB. Java + native .so (no Kotlin metadata),
 # so it is immune to the AGP-9.2.1/Kotlin-2.2 metadata constraint that pins Coil. Its only transitive
@@ -20,9 +22,10 @@ kotlinxSerializationJson = "1.8.1"
 datastore = "1.2.1"
 koin = "4.2.2"
 playServicesNearby = "18.5.0"
-# Coil 3.4.0+ is built with Kotlin 2.4.0 (metadata unreadable by AGP 9.2.1's bundled
-# Kotlin 2.2 compiler). 3.3.0 predates Kotlin 2.4.0 and stays compatible.
-coil = "3.3.0"
+# Coil 3.4.0+ is built with Kotlin 2.4.0. We now compile :app with Kotlin 2.4.0 (built-in Kotlin is
+# overridden off AGP's bundled 2.2.10 — see the buildscript classpath in the root build.gradle.kts), so
+# the 2.4 metadata is readable again and Coil is free to track latest.
+coil = "3.5.0"
 # detekt runs as a standalone CLI off the build classpath (never applied as a Gradle plugin) —
 # keep this in lockstep with DETEKT_VERSION in .gitlab-ci.yml so local and CI use the same rules.
 detekt = "1.23.8"
@@ -71,6 +74,11 @@ play-services-nearby = { group = "com.google.android.gms", name = "play-services
 
 coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }
 coil-gif = { group = "io.coil-kt.coil3", name = "coil-gif", version.ref = "coil" }
+
+# Put onto the root buildscript classpath so AGP 9's built-in Kotlin compiles with this KGP (2.4.0)
+# instead of AGP's bundled default (2.2.10). Kotlin 2.4 is supported on AGP 9.1+ per Google's
+# AGP↔Kotlin matrix; this is what lets us read Coil 3.4+/latest Compose's Kotlin-2.4 metadata.
+kotlin-gradle-plugin = { group = "org.jetbrains.kotlin", name = "kotlin-gradle-plugin", version.ref = "kotlin" }
 
 # Resolved only into the isolated `detektCli` configuration in the root build (the runnable
 # classpath for the standalone analyzer) — never onto :app's compile/runtime classpath.
