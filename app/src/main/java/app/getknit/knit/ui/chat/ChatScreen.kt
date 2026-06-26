@@ -1,6 +1,8 @@
 package app.getknit.knit.ui.chat
 
+import android.content.ClipData
 import android.net.Uri
+import android.os.Build
 import android.text.format.DateUtils
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -25,6 +27,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -54,6 +57,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
@@ -63,6 +67,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -78,6 +83,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -88,9 +94,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -117,6 +125,7 @@ import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
 import java.io.File
@@ -172,6 +181,8 @@ fun ChatScreen(
     LaunchedEffect(Unit) {
         viewModel.events.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
     }
+    val clipboard = LocalClipboard.current
+    val copyScope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
@@ -248,6 +259,18 @@ fun ChatScreen(
                         row,
                         onImageClick = { fullscreenImage = it },
                         onReact = viewModel::react,
+                        onCopy = { text ->
+                            copyScope.launch {
+                                clipboard.setClipEntry(
+                                    ClipData.newPlainText("message", text).toClipEntry(),
+                                )
+                                // Android 13+ shows its own copy confirmation; skip the toast there
+                                // so the user doesn't see a duplicate.
+                                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                                    viewModel.onMessageCopied()
+                                }
+                            }
+                        },
                     )
                 }
             }
@@ -272,6 +295,7 @@ private fun MessageBubble(
     row: ChatRow,
     onImageClick: (String) -> Unit,
     onReact: (messageId: String, emoji: String) -> Unit,
+    onCopy: (text: String) -> Unit,
 ) {
     val maxBubbleWidth = (LocalConfiguration.current.screenWidthDp * 0.8f).dp
     val bubbleShape = if (row.mine) {
@@ -362,6 +386,15 @@ private fun MessageBubble(
                             onReact(row.id, emoji)
                             showPicker = false
                         },
+                        // Image-only messages have no text to copy, so omit the action.
+                        onCopy = if (row.body.isNotBlank()) {
+                            {
+                                onCopy(row.body)
+                                showPicker = false
+                            }
+                        } else {
+                            null
+                        },
                         onDismiss = { showPicker = false },
                     )
                 }
@@ -374,9 +407,12 @@ private fun MessageBubble(
     }
 }
 
-/** Floating bar of quick-reaction emoji, positioned just above the long-pressed bubble. */
+/**
+ * Floating menu shown just above a long-pressed bubble: a row of quick-reaction emoji, plus an
+ * optional "Copy text" action below ([onCopy] is null for messages with no copyable text).
+ */
 @Composable
-private fun ReactionPicker(onPick: (String) -> Unit, onDismiss: () -> Unit) {
+private fun ReactionPicker(onPick: (String) -> Unit, onCopy: (() -> Unit)?, onDismiss: () -> Unit) {
     val spacingPx = with(LocalDensity.current) { 8.dp.roundToPx() }
     // Center the bar horizontally over the bubble and place it above; drop below only if it would clip
     // the top of the window.
@@ -407,20 +443,44 @@ private fun ReactionPicker(onPick: (String) -> Unit, onDismiss: () -> Unit) {
             tonalElevation = 3.dp,
             shadowElevation = 6.dp,
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                REACTION_EMOJI.forEach { emoji ->
-                    Text(
-                        text = emoji,
-                        style = MaterialTheme.typography.headlineSmall,
+            // Size the menu to the emoji row's width so the divider/copy row span it, not the screen.
+            Column(modifier = Modifier.width(IntrinsicSize.Max)) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    REACTION_EMOJI.forEach { emoji ->
+                        Text(
+                            text = emoji,
+                            style = MaterialTheme.typography.headlineSmall,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .clickable { onPick(emoji) }
+                                .padding(8.dp),
+                        )
+                    }
+                }
+                if (onCopy != null) {
+                    HorizontalDivider()
+                    Row(
                         modifier = Modifier
-                            .clip(CircleShape)
-                            .clickable { onPick(emoji) }
-                            .padding(8.dp),
-                    )
+                            .fillMaxWidth()
+                            .clickable { onCopy() }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.ContentCopy,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.chat_action_copy),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
                 }
             }
         }

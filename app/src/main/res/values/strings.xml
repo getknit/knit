@@ -43,6 +43,8 @@
     <string name="chat_self_name">You</string>
     <string name="chat_status_sent">Sent</string>
     <string name="chat_status_delivered">Delivered</string>
+    <string name="chat_action_copy">Copy text</string>
+    <string name="chat_message_copied">Copied to clipboard</string>
 
     <!-- Direct messages / contacts -->
     <string name="contacts_title">New message</string>

@@ -227,6 +227,11 @@ class ChatViewModel(
         }
     }
 
+    /** A message's text was copied to the clipboard; surface the confirmation toast. */
+    fun onMessageCopied() {
+        _events.tryEmit(R.string.chat_message_copied)
+    }
+
     /** Chat is on screen: suppress notifications and clear any active one (the user is reading). */
     fun onChatForeground() {
         chatForeground.value = true
