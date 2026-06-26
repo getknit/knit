@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.R
 import app.getknit.knit.data.AttachmentStore
+import app.getknit.knit.data.GallerySaver
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
@@ -17,14 +18,18 @@ import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.notifications.Notifier
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 
 data class ChatRow(
     val id: String,
@@ -81,6 +86,7 @@ class ChatViewModel(
     settings: SettingsStore,
     private val notifier: Notifier,
     private val attachments: AttachmentStore,
+    private val gallerySaver: GallerySaver,
     private val context: Context,
 ) : ViewModel() {
 
@@ -95,6 +101,10 @@ class ChatViewModel(
     /** Image staged in the input bar, ready to send with the next message (null when none). */
     private val _pendingAttachment = MutableStateFlow<AttachmentStore.Ingested?>(null)
     val pendingAttachment: StateFlow<AttachmentStore.Ingested?> = _pendingAttachment.asStateFlow()
+
+    /** One-shot UI messages (a string res id), surfaced as toasts — e.g. the result of saving an image. */
+    private val _events = MutableSharedFlow<Int>(extraBufferCapacity = 1)
+    val events: SharedFlow<Int> = _events.asSharedFlow()
 
     init {
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
@@ -207,6 +217,14 @@ class ChatViewModel(
 
     fun clearAttachment() {
         _pendingAttachment.value = null
+    }
+
+    /** Exports the attachment at [path] to the public `Pictures/Knit` folder and toasts the result. */
+    fun saveAttachment(path: String) {
+        viewModelScope.launch {
+            val ok = gallerySaver.saveToPictures(File(path))
+            _events.tryEmit(if (ok) R.string.chat_image_saved else R.string.chat_image_save_failed)
+        }
     }
 
     /** Chat is on screen: suppress notifications and clear any active one (the user is reading). */

@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStoreFile
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.AvatarStore
+import app.getknit.knit.data.GallerySaver
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -30,6 +31,7 @@ val appModule = module {
     single { Identity(get()) }
     single { AvatarStore(androidContext()) }
     single { AttachmentStore(androidContext()) }
+    single { GallerySaver(androidContext()) }
     single<Notifier> { MessageNotifier(androidContext()) }
 
     single { KnitDatabase.build(androidContext()) }

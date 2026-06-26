@@ -2,6 +2,7 @@ package app.getknit.knit.ui.chat
 
 import android.net.Uri
 import android.text.format.DateUtils
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -54,7 +56,11 @@ import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
@@ -83,6 +89,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
@@ -157,6 +164,13 @@ fun ChatScreen(
 
     LaunchedEffect(state.rows.size) {
         if (state.rows.isNotEmpty()) listState.animateScrollToItem(state.rows.lastIndex)
+    }
+
+    // Surface one-shot results (e.g. image saved) as toasts; a toast shows over the fullscreen Dialog,
+    // unlike a Scaffold snackbar which the viewer would cover.
+    val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
     }
 
     Scaffold(
@@ -241,7 +255,11 @@ fun ChatScreen(
     }
 
     fullscreenImage?.let { path ->
-        FullscreenImageViewer(path = path, onDismiss = { fullscreenImage = null })
+        FullscreenImageViewer(
+            path = path,
+            onDismiss = { fullscreenImage = null },
+            onSave = { viewModel.saveAttachment(path) },
+        )
     }
 }
 
@@ -486,12 +504,17 @@ private fun AttachmentImage(path: String?, onImageClick: (String) -> Unit) {
     }
 }
 
-/** Fullscreen, pinch-to-zoom/pan viewer for a tapped image. Dismissed by the close button or back press. */
+/**
+ * Fullscreen, pinch-to-zoom/pan viewer for a tapped image. A back arrow (top-left) dismisses it and
+ * an overflow menu (top-right) offers Save; back press / outside tap also dismiss. Controls float
+ * white over the black backdrop, Signal-style.
+ */
 @Composable
-private fun FullscreenImageViewer(path: String, onDismiss: () -> Unit) {
+private fun FullscreenImageViewer(path: String, onDismiss: () -> Unit, onSave: () -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         var scale by remember { mutableFloatStateOf(1f) }
         var offset by remember { mutableStateOf(Offset.Zero) }
+        var menuOpen by remember { mutableStateOf(false) }
         val transformState = rememberTransformableState { zoomChange, panChange, _ ->
             scale = (scale * zoomChange).coerceIn(1f, 5f)
             offset += panChange
@@ -516,9 +539,32 @@ private fun FullscreenImageViewer(path: String, onDismiss: () -> Unit) {
             )
             IconButton(
                 onClick = onDismiss,
-                modifier = Modifier.align(Alignment.TopEnd).navigationBarsPadding().padding(8.dp),
+                modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(8.dp),
             ) {
-                Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.action_close), tint = Color.White)
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = stringResource(R.string.action_back),
+                    tint = Color.White,
+                )
+            }
+            Box(modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp)) {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        contentDescription = stringResource(R.string.chat_more_options),
+                        tint = Color.White,
+                    )
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.action_save)) },
+                        leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
+                        onClick = {
+                            menuOpen = false
+                            onSave()
+                        },
+                    )
+                }
             }
         }
     }

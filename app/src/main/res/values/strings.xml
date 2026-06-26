@@ -36,6 +36,8 @@
     <string name="chat_loading_photo">Loading photo…</string>
     <string name="chat_attachment_image_desc">Photo attachment</string>
     <string name="chat_image_viewer_desc">Photo</string>
+    <string name="chat_image_saved">Saved to Pictures/Knit</string>
+    <string name="chat_image_save_failed">Couldn\'t save image</string>
     <string name="chat_attachment_preview_desc">Attachment preview</string>
     <string name="chat_remove_attachment">Remove attachment</string>
     <string name="chat_self_name">You</string>
