@@ -129,7 +129,7 @@ fun ProfileDetailsScreen(
                         .size(10.dp)
                         .clip(CircleShape)
                         .background(
-                            if (state.online) MaterialTheme.colorScheme.primary
+                            if (state.online) MaterialTheme.colorScheme.tertiary
                             else MaterialTheme.colorScheme.outline,
                         ),
                 )

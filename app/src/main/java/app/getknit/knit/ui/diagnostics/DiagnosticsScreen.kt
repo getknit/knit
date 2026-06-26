@@ -150,9 +150,9 @@ private fun NodeRow(node: NodeInfo) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Filled primary dot = live direct neighbor; muted dot = known only via relay.
+        // Filled tertiary dot = live direct neighbor; muted dot = known only via relay.
         val dotColor =
-            if (node.direct) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+            if (node.direct) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outline
         Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(dotColor))
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {

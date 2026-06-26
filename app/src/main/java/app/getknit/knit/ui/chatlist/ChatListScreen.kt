@@ -20,7 +20,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Block
-import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Person
@@ -43,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -198,7 +198,7 @@ private fun ConversationListItem(
     }
 }
 
-/** The circular leading glyph: a group icon for the room, an [Avatar] for a person (future DMs). */
+/** The circular leading glyph: the knit logo for the room, an [Avatar] for a person (future DMs). */
 @Composable
 private fun LeadingVisual(row: ConversationRow) {
     val size = 52.dp
@@ -211,7 +211,7 @@ private fun LeadingVisual(row: ConversationRow) {
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                imageVector = Icons.Filled.Groups,
+                painter = painterResource(R.drawable.ic_stat_mesh),
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
             )

@@ -113,7 +113,7 @@ private fun ContactRow(contact: Contact, onClick: () -> Unit) {
                 modifier = Modifier
                     .size(10.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary),
+                    .background(MaterialTheme.colorScheme.tertiary),
             )
         }
     }
