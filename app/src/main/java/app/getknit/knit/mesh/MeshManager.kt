@@ -66,8 +66,9 @@ class MeshManager(
         store = blobStore,
         selfId = { identity.nodeId() },
         // The chat list observes the blobs table for presence, so no per-message path write is needed
-        // when a blob arrives; the new row makes the attachment flip from "loading" to shown.
-        onObtained = { _, _ -> },
+        // when an attachment arrives. A pulled blob may also be a (multi-hop) peer's avatar, so attribute
+        // it back to whoever advertised it.
+        onObtained = { hash, _ -> adoptAdvertisedAvatar(hash) },
     )
 
     @Volatile
@@ -81,6 +82,10 @@ class MeshManager(
     // nodeId -> avatar hash we last sent that neighbor, so we don't re-push an unchanged avatar on
     // every profile edit or reconnect. Cleared per-peer when they disconnect (see watchNeighbors).
     private val sentAvatarHashes = ConcurrentHashMap<String, String>()
+
+    // nodeId -> avatar hash a non-direct peer advertised but whose bytes we're still pulling, so a blob
+    // arriving via the multi-hop BlobExchange can be attributed back to the peer that advertised it.
+    private val advertisedAvatars = ConcurrentHashMap<String, String>()
 
     /** Number of directly-connected neighbors, for the UI status header. */
     val neighborCount: StateFlow<Int> =
@@ -395,24 +400,56 @@ class MeshManager(
 
     private suspend fun handleProfile(frame: ProfileFrame) {
         val existing = peers.find(frame.senderId)
+        val advertised = frame.avatarHash
+        // The stored avatarHash means "bytes are present locally": adopt the advertised hash only once
+        // we hold its blob, otherwise keep the current avatar (if any) until the new one is fetched.
+        val haveAvatar = advertised != null && blobStore.has(advertised)
         peers.upsert(
             (existing ?: PeerEntity(frame.senderId)).copy(
                 name = frame.name,
                 status = frame.status,
                 pubKey = frame.pubKey,
+                avatarHash = if (haveAvatar) advertised else existing?.avatarHash,
                 updatedAt = frame.sentAt,
             ),
         )
+        // A direct neighbor pushes its avatar to us (sendAvatarIfNeeded); a peer we only reach through a
+        // relay won't, so pull its avatar hop-by-hop over the same content-addressed exchange that
+        // carries attachments. It's attributed back to this peer in [adoptAdvertisedAvatar] on arrival.
+        if (advertised != null && !haveAvatar &&
+            transport.neighbors.value.none { it.nodeId == frame.senderId }
+        ) {
+            advertisedAvatars[frame.senderId] = advertised
+            blobExchange.want(advertised)
+        }
     }
 
     /**
-     * Ingests a peer's received avatar into the encrypted blob store, points the peer row at it by
-     * [hash], deletes the decrypted staging copy, and garbage-collects the peer's previous avatar blob.
+     * A pulled blob just landed: if any non-direct peer advertised it as their avatar (see
+     * [handleProfile]), point those peers at it now that the bytes are local and drop the previous one.
+     * A no-op for attachment blobs, which no peer advertises.
+     */
+    private suspend fun adoptAdvertisedAvatar(hash: String) {
+        val owners = advertisedAvatars.entries.filter { it.value == hash }.map { it.key }
+        owners.forEach { nodeId ->
+            advertisedAvatars.remove(nodeId)
+            val peer = peers.find(nodeId) ?: return@forEach
+            if (peer.avatarHash == hash) return@forEach
+            val oldHash = peer.avatarHash
+            peers.upsert(peer.copy(avatarHash = hash))
+            if (oldHash != hash) blobs.deleteIfUnreferenced(oldHash)
+        }
+    }
+
+    /**
+     * Ingests a direct neighbor's pushed avatar into the encrypted blob store, points the peer row at
+     * it by [hash], deletes the decrypted staging copy, and garbage-collects the peer's previous blob.
      */
     private suspend fun onAvatarReceived(nodeId: String, hash: String, mime: String, srcPath: String) {
         val bytes = runCatching { File(srcPath).readBytes() }.getOrNull() ?: return
         blobs.insert(hash, mime, bytes)
         File(srcPath).delete()
+        advertisedAvatars.remove(nodeId) // pushed directly; no need to also pull it
         val existing = peers.find(nodeId)
         val oldHash = existing?.avatarHash
         peers.upsert((existing ?: PeerEntity(nodeId)).copy(avatarHash = hash))
