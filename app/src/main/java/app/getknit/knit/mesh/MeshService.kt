@@ -22,6 +22,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import app.getknit.knit.MainActivity
 import app.getknit.knit.R
+import app.getknit.knit.mesh.power.PowerMonitor
 import org.koin.android.ext.android.inject
 
 /**
@@ -33,6 +34,7 @@ import org.koin.android.ext.android.inject
 class MeshService : LifecycleService() {
 
     private val meshManager: MeshManager by inject()
+    private val powerMonitor: PowerMonitor by inject()
 
     private val sensorManager by lazy { getSystemService(SensorManager::class.java) }
     private var significantMotion: Sensor? = null
@@ -57,6 +59,7 @@ class MeshService : LifecycleService() {
         super.onCreate()
         createChannel()
         startForeground()
+        powerMonitor.start() // seed power state before the discovery loop first reads it
         meshManager.start()
         scheduleHeartbeat()
         armSignificantMotion()
@@ -82,6 +85,7 @@ class MeshService : LifecycleService() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(bluetoothReceiver) }
+        powerMonitor.stop()
         significantMotion?.let { sensorManager.cancelTriggerSensor(motionListener, it) }
         cancelHeartbeat()
         meshManager.stop()

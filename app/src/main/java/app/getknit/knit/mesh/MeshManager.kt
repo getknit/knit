@@ -26,6 +26,10 @@ import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.incomingNotification
 import app.getknit.knit.notifications.mentionNotification
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -58,7 +62,13 @@ class MeshManager(
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
 ) {
-    private val router = MeshRouter(transport, scope, metrics = metrics, onDeliver = ::onDeliver)
+    // Reconstructed per session so its inbound collector + relay jobs live on the session scope and
+    // are cancelled by stop() (rather than leaking on the never-cancelled app scope).
+    private var router = MeshRouter(transport, scope, metrics = metrics, onDeliver = ::onDeliver)
+
+    // Per-session scope for the collectors + metrics loop + router; cancelled in stop() so they don't
+    // accumulate across start/stop cycles (e.g. restart() on Bluetooth recovery).
+    private var sessionScope: CoroutineScope? = null
 
     // Content-addressed image fetch over the mesh, backed by the encrypted blob store.
     private val blobExchange = BlobExchange(
@@ -101,20 +111,32 @@ class MeshManager(
         started = true
         profileVersion = System.currentTimeMillis()
         blobStore.clearTransfers() // drop any plaintext transfer temp files left by a previous session
+        // Child of the app Job so app-scope cancellation still propagates; SupervisorJob isolates a
+        // single collector's failure from the rest of the session.
+        val session = CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Default)
+        sessionScope = session
+        router = MeshRouter(transport, session, metrics = metrics, onDeliver = ::onDeliver)
         router.start()
         transport.start()
-        watchNeighbors()
-        watchProfileChanges()
-        watchIncomingFiles()
-        resumePendingFetches()
-        logMetricsPeriodically()
+        watchNeighbors(session)
+        watchProfileChanges(session)
+        watchIncomingFiles(session)
+        resumePendingFetches(session)
+        logMetricsPeriodically(session)
     }
 
     fun stop() {
         if (!started) return
         started = false
         transport.stop()
-        scope.launch { router.stop() } // cancel any relays still waiting out their jitter window
+        // Clear this session's pending relays on the app scope (the session is about to die); capture
+        // the instance so a fast restart reassigning `router` can't retarget the wrong one. Then tear
+        // the session down — stopping the inbound collector, the metrics loop, and the watch* collectors.
+        val session = sessionScope
+        val sessionRouter = router
+        scope.launch { sessionRouter.stop() }
+        session?.cancel()
+        sessionScope = null
     }
 
     /** Triggers an immediate rescan/reconnect (heartbeat alarm, device motion). */
@@ -195,8 +217,8 @@ class MeshManager(
     }
 
     /** On startup, re-request any attachment blobs referenced by stored messages we don't yet have. */
-    private fun resumePendingFetches() {
-        scope.launch {
+    private fun resumePendingFetches(session: CoroutineScope) {
+        session.launch {
             blobs.deleteOrphans() // reclaim blobs left by attachments staged but never sent
             messages.hashesNeedingFetch().forEach { blobExchange.want(it) }
         }
@@ -204,8 +226,8 @@ class MeshManager(
 
     // --- Profile broadcasting ---
 
-    private fun watchNeighbors() {
-        scope.launch {
+    private fun watchNeighbors(session: CoroutineScope) {
+        session.launch {
             var known = emptySet<String>()
             transport.neighbors.collect { current ->
                 val currentIds = current.map { it.nodeId }.toSet()
@@ -220,8 +242,8 @@ class MeshManager(
         }
     }
 
-    private fun watchProfileChanges() {
-        scope.launch {
+    private fun watchProfileChanges(session: CoroutineScope) {
+        session.launch {
             combine(settings.displayName, settings.status, settings.avatarUpdatedAt) { _, _, _ -> }
                 .drop(1) // skip the initial stored value; only react to real edits
                 .collect {
@@ -231,8 +253,8 @@ class MeshManager(
         }
     }
 
-    private fun watchIncomingFiles() {
-        scope.launch {
+    private fun watchIncomingFiles(session: CoroutineScope) {
+        session.launch {
             transport.incomingFiles.collect { file ->
                 when (file.kind) {
                     FileKind.AVATAR -> onAvatarReceived(file.fromNodeId, file.key, file.mime, file.path)
@@ -457,8 +479,8 @@ class MeshManager(
     }
 
     /** Periodically logs a transmission snapshot so flood-suppression and byte savings are visible. */
-    private fun logMetricsPeriodically() {
-        scope.launch {
+    private fun logMetricsPeriodically(session: CoroutineScope) {
+        session.launch {
             while (true) {
                 delay(METRICS_LOG_INTERVAL_MS)
                 val s = metrics.snapshot()

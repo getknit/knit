@@ -11,6 +11,8 @@ import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
+import app.getknit.knit.mesh.power.PowerPolicy
+import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.mesh.protocol.Frame
 import app.getknit.knit.mesh.protocol.WireCodec
 import com.google.android.gms.nearby.Nearby
@@ -37,6 +39,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -55,6 +58,11 @@ import java.util.concurrent.ConcurrentHashMap
  * auto-accept every peer (open mesh), and back off discovery as the neighbor count grows. The node
  * id is carried as the Nearby endpoint name so peers recognize each other and reject self-discovery.
  *
+ * For battery: advertising and discovery run in BLE-only low-power mode, and the discovery duty cycle
+ * is driven by [PowerPolicy] from the current [PowerStateSource] (screen on / charging → scan often;
+ * screen off on battery → scan rarely). Advertising stays on regardless so a backgrounded device can
+ * still relay. A change in power state wakes the discovery loop early via [healSignal].
+ *
  * Permissions are gated by the onboarding flow; the mesh starts regardless and degrades if a
  * permission was denied, so Nearby calls are marked [SuppressLint] for "MissingPermission".
  */
@@ -64,6 +72,7 @@ class NearbyTransport(
     private val identity: Identity,
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
+    private val powerState: PowerStateSource,
 ) : MeshTransport {
 
     private val appContext = context.applicationContext
@@ -99,6 +108,7 @@ class NearbyTransport(
 
     private lateinit var localNodeId: String
     private var discoveryJob: Job? = null
+    private var powerJob: Job? = null
 
     // Signaled by heal() to wake the discovery loop early (re-scan now instead of after backoff).
     private val healSignal = Channel<Unit>(Channel.CONFLATED)
@@ -112,11 +122,15 @@ class NearbyTransport(
             localNodeId = identity.nodeId()
             startAdvertising()
             discoveryJob = scope.launch { discoveryLoop() }
+            // Wake the discovery loop whenever power state changes so it re-evaluates the duty cycle
+            // immediately (e.g. screen-on / charging) instead of waiting out a long idle backoff.
+            powerJob = scope.launch { powerState.state.drop(1).collect { healSignal.trySend(Unit) } }
         }
     }
 
     override fun stop() {
         discoveryJob?.cancel()
+        powerJob?.cancel()
         runCatching { client.stopAllEndpoints() }
         runCatching { client.stopAdvertising() }
         runCatching { client.stopDiscovery() }
@@ -157,25 +171,38 @@ class NearbyTransport(
     // --- Advertising / discovery ---
 
     private fun startAdvertising() {
-        val options = AdvertisingOptions.Builder().setStrategy(STRATEGY).build()
+        // Low power keeps advertising on BLE only (no Bluetooth-Classic) — the connection still
+        // upgrades to a faster medium after a peer connects.
+        val options = AdvertisingOptions.Builder()
+            .setStrategy(STRATEGY)
+            .setLowPower(true)
+            .build()
         client.startAdvertising(localNodeId, SERVICE_ID, lifecycleCallback, options)
             .addOnFailureListener { Log.w(TAG, "startAdvertising failed", it) }
     }
 
-    /** Repeatedly discovers for a window, connects to what it found, then backs off by peer count. */
+    /**
+     * Repeatedly discovers for a window, connects to what it found, then backs off. The scan window
+     * and base idle interval come from [PowerPolicy] (screen/charge/battery aware); the idle is
+     * further multiplied by the neighbor count so a denser mesh scans less.
+     */
     private suspend fun discoveryLoop() {
         while (scope.isActive) {
-            val options = DiscoveryOptions.Builder().setStrategy(STRATEGY).build()
+            val duty = PowerPolicy.dutyCycle(powerState.state.value)
+            val options = DiscoveryOptions.Builder()
+                .setStrategy(STRATEGY)
+                .setLowPower(true)
+                .build()
             runCatching {
                 client.startDiscovery(SERVICE_ID, discoveryCallback, options)
             }.onFailure { Log.w(TAG, "startDiscovery failed", it) }
 
-            delay(DISCOVERY_WINDOW_MS)
+            delay(duty.scanWindowMs)
             runCatching { client.stopDiscovery() }
 
             // Back off as the mesh grows (more neighbors → scan less often), but wake early when
-            // heal() is signaled (heartbeat / motion / Bluetooth recovery).
-            withTimeoutOrNull(DISCOVERY_INTERVAL_MS * (1 + connected.size)) {
+            // heal() is signaled (heartbeat / motion / Bluetooth recovery) or power state changes.
+            withTimeoutOrNull(duty.baseIntervalMs * (1 + connected.size)) {
                 healSignal.receive()
             }
         }
@@ -339,8 +366,6 @@ class NearbyTransport(
         const val SERVICE_ID = "app.getknit.knit.MESH"
         val STRATEGY: Strategy = Strategy.P2P_CLUSTER
 
-        const val DISCOVERY_WINDOW_MS = 12_000L
-        const val DISCOVERY_INTERVAL_MS = 30_000L
         const val MAX_ENDPOINT_ERRORS = 10
 
         // "KFH1" — distinguishes a file-header BYTES payload from a CBOR mesh frame (which never

@@ -1,0 +1,66 @@
+package app.getknit.knit.mesh.power
+
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+
+/**
+ * Snapshot of the device power conditions that drive the mesh discovery duty cycle. Defaults are
+ * deliberately optimistic ([interactive] = true) so the first discovery iteration runs aggressively
+ * until [PowerMonitor] seeds the real state.
+ */
+data class PowerState(
+    val interactive: Boolean = true,
+    val charging: Boolean = false,
+    val batteryLow: Boolean = false,
+)
+
+/**
+ * How the discovery loop should behave for a given [PowerState]: scan for [scanWindowMs], then idle
+ * for [baseIntervalMs] before the transport applies its neighbor-count backoff.
+ */
+data class DutyCycle(
+    val scanWindowMs: Long,
+    val baseIntervalMs: Long,
+)
+
+/**
+ * Pure mapping from [PowerState] to the discovery [DutyCycle]. Advertising is left always-on by the
+ * transport (moderate posture: peers can still relay through a backgrounded device); only the
+ * discovery cadence changes here. Being interactive or charging scans aggressively (charging
+ * overrides battery concerns); a screen-off device on battery backs off, more so when battery is low.
+ */
+object PowerPolicy {
+
+    fun dutyCycle(state: PowerState): DutyCycle = when {
+        state.interactive || state.charging -> DutyCycle(ACTIVE_WINDOW_MS, ACTIVE_INTERVAL_MS)
+        state.batteryLow -> DutyCycle(IDLE_WINDOW_MS, LOW_BATTERY_INTERVAL_MS)
+        else -> DutyCycle(IDLE_WINDOW_MS, IDLE_INTERVAL_MS)
+    }
+
+    // Screen on or charging: the original aggressive cadence.
+    private const val ACTIVE_WINDOW_MS = 12_000L
+    private const val ACTIVE_INTERVAL_MS = 30_000L
+
+    // Screen off on battery: the main saver — shorter scans, much longer gaps.
+    private const val IDLE_WINDOW_MS = 8_000L
+    private const val IDLE_INTERVAL_MS = 120_000L
+
+    // Screen off and battery low: most relaxed.
+    private const val LOW_BATTERY_INTERVAL_MS = 300_000L
+}
+
+/**
+ * Holds the current [PowerState] as an observable [StateFlow]. [PowerMonitor] writes it from system
+ * broadcasts; the transport reads it to drive the discovery loop. Kept Android-free so it stays
+ * unit-testable and outside the GMS layer.
+ */
+class PowerStateSource {
+    private val _state = MutableStateFlow(PowerState())
+    val state: StateFlow<PowerState> = _state.asStateFlow()
+
+    fun update(transform: (PowerState) -> PowerState) {
+        _state.update(transform)
+    }
+}
