@@ -25,4 +25,7 @@ class ReactionRepository(private val dao: ReactionDao) {
     /** The reactor's current emoji on a message (null if none/retracted) — used for toggle decisions. */
     suspend fun currentEmoji(messageId: String, reactorNodeId: String): String? =
         dao.emojiFor(messageId, reactorNodeId)
+
+    /** Removes all reactions for a deleted message, since the reactions table has no FK cascade. */
+    suspend fun deleteForMessage(messageId: String) = dao.deleteForMessage(messageId)
 }

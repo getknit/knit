@@ -37,6 +37,9 @@ class AttachmentStore(private val context: Context) {
 
     fun mimeFor(hash: String): String? = existing(hash)?.let { mimeForExt(it.extension) }
 
+    /** Deletes the content-addressed file for [hash]. Callers must ensure no message still references it. */
+    fun delete(hash: String): Boolean = existing(hash)?.delete() ?: false
+
     /**
      * Ingests [uri] into the store and returns its [Ingested] descriptor (or null on failure / if the
      * processed image exceeds [MAX_BYTES]). GIFs are kept as-is; other images are downscaled to

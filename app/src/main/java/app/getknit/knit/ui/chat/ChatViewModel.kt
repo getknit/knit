@@ -78,9 +78,9 @@ data class ChatUiState(
 
 class ChatViewModel(
     private val conversationId: String,
-    messages: MessageRepository,
+    private val messages: MessageRepository,
     peers: PeerRepository,
-    reactions: ReactionRepository,
+    private val reactions: ReactionRepository,
     private val meshManager: MeshManager,
     private val identity: Identity,
     settings: SettingsStore,
@@ -208,6 +208,20 @@ class ChatViewModel(
     /** Toggles the local user's [emoji] reaction on [messageId] (add / replace / remove) and floods it. */
     fun react(messageId: String, emoji: String) {
         viewModelScope.launch { meshManager.sendReaction(messageId, emoji) }
+    }
+
+    /**
+     * Removes [messageId] from this device only — its row, its reactions, and (if no other message
+     * still references it) its content-addressed attachment blob. Sends nothing over the mesh.
+     */
+    fun deleteMessage(messageId: String) {
+        val hash = state.value.rows.firstOrNull { it.id == messageId }?.attachmentHash
+        viewModelScope.launch {
+            messages.delete(messageId)
+            reactions.deleteForMessage(messageId)
+            if (hash != null && messages.countByAttachmentHash(hash) == 0) attachments.delete(hash)
+            _events.tryEmit(R.string.chat_message_deleted)
+        }
     }
 
     /** Ingests a picked or keyboard-inserted image and stages it in the input bar. */

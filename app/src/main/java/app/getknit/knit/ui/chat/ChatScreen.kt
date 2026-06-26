@@ -58,10 +58,12 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -74,6 +76,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -259,6 +262,7 @@ fun ChatScreen(
                         row,
                         onImageClick = { fullscreenImage = it },
                         onReact = viewModel::react,
+                        onDelete = viewModel::deleteMessage,
                         onCopy = { text ->
                             copyScope.launch {
                                 clipboard.setClipEntry(
@@ -295,6 +299,7 @@ private fun MessageBubble(
     row: ChatRow,
     onImageClick: (String) -> Unit,
     onReact: (messageId: String, emoji: String) -> Unit,
+    onDelete: (messageId: String) -> Unit,
     onCopy: (text: String) -> Unit,
 ) {
     val maxBubbleWidth = (LocalConfiguration.current.screenWidthDp * 0.8f).dp
@@ -304,6 +309,7 @@ private fun MessageBubble(
         RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 4.dp)
     }
     var showPicker by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (row.mine) Arrangement.End else Arrangement.Start,
@@ -395,7 +401,34 @@ private fun MessageBubble(
                         } else {
                             null
                         },
+                        onDelete = {
+                            showPicker = false
+                            showDeleteConfirm = true
+                        },
                         onDismiss = { showPicker = false },
+                    )
+                }
+                if (showDeleteConfirm) {
+                    AlertDialog(
+                        onDismissRequest = { showDeleteConfirm = false },
+                        title = { Text(stringResource(R.string.chat_delete_confirm_title)) },
+                        text = { Text(stringResource(R.string.chat_delete_confirm_body)) },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                onDelete(row.id)
+                                showDeleteConfirm = false
+                            }) {
+                                Text(
+                                    text = stringResource(R.string.chat_delete_confirm_action),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showDeleteConfirm = false }) {
+                                Text(stringResource(android.R.string.cancel))
+                            }
+                        },
                     )
                 }
             }
@@ -408,11 +441,17 @@ private fun MessageBubble(
 }
 
 /**
- * Floating menu shown just above a long-pressed bubble: a row of quick-reaction emoji, plus an
- * optional "Copy text" action below ([onCopy] is null for messages with no copyable text).
+ * Floating menu shown just above a long-pressed bubble: a row of quick-reaction emoji, an optional
+ * "Copy text" action ([onCopy] is null for messages with no copyable text), and an always-present
+ * "Delete message" action that removes the message from this device only.
  */
 @Composable
-private fun ReactionPicker(onPick: (String) -> Unit, onCopy: (() -> Unit)?, onDismiss: () -> Unit) {
+private fun ReactionPicker(
+    onPick: (String) -> Unit,
+    onCopy: (() -> Unit)?,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     val spacingPx = with(LocalDensity.current) { 8.dp.roundToPx() }
     // Center the bar horizontally over the bubble and place it above; drop below only if it would clip
     // the top of the window.
@@ -461,8 +500,9 @@ private fun ReactionPicker(onPick: (String) -> Unit, onCopy: (() -> Unit)?, onDi
                         )
                     }
                 }
+                // Delete is always offered, so the divider below the emoji row always shows.
+                HorizontalDivider()
                 if (onCopy != null) {
-                    HorizontalDivider()
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -481,6 +521,26 @@ private fun ReactionPicker(onPick: (String) -> Unit, onCopy: (() -> Unit)?, onDi
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onDelete() }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Delete,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Text(
+                        text = stringResource(R.string.chat_action_delete),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }

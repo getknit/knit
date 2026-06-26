@@ -30,6 +30,11 @@ class ReactionRepositoryTest {
             rows[reaction.messageId to reaction.reactorNodeId] = reaction
             live.value = rows.values.filter { it.emoji != null }.sortedBy { it.updatedAt }
         }
+
+        override suspend fun deleteForMessage(messageId: String) {
+            rows.keys.filter { it.first == messageId }.forEach { rows.remove(it) }
+            live.value = rows.values.filter { it.emoji != null }.sortedBy { it.updatedAt }
+        }
     }
 
     private fun reaction(reactor: String, emoji: String?, at: Long) =

@@ -22,4 +22,8 @@ interface ReactionDao {
 
     @Upsert
     suspend fun upsert(reaction: ReactionEntity)
+
+    /** Drops every reaction for a message (there is no FK cascade) when the message is deleted. */
+    @Query("DELETE FROM reactions WHERE messageId = :messageId")
+    suspend fun deleteForMessage(messageId: String)
 }

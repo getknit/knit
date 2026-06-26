@@ -23,6 +23,14 @@ interface MessageDao {
     @Query("UPDATE messages SET received = 1 WHERE id = :id")
     suspend fun markReceived(id: String)
 
+    /** Removes a single message locally (used by the long-press "Delete message" action). */
+    @Query("DELETE FROM messages WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    /** How many messages still reference [hash] — guards deleting a shared, content-addressed blob. */
+    @Query("SELECT COUNT(*) FROM messages WHERE attachmentHash = :hash")
+    suspend fun countByAttachmentHash(hash: String): Int
+
     /** Sets the local file path on every message referencing [hash] (an attachment just arrived). */
     @Query("UPDATE messages SET attachmentPath = :path WHERE attachmentHash = :hash")
     suspend fun setAttachmentPath(hash: String, path: String)

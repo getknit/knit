@@ -45,6 +45,11 @@
     <string name="chat_status_delivered">Delivered</string>
     <string name="chat_action_copy">Copy text</string>
     <string name="chat_message_copied">Copied to clipboard</string>
+    <string name="chat_action_delete">Delete message</string>
+    <string name="chat_message_deleted">Message deleted</string>
+    <string name="chat_delete_confirm_title">Delete message?</string>
+    <string name="chat_delete_confirm_body">It will be removed from this device only.</string>
+    <string name="chat_delete_confirm_action">Delete</string>
 
     <!-- Direct messages / contacts -->
     <string name="contacts_title">New message</string>
