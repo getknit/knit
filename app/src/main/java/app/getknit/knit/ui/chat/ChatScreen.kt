@@ -135,6 +135,7 @@ import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.image.BlobImage
+import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -162,6 +163,9 @@ fun ChatScreen(
     var showRenameDialog by remember { mutableStateOf(false) }
     var showLeaveConfirm by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    // A ticking clock so each bubble's relative timestamp ("2 min ago") recomposes as time passes;
+    // System.currentTimeMillis() alone is not a tracked read and would freeze at first composition.
+    val now by rememberCurrentTimeMillis()
 
     // Modern Android Photo Picker — needs no runtime permission. ImageOnly still includes GIFs.
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -382,6 +386,7 @@ fun ChatScreen(
                 items(state.rows, key = { it.id }) { row ->
                     MessageBubble(
                         row,
+                        now = now,
                         // In a 1:1 DM the peer's name is in the top bar, so don't repeat it on every
                         // received bubble; show it only where multiple people can speak.
                         showSenderName = state.isRoom || state.isGroup,
@@ -532,6 +537,7 @@ private val REACTION_EMOJI = listOf("👍", "❤️", "😂", "😮", "😢", "�
 @Composable
 private fun MessageBubble(
     row: ChatRow,
+    now: Long,
     showSenderName: Boolean,
     onImageClick: (BlobImage) -> Unit,
     onOpenProfile: (nodeId: String) -> Unit,
@@ -628,7 +634,7 @@ private fun MessageBubble(
                             horizontalArrangement = Arrangement.spacedBy(3.dp),
                         ) {
                             Text(
-                                text = timeLabel(row),
+                                text = timeLabel(row, now),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -1019,9 +1025,9 @@ private fun FullscreenImageViewer(image: BlobImage, onDismiss: () -> Unit, onSav
     }
 }
 
-private fun timeLabel(row: ChatRow): String =
+private fun timeLabel(row: ChatRow, now: Long): String =
     DateUtils.getRelativeTimeSpanString(
-        row.sentAt, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS,
+        row.sentAt, now, DateUtils.MINUTE_IN_MILLIS,
     ).toString()
 
 @Composable

@@ -56,6 +56,7 @@ import app.getknit.knit.R
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.util.compactTimeAgo
+import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import org.koin.androidx.compose.koinViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -70,6 +71,9 @@ fun ChatListScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var menuOpen by remember { mutableStateOf(false) }
+    // A ticking clock so each row's relative timestamp recomposes as time passes; a bare
+    // System.currentTimeMillis() read would freeze at first composition (see rememberCurrentTimeMillis).
+    val now by rememberCurrentTimeMillis()
 
     Scaffold(
         topBar = {
@@ -137,7 +141,7 @@ fun ChatListScreen(
             contentPadding = PaddingValues(vertical = 4.dp),
         ) {
             items(state.conversations, key = { it.id }) { row ->
-                ConversationListItem(row = row, onClick = { onOpenConversation(row.id) })
+                ConversationListItem(row = row, now = now, onClick = { onOpenConversation(row.id) })
             }
         }
     }
@@ -146,6 +150,7 @@ fun ChatListScreen(
 @Composable
 private fun ConversationListItem(
     row: ConversationRow,
+    now: Long,
     onClick: () -> Unit,
 ) {
     Row(
@@ -177,7 +182,7 @@ private fun ConversationListItem(
         Column(horizontalAlignment = Alignment.End) {
             row.lastMessageAt?.let { sentAt ->
                 Text(
-                    text = compactTimeAgo(sentAt, System.currentTimeMillis()),
+                    text = compactTimeAgo(sentAt, now),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

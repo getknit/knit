@@ -38,6 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.ui.util.compactTimeAgo
+import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import org.koin.androidx.compose.koinViewModel
 
 /**
@@ -51,6 +52,9 @@ fun DiagnosticsScreen(
     viewModel: DiagnosticsViewModel = koinViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    // A ticking clock so each node's "profile updated N ago" label recomposes as time passes; a bare
+    // System.currentTimeMillis() read would freeze at first composition (see rememberCurrentTimeMillis).
+    val now by rememberCurrentTimeMillis()
 
     Scaffold(
         topBar = {
@@ -84,7 +88,7 @@ fun DiagnosticsScreen(
             if (state.directNodes.isEmpty()) {
                 item { EmptyLine(stringResource(R.string.diagnostics_none_direct)) }
             } else {
-                items(state.directNodes, key = { it.nodeId }) { NodeRow(it) }
+                items(state.directNodes, key = { it.nodeId }) { NodeRow(it, now) }
             }
 
             item {
@@ -93,7 +97,7 @@ fun DiagnosticsScreen(
             if (state.relayNodes.isEmpty()) {
                 item { EmptyLine(stringResource(R.string.diagnostics_none_relay)) }
             } else {
-                items(state.relayNodes, key = { it.nodeId }) { NodeRow(it) }
+                items(state.relayNodes, key = { it.nodeId }) { NodeRow(it, now) }
             }
         }
     }
@@ -145,7 +149,7 @@ private fun MetricRow(label: String, value: String) {
 }
 
 @Composable
-private fun NodeRow(node: NodeInfo) {
+private fun NodeRow(node: NodeInfo, now: Long) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -172,7 +176,7 @@ private fun NodeRow(node: NodeInfo) {
             Text(
                 text = stringResource(
                     R.string.diagnostics_profile_age,
-                    compactTimeAgo(updatedAt, System.currentTimeMillis()),
+                    compactTimeAgo(updatedAt, now),
                 ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
