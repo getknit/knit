@@ -1,7 +1,10 @@
 package app.getknit.knit.di
 
+import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.crypto.IdentityKeyStore
+import app.getknit.knit.demo.DemoSeeder
+import app.getknit.knit.mesh.DemoTransport
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
@@ -25,7 +28,12 @@ val meshModule = module {
     single { PowerMonitor(androidContext(), get()) }
     // Bridges the mesh blob-exchange to the encrypted DB; materializes transfer temp files under cacheDir.
     single { MeshBlobStore(get(), File(androidContext().cacheDir, "blobtx")) }
-    single<MeshTransport> { NearbyTransport(androidContext(), get(), get(), get(), get()) }
+    // Demo-screenshot builds swap in a no-op transport that just reports a few connected neighbors
+    // (so the UI looks "connected" against the seeded data); production always uses NearbyTransport.
+    single<MeshTransport> {
+        if (BuildConfig.SEED_DEMO) DemoTransport(DemoSeeder.ONLINE_NODE_IDS)
+        else NearbyTransport(androidContext(), get(), get(), get(), get())
+    }
     // The E2E message cipher, built from this device's identity private keysets.
     single {
         val keys = get<IdentityKeyStore>().keys()

@@ -10,6 +10,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.MeshService
 import app.getknit.knit.ui.blocked.BlockedUsersScreen
@@ -40,16 +41,20 @@ private object Routes {
  * peer's node id for a 1:1 DM, or a group id. Starts the mesh foreground service once past onboarding.
  */
 @Composable
-fun KnitApp() {
+fun KnitApp(startRoute: String? = null) {
     val context = LocalContext.current
     val navController = rememberNavController()
-    val start = if (hasAllMeshPermissions(context)) Routes.CHAT_LIST else Routes.ONBOARDING
+    // Demo-screenshot mode skips the permission gate (and an optional [startRoute] jumps straight to a
+    // screen for deterministic capture); otherwise gate on permissions as usual.
+    val start = startRoute
+        ?: if (BuildConfig.SEED_DEMO || hasAllMeshPermissions(context)) Routes.CHAT_LIST else Routes.ONBOARDING
 
-    // Start the mesh service whenever the user is past onboarding (guard kept broad on purpose).
+    // Start the mesh service whenever the user is past onboarding (guard kept broad on purpose). Demo
+    // builds never start it — there is no real mesh and the seeded data needs no transport.
     val backStackEntry by navController.currentBackStackEntryAsState()
     LaunchedEffect(backStackEntry?.destination?.route) {
         val route = backStackEntry?.destination?.route
-        if (route != null && route != Routes.ONBOARDING) MeshService.start(context)
+        if (!BuildConfig.SEED_DEMO && route != null && route != Routes.ONBOARDING) MeshService.start(context)
     }
 
     NavHost(navController = navController, startDestination = start) {

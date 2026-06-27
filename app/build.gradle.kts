@@ -21,6 +21,16 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Demo-screenshot mode: when built with `-PseedDemo=true`, the app seeds a realistic data set
+        // and swaps in a no-op transport so every screen renders populated on an emulator (no real
+        // mesh). Defaults false, so release/normal builds are unaffected. See DemoSeeder/DemoTransport.
+        val seedDemo = (project.findProperty("seedDemo") as? String)?.toBoolean() == true
+        buildConfigField("boolean", "SEED_DEMO", seedDemo.toString())
+        // Which seed scenario DemoSeeder loads: "hiking" (default) or "festival". Only meaningful when
+        // seedDemo is on; picks the persona/message/avatar set so we can shoot multiple marketing themes.
+        val demoTheme = (project.findProperty("demoTheme") as? String) ?: "hiking"
+        buildConfigField("String", "DEMO_THEME", "\"$demoTheme\"")
     }
 
     buildTypes {
@@ -36,6 +46,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     androidResources {
         // On-device model files must stay uncompressed so TFLite can mmap them from the APK.
