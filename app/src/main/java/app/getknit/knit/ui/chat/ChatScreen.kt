@@ -382,6 +382,9 @@ fun ChatScreen(
                 items(state.rows, key = { it.id }) { row ->
                     MessageBubble(
                         row,
+                        // In a 1:1 DM the peer's name is in the top bar, so don't repeat it on every
+                        // received bubble; show it only where multiple people can speak.
+                        showSenderName = state.isRoom || state.isGroup,
                         onImageClick = { fullscreenImage = it },
                         onOpenProfile = onOpenProfile,
                         onReact = viewModel::react,
@@ -529,6 +532,7 @@ private val REACTION_EMOJI = listOf("👍", "❤️", "😂", "😮", "😢", "�
 @Composable
 private fun MessageBubble(
     row: ChatRow,
+    showSenderName: Boolean,
     onImageClick: (BlobImage) -> Unit,
     onOpenProfile: (nodeId: String) -> Unit,
     onReact: (messageId: String, emoji: String) -> Unit,
@@ -551,7 +555,7 @@ private fun MessageBubble(
         horizontalArrangement = if (row.mine) Arrangement.End else Arrangement.Start,
         verticalAlignment = Alignment.Bottom,
     ) {
-        if (!row.mine) {
+        if (!row.mine && showSenderName) {
             Avatar(
                 avatarHash = row.avatarHash,
                 name = row.senderName,
@@ -582,7 +586,7 @@ private fun MessageBubble(
                         ),
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        if (!row.mine) {
+                        if (!row.mine && showSenderName) {
                             Text(
                                 text = row.senderName,
                                 style = MaterialTheme.typography.labelMedium,
