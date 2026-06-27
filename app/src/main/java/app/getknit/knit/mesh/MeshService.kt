@@ -138,7 +138,11 @@ class MeshService : LifecycleService() {
             NOTIFICATION_ID,
             notification,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                // location lets Nearby discovery keep scanning while backgrounded (screen off); without
+                // it a "while in use" location grant is withheld from the service and discovery fails
+                // with error 8034 — see AndroidManifest.xml.
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
             } else {
                 0
             },

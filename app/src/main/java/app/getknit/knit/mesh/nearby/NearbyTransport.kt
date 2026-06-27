@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.nearby
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.FileKind
@@ -103,8 +104,13 @@ class NearbyTransport(
     private val nodeToEndpoint = ConcurrentHashMap<String, String>()
     private val connected = ConcurrentHashMap.newKeySet<String>() // connected endpointIds
     private val connecting = ConcurrentHashMap.newKeySet<String>() // in-flight connection requests
-    private val errorCounts = ConcurrentHashMap<String, Int>()
-    private val blacklisted = ConcurrentHashMap.newKeySet<String>()
+
+    // Per-endpoint connection backoff. A failed connect (often a transient BLE GATT-bootstrap failure
+    // when the peer's radio is busy) widens the next-attempt delay exponentially, so an unreachable
+    // peer isn't re-attempted every discovery burst — which would waste BLE airtime that the working
+    // links and discovery need. Cleared on a successful connection so a later drop reconnects promptly.
+    private data class Retry(val attemptAt: Long, val delayMs: Long)
+    private val retry = ConcurrentHashMap<String, Retry>()
 
     private lateinit var localNodeId: String
     private var discoveryJob: Job? = null
@@ -135,6 +141,7 @@ class NearbyTransport(
         runCatching { client.stopAdvertising() }
         runCatching { client.stopDiscovery() }
         endpointToNode.clear(); nodeToEndpoint.clear(); connected.clear(); connecting.clear()
+        retry.clear()
         _neighbors.value = emptySet()
     }
 
@@ -161,11 +168,16 @@ class NearbyTransport(
     }
 
     override fun heal() {
-        // Wake the discovery loop now, and retry any known endpoints we're not connected to.
+        // Wake the discovery loop now, and retry any known endpoints we're not connected to. heal() is
+        // an explicit recovery signal (heartbeat / motion / Bluetooth recovery) that fires rarely, so
+        // it clears each disconnected peer's backoff to force an immediate fresh attempt.
         healSignal.trySend(Unit)
         endpointToNode.keys
-            .filter { it !in connected && it !in blacklisted }
-            .forEach { connectTo(it) }
+            .filter { it !in connected }
+            .forEach { endpointId ->
+                retry.remove(endpointId)
+                connectTo(endpointId)
+            }
     }
 
     // --- Advertising / discovery ---
@@ -209,7 +221,10 @@ class NearbyTransport(
     }
 
     private fun connectTo(endpointId: String) {
-        if (endpointId in connected || endpointId in blacklisted) return
+        if (endpointId in connected) return
+        // Honor the per-endpoint backoff window: a peer that just failed isn't re-attempted until its
+        // next-attempt time, even though discovery keeps re-finding it and calling connectTo.
+        retry[endpointId]?.let { if (SystemClock.elapsedRealtime() < it.attemptAt) return }
         if (!connecting.add(endpointId)) return // a request is already in flight for this endpoint
         // Requests run one-at-a-time on connectDispatcher; await() lets each finish before the next.
         scope.launch(connectDispatcher) {
@@ -217,12 +232,17 @@ class NearbyTransport(
                 client.requestConnection(localNodeId, endpointId, lifecycleCallback).await()
             }.onFailure { e ->
                 connecting.remove(endpointId)
-                val count = (errorCounts[endpointId] ?: 0) + 1
-                errorCounts[endpointId] = count
-                if (count >= MAX_ENDPOINT_ERRORS) blacklisted.add(endpointId)
-                Log.w(TAG, "requestConnection to $endpointId failed ($count)", e)
+                scheduleRetry(endpointId)
+                Log.w(TAG, "requestConnection to $endpointId failed; backing off", e)
             }
         }
+    }
+
+    /** Widen this endpoint's retry delay (exponential, capped) and stamp its next eligible attempt. */
+    private fun scheduleRetry(endpointId: String) {
+        val prev = retry[endpointId]?.delayMs ?: 0L
+        val next = if (prev <= 0L) RETRY_BASE_MS else (prev * 2).coerceAtMost(RETRY_MAX_MS)
+        retry[endpointId] = Retry(SystemClock.elapsedRealtime() + next, next)
     }
 
     private val discoveryCallback = object : EndpointDiscoveryCallback() {
@@ -250,8 +270,10 @@ class NearbyTransport(
             connecting.remove(endpointId)
             if (resolution.status.statusCode == ConnectionsStatusCodes.STATUS_OK) {
                 connected.add(endpointId)
-                errorCounts.remove(endpointId)
+                retry.remove(endpointId) // reset backoff so a later drop reconnects without delay
                 refreshNeighbors()
+            } else {
+                scheduleRetry(endpointId)
             }
         }
 
@@ -366,7 +388,9 @@ class NearbyTransport(
         const val SERVICE_ID = "app.getknit.knit.MESH"
         val STRATEGY: Strategy = Strategy.P2P_CLUSTER
 
-        const val MAX_ENDPOINT_ERRORS = 10
+        // Connection retry backoff: first retry after 5s, doubling to a 5-minute ceiling.
+        const val RETRY_BASE_MS = 5_000L
+        const val RETRY_MAX_MS = 5 * 60_000L
 
         // "KFH1" — distinguishes a file-header BYTES payload from a CBOR mesh frame (which never
         // begins with these bytes; a guard test in WireSerializationTest pins this down).

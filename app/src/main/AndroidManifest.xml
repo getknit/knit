@@ -18,9 +18,14 @@
 
     <!-- Location: Nearby Connections' discovery requires location at runtime on ALL supported API
          levels, including Android 13+. neverForLocation does NOT exempt it (verified: capping these
-         to maxSdkVersion=32 caused error 8034 on API 36). Keep them uncapped and granted. -->
+         to maxSdkVersion=32 caused error 8034 on API 36). Keep them uncapped and granted.
+         BACKGROUND_LOCATION ("Allow all the time") is required so discovery keeps running with the
+         screen off: a "while in use" grant is only delivered to MeshService while the app is in the
+         foreground, so an overnight/backgrounded device stops discovering (error 8034) and can only
+         be found, never initiate — see the foreground-service location type below. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
     <!-- QR identity verification (scan a peer's key) -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -29,6 +34,8 @@
     <!-- Always-on mesh foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Lets MeshService deliver "while in use" location to Nearby discovery while backgrounded. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
@@ -58,7 +65,7 @@
         <service
             android:name=".mesh.MeshService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|location" />
 
         <receiver
             android:name=".notifications.NotificationDismissReceiver"

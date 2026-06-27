@@ -27,3 +27,17 @@ fun hasAllMeshPermissions(context: Context): Boolean =
     requiredMeshPermissions().all {
         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
     }
+
+/**
+ * Whether "Allow all the time" (background) location is granted. Nearby discovery keeps scanning with
+ * the screen off only when [MeshService] can reach location while backgrounded, which needs this on
+ * top of foreground location — without it a backgrounded device stops discovering (error 8034) and
+ * can only be found, never initiate. Request it *separately and after* [requiredMeshPermissions] are
+ * granted: the system only offers "all the time" once foreground location is held, and silently
+ * denies it if bundled into the same request on API 30+.
+ */
+fun hasBackgroundLocation(context: Context): Boolean =
+    ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+    ) == PackageManager.PERMISSION_GRANTED

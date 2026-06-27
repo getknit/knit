@@ -22,6 +22,9 @@
     <string name="onboarding_blurb">Knit connects to nearby phones over Bluetooth and Wi-Fi to relay encrypted messages — no internet, no servers. It needs nearby-device and location permissions to find peers, and works best when allowed to run in the background.</string>
     <string name="onboarding_grant_permissions">Grant permissions</string>
     <string name="onboarding_permissions_granted">Permissions granted</string>
+    <string name="onboarding_background_location">Allow location all the time</string>
+    <string name="onboarding_background_location_granted">Location: allowed all the time</string>
+    <string name="onboarding_background_location_blurb">For the mesh to keep finding peers while your screen is off, set location to \"Allow all the time.\"</string>
     <string name="onboarding_start">Start meshing</string>
 
     <!-- Chat -->
