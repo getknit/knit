@@ -8,17 +8,22 @@ import app.getknit.knit.R
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GallerySaver
+import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.group.GroupEntity
+import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.groupTitle
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.notifications.Notifier
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -80,11 +85,16 @@ data class ChatUiState(
     val avatarHash: String? = null,
     // True when this DM's peer is blocked, so the header offers "Unblock" instead of "Block".
     val isBlocked: Boolean = false,
+    // True when this thread is a group chat; [memberCount] sizes the header subtitle. The header then
+    // offers "Rename group" / "Leave group" instead of Block/Unblock.
+    val isGroup: Boolean = false,
+    val memberCount: Int = 0,
 )
 
 class ChatViewModel(
     private val conversationId: String,
     private val messages: MessageRepository,
+    private val groups: GroupRepository,
     peers: PeerRepository,
     private val reactions: ReactionRepository,
     private val meshManager: MeshManager,
@@ -139,6 +149,7 @@ class ChatViewModel(
         val reactions: List<ReactionEntity>,
         val blocked: Set<String>,
         val presentHashes: Set<String>,
+        val group: GroupEntity?,
     )
 
     private val messagesWithReactions = combine(
@@ -146,8 +157,9 @@ class ChatViewModel(
         reactions.observeReactions(),
         settings.blockedNodeIds,
         blobs.observeHashes(),
-    ) { msgs, reacts, blocked, hashes ->
-        MessagesBundle(msgs.filter { it.senderId !in blocked }, reacts, blocked, hashes.toSet())
+        groups.observeGroup(conversationId),
+    ) { msgs, reacts, blocked, hashes, group ->
+        MessagesBundle(msgs.filter { it.senderId !in blocked }, reacts, blocked, hashes.toSet(), group)
     }
 
     val state: StateFlow<ChatUiState> = combine(
@@ -161,6 +173,9 @@ class ChatViewModel(
         val reacts = bundle.reactions
         val blocked = bundle.blocked
         val presentHashes = bundle.presentHashes
+        val group = bundle.group
+        val isGroup = group != null
+        val members = group?.let { GroupMembersStore.decode(it.members) }.orEmpty()
         val peersByNode = peerList.associateBy { it.nodeId }
         // Group once, then tally per emoji within each message's bucket. Orphan reactions (no matching
         // message yet) simply never produce a row until their message arrives.
@@ -194,9 +209,9 @@ class ChatViewModel(
                 reactions = tallies,
             )
         }
-        // Autocomplete candidates: everyone we've received a message from, resolved to a display name.
-        val candidates = msgs.asSequence()
-            .map { it.senderId }
+        // Autocomplete candidates: everyone we've received a message from, plus a group's roster (so
+        // @-mentions work in a fresh group before anyone has spoken), resolved to a display name.
+        val candidates = (msgs.map { it.senderId } + members).asSequence()
             .filter { it != me }
             .distinct()
             .map { id ->
@@ -214,13 +229,21 @@ class ChatViewModel(
             myNodeId = me.orEmpty(),
             mentionCandidates = candidates,
             isRoom = isRoom,
-            title = if (isRoom) {
-                context.getString(R.string.nearby_title)
-            } else {
-                displayNameFor(peersByNode[conversationId]?.name, conversationId)
+            title = when {
+                group != null -> groupTitle(
+                    storedName = group.name,
+                    memberIds = members,
+                    selfId = me,
+                    fallback = context.getString(R.string.group_unnamed),
+                ) { id -> displayNameFor(peersByNode[id]?.name, id) }
+                isRoom -> context.getString(R.string.nearby_title)
+                else -> displayNameFor(peersByNode[conversationId]?.name, conversationId)
             },
-            avatarHash = if (isRoom) null else peersByNode[conversationId]?.avatarHash,
-            isBlocked = !isRoom && conversationId in blocked,
+            // Groups and the room use a glyph, not a peer avatar.
+            avatarHash = if (isRoom || isGroup) null else peersByNode[conversationId]?.avatarHash,
+            isBlocked = !isRoom && !isGroup && conversationId in blocked,
+            isGroup = isGroup,
+            memberCount = members.size,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom))
 
@@ -229,9 +252,58 @@ class ChatViewModel(
         val attachment = _pendingAttachment.value
         if (trimmed.isEmpty() && attachment == null) return
         _pendingAttachment.value = null
-        // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
-        val recipientId = if (isRoom) null else conversationId
-        viewModelScope.launch { meshManager.sendChat(trimmed, attachment, mentions, recipientId) }
+        viewModelScope.launch {
+            // Re-read the group at send time so it's never misrouted as a DM in a startup race, and so a
+            // pending rename rides this message (its GroupInfo.name converges last-writer-wins).
+            val group = if (isRoom) null else groups.find(conversationId)
+            if (group != null) {
+                val info = GroupInfo(
+                    id = group.groupId,
+                    // Only a renamed group carries a shared name; unnamed groups stay locally-titled.
+                    name = group.name.takeIf { it.isNotBlank() },
+                    members = GroupMembersStore.decode(group.members),
+                    createdBy = group.createdBy,
+                )
+                meshManager.sendChat(trimmed, attachment, mentions, recipientId = null, group = info)
+            } else {
+                // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
+                val recipientId = if (isRoom) null else conversationId
+                meshManager.sendChat(trimmed, attachment, mentions, recipientId)
+            }
+        }
+    }
+
+    /**
+     * Renames this group: updates the local store immediately and floods a [GroupUpdateFrame] so members
+     * converge right away (no waiting for the next message). The name is last-writer-wins by timestamp.
+     */
+    fun renameGroup(newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch {
+            val group = groups.find(conversationId) ?: return@launch
+            val updated = group.copy(name = trimmed, nameUpdatedAt = System.currentTimeMillis())
+            groups.upsert(updated)
+            meshManager.sendGroupUpdate(
+                GroupInfo(
+                    id = updated.groupId,
+                    name = updated.name,
+                    members = GroupMembersStore.decode(updated.members),
+                    createdBy = updated.createdBy,
+                ),
+            )
+        }
+    }
+
+    /**
+     * Leaves this group: tombstones it (so its frames stop being delivered and it can't be resurrected)
+     * and deletes its messages, then closes the screen. Emitted only after the leave persists.
+     */
+    fun leaveGroup() {
+        viewModelScope.launch {
+            groups.leave(conversationId)
+            _closeChat.tryEmit(Unit)
+        }
     }
 
     /** Toggles the local user's [emoji] reaction on [messageId] (add / replace / remove) and floods it. */

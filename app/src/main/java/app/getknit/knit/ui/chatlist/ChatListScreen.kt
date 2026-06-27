@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Person
@@ -198,25 +199,39 @@ private fun ConversationListItem(
     }
 }
 
-/** The circular leading glyph: the knit logo for the room, an [Avatar] for a person (future DMs). */
+/** The circular leading glyph: the knit logo for the room, a people glyph for a group, an [Avatar] for a DM. */
 @Composable
 private fun LeadingVisual(row: ConversationRow) {
     val size = 52.dp
-    if (row.isRoom) {
-        Box(
-            modifier = Modifier
-                .size(size)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.secondaryContainer),
-            contentAlignment = Alignment.Center,
-        ) {
+    when {
+        row.isRoom -> CircleGlyph(size) {
             Icon(
                 painter = painterResource(R.drawable.ic_stat_mesh),
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
             )
         }
-    } else {
-        Avatar(avatarHash = row.avatarHash, name = row.title, size = size)
+        row.isGroup -> CircleGlyph(size) {
+            Icon(
+                Icons.Filled.Group,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+        }
+        else -> Avatar(avatarHash = row.avatarHash, name = row.title, size = size)
+    }
+}
+
+/** A circular tinted container for a leading glyph (room logo / group icon). */
+@Composable
+private fun CircleGlyph(size: androidx.compose.ui.unit.Dp, content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.secondaryContainer),
+        contentAlignment = Alignment.Center,
+    ) {
+        content()
     }
 }

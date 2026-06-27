@@ -27,6 +27,10 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE id = :id")
     suspend fun deleteById(id: String)
 
+    /** Removes every message in a thread (used when leaving a group, so the thread vanishes). */
+    @Query("DELETE FROM messages WHERE conversationId = :conversationId")
+    suspend fun deleteByConversation(conversationId: String)
+
     /** How many messages still reference [hash] — guards deleting a shared, content-addressed blob. */
     @Query("SELECT COUNT(*) FROM messages WHERE attachmentHash = :hash")
     suspend fun countByAttachmentHash(hash: String): Int

@@ -49,6 +49,27 @@ data class Mention(
 /** True when these mentions target [nodeId] (typically the receiver's own id). */
 fun List<Mention>.mention(nodeId: String): Boolean = any { it.nodeId == nodeId }
 
+/**
+ * Group-chat metadata carried on every group [ChatFrame] so the message is self-describing: any node
+ * that receives one can (re)construct the group from scratch, with no separate invite/create frame —
+ * robust against flood loss and late joiners on a lossy mesh. [id] is derived deterministically from
+ * the member set (see [app.getknit.knit.data.message.Conversations.groupIdFor]) so the same people
+ * always resolve to the same group — no duplicate threads — and it can't collide in conversation-id
+ * space; [name] is set ONLY by an explicit rename (converges last-writer-wins by the frame's
+ * [ChatFrame.sentAt]) and is null for an unnamed group, where each device renders its own default from
+ * the members ([app.getknit.knit.data.message.groupTitle]); [members] is the fixed roster (capped at 8
+ * incl. the creator); [createdBy] is the creator's node id, used to refuse a group a blocked user tries
+ * to start on this device. A plain nested `@Serializable` value (like [Mention]) — never a [Frame], so
+ * no [SerialName] discriminator.
+ */
+@Serializable
+data class GroupInfo(
+    val id: String,
+    val name: String? = null,
+    val members: List<String>,
+    val createdBy: String,
+)
+
 @Serializable
 @SerialName("chat")
 data class ChatFrame(
@@ -62,6 +83,26 @@ data class ChatFrame(
     // Reference to an out-of-band image blob (fetched by content hash); null for text-only messages.
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,
+    // Set on group-chat messages; null for the broadcast room and 1:1 DMs (recipientId stays null for
+    // groups — the group field, not recipientId, addresses the thread). Omitted on the wire when null.
+    val group: GroupInfo? = null,
+    override val ttl: Int = DEFAULT_TTL,
+    override val hops: Int = 0,
+) : Frame
+
+/**
+ * Floods a group's metadata ([group]) on its own, independent of any chat message — so a rename (or a
+ * just-created group) reaches members immediately rather than waiting for the next [ChatFrame]. Carries
+ * no body; receivers reconcile their stored group (last-writer-wins on [sentAt] for the name) without
+ * persisting a message. A member who doesn't yet know the group will create it from the carried roster.
+ */
+@Serializable
+@SerialName("groupupdate")
+data class GroupUpdateFrame(
+    override val id: String,
+    val senderId: String,
+    val sentAt: Long,
+    val group: GroupInfo,
     override val ttl: Int = DEFAULT_TTL,
     override val hops: Int = 0,
 ) : Frame
@@ -134,6 +175,7 @@ data class BlobRequestFrame(
 /** Returns a copy of this frame with its hop count incremented (used when relaying). */
 fun Frame.incrementHop(): Frame = when (this) {
     is ChatFrame -> copy(hops = hops + 1)
+    is GroupUpdateFrame -> copy(hops = hops + 1)
     is ProfileFrame -> copy(hops = hops + 1)
     is ReceiptFrame -> copy(hops = hops + 1)
     is ReactionFrame -> copy(hops = hops + 1)

@@ -22,6 +22,9 @@ class MessageRepository(private val dao: MessageDao) {
     /** Deletes a single message from this device only. */
     suspend fun delete(id: String) = dao.deleteById(id)
 
+    /** Deletes all messages in a thread from this device only (used when leaving a group). */
+    suspend fun deleteByConversation(conversationId: String) = dao.deleteByConversation(conversationId)
+
     /** Number of messages still referencing [hash] (0 once an attachment's last message is gone). */
     suspend fun countByAttachmentHash(hash: String): Int = dao.countByAttachmentHash(hash)
 

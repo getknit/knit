@@ -12,14 +12,16 @@ import org.koin.core.module.dsl.viewModel
 import org.koin.dsl.module
 
 val uiModule = module {
-    // ChatViewModel takes the conversationId (the Nearby room or a peer's node id) as a runtime param.
+    // ChatViewModel takes the conversationId (the Nearby room, a peer's node id, or a group id) as a
+    // runtime param; the rest (incl. GroupRepository) are resolved by type.
     viewModel { params ->
         ChatViewModel(
-            params.get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), androidContext(),
+            params.get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(),
+            androidContext(),
         )
     }
-    viewModel { ChatListViewModel(get(), get(), get(), get(), get(), androidContext()) }
-    viewModel { ContactsViewModel(get(), get(), get(), get()) }
+    viewModel { ChatListViewModel(get(), get(), get(), get(), get(), get(), androidContext()) }
+    viewModel { ContactsViewModel(get(), get(), get(), get(), get()) }
     viewModel { DiagnosticsViewModel(get(), get(), get(), get(), get()) }
     viewModel { ProfileViewModel(get(), get(), get(), get()) }
     // ProfileDetailsViewModel takes the tapped peer's node id as a runtime param.

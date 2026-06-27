@@ -54,6 +54,20 @@
     <string name="chat_action_unblock">Unblock user</string>
     <string name="chat_user_blocked">User blocked</string>
     <string name="chat_user_unblocked">User unblocked</string>
+
+    <!-- Group chat -->
+    <string name="group_unnamed">Group</string>
+    <plurals name="chat_group_member_count">
+        <item quantity="one">%d member</item>
+        <item quantity="other">%d members</item>
+    </plurals>
+    <string name="chat_group_rename">Rename group</string>
+    <string name="chat_group_name_label">Group name</string>
+    <string name="chat_group_rename_action">Rename</string>
+    <string name="chat_group_leave">Leave group</string>
+    <string name="chat_group_leave_confirm_title">Leave group?</string>
+    <string name="chat_group_leave_confirm_body">You\'ll stop receiving messages and this chat will be removed from this device.</string>
+    <string name="chat_group_leave_confirm_action">Leave</string>
     <string name="blocked_users_title">Blocked users</string>
     <string name="blocked_users_empty">No blocked users</string>
     <string name="blocked_users_unblock">Unblock</string>
@@ -62,6 +76,10 @@
     <string name="contacts_title">New message</string>
     <string name="contacts_new_message">New message</string>
     <string name="contacts_empty">No one to message yet.\nConnect with nearby people first.</string>
+    <string name="contacts_start_chat">Start chat</string>
+    <string name="contacts_selected">Selected</string>
+    <string name="contacts_not_selected">Not selected</string>
+    <string name="contacts_group_full">Groups can have up to %1$d people</string>
 
     <!-- Chat list -->
     <string name="nearby_title">Nearby</string>

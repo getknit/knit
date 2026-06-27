@@ -24,5 +24,7 @@ val meshModule = module {
     // Bridges the mesh blob-exchange to the encrypted DB; materializes transfer temp files under cacheDir.
     single { MeshBlobStore(get(), File(androidContext().cacheDir, "blobtx")) }
     single<MeshTransport> { NearbyTransport(androidContext(), get(), get(), get(), get()) }
-    single { MeshManager(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
+    // Constructor order: transport, messages, groups, reactions, peers, identity, settings, blobs,
+    // blobStore, notifier, scope, metrics.
+    single { MeshManager(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
 }

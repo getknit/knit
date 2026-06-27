@@ -54,6 +54,7 @@ import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Block
@@ -63,6 +64,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -74,6 +77,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -103,6 +107,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.toClipEntry
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -151,6 +156,8 @@ fun ChatScreen(
     val pendingMentions = remember { mutableStateListOf<Mention>() }
     var fullscreenImage by remember { mutableStateOf<BlobImage?>(null) }
     var headerMenuOpen by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var showLeaveConfirm by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     // Modern Android Photo Picker — needs no runtime permission. ImageOnly still includes GIFs.
@@ -206,37 +213,66 @@ fun ChatScreen(
                     }
                 },
                 title = {
-                    if (state.isRoom) {
-                        Column {
-                            Text(
-                                text = stringResource(R.string.nearby_title),
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            ConnectionStatusRow(state.neighborCount)
+                    when {
+                        state.isRoom -> {
+                            Column {
+                                Text(
+                                    text = stringResource(R.string.nearby_title),
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                                ConnectionStatusRow(state.neighborCount)
+                            }
                         }
-                    } else {
-                        // 1:1 DM: peer avatar + name, Signal-style.
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Avatar(
-                                avatarHash = state.avatarHash,
-                                name = state.title,
-                                size = 36.dp,
-                                onClick = { onOpenProfile(conversationId) },
-                            )
-                            Spacer(Modifier.width(10.dp))
-                            Text(
-                                text = state.title,
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
+                        state.isGroup -> {
+                            // Group: a people glyph + name + member count.
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                GroupGlyph(size = 36.dp)
+                                Spacer(Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = state.title,
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = pluralStringResource(
+                                            R.plurals.chat_group_member_count,
+                                            state.memberCount,
+                                            state.memberCount,
+                                        ),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                        else -> {
+                            // 1:1 DM: peer avatar + name, Signal-style.
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Avatar(
+                                    avatarHash = state.avatarHash,
+                                    name = state.title,
+                                    size = 36.dp,
+                                    onClick = { onOpenProfile(conversationId) },
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    text = state.title,
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
                         }
                     }
                 },
                 actions = {
-                    // Block/Unblock lives only on DM threads — blocking the broadcast room is meaningless.
+                    // The overflow lives on DM and group threads — the broadcast room has no actions.
                     if (!state.isRoom) {
                         Box {
                             IconButton(onClick = { headerMenuOpen = true }) {
@@ -249,22 +285,43 @@ fun ChatScreen(
                                 expanded = headerMenuOpen,
                                 onDismissRequest = { headerMenuOpen = false },
                             ) {
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            stringResource(
-                                                if (state.isBlocked) R.string.chat_action_unblock
-                                                else R.string.chat_action_block,
-                                            ),
-                                        )
-                                    },
-                                    leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
-                                    onClick = {
-                                        headerMenuOpen = false
-                                        if (state.isBlocked) viewModel.unblock(conversationId)
-                                        else viewModel.block(conversationId)
-                                    },
-                                )
+                                if (state.isGroup) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.chat_group_rename)) },
+                                        leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            showRenameDialog = true
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.chat_group_leave)) },
+                                        leadingIcon = {
+                                            Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null)
+                                        },
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            showLeaveConfirm = true
+                                        },
+                                    )
+                                } else {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                stringResource(
+                                                    if (state.isBlocked) R.string.chat_action_unblock
+                                                    else R.string.chat_action_block,
+                                                ),
+                                            )
+                                        },
+                                        leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            if (state.isBlocked) viewModel.unblock(conversationId)
+                                            else viewModel.block(conversationId)
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -336,6 +393,95 @@ fun ChatScreen(
             onSave = { viewModel.saveAttachment(image.hash) },
         )
     }
+
+    if (showRenameDialog) {
+        RenameGroupDialog(
+            currentName = state.title,
+            onDismiss = { showRenameDialog = false },
+            onRename = { name ->
+                viewModel.renameGroup(name)
+                showRenameDialog = false
+            },
+        )
+    }
+
+    if (showLeaveConfirm) {
+        AlertDialog(
+            onDismissRequest = { showLeaveConfirm = false },
+            title = { Text(stringResource(R.string.chat_group_leave_confirm_title)) },
+            text = { Text(stringResource(R.string.chat_group_leave_confirm_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLeaveConfirm = false
+                    viewModel.leaveGroup()
+                }) {
+                    Text(
+                        text = stringResource(R.string.chat_group_leave_confirm_action),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLeaveConfirm = false }) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+            },
+        )
+    }
+}
+
+/** Circular people glyph used as a group's leading visual, mirroring the chat-list room logo style. */
+@Composable
+private fun GroupGlyph(size: androidx.compose.ui.unit.Dp) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.secondaryContainer),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Filled.Group,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.size(size * 0.6f),
+        )
+    }
+}
+
+/** Dialog to rename a group; pre-fills the current name and disables Rename when the field is blank. */
+@Composable
+private fun RenameGroupDialog(
+    currentName: String,
+    onDismiss: () -> Unit,
+    onRename: (String) -> Unit,
+) {
+    var name by remember { mutableStateOf(currentName) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.chat_group_rename)) },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                singleLine = true,
+                label = { Text(stringResource(R.string.chat_group_name_label)) },
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onRename(name) },
+                enabled = name.isNotBlank(),
+            ) {
+                Text(stringResource(R.string.chat_group_rename_action))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(android.R.string.cancel))
+            }
+        },
+    )
 }
 
 /** The short set of quick reactions offered when long-pressing a message. */

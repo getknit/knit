@@ -3,6 +3,7 @@ package app.getknit.knit
 import app.getknit.knit.data.message.Conversations
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -37,5 +38,44 @@ class ConversationsTest {
         assertTrue(Conversations.isForMe(recipientId = null, selfId = "a"))
         assertTrue(Conversations.isForMe(recipientId = "a", selfId = "a"))
         assertFalse(Conversations.isForMe(recipientId = "b", selfId = "a"))
+    }
+
+    @Test
+    fun groupIdWinsOverRecipientAndSelf() {
+        // A group message belongs to the group's thread no matter who sent it or who's looking.
+        assertEquals("grp-1", Conversations.idFor(senderId = "a", recipientId = null, selfId = "a", groupId = "grp-1"))
+        assertEquals("grp-1", Conversations.idFor(senderId = "b", recipientId = null, selfId = "a", groupId = "grp-1"))
+    }
+
+    @Test
+    fun isGroupMemberChecksTheRoster() {
+        assertTrue(Conversations.isGroupMember(listOf("a", "b", "c"), selfId = "a"))
+        assertFalse(Conversations.isGroupMember(listOf("b", "c"), selfId = "a"))
+    }
+
+    @Test
+    fun groupIdIsOrderAgnosticAndDedupingSoTheSameSetResolvesToOneGroup() {
+        val a = Conversations.groupIdFor(listOf("alice", "bob", "carol"))
+        val reordered = Conversations.groupIdFor(listOf("carol", "alice", "bob"))
+        val withDupes = Conversations.groupIdFor(listOf("bob", "carol", "alice", "bob"))
+        assertEquals(a, reordered)
+        assertEquals(a, withDupes)
+    }
+
+    @Test
+    fun differentMemberSetsGetDifferentGroupIds() {
+        val abc = Conversations.groupIdFor(listOf("alice", "bob", "carol"))
+        val abd = Conversations.groupIdFor(listOf("alice", "bob", "dave"))
+        val ab = Conversations.groupIdFor(listOf("alice", "bob"))
+        assertNotEquals(abc, abd)
+        assertNotEquals(abc, ab)
+    }
+
+    @Test
+    fun groupIdCannotCollideWithNodeIdsOrTheRoom() {
+        val id = Conversations.groupIdFor(listOf("alice", "bob"))
+        // The "g-" prefix (with a hyphen) keeps it out of the 8-char [a-z0-9] node-id space and != NEARBY.
+        assertTrue(id.startsWith(Conversations.GROUP_ID_PREFIX))
+        assertNotEquals(Conversations.NEARBY, id)
     }
 }

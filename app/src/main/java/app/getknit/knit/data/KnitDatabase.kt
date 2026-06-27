@@ -7,6 +7,8 @@ import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
 import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
+import app.getknit.knit.data.group.GroupDao
+import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerDao
@@ -17,7 +19,10 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 import java.io.File
 
 @Database(
-    entities = [MessageEntity::class, PeerEntity::class, ReactionEntity::class, BlobEntity::class],
+    entities = [
+        MessageEntity::class, PeerEntity::class, ReactionEntity::class, BlobEntity::class,
+        GroupEntity::class,
+    ],
     // v2: messages gained attachmentHash/attachmentMime/attachmentPath (destructive migration).
     // v3: messages gained a mentions JSON column (destructive migration; app not yet public).
     // v4: added the reactions table (destructive migration; app not yet public).
@@ -25,7 +30,8 @@ import java.io.File
     // v6: images moved into the encrypted `blobs` table; messages dropped attachmentPath, peers
     //     swapped avatarPath for avatarHash. Destructive migration; the now-orphaned plaintext image
     //     files are purged on upgrade (see [purgeLegacyImageFiles]).
-    version = 6,
+    // v7: added the groups table for group chat. Destructive migration; app not yet public.
+    version = 7,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {
@@ -33,6 +39,7 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun peerDao(): PeerDao
     abstract fun reactionDao(): ReactionDao
     abstract fun blobDao(): BlobDao
+    abstract fun groupDao(): GroupDao
 
     companion object {
         /**

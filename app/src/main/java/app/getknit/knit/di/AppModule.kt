@@ -8,6 +8,7 @@ import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GallerySaver
+import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -42,8 +43,10 @@ val appModule = module {
     single { get<KnitDatabase>().peerDao() }
     single { get<KnitDatabase>().reactionDao() }
     single { get<KnitDatabase>().blobDao() }
+    single { get<KnitDatabase>().groupDao() }
     single { MessageRepository(get()) }
     single { PeerRepository(get()) }
     single { ReactionRepository(get()) }
     single { BlobRepository(get(), get(), get(), get()) }
+    single { GroupRepository(get(), get()) }
 }

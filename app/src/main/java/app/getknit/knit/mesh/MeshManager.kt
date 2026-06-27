@@ -2,10 +2,13 @@ package app.getknit.knit.mesh
 
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
+import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.group.GroupEntity
+import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
@@ -16,6 +19,8 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.Frame
+import app.getknit.knit.mesh.protocol.GroupInfo
+import app.getknit.knit.mesh.protocol.GroupUpdateFrame
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileFrame
 import app.getknit.knit.mesh.protocol.ReactionFrame
@@ -52,6 +57,7 @@ import java.util.concurrent.ConcurrentHashMap
 class MeshManager(
     private val transport: MeshTransport,
     private val messages: MessageRepository,
+    private val groups: GroupRepository,
     private val reactions: ReactionRepository,
     private val peers: PeerRepository,
     private val identity: Identity,
@@ -157,14 +163,16 @@ class MeshManager(
      * neighbors will pull it by hash and it propagates outward from there.
      *
      * [recipientId] null sends to the broadcast room; a node id sends a 1:1 DM addressed to that
-     * peer. DMs still flood (no routing table yet) — only the addressed recipient delivers/acks them
-     * locally; relays forward the frame untouched.
+     * peer. A non-null [group] sends a group message (recipientId stays null) — the [GroupInfo] rides
+     * on the frame so members can (re)build the group from it. All three still flood (no routing table
+     * yet); only the addressed recipient(s) deliver/ack, while relays forward the frame untouched.
      */
     suspend fun sendChat(
         text: String,
         attachment: AttachmentStore.Ingested? = null,
         mentions: List<Mention> = emptyList(),
         recipientId: String? = null,
+        group: GroupInfo? = null,
     ) {
         val me = identity.nodeId()
         val frame = ChatFrame(
@@ -176,13 +184,14 @@ class MeshManager(
             mentions = mentions,
             attachmentHash = attachment?.hash,
             attachmentMime = attachment?.mime,
+            group = group,
         )
         messages.save(
             MessageEntity(
                 id = frame.id,
                 senderId = me,
                 recipientId = recipientId,
-                conversationId = Conversations.idFor(me, recipientId, me),
+                conversationId = Conversations.idFor(me, recipientId, me, group?.id),
                 body = text,
                 sentAt = frame.sentAt,
                 received = false,
@@ -192,6 +201,22 @@ class MeshManager(
             ),
         )
         router.originate(frame)
+    }
+
+    /**
+     * Floods a group metadata update (e.g. a rename) immediately, independent of any chat message, so
+     * members converge without waiting for the next message. The receiver applies it last-writer-wins on
+     * [GroupUpdateFrame.sentAt]; the local store has already been updated by the caller.
+     */
+    suspend fun sendGroupUpdate(group: GroupInfo) {
+        router.originate(
+            GroupUpdateFrame(
+                id = UUID.randomUUID().toString(),
+                senderId = identity.nodeId(),
+                sentAt = System.currentTimeMillis(),
+                group = group,
+            ),
+        )
     }
 
     /**
@@ -308,6 +333,7 @@ class MeshManager(
     private suspend fun onDeliver(frame: Frame, fromNodeId: String) {
         when (frame) {
             is ChatFrame -> handleChat(frame)
+            is GroupUpdateFrame -> handleGroupUpdate(frame)
             is ProfileFrame -> handleProfile(frame)
             is ReceiptFrame -> messages.markReceived(frame.ackId)
             is ReactionFrame -> handleReaction(frame)
@@ -338,17 +364,87 @@ class MeshManager(
         // Blocked sender: never persist, notify, or ack — but the router still relays it onward, so a
         // blocked user stays a working mesh peer (we just don't surface anything from them).
         if (frame.senderId in settings.blockedNodeIds.first()) return
+        // Group messages take the membership-gated path; they carry recipientId null, so they must be
+        // handled before the DM check below (which would otherwise treat them as broadcast).
+        val group = frame.group
+        if (group != null) {
+            handleGroupChat(frame, group, me)
+            return
+        }
         // A DM addressed to someone else: we're only relaying it (the router floods it onward). It
         // isn't ours, so don't persist, notify, or ack it.
         if (!Conversations.isForMe(frame.recipientId, me)) return
+        deliverChat(frame, me, Conversations.idFor(frame.senderId, frame.recipientId, me))
+    }
 
+    /**
+     * Handles an inbound group message: reconciles the group from the self-describing roster carried on
+     * the frame, then (if the group is active for us) persists/notifies/acks the message.
+     */
+    private suspend fun handleGroupChat(frame: ChatFrame, group: GroupInfo, me: String) {
+        if (reconcileGroup(group, frame.senderId, frame.sentAt, me)) {
+            deliverChat(frame, me, group.id)
+        }
+    }
+
+    /**
+     * Handles a standalone group-metadata update (e.g. a rename): reconciles the stored group, with no
+     * message to persist or ack. A member who didn't yet know the group creates it from the roster.
+     */
+    private suspend fun handleGroupUpdate(frame: GroupUpdateFrame) {
+        reconcileGroup(frame.group, frame.senderId, frame.sentAt, identity.nodeId())
+    }
+
+    /**
+     * Brings the locally-stored group in line with a self-describing [group] roster carried on a frame
+     * from [senderId] (stamped [sentAt]). Returns true when the group is active for us (so a chat frame
+     * should be delivered), false when the frame must be ignored: blocked sender, a group we've left
+     * (never re-upserted, so a frame can't resurrect it), one we're not a member of, or a *new* group
+     * whose creator we've blocked (covers the proxy case where a non-blocked member relays the first
+     * frame carrying a blocked createdBy). The name is last-writer-wins on [sentAt] so concurrent renames
+     * across the mesh converge.
+     */
+    private suspend fun reconcileGroup(group: GroupInfo, senderId: String, sentAt: Long, me: String): Boolean {
+        val blocked = settings.blockedNodeIds.first()
+        val existing = groups.find(group.id)
+        val refuse = senderId in blocked || // blocked sender's frame
+            existing?.left == true || // a group we've left — never re-upsert, so it can't be resurrected
+            !Conversations.isGroupMember(group.members, me) || // not for us; we're only relaying it
+            (existing == null && group.createdBy in blocked) // a blocked user starting a new group here
+        if (refuse) return false
+
+        // The name is shared only when explicitly set; an unnamed (blank/null) frame never clears a name
+        // someone else set. Adopt an incoming name only if it's newer (last-writer-wins on sentAt).
+        val incomingName = group.name?.takeIf { it.isNotBlank() }
+        val keepName = existing?.name.orEmpty()
+        val keepClock = existing?.nameUpdatedAt ?: 0L
+        val takeIncoming = incomingName != null && sentAt >= keepClock
+        groups.upsert(
+            GroupEntity(
+                groupId = group.id,
+                name = if (takeIncoming) incomingName else keepName,
+                members = GroupMembersStore.encode(group.members),
+                createdBy = group.createdBy,
+                createdAt = existing?.createdAt ?: sentAt,
+                nameUpdatedAt = if (takeIncoming) sentAt else keepClock,
+                left = false,
+            ),
+        )
+        return true
+    }
+
+    /**
+     * Persists an inbound chat into [conversationId], starts pulling any attachment blob we don't hold,
+     * fires the appropriate notification, and acks. Shared by the DM/broadcast and group delivery paths.
+     */
+    private suspend fun deliverChat(frame: ChatFrame, me: String, conversationId: String) {
         val hash = frame.attachmentHash
         messages.save(
             MessageEntity(
                 id = frame.id,
                 senderId = frame.senderId,
                 recipientId = frame.recipientId,
-                conversationId = Conversations.idFor(frame.senderId, frame.recipientId, me),
+                conversationId = conversationId,
                 body = frame.body,
                 sentAt = frame.sentAt,
                 received = false,
@@ -373,7 +469,8 @@ class MeshManager(
     /**
      * Sends a delivery receipt for [frame]. A DM addressed to us floods its receipt via the router so
      * it reaches the sender across multiple hops (the recipient is the only one who acks). Broadcast
-     * messages keep the legacy behaviour: ack only if the author is a direct neighbor (relays don't).
+     * and group messages keep the legacy behaviour: ack only if the author is a direct neighbor (relays
+     * don't) — group messages carry recipientId null, so the tick is best-effort, not per-member.
      */
     private suspend fun acknowledge(frame: ChatFrame, me: String) {
         val ack = ReceiptFrame(id = UUID.randomUUID().toString(), senderId = me, ackId = frame.id)

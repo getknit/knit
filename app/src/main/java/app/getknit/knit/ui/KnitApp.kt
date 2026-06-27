@@ -36,8 +36,8 @@ private object Routes {
 
 /**
  * App root: gates on permissions, then hosts the screen graph (chat list ⇄ contacts ⇄ chat ⇄ profile)
- * with Navigation Compose. The chat route carries a `conversationId` — the "Nearby" broadcast room or
- * a peer's node id for a 1:1 DM. Starts the mesh foreground service once the user is past onboarding.
+ * with Navigation Compose. The chat route carries a `conversationId` — the "Nearby" broadcast room, a
+ * peer's node id for a 1:1 DM, or a group id. Starts the mesh foreground service once past onboarding.
  */
 @Composable
 fun KnitApp() {
@@ -74,10 +74,10 @@ fun KnitApp() {
         composable(Routes.CONTACTS) {
             ContactsScreen(
                 onBack = { navController.popBackStack() },
-                // Open the DM thread (keyed by the peer's node id) and drop the picker from the back
-                // stack, so Back from the chat returns to the conversation list.
-                onPick = { peerId ->
-                    navController.navigate(Routes.chat(peerId)) {
+                // Open the chosen conversation (a peer's node id for a DM, or a freshly created group's
+                // id) and drop the picker from the back stack, so Back from the chat returns to the list.
+                onPick = { conversationId ->
+                    navController.navigate(Routes.chat(conversationId)) {
                         popUpTo(Routes.CONTACTS) { inclusive = true }
                     }
                 },
@@ -87,7 +87,7 @@ fun KnitApp() {
             route = Routes.CHAT,
             arguments = listOf(navArgument("conversationId") { type = NavType.StringType }),
         ) { backStackEntry ->
-            // conversationId is the Nearby room or a peer's node id (a 1:1 DM thread).
+            // conversationId is the Nearby room, a peer's node id (a 1:1 DM), or a group id.
             val conversationId =
                 backStackEntry.arguments?.getString("conversationId") ?: Conversations.NEARBY
             ChatScreen(
