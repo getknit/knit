@@ -25,7 +25,7 @@ class ToxicityInstrumentedTest {
         assertFalse(moderator.classify("thanks so much, have a great day").flagged)
 
         // Rude/insulting but not "serious" -> allowed. We deliberately do NOT block general
-        // toxicity/insults (the default block set is severe_toxicity/identity_attack/sexual_explicit).
+        // toxicity/insults (the default block set is severe_toxicity/identity_attack/sexual_explicit/threat).
         assertFalse(moderator.classify("you are such an idiot").flagged)
 
         // Identity attack -> blocked.

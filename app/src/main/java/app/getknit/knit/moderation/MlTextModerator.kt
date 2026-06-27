@@ -26,9 +26,9 @@ import java.nio.ByteOrder
  * [SentencePieceTokenizer] over the bundled `tokenizer.json` (no native libs → 16 KB-page safe).
  *
  * **Selective blocking:** only the categories in [blockThresholds] are enforced (each against its own
- * threshold). The default set blocks `severe_toxicity`, `identity_attack`, and `sexual_explicit` — i.e.
- * serious abuse — and deliberately ignores `toxicity`/`insult`/`obscene` (general rudeness) and the
- * identity-mention columns (which detect topic, not toxicity). Tune thresholds on-device.
+ * threshold). The default set blocks `severe_toxicity`, `identity_attack`, `sexual_explicit`, and
+ * `threat` — i.e. serious abuse — and deliberately ignores `toxicity`/`insult`/`obscene` (general
+ * rudeness) and the identity-mention columns (which detect topic, not toxicity). Tune thresholds on-device.
  */
 class MlTextModerator(
     private val context: Context,
@@ -139,6 +139,7 @@ class MlTextModerator(
             "severe_toxicity" to 0.7f,
             "identity_attack" to 0.7f,
             "sexual_explicit" to 0.6f,
+            "threat" to 0.7f,
         )
 
         const val INPUT_IDS_INPUT = 0

@@ -108,9 +108,9 @@ exported to TFLite (dynamic int8, ~14.6 MB) by the separate **`detoxify-mobile`*
   over `labels.txt`: 7 toxicity labels (`toxicity, severe_toxicity, obscene, identity_attack, insult,
   threat, sexual_explicit`) + 9 identity-mention columns (`male`…`psychiatric_or_mental_illness`).
 - **Selective blocking:** `MlTextModerator` enforces only a configured subset — default
-  `severe_toxicity`, `identity_attack`, `sexual_explicit` (each vs its own threshold) — and ignores
-  general `toxicity`/`insult`/`obscene` (rudeness) and the identity columns (topic, not toxicity). The
-  unbiased model is also calibrated to avoid false-flagging neutral identity mentions.
+  `severe_toxicity`, `identity_attack`, `sexual_explicit`, `threat` (each vs its own threshold) — and
+  ignores general `toxicity`/`insult`/`obscene` (rudeness) and the identity columns (topic, not
+  toxicity). The unbiased model is also calibrated to avoid false-flagging neutral identity mentions.
 - License: Apache-2.0 (Detoxify weights + `albert-base-v2`) — retain attribution when shipping.
 
 We deliberately did **not** use MediaPipe (Model Maker is deprecated) nor a prebuilt native tokenizer.

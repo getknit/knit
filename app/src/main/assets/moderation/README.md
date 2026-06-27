@@ -36,9 +36,9 @@ sexual_explicit`) plus 9 identity-mention columns. ~14.6 MB dynamic-int8 model, 
 (`.gitattributes` tracks `*.tflite`).
 
 **Selective blocking:** `MlTextModerator` enforces only a configured subset of categories — by default
-`severe_toxicity`, `identity_attack`, `sexual_explicit` (serious abuse) — and deliberately ignores
-general `toxicity`/`insult`/`obscene` (rudeness) and the identity-mention columns. Tune thresholds
-on-device.
+`severe_toxicity`, `identity_attack`, `sexual_explicit`, `threat` (serious abuse) — and deliberately
+ignores general `toxicity`/`insult`/`obscene` (rudeness) and the identity-mention columns. Tune
+thresholds on-device.
 
 `tokenizer.json` drives the pure-Kotlin `SentencePieceTokenizer` (no native library → 16 KB-page safe;
 verified id-for-id against the HuggingFace tokenizer). If any asset is **absent or fails to load,
