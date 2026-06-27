@@ -664,7 +664,7 @@ private fun MessageBubble(
                             horizontalArrangement = Arrangement.spacedBy(3.dp),
                         ) {
                             Text(
-                                text = timeLabel(row, now),
+                                text = timeLabel(row, now, stringResource(R.string.chat_time_just_now)),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -1055,10 +1055,14 @@ private fun FullscreenImageViewer(image: BlobImage, onDismiss: () -> Unit, onSav
     }
 }
 
-private fun timeLabel(row: ChatRow, now: Long): String =
-    DateUtils.getRelativeTimeSpanString(
+private fun timeLabel(row: ChatRow, now: Long, justNow: String): String {
+    // DateUtils renders anything under a minute (and any slight clock skew into the future) as
+    // "0 minutes ago"; show a friendlier "Just now" instead.
+    if (now - row.sentAt < DateUtils.MINUTE_IN_MILLIS) return justNow
+    return DateUtils.getRelativeTimeSpanString(
         row.sentAt, now, DateUtils.MINUTE_IN_MILLIS,
     ).toString()
+}
 
 @Composable
 private fun EmptyState(modifier: Modifier = Modifier) {
