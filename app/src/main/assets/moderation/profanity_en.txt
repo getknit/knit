@@ -1,0 +1,25 @@
+# Starter English profanity list for LexicalTextFilter (the deterministic first pass of the hybrid
+# text-moderation pipeline). One term per line; blank lines and lines starting with '#' are ignored.
+#
+# Matching is whole-token and evasion-tolerant (case, diacritics, leetspeak, stretched/spaced letters),
+# so list base forms — derivatives are caught by the normalizer or by the ML toxicity classifier.
+#
+# NOTE: this is a deliberately small starter set. Before release, replace/extend it with a vetted,
+# permissively-licensed corpus (e.g. LDNOOBW "List of Dirty, Naughty, Obscene and Otherwise Bad Words")
+# and tune per supported language. Keep clearly-offensive slurs here too once license-vetted.
+fuck
+fucker
+motherfucker
+shit
+bullshit
+asshole
+bitch
+bastard
+dickhead
+cunt
+slut
+whore
+piss
+prick
+wanker
+twat

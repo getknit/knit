@@ -66,6 +66,21 @@ private fun sampleSizeFor(width: Int, height: Int, maxDim: Int): Int {
     return sample
 }
 
+/**
+ * Decodes a bitmap from in-memory [bytes], sub-sampled and downscaled so neither side exceeds [maxDim]
+ * (so screening a peer-supplied image can't OOM). For an animated GIF this yields its first frame, which
+ * is enough for content classification. Returns null if the bytes can't be decoded.
+ */
+internal fun decodeBoundedFromBytes(bytes: ByteArray, maxDim: Int): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    val options = BitmapFactory.Options().apply {
+        inSampleSize = sampleSizeFor(bounds.outWidth, bounds.outHeight, maxDim)
+    }
+    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+    return downscale(bitmap, maxDim)
+}
+
 /** Scales [src] down so neither side exceeds [max], preserving aspect ratio; returns [src] if already within bounds. */
 internal fun downscale(src: Bitmap, max: Int): Bitmap {
     if (src.width <= max && src.height <= max) return src

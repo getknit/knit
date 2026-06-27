@@ -2,6 +2,7 @@ package app.getknit.knit.data.settings
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -60,6 +61,13 @@ class SettingsStore(
     val blockedNodeIds: Flow<Set<String>> = dataStore.data.map { it[KEY_BLOCKED] ?: emptySet() }
 
     /**
+     * Whether on-device content moderation (abusive-text + explicit-image filtering) is enabled.
+     * Defaults to on. When off, outbound content is never blocked and inbound content is never flagged.
+     */
+    val contentFilteringEnabled: Flow<Boolean> =
+        dataStore.data.map { it[KEY_CONTENT_FILTERING] ?: true }
+
+    /**
      * Returns the persisted 8-char node id, generating and storing one on first call. New ids are
      * derived deterministically from the device id (see [NodeId]), so clearing app data regenerates
      * the same id instead of a fresh random one. An already-persisted id is always returned as-is.
@@ -88,6 +96,9 @@ class SettingsStore(
     suspend fun unblock(nodeId: String) =
         dataStore.edit { it[KEY_BLOCKED] = (it[KEY_BLOCKED] ?: emptySet()) - nodeId }
 
+    suspend fun setContentFilteringEnabled(value: Boolean) =
+        dataStore.edit { it[KEY_CONTENT_FILTERING] = value }
+
     /** Device-derived id, or a random fallback when the platform reports no stable device id. */
     private fun newNodeId(): String =
         deviceIdSource.rawDeviceId()?.takeIf { it.isNotBlank() }
@@ -111,5 +122,6 @@ class SettingsStore(
         val KEY_AVATAR_UPDATED_AT = longPreferencesKey("avatar_updated_at")
         val KEY_OWN_AVATAR_HASH = stringPreferencesKey("own_avatar_hash")
         val KEY_BLOCKED = stringSetPreferencesKey("blocked_node_ids")
+        val KEY_CONTENT_FILTERING = booleanPreferencesKey("content_filtering_enabled")
     }
 }

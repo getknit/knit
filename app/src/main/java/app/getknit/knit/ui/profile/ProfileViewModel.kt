@@ -49,6 +49,14 @@ class ProfileViewModel(
         settings.ownAvatarHash
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /**
+     * Whether on-device content moderation is enabled. A Switch can bind straight to the DataStore flow
+     * (unlike a TextField — see the editable-text note above), since toggling has no per-keystroke lag.
+     */
+    val contentFilteringEnabled: StateFlow<Boolean> =
+        settings.contentFilteringEnabled
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
     init {
         viewModelScope.launch {
             val id = identity.nodeId()
@@ -67,6 +75,10 @@ class ProfileViewModel(
     fun setStatus(value: String) {
         _status.value = value
         viewModelScope.launch { settings.setStatus(value) }
+    }
+
+    fun setContentFilteringEnabled(value: Boolean) {
+        viewModelScope.launch { settings.setContentFilteringEnabled(value) }
     }
 
     // The picked image awaiting crop. Held here (not in SavedStateHandle — a Bitmap is large and not

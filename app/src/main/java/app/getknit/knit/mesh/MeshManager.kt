@@ -27,6 +27,7 @@ import app.getknit.knit.mesh.protocol.ReactionFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
 import app.getknit.knit.mesh.protocol.mention
 import android.util.Log
+import app.getknit.knit.moderation.TextModerator
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.incomingNotification
 import app.getknit.knit.notifications.mentionNotification
@@ -65,6 +66,7 @@ class MeshManager(
     private val blobs: BlobRepository,
     private val blobStore: MeshBlobStore,
     private val notifier: Notifier,
+    private val textModerator: TextModerator,
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
 ) {
@@ -166,6 +168,10 @@ class MeshManager(
      * peer. A non-null [group] sends a group message (recipientId stays null) — the [GroupInfo] rides
      * on the frame so members can (re)build the group from it. All three still flood (no routing table
      * yet); only the addressed recipient(s) deliver/ack, while relays forward the frame untouched.
+     *
+     * Returns false without sending or storing anything if on-device content filtering flags [text] as
+     * abusive (block-on-send); true once the message is stored locally and flooded. The [attachment] is
+     * screened separately at ingest time, so by here it is already clean.
      */
     suspend fun sendChat(
         text: String,
@@ -173,7 +179,8 @@ class MeshManager(
         mentions: List<Mention> = emptyList(),
         recipientId: String? = null,
         group: GroupInfo? = null,
-    ) {
+    ): Boolean {
+        if (isTextFlagged(text)) return false
         val me = identity.nodeId()
         val frame = ChatFrame(
             id = UUID.randomUUID().toString(),
@@ -201,6 +208,7 @@ class MeshManager(
             ),
         )
         router.originate(frame)
+        return true
     }
 
     /**
@@ -451,6 +459,11 @@ class MeshManager(
                 mentions = MentionStore.encode(frame.mentions),
                 attachmentHash = hash,
                 attachmentMime = frame.attachmentMime,
+                moderation = if (isTextFlagged(frame.body)) {
+                    MessageEntity.MODERATION_TEXT_FLAGGED
+                } else {
+                    MessageEntity.MODERATION_NONE
+                },
             ),
         )
         // Start pulling the referenced blob unless we already hold it (the UI observes the blobs table
@@ -465,6 +478,17 @@ class MeshManager(
         }
         acknowledge(frame, me)
     }
+
+    /**
+     * Whether [text] is non-blank, content filtering is enabled, and the on-device moderator flags it as
+     * abusive. Drives both block-on-send (in [sendChat]) and the stored flag on inbound messages (in
+     * [deliverChat]); a flagged inbound message is still stored and merely collapsed in the UI, so a
+     * false positive never silently drops content.
+     */
+    private suspend fun isTextFlagged(text: String): Boolean =
+        text.isNotBlank() &&
+            settings.contentFilteringEnabled.first() &&
+            textModerator.classify(text).flagged
 
     /**
      * Sends a delivery receipt for [frame]. A DM addressed to us floods its receipt via the router so
@@ -550,6 +574,13 @@ class MeshManager(
      */
     private suspend fun adoptAdvertisedAvatar(hash: String) {
         val owners = advertisedAvatars.entries.filter { it.value == hash }.map { it.key }
+        if (owners.isEmpty()) return
+        // A pulled avatar was screened in MeshBlobStore.saveIncoming; don't adopt it if flagged explicit.
+        if (blobs.isImageFlagged(hash)) {
+            owners.forEach { advertisedAvatars.remove(it) }
+            blobs.deleteIfUnreferenced(hash)
+            return
+        }
         owners.forEach { nodeId ->
             advertisedAvatars.remove(nodeId)
             val peer = peers.find(nodeId) ?: return@forEach
@@ -569,6 +600,12 @@ class MeshManager(
         blobs.insert(hash, mime, bytes)
         File(srcPath).delete()
         advertisedAvatars.remove(nodeId) // pushed directly; no need to also pull it
+        blobs.screenImage(hash, bytes)
+        // Don't adopt an explicit avatar: leave the peer on its monogram fallback and drop the blob.
+        if (blobs.isImageFlagged(hash)) {
+            blobs.deleteIfUnreferenced(hash)
+            return
+        }
         val existing = peers.find(nodeId)
         val oldHash = existing?.avatarHash
         peers.upsert((existing ?: PeerEntity(nodeId)).copy(avatarHash = hash))

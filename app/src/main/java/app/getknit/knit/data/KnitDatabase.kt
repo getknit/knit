@@ -7,6 +7,8 @@ import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
 import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
+import app.getknit.knit.data.blob.BlobVerdictDao
+import app.getknit.knit.data.blob.BlobVerdictEntity
 import app.getknit.knit.data.group.GroupDao
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.message.MessageDao
@@ -21,7 +23,7 @@ import java.io.File
 @Database(
     entities = [
         MessageEntity::class, PeerEntity::class, ReactionEntity::class, BlobEntity::class,
-        GroupEntity::class,
+        GroupEntity::class, BlobVerdictEntity::class,
     ],
     // v2: messages gained attachmentHash/attachmentMime/attachmentPath (destructive migration).
     // v3: messages gained a mentions JSON column (destructive migration; app not yet public).
@@ -31,7 +33,9 @@ import java.io.File
     //     swapped avatarPath for avatarHash. Destructive migration; the now-orphaned plaintext image
     //     files are purged on upgrade (see [purgeLegacyImageFiles]).
     // v7: added the groups table for group chat. Destructive migration; app not yet public.
-    version = 7,
+    // v8: messages gained a `moderation` verdict column; added the `blob_verdicts` table caching
+    //     on-device NSFW verdicts by content hash. Destructive migration; app not yet public.
+    version = 8,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {
@@ -40,6 +44,7 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun reactionDao(): ReactionDao
     abstract fun blobDao(): BlobDao
     abstract fun groupDao(): GroupDao
+    abstract fun blobVerdictDao(): BlobVerdictDao
 
     companion object {
         /**

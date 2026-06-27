@@ -4,6 +4,7 @@ import android.app.Application
 import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.di.appModule
 import app.getknit.knit.di.meshModule
+import app.getknit.knit.di.moderationModule
 import app.getknit.knit.di.uiModule
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.ui.image.BlobFetcher
@@ -27,7 +28,7 @@ class KnitApplication : Application(), SingletonImageLoader.Factory {
         val koinApp = startKoin {
             androidLogger()
             androidContext(this@KnitApplication)
-            modules(appModule, meshModule, uiModule)
+            modules(appModule, meshModule, moderationModule, uiModule)
         }
         // Register the message notification channel up front so it appears in system settings.
         koinApp.koin.get<Notifier>().createChannel()

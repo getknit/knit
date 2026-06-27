@@ -19,6 +19,10 @@ import kotlinx.serialization.json.Json
  * [attachmentHash]/[attachmentMime] reference an out-of-band image blob fetched by content hash; the
  * bytes live in the encrypted `blobs` table (see [app.getknit.knit.data.blob.BlobEntity]), keyed by
  * [attachmentHash], and are null until the blob has been pulled from the mesh.
+ *
+ * [moderation] records an on-device content-moderation verdict for the [body] ([MODERATION_NONE] or
+ * [MODERATION_TEXT_FLAGGED]). A flagged inbound message is still stored, but the UI collapses it behind
+ * a tap-to-reveal rather than dropping it (so a false positive never loses content).
  */
 @Entity(tableName = "messages", indices = [Index("conversationId")])
 data class MessageEntity(
@@ -32,7 +36,16 @@ data class MessageEntity(
     val mentions: String = "[]",
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,
-)
+    val moderation: Int = MODERATION_NONE,
+) {
+    companion object {
+        /** [moderation]: text passed (or was not checked). */
+        const val MODERATION_NONE = 0
+
+        /** [moderation]: the body was flagged as abusive by the on-device text moderator. */
+        const val MODERATION_TEXT_FLAGGED = 1
+    }
+}
 
 /**
  * Encodes/decodes the [MessageEntity.mentions] JSON column. Its own [Json] instance (WireCodec's is

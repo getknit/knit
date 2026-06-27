@@ -44,6 +44,9 @@ class MeshBlobStore(
             val src = File(srcPath)
             val bytes = runCatching { src.readBytes() }.getOrNull() ?: return@withContext null
             blobs.insert(hash, mime, bytes)
+            // Screen the received image on-device and cache the verdict by hash (the UI blurs flagged
+            // attachments). Stored regardless, so a false positive never drops content.
+            blobs.screenImage(hash, bytes)
             src.delete() // drop the plaintext staging copy now that the bytes are encrypted
             fileFor(hash)
         }

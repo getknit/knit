@@ -44,9 +44,11 @@ val appModule = module {
     single { get<KnitDatabase>().reactionDao() }
     single { get<KnitDatabase>().blobDao() }
     single { get<KnitDatabase>().groupDao() }
+    single { get<KnitDatabase>().blobVerdictDao() }
     single { MessageRepository(get()) }
     single { PeerRepository(get()) }
     single { ReactionRepository(get()) }
-    single { BlobRepository(get(), get(), get(), get()) }
+    // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, imageModerator.
+    single { BlobRepository(get(), get(), get(), get(), get(), get()) }
     single { GroupRepository(get(), get()) }
 }

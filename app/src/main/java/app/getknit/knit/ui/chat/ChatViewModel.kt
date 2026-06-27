@@ -47,11 +47,17 @@ data class ChatRow(
     val avatarHash: String?,
     val sentAt: Long,
     val received: Boolean,
+    // True when the on-device text moderator flagged this message's body; the bubble collapses it
+    // behind a tap-to-reveal instead of showing the text outright.
+    val moderationFlagged: Boolean = false,
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,
     // True once the attachment blob is present locally; false while it's still being pulled (the bubble
     // shows a loading placeholder). Only meaningful when [attachmentHash] is non-null.
     val attachmentReady: Boolean = false,
+    // True when on-device screening flagged the attachment as explicit; the bubble blurs it behind a
+    // tap-to-view. Only meaningful when [attachmentHash] is non-null.
+    val attachmentFlagged: Boolean = false,
     val mentions: List<Mention> = emptyList(),
     val reactions: List<ReactionSummary> = emptyList(),
 )
@@ -119,6 +125,13 @@ class ChatViewModel(
     private val _pendingAttachment = MutableStateFlow<AttachmentStore.Ingested?>(null)
     val pendingAttachment: StateFlow<AttachmentStore.Ingested?> = _pendingAttachment.asStateFlow()
 
+    /**
+     * An image flagged as explicit by on-device screening, awaiting the user's "send anyway?"
+     * confirmation. Sending such images is allowed but discouraged: it's staged only once confirmed.
+     */
+    private val _confirmAttachment = MutableStateFlow<AttachmentStore.Ingested?>(null)
+    val confirmAttachment: StateFlow<AttachmentStore.Ingested?> = _confirmAttachment.asStateFlow()
+
     /** One-shot UI messages (a string res id), surfaced as toasts — e.g. the result of saving an image. */
     private val _events = MutableSharedFlow<Int>(extraBufferCapacity = 1)
     val events: SharedFlow<Int> = _events.asSharedFlow()
@@ -126,6 +139,14 @@ class ChatViewModel(
     /** Emitted once the DM's peer is blocked, so the screen can close (the thread is now hidden). */
     private val _closeChat = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val closeChat: SharedFlow<Unit> = _closeChat.asSharedFlow()
+
+    /**
+     * Emitted after a message is accepted and sent, so the screen clears its input field/mentions. The
+     * screen no longer clears optimistically: if [send] blocks the text for abuse, nothing is emitted and
+     * the user keeps their draft to edit.
+     */
+    private val _clearInput = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val clearInput: SharedFlow<Unit> = _clearInput.asSharedFlow()
 
     init {
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
@@ -149,17 +170,24 @@ class ChatViewModel(
         val reactions: List<ReactionEntity>,
         val blocked: Set<String>,
         val presentHashes: Set<String>,
+        val flaggedHashes: Set<String>,
         val group: GroupEntity?,
     )
+
+    // Present + moderation-flagged blob hashes, combined upstream so the main bundle stays at the typed
+    // 5-flow combine overload.
+    private val blobState = combine(blobs.observeHashes(), blobs.observeFlaggedHashes()) { present, flagged ->
+        present.toSet() to flagged.toSet()
+    }
 
     private val messagesWithReactions = combine(
         messages.observeMessages(conversationId),
         reactions.observeReactions(),
         settings.blockedNodeIds,
-        blobs.observeHashes(),
+        blobState,
         groups.observeGroup(conversationId),
-    ) { msgs, reacts, blocked, hashes, group ->
-        MessagesBundle(msgs.filter { it.senderId !in blocked }, reacts, blocked, hashes.toSet(), group)
+    ) { msgs, reacts, blocked, (present, flagged), group ->
+        MessagesBundle(msgs.filter { it.senderId !in blocked }, reacts, blocked, present, flagged, group)
     }
 
     val state: StateFlow<ChatUiState> = combine(
@@ -173,6 +201,7 @@ class ChatViewModel(
         val reacts = bundle.reactions
         val blocked = bundle.blocked
         val presentHashes = bundle.presentHashes
+        val flaggedHashes = bundle.flaggedHashes
         val group = bundle.group
         val isGroup = group != null
         val members = group?.let { GroupMembersStore.decode(it.members) }.orEmpty()
@@ -202,9 +231,11 @@ class ChatViewModel(
                 avatarHash = peersByNode[m.senderId]?.avatarHash,
                 sentAt = m.sentAt,
                 received = m.received,
+                moderationFlagged = m.moderation == MessageEntity.MODERATION_TEXT_FLAGGED,
                 attachmentHash = m.attachmentHash,
                 attachmentMime = m.attachmentMime,
                 attachmentReady = m.attachmentHash != null && m.attachmentHash in presentHashes,
+                attachmentFlagged = m.attachmentHash != null && m.attachmentHash in flaggedHashes,
                 mentions = MentionStore.decode(m.mentions),
                 reactions = tallies,
             )
@@ -251,12 +282,11 @@ class ChatViewModel(
         val trimmed = text.trim()
         val attachment = _pendingAttachment.value
         if (trimmed.isEmpty() && attachment == null) return
-        _pendingAttachment.value = null
         viewModelScope.launch {
             // Re-read the group at send time so it's never misrouted as a DM in a startup race, and so a
             // pending rename rides this message (its GroupInfo.name converges last-writer-wins).
             val group = if (isRoom) null else groups.find(conversationId)
-            if (group != null) {
+            val sent = if (group != null) {
                 val info = GroupInfo(
                     id = group.groupId,
                     // Only a renamed group carries a shared name; unnamed groups stay locally-titled.
@@ -269,6 +299,14 @@ class ChatViewModel(
                 // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
                 val recipientId = if (isRoom) null else conversationId
                 meshManager.sendChat(trimmed, attachment, mentions, recipientId)
+            }
+            // MeshManager applies block-on-send. Clear the input/attachment only once a message is
+            // accepted; a blocked message keeps the draft and surfaces a toast so the user can edit.
+            if (sent) {
+                _pendingAttachment.value = null
+                _clearInput.tryEmit(Unit)
+            } else {
+                _events.tryEmit(R.string.moderation_text_blocked)
             }
         }
     }
@@ -345,9 +383,40 @@ class ChatViewModel(
         }
     }
 
-    /** Ingests a picked or keyboard-inserted image and stages it in the input bar. */
+    /**
+     * Ingests a picked or keyboard-inserted image and stages it in the input bar. A picture flagged as
+     * explicit by on-device screening is handled by context: the public Nearby room **blocks** it
+     * outright (no confirmation bypass), while DMs/groups route it to [confirmAttachment] for a
+     * "send anyway?" confirmation. A decode failure is silently ignored, as before.
+     */
     fun attach(uri: Uri) {
-        viewModelScope.launch { _pendingAttachment.value = attachments.ingest(uri) }
+        viewModelScope.launch {
+            when (val result = attachments.ingest(uri)) {
+                is AttachmentStore.IngestResult.Success -> when {
+                    !result.flagged -> _pendingAttachment.value = result.ingested
+                    isRoom -> {
+                        // Hard block in the broadcast room; drop the ingested-but-unsent blob.
+                        blobs.deleteIfUnreferenced(result.ingested.hash)
+                        _events.tryEmit(R.string.moderation_image_blocked)
+                    }
+                    else -> _confirmAttachment.value = result.ingested
+                }
+                AttachmentStore.IngestResult.Failed -> Unit
+            }
+        }
+    }
+
+    /** The user confirmed the explicit-image warning: stage the (already-ingested) image for sending. */
+    fun confirmFlaggedAttachment() {
+        _pendingAttachment.value = _confirmAttachment.value ?: return
+        _confirmAttachment.value = null
+    }
+
+    /** The user declined the explicit-image warning: drop it and GC the ingested-but-unsent blob. */
+    fun dismissFlaggedAttachment() {
+        val pending = _confirmAttachment.value ?: return
+        _confirmAttachment.value = null
+        viewModelScope.launch { blobs.deleteIfUnreferenced(pending.hash) }
     }
 
     /** Discards the staged image; its blob (ingested on pick) is GC'd unless a sent message references it. */

@@ -3,8 +3,6 @@ package app.getknit.knit.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
-import app.getknit.knit.data.blob.BlobDao
-import app.getknit.knit.data.blob.BlobEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -12,41 +10,61 @@ import java.security.MessageDigest
 
 /**
  * Ingests picked/keyboard images into the encrypted, content-addressed `blobs` table (see
- * [BlobEntity]). The content hash both keys the blob and is the key carried in the wire frame, so any
- * holder can serve the bytes and identical images dedupe.
+ * [app.getknit.knit.data.blob.BlobEntity]). The content hash both keys the blob and is the key carried
+ * in the wire frame, so any holder can serve the bytes and identical images dedupe.
  *
  * Photos are decoded, EXIF-rotated, downscaled, and re-encoded to JPEG; GIFs are kept **verbatim** so
- * their animation survives (decoding through [BitmapFactory] would flatten them). The bytes never
- * touch disk — they go straight into the encrypted database.
+ * their animation survives (decoding through [android.graphics.BitmapFactory] would flatten them). The
+ * bytes never touch disk — they go straight into the encrypted database.
+ *
+ * Before staging, the image is screened for explicit content via [BlobRepository]. Sending an explicit
+ * image is *allowed but discouraged*: a flagged image is still ingested, and [ingest] reports the flag
+ * so the caller can ask the user to confirm before staging/sending it (the receive side blurs it).
  */
-class AttachmentStore(private val context: Context, private val blobs: BlobDao) {
+class AttachmentStore(private val context: Context, private val blobs: BlobRepository) {
 
     /** The result of ingesting a picked/keyboard image: its content [hash] and [mime]. */
     data class Ingested(val hash: String, val mime: String)
 
     /**
-     * Ingests [uri] into the blob store and returns its [Ingested] descriptor (or null on failure / if
-     * the processed image exceeds [MAX_BYTES]). GIFs are kept as-is; other images are downscaled to
-     * [MAX_DIMENSION] and re-encoded as JPEG.
+     * Outcome of [ingest]: stored ([Success], with [Success.flagged] true when screening judged the
+     * image explicit so the caller can prompt for confirmation), or [Failed] to decode / too large.
      */
-    suspend fun ingest(uri: Uri): Ingested? = withContext(Dispatchers.IO) {
+    sealed interface IngestResult {
+        data class Success(val ingested: Ingested, val flagged: Boolean) : IngestResult
+        data object Failed : IngestResult
+    }
+
+    /**
+     * Ingests [uri] into the blob store. GIFs are kept as-is; other images are downscaled to
+     * [MAX_DIMENSION] and re-encoded as JPEG. Returns [IngestResult.Failed] on a decode failure or if
+     * the processed image exceeds [MAX_BYTES], else [IngestResult.Success] with [Success.flagged] set
+     * when on-device screening judged the image explicit.
+     */
+    suspend fun ingest(uri: Uri): IngestResult = withContext(Dispatchers.IO) {
         val sourceMime = context.contentResolver.getType(uri)
-        val (mime, bytes) = if (sourceMime == "image/gif") {
-            "image/gif" to (context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: return@withContext null)
+        val (mime, bytes, frame) = if (sourceMime == "image/gif") {
+            val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: return@withContext IngestResult.Failed
+            // Screen the GIF's first frame (verbatim bytes are stored, so decode a frame just to classify).
+            Triple("image/gif", raw, decodeBoundedFromBytes(raw, MAX_DIMENSION))
         } else {
-            val bitmap = decodeOrientedBounded(context, uri, MAX_DIMENSION) ?: return@withContext null
+            val bitmap = decodeOrientedBounded(context, uri, MAX_DIMENSION)
+                ?: return@withContext IngestResult.Failed
             val scaled = downscale(bitmap, MAX_DIMENSION)
             val jpeg = ByteArrayOutputStream().use { out ->
                 scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
                 out.toByteArray()
             }
-            "image/jpeg" to jpeg
+            Triple("image/jpeg", jpeg, scaled)
         }
-        if (bytes.isEmpty() || bytes.size > MAX_BYTES) return@withContext null
+        if (bytes.isEmpty() || bytes.size > MAX_BYTES) return@withContext IngestResult.Failed
+        // Stored regardless; an explicit image is allowed but the caller confirms before sending
+        // (fail-open if the frame couldn't be decoded to screen).
+        val flagged = frame != null && blobs.isImageExplicit(frame)
         val hash = sha256(bytes)
-        blobs.insert(BlobEntity(hash, mime, bytes))
-        Ingested(hash, mime)
+        blobs.insert(hash, mime, bytes)
+        IngestResult.Success(Ingested(hash, mime), flagged)
     }
 
     private fun sha256(bytes: ByteArray): String =

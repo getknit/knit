@@ -37,6 +37,10 @@ android {
     buildFeatures {
         compose = true
     }
+    androidResources {
+        // On-device model files must stay uncompressed so TFLite can mmap them from the APK.
+        noCompress += listOf("tflite")
+    }
 }
 
 dependencyLocking {
@@ -86,6 +90,10 @@ dependencies {
     // Images
     implementation(libs.coil.compose)
     implementation(libs.coil.gif) // animated GIF/WebP decoding (keyboard GIFs)
+
+    // On-device NSFW image classifier runtime (no network; model bundled in assets). See the version
+    // catalog for why the bare TFLite interpreter is used rather than MediaPipe/LiteRT.
+    implementation(libs.tensorflow.lite)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

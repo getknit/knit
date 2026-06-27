@@ -101,6 +101,8 @@
     <string name="battery_allow_button">Allow background battery use</string>
     <string name="profile_avatar_crop_hint">Drag and pinch to adjust</string>
     <string name="profile_avatar_crop_desc">Adjust profile photo</string>
+    <string name="settings_content_filtering_title">Content filtering</string>
+    <string name="settings_content_filtering_subtitle">Block abusive text and explicit images on this device</string>
 
     <!-- Profile details (another peer) -->
     <string name="profile_details_title">Profile</string>
@@ -131,4 +133,13 @@
     <string name="action_close">Close</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_save">Save</string>
+
+    <!-- Content moderation (on-device) -->
+    <string name="moderation_text_blocked">Message not sent: it may contain abusive language</string>
+    <string name="moderation_text_hidden">Message hidden — tap to reveal</string>
+    <string name="moderation_image_blocked">Explicit images can\'t be sent to the Nearby room</string>
+    <string name="moderation_image_confirm_title">Send explicit image?</string>
+    <string name="moderation_image_confirm_body">This image may contain explicit content. Pleasure ensure the recipient wants to receive this kind of content.</string>
+    <string name="moderation_image_confirm_send">Send anyway</string>
+    <string name="moderation_image_hidden">Sensitive image — tap to view</string>
 </resources>

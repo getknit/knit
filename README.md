@@ -25,6 +25,13 @@ servers. Duplicate copies are discarded. The interface is a modern Signal-style 
   content-addressed and pulled on demand so the bytes don't ride the flood.
 - **Profiles** — display name, status, and avatar — flooded across the mesh; avatars transferred as
   files (and re-pushed only when they actually change) and shown next to messages.
+- **On-device content moderation** — abusive-text and explicit-image (NSFW) filtering that runs
+  **entirely offline** (no network, no server): a deterministic profanity filter plus a bundled TFLite
+  NSFW image classifier. Abusive **text is blocked on send**; explicit **images** are blocked outright
+  in the public Nearby room and **allowed-but-discouraged via a "send anyway?" confirmation** in
+  DMs/groups; both are **collapsed/blurred behind tap-to-reveal on receive** (receiver-side enforcement
+  is what actually protects a user in a mesh), with one-tap block-sender and a user toggle. See
+  [`docs/CONTENT_MODERATION.md`](docs/CONTENT_MODERATION.md).
 - **Messaging-style notifications** with a separate channel for mentions.
 - **Always-on background mesh** via a foreground service, kept healthy by a heartbeat alarm,
   significant-motion re-scan, and Bluetooth-recovery; prompts to disable battery optimization.
@@ -40,7 +47,7 @@ servers. Duplicate copies are discarded. The interface is a modern Signal-style 
 
 Kotlin 2.2.10 · Jetpack Compose (Material 3) + Navigation Compose · AGP 9.2.1 / Gradle 9.4.1 ·
 Koin (DI) · Room · DataStore · kotlinx.serialization (**CBOR** wire format) · Coil 3 ·
-`play-services-nearby`.
+`play-services-nearby` · TensorFlow Lite (on-device NSFW image classifier).
 
 ## Build
 
@@ -71,6 +78,8 @@ physical phone (its network is NAT'd), so use real devices for connectivity test
   contributors and coding agents.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — detailed design: mesh algorithm, wire protocol,
   data flow, background survival, build-tooling decisions, and testing strategy.
+- [`docs/CONTENT_MODERATION.md`](docs/CONTENT_MODERATION.md) — on-device abusive-text / explicit-image
+  moderation: design, hook points, the bundled NSFW model, Git LFS, and the deferred ML-toxicity plan.
 
 ## Roadmap
 

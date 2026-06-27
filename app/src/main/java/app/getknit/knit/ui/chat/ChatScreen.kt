@@ -67,6 +67,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -149,6 +150,7 @@ fun ChatScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val pendingAttachment by viewModel.pendingAttachment.collectAsStateWithLifecycle()
+    val confirmAttachment by viewModel.confirmAttachment.collectAsStateWithLifecycle()
     val inputState = rememberTextFieldState()
     // Mentions the user inserted via autocomplete, draft-local alongside inputState (per the AGENTS.md
     // gotcha, draft state stays in the screen, not the ViewModel/DataStore). Filtered against the final
@@ -193,6 +195,13 @@ fun ChatScreen(
     val context = LocalContext.current
     LaunchedEffect(Unit) {
         viewModel.events.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    }
+    // Clear the input only once a message is accepted and sent (not when it's blocked for abuse).
+    LaunchedEffect(Unit) {
+        viewModel.clearInput.collect {
+            inputState.clearText()
+            pendingMentions.clear()
+        }
     }
     // Blocking the peer of a DM hides this whole thread, so leave the now-empty screen.
     LaunchedEffect(Unit) {
@@ -344,9 +353,9 @@ fun ChatScreen(
                 onSend = {
                     val text = inputState.text.toString()
                     val applied = pendingMentions.filter { text.contains("@${it.name}") }
+                    // Don't clear here: a message blocked for abuse must keep the draft. The ViewModel
+                    // emits clearInput only once a message is actually accepted (see the collector above).
                     viewModel.send(text, applied)
-                    inputState.clearText()
-                    pendingMentions.clear()
                 },
             )
         },
@@ -391,6 +400,25 @@ fun ChatScreen(
             image = image,
             onDismiss = { fullscreenImage = null },
             onSave = { viewModel.saveAttachment(image.hash) },
+        )
+    }
+
+    // Sending an explicit image is allowed but discouraged: confirm before staging a flagged one.
+    if (confirmAttachment != null) {
+        AlertDialog(
+            onDismissRequest = viewModel::dismissFlaggedAttachment,
+            title = { Text(stringResource(R.string.moderation_image_confirm_title)) },
+            text = { Text(stringResource(R.string.moderation_image_confirm_body)) },
+            confirmButton = {
+                TextButton(onClick = viewModel::confirmFlaggedAttachment) {
+                    Text(stringResource(R.string.moderation_image_confirm_send))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::dismissFlaggedAttachment) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+            },
         )
     }
 
@@ -506,6 +534,8 @@ private fun MessageBubble(
     }
     var showPicker by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    // A message flagged by the on-device text moderator is collapsed until the user taps to reveal it.
+    var revealed by remember(row.id) { mutableStateOf(false) }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (row.mine) Arrangement.End else Arrangement.Start,
@@ -533,10 +563,11 @@ private fun MessageBubble(
                     modifier = Modifier
                         .widthIn(max = maxBubbleWidth)
                         .combinedClickable(
-                            // No tap action (and no ripple) — long-press opens the reaction picker.
+                            // Tap only reveals a moderation-collapsed message; otherwise no tap action
+                            // (and no ripple). Long-press opens the reaction picker.
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                            onClick = {},
+                            onClick = { if (row.moderationFlagged && !revealed) revealed = true },
                             onLongClick = { showPicker = true },
                         ),
                 ) {
@@ -549,18 +580,32 @@ private fun MessageBubble(
                             )
                         }
                         if (row.attachmentHash != null) {
-                            AttachmentImage(row.attachmentHash, row.attachmentMime, row.attachmentReady, onImageClick)
+                            AttachmentImage(
+                                row.attachmentHash,
+                                row.attachmentMime,
+                                row.attachmentReady,
+                                row.attachmentFlagged,
+                                onImageClick,
+                            )
                             if (row.body.isNotBlank()) Spacer(Modifier.height(4.dp))
                         }
                         if (row.body.isNotBlank()) {
-                            val mentionStyle = SpanStyle(
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                text = highlightMentions(row.body, row.mentions, mentionStyle),
-                                style = MaterialTheme.typography.bodyLarge,
-                            )
+                            if (row.moderationFlagged && !revealed) {
+                                Text(
+                                    text = stringResource(R.string.moderation_text_hidden),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            } else {
+                                val mentionStyle = SpanStyle(
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    text = highlightMentions(row.body, row.mentions, mentionStyle),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                )
+                            }
                         }
                         Row(
                             modifier = Modifier.align(Alignment.End),
@@ -829,25 +874,55 @@ private fun AttachmentImage(
     hash: String?,
     mime: String?,
     ready: Boolean,
+    flagged: Boolean,
     onImageClick: (BlobImage) -> Unit,
 ) {
+    // A flagged image stays hidden behind a placeholder until the user taps to view it.
+    var revealed by remember(hash) { mutableStateOf(false) }
+    val hidden = flagged && !revealed
     val image = if (ready && hash != null) BlobImage(hash, mime) else null
     Box(
         modifier = Modifier
             .padding(vertical = 2.dp)
             .clip(RoundedCornerShape(12.dp))
-            .then(if (image != null) Modifier.clickable { onImageClick(image) } else Modifier),
+            .then(
+                when {
+                    hidden -> Modifier.clickable { revealed = true }
+                    image != null -> Modifier.clickable { onImageClick(image) }
+                    else -> Modifier
+                },
+            ),
         contentAlignment = Alignment.Center,
     ) {
-        if (image != null) {
-            AsyncImage(
+        when {
+            hidden -> Column(
+                modifier = Modifier
+                    .size(160.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Icon(
+                    Icons.Filled.VisibilityOff,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = stringResource(R.string.moderation_image_hidden),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
+            image != null -> AsyncImage(
                 model = image,
                 contentDescription = stringResource(R.string.chat_attachment_image_desc),
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.sizeIn(maxWidth = 220.dp, maxHeight = 260.dp),
             )
-        } else {
-            Column(
+            else -> Column(
                 modifier = Modifier
                     .size(160.dp)
                     .background(MaterialTheme.colorScheme.surface),

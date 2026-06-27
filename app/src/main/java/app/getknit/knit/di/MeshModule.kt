@@ -25,6 +25,10 @@ val meshModule = module {
     single { MeshBlobStore(get(), File(androidContext().cacheDir, "blobtx")) }
     single<MeshTransport> { NearbyTransport(androidContext(), get(), get(), get(), get()) }
     // Constructor order: transport, messages, groups, reactions, peers, identity, settings, blobs,
-    // blobStore, notifier, scope, metrics.
-    single { MeshManager(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
+    // blobStore, notifier, textModerator, scope, metrics.
+    single {
+        MeshManager(
+            get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(),
+        )
+    }
 }
