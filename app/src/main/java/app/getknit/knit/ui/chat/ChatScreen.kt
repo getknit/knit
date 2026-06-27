@@ -30,9 +30,11 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -193,6 +195,34 @@ fun ChatScreen(
 
     LaunchedEffect(state.rows.size) {
         if (state.rows.isNotEmpty()) listState.animateScrollToItem(state.rows.lastIndex)
+    }
+
+    // Keep the newest messages visible as the soft keyboard slides in/out. The input bar is
+    // imePadding-lifted, so when the IME opens the Scaffold shrinks the list's viewport from the
+    // bottom; a top-anchored LazyColumn keeps its first visible item pinned, which pushes the most
+    // recent bubbles off-screen behind the keyboard. If the user was already at the bottom, re-pin to
+    // the last item on every IME animation frame so it stays glued to the bottom; if they'd scrolled
+    // up to read history, leave their position untouched (the top stays anchored on its own).
+    val density = LocalDensity.current
+    val imeInsets = WindowInsets.ime
+    LaunchedEffect(listState, imeInsets) {
+        var following = false
+        var prevImeBottom = 0
+        snapshotFlow { imeInsets.getBottom(density) }.collect { imeBottom ->
+            // Decide whether to follow at the moment the keyboard starts to appear, before the
+            // viewport has meaningfully shrunk and could falsely report we've left the bottom.
+            if (imeBottom > 0 && prevImeBottom == 0) {
+                val info = listState.layoutInfo
+                val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+                following = lastVisible >= info.totalItemsCount - 1
+            }
+            if (imeBottom == 0) following = false
+            if (following) {
+                val lastIndex = listState.layoutInfo.totalItemsCount - 1
+                if (lastIndex >= 0) listState.scrollToItem(lastIndex)
+            }
+            prevImeBottom = imeBottom
+        }
     }
 
     // Surface one-shot results (e.g. image saved) as toasts; a toast shows over the fullscreen Dialog,
