@@ -25,19 +25,25 @@ load, the moderator degrades to allow-all** (hooks + blur UI stay wired).
 on-device. `*.tflite` is kept uncompressed in the APK (`androidResources { noCompress }` in
 `app/build.gradle.kts`) so TFLite can mmap it.
 
-## `toxicity.tflite` + `tokenizer.json` (bundled — activates text ML moderation)
+## `toxicity.tflite` + `tokenizer.json` + `labels.txt` (bundled — activates text ML moderation)
 
 The on-device toxicity classifier consumed by `MlTextModerator`, layered into `HybridTextModerator`
-after the lexical pass (it only sees text the word list clears). **Detoxify "original-small" (ALBERT)**
-fine-tuned on the Jigsaw Toxic Comment Challenge, exported to TFLite: inputs `input_ids` /
-`attention_mask` `[1, 128]` (int), output `[1, 6]` sigmoid probabilities
-(`toxic, severe_toxic, obscene, threat, insult, identity_hate`); flagged when the max label probability
-≥ 0.7. ~14.6 MB dynamic-int8 model, **managed via Git LFS** (`.gitattributes` tracks `*.tflite`).
+after the lexical pass (it only sees text the word list clears). **Detoxify "unbiased-small" (ALBERT)**
+fine-tuned on the Jigsaw Unintended Bias dataset, exported to TFLite: inputs `input_ids` /
+`attention_mask` `[1, 128]` (int), output `[1, 16]` sigmoid probabilities over the labels in
+`labels.txt` — 7 toxicity labels (`toxicity, severe_toxicity, obscene, identity_attack, insult, threat,
+sexual_explicit`) plus 9 identity-mention columns. ~14.6 MB dynamic-int8 model, **managed via Git LFS**
+(`.gitattributes` tracks `*.tflite`).
 
-`tokenizer.json` is the HuggingFace tokenizer, read on-device by `ai.djl.huggingface:tokenizers`
-(offline, no network) — the same tokenizer used in training, so token ids match exactly. If either file
-is **absent or fails to load, `MlTextModerator` degrades to allow-all** and the lexical pass still runs.
+**Selective blocking:** `MlTextModerator` enforces only a configured subset of categories — by default
+`severe_toxicity`, `identity_attack`, `sexual_explicit` (serious abuse) — and deliberately ignores
+general `toxicity`/`insult`/`obscene` (rudeness) and the identity-mention columns. Tune thresholds
+on-device.
 
-Both files are produced (and re-tunable) by the separate `detoxify-mobile` conversion pipeline; license
-is Apache-2.0 (Detoxify weights + albert-base-v2) — retain attribution when shipping. Full design and
-wiring: [`docs/CONTENT_MODERATION.md`](../../../../../docs/CONTENT_MODERATION.md) §4.
+`tokenizer.json` drives the pure-Kotlin `SentencePieceTokenizer` (no native library → 16 KB-page safe;
+verified id-for-id against the HuggingFace tokenizer). If any asset is **absent or fails to load,
+`MlTextModerator` degrades to allow-all** and the lexical pass still runs.
+
+Produced (and re-tunable) by the separate `detoxify-mobile` conversion pipeline; license is Apache-2.0
+(Detoxify weights + albert-base-v2) — retain attribution when shipping. Full design and wiring:
+[`docs/CONTENT_MODERATION.md`](../../../../../docs/CONTENT_MODERATION.md) §4.

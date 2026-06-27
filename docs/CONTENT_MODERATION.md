@@ -101,31 +101,37 @@ their assets are missing, so the feature ships even on a stripped build.
 
 ### 4.1 Model
 
-**Detoxify "original-small" (`albert-base-v2`)** fine-tuned on the **Jigsaw Toxic Comment Challenge**,
+**Detoxify "unbiased-small" (`albert-base-v2`)** fine-tuned on the **Jigsaw Unintended Bias** dataset,
 exported to TFLite (dynamic int8, ~14.6 MB) by the separate **`detoxify-mobile`** conversion pipeline:
 
-- Inputs `input_ids` / `attention_mask` `[1, 128]` (int); output `[1, 6]` **sigmoid** probabilities for
-  `toxic, severe_toxic, obscene, threat, insult, identity_hate`. `MlTextModerator` flags on
-  `max(prob) ≥ 0.7` (tunable).
+- Inputs `input_ids` / `attention_mask` `[1, 128]` (int); output `[1, 16]` **sigmoid** probabilities
+  over `labels.txt`: 7 toxicity labels (`toxicity, severe_toxicity, obscene, identity_attack, insult,
+  threat, sexual_explicit`) + 9 identity-mention columns (`male`…`psychiatric_or_mental_illness`).
+- **Selective blocking:** `MlTextModerator` enforces only a configured subset — default
+  `severe_toxicity`, `identity_attack`, `sexual_explicit` (each vs its own threshold) — and ignores
+  general `toxicity`/`insult`/`obscene` (rudeness) and the identity columns (topic, not toxicity). The
+  unbiased model is also calibrated to avoid false-flagging neutral identity mentions.
 - License: Apache-2.0 (Detoxify weights + `albert-base-v2`) — retain attribution when shipping.
 
-We deliberately did **not** use MediaPipe: Model Maker is deprecated, and the runtime instead mirrors
-`NsfwImageModerator` (bare `org.tensorflow:tensorflow-lite` Interpreter — no telemetry, no new model
-runtime). ALBERT tokenizes with SentencePiece (not WordPiece), so tokenization uses
-`ai.djl.huggingface:tokenizers` reading the bundled `tokenizer.json` — the same HF tokenizer used in
-training, so on-device ids match exactly; fully offline, no `INTERNET`.
+We deliberately did **not** use MediaPipe (Model Maker is deprecated) nor a prebuilt native tokenizer.
+The runtime mirrors `NsfwImageModerator` (bare `org.tensorflow:tensorflow-lite` Interpreter — no
+telemetry), and ALBERT's SentencePiece tokenization is a **pure-Kotlin** `SentencePieceTokenizer` that
+parses `tokenizer.json` — no `.so`, so it's 16 KB-page safe (the prebuilt HF/DJL tokenizers ship only
+4 KB-aligned natives, which fail Android 15's 16 KB requirement). Verified id-for-id against the HF
+tokenizer. Fully offline, no `INTERNET`.
 
 ### 4.2 What's wired
 
-- `assets/moderation/toxicity.tflite` (LFS) + `assets/moderation/tokenizer.json`.
-- `moderation/MlTextModerator.kt` — tokenize → pad/truncate to 128 → TFLite Interpreter → max-sigmoid vs
-  threshold; degrades to `TextVerdict.ALLOWED` on a missing/bad asset.
+- `assets/moderation/{toxicity.tflite (LFS), tokenizer.json, labels.txt}`.
+- `moderation/SentencePieceTokenizer.kt` — pure-Kotlin Unigram tokenizer (parses `tokenizer.json` via
+  kotlinx-serialization; no native lib). JVM unit-tested against HF goldens (`SentencePieceTokenizerTest`).
+- `moderation/MlTextModerator.kt` — tokenize → pad/truncate to 128 → TFLite Interpreter → per-category
+  threshold over the block set; degrades to `TextVerdict.ALLOWED` on a missing/bad asset.
 - `di/ModerationModule.kt` — `HybridTextModerator(lexical = …, ml = MlTextModerator(androidContext()))`.
-- `app/build.gradle.kts` / `gradle/libs.versions.toml` — `ai.djl.huggingface:tokenizers` +
-  `ai.djl.android:tokenizer-native` (`0.33.0`, catalog `djl`), plus
-  `packaging { resources { excludes += "native/**" } }` to drop the tokenizers jar's bundled desktop
-  natives (the Android `.so` comes from the `-native` AAR). Merged manifest stays `INTERNET`-free.
-- `ToxicityInstrumentedTest` (androidTest) — on-device golden token ids + end-to-end verdict.
+- **No new Gradle dependency** (the tokenizer reuses kotlinx-serialization) and the APK adds **no native
+  `.so`** for text moderation. Merged manifest stays `INTERNET`-free.
+- `ToxicityInstrumentedTest` (androidTest) — on-device end-to-end verdict (blocks serious abuse, allows
+  rudeness/clean).
 
 No app-side wiring beyond the DI line is needed — `MessageEntity.moderation`, the tap-to-reveal UI, the
 settings gate, and both hook points already route any `TextModerator` verdict.

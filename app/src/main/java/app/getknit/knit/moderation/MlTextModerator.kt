@@ -1,6 +1,5 @@
 package app.getknit.knit.moderation
 
-import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -18,24 +17,34 @@ import java.nio.ByteOrder
  * Layered into [HybridTextModerator] as the ML pass behind the deterministic [LexicalTextFilter]; it
  * only sees text the word list let through. Mirrors [NsfwImageModerator]: a bare TFLite [Interpreter]
  * (no MediaPipe/LiteRT), lazy load, inference serialized behind [mutex] off the main thread, and
- * **graceful degradation** — if either asset is missing or fails to load, [classify] returns
+ * **graceful degradation** — if any asset is missing or fails to load, [classify] returns
  * [TextVerdict.ALLOWED], so the lexical pass still runs and the app never hard-fails on a bad asset.
  *
- * **Model:** Detoxify "original-small" (ALBERT) exported to TFLite — inputs `input_ids` and
- * `attention_mask` (`[1, maxLen]` int), output `[1, 6]` sigmoid probabilities for the Jigsaw labels
- * `toxic, severe_toxic, obscene, threat, insult, identity_hate`. The max label probability is compared
- * to [threshold]. Tokenization uses the HuggingFace tokenizer (`tokenizer.json`) — the same library
- * used in training, so on-device token ids match exactly. See `assets/moderation/README.md`.
+ * **Model:** Detoxify "unbiased-small" (ALBERT) exported to TFLite — inputs `input_ids` and
+ * `attention_mask` (`[1, maxLen]` int), output `[1, N]` sigmoid probabilities over the labels in
+ * `labels.txt` (7 Jigsaw toxicity labels + 9 identity-mention columns). Tokenization is the pure-Kotlin
+ * [SentencePieceTokenizer] over the bundled `tokenizer.json` (no native libs → 16 KB-page safe).
+ *
+ * **Selective blocking:** only the categories in [blockThresholds] are enforced (each against its own
+ * threshold). The default set blocks `severe_toxicity`, `identity_attack`, and `sexual_explicit` — i.e.
+ * serious abuse — and deliberately ignores `toxicity`/`insult`/`obscene` (general rudeness) and the
+ * identity-mention columns (which detect topic, not toxicity). Tune thresholds on-device.
  */
 class MlTextModerator(
     private val context: Context,
     private val modelAsset: String = DEFAULT_MODEL_ASSET,
     private val tokenizerAsset: String = DEFAULT_TOKENIZER_ASSET,
-    private val threshold: Float = DEFAULT_THRESHOLD,
+    private val labelsAsset: String = DEFAULT_LABELS_ASSET,
+    private val blockThresholds: Map<String, Float> = DEFAULT_BLOCK_THRESHOLDS,
     private val maxLen: Int = DEFAULT_MAX_LEN,
 ) : TextModerator {
 
-    private class Engine(val tokenizer: HuggingFaceTokenizer, val interpreter: Interpreter)
+    private class BlockRule(val index: Int, val threshold: Float)
+    private class Engine(
+        val tokenizer: SentencePieceTokenizer,
+        val interpreter: Interpreter,
+        val rules: List<BlockRule>,
+    )
 
     private val mutex = Mutex()
     private var loaded = false
@@ -54,15 +63,21 @@ class MlTextModerator(
 
     private fun loadEngine(): Engine? =
         try {
-            val tokenizer = context.assets.open(tokenizerAsset).use { input ->
-                HuggingFaceTokenizer.newInstance(input, mapOf("addSpecialTokens" to "true"))
+            val tokenizer = context.assets.open(tokenizerAsset).use {
+                SentencePieceTokenizer.fromJson(it.readBytes().decodeToString())
+            }
+            val labels = context.assets.open(labelsAsset).use {
+                it.readBytes().decodeToString().lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
+            }
+            val rules = blockThresholds.mapNotNull { (label, threshold) ->
+                labels.indexOf(label).takeIf { it >= 0 }?.let { BlockRule(it, threshold) }
             }
             val bytes = context.assets.open(modelAsset).use { it.readBytes() }
             val model = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).apply {
                 put(bytes)
                 rewind()
             }
-            Engine(tokenizer, Interpreter(model))
+            Engine(tokenizer, Interpreter(model), rules)
         } catch (_: IOException) {
             null // an asset is missing -> degrade to allow-all
         } catch (_: IllegalStateException) {
@@ -70,19 +85,9 @@ class MlTextModerator(
         }
 
     private fun infer(engine: Engine, text: String): TextVerdict {
-        val encoding = engine.tokenizer.encode(text)
-        // The tokenizer returns variable-length ids ([CLS]…[SEP]); pad/truncate to maxLen.
-        val rawIds = encoding.ids
-        val ids = LongArray(maxLen) // 0 == [PAD]
-        val mask = LongArray(maxLen)
-        val count = minOf(rawIds.size, maxLen)
-        for (i in 0 until count) {
-            ids[i] = rawIds[i]
-            mask[i] = encoding.attentionMask[i]
-        }
-        if (rawIds.size > maxLen) ids[maxLen - 1] = SEP_ID // preserve trailing [SEP] on truncation
-
+        val encoding = engine.tokenizer.encode(text, maxLen)
         val tflite = engine.interpreter
+
         val inputs = arrayOfNulls<Any>(tflite.inputTensorCount)
         for (i in 0 until tflite.inputTensorCount) {
             val tensor = tflite.getInputTensor(i)
@@ -90,7 +95,8 @@ class MlTextModerator(
             val isMask = tensor.name().contains("mask", ignoreCase = true) ||
                 (i == ATTENTION_MASK_INPUT && tflite.inputTensorCount == INPUT_COUNT &&
                     !tflite.getInputTensor(INPUT_IDS_INPUT).name().contains("mask", ignoreCase = true))
-            inputs[i] = (if (isMask) mask else ids).toBuffer(tensor.dataType())
+            val source = if (isMask) encoding.attentionMask else encoding.inputIds
+            inputs[i] = source.toBuffer(tensor.dataType())
         }
 
         val classCount = tflite.getOutputTensor(0).shape()[1]
@@ -98,20 +104,24 @@ class MlTextModerator(
         tflite.runForMultipleInputsOutputs(inputs, mapOf(0 to output))
 
         val scores = output[0]
-        val score = scores.maxOrNull() ?: 0f
-        return if (score >= threshold) {
-            TextVerdict(allowed = false, category = TextVerdict.Category.TOXICITY, score = score)
+        var worst = 0f
+        for (rule in engine.rules) {
+            val score = scores.getOrElse(rule.index) { 0f }
+            if (score >= rule.threshold && score > worst) worst = score
+        }
+        return if (worst > 0f) {
+            TextVerdict(allowed = false, category = TextVerdict.Category.TOXICITY, score = worst)
         } else {
             TextVerdict.ALLOWED
         }
     }
 
     /** Pack a fixed-length array into a direct buffer of the tensor's dtype (model emits int64). */
-    private fun LongArray.toBuffer(dtype: DataType): ByteBuffer {
+    private fun IntArray.toBuffer(dtype: DataType): ByteBuffer {
         val bytesPerElement = if (dtype == DataType.INT64) LONG_BYTES else INT_BYTES
         val buffer = ByteBuffer.allocateDirect(size * bytesPerElement).order(ByteOrder.nativeOrder())
         for (value in this) {
-            if (dtype == DataType.INT64) buffer.putLong(value) else buffer.putInt(value.toInt())
+            if (dtype == DataType.INT64) buffer.putLong(value.toLong()) else buffer.putInt(value)
         }
         buffer.rewind()
         return buffer
@@ -120,13 +130,20 @@ class MlTextModerator(
     private companion object {
         const val DEFAULT_MODEL_ASSET = "moderation/toxicity.tflite"
         const val DEFAULT_TOKENIZER_ASSET = "moderation/tokenizer.json"
-        const val DEFAULT_THRESHOLD = 0.7f
+        const val DEFAULT_LABELS_ASSET = "moderation/labels.txt"
         const val DEFAULT_MAX_LEN = 128
+
+        // Block serious abuse only; ignore general rudeness (toxicity/insult/obscene) and the
+        // identity-mention columns. Starting thresholds — tune on-device.
+        val DEFAULT_BLOCK_THRESHOLDS = mapOf(
+            "severe_toxicity" to 0.7f,
+            "identity_attack" to 0.7f,
+            "sexual_explicit" to 0.6f,
+        )
 
         const val INPUT_IDS_INPUT = 0
         const val ATTENTION_MASK_INPUT = 1
         const val INPUT_COUNT = 2
-        const val SEP_ID = 3L
         const val LONG_BYTES = 8
         const val INT_BYTES = 4
     }

@@ -1,0 +1,16 @@
+toxicity
+severe_toxicity
+obscene
+identity_attack
+insult
+threat
+sexual_explicit
+male
+female
+homosexual_gay_or_lesbian
+christian
+jewish
+muslim
+black
+white
+psychiatric_or_mental_illness

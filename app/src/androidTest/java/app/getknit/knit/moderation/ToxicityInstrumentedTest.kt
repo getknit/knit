@@ -1,16 +1,15 @@
 package app.getknit.knit.moderation
 
-import ai.djl.huggingface.tokenizers.HuggingFaceTokenizer
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
-import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * On-device checks for the toxicity classifier. The HuggingFace tokenizer's native runs on a
- * device/emulator only, so this is an instrumented test (not a JVM unit test).
+ * End-to-end on-device check of the toxicity classifier (tokenizer -> TFLite -> verdict). The TFLite
+ * Interpreter needs a device/emulator, so this is an instrumented test; the tokenizer itself is
+ * covered on the JVM by SentencePieceTokenizerTest. Needs the moderation assets in the APK.
  *
  *     ./gradlew :app:connectedDebugAndroidTest
  */
@@ -18,22 +17,18 @@ class ToxicityInstrumentedTest {
 
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
 
-    /** On-device token ids must equal the training-time (HuggingFace) ids — goldens verified against
-     *  the HF tokenizer and DJL-on-JVM in the detoxify-mobile conversion repo. */
     @Test
-    fun tokenizerMatchesTrainingIds() {
-        val tokenizer = context.assets.open("moderation/tokenizer.json").use {
-            HuggingFaceTokenizer.newInstance(it, mapOf("addSpecialTokens" to "true"))
-        }
-        assertArrayEquals(longArrayOf(2, 2218, 71, 24932, 3), tokenizer.encode("shut up moron").ids)
-        assertArrayEquals(longArrayOf(2, 57, 21, 374, 208, 187, 3), tokenizer.encode("Have a great day!").ids)
-    }
-
-    /** End-to-end: tokenizer -> TFLite -> verdict. */
-    @Test
-    fun flagsToxicAllowsClean() = runBlocking {
+    fun blocksSeriousAbuseButAllowsRudeAndClean() = runBlocking {
         val moderator = MlTextModerator(context)
-        assertTrue(moderator.classify("shut up, you worthless idiot").flagged)
-        assertFalse(moderator.classify("thanks so much, have a great day!").flagged)
+
+        // Clean text -> allowed.
+        assertFalse(moderator.classify("thanks so much, have a great day").flagged)
+
+        // Rude/insulting but not "serious" -> allowed. We deliberately do NOT block general
+        // toxicity/insults (the default block set is severe_toxicity/identity_attack/sexual_explicit).
+        assertFalse(moderator.classify("you are such an idiot").flagged)
+
+        // Identity attack -> blocked.
+        assertTrue(moderator.classify("those people are subhuman and should be wiped out").flagged)
     }
 }
