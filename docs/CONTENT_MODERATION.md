@@ -93,54 +93,46 @@ input `[1,224,224,3]` float32 normalized `÷255`, softmax output `[1,5]` =
 before release; tune `threshold`/`unsafeClasses` on-device. A quantized `.tflite` (~4–5 MB) drops in
 unchanged — `NsfwImageModerator` auto-detects uint8 input.
 
-## 4. Phase 4 plan — ML toxicity classifier (deferred)
+## 4. Phase 4 — ML toxicity classifier (implemented)
 
-**Status: deferred, blocked on a prerequisite.** The hybrid runs lexical-only today. Layering in an
-on-device toxicity classifier is gated on a vetted model existing, because:
+**Status: implemented.** `HybridTextModerator` runs the lexical filter first and hands anything it
+clears to `MlTextModerator`, an on-device BERT-family toxicity classifier. Both degrade to allow-all if
+their assets are missing, so the feature ships even on a stripped build.
 
-- There is **no turnkey toxicity model** — even Google's prebuilt MediaPipe text classifiers are
-  *sentiment* (movie-review positive/negative), not toxicity. It must be trained or sourced and
-  license-vetted.
-- BERT tokenization is hard to hand-roll, so the realistic runtime is **MediaPipe `tasks-text`**,
-  which transitively pulls `flogger`/`protobuf`/Google `datatransport` (telemetry). Adding it
-  speculatively — for zero current functionality, no way to validate without a model, and a dent in
-  the offline-purity goal — is not worth it until a model exists.
+### 4.1 Model
 
-### 4.1 Model requirements
+**Detoxify "original-small" (`albert-base-v2`)** fine-tuned on the **Jigsaw Toxic Comment Challenge**,
+exported to TFLite (dynamic int8, ~14.6 MB) by the separate **`detoxify-mobile`** conversion pipeline:
 
-A **BERT text *classifier*** fine-tuned for toxicity, exported **with TFLite metadata** (embedded
-vocab + tokenizer config + label map):
+- Inputs `input_ids` / `attention_mask` `[1, 128]` (int); output `[1, 6]` **sigmoid** probabilities for
+  `toxic, severe_toxic, obscene, threat, insult, identity_hate`. `MlTextModerator` flags on
+  `max(prob) ≥ 0.7` (tunable).
+- License: Apache-2.0 (Detoxify weights + `albert-base-v2`) — retain attribution when shipping.
 
-- Output `[1, N]` class scores (e.g. 2 = clean/toxic, or the 6 Jigsaw labels:
-  `toxic, severe_toxic, obscene, threat, insult, identity_hate`).
-- **Not** a QA model (`start_logits`/`end_logits` outputs) and **not** sentiment.
-- Recommended: train with **MediaPipe Model Maker** (`BertClassifier`) on the **Jigsaw Toxic Comment**
-  dataset; quantize MobileBERT to ~25 MB. Model Maker emits the metadata `TextClassifier` needs.
+We deliberately did **not** use MediaPipe: Model Maker is deprecated, and the runtime instead mirrors
+`NsfwImageModerator` (bare `org.tensorflow:tensorflow-lite` Interpreter — no telemetry, no new model
+runtime). ALBERT tokenizes with SentencePiece (not WordPiece), so tokenization uses
+`ai.djl.huggingface:tokenizers` reading the bundled `tokenizer.json` — the same HF tokenizer used in
+training, so on-device ids match exactly; fully offline, no `INTERNET`.
 
-### 4.2 Implementation steps (when a model exists)
+### 4.2 What's wired
 
-1. Place the model at `assets/moderation/toxicity.tflite` (or `.task`). It is LFS-tracked automatically
-   (`.gitattributes` covers `*.tflite`; add a `*.task` rule via `git lfs track "*.task"` if used).
-2. Version catalog (`gradle/libs.versions.toml`): add `com.google.mediapipe:tasks-text`. **Probe its
-   transitive deps first** (AGENTS.md) — it must not bump the pinned `coreKtx 1.18.0` /
-   `lifecycle 2.10.0` or drag a newer Kotlin stdlib. Add `androidResources { noCompress += "task" }`
-   if a `.task` bundle is used.
-3. Confirm the **merged manifest still has no `INTERNET`** after adding the dep (MediaPipe's
-   `datatransport` should not add it; verify and, if needed, suppress with a manifest
-   `<uses-permission android:name="android.permission.INTERNET" tools:node="remove"/>`).
-4. Write `moderation/MlTextModerator.kt` implementing `TextModerator`: lazily build a MediaPipe
-   `TextClassifier` from `BaseOptions.setModelAssetPath(...)`, run `classify(text)` on a background
-   dispatcher, map the toxic category score against a threshold → `TextVerdict`. Degrade to
-   `TextVerdict.ALLOWED` if the model asset is missing (mirror `NsfwImageModerator`).
-5. Inject it in `di/ModerationModule.kt`:
-   `HybridTextModerator(LexicalTextFilter(...), ml = MlTextModerator(androidContext()))`.
-6. Regenerate the lockfile for **all** configs (AGENTS.md gotcha):
-   `./gradlew :app:dependencies --write-locks` then `./gradlew lint`.
-7. Verify: `./gradlew :app:testDebugUnitTest detekt :app:assembleDebug :app:lintDebug`, then on-device
-   tune the toxicity threshold against representative messages.
+- `assets/moderation/toxicity.tflite` (LFS) + `assets/moderation/tokenizer.json`.
+- `moderation/MlTextModerator.kt` — tokenize → pad/truncate to 128 → TFLite Interpreter → max-sigmoid vs
+  threshold; degrades to `TextVerdict.ALLOWED` on a missing/bad asset.
+- `di/ModerationModule.kt` — `HybridTextModerator(lexical = …, ml = MlTextModerator(androidContext()))`.
+- `app/build.gradle.kts` / `gradle/libs.versions.toml` — `ai.djl.huggingface:tokenizers` +
+  `ai.djl.android:tokenizer-native` (`0.33.0`, catalog `djl`), plus
+  `packaging { resources { excludes += "native/**" } }` to drop the tokenizers jar's bundled desktop
+  natives (the Android `.so` comes from the `-native` AAR). Merged manifest stays `INTERNET`-free.
+- `ToxicityInstrumentedTest` (androidTest) — on-device golden token ids + end-to-end verdict.
 
-No app-side wiring beyond step 5 is needed — `MessageEntity.moderation`, the tap-to-reveal UI, the
+No app-side wiring beyond the DI line is needed — `MessageEntity.moderation`, the tap-to-reveal UI, the
 settings gate, and both hook points already route any `TextModerator` verdict.
+
+To re-export or re-tune the model, see the `detoxify-mobile` repo (`README.md` + `android/INTEGRATION.md`).
+After any dependency change, regenerate the lockfile for **all** configs (AGENTS.md gotcha):
+`./gradlew :app:dependencies --write-locks` then `./gradlew lint`.
 
 ## 5. Git LFS for model files
 

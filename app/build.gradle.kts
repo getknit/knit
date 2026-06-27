@@ -41,6 +41,14 @@ android {
         // On-device model files must stay uncompressed so TFLite can mmap them from the APK.
         noCompress += listOf("tflite")
     }
+    packaging {
+        resources {
+            // The ai.djl.huggingface:tokenizers jar bundles ~50 MB of desktop natives
+            // (native/lib/{linux,osx,win}-*) as Java resources; on Android the .so comes from the
+            // ai.djl.android:tokenizer-native AAR, so strip the desktop ones from the APK.
+            excludes += "native/**"
+        }
+    }
 }
 
 dependencyLocking {
@@ -94,6 +102,12 @@ dependencies {
     // On-device NSFW image classifier runtime (no network; model bundled in assets). See the version
     // catalog for why the bare TFLite interpreter is used rather than MediaPipe/LiteRT.
     implementation(libs.tensorflow.lite)
+
+    // On-device tokenizer for the text toxicity classifier — HuggingFace tokenizers over the bundled
+    // tokenizer.json (exact training parity). Maven Central; offline arm64/x86_64 .so via the -native
+    // AAR; no INTERNET. Desktop natives in the tokenizers jar are stripped via packaging { } above.
+    implementation(libs.djl.huggingface.tokenizers)
+    implementation(libs.djl.android.tokenizer.native)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

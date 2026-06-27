@@ -25,10 +25,19 @@ load, the moderator degrades to allow-all** (hooks + blur UI stay wired).
 on-device. `*.tflite` is kept uncompressed in the APK (`androidResources { noCompress }` in
 `app/build.gradle.kts`) so TFLite can mmap it.
 
-## `toxicity` model (text ML — deferred, Phase 4)
+## `toxicity.tflite` + `tokenizer.json` (bundled — activates text ML moderation)
 
-The hybrid text moderator currently runs lexical-only (`ml = null`). Layering in an on-device toxicity
-classifier (e.g. MediaPipe Text Classifier with a MobileBERT model trained on the Jigsaw dataset) is
-deferred until a vetted model exists. It must be a BERT text *classifier* with TFLite metadata — not a
-QA model (`start/end_logits`) and not sentiment. Full plan and wiring steps:
-[`docs/CONTENT_MODERATION.md`](../../../../../docs/CONTENT_MODERATION.md) §4.
+The on-device toxicity classifier consumed by `MlTextModerator`, layered into `HybridTextModerator`
+after the lexical pass (it only sees text the word list clears). **Detoxify "original-small" (ALBERT)**
+fine-tuned on the Jigsaw Toxic Comment Challenge, exported to TFLite: inputs `input_ids` /
+`attention_mask` `[1, 128]` (int), output `[1, 6]` sigmoid probabilities
+(`toxic, severe_toxic, obscene, threat, insult, identity_hate`); flagged when the max label probability
+≥ 0.7. ~14.6 MB dynamic-int8 model, **managed via Git LFS** (`.gitattributes` tracks `*.tflite`).
+
+`tokenizer.json` is the HuggingFace tokenizer, read on-device by `ai.djl.huggingface:tokenizers`
+(offline, no network) — the same tokenizer used in training, so token ids match exactly. If either file
+is **absent or fails to load, `MlTextModerator` degrades to allow-all** and the lexical pass still runs.
+
+Both files are produced (and re-tunable) by the separate `detoxify-mobile` conversion pipeline; license
+is Apache-2.0 (Detoxify weights + albert-base-v2) — retain attribution when shipping. Full design and
+wiring: [`docs/CONTENT_MODERATION.md`](../../../../../docs/CONTENT_MODERATION.md) §4.

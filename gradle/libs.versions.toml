@@ -35,6 +35,12 @@ coil = "3.5.0"
 # (datatransport), NO Play on-demand model delivery (ai-delivery), and declares no manifest permissions
 # — so it can't perturb the pinned Kotlin-2.4 graph or compromise the app's no-INTERNET, offline design.
 tensorflowLite = "2.17.0"
+# On-device tokenizer for the text toxicity classifier: DJL's HuggingFace tokenizers (the HF Rust
+# `tokenizers` lib) reading the bundled tokenizer.json — exact parity with the model's training
+# tokenization. 0.33.0 is the only version with a published ai.djl.android:tokenizer-native AAR
+# (ships the offline arm64/x86_64 .so; declares no INTERNET permission). Pure JNI + small JVM jars
+# (gson/jna/commons-compress/slf4j), no Kotlin metadata, so it can't perturb the pinned Kotlin-2.4 graph.
+djl = "0.33.0"
 # detekt runs as a standalone CLI off the build classpath (never applied as a Gradle plugin) —
 # keep this in lockstep with DETEKT_VERSION in .gitlab-ci.yml so local and CI use the same rules.
 detekt = "1.23.8"
@@ -85,6 +91,12 @@ coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref 
 coil-gif = { group = "io.coil-kt.coil3", name = "coil-gif", version.ref = "coil" }
 
 tensorflow-lite = { group = "org.tensorflow", name = "tensorflow-lite", version.ref = "tensorflowLite" }
+
+# HuggingFace tokenizer for on-device text moderation. `tokenizers` is the Java API (+ desktop
+# natives bundled as resources — excluded via packaging in app/build.gradle.kts); the Android .so
+# comes from the `tokenizer-native` AAR.
+djl-huggingface-tokenizers = { group = "ai.djl.huggingface", name = "tokenizers", version.ref = "djl" }
+djl-android-tokenizer-native = { group = "ai.djl.android", name = "tokenizer-native", version.ref = "djl" }
 
 # Put onto the root buildscript classpath so AGP 9's built-in Kotlin compiles with this KGP (2.4.0)
 # instead of AGP's bundled default (2.2.10). Kotlin 2.4 is supported on AGP 9.1+ per Google's
