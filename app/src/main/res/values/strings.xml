@@ -110,6 +110,20 @@
     <string name="profile_details_online">Online</string>
     <string name="profile_details_offline">Offline</string>
 
+    <!-- E2E key verification -->
+    <string name="verify_section_title">Encryption</string>
+    <string name="verify_verified">Verified</string>
+    <string name="verify_not_verified">Not verified</string>
+    <string name="verify_no_key">Encryption keys haven\'t been exchanged with this contact yet.</string>
+    <string name="verify_safety_number">Safety number</string>
+    <string name="verify_caption">Compare this number with %1$s in person, or scan their code, to confirm no one is intercepting your messages.</string>
+    <string name="verify_qr_caption">Let %1$s scan this code</string>
+    <string name="verify_scan">Scan their code</string>
+    <string name="verify_mark_verified">Mark as verified</string>
+    <string name="verify_clear">Clear verification</string>
+    <string name="verify_match">Verified — keys match.</string>
+    <string name="verify_mismatch">Codes don\'t match. This may not be the right contact.</string>
+
     <!-- Diagnostics -->
     <string name="diagnostics_title">Diagnostics</string>
     <string name="diagnostics_self">This device</string>

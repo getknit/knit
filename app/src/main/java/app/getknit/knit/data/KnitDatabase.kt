@@ -35,7 +35,9 @@ import java.io.File
     // v7: added the groups table for group chat. Destructive migration; app not yet public.
     // v8: messages gained a `moderation` verdict column; added the `blob_verdicts` table caching
     //     on-device NSFW verdicts by content hash. Destructive migration; app not yet public.
-    version = 8,
+    // v9: E2E encryption — messages gained attachmentKey, peers gained verified (pubKey now holds the
+    //     pinned identity bundle). Destructive migration; clears pre-encryption plaintext history.
+    version = 9,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

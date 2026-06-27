@@ -14,6 +14,8 @@ import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.crypto.DatabaseKey
+import app.getknit.knit.data.crypto.IdentityKeyStore
+import app.getknit.knit.data.crypto.KeystoreSecret
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.AndroidDeviceIdSource
 import app.getknit.knit.identity.DeviceIdSource
@@ -31,7 +33,9 @@ val appModule = module {
     }
     single<DeviceIdSource> { AndroidDeviceIdSource(androidContext()) }
     single { SettingsStore(get(), get()) }
-    single { Identity(get()) }
+    // E2E identity keypair, wrapped under a hardware AndroidKeyStore key in filesDir (outside the DB).
+    single { IdentityKeyStore(KeystoreSecret(androidContext(), "knit_identity_key", "identity.key")) }
+    single { Identity(get(), get()) }
     single { AvatarStore(androidContext(), get()) }
     single { AttachmentStore(androidContext(), get()) }
     single { GallerySaver(androidContext()) }

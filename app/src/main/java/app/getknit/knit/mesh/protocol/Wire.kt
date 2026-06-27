@@ -70,12 +70,41 @@ data class GroupInfo(
     val createdBy: String,
 )
 
+/**
+ * One recipient's copy of the per-message content key [wk] (base64), wrapped (Tink hybrid / HPKE) to
+ * that recipient's published encryption key and tagged by their node id [to]. A group message carries
+ * one [WrappedKey] per member (minus the sender); a DM carries exactly one.
+ */
+@Serializable
+data class WrappedKey(
+    val to: String,
+    val wk: String,
+)
+
+/**
+ * The end-to-end encryption envelope carried on an encrypted [ChatFrame]. A random per-message content
+ * key encrypts the [app.getknit.knit.mesh.crypto.MessageContent] (body + mentions + attachment refs)
+ * with AES-256-GCM into [ct] under [nonce] (both base64); that content key is then wrapped once per
+ * recipient into [keys]. Only the addressed recipients can unwrap it, so relays — which never read
+ * frame contents anyway — carry pure ciphertext. [v] is the scheme version (omitted on the wire while
+ * it equals the default). Present only on DM/group messages; the broadcast room is never encrypted.
+ */
+@Serializable
+data class EncEnvelope(
+    val v: Int = 1,
+    val nonce: String,
+    val ct: String,
+    val keys: List<WrappedKey>,
+)
+
 @Serializable
 @SerialName("chat")
 data class ChatFrame(
     override val id: String,
     val senderId: String,
     val sentAt: Long,
+    // Plaintext body for the broadcast room. Empty when [enc] is set: the real body lives encrypted in
+    // the envelope, and mentions/attachment fields below are likewise blank/null on the wire.
     val body: String,
     val recipientId: String? = null,
     val sig: String? = null,
@@ -86,6 +115,10 @@ data class ChatFrame(
     // Set on group-chat messages; null for the broadcast room and 1:1 DMs (recipientId stays null for
     // groups — the group field, not recipientId, addresses the thread). Omitted on the wire when null.
     val group: GroupInfo? = null,
+    // End-to-end encryption envelope. Non-null ⇒ this is an encrypted DM/group message: [body] is empty,
+    // [mentions]/[attachment*] are blank/null, and the plaintext lives in [enc] + is authenticated by
+    // [sig]. Null ⇒ a plaintext broadcast-room message (unchanged legacy path).
+    val enc: EncEnvelope? = null,
     override val ttl: Int = DEFAULT_TTL,
     override val hops: Int = 0,
 ) : Frame

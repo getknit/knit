@@ -20,6 +20,10 @@ import kotlinx.serialization.json.Json
  * bytes live in the encrypted `blobs` table (see [app.getknit.knit.data.blob.BlobEntity]), keyed by
  * [attachmentHash], and are null until the blob has been pulled from the mesh.
  *
+ * [attachmentKey] is the base64 AES key for an end-to-end-encrypted attachment: in a DM/group the blob
+ * bytes are ciphertext (content-addressed by their ciphertext hash), so the UI must decrypt them with
+ * this key before decoding. Null for plaintext (broadcast-room) attachments and text-only messages.
+ *
  * [moderation] records an on-device content-moderation verdict for the [body] ([MODERATION_NONE] or
  * [MODERATION_TEXT_FLAGGED]). A flagged inbound message is still stored, but the UI collapses it behind
  * a tap-to-reveal rather than dropping it (so a false positive never loses content).
@@ -36,6 +40,7 @@ data class MessageEntity(
     val mentions: String = "[]",
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,
+    val attachmentKey: String? = null,
     val moderation: Int = MODERATION_NONE,
 ) {
     companion object {

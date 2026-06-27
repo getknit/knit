@@ -2,6 +2,7 @@ package app.getknit.knit
 
 import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
+import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.GroupUpdateFrame
 import app.getknit.knit.mesh.protocol.Mention
@@ -9,6 +10,7 @@ import app.getknit.knit.mesh.protocol.ProfileFrame
 import app.getknit.knit.mesh.protocol.ReactionFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
 import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WrappedKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -85,6 +87,31 @@ class WireSerializationTest {
         val decoded = WireCodec.decode(WireCodec.encode(frame)) as ChatFrame
         assertEquals(frame, decoded)
         assertNull(decoded.group?.name)
+    }
+
+    @Test
+    fun encryptedChatFrameRoundTrips() {
+        // A DM/group message carries an empty body, a signature, and the encryption envelope; cleartext
+        // fields stay blank/null on the wire while recipientId/group remain visible for routing.
+        val frame = ChatFrame(
+            id = "e1", senderId = "alice", sentAt = 10L, body = "",
+            recipientId = "bob00000", sig = "c2lnbmF0dXJl",
+            enc = EncEnvelope(
+                nonce = "bm9uY2U=",
+                ct = "Y2lwaGVydGV4dA==",
+                keys = listOf(WrappedKey("bob00000", "d3JhcHBlZA==")),
+            ),
+        )
+        val decoded = WireCodec.decode(WireCodec.encode(frame)) as ChatFrame
+        assertEquals(frame, decoded)
+        assertEquals("bob00000", decoded.enc?.keys?.firstOrNull()?.to)
+        assertEquals("", decoded.body)
+    }
+
+    @Test
+    fun plaintextChatFrameDecodesWithNullEnc() {
+        val frame = ChatFrame(id = "p1", senderId = "alice", sentAt = 1L, body = "hi")
+        assertNull((WireCodec.decode(WireCodec.encode(frame)) as ChatFrame).enc)
     }
 
     @Test

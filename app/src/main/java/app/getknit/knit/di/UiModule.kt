@@ -25,6 +25,6 @@ val uiModule = module {
     viewModel { DiagnosticsViewModel(get(), get(), get(), get(), get()) }
     viewModel { ProfileViewModel(get(), get(), get(), get()) }
     // ProfileDetailsViewModel takes the tapped peer's node id as a runtime param.
-    viewModel { params -> ProfileDetailsViewModel(params.get(), get(), get(), get()) }
+    viewModel { params -> ProfileDetailsViewModel(params.get(), get(), get(), get(), get()) }
     viewModel { BlockedUsersViewModel(get(), get()) }
 }

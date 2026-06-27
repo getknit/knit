@@ -52,6 +52,9 @@ data class ChatRow(
     val moderationFlagged: Boolean = false,
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,
+    // Base64 key for an end-to-end-encrypted attachment (null for plaintext/broadcast attachments);
+    // passed to the image loader to decrypt the ciphertext blob before decoding.
+    val attachmentKey: String? = null,
     // True once the attachment blob is present locally; false while it's still being pulled (the bubble
     // shows a loading placeholder). Only meaningful when [attachmentHash] is non-null.
     val attachmentReady: Boolean = false,
@@ -91,6 +94,8 @@ data class ChatUiState(
     val avatarHash: String? = null,
     // True when this DM's peer is blocked, so the header offers "Unblock" instead of "Block".
     val isBlocked: Boolean = false,
+    // True when this DM's peer has been key-verified (safety number / QR), to show a verified badge.
+    val verified: Boolean = false,
     // True when this thread is a group chat; [memberCount] sizes the header subtitle. The header then
     // offers "Rename group" / "Leave group" instead of Block/Unblock.
     val isGroup: Boolean = false,
@@ -234,6 +239,7 @@ class ChatViewModel(
                 moderationFlagged = m.moderation == MessageEntity.MODERATION_TEXT_FLAGGED,
                 attachmentHash = m.attachmentHash,
                 attachmentMime = m.attachmentMime,
+                attachmentKey = m.attachmentKey,
                 attachmentReady = m.attachmentHash != null && m.attachmentHash in presentHashes,
                 attachmentFlagged = m.attachmentHash != null && m.attachmentHash in flaggedHashes,
                 mentions = MentionStore.decode(m.mentions),
@@ -273,6 +279,7 @@ class ChatViewModel(
             // Groups and the room use a glyph, not a peer avatar.
             avatarHash = if (isRoom || isGroup) null else peersByNode[conversationId]?.avatarHash,
             isBlocked = !isRoom && !isGroup && conversationId in blocked,
+            verified = !isRoom && !isGroup && peersByNode[conversationId]?.verified == true,
             isGroup = isGroup,
             memberCount = members.size,
         )

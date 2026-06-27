@@ -97,6 +97,12 @@ dependencies {
     // tokenizer lib, so nothing to 16 KB-align and no .so added to the APK.
     implementation(libs.tensorflow.lite)
 
+    // E2E encryption (Tink — Java + native, no Kotlin metadata / no Gradle plugin, like SQLCipher)
+    implementation(libs.tink.android)
+    // QR identity verification (safety-number / QR verify screen)
+    implementation(libs.zxing.android.embedded)
+    implementation(libs.zxing.core)
+
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.koin.test.junit4)

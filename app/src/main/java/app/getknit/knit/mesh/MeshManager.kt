@@ -16,6 +16,11 @@ import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.crypto.AttachmentCrypto
+import app.getknit.knit.mesh.crypto.MessageContent
+import app.getknit.knit.mesh.crypto.MessageCrypto
+import app.getknit.knit.mesh.crypto.PublicKeyBundle
+import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.Frame
@@ -46,6 +51,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -55,6 +61,8 @@ import java.util.concurrent.ConcurrentHashMap
  * profile, and exposes the send/start API used by the foreground service and UI. A process singleton
  * (provided by Koin) so the bound service and the UI share one instance.
  */
+// The central mesh orchestrator: many small frame handlers, and many collaborators injected by design.
+@Suppress("TooManyFunctions", "LongParameterList")
 class MeshManager(
     private val transport: MeshTransport,
     private val messages: MessageRepository,
@@ -67,6 +75,7 @@ class MeshManager(
     private val blobStore: MeshBlobStore,
     private val notifier: Notifier,
     private val textModerator: TextModerator,
+    private val messageCrypto: MessageCrypto,
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
 ) {
@@ -182,34 +191,102 @@ class MeshManager(
     ): Boolean {
         if (isTextFlagged(text)) return false
         val me = identity.nodeId()
-        val frame = ChatFrame(
-            id = UUID.randomUUID().toString(),
-            senderId = me,
-            sentAt = System.currentTimeMillis(),
+        val id = UUID.randomUUID().toString()
+        val sentAt = System.currentTimeMillis()
+        val conversationId = Conversations.idFor(me, recipientId, me, group?.id)
+
+        // Broadcast room: plaintext (no fixed recipient set to encrypt to) — the legacy path, unchanged.
+        if (recipientId == null && group == null) {
+            messages.save(
+                MessageEntity(
+                    id = id, senderId = me, recipientId = null, conversationId = conversationId,
+                    body = text, sentAt = sentAt, received = false,
+                    mentions = MentionStore.encode(mentions),
+                    attachmentHash = attachment?.hash, attachmentMime = attachment?.mime,
+                ),
+            )
+            router.originate(
+                ChatFrame(
+                    id = id, senderId = me, sentAt = sentAt, body = text, mentions = mentions,
+                    attachmentHash = attachment?.hash, attachmentMime = attachment?.mime,
+                ),
+            )
+            return true
+        }
+
+        // DM or group: end-to-end encrypt. The attachment (if any) is encrypted to its own key and
+        // re-addressed by its ciphertext hash; body/mentions/attachment refs go into the sealed content.
+        val sealedAttachment = attachment?.let { sealAttachment(it) }
+        val content = MessageContent(
             body = text,
-            recipientId = recipientId,
             mentions = mentions,
-            attachmentHash = attachment?.hash,
+            attachmentHash = sealedAttachment?.hash,
             attachmentMime = attachment?.mime,
-            group = group,
+            attachmentKey = sealedAttachment?.key,
         )
+        // Persist our own plaintext copy regardless, so the sender always sees their message.
         messages.save(
             MessageEntity(
-                id = frame.id,
-                senderId = me,
-                recipientId = recipientId,
-                conversationId = Conversations.idFor(me, recipientId, me, group?.id),
-                body = text,
-                sentAt = frame.sentAt,
-                received = false,
+                id = id, senderId = me, recipientId = recipientId, conversationId = conversationId,
+                body = text, sentAt = sentAt, received = false,
                 mentions = MentionStore.encode(mentions),
-                attachmentHash = attachment?.hash,
-                attachmentMime = attachment?.mime,
+                attachmentHash = sealedAttachment?.hash, attachmentMime = attachment?.mime,
+                attachmentKey = sealedAttachment?.key,
             ),
         )
-        router.originate(frame)
+        val thread = group?.id ?: recipientId.orEmpty()
+        val header = MessageCrypto.header(id, me, sentAt, thread)
+        val sealed = messageCrypto.seal(content.encode(), header, recipientBundles(recipientId, group, me))
+        if (sealed == null) {
+            // No recipient's key is known yet — nothing can decrypt this. Saved locally above but not
+            // flooded; it stays unsent until a profile (carrying the key) arrives.
+            Log.w(TAG, "no known keys for recipient(s) of chat $id; not sent")
+            return true
+        }
+        router.originate(
+            ChatFrame(
+                id = id, senderId = me, sentAt = sentAt, body = "",
+                recipientId = recipientId, sig = sealed.sig, group = group, enc = sealed.envelope,
+            ),
+        )
         return true
     }
+
+    /** Resolves the published key bundles for a DM recipient or a group's members (excluding us). */
+    private suspend fun recipientBundles(
+        recipientId: String?,
+        group: GroupInfo?,
+        me: String,
+    ): Map<String, PublicKeyBundle> {
+        val targets = when {
+            group != null -> group.members.filter { it != me }
+            recipientId != null -> listOf(recipientId)
+            else -> emptyList()
+        }
+        return targets.mapNotNull { nodeId ->
+            peers.find(nodeId)?.pubKey?.let { PublicKeyBundle.decode(it) }?.let { nodeId to it }
+        }.toMap()
+    }
+
+    /** Encrypted, content-addressed copy of a just-ingested attachment, plus its base64 key. */
+    private data class SealedAttachment(val hash: String, val key: String)
+
+    /**
+     * Encrypts the ingested (plaintext) attachment to a fresh key, stores the ciphertext blob under its
+     * ciphertext hash (so the existing content-addressed pull/dedup still works), and drops the now-
+     * unreferenced plaintext blob.
+     */
+    private suspend fun sealAttachment(attachment: AttachmentStore.Ingested): SealedAttachment? {
+        val plain = blobs.bytes(attachment.hash) ?: return null
+        val sealed = AttachmentCrypto.seal(plain)
+        val ctHash = sha256Hex(sealed.blob)
+        blobs.insert(ctHash, attachment.mime, sealed.blob)
+        blobs.deleteIfUnreferenced(attachment.hash)
+        return SealedAttachment(ctHash, b64(sealed.key))
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     /**
      * Floods a group metadata update (e.g. a rename) immediately, independent of any chat message, so
@@ -333,6 +410,7 @@ class MeshManager(
             name = settings.displayName.first(),
             status = settings.status.first(),
             avatarHash = settings.ownAvatarHash.first(),
+            pubKey = identity.publicKeyBundle(),
         )
     }
 
@@ -382,7 +460,7 @@ class MeshManager(
         // A DM addressed to someone else: we're only relaying it (the router floods it onward). It
         // isn't ours, so don't persist, notify, or ack it.
         if (!Conversations.isForMe(frame.recipientId, me)) return
-        deliverChat(frame, me, Conversations.idFor(frame.senderId, frame.recipientId, me))
+        decryptAndDeliver(frame, me, Conversations.idFor(frame.senderId, frame.recipientId, me))
     }
 
     /**
@@ -391,8 +469,56 @@ class MeshManager(
      */
     private suspend fun handleGroupChat(frame: ChatFrame, group: GroupInfo, me: String) {
         if (reconcileGroup(group, frame.senderId, frame.sentAt, me)) {
-            deliverChat(frame, me, group.id)
+            decryptAndDeliver(frame, me, group.id)
         }
+    }
+
+    /**
+     * For an encrypted DM/group frame, verifies + decrypts it (dropping it on any failure) and delivers
+     * the plaintext; a plaintext (broadcast) frame is delivered as-is. Decryption is wrapped so a failure
+     * NEVER throws out of the inbound handler — the router schedules the relay *after* onDeliver returns,
+     * so an exception here would silently stop us forwarding the frame to other peers.
+     */
+    private suspend fun decryptAndDeliver(frame: ChatFrame, me: String, conversationId: String) {
+        if (frame.enc == null) {
+            deliverChat(frame, me, conversationId)
+            return
+        }
+        val decrypted = runCatching { decrypt(frame, me) }.getOrElse {
+            Log.w(TAG, "drop encrypted chat ${frame.id}: ${it.message}")
+            null
+        } ?: return
+        deliverChat(decrypted.frame, me, conversationId, decrypted.attachmentKey)
+    }
+
+    /** A successfully-decrypted chat: a plaintext frame copy plus the attachment key (if any). */
+    private data class Decrypted(val frame: ChatFrame, val attachmentKey: String?)
+
+    /**
+     * Verifies the sender's signature against their pinned key and decrypts the envelope. Returns null
+     * (drop) when we have no pinned key for the sender yet, or verification/decryption fails.
+     */
+    private suspend fun decrypt(frame: ChatFrame, me: String): Decrypted? {
+        val envelope = frame.enc ?: return null
+        val senderBundle = peers.find(frame.senderId)?.pubKey?.let { PublicKeyBundle.decode(it) }
+        if (senderBundle == null) {
+            Log.w(TAG, "drop encrypted chat from ${frame.senderId}: no pinned key")
+            return null
+        }
+        val thread = frame.group?.id ?: frame.recipientId.orEmpty()
+        val header = MessageCrypto.header(frame.id, frame.senderId, frame.sentAt, thread)
+        val content = messageCrypto.open(envelope, frame.sig, header, me, senderBundle) ?: return null
+        return Decrypted(
+            frame.copy(
+                body = content.body,
+                mentions = content.mentions,
+                attachmentHash = content.attachmentHash,
+                attachmentMime = content.attachmentMime,
+                enc = null,
+                sig = null,
+            ),
+            content.attachmentKey,
+        )
     }
 
     /**
@@ -445,7 +571,12 @@ class MeshManager(
      * Persists an inbound chat into [conversationId], starts pulling any attachment blob we don't hold,
      * fires the appropriate notification, and acks. Shared by the DM/broadcast and group delivery paths.
      */
-    private suspend fun deliverChat(frame: ChatFrame, me: String, conversationId: String) {
+    private suspend fun deliverChat(
+        frame: ChatFrame,
+        me: String,
+        conversationId: String,
+        attachmentKey: String? = null,
+    ) {
         val hash = frame.attachmentHash
         messages.save(
             MessageEntity(
@@ -459,6 +590,7 @@ class MeshManager(
                 mentions = MentionStore.encode(frame.mentions),
                 attachmentHash = hash,
                 attachmentMime = frame.attachmentMime,
+                attachmentKey = attachmentKey,
                 moderation = if (isTextFlagged(frame.body)) {
                     MessageEntity.MODERATION_TEXT_FLAGGED
                 } else {
@@ -547,11 +679,18 @@ class MeshManager(
         // The stored avatarHash means "bytes are present locally": adopt the advertised hash only once
         // we hold its blob, otherwise keep the current avatar (if any) until the new one is fetched.
         val haveAvatar = advertised != null && blobStore.has(advertised)
+        // Trust-on-first-use: pin the first key we see for this peer. Never clear a pinned key with a
+        // null-key frame. If a *different* key arrives, adopt it (so comms continue) but drop the
+        // verified flag — the user must re-confirm via safety number / QR.
+        val pinnedKey = existing?.pubKey
+        val keyChanged = pinnedKey != null && frame.pubKey != null && frame.pubKey != pinnedKey
+        if (keyChanged) Log.w(TAG, "peer ${frame.senderId} identity key changed; verification reset")
         peers.upsert(
             (existing ?: PeerEntity(frame.senderId)).copy(
                 name = frame.name,
                 status = frame.status,
-                pubKey = frame.pubKey,
+                pubKey = frame.pubKey ?: pinnedKey,
+                verified = if (keyChanged) false else (existing?.verified ?: false),
                 avatarHash = if (haveAvatar) advertised else existing?.avatarHash,
                 updatedAt = frame.sentAt,
             ),

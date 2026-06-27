@@ -1,6 +1,8 @@
 package app.getknit.knit.ui.image
 
 import app.getknit.knit.data.blob.BlobDao
+import app.getknit.knit.mesh.crypto.AttachmentCrypto
+import app.getknit.knit.mesh.crypto.b64d
 import coil3.ImageLoader
 import coil3.decode.DataSource
 import coil3.decode.ImageSource
@@ -23,7 +25,13 @@ class BlobFetcher(
 ) : Fetcher {
 
     override suspend fun fetch(): FetchResult? {
-        val bytes = blobs.bytes(data.hash) ?: return null
+        val raw = blobs.bytes(data.hash) ?: return null
+        // Encrypted attachment: the stored bytes are ciphertext; decrypt in memory before decoding.
+        val bytes = if (data.key != null) {
+            AttachmentCrypto.open(raw, b64d(data.key)) ?: return null
+        } else {
+            raw
+        }
         return SourceFetchResult(
             source = ImageSource(
                 source = Buffer().apply { write(bytes) },

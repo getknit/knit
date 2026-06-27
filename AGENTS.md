@@ -64,10 +64,13 @@ ui/            Compose screens (onboarding, chatlist, chat, contacts, profile) +
 mesh/          MeshTransport (interface) · MeshRouter (dedup + jittered/suppressed flood)
                · MeshManager (orchestrator) · MeshService (foreground service) · MeshMetrics
                · BlobExchange/BlobStore (content-addressed pull) · protocol/Wire.kt (CBOR Frame)
+mesh/crypto/   E2E (Tink): MessageCrypto (per-msg seal/open) · PublicKeyBundle · MessageContent
+               · AttachmentCrypto · SafetyNumber · VerifyPayload (pure, JVM-testable)
 mesh/nearby/   NearbyTransport — the ONLY place that imports com.google.android.gms.*
 data/          Room (messages, peers, reactions) + repositories · settings/SettingsStore (DataStore)
                · AvatarStore + AttachmentStore (image files) · message/Conversations (DM keys)
-identity/      Identity (stable nodeId) · NodeId (derive) · DeviceIdSource · Alias (name fallback)
+               · crypto/ DatabaseKey + IdentityKeyStore (AndroidKeyStore-wrapped secrets) + KeystoreSecret
+identity/      Identity (stable nodeId + E2E keypair) · NodeId (derive) · DeviceIdSource · Alias
 notifications/ Notifier + MessageNotifier (messages + dedicated mentions channel)
 di/            Koin modules: appModule, meshModule, uiModule
 ```
@@ -87,10 +90,12 @@ frames.
   `org.koin.core.module.dsl.viewModel` (not the deprecated `androidx.viewmodel.dsl` one).
 - **Wire format** (`mesh/protocol/Wire.kt`) is a `@Serializable sealed interface Frame` serialized as
   **binary CBOR** (`WireCodec`, `encodeDefaults = false`) — not JSON. New frame types are added as
-  sealed subclasses with a `@SerialName` (current set: `chat`, `profile`, `receipt`, `reaction`,
-  `blobreq`); a non-flooded control frame overrides `relayable` to `false`. `ChatFrame.recipientId`
-  addresses DMs; `sig` / `pubKey` are reserved for future E2E — keep them. Changing the encoding or a
-  frame's shape is a coordinated wire-format break (no version negotiation yet).
+  sealed subclasses with a `@SerialName` (current set: `chat`, `groupupdate`, `profile`, `receipt`,
+  `reaction`, `blobreq`); a non-flooded control frame overrides `relayable` to `false`.
+  `ChatFrame.recipientId`/`group` address DMs/groups (cleartext, for routing); `ChatFrame.enc` +
+  `sig` carry the E2E envelope + Ed25519 signature and `ProfileFrame.pubKey` the public-key bundle —
+  all now in use (see the E2E section below). Changing the encoding or a frame's shape is a coordinated
+  wire-format break (no version negotiation yet).
 - **Pure, testable mesh logic.** `MeshRouter`, `SeenSet`, `WireCodec`, `MeshMetrics`, `BlobExchange`,
   and `Conversations` have no Android dependencies and are unit-tested with `FakeLoopTransport`/fakes.
   Keep them that way. `MeshRouter` relay timing is driven by an injectable `jitter` lambda so tests
@@ -134,9 +139,23 @@ When driving the emulator over `adb`: the soft keyboard overlaps via `adjustResi
 coordinates from `uiautomator dump` rather than guessing; seed the photo picker by `screencap`-ing
 into `/sdcard/Pictures` if you need an image to select.
 
+## End-to-end encryption (implemented)
+
+DMs and group chats are E2E-encrypted; the broadcast "Nearby" room stays plaintext by design (no fixed
+recipient set). Scheme (static keys, no ratchet): a per-message random content key AES-256-GCM-encrypts
+the `MessageContent` (body + mentions + attachment refs) into `ChatFrame.enc`, the content key is
+wrapped (Tink HPKE/X25519) to each recipient, and the envelope is Ed25519-signed into `ChatFrame.sig`.
+Identity keypairs live in `IdentityKeyStore` (AndroidKeyStore-wrapped, **outside** the destructively-
+migrated DB), advertised via `ProfileFrame.pubKey`, pinned TOFU into `PeerEntity.pubKey`, and confirmed
+out of band via the safety-number/QR screen (`PeerEntity.verified`). Image attachments are encrypted to
+a per-attachment key and content-addressed by ciphertext hash, so `BlobExchange`/`BlobStore` are
+unchanged. **Decrypt/verify failures must never throw out of the inbound handler** — `onDeliver` runs
+before the router schedules the relay, so a throw would stop forwarding (see `MeshManager.decryptAndDeliver`).
+
 ## Out of scope (deferred, by design)
 
 Alternate transports (Wi-Fi Aware/BLE), **true DM routing** (DMs currently flood — only the addressed
-recipient delivers/acks), app-level end-to-end encryption + identity verification, and at-rest DB
-encryption (SQLCipher). Don't start these without explicit direction; the wire format
-(`recipientId`/`sig`/`pubKey`) and identity layer already leave room for them.
+recipient delivers/acks), and for E2E specifically: **forward secrecy / a ratchet** (static keys only),
+encrypting **reactions/receipts** (they flood as cleartext metadata), encrypting the broadcast room, and
+a **key-request/retransmit** protocol for messages received before the sender's key is known. Don't
+start these without explicit direction.

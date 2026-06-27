@@ -35,6 +35,15 @@ coil = "3.5.0"
 # (datatransport), NO Play on-demand model delivery (ai-delivery), and declares no manifest permissions
 # — so it can't perturb the pinned Kotlin-2.4 graph or compromise the app's no-INTERNET, offline design.
 tensorflowLite = "2.17.0"
+# Google Tink: app-level E2E crypto (hybrid key-wrap, Ed25519 signatures, AES-GCM AEAD). Like SQLCipher
+# it is Java + native with no Kotlin metadata and no Gradle plugin, so it can't perturb the AGP-9.2.1 /
+# Kotlin-2.4 toolchain. Works on minSdk 29 (the platform XDH/Ed25519 APIs are API 33+, which is why we
+# don't use java.security directly).
+tink = "1.18.0"
+# QR identity verification: zxing-android-embedded scans; zxing core (pinned newer than the embedded
+# lib's transitive 3.4.1) generates the QR bitmap.
+zxingEmbedded = "4.3.0"
+zxingCore = "3.5.3"
 # detekt runs as a standalone CLI off the build classpath (never applied as a Gradle plugin) —
 # keep this in lockstep with DETEKT_VERSION in .gitlab-ci.yml so local and CI use the same rules.
 detekt = "1.23.8"
@@ -85,6 +94,9 @@ coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref 
 coil-gif = { group = "io.coil-kt.coil3", name = "coil-gif", version.ref = "coil" }
 
 tensorflow-lite = { group = "org.tensorflow", name = "tensorflow-lite", version.ref = "tensorflowLite" }
+tink-android = { group = "com.google.crypto.tink", name = "tink-android", version.ref = "tink" }
+zxing-android-embedded = { group = "com.journeyapps", name = "zxing-android-embedded", version.ref = "zxingEmbedded" }
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxingCore" }
 
 # Put onto the root buildscript classpath so AGP 9's built-in Kotlin compiles with this KGP (2.4.0)
 # instead of AGP's bundled default (2.2.10). Kotlin 2.4 is supported on AGP 9.1+ per Google's

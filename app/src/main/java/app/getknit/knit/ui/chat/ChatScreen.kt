@@ -67,6 +67,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -276,6 +277,15 @@ fun ChatScreen(
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.primary,
                                 )
+                                if (state.verified) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Icon(
+                                        imageVector = Icons.Filled.VerifiedUser,
+                                        contentDescription = stringResource(R.string.verify_verified),
+                                        tint = MaterialTheme.colorScheme.tertiary,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
                             }
                         }
                     }
@@ -583,6 +593,7 @@ private fun MessageBubble(
                             AttachmentImage(
                                 row.attachmentHash,
                                 row.attachmentMime,
+                                row.attachmentKey,
                                 row.attachmentReady,
                                 row.attachmentFlagged,
                                 onImageClick,
@@ -873,6 +884,7 @@ private fun ReactionChip(reaction: ReactionSummary, onClick: () -> Unit) {
 private fun AttachmentImage(
     hash: String?,
     mime: String?,
+    key: String?,
     ready: Boolean,
     flagged: Boolean,
     onImageClick: (BlobImage) -> Unit,
@@ -880,7 +892,7 @@ private fun AttachmentImage(
     // A flagged image stays hidden behind a placeholder until the user taps to view it.
     var revealed by remember(hash) { mutableStateOf(false) }
     val hidden = flagged && !revealed
-    val image = if (ready && hash != null) BlobImage(hash, mime) else null
+    val image = if (ready && hash != null) BlobImage(hash, mime, key) else null
     Box(
         modifier = Modifier
             .padding(vertical = 2.dp)
