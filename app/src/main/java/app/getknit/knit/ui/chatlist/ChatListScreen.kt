@@ -1,7 +1,9 @@
 package app.getknit.knit.ui.chatlist
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,11 +22,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -35,6 +39,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -151,66 +156,132 @@ fun ChatListScreen(
             contentPadding = PaddingValues(vertical = 4.dp),
         ) {
             items(state.conversations, key = { it.id }) { row ->
-                ConversationListItem(row = row, now = now, onClick = { onOpenConversation(row.id) })
+                ConversationListItem(
+                    row = row,
+                    now = now,
+                    onClick = { onOpenConversation(row.id) },
+                    onDelete = viewModel::deleteConversation,
+                )
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun ConversationListItem(
     row: ConversationRow,
     now: Long,
     onClick: () -> Unit,
+    onDelete: (conversationId: String) -> Unit = {},
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        LeadingVisual(row)
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = row.title,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = row.lastPreview ?: stringResource(R.string.chat_list_empty_preview),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(horizontalAlignment = Alignment.End) {
-            row.lastMessageAt?.let { sentAt ->
+    // The Nearby broadcast room can't be deleted, so it gets a plain tap with no long-press menu.
+    val deletable = !row.isRoom
+    var menuOpen by remember { mutableStateOf(false) }
+    var showConfirm by remember { mutableStateOf(false) }
+    val clickModifier = if (deletable) {
+        Modifier.combinedClickable(onClick = onClick, onLongClick = { menuOpen = true })
+    } else {
+        Modifier.clickable(onClick = onClick)
+    }
+
+    Box {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(clickModifier)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            LeadingVisual(row)
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = compactTimeAgo(sentAt, now),
-                    style = MaterialTheme.typography.labelSmall,
+                    text = row.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = row.lastPreview ?: stringResource(R.string.chat_list_empty_preview),
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (row.unreadCount > 0) {
-                Spacer(Modifier.height(4.dp))
-                val desc = pluralStringResource(
-                    R.plurals.chat_list_unread_count, row.unreadCount, row.unreadCount,
-                )
-                Badge(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.clearAndSetSemantics { contentDescription = desc },
-                ) {
-                    Text(row.unreadCount.toString())
+            Spacer(Modifier.width(12.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                row.lastMessageAt?.let { sentAt ->
+                    Text(
+                        text = compactTimeAgo(sentAt, now),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (row.unreadCount > 0) {
+                    Spacer(Modifier.height(4.dp))
+                    val desc = pluralStringResource(
+                        R.plurals.chat_list_unread_count, row.unreadCount, row.unreadCount,
+                    )
+                    Badge(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.clearAndSetSemantics { contentDescription = desc },
+                    ) {
+                        Text(row.unreadCount.toString())
+                    }
                 }
             }
         }
+        if (deletable) {
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = stringResource(R.string.chat_list_delete_action),
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    },
+                    onClick = {
+                        menuOpen = false
+                        showConfirm = true
+                    },
+                )
+            }
+        }
+    }
+
+    if (showConfirm) {
+        AlertDialog(
+            onDismissRequest = { showConfirm = false },
+            title = { Text(stringResource(R.string.chat_list_delete_confirm_title)) },
+            text = { Text(stringResource(R.string.chat_list_delete_confirm_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete(row.id)
+                    showConfirm = false
+                }) {
+                    Text(
+                        text = stringResource(R.string.chat_list_delete_action),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirm = false }) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+            },
+        )
     }
 }
 

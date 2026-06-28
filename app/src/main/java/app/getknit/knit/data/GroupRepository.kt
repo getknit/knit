@@ -28,4 +28,14 @@ class GroupRepository(
         dao.markLeft(groupId)
         messages.deleteByConversation(groupId)
     }
+
+    /**
+     * Deletes [groupId] locally without leaving: hard-deletes the row and clears its messages, so the
+     * chat disappears now but the next inbound group frame re-creates it via MeshManager.reconcileGroup
+     * (contrast [leave], which tombstones to block re-add).
+     */
+    suspend fun delete(groupId: String) {
+        dao.deleteById(groupId)
+        messages.deleteByConversation(groupId)
+    }
 }

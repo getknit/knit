@@ -70,6 +70,9 @@
     <string name="chat_delete_confirm_title">Delete message?</string>
     <string name="chat_delete_confirm_body">It will be removed from this device only.</string>
     <string name="chat_delete_confirm_action">Delete</string>
+    <string name="chat_list_delete_action">Delete</string>
+    <string name="chat_list_delete_confirm_title">Delete chat?</string>
+    <string name="chat_list_delete_confirm_body">All messages in this chat will be removed from this device only.</string>
     <string name="chat_action_block">Block user</string>
     <string name="chat_action_unblock">Unblock user</string>
     <string name="chat_user_blocked">User blocked</string>

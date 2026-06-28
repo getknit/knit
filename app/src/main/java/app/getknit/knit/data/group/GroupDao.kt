@@ -23,4 +23,8 @@ interface GroupDao {
     /** Marks the group left so inbound frames are dropped and it's hidden from the list. */
     @Query("UPDATE groups SET left = 1 WHERE groupId = :groupId")
     suspend fun markLeft(groupId: String)
+
+    /** Hard-deletes the group row (no tombstone), so a future inbound group frame can re-create it. */
+    @Query("DELETE FROM groups WHERE groupId = :groupId")
+    suspend fun deleteById(groupId: String)
 }

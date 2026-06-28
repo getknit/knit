@@ -9,6 +9,7 @@ import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
+import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.groupTitle
@@ -52,12 +53,12 @@ data class ChatListUiState(
  * is on screen; this VM only reads them to compute unread badges.
  */
 class ChatListViewModel(
-    messages: MessageRepository,
+    private val messages: MessageRepository,
     peers: PeerRepository,
     settings: SettingsStore,
     identity: Identity,
     meshManager: MeshManager,
-    groups: GroupRepository,
+    private val groups: GroupRepository,
     private val context: Context,
 ) : ViewModel() {
 
@@ -182,5 +183,20 @@ class ChatListViewModel(
             displayNameFor(peersByNode[message.senderId]?.name, message.senderId)
         }
         return context.getString(R.string.chat_list_preview_with_sender, sender, body)
+    }
+
+    /**
+     * Deletes a conversation locally: clears its messages (DM/group) and, for a group, hard-deletes the
+     * group row so it leaves the list but can be re-added by a future group frame. Nearby is not
+     * deletable. Sends nothing over the mesh; the list updates from the underlying flows.
+     */
+    fun deleteConversation(conversationId: String) {
+        viewModelScope.launch {
+            when (Conversations.kindFor(conversationId)) {
+                ConversationKind.NEARBY -> Unit // the broadcast room can't be deleted
+                ConversationKind.GROUP -> groups.delete(conversationId)
+                ConversationKind.DM -> messages.deleteByConversation(conversationId)
+            }
+        }
     }
 }
