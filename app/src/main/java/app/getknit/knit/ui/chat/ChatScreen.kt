@@ -84,6 +84,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -114,6 +115,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -265,7 +270,7 @@ fun ChatScreen(
         topBar = {
             TopAppBar(
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = stringResource(R.string.action_back),
@@ -318,6 +323,7 @@ fun ChatScreen(
                                     avatarHash = state.avatarHash,
                                     name = state.title,
                                     size = 36.dp,
+                                    contentDescription = stringResource(R.string.chat_view_profile, state.title),
                                     onClick = { onOpenProfile(conversationId) },
                                 )
                                 Spacer(Modifier.width(10.dp))
@@ -344,7 +350,7 @@ fun ChatScreen(
                     // The overflow lives on DM and group threads — the broadcast room has no actions.
                     if (!state.isRoom) {
                         Box {
-                            IconButton(onClick = { headerMenuOpen = true }) {
+                            IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(48.dp)) {
                                 Icon(
                                     Icons.Filled.MoreVert,
                                     contentDescription = stringResource(R.string.chat_more_options),
@@ -614,6 +620,7 @@ private fun MessageBubble(
                 avatarHash = row.avatarHash,
                 name = row.senderName,
                 size = 40.dp,
+                contentDescription = stringResource(R.string.chat_view_profile, row.senderName),
                 onClick = { onOpenProfile(row.senderNodeId) },
             )
             Spacer(Modifier.width(8.dp))
@@ -831,12 +838,15 @@ private fun ReactionPicker(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     REACTION_EMOJI.forEach { emoji ->
+                        val reactWith = stringResource(R.string.chat_react_with, emoji)
                         Text(
                             text = emoji,
                             style = MaterialTheme.typography.headlineSmall,
                             modifier = Modifier
                                 .clip(CircleShape)
-                                .clickable { onPick(emoji) }
+                                .clickable(role = Role.Button, onClick = { onPick(emoji) })
+                                .minimumInteractiveComponentSize()
+                                .semantics { contentDescription = reactWith }
                                 .padding(8.dp),
                         )
                     }
@@ -925,6 +935,9 @@ private fun ReactionRow(reactions: List<ReactionSummary>, onToggle: (String) -> 
 @Composable
 private fun ReactionChip(reaction: ReactionSummary, onClick: () -> Unit) {
     val shape = RoundedCornerShape(12.dp)
+    val chipDescription = pluralStringResource(
+        R.plurals.chat_reaction_count, reaction.count, reaction.count, reaction.emoji,
+    )
     Surface(
         shape = shape,
         color = if (reaction.mine) MaterialTheme.colorScheme.primaryContainer
@@ -932,7 +945,11 @@ private fun ReactionChip(reaction: ReactionSummary, onClick: () -> Unit) {
         contentColor = if (reaction.mine) MaterialTheme.colorScheme.onPrimaryContainer
         else MaterialTheme.colorScheme.onSurfaceVariant,
         border = if (reaction.mine) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
-        modifier = Modifier.clip(shape).clickable { onClick() },
+        modifier = Modifier
+            .clip(shape)
+            .clickable(role = Role.Button, onClick = onClick)
+            .minimumInteractiveComponentSize()
+            .semantics { contentDescription = chipDescription },
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
@@ -981,6 +998,7 @@ private fun AttachmentImage(
                         onLongClick = onLongClick,
                     )
                     image != null -> Modifier.combinedClickable(
+                        onClickLabel = stringResource(R.string.chat_view_photo),
                         onClick = { onImageClick(image) },
                         onLongClick = onLongClick,
                     )
@@ -1090,7 +1108,7 @@ private fun FullscreenImageViewer(
                     .padding(horizontal = 4.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = onDismiss) {
+                IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
                     Icon(
                         Icons.AutoMirrored.Filled.ArrowBack,
                         contentDescription = stringResource(R.string.action_back),
@@ -1116,7 +1134,7 @@ private fun FullscreenImageViewer(
                     )
                 }
                 Box {
-                    IconButton(onClick = { menuOpen = true }) {
+                    IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(48.dp)) {
                         Icon(
                             Icons.Filled.MoreVert,
                             contentDescription = stringResource(R.string.chat_more_options),
@@ -1271,12 +1289,23 @@ private fun MessageInput(
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     contentAlignment = Alignment.CenterStart,
                 ) {
+                    // The hint is a sibling overlay, so wire it onto the field as its accessibility
+                    // label (the field would otherwise be an unnamed edit box); the visible hint is
+                    // then marked decorative to avoid TalkBack reading it twice.
+                    val messageHint = stringResource(R.string.chat_message_hint)
                     if (state.text.isEmpty()) {
-                        Text(stringResource(R.string.chat_message_hint), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            messageHint,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.clearAndSetSemantics {},
+                        )
                     }
                     BasicTextField(
                         state = state,
-                        modifier = Modifier.fillMaxWidth().contentReceiver(receiveContentListener),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .contentReceiver(receiveContentListener)
+                            .semantics { contentDescription = messageHint },
                         textStyle = MaterialTheme.typography.bodyLarge.copy(
                             color = MaterialTheme.colorScheme.onSurface,
                         ),
@@ -1317,16 +1346,24 @@ private fun AttachmentPreview(image: BlobImage, onClear: () -> Unit) {
             contentScale = ContentScale.Crop,
             modifier = Modifier.size(72.dp).clip(RoundedCornerShape(12.dp)),
         )
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier.align(Alignment.TopEnd).padding(2.dp),
+        // 48dp touch target (a11y) with the small visible badge kept flush in the corner.
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .size(48.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onClear, role = Role.Button),
+            contentAlignment = Alignment.TopEnd,
         ) {
-            IconButton(onClick = onClear, modifier = Modifier.size(24.dp)) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.padding(2.dp),
+            ) {
                 Icon(
                     Icons.Filled.Close,
                     contentDescription = stringResource(R.string.chat_remove_attachment),
-                    modifier = Modifier.size(16.dp),
+                    modifier = Modifier.padding(4.dp).size(16.dp),
                 )
             }
         }

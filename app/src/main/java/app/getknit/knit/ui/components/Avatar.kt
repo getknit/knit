@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -15,6 +16,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -28,6 +33,11 @@ import coil3.compose.AsyncImage
  * colored circle with the first letter of [name]. Source avatars are stored 256² (see AvatarStore),
  * so larger [size]s stay crisp. When [onClick] is non-null the whole circle is tappable, with a
  * circular ripple.
+ *
+ * Accessibility: the image/initial is decorative on its own, so pass [contentDescription] to give
+ * the avatar an accessible name (do this when [onClick] is set, so the tappable target is
+ * announced). When [onClick] is set the touch target grows to the 48dp minimum without enlarging
+ * the visible circle, and [onClickLabel] describes the action (e.g. "view profile").
  */
 @Composable
 fun Avatar(
@@ -38,14 +48,30 @@ fun Avatar(
     background: Color = MaterialTheme.colorScheme.secondaryContainer,
     contentColor: Color = MaterialTheme.colorScheme.onSecondaryContainer,
     textStyle: TextStyle = MaterialTheme.typography.labelLarge,
+    contentDescription: String? = null,
     onClick: (() -> Unit)? = null,
+    onClickLabel: String? = null,
 ) {
     Box(
         modifier = modifier
+            .then(if (onClick != null) Modifier.minimumInteractiveComponentSize() else Modifier)
             .size(size)
             .clip(CircleShape)
             .background(background)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(onClickLabel = onClickLabel, role = Role.Button, onClick = onClick)
+                } else {
+                    Modifier
+                },
+            )
+            .then(
+                if (contentDescription != null) {
+                    Modifier.semantics { this.contentDescription = contentDescription }
+                } else {
+                    Modifier
+                },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         if (avatarHash != null) {
@@ -66,6 +92,8 @@ fun Avatar(
                 style = textStyle.copy(fontSize = initialSize, lineHeight = TextUnit.Unspecified),
                 color = contentColor,
                 textAlign = TextAlign.Center,
+                // Decorative: the Box (or an adjacent name label) carries the accessible name.
+                modifier = Modifier.clearAndSetSemantics {},
             )
         }
     }

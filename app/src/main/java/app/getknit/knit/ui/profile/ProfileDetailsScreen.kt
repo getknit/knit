@@ -102,7 +102,7 @@ fun ProfileDetailsScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.profile_details_title)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = stringResource(R.string.action_back),
@@ -111,7 +111,7 @@ fun ProfileDetailsScreen(
                 },
                 actions = {
                     Box {
-                        IconButton(onClick = { menuOpen = true }) {
+                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(48.dp)) {
                             Icon(
                                 Icons.Filled.MoreVert,
                                 contentDescription = stringResource(R.string.chat_more_options),
@@ -201,7 +201,7 @@ fun ProfileDetailsScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                FilledIconButton(onClick = { onMessage(state.nodeId) }) {
+                FilledIconButton(onClick = { onMessage(state.nodeId) }, modifier = Modifier.size(48.dp)) {
                     Icon(
                         Icons.AutoMirrored.Filled.Message,
                         contentDescription = stringResource(R.string.profile_details_message),

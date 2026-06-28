@@ -54,6 +54,7 @@
     <string name="chat_message_hint">Knit Message</string>
     <string name="chat_loading_photo">Loading photo…</string>
     <string name="chat_attachment_image_desc">Photo attachment</string>
+    <string name="chat_view_photo">View photo</string>
     <string name="chat_image_viewer_desc">Photo</string>
     <string name="chat_image_saved">Saved to Pictures/Knit</string>
     <string name="chat_image_save_failed">Couldn\'t save image</string>
@@ -75,6 +76,12 @@
     <string name="chat_list_delete_confirm_body">All messages in this chat will be removed from this device only.</string>
     <string name="chat_action_block">Block user</string>
     <string name="chat_action_unblock">Unblock user</string>
+    <string name="chat_view_profile">View %1$s\'s profile</string>
+    <string name="chat_react_with">React with %1$s</string>
+    <plurals name="chat_reaction_count">
+        <item quantity="one">%2$s, %1$d reaction</item>
+        <item quantity="other">%2$s, %1$d reactions</item>
+    </plurals>
     <string name="chat_user_blocked">User blocked</string>
     <string name="chat_user_unblocked">User unblocked</string>
 
@@ -132,6 +139,7 @@
     <string name="battery_allow_button">Allow background battery use</string>
     <string name="profile_avatar_crop_hint">Drag and pinch to adjust</string>
     <string name="profile_avatar_crop_desc">Adjust profile photo</string>
+    <string name="profile_change_photo_desc">Change profile photo</string>
     <string name="settings_content_filtering_title">Content filtering</string>
     <string name="settings_content_filtering_subtitle">Block abusive text and explicit images on this device</string>
 

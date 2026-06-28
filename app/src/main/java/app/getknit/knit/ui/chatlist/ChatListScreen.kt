@@ -1,5 +1,6 @@
 package app.getknit.knit.ui.chatlist
 
+import android.text.format.DateUtils
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -52,8 +53,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -92,13 +100,14 @@ fun ChatListScreen(
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.semantics { heading() },
                         )
                         ConnectionStatusRow(state.neighborCount)
                     }
                 },
                 actions = {
                     Box {
-                        IconButton(onClick = { menuOpen = true }) {
+                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.chat_more_options))
                         }
                         DropdownMenu(
@@ -185,12 +194,40 @@ internal fun ConversationListItem(
         Modifier.clickable(onClick = onClick)
     }
 
+    // The row is a single accessible target: collapse its children (avatar, title, preview, time,
+    // unread badge) into one labelled Button node so a screen reader reads the whole conversation as
+    // one summary with a spoken timestamp, and surface the long-press delete as a custom action.
+    val preview = row.lastPreview ?: stringResource(R.string.chat_list_empty_preview)
+    val spokenTime = row.lastMessageAt?.let {
+        DateUtils.getRelativeTimeSpanString(it, now, DateUtils.MINUTE_IN_MILLIS).toString()
+    }
+    val spokenUnread = if (row.unreadCount > 0) {
+        pluralStringResource(R.plurals.chat_list_unread_count, row.unreadCount, row.unreadCount)
+    } else {
+        null
+    }
+    val rowDescription = listOfNotNull(row.title, preview, spokenTime, spokenUnread).joinToString(", ")
+    val deleteLabel = stringResource(R.string.chat_list_delete_action)
+
     Box {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(clickModifier)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+                .clearAndSetSemantics {
+                    contentDescription = rowDescription
+                    role = Role.Button
+                    onClick { onClick(); true }
+                    if (deletable) {
+                        customActions = listOf(
+                            CustomAccessibilityAction(deleteLabel) {
+                                showConfirm = true
+                                true
+                            },
+                        )
+                    }
+                },
             verticalAlignment = Alignment.CenterVertically,
         ) {
             LeadingVisual(row)
@@ -204,7 +241,7 @@ internal fun ConversationListItem(
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = row.lastPreview ?: stringResource(R.string.chat_list_empty_preview),
+                    text = preview,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -222,13 +259,9 @@ internal fun ConversationListItem(
                 }
                 if (row.unreadCount > 0) {
                     Spacer(Modifier.height(4.dp))
-                    val desc = pluralStringResource(
-                        R.plurals.chat_list_unread_count, row.unreadCount, row.unreadCount,
-                    )
                     Badge(
                         containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.clearAndSetSemantics { contentDescription = desc },
                     ) {
                         Text(row.unreadCount.toString())
                     }
