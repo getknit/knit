@@ -26,4 +26,15 @@ interface ReactionDao {
     /** Drops every reaction for a message (there is no FK cascade) when the message is deleted. */
     @Query("DELETE FROM reactions WHERE messageId = :messageId")
     suspend fun deleteForMessage(messageId: String)
+
+    /**
+     * Reclaims reaction rows whose target message is no longer stored (the table has no FK cascade) and
+     * that are older than [olderThan] (epoch ms). The age floor spares a reaction that legitimately
+     * arrived before its message via out-of-order mesh delivery — see [ReactionEntity].
+     */
+    @Query(
+        "DELETE FROM reactions WHERE updatedAt < :olderThan AND " +
+            "messageId NOT IN (SELECT id FROM messages)",
+    )
+    suspend fun deleteOrphansOlderThan(olderThan: Long)
 }

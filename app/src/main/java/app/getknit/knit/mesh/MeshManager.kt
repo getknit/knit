@@ -330,10 +330,11 @@ class MeshManager(
         )
     }
 
-    /** On startup, re-request any attachment blobs referenced by stored messages we don't yet have. */
+    /** On startup, sweep orphaned blobs/reactions and re-request attachment blobs we're still missing. */
     private fun resumePendingFetches(session: CoroutineScope) {
         session.launch {
             blobs.deleteOrphans() // reclaim blobs left by attachments staged but never sent
+            reactions.deleteOrphans(System.currentTimeMillis()) // reclaim reactions left by deleted messages
             messages.hashesNeedingFetch().forEach { blobExchange.want(it) }
         }
     }

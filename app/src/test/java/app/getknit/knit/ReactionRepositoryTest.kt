@@ -18,6 +18,9 @@ class ReactionRepositoryTest {
         private val rows = mutableMapOf<Pair<String, String>, ReactionEntity>()
         private val live = MutableStateFlow<List<ReactionEntity>>(emptyList())
 
+        /** Message ids that count as "stored"; a reaction whose messageId is absent is an orphan. */
+        var storedMessageIds: Set<String> = emptySet()
+
         override fun observeAll(): Flow<List<ReactionEntity>> = live
 
         override suspend fun updatedAtFor(messageId: String, reactorNodeId: String): Long? =
@@ -33,6 +36,14 @@ class ReactionRepositoryTest {
 
         override suspend fun deleteForMessage(messageId: String) {
             rows.keys.filter { it.first == messageId }.forEach { rows.remove(it) }
+            live.value = rows.values.filter { it.emoji != null }.sortedBy { it.updatedAt }
+        }
+
+        override suspend fun deleteOrphansOlderThan(olderThan: Long) {
+            rows.entries
+                .filter { (key, value) -> value.updatedAt < olderThan && key.first !in storedMessageIds }
+                .map { it.key }
+                .forEach { rows.remove(it) }
             live.value = rows.values.filter { it.emoji != null }.sortedBy { it.updatedAt }
         }
     }
@@ -75,5 +86,25 @@ class ReactionRepositoryTest {
         val live = repo.observeReactions().first()
         assertEquals(1, live.size)
         assertEquals("alice", live.single().reactorNodeId)
+    }
+
+    @Test
+    fun deleteOrphansReapsOldOrphansOnly() = runTest {
+        val dao = FakeReactionDao()
+        val repo = ReactionRepository(dao)
+        val day = 24L * 60 * 60 * 1000
+        val now = 10 * day
+        dao.storedMessageIds = setOf("kept-msg")
+
+        // Old orphan (no message) -> reaped; recent orphan within the grace window -> kept; an old
+        // reaction whose message still exists -> kept regardless of age.
+        repo.apply(ReactionEntity("old-orphan", "alice", "👍", updatedAt = now - 2 * day))
+        repo.apply(ReactionEntity("fresh-orphan", "alice", "👍", updatedAt = now - 1000))
+        repo.apply(ReactionEntity("kept-msg", "alice", "👍", updatedAt = now - 5 * day))
+
+        repo.deleteOrphans(now)
+
+        val live = repo.observeReactions().first().map { it.messageId }.toSet()
+        assertEquals(setOf("fresh-orphan", "kept-msg"), live)
     }
 }
