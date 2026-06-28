@@ -166,7 +166,7 @@ class WireSerializationTest {
     fun profileFrameRoundTrips() {
         val frame = ProfileFrame(
             id = "p1", senderId = "bob", sentAt = 9L, name = "Bob", status = "around",
-            avatarHash = "abc", pubKey = null,
+            avatarHash = "abc", pubKey = null, deviceTag = "abcdef0123456789",
         )
         assertEquals(frame, WireCodec.decode(WireCodec.encode(frame)))
     }

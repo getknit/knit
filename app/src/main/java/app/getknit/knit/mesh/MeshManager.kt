@@ -16,6 +16,7 @@ import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageCrypto
@@ -412,6 +413,7 @@ class MeshManager(
             status = settings.status.first(),
             avatarHash = settings.ownAvatarHash.first(),
             pubKey = identity.publicKeyBundle(),
+            deviceTag = identity.deviceTag(),
         )
     }
 
@@ -504,6 +506,13 @@ class MeshManager(
         val senderBundle = peers.find(frame.senderId)?.pubKey?.let { PublicKeyBundle.decode(it) }
         if (senderBundle == null) {
             Log.w(TAG, "drop encrypted chat from ${frame.senderId}: no pinned key")
+            return null
+        }
+        // Defence in depth: the pinned key must derive to the sender's nodeId. handleProfile already
+        // enforces this when pinning, so this also rejects any stale pin left by a pre-self-certifying
+        // build (whose nodeIds were device-derived, not key-derived).
+        if (NodeId.fromPublicKeyBundle(senderBundle.encoded) != frame.senderId) {
+            Log.w(TAG, "drop encrypted chat from ${frame.senderId}: pinned key does not match nodeId")
             return null
         }
         val thread = frame.group?.id ?: frame.recipientId.orEmpty()
@@ -685,27 +694,45 @@ class MeshManager(
     }
 
     private suspend fun handleProfile(frame: ProfileFrame) {
+        // Self-certifying identity: a peer's nodeId IS the hash of its public-key bundle, so a profile
+        // is only trustworthy if the advertised key actually derives back to the claimed senderId.
+        // This makes the key pin race-proof — a peer cannot pin a key for a nodeId it doesn't hold the
+        // keypair for (impersonating one would require a hash collision), so there is no first-speaker
+        // TOFU window. A null or mismatched key is dropped outright.
+        val pubKey = frame.pubKey
+        if (pubKey == null || NodeId.fromPublicKeyBundle(pubKey) != frame.senderId) {
+            Log.w(TAG, "drop profile from ${frame.senderId}: key does not derive to its nodeId")
+            return
+        }
         val existing = peers.find(frame.senderId)
         val advertised = frame.avatarHash
         // The stored avatarHash means "bytes are present locally": adopt the advertised hash only once
         // we hold its blob, otherwise keep the current avatar (if any) until the new one is fetched.
         val haveAvatar = advertised != null && blobStore.has(advertised)
-        // Trust-on-first-use: pin the first key we see for this peer. Never clear a pinned key with a
-        // null-key frame. If a *different* key arrives, adopt it (so comms continue) but drop the
-        // verified flag — the user must re-confirm via safety number / QR.
-        val pinnedKey = existing?.pubKey
-        val keyChanged = pinnedKey != null && frame.pubKey != null && frame.pubKey != pinnedKey
-        if (keyChanged) Log.w(TAG, "peer ${frame.senderId} identity key changed; verification reset")
+        // The key is bound to the nodeId, so a verified peer's key cannot legitimately change; keep the
+        // pinned-verified state as-is. (A different key for the same nodeId would be a hash collision,
+        // already excluded above.)
         peers.upsert(
             (existing ?: PeerEntity(frame.senderId)).copy(
                 name = frame.name,
                 status = frame.status,
-                pubKey = frame.pubKey ?: pinnedKey,
-                verified = if (keyChanged) false else (existing?.verified ?: false),
+                pubKey = pubKey,
+                verified = existing?.verified ?: false,
+                deviceTag = frame.deviceTag ?: existing?.deviceTag,
                 avatarHash = if (haveAvatar) advertised else existing?.avatarHash,
                 updatedAt = frame.sentAt,
             ),
         )
+        // Block-list continuity: a nodeId is the hash of a keypair, so a blocked peer that regenerates
+        // its key returns under a new nodeId. If this peer's (key-independent) device tag is already
+        // blocked, block this new nodeId too — every other block check stays plain nodeId-based.
+        val deviceTag = frame.deviceTag
+        if (deviceTag != null &&
+            frame.senderId !in settings.blockedNodeIds.first() &&
+            deviceTag in settings.blockedDeviceTags.first()
+        ) {
+            settings.block(frame.senderId, deviceTag)
+        }
         // A direct neighbor pushes its avatar to us (sendAvatarIfNeeded); a peer we only reach through a
         // relay won't, so pull its avatar hop-by-hop over the same content-addressed exchange that
         // carries attachments. It's attributed back to this peer in [adoptAdvertisedAvatar] on arrival.

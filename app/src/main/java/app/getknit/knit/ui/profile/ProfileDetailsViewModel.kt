@@ -63,6 +63,11 @@ class ProfileDetailsViewModel(
     @Volatile
     private var peerBundle: String? = null
 
+    // Latest device tag for the peer, captured so block/unblock can keep the block sticky across the
+    // peer regenerating its key (and thus its nodeId). See [DeviceTag].
+    @Volatile
+    private var peerDeviceTag: String? = null
+
     init {
         viewModelScope.launch(Dispatchers.IO) {
             me.value = MyIdentity(identity.nodeId(), identity.publicKeyBundle())
@@ -77,6 +82,7 @@ class ProfileDetailsViewModel(
     ) { peerList, neighbors, blocked, myId ->
         val peer = peerList.firstOrNull { it.nodeId == nodeId }
         peerBundle = peer?.pubKey
+        peerDeviceTag = peer?.deviceTag
         val safety = if (peer?.pubKey != null && myId != null) {
             SafetyNumber.compute(myId.nodeId, myId.bundle, nodeId, peer.pubKey)
         } else {
@@ -109,12 +115,12 @@ class ProfileDetailsViewModel(
 
     /** Blocks this peer locally: their messages/reactions stop being stored, shown, and notified. */
     fun block() {
-        viewModelScope.launch { settings.block(nodeId) }
+        viewModelScope.launch { settings.block(nodeId, peerDeviceTag) }
     }
 
     /** Unblocks this peer, restoring their (never-deleted) message history. */
     fun unblock() {
-        viewModelScope.launch { settings.unblock(nodeId) }
+        viewModelScope.launch { settings.unblock(nodeId, peerDeviceTag) }
     }
 
     /** Marks this peer's pinned key as verified out of band (safety numbers matched / QR scanned). */

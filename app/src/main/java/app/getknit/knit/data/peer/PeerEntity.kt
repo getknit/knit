@@ -13,6 +13,9 @@ import androidx.room.PrimaryKey
  * [app.getknit.knit.mesh.crypto.PublicKeyBundle]), learned from their [ProfileFrame] on a
  * trust-on-first-use basis. [verified] is true once the local user has confirmed that key out of band
  * (safety number / QR); it is reset to false if the pinned key ever changes.
+ *
+ * [deviceTag] is the peer's key-independent device tag (see [app.getknit.knit.identity.DeviceTag]),
+ * used only to keep a block sticky when the peer regenerates its key (and thus its nodeId).
  */
 @Entity(tableName = "peers")
 data class PeerEntity(
@@ -22,5 +25,6 @@ data class PeerEntity(
     val avatarHash: String? = null,
     val pubKey: String? = null,
     val verified: Boolean = false,
+    val deviceTag: String? = null,
     val updatedAt: Long = 0L,
 )

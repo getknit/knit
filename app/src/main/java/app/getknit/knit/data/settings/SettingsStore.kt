@@ -7,20 +7,17 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
-import app.getknit.knit.identity.DeviceIdSource
-import app.getknit.knit.identity.NodeId
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlin.random.Random
 
 /**
  * User/device settings backed by a Preferences DataStore (replaces the legacy
- * SharedPreferences). Holds the stable node identity and the profile/mesh toggles.
+ * SharedPreferences). Holds the profile/mesh toggles and per-conversation read state. (The node id is
+ * no longer persisted here — it is derived from the E2E keypair; see [app.getknit.knit.identity.Identity].)
  */
 class SettingsStore(
     private val dataStore: DataStore<Preferences>,
-    private val deviceIdSource: DeviceIdSource,
 ) {
 
     val displayName: Flow<String> = dataStore.data.map { it[KEY_NAME] ?: "" }
@@ -56,9 +53,19 @@ class SettingsStore(
     /**
      * Node ids the local user has blocked. Their messages/reactions are never stored, shown, or
      * notified, and they're hidden from the new-DM picker. Blocking is local-only and keyed by the
-     * stable device-derived node id (see [NodeId]), so it survives the blocked user reinstalling.
+     * peer's node id; since a node id is now the hash of the peer's keypair, a blocked peer that
+     * regenerates its identity key (e.g. a reinstall that drops `identity.key`) gets a fresh id and is
+     * no longer matched — the cost of binding identity to the key rather than the device.
      */
     val blockedNodeIds: Flow<Set<String>> = dataStore.data.map { it[KEY_BLOCKED] ?: emptySet() }
+
+    /**
+     * Device tags (see [app.getknit.knit.identity.DeviceTag]) the user has blocked. Because a nodeId is
+     * the hash of a keypair, a blocked peer that regenerates its key returns under a new nodeId; the
+     * device tag is key-independent, so `MeshManager.handleProfile` re-blocks the new id when the tag
+     * matches. Maintained alongside [blockedNodeIds] by [block]/[unblock].
+     */
+    val blockedDeviceTags: Flow<Set<String>> = dataStore.data.map { it[KEY_BLOCKED_TAGS] ?: emptySet() }
 
     /**
      * Whether on-device content moderation (abusive-text + explicit-image filtering) is enabled.
@@ -66,21 +73,6 @@ class SettingsStore(
      */
     val contentFilteringEnabled: Flow<Boolean> =
         dataStore.data.map { it[KEY_CONTENT_FILTERING] ?: true }
-
-    /**
-     * Returns the persisted 8-char node id, generating and storing one on first call. New ids are
-     * derived deterministically from the device id (see [NodeId]), so clearing app data regenerates
-     * the same id instead of a fresh random one. An already-persisted id is always returned as-is.
-     */
-    suspend fun getOrCreateNodeId(): String {
-        dataStore.data.first()[KEY_NODE_ID]?.let { return it }
-        val generated = newNodeId()
-        dataStore.edit { prefs ->
-            // Re-check inside the transaction to avoid a race generating two ids.
-            prefs[KEY_NODE_ID] ?: run { prefs[KEY_NODE_ID] = generated }
-        }
-        return dataStore.data.first()[KEY_NODE_ID] ?: generated
-    }
 
     suspend fun setDisplayName(value: String) = dataStore.edit { it[KEY_NAME] = value }
     suspend fun setStatus(value: String) = dataStore.edit { it[KEY_STATUS] = value }
@@ -90,24 +82,26 @@ class SettingsStore(
     suspend fun setLastReadAt(conversationId: String, value: Long) =
         dataStore.edit { it[lastReadKey(conversationId)] = value }
 
-    suspend fun block(nodeId: String) =
-        dataStore.edit { it[KEY_BLOCKED] = (it[KEY_BLOCKED] ?: emptySet()) + nodeId }
+    /** Blocks [nodeId]; also records the peer's [deviceTag] (when known) so the block survives a key reset. */
+    suspend fun block(nodeId: String, deviceTag: String? = null) =
+        dataStore.edit { prefs ->
+            prefs[KEY_BLOCKED] = (prefs[KEY_BLOCKED] ?: emptySet()) + nodeId
+            if (deviceTag != null) {
+                prefs[KEY_BLOCKED_TAGS] = (prefs[KEY_BLOCKED_TAGS] ?: emptySet()) + deviceTag
+            }
+        }
 
-    suspend fun unblock(nodeId: String) =
-        dataStore.edit { it[KEY_BLOCKED] = (it[KEY_BLOCKED] ?: emptySet()) - nodeId }
+    /** Unblocks [nodeId]; also clears its [deviceTag] (when known) so the device is no longer re-blocked. */
+    suspend fun unblock(nodeId: String, deviceTag: String? = null) =
+        dataStore.edit { prefs ->
+            prefs[KEY_BLOCKED] = (prefs[KEY_BLOCKED] ?: emptySet()) - nodeId
+            if (deviceTag != null) {
+                prefs[KEY_BLOCKED_TAGS] = (prefs[KEY_BLOCKED_TAGS] ?: emptySet()) - deviceTag
+            }
+        }
 
     suspend fun setContentFilteringEnabled(value: Boolean) =
         dataStore.edit { it[KEY_CONTENT_FILTERING] = value }
-
-    /** Device-derived id, or a random fallback when the platform reports no stable device id. */
-    private fun newNodeId(): String =
-        deviceIdSource.rawDeviceId()?.takeIf { it.isNotBlank() }
-            ?.let { NodeId.derive(it) }
-            ?: randomNodeId()
-
-    private fun randomNodeId(): String =
-        (1..NodeId.LENGTH).map { NodeId.ALPHABET[Random.nextInt(NodeId.ALPHABET.length)] }
-            .joinToString("")
 
     /** Dynamic per-conversation read-watermark key, e.g. "last_read_nearby" / "last_read_<nodeId>". */
     private fun lastReadKey(conversationId: String) =
@@ -116,12 +110,12 @@ class SettingsStore(
     private companion object {
         const val LAST_READ_PREFIX = "last_read_"
 
-        val KEY_NODE_ID = stringPreferencesKey("node_id")
         val KEY_NAME = stringPreferencesKey("display_name")
         val KEY_STATUS = stringPreferencesKey("status")
         val KEY_AVATAR_UPDATED_AT = longPreferencesKey("avatar_updated_at")
         val KEY_OWN_AVATAR_HASH = stringPreferencesKey("own_avatar_hash")
         val KEY_BLOCKED = stringSetPreferencesKey("blocked_node_ids")
+        val KEY_BLOCKED_TAGS = stringSetPreferencesKey("blocked_device_tags")
         val KEY_CONTENT_FILTERING = booleanPreferencesKey("content_filtering_enabled")
     }
 }

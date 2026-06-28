@@ -37,7 +37,10 @@ import java.io.File
     //     on-device NSFW verdicts by content hash. Destructive migration; app not yet public.
     // v9: E2E encryption — messages gained attachmentKey, peers gained verified (pubKey now holds the
     //     pinned identity bundle). Destructive migration; clears pre-encryption plaintext history.
-    version = 9,
+    // v10: nodeId is now the self-certifying hash of the keypair; peers gained a key-independent
+    //      `deviceTag` for block-list continuity. Destructive migration; the prior device-derived
+    //      nodeIds (and their pins) are invalidated by the identity change anyway.
+    version = 10,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

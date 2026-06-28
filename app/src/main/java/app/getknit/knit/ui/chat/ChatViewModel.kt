@@ -106,7 +106,7 @@ class ChatViewModel(
     private val conversationId: String,
     private val messages: MessageRepository,
     private val groups: GroupRepository,
-    peers: PeerRepository,
+    private val peers: PeerRepository,
     private val reactions: ReactionRepository,
     private val meshManager: MeshManager,
     private val identity: Identity,
@@ -373,7 +373,7 @@ class ChatViewModel(
     /** Blocks [nodeId] locally: their messages/reactions stop being stored, shown, and notified. */
     fun block(nodeId: String) {
         viewModelScope.launch {
-            settings.block(nodeId)
+            settings.block(nodeId, peers.find(nodeId)?.deviceTag)
             _events.tryEmit(R.string.chat_user_blocked)
             // Blocking the peer of a DM empties this thread (and hides it from the list), so close the
             // now-confusing screen. Emitted only after the block persists, so navigating away can't
@@ -385,7 +385,7 @@ class ChatViewModel(
     /** Unblocks [nodeId], restoring their (never-deleted) message history. */
     fun unblock(nodeId: String) {
         viewModelScope.launch {
-            settings.unblock(nodeId)
+            settings.unblock(nodeId, peers.find(nodeId)?.deviceTag)
             _events.tryEmit(R.string.chat_user_unblocked)
         }
     }

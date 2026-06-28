@@ -25,7 +25,7 @@ data class BlockedUser(
  */
 class BlockedUsersViewModel(
     private val settings: SettingsStore,
-    peers: PeerRepository,
+    private val peers: PeerRepository,
 ) : ViewModel() {
 
     val blocked: StateFlow<List<BlockedUser>> = combine(
@@ -45,6 +45,6 @@ class BlockedUsersViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun unblock(nodeId: String) {
-        viewModelScope.launch { settings.unblock(nodeId) }
+        viewModelScope.launch { settings.unblock(nodeId, peers.find(nodeId)?.deviceTag) }
     }
 }

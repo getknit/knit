@@ -150,6 +150,10 @@ data class ProfileFrame(
     val status: String,
     val avatarHash: String? = null,
     val pubKey: String? = null,
+    // Key-independent device tag for soft block-list continuity (a blocked peer that regenerates its
+    // key returns under a new senderId but the same tag). Optional, so this is a backward-compatible
+    // wire addition (missing → null). Never used for routing/trust — only the local block list.
+    val deviceTag: String? = null,
     override val ttl: Int = DEFAULT_TTL,
     override val hops: Int = 0,
 ) : Frame

@@ -54,4 +54,24 @@ class NodeIdTest {
         assertNotEquals(androidIdShaped, NodeId.derive(androidIdShaped))
         assertNotEquals(androidIdShaped.take(NodeId.LENGTH), NodeId.derive(androidIdShaped))
     }
+
+    @Test
+    fun fromPublicKeyBundleIsDeterministicAndShaped() {
+        // The self-certifying id is a deterministic, [a-z0-9]{8}-shaped function of the bundle string,
+        // so both sides of a conversation compute the same id from the same advertised bundle.
+        repeat(1_000) {
+            val bundle = "bundle-$it"
+            val id = NodeId.fromPublicKeyBundle(bundle)
+            assertEquals(id, NodeId.fromPublicKeyBundle(bundle))
+            assertTrue("'$id' must be 8 chars of [a-z0-9]", format.matches(id))
+        }
+    }
+
+    @Test
+    fun distinctBundlesYieldDistinctIds() {
+        // The anti-impersonation property at the derivation level: a different key bundle (e.g. an
+        // attacker's) maps to a different nodeId, so it can never claim a victim's id.
+        val ids = (1..5_000).map { NodeId.fromPublicKeyBundle("bundle-$it") }.toSet()
+        assertEquals(5_000, ids.size)
+    }
 }

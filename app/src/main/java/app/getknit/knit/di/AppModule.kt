@@ -31,10 +31,12 @@ val appModule = module {
             androidContext().preferencesDataStoreFile("knit_settings")
         }
     }
+    single { SettingsStore(get()) }
+    // Stable per-device id (ANDROID_ID) — seeds the soft block-continuity DeviceTag, not the nodeId.
     single<DeviceIdSource> { AndroidDeviceIdSource(androidContext()) }
-    single { SettingsStore(get(), get()) }
     // E2E identity keypair, wrapped under a hardware AndroidKeyStore key in filesDir (outside the DB).
     single { IdentityKeyStore(KeystoreSecret(androidContext(), "knit_identity_key", "identity.key")) }
+    // nodeId is derived from the keypair's public bundle; the device id only feeds the block tag.
     single { Identity(get(), get()) }
     single { AvatarStore(androidContext(), get()) }
     single { AttachmentStore(androidContext(), get()) }
