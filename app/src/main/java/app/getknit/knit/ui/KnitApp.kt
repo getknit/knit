@@ -18,6 +18,7 @@ import app.getknit.knit.ui.chat.ChatScreen
 import app.getknit.knit.ui.chatlist.ChatListScreen
 import app.getknit.knit.ui.contacts.ContactsScreen
 import app.getknit.knit.ui.diagnostics.DiagnosticsScreen
+import app.getknit.knit.ui.donate.DonateScreen
 import app.getknit.knit.ui.onboarding.OnboardingScreen
 import app.getknit.knit.ui.profile.ProfileDetailsScreen
 import app.getknit.knit.ui.profile.ProfileScreen
@@ -29,6 +30,7 @@ private object Routes {
     const val PROFILE = "profile"
     const val DIAGNOSTICS = "diagnostics"
     const val BLOCKED_USERS = "blocked"
+    const val DONATE = "donate"
     const val CHAT = "chat/{conversationId}"
     fun chat(conversationId: String) = "chat/$conversationId"
     const val PROFILE_DETAILS = "profileDetails/{nodeId}"
@@ -74,6 +76,7 @@ fun KnitApp(startRoute: String? = null) {
                 onOpenProfile = { navController.navigate(Routes.PROFILE) },
                 onOpenDiagnostics = { navController.navigate(Routes.DIAGNOSTICS) },
                 onOpenBlockedUsers = { navController.navigate(Routes.BLOCKED_USERS) },
+                onOpenDonate = { navController.navigate(Routes.DONATE) },
             )
         }
         composable(Routes.CONTACTS) {
@@ -127,6 +130,9 @@ fun KnitApp(startRoute: String? = null) {
         }
         composable(Routes.BLOCKED_USERS) {
             BlockedUsersScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Routes.DONATE) {
+            DonateScreen(onBack = { navController.popBackStack() })
         }
     }
 }

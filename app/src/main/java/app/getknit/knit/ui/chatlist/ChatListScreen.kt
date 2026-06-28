@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NetworkCheck
@@ -67,6 +68,7 @@ fun ChatListScreen(
     onOpenProfile: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenBlockedUsers: () -> Unit,
+    onOpenDonate: () -> Unit,
     viewModel: ChatListViewModel = koinViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -120,6 +122,14 @@ fun ChatListScreen(
                                 onClick = {
                                     menuOpen = false
                                     onOpenBlockedUsers()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.donate_title)) },
+                                leadingIcon = { Icon(Icons.Filled.Favorite, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    onOpenDonate()
                                 },
                             )
                         }
