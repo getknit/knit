@@ -52,7 +52,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
-import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -289,9 +288,6 @@ class MeshManager(
         blobs.deleteIfUnreferenced(attachment.hash)
         return SealedAttachment(ctHash, b64(sealed.key))
     }
-
-    private fun sha256Hex(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     /**
      * Floods a group metadata update (e.g. a rename) immediately, independent of any chat message, so
@@ -751,6 +747,13 @@ class MeshManager(
      */
     private suspend fun onAvatarReceived(nodeId: String, hash: String, mime: String, srcPath: String) {
         val bytes = runCatching { File(srcPath).readBytes() }.getOrNull() ?: return
+        // [hash] is the peer's claimed content address. Verify the bytes hash to it before storing, so a
+        // neighbor can't push arbitrary bytes under another avatar's address (content-address spoofing).
+        if (!isValidBlobHash(hash) || sha256Hex(bytes) != hash) {
+            Log.w(TAG, "Dropping avatar from $nodeId: bytes do not match claimed hash")
+            File(srcPath).delete()
+            return
+        }
         blobs.insert(hash, mime, bytes)
         File(srcPath).delete()
         advertisedAvatars.remove(nodeId) // pushed directly; no need to also pull it

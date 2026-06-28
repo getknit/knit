@@ -216,6 +216,21 @@ fun Frame.incrementHop(): Frame = when (this) {
 }
 
 /**
+ * Returns a copy of this frame with its [ttl] capped at [max] (a no-op when already within bounds).
+ * [ttl] is an attacker-controlled wire field, so a forged oversized value (e.g. [Int.MAX_VALUE]) would
+ * otherwise let a frame outlive the dedup window and flood the mesh indefinitely; the relayer caps it
+ * to the local [DEFAULT_TTL] so the hop count alone bounds propagation.
+ */
+fun Frame.cappedTtl(max: Int): Frame = if (ttl <= max) this else when (this) {
+    is ChatFrame -> copy(ttl = max)
+    is GroupUpdateFrame -> copy(ttl = max)
+    is ProfileFrame -> copy(ttl = max)
+    is ReceiptFrame -> copy(ttl = max)
+    is ReactionFrame -> copy(ttl = max)
+    is BlobRequestFrame -> copy(ttl = max)
+}
+
+/**
  * Serializes [Frame]s to/from the bytes carried in a transport payload, using compact binary CBOR
  * rather than JSON text. CBOR encodes numbers as binary, length-prefixes strings (no quotes/braces),
  * and — with [CborBuilder.encodeDefaults] off — omits defaulted fields entirely, so a typical text

@@ -3,6 +3,7 @@ package app.getknit.knit.data.crypto
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.security.keystore.StrongBoxUnavailableException
 import java.io.File
 import java.security.GeneralSecurityException
 import java.security.KeyStore
@@ -64,7 +65,18 @@ class KeystoreSecret(
         return (store.getEntry(alias, null) as? KeyStore.SecretKeyEntry)?.secretKey
     }
 
-    private fun generateKeystoreKey(): SecretKey {
+    // Prefer a StrongBox (secure-element) backed key; fall back to a TEE-backed key on devices without
+    // one. Note we deliberately do NOT set setUnlockedDeviceRequired here: the secret is unwrapped
+    // transparently during graph construction, which can happen while the device is locked (the mesh
+    // foreground service is START_STICKY and may be restarted by the system screen-off), and an
+    // unlocked-device requirement would make that unwrap throw.
+    private fun generateKeystoreKey(): SecretKey =
+        runCatching { generateKeystoreKey(strongBox = true) }
+            .getOrElse { e ->
+                if (e is StrongBoxUnavailableException) generateKeystoreKey(strongBox = false) else throw e
+            }
+
+    private fun generateKeystoreKey(strongBox: Boolean): SecretKey {
         val spec = KeyGenParameterSpec.Builder(
             alias,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
@@ -72,6 +84,7 @@ class KeystoreSecret(
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(KEY_SIZE_BITS)
+            .setIsStrongBoxBacked(strongBox)
             .build()
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
             .apply { init(spec) }

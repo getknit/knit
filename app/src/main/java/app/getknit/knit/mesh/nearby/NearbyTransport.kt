@@ -12,6 +12,7 @@ import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
+import app.getknit.knit.mesh.isValidBlobHash
 import app.getknit.knit.mesh.power.PowerPolicy
 import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.mesh.protocol.Frame
@@ -48,6 +49,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -338,6 +342,13 @@ class NearbyTransport(
 
     /** Copies a completed FILE payload into the cache (avatar by node, attachment by hash) and announces it. */
     private fun saveIncomingFile(nodeId: String, uri: android.net.Uri, meta: FileMeta) {
+        // [meta.key] is an untrusted, peer-supplied content address that is interpolated into the cache
+        // filename below. Reject anything that isn't a 64-hex content hash so a malicious "../" can't
+        // escape the cache directory (path traversal → arbitrary in-sandbox write).
+        if (!isValidBlobHash(meta.key)) {
+            Log.w(TAG, "Rejecting ${meta.kind} file from $nodeId: malformed blob key")
+            return
+        }
         val dest = when (meta.kind) {
             FileKind.AVATAR -> {
                 // Stage the received avatar by node+hash; MeshManager ingests it into the encrypted blob
@@ -350,14 +361,40 @@ class NearbyTransport(
             }
             FileKind.ATTACHMENT -> File(appContext.cacheDir, "attach-${meta.key}.${extForMime(meta.mime)}")
         }
+        // Defence in depth: the avatar name also embeds [nodeId] (a self-asserted endpoint name), so
+        // confirm the resolved path really lands inside the cache dir before writing to it.
+        val cacheRoot = appContext.cacheDir.canonicalPath + File.separator
+        if (!dest.canonicalPath.startsWith(cacheRoot)) {
+            Log.w(TAG, "Rejecting ${meta.kind} file from $nodeId: path escapes cache dir")
+            return
+        }
         runCatching {
             appContext.contentResolver.openInputStream(uri)?.use { input ->
-                dest.outputStream().use { input.copyTo(it) }
+                dest.outputStream().use { output -> copyBounded(input, output, MAX_INCOMING_FILE_BYTES) }
             }
         }.onSuccess {
             _incomingFiles.tryEmit(ReceivedFile(nodeId, dest.absolutePath, meta.kind, meta.key, meta.mime))
         }.onFailure {
+            dest.delete() // drop any partial copy (decode failure or over-size abort)
             Log.w(TAG, "Failed saving ${meta.kind} file from $nodeId", it)
+        }
+    }
+
+    /**
+     * Copies [input] to [output], aborting once more than [max] bytes have been read. Bounds an inbound
+     * FILE payload so a malicious peer can't stream an unbounded file and exhaust disk — the send side
+     * already caps attachments (see `AttachmentStore.MAX_BYTES`); this enforces the matching ceiling on
+     * receipt, which Nearby's file channel otherwise leaves unbounded.
+     */
+    private fun copyBounded(input: InputStream, output: OutputStream, max: Long) {
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read == -1) break
+            total += read
+            if (total > max) throw IOException("incoming file exceeds $max bytes")
+            output.write(buffer, 0, read)
         }
     }
 
@@ -391,6 +428,12 @@ class NearbyTransport(
         // Connection retry backoff: first retry after 5s, doubling to a 5-minute ceiling.
         const val RETRY_BASE_MS = 5_000L
         const val RETRY_MAX_MS = 5 * 60_000L
+
+        // Receive-side ceiling on a FILE payload. The send side bounds attachments to 8 MiB
+        // (AttachmentStore.MAX_BYTES); the extra headroom covers E2E framing (GCM IV+tag) and avatar
+        // transfer so a legitimate max-size attachment isn't rejected, while still refusing an
+        // unbounded malicious stream that would exhaust disk.
+        const val MAX_INCOMING_FILE_BYTES = 8L * 1024 * 1024 + 64 * 1024
 
         // "KFH1" — distinguishes a file-header BYTES payload from a CBOR mesh frame (which never
         // begins with these bytes; a guard test in WireSerializationTest pins this down).

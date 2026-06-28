@@ -1,6 +1,9 @@
 package app.getknit.knit.data
 
+import android.util.Log
 import app.getknit.knit.mesh.BlobStore
+import app.getknit.knit.mesh.isValidBlobHash
+import app.getknit.knit.mesh.sha256Hex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -26,6 +29,9 @@ class MeshBlobStore(
 
     /** Materializes a temp file from the stored bytes so the transport can send it; null if not held. */
     override suspend fun fileFor(hash: String): File? = withContext(Dispatchers.IO) {
+        // [hash] is interpolated into the temp filename below; reject anything that isn't a content
+        // address so a peer-supplied "../" can't escape [transferDir].
+        if (!isValidBlobHash(hash)) return@withContext null
         val bytes = blobs.bytes(hash) ?: return@withContext null
         val mime = blobs.mimeFor(hash) ?: "image/jpeg"
         val dest = File(ensureDir(), "$hash.${extForMime(mime)}")
@@ -42,7 +48,20 @@ class MeshBlobStore(
     override suspend fun saveIncoming(hash: String, mime: String, srcPath: String): File? =
         withContext(Dispatchers.IO) {
             val src = File(srcPath)
+            // [hash] is an untrusted, peer-supplied content address. Reject a malformed one before it
+            // reaches a filesystem path, and verify the bytes actually hash to it — a holder must not be
+            // able to serve arbitrary bytes under another blob's address (content-address poisoning).
+            if (!isValidBlobHash(hash)) {
+                Log.w(TAG, "Dropping incoming blob with malformed hash")
+                src.delete()
+                return@withContext null
+            }
             val bytes = runCatching { src.readBytes() }.getOrNull() ?: return@withContext null
+            if (sha256Hex(bytes) != hash) {
+                Log.w(TAG, "Dropping incoming blob: bytes do not match claimed hash $hash")
+                src.delete()
+                return@withContext null
+            }
             blobs.insert(hash, mime, bytes)
             // Screen the received image on-device and cache the verdict by hash (the UI blurs flagged
             // attachments). Stored regardless, so a false positive never drops content.
@@ -63,5 +82,9 @@ class MeshBlobStore(
         "image/png" -> "png"
         "image/webp" -> "webp"
         else -> "jpg"
+    }
+
+    private companion object {
+        const val TAG = "MeshBlobStore"
     }
 }

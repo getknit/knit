@@ -10,6 +10,7 @@ import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
+import app.getknit.knit.mesh.protocol.DEFAULT_TTL
 import app.getknit.knit.mesh.protocol.Frame
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -95,6 +96,34 @@ class MeshRouterTest {
         val router = MeshRouter(transport, this) { _, _ -> }
 
         router.handleInbound(chat("m1", ttl = 3, hops = 3), fromNodeId = "b")
+
+        assertEquals(0, transport.sent.size)
+    }
+
+    @Test
+    fun clampsForgedOversizedTtlOnRelay() = runTest {
+        // A peer forges a huge ttl to make a frame flood forever. The relayer must cap it to the local
+        // DEFAULT_TTL so the hop count alone bounds propagation.
+        val transport = RecordingTransport(setOf("b", "c"))
+        val router = MeshRouter(transport, this, jitter = { 0L }) { _, _ -> }
+
+        router.handleInbound(chat("m1", ttl = Int.MAX_VALUE, hops = 0), fromNodeId = "b")
+        advanceUntilIdle()
+
+        val (relayed, _) = transport.sent.single()
+        assertEquals(DEFAULT_TTL, relayed.ttl) // forwarded with a sane, bounded ttl
+        assertEquals(1, relayed.hops)
+    }
+
+    @Test
+    fun doesNotRelayForgedTtlOnceHopsReachLocalDefault() = runTest {
+        // Even with a forged Int.MAX_VALUE ttl, a frame already at DEFAULT_TTL hops must not relay —
+        // the clamp applies to the stop-check, not just the forwarded copy.
+        val transport = RecordingTransport(setOf("b", "c"))
+        val router = MeshRouter(transport, this, jitter = { 0L }) { _, _ -> }
+
+        router.handleInbound(chat("m1", ttl = Int.MAX_VALUE, hops = DEFAULT_TTL), fromNodeId = "b")
+        advanceUntilIdle()
 
         assertEquals(0, transport.sent.size)
     }

@@ -3,6 +3,7 @@ package app.getknit.knit.data.crypto
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.security.keystore.StrongBoxUnavailableException
 import android.util.Log
 import java.io.File
 import java.security.GeneralSecurityException
@@ -74,7 +75,19 @@ class DatabaseKey(private val context: Context) {
         return (store.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry)?.secretKey
     }
 
-    private fun generateKeystoreKey(): SecretKey {
+    // Prefer a StrongBox (secure-element) backed key; fall back to a TEE-backed key on devices without
+    // one. We deliberately do NOT set setUnlockedDeviceRequired: the passphrase is unwrapped during DB
+    // construction, which can happen while the device is locked (the mesh foreground service is
+    // START_STICKY and may be restarted screen-off) — and since an unrecoverable unwrap here triggers a
+    // destructive wipe, an unlocked-device requirement would risk wiping the database on a routine
+    // background restart.
+    private fun generateKeystoreKey(): SecretKey =
+        runCatching { generateKeystoreKey(strongBox = true) }
+            .getOrElse { e ->
+                if (e is StrongBoxUnavailableException) generateKeystoreKey(strongBox = false) else throw e
+            }
+
+    private fun generateKeystoreKey(strongBox: Boolean): SecretKey {
         val spec = KeyGenParameterSpec.Builder(
             KEY_ALIAS,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
@@ -82,6 +95,7 @@ class DatabaseKey(private val context: Context) {
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(KEY_SIZE_BITS)
+            .setIsStrongBoxBacked(strongBox)
             .build()
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
             .apply { init(spec) }

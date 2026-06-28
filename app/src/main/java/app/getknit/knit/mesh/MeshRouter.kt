@@ -1,6 +1,8 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.mesh.protocol.DEFAULT_TTL
 import app.getknit.knit.mesh.protocol.Frame
+import app.getknit.knit.mesh.protocol.cappedTtl
 import app.getknit.knit.mesh.protocol.incrementHop
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -105,9 +107,13 @@ class MeshRouter(
      */
     private suspend fun scheduleRelay(frame: Frame, fromNodeId: String) {
         if (!frame.relayable) return // point-to-point control frames propagate hop-by-hop, not flooded
-        if (frame.hops >= frame.ttl) return
+        // [ttl] is attacker-controlled; cap it to the local default so a forged oversized value can't
+        // keep a frame alive past the dedup window and flood the mesh. Every relayer caps independently,
+        // so the hop count alone bounds propagation regardless of what ttl a peer claims.
+        val effectiveTtl = minOf(frame.ttl, DEFAULT_TTL)
+        if (frame.hops >= effectiveTtl) return
         val entry = PendingRelay(
-            relayed = frame.incrementHop(),
+            relayed = frame.incrementHop().cappedTtl(DEFAULT_TTL),
             heardFrom = mutableSetOf(fromNodeId),
             count = 1,
         )
