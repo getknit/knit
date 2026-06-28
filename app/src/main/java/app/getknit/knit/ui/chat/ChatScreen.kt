@@ -34,12 +34,12 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -1015,7 +1015,10 @@ private fun AttachmentImage(
                 model = image,
                 contentDescription = stringResource(R.string.chat_attachment_image_desc),
                 contentScale = ContentScale.Fit,
-                modifier = Modifier.sizeIn(maxWidth = 220.dp, maxHeight = 260.dp),
+                // A fixed width (not just a max) makes small images — e.g. Gboard GIFs/stickers, which are
+                // tiny in pixel terms — scale up to fill the bubble instead of rendering at intrinsic size.
+                // ContentScale.Fit preserves aspect ratio; heightIn caps tall images.
+                modifier = Modifier.width(220.dp).heightIn(max = 260.dp),
             )
             else -> Column(
                 modifier = Modifier
