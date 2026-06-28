@@ -166,7 +166,7 @@ fun ChatScreen(
     // gotcha, draft state stays in the screen, not the ViewModel/DataStore). Filtered against the final
     // text on send so a mention whose "@name" was deleted doesn't ship.
     val pendingMentions = remember { mutableStateListOf<Mention>() }
-    var fullscreenImage by remember { mutableStateOf<BlobImage?>(null) }
+    var fullscreenImage by remember { mutableStateOf<FullscreenImage?>(null) }
     var headerMenuOpen by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var showLeaveConfirm by remember { mutableStateOf(false) }
@@ -459,11 +459,12 @@ fun ChatScreen(
         }
     }
 
-    fullscreenImage?.let { image ->
+    fullscreenImage?.let { fs ->
         FullscreenImageViewer(
-            image = image,
+            fullscreen = fs,
+            now = now,
             onDismiss = { fullscreenImage = null },
-            onSave = { viewModel.saveAttachment(image.hash) },
+            onSave = { viewModel.saveAttachment(fs.image.hash) },
         )
     }
 
@@ -585,7 +586,7 @@ private fun MessageBubble(
     row: ChatRow,
     now: Long,
     showSenderName: Boolean,
-    onImageClick: (BlobImage) -> Unit,
+    onImageClick: (FullscreenImage) -> Unit,
     onOpenProfile: (nodeId: String) -> Unit,
     onReact: (messageId: String, emoji: String) -> Unit,
     onDelete: (messageId: String) -> Unit,
@@ -653,7 +654,12 @@ private fun MessageBubble(
                                 row.attachmentKey,
                                 row.attachmentReady,
                                 row.attachmentFlagged,
-                                onImageClick,
+                                onImageClick = {
+                                    onImageClick(
+                                        FullscreenImage(it, row.mine, row.senderName, row.sentAt),
+                                    )
+                                },
+                                onLongClick = { showPicker = true },
                             )
                             if (row.body.isNotBlank()) Spacer(Modifier.height(4.dp))
                         }
@@ -947,6 +953,7 @@ private fun ReactionChip(reaction: ReactionSummary, onClick: () -> Unit) {
 }
 
 /** The image inside a bubble: the photo/GIF once fetched (tap to open fullscreen), or a loading placeholder. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AttachmentImage(
     hash: String?,
@@ -955,6 +962,7 @@ private fun AttachmentImage(
     ready: Boolean,
     flagged: Boolean,
     onImageClick: (BlobImage) -> Unit,
+    onLongClick: () -> Unit,
 ) {
     // A flagged image stays hidden behind a placeholder until the user taps to view it.
     var revealed by remember(hash) { mutableStateOf(false) }
@@ -965,9 +973,17 @@ private fun AttachmentImage(
             .padding(vertical = 2.dp)
             .clip(RoundedCornerShape(12.dp))
             .then(
+                // The image consumes taps itself (reveal / open fullscreen), so a long-press would never
+                // reach the bubble's combinedClickable — wire it here too so it opens the reaction picker.
                 when {
-                    hidden -> Modifier.clickable { revealed = true }
-                    image != null -> Modifier.clickable { onImageClick(image) }
+                    hidden -> Modifier.combinedClickable(
+                        onClick = { revealed = true },
+                        onLongClick = onLongClick,
+                    )
+                    image != null -> Modifier.combinedClickable(
+                        onClick = { onImageClick(image) },
+                        onLongClick = onLongClick,
+                    )
                     else -> Modifier
                 },
             ),
@@ -1016,13 +1032,27 @@ private fun AttachmentImage(
     }
 }
 
+/** A tapped attachment plus the bubble metadata the fullscreen viewer shows in its top bar. */
+private data class FullscreenImage(
+    val image: BlobImage,
+    val mine: Boolean,
+    val senderName: String,
+    val sentAt: Long,
+)
+
 /**
- * Fullscreen, pinch-to-zoom/pan viewer for a tapped image. A back arrow (top-left) dismisses it and
- * an overflow menu (top-right) offers Save; back press / outside tap also dismiss. Controls float
- * white over the black backdrop, Signal-style.
+ * Fullscreen, pinch-to-zoom/pan viewer for a tapped image. The top bar floats white over the black
+ * backdrop, Signal-style: a back arrow (left) dismisses it, the sender ("You"/peer) and relative send
+ * time sit in the middle, and an overflow menu (right) offers Save; back press / outside tap also dismiss.
  */
 @Composable
-private fun FullscreenImageViewer(image: BlobImage, onDismiss: () -> Unit, onSave: () -> Unit) {
+private fun FullscreenImageViewer(
+    fullscreen: FullscreenImage,
+    now: Long,
+    onDismiss: () -> Unit,
+    onSave: () -> Unit,
+) {
+    val image = fullscreen.image
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         var scale by remember { mutableFloatStateOf(1f) }
         var offset by remember { mutableStateOf(Offset.Zero) }
@@ -1049,45 +1079,72 @@ private fun FullscreenImageViewer(image: BlobImage, onDismiss: () -> Unit, onSav
                         translationY = offset.y,
                     ),
             )
-            IconButton(
-                onClick = onDismiss,
-                modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(8.dp),
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = stringResource(R.string.action_back),
-                    tint = Color.White,
-                )
-            }
-            Box(modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp)) {
-                IconButton(onClick = { menuOpen = true }) {
+                IconButton(onClick = onDismiss) {
                     Icon(
-                        Icons.Filled.MoreVert,
-                        contentDescription = stringResource(R.string.chat_more_options),
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = stringResource(R.string.action_back),
                         tint = Color.White,
                     )
                 }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.action_save)) },
-                        leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
-                        onClick = {
-                            menuOpen = false
-                            onSave()
-                        },
+                Column(modifier = Modifier.weight(1f).padding(horizontal = 4.dp)) {
+                    Text(
+                        text = if (fullscreen.mine) stringResource(R.string.chat_self_name)
+                        else fullscreen.senderName,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     )
+                    Text(
+                        text = relativeTime(
+                            fullscreen.sentAt, now, stringResource(R.string.chat_time_just_now),
+                        ),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White.copy(alpha = 0.7f),
+                        maxLines = 1,
+                    )
+                }
+                Box {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(
+                            Icons.Filled.MoreVert,
+                            contentDescription = stringResource(R.string.chat_more_options),
+                            tint = Color.White,
+                        )
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.action_save)) },
+                            leadingIcon = { Icon(Icons.Filled.Download, contentDescription = null) },
+                            onClick = {
+                                menuOpen = false
+                                onSave()
+                            },
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-private fun timeLabel(row: ChatRow, now: Long, justNow: String): String {
+private fun timeLabel(row: ChatRow, now: Long, justNow: String): String =
+    relativeTime(row.sentAt, now, justNow)
+
+private fun relativeTime(sentAt: Long, now: Long, justNow: String): String {
     // DateUtils renders anything under a minute (and any slight clock skew into the future) as
     // "0 minutes ago"; show a friendlier "Just now" instead.
-    if (now - row.sentAt < DateUtils.MINUTE_IN_MILLIS) return justNow
+    if (now - sentAt < DateUtils.MINUTE_IN_MILLIS) return justNow
     return DateUtils.getRelativeTimeSpanString(
-        row.sentAt, now, DateUtils.MINUTE_IN_MILLIS,
+        sentAt, now, DateUtils.MINUTE_IN_MILLIS,
     ).toString()
 }
 
