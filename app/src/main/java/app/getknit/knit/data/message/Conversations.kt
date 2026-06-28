@@ -2,6 +2,9 @@ package app.getknit.knit.data.message
 
 import java.security.MessageDigest
 
+/** The kind of conversation a thread belongs to — drives per-context notification channel routing. */
+enum class ConversationKind { NEARBY, GROUP, DM }
+
 /**
  * Conversation identity helpers. A "conversation" groups messages into one thread: the public
  * broadcast room ([NEARBY]), a 1:1 DM keyed by the *other* party's node id, or a group keyed by a
@@ -42,6 +45,17 @@ object Conversations {
 
     /** Whether [selfId] is in a group's [members] roster — the group analogue of [isForMe]. */
     fun isGroupMember(members: List<String>, selfId: String): Boolean = selfId in members
+
+    /**
+     * The [ConversationKind] of a thread, derived from its [conversationId]: the [NEARBY] room, a
+     * group (id prefixed [GROUP_ID_PREFIX]), or otherwise a 1:1 DM (a peer node id). Pure, so the
+     * notification layer can route by context without re-deriving from frame fields.
+     */
+    fun kindFor(conversationId: String): ConversationKind = when {
+        conversationId == NEARBY -> ConversationKind.NEARBY
+        conversationId.startsWith(GROUP_ID_PREFIX) -> ConversationKind.GROUP
+        else -> ConversationKind.DM
+    }
 
     /**
      * Stable, order-agnostic id for a group defined by [members] (node ids). Derived from the sorted,

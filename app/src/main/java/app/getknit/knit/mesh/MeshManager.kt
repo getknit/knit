@@ -9,6 +9,7 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
+import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
@@ -602,11 +603,11 @@ class MeshManager(
         // and flips the attachment from "loading" to shown once the bytes land).
         if (hash != null && !blobStore.has(hash)) blobExchange.want(hash)
         // A message that @-mentions us notifies on the dedicated Mentions channel only; everything else
-        // takes the normal room notification path.
+        // takes the per-context channel (Nearby / Group messages / Direct messages).
         if (frame.senderId != me && frame.mentions.mention(me)) {
             notifyMention(frame)
         } else {
-            notifyIncoming(frame)
+            notifyIncoming(frame, Conversations.kindFor(conversationId))
         }
         acknowledge(frame, me)
     }
@@ -638,8 +639,8 @@ class MeshManager(
         }
     }
 
-    /** Fires a "new message" notification for an inbound chat (skips our own and empty messages). */
-    private suspend fun notifyIncoming(frame: ChatFrame) {
+    /** Fires a "new message" notification on [kind]'s channel for an inbound chat (skips our own and empty messages). */
+    private suspend fun notifyIncoming(frame: ChatFrame, kind: ConversationKind) {
         val me = identity.nodeId()
         val peer = peers.find(frame.senderId)
         // Image-only messages have a blank body; show a placeholder so they still notify.
@@ -653,7 +654,7 @@ class MeshManager(
             peerAvatarBytes = peer?.avatarHash?.let { blobs.bytes(it) },
         ) ?: return
         val selfAvatar = settings.ownAvatarHash.first()?.let { blobs.bytes(it) }
-        notifier.notify(incoming, me, settings.displayName.first(), selfAvatar)
+        notifier.notify(kind, incoming, me, settings.displayName.first(), selfAvatar)
     }
 
     /** Fires a "you were mentioned" notification on the Mentions channel for an inbound chat. */

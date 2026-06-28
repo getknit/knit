@@ -1,8 +1,6 @@
 package app.getknit.knit.mesh
 
 import android.app.AlarmManager
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
 import android.content.BroadcastReceiver
@@ -23,6 +21,7 @@ import androidx.lifecycle.LifecycleService
 import app.getknit.knit.MainActivity
 import app.getknit.knit.R
 import app.getknit.knit.mesh.power.PowerMonitor
+import app.getknit.knit.notifications.NotificationChannels
 import org.koin.android.ext.android.inject
 
 /**
@@ -57,7 +56,9 @@ class MeshService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
-        createChannel()
+        // Channels are normally created at app startup (KnitApplication); ensure defensively in case
+        // the process is started straight into the service.
+        NotificationChannels.ensure(this)
         startForeground()
         powerMonitor.start() // seed power state before the discovery loop first reads it
         meshManager.start()
@@ -149,17 +150,8 @@ class MeshService : LifecycleService() {
         )
     }
 
-    private fun createChannel() {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            getString(R.string.mesh_channel_name),
-            NotificationManager.IMPORTANCE_MIN,
-        )
-        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-    }
-
     companion object {
-        private const val CHANNEL_ID = "knit_mesh"
+        private val CHANNEL_ID = NotificationChannels.STATUS
         private const val NOTIFICATION_ID = 1
         private const val ACTION_STOP = "app.getknit.knit.STOP_MESH"
         private const val ACTION_HEAL = "app.getknit.knit.HEAL_MESH"

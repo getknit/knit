@@ -1,5 +1,6 @@
 package app.getknit.knit.notifications
 
+import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.identity.displayNameFor
 
 /**
@@ -43,23 +44,29 @@ data class NotifMessage(
  */
 interface Notifier {
 
-    /** Registers the notification channel. Safe to call repeatedly; called once at startup. */
+    /** Registers the notification channels + groups. Safe to call repeatedly; called once at startup. */
     fun createChannel()
 
-    /** Records [incoming] and (re)posts the single room notification. */
-    fun notify(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?)
+    /** Records [incoming] and (re)posts the notification for the [kind]'s channel. */
+    fun notify(
+        kind: ConversationKind,
+        incoming: NotifMessage,
+        selfId: String,
+        selfName: String,
+        selfAvatarBytes: ByteArray?,
+    )
 
     /** Posts a high-priority "you were mentioned" notification on the separate Mentions channel. */
     fun notifyMention(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?)
 
-    /** Toggles whether the chat is on screen; turning it on cancels + clears the notification. */
+    /** Toggles whether the chat is on screen; turning it on cancels + clears the notifications. */
     fun setChatVisible(visible: Boolean)
 
-    /** Clears accumulated state and dismisses the notification (chat opened / read). */
+    /** Clears all accumulated state and dismisses every message notification (chat opened / read). */
     fun clear()
 
-    /** Drops accumulated state without dismissing (notification swiped away). */
-    fun onDismissed()
+    /** Drops the accumulated state for the dismissed [notificationId] only (notification swiped away). */
+    fun onDismissed(notificationId: Int)
 }
 
 /**

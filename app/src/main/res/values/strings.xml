@@ -1,21 +1,37 @@
 <resources>
     <string name="app_name">Knit</string>
 
-    <!-- Mesh foreground service -->
+    <!-- Notification channel groups -->
+    <string name="notif_group_messages">Messages</string>
+    <string name="notif_group_app">App</string>
+
+    <!-- Mesh foreground service (App group) -->
     <string name="mesh_channel_name">Mesh networking</string>
+    <string name="channel_status_desc">Keeps the mesh running while the app is in the background</string>
     <string name="mesh_notification_title">Knit mesh is active</string>
     <string name="mesh_notification_text">Connecting to nearby devices</string>
     <string name="mesh_notification_stop">Stop</string>
 
-    <!-- New-message notifications -->
-    <string name="message_channel_name">Messages</string>
-    <string name="message_channel_description">Notifications for new messages from nearby people</string>
-    <string name="message_conversation_title">Knit mesh</string>
-    <string name="notif_self_name">You</string>
+    <!-- Connection &amp; error alerts (App group) -->
+    <string name="channel_alerts_name">Connection &amp; alerts</string>
+    <string name="channel_alerts_desc">Mesh connection changes and errors</string>
 
-    <!-- Mention notifications -->
+    <!-- Message channels (Messages group) -->
+    <string name="channel_nearby_name">Nearby</string>
+    <string name="channel_nearby_desc">Messages in the public Nearby room</string>
+    <string name="channel_groups_name">Group messages</string>
+    <string name="channel_groups_desc">Messages in your group chats</string>
+    <string name="channel_dms_name">Direct messages</string>
+    <string name="channel_dms_desc">Private 1:1 messages</string>
     <string name="mention_channel_name">Mentions</string>
     <string name="mention_channel_description">Notifications when someone @-mentions you</string>
+
+    <!-- Notification conversation titles (per channel) -->
+    <string name="notif_title_nearby">Nearby</string>
+    <string name="notif_title_groups">Group messages</string>
+    <string name="notif_title_dms">Direct messages</string>
+    <string name="notif_title_mentions">Mentions</string>
+    <string name="notif_self_name">You</string>
 
     <!-- Onboarding -->
     <string name="onboarding_title">Welcome to Knit</string>

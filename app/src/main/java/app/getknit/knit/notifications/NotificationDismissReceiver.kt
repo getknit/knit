@@ -15,6 +15,8 @@ class NotificationDismissReceiver : BroadcastReceiver(), KoinComponent {
     private val notifier: Notifier by inject()
 
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == MessageNotifier.ACTION_DISMISS) notifier.onDismissed()
+        if (intent.action != MessageNotifier.ACTION_DISMISS) return
+        val notificationId = intent.getIntExtra(MessageNotifier.EXTRA_NOTIF_ID, -1)
+        if (notificationId != -1) notifier.onDismissed(notificationId)
     }
 }
