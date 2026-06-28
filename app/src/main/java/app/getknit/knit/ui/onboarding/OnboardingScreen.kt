@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -54,82 +55,87 @@ fun OnboardingScreen(onReady: () -> Unit) {
         backgroundLocation = hasBackgroundLocation(context)
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background,
     ) {
-        Text(
-            text = stringResource(R.string.onboarding_title),
-            style = MaterialTheme.typography.headlineMedium,
-        )
-        Text(
-            text = stringResource(R.string.onboarding_blurb),
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(vertical = 24.dp),
-        )
-
-        Button(
-            onClick = { launcher.launch(requiredMeshPermissions()) },
-            modifier = Modifier.fillMaxWidth(),
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
         ) {
             Text(
-                if (granted) {
-                    stringResource(R.string.onboarding_permissions_granted)
-                } else {
-                    stringResource(R.string.onboarding_grant_permissions)
-                },
+                text = stringResource(R.string.onboarding_title),
+                style = MaterialTheme.typography.headlineMedium,
             )
-        }
-
-        // Only ask for "all the time" location once foreground location is granted — the system won't
-        // offer the option before then, and without it the mesh stops finding peers when backgrounded.
-        if (granted) {
             Text(
-                text = stringResource(R.string.onboarding_background_location_blurb),
-                style = MaterialTheme.typography.bodySmall,
+                text = stringResource(R.string.onboarding_blurb),
+                style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.padding(top = 16.dp),
+                modifier = Modifier.padding(vertical = 24.dp),
             )
+
+            Button(
+                onClick = { launcher.launch(requiredMeshPermissions()) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    if (granted) {
+                        stringResource(R.string.onboarding_permissions_granted)
+                    } else {
+                        stringResource(R.string.onboarding_grant_permissions)
+                    },
+                )
+            }
+
+            // Only ask for "all the time" location once foreground location is granted — the system won't
+            // offer the option before then, and without it the mesh stops finding peers when backgrounded.
+            if (granted) {
+                Text(
+                    text = stringResource(R.string.onboarding_background_location_blurb),
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 16.dp),
+                )
+                OutlinedButton(
+                    onClick = {
+                        backgroundLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                    },
+                    enabled = !backgroundLocation,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                ) {
+                    Text(
+                        if (backgroundLocation) {
+                            stringResource(R.string.onboarding_background_location_granted)
+                        } else {
+                            stringResource(R.string.onboarding_background_location)
+                        },
+                    )
+                }
+            }
+
             OutlinedButton(
-                onClick = {
-                    backgroundLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-                },
-                enabled = !backgroundLocation,
+                onClick = { requestIgnoreBatteryOptimizations(context) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 8.dp),
             ) {
-                Text(
-                    if (backgroundLocation) {
-                        stringResource(R.string.onboarding_background_location_granted)
-                    } else {
-                        stringResource(R.string.onboarding_background_location)
-                    },
-                )
+                Text(stringResource(R.string.battery_allow_button))
             }
-        }
 
-        OutlinedButton(
-            onClick = { requestIgnoreBatteryOptimizations(context) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 8.dp),
-        ) {
-            Text(stringResource(R.string.battery_allow_button))
-        }
-
-        Button(
-            onClick = onReady,
-            enabled = granted,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 24.dp),
-        ) {
-            Text(stringResource(R.string.onboarding_start))
+            Button(
+                onClick = onReady,
+                enabled = granted,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 24.dp),
+            ) {
+                Text(stringResource(R.string.onboarding_start))
+            }
         }
     }
 }
