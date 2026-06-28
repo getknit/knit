@@ -14,9 +14,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import app.getknit.knit.ui.image.BlobImage
 import coil3.compose.AsyncImage
 
@@ -54,9 +56,14 @@ fun Avatar(
                 modifier = Modifier.fillMaxSize(),
             )
         } else {
+            // Scale the initial to ~half the circle's diameter (Google/Signal-style fill) instead of a
+            // fixed type ramp that looks tiny in large avatars. Derive the size from the dp diameter via
+            // toSp() so it ignores the user's font scale and always fits the fixed-size circle. Reset the
+            // inherited lineHeight so the (now much larger) glyph isn't clipped by the base style's box.
+            val initialSize = with(LocalDensity.current) { (size * 0.5f).toSp() }
             Text(
                 text = name.firstOrNull()?.uppercase() ?: "?",
-                style = textStyle,
+                style = textStyle.copy(fontSize = initialSize, lineHeight = TextUnit.Unspecified),
                 color = contentColor,
                 textAlign = TextAlign.Center,
             )
