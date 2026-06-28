@@ -97,6 +97,9 @@
     <string name="donate_blurb">Knit is free and funded entirely by tips — no ads, no servers, no tracking. If it\'s useful to you, a small donation helps keep development going.</string>
     <string name="donate_kofi">Ko-fi</string>
 
+    <!-- Share sheet target picker -->
+    <string name="share_target_title">Share to…</string>
+
     <!-- Direct messages / contacts -->
     <string name="contacts_title">New message</string>
     <string name="contacts_new_message">New message</string>

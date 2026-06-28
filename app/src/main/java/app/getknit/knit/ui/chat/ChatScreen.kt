@@ -54,6 +54,7 @@ import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
@@ -137,11 +138,13 @@ import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.image.BlobImage
+import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
+import org.koin.compose.koinInject
 import org.koin.core.parameter.parametersOf
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -156,6 +159,7 @@ fun ChatScreen(
     val pendingAttachment by viewModel.pendingAttachment.collectAsStateWithLifecycle()
     val confirmAttachment by viewModel.confirmAttachment.collectAsStateWithLifecycle()
     val inputState = rememberTextFieldState()
+    val shareInbox = koinInject<ShareInbox>()
     // Mentions the user inserted via autocomplete, draft-local alongside inputState (per the AGENTS.md
     // gotcha, draft state stays in the screen, not the ViewModel/DataStore). Filtered against the final
     // text on send so a mention whose "@name" was deleted doesn't ship.
@@ -236,6 +240,16 @@ fun ChatScreen(
         viewModel.clearInput.collect {
             inputState.clearText()
             pendingMentions.clear()
+        }
+    }
+    // Drain any payload handed in from the system share sheet (see ShareInbox): prefill the text draft
+    // and stage the image through the normal attach() path, so it inherits ingest-time screening and
+    // the "send anyway?" / hard-block handling. consume() is single-shot, so only the chat opened right
+    // after the share-target picker prefills — normal chat opens see nothing.
+    LaunchedEffect(Unit) {
+        shareInbox.consume()?.let { shared ->
+            shared.text?.let { if (it.isNotEmpty()) inputState.setTextAndPlaceCursorAtEnd(it) }
+            shared.imageUri?.let { viewModel.attach(Uri.parse(it)) }
         }
     }
     // Blocking the peer of a DM hides this whole thread, so leave the now-empty screen.

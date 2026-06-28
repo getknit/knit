@@ -136,10 +136,10 @@ class MlTextModerator(
         // Block serious abuse only; ignore general rudeness (toxicity/insult/obscene) and the
         // identity-mention columns. Starting thresholds — tune on-device.
         val DEFAULT_BLOCK_THRESHOLDS = mapOf(
-            "severe_toxicity" to 0.7f,
-            "identity_attack" to 0.7f,
-            "sexual_explicit" to 0.6f,
-            "threat" to 0.7f,
+            "severe_toxicity" to 0.85f,
+            "identity_attack" to 0.85f,
+            "sexual_explicit" to 0.8f,
+            "threat" to 0.9f,
         )
 
         const val INPUT_IDS_INPUT = 0

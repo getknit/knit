@@ -22,6 +22,7 @@ import app.getknit.knit.identity.DeviceIdSource
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.notifications.MessageNotifier
 import app.getknit.knit.notifications.Notifier
+import app.getknit.knit.ui.share.ShareInbox
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
 
@@ -42,6 +43,8 @@ val appModule = module {
     single { AttachmentStore(androidContext(), get()) }
     single { GallerySaver(androidContext()) }
     single<Notifier> { MessageNotifier(androidContext()) }
+    // Single-shot handoff for content arriving via the system share sheet (ACTION_SEND).
+    single { ShareInbox() }
 
     single { DatabaseKey(androidContext()) }
     single { KnitDatabase.build(androidContext(), get<DatabaseKey>().getOrCreate()) }

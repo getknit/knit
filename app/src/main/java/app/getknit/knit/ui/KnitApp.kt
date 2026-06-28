@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -22,6 +23,9 @@ import app.getknit.knit.ui.donate.DonateScreen
 import app.getknit.knit.ui.onboarding.OnboardingScreen
 import app.getknit.knit.ui.profile.ProfileDetailsScreen
 import app.getknit.knit.ui.profile.ProfileScreen
+import app.getknit.knit.ui.share.ShareInbox
+import app.getknit.knit.ui.share.ShareTargetScreen
+import org.koin.compose.koinInject
 
 private object Routes {
     const val ONBOARDING = "onboarding"
@@ -31,6 +35,7 @@ private object Routes {
     const val DIAGNOSTICS = "diagnostics"
     const val BLOCKED_USERS = "blocked"
     const val DONATE = "donate"
+    const val SHARE = "share"
     const val CHAT = "chat/{conversationId}"
     fun chat(conversationId: String) = "chat/$conversationId"
     const val PROFILE_DETAILS = "profileDetails/{nodeId}"
@@ -46,10 +51,14 @@ private object Routes {
 fun KnitApp(startRoute: String? = null) {
     val context = LocalContext.current
     val navController = rememberNavController()
+    val shareInbox = koinInject<ShareInbox>()
+    val pendingShare by shareInbox.pending.collectAsStateWithLifecycle()
+    // Past onboarding once mesh permissions are granted (demo builds skip the gate).
+    val onboarded = BuildConfig.SEED_DEMO || hasAllMeshPermissions(context)
     // Demo-screenshot mode skips the permission gate (and an optional [startRoute] jumps straight to a
     // screen for deterministic capture); otherwise gate on permissions as usual.
     val start = startRoute
-        ?: if (BuildConfig.SEED_DEMO || hasAllMeshPermissions(context)) Routes.CHAT_LIST else Routes.ONBOARDING
+        ?: if (onboarded) Routes.CHAT_LIST else Routes.ONBOARDING
 
     // Start the mesh service whenever the user is past onboarding (guard kept broad on purpose). Demo
     // builds never start it — there is no real mesh and the seeded data needs no transport.
@@ -57,6 +66,19 @@ fun KnitApp(startRoute: String? = null) {
     LaunchedEffect(backStackEntry?.destination?.route) {
         val route = backStackEntry?.destination?.route
         if (!BuildConfig.SEED_DEMO && route != null && route != Routes.ONBOARDING) MeshService.start(context)
+    }
+
+    // A share arrived (cold start: pending at first composition; warm start: onNewIntent flips it).
+    // Open the target picker over the chat list — so Back/abandon returns there. A share that lands
+    // before onboarding is dropped rather than left to leak into a later chat. launchSingleTop keeps
+    // the cold-start navigate from stacking a second picker.
+    LaunchedEffect(pendingShare != null) {
+        if (pendingShare == null) return@LaunchedEffect
+        if (!onboarded) {
+            shareInbox.clear()
+            return@LaunchedEffect
+        }
+        navController.navigate(Routes.SHARE) { launchSingleTop = true }
     }
 
     NavHost(navController = navController, startDestination = start) {
@@ -87,6 +109,23 @@ fun KnitApp(startRoute: String? = null) {
                 onPick = { conversationId ->
                     navController.navigate(Routes.chat(conversationId)) {
                         popUpTo(Routes.CONTACTS) { inclusive = true }
+                    }
+                },
+            )
+        }
+        composable(Routes.SHARE) {
+            ShareTargetScreen(
+                // Abandoning the share clears the inbox so it can't prefill a later chat; the picker
+                // always sits over the chat list, so popping returns there.
+                onBack = {
+                    shareInbox.clear()
+                    navController.popBackStack()
+                },
+                // Open the chosen conversation and drop the picker; ChatScreen drains the inbox into
+                // its draft on arrival.
+                onPick = { conversationId ->
+                    navController.navigate(Routes.chat(conversationId)) {
+                        popUpTo(Routes.SHARE) { inclusive = true }
                     }
                 },
             )

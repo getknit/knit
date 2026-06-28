@@ -106,7 +106,7 @@ class NsfwImageModerator(
     private companion object {
         const val DEFAULT_MODEL_ASSET = "moderation/nsfw.tflite"
         val DEFAULT_UNSAFE_CLASSES = setOf(1, 3, 4)
-        const val DEFAULT_THRESHOLD = 0.7f
+        const val DEFAULT_THRESHOLD = 0.9f
 
         const val INPUT_H = 1
         const val INPUT_W = 2

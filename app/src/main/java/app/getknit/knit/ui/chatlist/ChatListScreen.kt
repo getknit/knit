@@ -158,7 +158,7 @@ fun ChatListScreen(
 }
 
 @Composable
-private fun ConversationListItem(
+internal fun ConversationListItem(
     row: ConversationRow,
     now: Long,
     onClick: () -> Unit,
