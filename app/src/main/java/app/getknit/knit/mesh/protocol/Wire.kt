@@ -12,17 +12,31 @@ const val DEFAULT_TTL: Int = 8
 
 /**
  * A unit of data flooded across the mesh. Every frame carries a globally-unique [id] (the dedup
- * key), a [ttl] hop limit, and the current [hops] count (incremented at each relay).
- *
- * The format is designed once to cover the broadcast-room MVP and future 1:1 DMs + end-to-end
- * encryption: [ChatFrame.recipientId] / [ChatFrame.sig] and [ProfileFrame.pubKey] are reserved now
- * and unused until those phases land.
+ * key), the originating [senderId], a [ttl] hop limit, and the current [hops] count (incremented at
+ * each relay). Flooded frames are authenticated by [sig] (an Ed25519 signature over [signedBytes]);
+ * the point-to-point [BlobRequestFrame] is the only unsigned frame type.
  */
 @Serializable
 sealed interface Frame {
     val id: String
+
+    /**
+     * The originator's 8-char node id, cryptographically bound to its public-key bundle (a nodeId IS
+     * the salted hash of the bundle — see [app.getknit.knit.identity.NodeId]). Authenticated by [sig]
+     * on flooded frames, so a relay can't forge a frame under another node's id.
+     */
+    val senderId: String
     val ttl: Int
     val hops: Int
+
+    /**
+     * Base64 Ed25519 signature over the frame's canonical bytes ([signedBytes]), proving it was
+     * authored by the holder of [senderId]'s signing key and not tampered with in transit. A computed
+     * getter defaulting to null (so the unsigned [BlobRequestFrame] never serializes one); every
+     * flooded frame overrides it with a stored property. On an *encrypted* [ChatFrame] it instead
+     * carries the E2E envelope signature (verified by [app.getknit.knit.mesh.crypto.MessageCrypto]).
+     */
+    val sig: String? get() = null
 
     /**
      * Whether [MeshRouter] should flood this frame onward to other neighbors. True for the
@@ -101,13 +115,13 @@ data class EncEnvelope(
 @SerialName("chat")
 data class ChatFrame(
     override val id: String,
-    val senderId: String,
+    override val senderId: String,
     val sentAt: Long,
     // Plaintext body for the broadcast room. Empty when [enc] is set: the real body lives encrypted in
     // the envelope, and mentions/attachment fields below are likewise blank/null on the wire.
     val body: String,
     val recipientId: String? = null,
-    val sig: String? = null,
+    override val sig: String? = null,
     val mentions: List<Mention> = emptyList(),
     // Reference to an out-of-band image blob (fetched by content hash); null for text-only messages.
     val attachmentHash: String? = null,
@@ -133,9 +147,10 @@ data class ChatFrame(
 @SerialName("groupupdate")
 data class GroupUpdateFrame(
     override val id: String,
-    val senderId: String,
+    override val senderId: String,
     val sentAt: Long,
     val group: GroupInfo,
+    override val sig: String? = null,
     override val ttl: Int = DEFAULT_TTL,
     override val hops: Int = 0,
 ) : Frame
@@ -144,7 +159,7 @@ data class GroupUpdateFrame(
 @SerialName("profile")
 data class ProfileFrame(
     override val id: String,
-    val senderId: String,
+    override val senderId: String,
     val sentAt: Long,
     val name: String,
     val status: String,
@@ -154,6 +169,7 @@ data class ProfileFrame(
     // key returns under a new senderId but the same tag). Optional, so this is a backward-compatible
     // wire addition (missing → null). Never used for routing/trust — only the local block list.
     val deviceTag: String? = null,
+    override val sig: String? = null,
     override val ttl: Int = DEFAULT_TTL,
     override val hops: Int = 0,
 ) : Frame
@@ -162,8 +178,9 @@ data class ProfileFrame(
 @SerialName("receipt")
 data class ReceiptFrame(
     override val id: String,
-    val senderId: String,
+    override val senderId: String,
     val ackId: String,
+    override val sig: String? = null,
     override val ttl: Int = DEFAULT_TTL,
     override val hops: Int = 0,
 ) : Frame
@@ -183,10 +200,11 @@ data class ReceiptFrame(
 @SerialName("reaction")
 data class ReactionFrame(
     override val id: String,
-    val senderId: String,
+    override val senderId: String,
     val messageId: String,
     val emoji: String? = null,
     val sentAt: Long,
+    override val sig: String? = null,
     override val ttl: Int = DEFAULT_TTL,
     override val hops: Int = 0,
 ) : Frame
@@ -201,7 +219,7 @@ data class ReactionFrame(
 @SerialName("blobreq")
 data class BlobRequestFrame(
     override val id: String,
-    val senderId: String,
+    override val senderId: String,
     val hash: String,
     override val ttl: Int = DEFAULT_TTL,
     override val hops: Int = 0,
@@ -232,6 +250,36 @@ fun Frame.cappedTtl(max: Int): Frame = if (ttl <= max) this else when (this) {
     is ReceiptFrame -> copy(ttl = max)
     is ReactionFrame -> copy(ttl = max)
     is BlobRequestFrame -> copy(ttl = max)
+}
+
+/**
+ * The canonical bytes a frame's [Frame.sig] is computed over: the frame's own CBOR ([WireCodec]) with
+ * the mutable routing fields ([Frame.ttl]/[Frame.hops]) and the signature slot itself normalized to
+ * their defaults. The router only mutates ttl/hops in flight, so the originator and every relay-mutated
+ * copy a verifier later decodes derive *identical* bytes; routing metadata is deliberately left
+ * unauthenticated. The [SerialName] discriminator IS covered (it rides in the CBOR), so a profile
+ * signature can't be lifted onto a chat. [id] is covered too, so a captured frame can't be re-flooded
+ * under a fresh id (to dodge the dedup [SeenSet]) without invalidating the signature.
+ */
+fun Frame.signedBytes(): ByteArray = WireCodec.encode(canonicalForSig())
+
+private fun Frame.canonicalForSig(): Frame = when (this) {
+    is ChatFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
+    is GroupUpdateFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
+    is ProfileFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
+    is ReceiptFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
+    is ReactionFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
+    is BlobRequestFrame -> copy(ttl = DEFAULT_TTL, hops = 0) // unsigned; never actually signed/verified
+}
+
+/** Returns a copy of this frame carrying [sig]. A no-op for the unsigned [BlobRequestFrame]. */
+fun Frame.withSig(sig: String): Frame = when (this) {
+    is ChatFrame -> copy(sig = sig)
+    is GroupUpdateFrame -> copy(sig = sig)
+    is ProfileFrame -> copy(sig = sig)
+    is ReceiptFrame -> copy(sig = sig)
+    is ReactionFrame -> copy(sig = sig)
+    is BlobRequestFrame -> this // unsigned
 }
 
 /**

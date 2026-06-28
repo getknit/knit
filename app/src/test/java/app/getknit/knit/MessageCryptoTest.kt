@@ -8,8 +8,10 @@ import app.getknit.knit.mesh.protocol.Mention
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MessageCryptoTest {
@@ -118,6 +120,34 @@ class MessageCryptoTest {
         val alice = party("alice000")
         val header = MessageCrypto.header("m7", alice.nodeId, 1L, "bob00000")
         assertNull(alice.crypto.seal(content("hi"), header, emptyMap()))
+    }
+
+    @Test
+    fun genericSignAndVerifyRoundTrips() {
+        val alice = party("alice000")
+        val bytes = "frame-canonical-bytes".toByteArray()
+        assertTrue(MessageCrypto.verify(alice.bundle, alice.crypto.sign(bytes), bytes))
+    }
+
+    @Test
+    fun genericVerifyRejectsTamperedBytes() {
+        val alice = party("alice000")
+        val sig = alice.crypto.sign("frame-canonical-bytes".toByteArray())
+        assertFalse(MessageCrypto.verify(alice.bundle, sig, "frame-canonical-bytez".toByteArray()))
+    }
+
+    @Test
+    fun genericVerifyRejectsWrongKey() {
+        val alice = party("alice000")
+        val mallory = party("mallory0")
+        val bytes = "frame-canonical-bytes".toByteArray()
+        assertFalse(MessageCrypto.verify(mallory.bundle, alice.crypto.sign(bytes), bytes))
+    }
+
+    @Test
+    fun genericVerifyRejectsNullSignature() {
+        val alice = party("alice000")
+        assertFalse(MessageCrypto.verify(alice.bundle, null, "frame-canonical-bytes".toByteArray()))
     }
 
     @Test

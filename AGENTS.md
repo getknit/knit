@@ -94,8 +94,13 @@ frames.
   `reaction`, `blobreq`); a non-flooded control frame overrides `relayable` to `false`.
   `ChatFrame.recipientId`/`group` address DMs/groups (cleartext, for routing); `ChatFrame.enc` +
   `sig` carry the E2E envelope + Ed25519 signature and `ProfileFrame.pubKey` the public-key bundle —
-  all now in use (see the E2E section below). Changing the encoding or a frame's shape is a coordinated
-  wire-format break (no version negotiation yet).
+  all now in use (see the E2E section below). **Every flooded frame is Ed25519-signed** (`Frame.sig`,
+  hoisted onto the interface alongside `senderId`): `Frame.signedBytes()` is the canonical blob
+  (the frame's own CBOR with the mutable `ttl`/`hops` and the `sig` slot normalized out, so relays
+  can't break it); `blobreq` is the only unsigned frame. `MeshManager` signs on origination and
+  `verifyInbound` drops any flooded frame whose signature is missing/invalid or whose key doesn't
+  derive to `senderId`. Changing the encoding or a frame's shape is a coordinated wire-format break
+  (no version negotiation yet).
 - **Pure, testable mesh logic.** `MeshRouter`, `SeenSet`, `WireCodec`, `MeshMetrics`, `BlobExchange`,
   and `Conversations` have no Android dependencies and are unit-tested with `FakeLoopTransport`/fakes.
   Keep them that way. `MeshRouter` relay timing is driven by an injectable `jitter` lambda so tests
@@ -152,10 +157,23 @@ a per-attachment key and content-addressed by ciphertext hash, so `BlobExchange`
 unchanged. **Decrypt/verify failures must never throw out of the inbound handler** — `onDeliver` runs
 before the router schedules the relay, so a throw would stop forwarding (see `MeshManager.decryptAndDeliver`).
 
+The **plaintext** flooded frames (broadcast `chat`, `profile`, `groupupdate`, `reaction`, `receipt`)
+are not encrypted but are now **authenticated**: each is Ed25519-signed with the sender's identity key
+over `Frame.signedBytes()`, and `MeshManager.verifyInbound` (the gate at the top of `onDeliver`) drops
+any that fail — closing the prior gap where a relay could forge a frame (e.g. a profile with a
+different name) under another node's `senderId`. Verification reuses the encrypted-chat key path
+(`peers.find(senderId).pubKey` → `PublicKeyBundle.verifier()`, guarded by
+`NodeId.fromPublicKeyBundle == senderId`); a `profile` uses its in-band `pubKey` since first contact
+precedes any pin. Encrypted `chat` keeps its *envelope* signature semantics on `sig` (verified by
+`MessageCrypto.open`); `blobreq` stays unsigned. Same no-throw contract applies: `verifyInbound`
+swallows failures and returns false (drop locally) so the router still relays.
+
 ## Out of scope (deferred, by design)
 
 Alternate transports (Wi-Fi Aware/BLE), **true DM routing** (DMs currently flood — only the addressed
 recipient delivers/acks), and for E2E specifically: **forward secrecy / a ratchet** (static keys only),
-encrypting **reactions/receipts** (they flood as cleartext metadata), encrypting the broadcast room, and
-a **key-request/retransmit** protocol for messages received before the sender's key is known. Don't
+**encrypting** reactions/receipts (they are signed now — see the E2E section — but still flood as
+cleartext metadata), encrypting the broadcast room, and a **key-request/retransmit** protocol for
+messages received before the sender's key is known (so a flooded frame from a not-yet-pinned sender is
+dropped by `verifyInbound`). Don't
 start these without explicit direction.

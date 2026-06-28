@@ -2,6 +2,7 @@ package app.getknit.knit
 
 import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
+import app.getknit.knit.mesh.protocol.DEFAULT_TTL
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.GroupUpdateFrame
@@ -11,6 +12,11 @@ import app.getknit.knit.mesh.protocol.ReactionFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WrappedKey
+import app.getknit.knit.mesh.protocol.cappedTtl
+import app.getknit.knit.mesh.protocol.incrementHop
+import app.getknit.knit.mesh.protocol.signedBytes
+import app.getknit.knit.mesh.protocol.withSig
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -195,5 +201,54 @@ class WireSerializationTest {
     @Test
     fun malformedBytesDecodeToNull() {
         assertNull(WireCodec.decode("not a frame".encodeToByteArray()))
+    }
+
+    @Test
+    fun signedFramesRoundTripWithSignature() {
+        val frames = listOf(
+            ChatFrame(id = "m", senderId = "a", sentAt = 1L, body = "hi", sig = "c2ln"),
+            GroupUpdateFrame(
+                id = "gu", senderId = "a", sentAt = 1L,
+                group = GroupInfo(id = "g", members = listOf("a", "b"), createdBy = "a"), sig = "c2ln",
+            ),
+            ProfileFrame(id = "p", senderId = "b", sentAt = 2L, name = "Bob", status = "ok", sig = "c2ln"),
+            ReceiptFrame(id = "r", senderId = "c", ackId = "m", sig = "c2ln"),
+            ReactionFrame(id = "x", senderId = "c", messageId = "m", emoji = "👍", sentAt = 3L, sig = "c2ln"),
+        )
+        frames.forEach { assertEquals(it, WireCodec.decode(WireCodec.encode(it))) }
+    }
+
+    @Test
+    fun blobRequestFrameHasNoSignatureField() {
+        // blobreq inherits the interface's null sig getter; it is never signed nor serialized.
+        val frame = BlobRequestFrame(id = "q", senderId = "b", hash = "abc")
+        assertNull(frame.sig)
+        assertEquals(frame, WireCodec.decode(WireCodec.encode(frame)))
+    }
+
+    @Test
+    fun signedBytesAreStableAcrossRelayMutation() {
+        // The signature covers everything EXCEPT ttl/hops/sig, so a relayed copy (hops bumped, ttl
+        // capped, signature attached) yields identical signed bytes — the verifier reproduces exactly
+        // the bytes the originator signed.
+        val origin = ReactionFrame(id = "x", senderId = "a", messageId = "m", emoji = "👍", sentAt = 7L)
+        val relayed = origin.withSig("c2ln").incrementHop().incrementHop().cappedTtl(DEFAULT_TTL)
+        assertArrayEquals(origin.signedBytes(), relayed.signedBytes())
+    }
+
+    @Test
+    fun signedBytesChangeWhenContentChanges() {
+        val original = ReactionFrame(id = "x", senderId = "a", messageId = "m", emoji = "👍", sentAt = 7L)
+        val tampered = original.copy(emoji = "👎")
+        assertFalse(original.signedBytes().contentEquals(tampered.signedBytes()))
+    }
+
+    @Test
+    fun signedBytesBindTheFrameType() {
+        // A profile (or any) signature can't be lifted onto a chat: the @SerialName discriminator rides
+        // in the canonical bytes, so distinct types differ even with identical id/senderId.
+        val chat = ChatFrame(id = "z", senderId = "a", sentAt = 1L, body = "")
+        val reaction = ReactionFrame(id = "z", senderId = "a", messageId = "", emoji = null, sentAt = 1L)
+        assertFalse(chat.signedBytes().contentEquals(reaction.signedBytes()))
     }
 }

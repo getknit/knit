@@ -35,6 +35,14 @@ class MessageCrypto(
         ownHybridPrivate.getPrimitive(RegistryConfiguration.get(), HybridDecrypt::class.java)
     }
 
+    /**
+     * Ed25519-signs arbitrary [bytes] with this device's identity signing key, returning the base64
+     * signature. Used for frame-level authentication of flooded frames (see
+     * [app.getknit.knit.mesh.protocol.signedBytes]); the E2E [seal] path computes its own signature
+     * over the envelope instead.
+     */
+    fun sign(bytes: ByteArray): String = b64(signer.sign(bytes))
+
     /** An encrypted, signed message ready to attach to a [app.getknit.knit.mesh.protocol.ChatFrame]. */
     data class Sealed(val envelope: EncEnvelope, val sig: String)
 
@@ -103,5 +111,17 @@ class MessageCrypto(
         /** The signed/encrypted header binding a message to its identity and thread. */
         fun header(id: String, senderId: String, sentAt: Long, thread: String): ByteArray =
             "$id|$senderId|$sentAt|$thread".toByteArray()
+
+        /**
+         * Verifies a base64 Ed25519 [sig] over [bytes] against a peer's published [senderBundle].
+         * Returns false on ANY failure (missing or malformed signature, key mismatch) and never
+         * throws, so inbound callers can drop-and-continue without aborting the relay (mirrors how
+         * [open] swallows verification failures).
+         */
+        fun verify(senderBundle: PublicKeyBundle, sig: String?, bytes: ByteArray): Boolean =
+            runCatching {
+                senderBundle.verifier().verify(b64d(requireNotNull(sig)), bytes)
+                true
+            }.getOrDefault(false)
     }
 }

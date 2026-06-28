@@ -33,6 +33,8 @@ import app.getknit.knit.mesh.protocol.ProfileFrame
 import app.getknit.knit.mesh.protocol.ReactionFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
 import app.getknit.knit.mesh.protocol.mention
+import app.getknit.knit.mesh.protocol.signedBytes
+import app.getknit.knit.mesh.protocol.withSig
 import android.util.Log
 import app.getknit.knit.moderation.TextModerator
 import app.getknit.knit.notifications.Notifier
@@ -210,7 +212,7 @@ class MeshManager(
                     attachmentHash = attachment?.hash, attachmentMime = attachment?.mime,
                 ),
             )
-            router.originate(
+            originateSigned(
                 ChatFrame(
                     id = id, senderId = me, sentAt = sentAt, body = text, mentions = mentions,
                     attachmentHash = attachment?.hash, attachmentMime = attachment?.mime,
@@ -296,7 +298,7 @@ class MeshManager(
      * [GroupUpdateFrame.sentAt]; the local store has already been updated by the caller.
      */
     suspend fun sendGroupUpdate(group: GroupInfo) {
-        router.originate(
+        originateSigned(
             GroupUpdateFrame(
                 id = UUID.randomUUID().toString(),
                 senderId = identity.nodeId(),
@@ -317,7 +319,7 @@ class MeshManager(
         val next = if (reactions.currentEmoji(messageId, me) == emoji) null else emoji
         val now = System.currentTimeMillis()
         reactions.apply(ReactionEntity(messageId, me, next, now))
-        router.originate(
+        originateSigned(
             ReactionFrame(
                 id = UUID.randomUUID().toString(),
                 senderId = me,
@@ -378,12 +380,12 @@ class MeshManager(
     }
 
     private suspend fun pushProfileTo(peer: Peer) {
-        router.sendOwn(currentProfileFrame(), peer)
+        sendOwnSigned(currentProfileFrame(), peer)
         sendAvatarIfNeeded(peer)
     }
 
     private suspend fun broadcastProfile() {
-        router.originate(currentProfileFrame())
+        originateSigned(currentProfileFrame())
         transport.neighbors.value.forEach { sendAvatarIfNeeded(it) }
     }
 
@@ -417,9 +419,24 @@ class MeshManager(
         )
     }
 
+    // --- Signed origination ---
+
+    /** Floods a locally-built [frame] to the whole mesh, stamping it with our Ed25519 signature. */
+    private suspend fun originateSigned(frame: Frame) = router.originate(sign(frame))
+
+    /** Sends a locally-built [frame] to a single [peer] (targeted profile push), signed. */
+    private suspend fun sendOwnSigned(frame: Frame, peer: Peer) = router.sendOwn(sign(frame), peer)
+
+    /** Attaches our signature over the frame's canonical bytes (see [signedBytes]). */
+    private fun sign(frame: Frame): Frame = frame.withSig(messageCrypto.sign(frame.signedBytes()))
+
     // --- Delivery of inbound frames ---
 
     private suspend fun onDeliver(frame: Frame, fromNodeId: String) {
+        // Strict authentication gate: a flooded frame that isn't signed by the key its senderId binds
+        // to is dropped (not delivered locally). We still return normally so MeshRouter relays it
+        // onward — other peers verify independently, and we don't become a propagation black hole.
+        if (!verifyInbound(frame)) return
         when (frame) {
             is ChatFrame -> handleChat(frame)
             is GroupUpdateFrame -> handleGroupUpdate(frame)
@@ -428,6 +445,53 @@ class MeshManager(
             is ReactionFrame -> handleReaction(frame)
             is BlobRequestFrame -> blobExchange.onRequest(frame.hash, fromNodeId)
         }
+    }
+
+    /**
+     * Authenticates a flooded frame: its [Frame.sig] must verify against a public-key bundle that
+     * derives back to [Frame.senderId]. A [ProfileFrame] carries that bundle in-band (first contact
+     * arrives before any pin); every other frame uses the sender's pinned key, so a frame from a peer
+     * whose profile we haven't received yet is dropped. Encrypted chat keeps its envelope signature
+     * (checked later in [decrypt]); the point-to-point [BlobRequestFrame] is unsigned by design.
+     *
+     * Wrapped in [runCatching] so it NEVER throws out of [onDeliver]: any failure returns false =
+     * "drop locally", and the router still schedules the relay (it runs after onDeliver returns).
+     */
+    private suspend fun verifyInbound(frame: Frame): Boolean = runCatching {
+        if (frame is BlobRequestFrame) return true
+        if (frame is ChatFrame && frame.enc != null) return true // envelope sig verified in decrypt()
+        val bundle = when (frame) {
+            is ProfileFrame -> frame.pubKey?.let { PublicKeyBundle.decode(it) }
+            else -> peers.find(frame.senderId)?.pubKey?.let { PublicKeyBundle.decode(it) }
+        }
+        if (bundle == null) {
+            Log.w(TAG, "drop ${frame.kind()} ${frame.id} from ${frame.senderId}: no key to verify it")
+            return false
+        }
+        // The verifying key must provably belong to the claimed senderId (a nodeId IS the hash of the
+        // bundle). Mirrors the encrypted-chat check in decrypt(); also rejects stale device-derived pins.
+        if (NodeId.fromPublicKeyBundle(bundle.encoded) != frame.senderId) {
+            Log.w(TAG, "drop ${frame.kind()} ${frame.id} from ${frame.senderId}: key does not match nodeId")
+            return false
+        }
+        if (!MessageCrypto.verify(bundle, frame.sig, frame.signedBytes())) {
+            Log.w(TAG, "drop ${frame.kind()} ${frame.id} from ${frame.senderId}: bad/missing signature")
+            return false
+        }
+        true
+    }.getOrElse {
+        Log.w(TAG, "drop frame ${frame.id} from ${frame.senderId}: verification error ${it.message}")
+        false
+    }
+
+    /** Short frame-type label for verification logs. */
+    private fun Frame.kind(): String = when (this) {
+        is ChatFrame -> "chat"
+        is GroupUpdateFrame -> "groupupdate"
+        is ProfileFrame -> "profile"
+        is ReceiptFrame -> "receipt"
+        is ReactionFrame -> "reaction"
+        is BlobRequestFrame -> "blobreq"
     }
 
     /**
@@ -657,10 +721,10 @@ class MeshManager(
     private suspend fun acknowledge(frame: ChatFrame, me: String) {
         val ack = ReceiptFrame(id = UUID.randomUUID().toString(), senderId = me, ackId = frame.id)
         if (frame.recipientId == me) {
-            router.originate(ack)
+            originateSigned(ack)
         } else {
             val direct = transport.neighbors.value.firstOrNull { it.nodeId == frame.senderId } ?: return
-            transport.send(ack, direct)
+            transport.send(sign(ack), direct)
         }
     }
 
