@@ -115,7 +115,7 @@ class ChatListViewModel(
                 avatarHash = avatarHash,
                 isRoom = isRoom,
                 isGroup = isGroup,
-                lastPreview = last?.let { previewFor(it, peersByNode, me) },
+                lastPreview = last?.let { previewFor(it, peersByNode, me, isDm = !isRoom && !isGroup) },
                 lastMessageAt = last?.sentAt,
                 unreadCount = unread,
             )
@@ -158,21 +158,28 @@ class ChatListViewModel(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatListUiState())
 
-    /** "Sender: body" preview, mirroring how ChatViewModel resolves names and labels own messages. */
+    /**
+     * "Sender: body" preview, mirroring how ChatViewModel resolves names and labels own messages.
+     * In a 1:1 DM the peer's name is already the row title, so an incoming message shows just its body;
+     * our own messages still get the "You: …" prefix (it's not the recipient's name and signals who spoke).
+     */
     private fun previewFor(
         message: MessageEntity,
         peersByNode: Map<String, PeerEntity>,
         me: String?,
+        isDm: Boolean,
     ): String {
-        val sender = if (message.senderId == me) {
-            context.getString(R.string.chat_self_name)
-        } else {
-            displayNameFor(peersByNode[message.senderId]?.name, message.senderId)
-        }
         val body = when {
             message.body.isNotBlank() -> message.body
             message.attachmentHash != null -> context.getString(R.string.chat_list_preview_photo)
             else -> ""
+        }
+        val isOwn = message.senderId == me
+        if (isDm && !isOwn) return body
+        val sender = if (isOwn) {
+            context.getString(R.string.chat_self_name)
+        } else {
+            displayNameFor(peersByNode[message.senderId]?.name, message.senderId)
         }
         return context.getString(R.string.chat_list_preview_with_sender, sender, body)
     }
