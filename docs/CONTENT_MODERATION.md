@@ -136,7 +136,7 @@ tokenizer. Fully offline, no `INTERNET`.
 No app-side wiring beyond the DI line is needed — `MessageEntity.moderation`, the tap-to-reveal UI, the
 settings gate, and both hook points already route any `TextModerator` verdict.
 
-To re-export or re-tune the model, see the `detoxify-mobile` repo (`README.md` + `android/INTEGRATION.md`).
+To re-export or re-tune the model, see the `detoxify-mobile` repo (`README.md`).
 After any dependency change, regenerate the lockfile for **all** configs (AGENTS.md gotcha):
 `./gradlew :app:dependencies --write-locks` then `./gradlew lint`.
 
