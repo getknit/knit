@@ -35,6 +35,17 @@ interface MessageDao {
     @Query("SELECT COUNT(*) FROM messages WHERE attachmentHash = :hash")
     suspend fun countByAttachmentHash(hash: String): Int
 
+    /**
+     * The (base64) per-attachment key stored with a message referencing the ciphertext [hash], if any —
+     * used to decrypt a just-pulled E2E attachment blob so its plaintext can be screened. Null for a
+     * plaintext (broadcast) attachment or when no such message is stored (e.g. we only relayed the blob).
+     */
+    @Query(
+        "SELECT attachmentKey FROM messages " +
+            "WHERE attachmentHash = :hash AND attachmentKey IS NOT NULL LIMIT 1",
+    )
+    suspend fun attachmentKeyForHash(hash: String): String?
+
     /** Attachment hashes referenced by stored messages whose bytes aren't in the `blobs` table yet. */
     @Query(
         "SELECT DISTINCT attachmentHash FROM messages " +

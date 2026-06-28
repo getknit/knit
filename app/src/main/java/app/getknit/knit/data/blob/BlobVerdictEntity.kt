@@ -9,11 +9,12 @@ import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
 
 /**
- * Cached on-device NSFW verdict for an image blob, keyed by the same SHA-256 content [hash] as
- * [BlobEntity]. Because the hash addresses the content, a verdict computed when an image is sent is
- * reused when the identical bytes are received (and vice-versa), so each distinct image is scanned at
- * most once. [flagged] true means the image is explicit and should be blurred behind a tap-to-reveal;
- * [score] is the classifier confidence in `[0, 1]`.
+ * Cached on-device NSFW verdict for a stored image blob, keyed by the same SHA-256 content [hash] as
+ * [BlobEntity] — for an E2E attachment that's the ciphertext hash, with the verdict computed from the
+ * *decrypted* pixels. The cache is populated on receive (the send side only screens to gate a
+ * confirm/block and caches nothing) and is idempotent per hash, so each stored image is scanned at most
+ * once. [flagged] true means the image is explicit and should be blurred behind a tap-to-reveal; [score]
+ * is the classifier confidence in `[0, 1]`.
  */
 @Entity(tableName = "blob_verdicts")
 data class BlobVerdictEntity(

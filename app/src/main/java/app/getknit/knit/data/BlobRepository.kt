@@ -18,8 +18,11 @@ import kotlinx.coroutines.flow.first
  * an orphaned blob once nothing points at it.
  *
  * It is also the on-device image-moderation hub: it screens images against [imageModerator] (gated on
- * the user's content-filtering setting) and caches the NSFW verdict by content hash in [verdicts], so
- * identical bytes are scanned at most once across send and receive (see [screenImage]/[isImageBlocked]).
+ * the user's content-filtering setting) and caches the NSFW verdict by content hash in [verdicts]. The
+ * send side screens to gate a confirm/block ([isImageExplicit], cached nowhere); the receive side caches
+ * the verdict for a stored blob ([screenImage]) so each received image is scanned at most once. For an
+ * E2E attachment the stored bytes are ciphertext, so the caller decrypts first and passes the plaintext
+ * to [screenImage] under the ciphertext hash (see `MeshManager.screenEncryptedAttachment`).
  */
 class BlobRepository(
     private val blobs: BlobDao,
@@ -53,9 +56,12 @@ class BlobRepository(
 
     /**
      * Receive-side screening for a stored blob: when content filtering is on and no verdict is cached yet
-     * for [hash], decode [bytes] (first frame for a GIF), classify, and cache the verdict. Idempotent per
-     * hash, so the same image arriving via multiple messages/hops is scanned once. No-op when filtering
-     * is off or the bytes can't be decoded.
+     * for [hash], decode [bytes] (first frame for a GIF), classify, and cache the verdict under [hash].
+     * Idempotent per hash, so the same image arriving via multiple messages/hops is scanned once. No-op
+     * when filtering is off or the bytes can't be decoded. For a plaintext image (avatar / broadcast
+     * attachment) [bytes] are the stored blob's bytes; for an E2E attachment the caller decrypts the
+     * ciphertext blob first and passes the plaintext while still keying by the ciphertext [hash] (see
+     * `MeshManager.screenEncryptedAttachment`).
      */
     suspend fun screenImage(hash: String, bytes: ByteArray) {
         if (!settings.contentFilteringEnabled.first()) return

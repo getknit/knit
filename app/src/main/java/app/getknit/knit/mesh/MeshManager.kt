@@ -21,6 +21,7 @@ import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.b64
+import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.Frame
@@ -94,8 +95,12 @@ class MeshManager(
         selfId = { identity.nodeId() },
         // The chat list observes the blobs table for presence, so no per-message path write is needed
         // when an attachment arrives. A pulled blob may also be a (multi-hop) peer's avatar, so attribute
-        // it back to whoever advertised it.
-        onObtained = { hash, _ -> adoptAdvertisedAvatar(hash) },
+        // it back to whoever advertised it, and — for an E2E attachment — screen its decrypted bytes now
+        // that both the ciphertext and (from the delivered message) its key are on hand.
+        onObtained = { hash, _ ->
+            adoptAdvertisedAvatar(hash)
+            screenObtainedAttachment(hash)
+        },
     )
 
     @Volatile
@@ -599,8 +604,16 @@ class MeshManager(
             ),
         )
         // Start pulling the referenced blob unless we already hold it (the UI observes the blobs table
-        // and flips the attachment from "loading" to shown once the bytes land).
-        if (hash != null && !blobStore.has(hash)) blobExchange.want(hash)
+        // and flips the attachment from "loading" to shown once the bytes land). If we already hold it
+        // (e.g. cached earlier while relaying), screen its decrypted bytes now that the key is in hand;
+        // otherwise it's screened on arrival ([screenObtainedAttachment]) once the key has been stored.
+        if (hash != null) {
+            if (blobStore.has(hash)) {
+                screenEncryptedAttachment(hash, attachmentKey)
+            } else {
+                blobExchange.want(hash)
+            }
+        }
         // A message that @-mentions us notifies on the dedicated Mentions channel only; everything else
         // takes the per-context channel (Nearby / Group messages / Direct messages), keyed off conversationId.
         if (frame.senderId != me && frame.mentions.mention(me)) {
@@ -751,6 +764,33 @@ class MeshManager(
         val oldHash = existing?.avatarHash
         peers.upsert((existing ?: PeerEntity(nodeId)).copy(avatarHash = hash))
         if (oldHash != hash) blobs.deleteIfUnreferenced(oldHash)
+    }
+
+    /**
+     * A blob just landed via [BlobExchange]. If it's an E2E attachment we hold the key for (stored when
+     * the message was delivered, which is what triggered the pull), screen its *decrypted* bytes. The
+     * screen in [MeshBlobStore.saveIncoming] only ever sees the stored ciphertext for an encrypted
+     * attachment — it can't decode it — so this is where receive-side image moderation actually runs for
+     * DM/group attachments. A no-op for avatars and for relayed blobs we have no key for.
+     */
+    private suspend fun screenObtainedAttachment(hash: String) {
+        screenEncryptedAttachment(hash, messages.attachmentKeyForHash(hash))
+    }
+
+    /**
+     * Decrypts the stored ciphertext blob for [hash] with its base64 [key] and screens the plaintext
+     * image, caching the verdict under the ciphertext [hash] — the same key the chat UI's flagged set
+     * uses, so a flagged attachment blurs behind a tap-to-reveal. A no-op when there's no [key] (a
+     * plaintext/broadcast attachment, already screened on arrival in [MeshBlobStore.saveIncoming]), the
+     * blob isn't stored yet, or decryption fails. [BlobRepository.screenImage] is itself gated on the
+     * content-filtering setting and idempotent per hash, so a repeat call (or a prior ciphertext screen)
+     * is harmless.
+     */
+    private suspend fun screenEncryptedAttachment(hash: String?, key: String?) {
+        if (hash == null || key == null) return
+        val cipher = blobs.bytes(hash) ?: return
+        val plain = AttachmentCrypto.open(cipher, b64d(key)) ?: return
+        blobs.screenImage(hash, plain)
     }
 
     /** Periodically logs a transmission snapshot so flood-suppression and byte savings are visible. */

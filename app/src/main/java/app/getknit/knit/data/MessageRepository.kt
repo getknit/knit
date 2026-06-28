@@ -28,5 +28,8 @@ class MessageRepository(private val dao: MessageDao) {
     /** Number of messages still referencing [hash] (0 once an attachment's last message is gone). */
     suspend fun countByAttachmentHash(hash: String): Int = dao.countByAttachmentHash(hash)
 
+    /** Base64 per-attachment key for an encrypted attachment by its ciphertext [hash], if stored. */
+    suspend fun attachmentKeyForHash(hash: String): String? = dao.attachmentKeyForHash(hash)
+
     suspend fun hashesNeedingFetch(): List<String> = dao.hashesNeedingFetch()
 }
