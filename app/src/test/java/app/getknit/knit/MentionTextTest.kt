@@ -4,8 +4,11 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.chat.MentionCandidate
+import androidx.compose.ui.text.LinkAnnotation
 import app.getknit.knit.ui.chat.activeMentionQuery
+import app.getknit.knit.ui.chat.annotateMessageBody
 import app.getknit.knit.ui.chat.filterCandidates
+import app.getknit.knit.ui.chat.findUrls
 import app.getknit.knit.ui.chat.highlightMentions
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -116,5 +119,73 @@ class MentionTextTest {
         // The body mentions "Coral" but without the literal '@', so nothing is highlighted.
         val out = highlightMentions("Coral is here", listOf(Mention("n2", "Coral")), style)
         assertTrue(out.spanStyles.isEmpty())
+    }
+
+    // --- findUrls ---
+
+    @Test
+    fun detectsHttpAndHttpsUrls() {
+        assertEquals(
+            listOf("http://example.com", "https://example.org/path?q=1"),
+            findUrls("go http://example.com or https://example.org/path?q=1").map { it.url },
+        )
+    }
+
+    @Test
+    fun reportsDisplayRangeOfMatch() {
+        val text = "see https://a.com now"
+        val span = findUrls(text).single()
+        assertEquals(4, span.start)
+        assertEquals(17, span.end)
+        assertEquals("https://a.com", text.substring(span.start, span.end))
+    }
+
+    @Test
+    fun bareWwwLinkResolvesToHttps() {
+        val span = findUrls("visit www.example.com").single()
+        assertEquals("https://www.example.com", span.url)
+        // The displayed range stays as written, without the synthesized scheme.
+        assertEquals("www.example.com", "visit www.example.com".substring(span.start, span.end))
+    }
+
+    @Test
+    fun trimsTrailingSentencePunctuation() {
+        val text = "open https://a.com."
+        val span = findUrls(text).single()
+        assertEquals("https://a.com", span.url)
+        assertEquals("https://a.com", text.substring(span.start, span.end))
+    }
+
+    @Test
+    fun trimsUnbalancedClosingParenButKeepsBalancedOnes() {
+        assertEquals(
+            "https://en.wikipedia.org/wiki/Mesh_(networking)",
+            findUrls("(see https://en.wikipedia.org/wiki/Mesh_(networking))").single().url,
+        )
+    }
+
+    @Test
+    fun ignoresEmailsAndPlainText() {
+        assertTrue(findUrls("ping me at foo@bar.com about it").isEmpty())
+    }
+
+    // --- annotateMessageBody ---
+
+    @Test
+    fun annotatesBothMentionsAndLinks() {
+        val out = annotateMessageBody(
+            body = "hey @Coral see https://a.com",
+            mentions = listOf(Mention("n2", "Coral")),
+            mentionStyle = style,
+            linkStyle = style,
+        )
+        // Mention is still highlighted...
+        assertEquals(1, out.spanStyles.size)
+        assertEquals("@Coral", out.text.substring(out.spanStyles[0].start, out.spanStyles[0].end))
+        // ...and the URL is a clickable link with the right target.
+        val links = out.getLinkAnnotations(0, out.length)
+        assertEquals(1, links.size)
+        assertEquals("https://a.com", (links[0].item as LinkAnnotation.Url).url)
+        assertEquals("https://a.com", out.text.substring(links[0].start, links[0].end))
     }
 }

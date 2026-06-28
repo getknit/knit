@@ -118,6 +118,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
@@ -138,6 +139,7 @@ import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.image.BlobImage
+import app.getknit.knit.ui.openUrl
 import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import coil3.compose.AsyncImage
@@ -600,6 +602,7 @@ private fun MessageBubble(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     // A message flagged by the on-device text moderator is collapsed until the user taps to reveal it.
     var revealed by remember(row.id) { mutableStateOf(false) }
+    val context = LocalContext.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (row.mine) Arrangement.End else Arrangement.Start,
@@ -666,8 +669,18 @@ private fun MessageBubble(
                                     color = MaterialTheme.colorScheme.primary,
                                     fontWeight = FontWeight.SemiBold,
                                 )
+                                val linkStyle = SpanStyle(
+                                    color = MaterialTheme.colorScheme.primary,
+                                    textDecoration = TextDecoration.Underline,
+                                )
                                 Text(
-                                    text = highlightMentions(row.body, row.mentions, mentionStyle),
+                                    text = annotateMessageBody(
+                                        row.body,
+                                        row.mentions,
+                                        mentionStyle,
+                                        linkStyle,
+                                        onLinkClick = { url -> openUrl(context, url) },
+                                    ),
                                     style = MaterialTheme.typography.bodyLarge,
                                 )
                             }
