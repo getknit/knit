@@ -1,6 +1,6 @@
 package app.getknit.knit.data
 
-import android.graphics.Bitmap
+import android.util.Log
 import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
@@ -48,11 +48,26 @@ class BlobRepository(
     fun observeFlaggedHashes(): Flow<List<String>> = verdicts.observeFlaggedHashes()
 
     /**
-     * Send-side screen: true if content filtering is on and [bitmap] is classified explicit. Sending is
-     * allowed but discouraged, so callers use this to prompt the user for confirmation (not to block).
+     * Send-side screen: true if content filtering is on and the image in [bytes] is classified explicit.
+     * [bytes] are the exact bytes that will be stored and transmitted, decoded here at the same
+     * [SCREEN_MAX_DIM] bound the receive-side screen uses — so the sender and recipient classify
+     * byte-identical input and reach the same verdict (the screen reflects what is actually sent, not the
+     * sharper, full-resolution pre-JPEG source bitmap). Sending an explicit image is allowed but
+     * discouraged, so callers use this to prompt for confirmation (not to block). Fail-open (returns
+     * false) when filtering is off or the bytes can't be decoded; no verdict is cached here (the receive
+     * side caches by the stored/ciphertext hash, see [screenImage]).
      */
-    suspend fun isImageExplicit(bitmap: Bitmap): Boolean =
-        settings.contentFilteringEnabled.first() && imageModerator.classify(bitmap).flagged
+    suspend fun isImageExplicit(bytes: ByteArray): Boolean {
+        if (!settings.contentFilteringEnabled.first()) return false
+        val bitmap = decodeBoundedFromBytes(bytes, SCREEN_MAX_DIM) ?: return false
+        val verdict = imageModerator.classify(bitmap)
+        Log.d(
+            TAG,
+            "outgoing image score=${verdict.score} flagged=${verdict.flagged} " +
+                "size=${bitmap.width}x${bitmap.height}",
+        )
+        return verdict.flagged
+    }
 
     /**
      * Receive-side screening for a stored blob: when content filtering is on and no verdict is cached yet
@@ -68,6 +83,11 @@ class BlobRepository(
         if (verdicts.find(hash) != null) return
         val bitmap = decodeBoundedFromBytes(bytes, SCREEN_MAX_DIM) ?: return
         val verdict = imageModerator.classify(bitmap)
+        Log.d(
+            TAG,
+            "incoming image hash=$hash score=${verdict.score} flagged=${verdict.flagged} " +
+                "size=${bitmap.width}x${bitmap.height}",
+        )
         verdicts.upsert(BlobVerdictEntity(hash, verdict.flagged, verdict.score))
     }
 
@@ -103,6 +123,8 @@ class BlobRepository(
     }
 
     private companion object {
+        const val TAG = "ImageModeration"
+
         // Screening downsamples to the model's input anyway; bound the decode so a peer-supplied image
         // can't OOM before classification.
         const val SCREEN_MAX_DIM = 512

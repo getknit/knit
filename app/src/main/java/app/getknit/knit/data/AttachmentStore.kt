@@ -43,11 +43,11 @@ class AttachmentStore(private val context: Context, private val blobs: BlobRepos
      */
     suspend fun ingest(uri: Uri): IngestResult = withContext(Dispatchers.IO) {
         val sourceMime = context.contentResolver.getType(uri)
-        val (mime, bytes, frame) = if (sourceMime == "image/gif") {
+        val (mime, bytes) = if (sourceMime == "image/gif") {
+            // GIFs are stored verbatim so their animation survives.
             val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: return@withContext IngestResult.Failed
-            // Screen the GIF's first frame (verbatim bytes are stored, so decode a frame just to classify).
-            Triple("image/gif", raw, decodeBoundedFromBytes(raw, MAX_DIMENSION))
+            "image/gif" to raw
         } else {
             val bitmap = decodeOrientedBounded(context, uri, MAX_DIMENSION)
                 ?: return@withContext IngestResult.Failed
@@ -56,12 +56,14 @@ class AttachmentStore(private val context: Context, private val blobs: BlobRepos
                 scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
                 out.toByteArray()
             }
-            Triple("image/jpeg", jpeg, scaled)
+            "image/jpeg" to jpeg
         }
         if (bytes.isEmpty() || bytes.size > MAX_BYTES) return@withContext IngestResult.Failed
-        // Stored regardless; an explicit image is allowed but the caller confirms before sending
-        // (fail-open if the frame couldn't be decoded to screen).
-        val flagged = frame != null && blobs.isImageExplicit(frame)
+        // Screen the exact bytes we store and transmit (decoded at the receiver's bound), so the
+        // send-side verdict matches what the recipient computes rather than scoring the sharper,
+        // pre-JPEG source. Stored regardless — an explicit image is allowed but the caller confirms
+        // before sending; fail-open when the bytes can't be decoded.
+        val flagged = blobs.isImageExplicit(bytes)
         val hash = sha256(bytes)
         blobs.insert(hash, mime, bytes)
         IngestResult.Success(Ingested(hash, mime), flagged)
