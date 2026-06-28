@@ -36,7 +36,7 @@ import app.getknit.knit.mesh.protocol.mention
 import app.getknit.knit.mesh.protocol.signedBytes
 import app.getknit.knit.mesh.protocol.withSig
 import android.util.Log
-import app.getknit.knit.moderation.TextModerator
+import app.getknit.knit.moderation.ScopedTextModerator
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.incomingNotification
 import app.getknit.knit.notifications.mentionNotification
@@ -77,7 +77,7 @@ class MeshManager(
     private val blobs: BlobRepository,
     private val blobStore: MeshBlobStore,
     private val notifier: Notifier,
-    private val textModerator: TextModerator,
+    private val textModeration: ScopedTextModerator,
     private val messageCrypto: MessageCrypto,
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
@@ -196,7 +196,7 @@ class MeshManager(
         recipientId: String? = null,
         group: GroupInfo? = null,
     ): Boolean {
-        if (isTextFlagged(text, "outgoing")) return false
+        if (isTextFlagged(text, "outgoing", isRoom = recipientId == null && group == null)) return false
         val me = identity.nodeId()
         val id = UUID.randomUUID().toString()
         val sentAt = System.currentTimeMillis()
@@ -665,7 +665,9 @@ class MeshManager(
                 attachmentHash = hash,
                 attachmentMime = frame.attachmentMime,
                 attachmentKey = attachmentKey,
-                moderation = if (isTextFlagged(frame.body, "incoming")) {
+                moderation = if (
+                    isTextFlagged(frame.body, "incoming", isRoom = conversationId == Conversations.NEARBY)
+                ) {
                     MessageEntity.MODERATION_TEXT_FLAGGED
                 } else {
                     MessageEntity.MODERATION_NONE
@@ -697,13 +699,15 @@ class MeshManager(
      * Whether [text] is non-blank, content filtering is enabled, and the on-device moderator flags it as
      * abusive. Drives both block-on-send (in [sendChat]) and the stored flag on inbound messages (in
      * [deliverChat]); a flagged inbound message is still stored and merely collapsed in the UI, so a
-     * false positive never silently drops content. [direction] (`"outgoing"`/`"incoming"`) only labels
-     * the debug log; the verdict score/category/decision is logged under [TEXT_MODERATION_TAG], mirroring
-     * the image screen's `ImageModeration` logging — the body itself is never logged (only its length).
+     * false positive never silently drops content. [isRoom] selects the moderation scope: the Nearby
+     * broadcast room gets profanity + toxicity, while DMs and groups get toxicity only (see
+     * [ScopedTextModerator]). [direction] (`"outgoing"`/`"incoming"`) only labels the debug log; the
+     * verdict score/category/decision is logged under [TEXT_MODERATION_TAG], mirroring the image
+     * screen's `ImageModeration` logging — the body itself is never logged (only its length).
      */
-    private suspend fun isTextFlagged(text: String, direction: String): Boolean {
+    private suspend fun isTextFlagged(text: String, direction: String, isRoom: Boolean): Boolean {
         if (text.isBlank() || !settings.contentFilteringEnabled.first()) return false
-        val verdict = textModerator.classify(text)
+        val verdict = textModeration.classify(text, isRoom)
         Log.d(
             TEXT_MODERATION_TAG,
             "$direction text score=${verdict.score} category=${verdict.category} " +
