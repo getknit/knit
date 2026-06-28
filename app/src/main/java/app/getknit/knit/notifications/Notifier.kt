@@ -1,18 +1,20 @@
 package app.getknit.knit.notifications
 
-import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.identity.displayNameFor
 
 /**
- * One inbound message, resolved into the fields a MessagingStyle line needs. [avatarBytes] are the
- * sender's avatar image bytes (read from the encrypted blob store), or null for the letter fallback —
- * notifications can't go through Coil, so the raw bytes are carried and decoded directly.
+ * One inbound message, resolved into the fields a MessagingStyle line needs. [conversationId] is the
+ * thread it belongs to — used both to pick the channel and to suppress/clear notifications for the
+ * conversation currently on screen. [avatarBytes] are the sender's avatar image bytes (read from the
+ * encrypted blob store), or null for the letter fallback — notifications can't go through Coil, so the
+ * raw bytes are carried and decoded directly.
  */
 data class NotifMessage(
     val senderId: String,
     val senderName: String,
     val body: String,
     val sentAt: Long,
+    val conversationId: String,
     val avatarBytes: ByteArray?,
 ) {
     // ByteArray needs content-based equals/hashCode (the generated reference comparison would make two
@@ -24,6 +26,7 @@ data class NotifMessage(
             senderName == other.senderName &&
             body == other.body &&
             sentAt == other.sentAt &&
+            conversationId == other.conversationId &&
             avatarBytes.contentEquals(other.avatarBytes)
     }
 
@@ -32,6 +35,7 @@ data class NotifMessage(
         result = 31 * result + senderName.hashCode()
         result = 31 * result + body.hashCode()
         result = 31 * result + sentAt.hashCode()
+        result = 31 * result + conversationId.hashCode()
         result = 31 * result + (avatarBytes?.contentHashCode() ?: 0)
         return result
     }
@@ -47,23 +51,18 @@ interface Notifier {
     /** Registers the notification channels + groups. Safe to call repeatedly; called once at startup. */
     fun createChannel()
 
-    /** Records [incoming] and (re)posts the notification for the [kind]'s channel. */
-    fun notify(
-        kind: ConversationKind,
-        incoming: NotifMessage,
-        selfId: String,
-        selfName: String,
-        selfAvatarBytes: ByteArray?,
-    )
+    /** Records [incoming] and (re)posts the notification on the channel for its conversation kind. */
+    fun notify(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?)
 
     /** Posts a high-priority "you were mentioned" notification on the separate Mentions channel. */
     fun notifyMention(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?)
 
-    /** Toggles whether the chat is on screen; turning it on cancels + clears the notifications. */
-    fun setChatVisible(visible: Boolean)
-
-    /** Clears all accumulated state and dismisses every message notification (chat opened / read). */
-    fun clear()
+    /**
+     * Records which conversation is on screen (null = none). Messages for the visible conversation are
+     * not notified, and opening one clears its already-posted messages from every channel (the user is
+     * reading them). Other conversations keep notifying normally.
+     */
+    fun setVisibleConversation(conversationId: String?)
 
     /** Drops the accumulated state for the dismissed [notificationId] only (notification swiped away). */
     fun onDismissed(notificationId: Int)
@@ -82,6 +81,7 @@ fun incomingNotification(
     selfId: String,
     peerName: String?,
     peerAvatarBytes: ByteArray?,
+    conversationId: String,
 ): NotifMessage? {
     if (senderId == selfId) return null
     if (body.isBlank()) return null
@@ -90,6 +90,7 @@ fun incomingNotification(
         senderName = displayNameFor(peerName, senderId),
         body = body,
         sentAt = sentAt,
+        conversationId = conversationId,
         avatarBytes = peerAvatarBytes,
     )
 }
@@ -106,4 +107,6 @@ fun mentionNotification(
     selfId: String,
     peerName: String?,
     peerAvatarBytes: ByteArray?,
-): NotifMessage? = incomingNotification(senderId, body, sentAt, selfId, peerName, peerAvatarBytes)
+    conversationId: String,
+): NotifMessage? =
+    incomingNotification(senderId, body, sentAt, selfId, peerName, peerAvatarBytes, conversationId)

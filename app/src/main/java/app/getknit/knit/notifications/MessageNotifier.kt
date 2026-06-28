@@ -14,6 +14,7 @@ import androidx.core.graphics.drawable.IconCompat
 import app.getknit.knit.MainActivity
 import app.getknit.knit.R
 import app.getknit.knit.data.message.ConversationKind
+import app.getknit.knit.data.message.Conversations
 
 /**
  * Builds and posts "new message" notifications, one per context channel (Nearby / Group messages /
@@ -21,15 +22,26 @@ import app.getknit.knit.data.message.ConversationKind
  * re-posts one stable [NotificationCompat.MessagingStyle] notification, so multiple senders render as
  * one grouped conversation (avatar + name per line) and — combined with
  * [NotificationCompat.Builder.setOnlyAlertOnce] — a busy channel updates silently instead of buzzing
- * repeatedly. Channels themselves are owned by [NotificationChannels]. A Koin process singleton;
- * lives as long as MeshService keeps the process alive.
+ * repeatedly. Channels themselves are owned by [NotificationChannels].
+ *
+ * Suppression is per-conversation: while a conversation is on screen ([setVisibleConversation]) its
+ * messages are not notified, and opening it clears its already-posted messages from every channel —
+ * but other conversations keep notifying normally. A Koin process singleton; lives as long as
+ * MeshService keeps the process alive.
  */
 class MessageNotifier(private val context: Context) : Notifier {
 
     private val manager = NotificationManagerCompat.from(context)
 
+    /** The conversation currently on screen, or null when none is. */
     @Volatile
-    private var chatVisible = false
+    private var visibleConversationId: String? = null
+
+    /** Last "me" identity seen on a post, so a clear-driven re-post can rebuild the MessagingStyle. */
+    @Volatile
+    private var lastSelf: Self? = null
+
+    private class Self(val id: String, val name: String, val avatarBytes: ByteArray?)
 
     /** One per channel: its target channel, notification id, conversation title, and accumulated history. */
     private class Bucket(
@@ -64,32 +76,34 @@ class MessageNotifier(private val context: Context) : Notifier {
 
     override fun createChannel() = NotificationChannels.ensure(context)
 
-    override fun notify(
-        kind: ConversationKind,
-        incoming: NotifMessage,
-        selfId: String,
-        selfName: String,
-        selfAvatarBytes: ByteArray?,
-    ) = post(bucketFor(kind), incoming, selfId, selfName, selfAvatarBytes)
+    override fun notify(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?) =
+        post(bucketFor(Conversations.kindFor(incoming.conversationId)), incoming, selfId, selfName, selfAvatarBytes)
 
     override fun notifyMention(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?) =
         post(mentions, incoming, selfId, selfName, selfAvatarBytes)
 
     /** Records [incoming] in [bucket]'s history and (re)posts its grouped MessagingStyle notification. */
     private fun post(bucket: Bucket, incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?) {
-        if (chatVisible) return
+        // The user is already looking at this conversation — nothing to surface.
+        if (incoming.conversationId == visibleConversationId) return
+        val self = Self(selfId, selfName, selfAvatarBytes).also { lastSelf = it }
+        val messages = synchronized(bucket.history) { bucket.history.add(incoming) }
+        buildAndPost(bucket, messages, self)
+    }
+
+    /** Builds a MessagingStyle notification from [messages] and posts it on [bucket]'s id/channel. */
+    private fun buildAndPost(bucket: Bucket, messages: List<NotifMessage>, self: Self) {
         if (!manager.areNotificationsEnabled()) return
-        // Explicit POST_NOTIFICATIONS check (runtime permission on API 33+; auto-granted below).
-        // areNotificationsEnabled() already implies this, but lint's flow analysis needs the
-        // explicit check on the path to manager.notify() below.
+        // Explicit POST_NOTIFICATIONS check (runtime permission on API 33+). areNotificationsEnabled()
+        // already implies it, but lint's flow analysis needs the explicit check on every path to the
+        // manager.notify() call below (post() and setVisibleConversation() both reach it through here).
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
             return
         }
 
-        val messages = synchronized(bucket.history) { bucket.history.add(incoming) }
-        val me = personOf(selfId, selfName.ifBlank { context.getString(R.string.notif_self_name) }, selfAvatarBytes)
+        val me = personOf(self.id, self.name.ifBlank { context.getString(R.string.notif_self_name) }, self.avatarBytes)
         val style = NotificationCompat.MessagingStyle(me)
             .setGroupConversation(true)
             .setConversationTitle(context.getString(bucket.titleRes))
@@ -107,19 +121,26 @@ class MessageNotifier(private val context: Context) : Notifier {
             .setOnlyAlertOnce(true)
             .build()
 
-        // Guarded above; runCatching still defends a permission revoked between the check and here.
+        // Guarded by the caller; runCatching still defends a permission revoked between the check and here.
         runCatching { manager.notify(bucket.notificationId, notification) }
     }
 
-    override fun setChatVisible(visible: Boolean) {
-        chatVisible = visible
-        if (visible) clear()
-    }
-
-    override fun clear() {
+    override fun setVisibleConversation(conversationId: String?) {
+        visibleConversationId = conversationId
+        // Leaving a chat (null) just resumes notifying; opening one clears what it already showed.
+        if (conversationId == null) return
+        val self = lastSelf
+        // A conversation's messages can live in its kind channel and (if it @-mentioned us) in Mentions,
+        // so scan every bucket and re-post the survivors (or cancel the notification when none remain).
         allBuckets.forEach { bucket ->
-            synchronized(bucket.history) { bucket.history.clear() }
-            manager.cancel(bucket.notificationId)
+            val remaining = synchronized(bucket.history) {
+                if (bucket.history.remove(conversationId)) bucket.history.snapshot() else null
+            } ?: return@forEach
+            if (remaining.isEmpty() || self == null) {
+                manager.cancel(bucket.notificationId)
+            } else {
+                buildAndPost(bucket, remaining, self)
+            }
         }
     }
 

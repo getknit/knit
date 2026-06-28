@@ -448,15 +448,15 @@ class ChatViewModel(
         _events.tryEmit(R.string.chat_message_copied)
     }
 
-    /** Chat is on screen: suppress notifications and clear any active one (the user is reading). */
+    /** Chat is on screen: suppress this conversation's notifications and clear any active one (the user is reading). */
     fun onChatForeground() {
         chatForeground.value = true
-        notifier.setChatVisible(true)
+        notifier.setVisibleConversation(conversationId)
     }
 
-    /** Chat left the screen: resume notifying for incoming messages. */
+    /** Chat left the screen: resume notifying for this conversation's incoming messages. */
     fun onChatBackground() {
         chatForeground.value = false
-        notifier.setChatVisible(false)
+        notifier.setVisibleConversation(null)
     }
 }

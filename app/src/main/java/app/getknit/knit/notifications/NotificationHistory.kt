@@ -22,6 +22,9 @@ class NotificationHistory(private val capacity: Int = DEFAULT_CAPACITY) {
 
     fun clear() = items.clear()
 
+    /** Removes every message for [conversationId]; returns true if any were removed. */
+    fun remove(conversationId: String): Boolean = items.removeAll { it.conversationId == conversationId }
+
     private companion object {
         const val DEFAULT_CAPACITY = 8
     }
