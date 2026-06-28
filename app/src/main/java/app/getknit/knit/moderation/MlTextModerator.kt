@@ -39,7 +39,7 @@ class MlTextModerator(
     private val maxLen: Int = DEFAULT_MAX_LEN,
 ) : TextModerator {
 
-    private class BlockRule(val index: Int, val threshold: Float)
+    private class BlockRule(val index: Int, val label: String, val threshold: Float)
     private class Engine(
         val tokenizer: SentencePieceTokenizer,
         val interpreter: Interpreter,
@@ -70,7 +70,7 @@ class MlTextModerator(
                 it.readBytes().decodeToString().lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
             }
             val rules = blockThresholds.mapNotNull { (label, threshold) ->
-                labels.indexOf(label).takeIf { it >= 0 }?.let { BlockRule(it, threshold) }
+                labels.indexOf(label).takeIf { it >= 0 }?.let { BlockRule(it, label, threshold) }
             }
             val bytes = context.assets.open(modelAsset).use { it.readBytes() }
             val model = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).apply {
@@ -104,15 +104,32 @@ class MlTextModerator(
         tflite.runForMultipleInputsOutputs(inputs, mapOf(0 to output))
 
         val scores = output[0]
-        var worst = 0f
+        var blockedRule: BlockRule? = null
+        var blockedScore = 0f
+        var topLabel: String? = null
+        var topScore = 0f
         for (rule in engine.rules) {
             val score = scores.getOrElse(rule.index) { 0f }
-            if (score >= rule.threshold && score > worst) worst = score
+            if (score > topScore) {
+                topScore = score
+                topLabel = rule.label
+            }
+            if (score >= rule.threshold && score > blockedScore) {
+                blockedScore = score
+                blockedRule = rule
+            }
         }
-        return if (worst > 0f) {
-            TextVerdict(allowed = false, category = TextVerdict.Category.TOXICITY, score = worst)
+        return if (blockedRule != null) {
+            TextVerdict(
+                allowed = false,
+                category = TextVerdict.Category.TOXICITY,
+                score = blockedScore,
+                label = blockedRule.label,
+            )
         } else {
-            TextVerdict.ALLOWED
+            // Allowed: report the highest enforced-category score (and its label) even though it stayed
+            // below threshold, so debug logs show how close the text came rather than a flat 0.
+            TextVerdict(allowed = true, score = topScore, label = topLabel)
         }
     }
 

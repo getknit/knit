@@ -194,7 +194,7 @@ class MeshManager(
         recipientId: String? = null,
         group: GroupInfo? = null,
     ): Boolean {
-        if (isTextFlagged(text)) return false
+        if (isTextFlagged(text, "outgoing")) return false
         val me = identity.nodeId()
         val id = UUID.randomUUID().toString()
         val sentAt = System.currentTimeMillis()
@@ -601,7 +601,7 @@ class MeshManager(
                 attachmentHash = hash,
                 attachmentMime = frame.attachmentMime,
                 attachmentKey = attachmentKey,
-                moderation = if (isTextFlagged(frame.body)) {
+                moderation = if (isTextFlagged(frame.body, "incoming")) {
                     MessageEntity.MODERATION_TEXT_FLAGGED
                 } else {
                     MessageEntity.MODERATION_NONE
@@ -633,12 +633,20 @@ class MeshManager(
      * Whether [text] is non-blank, content filtering is enabled, and the on-device moderator flags it as
      * abusive. Drives both block-on-send (in [sendChat]) and the stored flag on inbound messages (in
      * [deliverChat]); a flagged inbound message is still stored and merely collapsed in the UI, so a
-     * false positive never silently drops content.
+     * false positive never silently drops content. [direction] (`"outgoing"`/`"incoming"`) only labels
+     * the debug log; the verdict score/category/decision is logged under [TEXT_MODERATION_TAG], mirroring
+     * the image screen's `ImageModeration` logging — the body itself is never logged (only its length).
      */
-    private suspend fun isTextFlagged(text: String): Boolean =
-        text.isNotBlank() &&
-            settings.contentFilteringEnabled.first() &&
-            textModerator.classify(text).flagged
+    private suspend fun isTextFlagged(text: String, direction: String): Boolean {
+        if (text.isBlank() || !settings.contentFilteringEnabled.first()) return false
+        val verdict = textModerator.classify(text)
+        Log.d(
+            TEXT_MODERATION_TAG,
+            "$direction text score=${verdict.score} category=${verdict.category} " +
+                "label=${verdict.label} flagged=${verdict.flagged} len=${text.length}",
+        )
+        return verdict.flagged
+    }
 
     /**
      * Sends a delivery receipt for [frame]. A DM addressed to us floods its receipt via the router so
@@ -841,6 +849,7 @@ class MeshManager(
 
     private companion object {
         const val TAG = "MeshManager"
+        const val TEXT_MODERATION_TAG = "TextModeration"
         const val METRICS_LOG_INTERVAL_MS = 60_000L
     }
 }
