@@ -1,6 +1,7 @@
 package app.getknit.knit.ui.chatlist
 
 import android.text.format.DateUtils
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.DropdownMenu
@@ -46,10 +48,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -69,8 +73,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
+import app.getknit.knit.ui.invite.ShareKnitDialog
+import app.getknit.knit.ui.invite.SplitApkException
+import app.getknit.knit.ui.invite.launchApkShareChooser
+import app.getknit.knit.ui.invite.prepareKnitApk
 import app.getknit.knit.ui.util.compactTimeAgo
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
+import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -86,6 +95,9 @@ fun ChatListScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var menuOpen by remember { mutableStateOf(false) }
+    var showShareApp by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     // A ticking clock so each row's relative timestamp recomposes as time passes; a bare
     // System.currentTimeMillis() read would freeze at first composition (see rememberCurrentTimeMillis).
     val now by rememberCurrentTimeMillis()
@@ -146,6 +158,14 @@ fun ChatListScreen(
                                     onOpenDonate()
                                 },
                             )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.share_app_menu)) },
+                                leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    showShareApp = true
+                                },
+                            )
                         }
                     }
                 },
@@ -173,6 +193,27 @@ fun ChatListScreen(
                 )
             }
         }
+    }
+
+    if (showShareApp) {
+        ShareKnitDialog(
+            onConfirm = {
+                showShareApp = false
+                scope.launch {
+                    runCatching {
+                        launchApkShareChooser(context, prepareKnitApk(context))
+                    }.onFailure { e ->
+                        val msg = if (e is SplitApkException) {
+                            R.string.share_app_error_split
+                        } else {
+                            R.string.share_app_error
+                        }
+                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                    }
+                }
+            },
+            onDismiss = { showShareApp = false },
+        )
     }
 }
 

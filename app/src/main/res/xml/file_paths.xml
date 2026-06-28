@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider path-config. Exposes only cacheDir/apk/, where a shareable copy of our own APK is
+     staged for the offline "Share Knit app" flow (see ui/invite/ShareApk.kt). -->
+<paths>
+    <cache-path name="apk" path="apk/" />
+</paths>

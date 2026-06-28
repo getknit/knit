@@ -82,6 +82,18 @@
         <receiver
             android:name=".notifications.NotificationDismissReceiver"
             android:exported="false" />
+
+        <!-- Hands our own APK to the system share sheet (Quick Share / Bluetooth) so a user can pass
+             Knit to a nearby phone offline. Outbound only; the receiver's OS installs it. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>
