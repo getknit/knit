@@ -32,6 +32,7 @@ import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileFrame
 import app.getknit.knit.mesh.protocol.ReactionFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
+import app.getknit.knit.mesh.protocol.isStorable
 import app.getknit.knit.mesh.protocol.mention
 import app.getknit.knit.mesh.protocol.signedBytes
 import app.getknit.knit.mesh.protocol.withSig
@@ -65,7 +66,7 @@ import java.util.concurrent.ConcurrentHashMap
  * (provided by Koin) so the bound service and the UI share one instance.
  */
 // The central mesh orchestrator: many small frame handlers, and many collaborators injected by design.
-@Suppress("TooManyFunctions", "LongParameterList")
+@Suppress("TooManyFunctions", "LongParameterList", "LargeClass")
 class MeshManager(
     private val transport: MeshTransport,
     private val messages: MessageRepository,
@@ -76,6 +77,7 @@ class MeshManager(
     private val settings: SettingsStore,
     private val blobs: BlobRepository,
     private val blobStore: MeshBlobStore,
+    private val forwardStore: ForwardStore,
     private val notifier: Notifier,
     private val textModeration: ScopedTextModerator,
     private val messageCrypto: MessageCrypto,
@@ -103,6 +105,14 @@ class MeshManager(
             adoptAdvertisedAvatar(hash)
             screenObtainedAttachment(hash)
         },
+    )
+
+    // Store-and-forward DM custody: carries DMs we originate/relay and re-offers them to neighbors that
+    // join later, so a message reaches a recipient that wasn't connected when it was first flooded.
+    private val forwardSync = ForwardSync(
+        transport = transport,
+        store = forwardStore,
+        authenticate = ::canCarry,
     )
 
     @Volatile
@@ -146,6 +156,7 @@ class MeshManager(
         watchProfileChanges(session)
         watchIncomingFiles(session)
         resumePendingFetches(session)
+        pruneForwardStorePeriodically(session)
         logMetricsPeriodically(session)
     }
 
@@ -163,9 +174,12 @@ class MeshManager(
         sessionScope = null
     }
 
-    /** Triggers an immediate rescan/reconnect (heartbeat alarm, device motion). */
+    /** Triggers an immediate rescan/reconnect (heartbeat alarm, device motion) and sweeps stale carry. */
     fun heal() {
-        if (started) transport.heal()
+        if (!started) return
+        transport.heal()
+        // Piggyback the forward-store TTL sweep on the 15-min heartbeat so it runs while backgrounded.
+        sessionScope?.launch { forwardSync.sweepExpired() }
     }
 
     /** Tears down and re-establishes the transport (e.g. after Bluetooth toggles back on). */
@@ -231,7 +245,12 @@ class MeshManager(
             attachmentMime = attachment?.mime,
             attachmentKey = sealedAttachment?.key,
         )
-        // Persist our own plaintext copy regardless, so the sender always sees their message.
+        val thread = group?.id ?: recipientId.orEmpty()
+        val header = MessageCrypto.header(id, me, sentAt, thread)
+        val sealed = messageCrypto.seal(content.encode(), header, recipientBundles(recipientId, group, me))
+        // Persist our own plaintext copy regardless, so the sender always sees their message. A DM whose
+        // recipient key isn't known yet is flagged pendingKey so handleProfile can retransmit it when the
+        // recipient's profile (carrying the key) finally arrives (groups stay unsent, as before).
         messages.save(
             MessageEntity(
                 id = id, senderId = me, recipientId = recipientId, conversationId = conversationId,
@@ -239,18 +258,16 @@ class MeshManager(
                 mentions = MentionStore.encode(mentions),
                 attachmentHash = sealedAttachment?.hash, attachmentMime = attachment?.mime,
                 attachmentKey = sealedAttachment?.key,
+                pendingKey = sealed == null && group == null,
             ),
         )
-        val thread = group?.id ?: recipientId.orEmpty()
-        val header = MessageCrypto.header(id, me, sentAt, thread)
-        val sealed = messageCrypto.seal(content.encode(), header, recipientBundles(recipientId, group, me))
         if (sealed == null) {
-            // No recipient's key is known yet — nothing can decrypt this. Saved locally above but not
-            // flooded; it stays unsent until a profile (carrying the key) arrives.
-            Log.w(TAG, "no known keys for recipient(s) of chat $id; not sent")
+            // No recipient's key is known yet — nothing can decrypt this. Saved locally above; a DM is
+            // marked pendingKey and retransmitted on key arrival, a group message stays unsent.
+            Log.w(TAG, "no known keys for recipient(s) of chat $id; not flooded yet")
             return true
         }
-        router.originate(
+        originate(
             ChatFrame(
                 id = id, senderId = me, sentAt = sentAt, body = "",
                 recipientId = recipientId, sig = sealed.sig, group = group, enc = sealed.envelope,
@@ -335,7 +352,18 @@ class MeshManager(
         session.launch {
             blobs.deleteOrphans() // reclaim blobs left by attachments staged but never sent
             reactions.deleteOrphans(System.currentTimeMillis()) // reclaim reactions left by deleted messages
+            forwardSync.sweepExpired() // drop carried DMs whose TTL elapsed while we were down
             messages.hashesNeedingFetch().forEach { blobExchange.want(it) }
+        }
+    }
+
+    /** Periodically reclaims expired carried DMs, bounding the forward store between heartbeat sweeps. */
+    private fun pruneForwardStorePeriodically(session: CoroutineScope) {
+        session.launch {
+            while (true) {
+                delay(FORWARD_SWEEP_INTERVAL_MS)
+                forwardSync.sweepExpired()
+            }
         }
     }
 
@@ -347,11 +375,15 @@ class MeshManager(
             transport.neighbors.collect { current ->
                 val currentIds = current.map { it.nodeId }.toSet()
                 val newcomers = current.filter { it.nodeId !in known }
-                (known - currentIds).forEach { sentAvatarHashes.remove(it) } // forget departed peers
+                (known - currentIds).forEach { // forget departed peers
+                    sentAvatarHashes.remove(it)
+                    forwardSync.onNeighborRemoved(it)
+                }
                 known = currentIds
                 newcomers.forEach {
                     pushProfileTo(it)
                     blobExchange.onNeighborAdded(it) // re-ask the new neighbor for blobs we still need
+                    forwardSync.onNeighborAdded(it) // re-offer carried DMs addressed to / routable via it
                 }
             }
         }
@@ -423,7 +455,17 @@ class MeshManager(
     // --- Signed origination ---
 
     /** Floods a locally-built [frame] to the whole mesh, stamping it with our Ed25519 signature. */
-    private suspend fun originateSigned(frame: Frame) = router.originate(sign(frame))
+    /**
+     * Floods [frame] to the mesh and, if it's a carriable DM, captures it in the forward store so we
+     * re-offer it to neighbors that join later. The single origination choke for chat (signed broadcast
+     * and the already-enveloped encrypted DM both pass through here); non-DM frames are simply not stored.
+     */
+    private suspend fun originate(frame: Frame) {
+        router.originate(frame)
+        forwardSync.onSeen(frame, ForwardStore.ORIGIN_SELF)
+    }
+
+    private suspend fun originateSigned(frame: Frame) = originate(sign(frame))
 
     /** Sends a locally-built [frame] to a single [peer] (targeted profile push), signed. */
     private suspend fun sendOwnSigned(frame: Frame, peer: Peer) = router.sendOwn(sign(frame), peer)
@@ -438,14 +480,38 @@ class MeshManager(
         // to is dropped (not delivered locally). We still return normally so MeshRouter relays it
         // onward — other peers verify independently, and we don't become a propagation black hole.
         if (!verifyInbound(frame)) return
+        // Carry a DM we're relaying *toward* its recipient so we can re-offer it to a neighbor that joins
+        // later — store-and-forward. Skip ones addressed to us (we're the destination — deliver, don't
+        // carry) and the broadcast room (no destination). Runs before handleChat returns early on a DM
+        // for another node, and before the router schedules the relay, so the copy is durable pre-flood.
+        if (frame is ChatFrame && frame.isStorable() &&
+            !Conversations.isForMe(frame.recipientId, identity.nodeId())
+        ) {
+            forwardSync.onSeen(frame, ForwardStore.ORIGIN_RELAY)
+        }
         when (frame) {
             is ChatFrame -> handleChat(frame)
             is GroupUpdateFrame -> handleGroupUpdate(frame)
             is ProfileFrame -> handleProfile(frame)
-            is ReceiptFrame -> messages.markReceived(frame.ackId)
+            is ReceiptFrame -> handleReceipt(frame)
             is ReactionFrame -> handleReaction(frame)
             is BlobRequestFrame -> blobExchange.onRequest(frame.hash, fromNodeId)
         }
+    }
+
+    /**
+     * Applies a delivery receipt. [verifyInbound] has already proven it is signed by [ReceiptFrame.senderId];
+     * we additionally require that sender to be the acked message's DM recipient before flipping the tick
+     * or purging the carried copy — otherwise any node could forge a receipt to spoof delivery or evict an
+     * undelivered DM. A broadcast/group message (recipientId null) keeps the legacy best-effort tick, and a
+     * message we don't hold makes [MessageRepository.markReceived] a harmless no-op.
+     */
+    private suspend fun handleReceipt(frame: ReceiptFrame) {
+        val recipientOfAcked = messages.recipientOf(frame.ackId)
+        if (recipientOfAcked == null || recipientOfAcked == frame.senderId) {
+            messages.markReceived(frame.ackId)
+        }
+        forwardSync.onAck(frame)
     }
 
     /**
@@ -597,6 +663,22 @@ class MeshManager(
     }
 
     /**
+     * Whether we should carry a relayed DM for store-and-forward (the [ForwardSync] authenticate hook).
+     * The sender must be pinned and not blocked, and the envelope signature must verify against that
+     * pinned key — so a node never stores unauthenticated junk, only DMs an identified sender actually
+     * authored. A carrier can't read the ciphertext (it isn't a recipient) but can authenticate it
+     * without decrypting (see [MessageCrypto.verifyEnvelope]). Our own sends bypass this check.
+     */
+    private suspend fun canCarry(frame: ChatFrame): Boolean {
+        if (frame.senderId in settings.blockedNodeIds.first()) return false
+        val envelope = frame.enc ?: return false // only encrypted DMs are carried
+        val bundle = peers.find(frame.senderId)?.pubKey?.let { PublicKeyBundle.decode(it) } ?: return false
+        if (NodeId.fromPublicKeyBundle(bundle.encoded) != frame.senderId) return false
+        val header = MessageCrypto.header(frame.id, frame.senderId, frame.sentAt, frame.recipientId.orEmpty())
+        return messageCrypto.verifyEnvelope(bundle, frame.sig, header, envelope)
+    }
+
+    /**
      * Handles a standalone group-metadata update (e.g. a rename): reconciles the stored group, with no
      * message to persist or ack. A member who didn't yet know the group creates it from the roster.
      */
@@ -652,6 +734,10 @@ class MeshManager(
         conversationId: String,
         attachmentKey: String? = null,
     ) {
+        // First-ever delivery? Store-and-forward can re-serve a DM we already hold (after the 10-min
+        // SeenSet window, or after a restart that empties it); notifying again would replay old messages.
+        // The save below is an idempotent upsert, so only the notification needs gating.
+        val isNew = !messages.exists(frame.id)
         val hash = frame.attachmentHash
         messages.save(
             MessageEntity(
@@ -688,11 +774,16 @@ class MeshManager(
         }
         // A message that @-mentions us notifies on the dedicated Mentions channel only; everything else
         // takes the per-context channel (Nearby / Group messages / Direct messages), keyed off conversationId.
-        if (frame.senderId != me && frame.mentions.mention(me)) {
-            notifyMention(frame, conversationId)
-        } else {
-            notifyIncoming(frame, conversationId)
+        // Only on first delivery — a re-served carried DM must not re-notify.
+        if (isNew) {
+            if (frame.senderId != me && frame.mentions.mention(me)) {
+                notifyMention(frame, conversationId)
+            } else {
+                notifyIncoming(frame, conversationId)
+            }
         }
+        // Ack unconditionally (even on a re-delivery): the receipt floods back to the sender and, for a
+        // DM, doubles as the vaccine that purges this message from any carrier that missed the first ack.
         acknowledge(frame, me)
     }
 
@@ -819,6 +910,37 @@ class MeshManager(
             advertisedAvatars[frame.senderId] = advertised
             blobExchange.want(advertised)
         }
+        // The sender's key is now pinned: retransmit any DMs to them that were stuck awaiting it.
+        flushPendingFor(frame.senderId)
+    }
+
+    /**
+     * Retransmits DMs to [recipientId] that were composed before their key was known (saved pendingKey
+     * by [sendChat]). Now that [handleProfile] has pinned the key, each is re-sealed and flooded (and
+     * captured for carry via [originate]); a still-unresolvable or now-blocked recipient is left pending.
+     */
+    private suspend fun flushPendingFor(recipientId: String) {
+        if (recipientId in settings.blockedNodeIds.first()) return
+        val me = identity.nodeId()
+        messages.pendingForRecipient(recipientId).forEach { row ->
+            val content = MessageContent(
+                body = row.body,
+                mentions = MentionStore.decode(row.mentions),
+                attachmentHash = row.attachmentHash,
+                attachmentMime = row.attachmentMime,
+                attachmentKey = row.attachmentKey,
+            )
+            val header = MessageCrypto.header(row.id, me, row.sentAt, recipientId)
+            val sealed = messageCrypto.seal(content.encode(), header, recipientBundles(recipientId, null, me))
+                ?: return@forEach
+            originate(
+                ChatFrame(
+                    id = row.id, senderId = me, sentAt = row.sentAt, body = "",
+                    recipientId = recipientId, sig = sealed.sig, enc = sealed.envelope,
+                ),
+            )
+            messages.clearPending(row.id)
+        }
     }
 
     /**
@@ -920,5 +1042,6 @@ class MeshManager(
         const val TAG = "MeshManager"
         const val TEXT_MODERATION_TAG = "TextModeration"
         const val METRICS_LOG_INTERVAL_MS = 60_000L
+        const val FORWARD_SWEEP_INTERVAL_MS = 10 * 60_000L
     }
 }

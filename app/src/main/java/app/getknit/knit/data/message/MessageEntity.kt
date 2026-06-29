@@ -27,6 +27,11 @@ import kotlinx.serialization.json.Json
  * [moderation] records an on-device content-moderation verdict for the [body] ([MODERATION_NONE] or
  * [MODERATION_TEXT_FLAGGED]). A flagged inbound message is still stored, but the UI collapses it behind
  * a tap-to-reveal rather than dropping it (so a false positive never loses content).
+ *
+ * [pendingKey] marks an outgoing DM that was saved locally but could not yet be sealed/flooded because
+ * the recipient's public key wasn't known (distinct from [received], which can't tell "never sent" from
+ * "sent, awaiting ack"). It stays true until the recipient's profile arrives and `MeshManager` re-seals
+ * and floods it (see `flushPendingFor`). Always false for received messages and broadcast/group sends.
  */
 @Entity(tableName = "messages", indices = [Index("conversationId")])
 data class MessageEntity(
@@ -42,6 +47,7 @@ data class MessageEntity(
     val attachmentMime: String? = null,
     val attachmentKey: String? = null,
     val moderation: Int = MODERATION_NONE,
+    val pendingKey: Boolean = false,
 ) {
     companion object {
         /** [moderation]: text passed (or was not checked). */

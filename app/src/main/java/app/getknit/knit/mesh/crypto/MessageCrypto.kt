@@ -82,6 +82,23 @@ class MessageCrypto(
     }.getOrNull()
 
     /**
+     * Verifies an encrypted message's envelope signature against the sender's published [senderBundle]
+     * **without decrypting** — so a relay/carrier (which is not a recipient and holds no wrapped key)
+     * can still authenticate a DM before storing it for store-and-forward. Mirrors the signature check
+     * [open] performs for the recipient. Returns false on any failure (missing/bad signature) and never
+     * throws, so an inbound carry decision can drop-and-continue without aborting the relay.
+     */
+    fun verifyEnvelope(
+        senderBundle: PublicKeyBundle,
+        sig: String?,
+        header: ByteArray,
+        envelope: EncEnvelope,
+    ): Boolean = runCatching {
+        senderBundle.verifier().verify(b64d(requireNotNull(sig)), signingBytes(header, envelope))
+        true
+    }.getOrDefault(false)
+
+    /**
      * Canonical bytes signed/verified for an envelope. Length-prefixed and with the wrapped keys sorted
      * by recipient id, so both endpoints derive identical bytes regardless of wire ordering.
      */

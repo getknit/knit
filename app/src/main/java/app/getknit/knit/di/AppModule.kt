@@ -16,10 +16,12 @@ import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.crypto.KeystoreSecret
+import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.AndroidDeviceIdSource
 import app.getknit.knit.identity.DeviceIdSource
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.notifications.MessageNotifier
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.ui.share.ShareInbox
@@ -54,10 +56,13 @@ val appModule = module {
     single { get<KnitDatabase>().blobDao() }
     single { get<KnitDatabase>().groupDao() }
     single { get<KnitDatabase>().blobVerdictDao() }
+    single { get<KnitDatabase>().forwardDao() }
     single { MessageRepository(get()) }
     single { PeerRepository(get()) }
     single { ReactionRepository(get()) }
     // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, imageModerator.
     single { BlobRepository(get(), get(), get(), get(), get(), get()) }
     single { GroupRepository(get(), get()) }
+    // Store-and-forward custody for DMs, backed by the encrypted forward_store table.
+    single<ForwardStore> { ForwardRepository(get()) }
 }

@@ -63,11 +63,12 @@ ui/            Compose screens (onboarding, chatlist, chat, contacts, profile) +
                (Koin koinViewModel()) · KnitApp (Navigation Compose)
 mesh/          MeshTransport (interface) · MeshRouter (dedup + jittered/suppressed flood)
                · MeshManager (orchestrator) · MeshService (foreground service) · MeshMetrics
-               · BlobExchange/BlobStore (content-addressed pull) · protocol/Wire.kt (CBOR Frame)
+               · BlobExchange/BlobStore (content-addressed pull) · ForwardSync/ForwardStore
+               (store-and-forward DM custody) · protocol/Wire.kt (CBOR Frame)
 mesh/crypto/   E2E (Tink): MessageCrypto (per-msg seal/open) · PublicKeyBundle · MessageContent
                · AttachmentCrypto · SafetyNumber · VerifyPayload (pure, JVM-testable)
 mesh/nearby/   NearbyTransport — the ONLY place that imports com.google.android.gms.*
-data/          Room (messages, peers, reactions) + repositories · settings/SettingsStore (DataStore)
+data/          Room (messages, peers, reactions, forward_store) + repositories · settings/SettingsStore (DataStore)
                · AvatarStore + AttachmentStore (image files) · message/Conversations (DM keys)
                · crypto/ DatabaseKey + IdentityKeyStore (AndroidKeyStore-wrapped secrets) + KeystoreSecret
 identity/      Identity (stable nodeId + E2E keypair) · NodeId (derive) · DeviceIdSource · Alias
@@ -168,12 +169,44 @@ precedes any pin. Encrypted `chat` keeps its *envelope* signature semantics on `
 `MessageCrypto.open`); `blobreq` stays unsigned. Same no-throw contract applies: `verifyInbound`
 swallows failures and returns false (drop locally) so the router still relays.
 
+## Store-and-forward DM delivery (implemented)
+
+The mesh floods a frame once and forgets it, so a DM whose recipient (or a path to them) isn't connected
+at that instant never arrives. **`ForwardSync` + `ForwardStore`** add delay-tolerant custody for **1:1
+DMs only** (the plaintext broadcast room has no destination; groups have no reliable per-member ack —
+both stay flood-only). A node persists the DMs it originates (`ORIGIN_SELF`) or relays *toward someone
+else* (`ORIGIN_RELAY`, gated `!isForMe` in `onDeliver`) into the encrypted `forward_store` table, and
+when a neighbor joins (`watchNeighbors` newcomers → `ForwardSync.onNeighborAdded`) **unicasts** the
+carried DMs to it (skipping a per-peer-per-session memo + the message's own author). If the newcomer is
+the recipient it delivers + acks; otherwise its normal relay floods the frame onward through the new
+topology — re-served frames re-enter the existing `handleInbound` path, no separate delivery code. A
+stored frame is kept routing-reset (`hops=0`, default `ttl`, signature intact — `signedBytes()` covers
+neither), so it re-floods with a full hop budget when re-served much later.
+
+Bounds (`ForwardRepository`): a per-DM **TTL** sweep (startup + a 10-min loop + the heartbeat `heal()`),
+a **global cap** and **per-sender quota** with relayed-before-our-own eviction. A carrier stores a DM
+only when its sender is **pinned, not blocked, and its envelope signature verifies**
+(`MeshManager.canCarry` → `MessageCrypto.verifyEnvelope`, authenticating without decrypting) — never
+unauthenticated junk. A **delivery receipt from the addressed recipient** purges the carried copy
+mesh-wide and tombstones its id (`ForwardSync.onAck`); because the ack must come *from* the DM's
+cleartext `recipientId`, a forged receipt can't evict an undelivered message — the same recipient check
+now also gates `MeshManager.handleReceipt` → `markReceived` (fixing a prior tick-spoof where any signed
+receipt flipped the ✓✓). Notifications fire only on first delivery (`deliverChat` `isNew` gate) so a
+re-served DM (after the 10-min `SeenSet` window, or a restart that empties it) never replays. The pure
+logic (`ForwardSync`, `ForwardStore`) is JVM-tested with `FakeLoopTransport` (`ForwardSyncTest`).
+
+A complementary **retransmit-on-key-arrival** path closes the most common "it never sent": a DM composed
+before the recipient's key is known is saved `pendingKey` (not flooded), and `handleProfile` re-seals +
+floods it once the key arrives (`flushPendingFor`).
+
 ## Out of scope (deferred, by design)
 
-Alternate transports (Wi-Fi Aware/BLE), **true DM routing** (DMs currently flood — only the addressed
-recipient delivers/acks), and for E2E specifically: **forward secrecy / a ratchet** (static keys only),
-**encrypting** reactions/receipts (they are signed now — see the E2E section — but still flood as
-cleartext metadata), encrypting the broadcast room, and a **key-request/retransmit** protocol for
-messages received before the sender's key is known (so a flooded frame from a not-yet-pinned sender is
-dropped by `verifyInbound`). Don't
-start these without explicit direction.
+Alternate transports (Wi-Fi Aware/BLE); **true DM routing** (DMs still flood — only the addressed
+recipient delivers/acks; store-and-forward now *carries* undelivered DMs, see above, but there is still
+no routing table); extending store-and-forward to **groups / the broadcast room**, or replacing
+push-on-contact with a **digest/pull anti-entropy** exchange (efficiency only); and for E2E specifically:
+**forward secrecy / a ratchet** (static keys only), **encrypting** reactions/receipts (they are signed
+now — see the E2E section — but still flood as cleartext metadata), encrypting the broadcast room, and an
+**inbound key-request** protocol for a frame *received* from a not-yet-pinned sender (still dropped by
+`verifyInbound` — the complementary *outbound* retransmit-on-key-arrival is now implemented, see above).
+Don't start these without explicit direction.

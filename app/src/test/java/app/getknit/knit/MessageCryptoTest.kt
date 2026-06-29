@@ -151,6 +151,33 @@ class MessageCryptoTest {
     }
 
     @Test
+    fun carrierVerifiesEnvelopeWithoutDecrypting() {
+        // A relay/carrier (not a recipient, holds no wrapped key) authenticates a DM before carrying it.
+        val alice = party("alice000")
+        val bob = party("bob00000")
+        val carol = party("carol000") // the carrier
+        val header = MessageCrypto.header("m1", alice.nodeId, 100L, bob.nodeId)
+        val sealed = alice.crypto.seal(content("hi bob"), header, mapOf(bob.nodeId to bob.bundle))!!
+
+        assertTrue(carol.crypto.verifyEnvelope(alice.bundle, sealed.sig, header, sealed.envelope))
+    }
+
+    @Test
+    fun verifyEnvelopeRejectsTamperedEnvelopeWrongSenderAndMissingSig() {
+        val alice = party("alice000")
+        val bob = party("bob00000")
+        val mallory = party("mallory0")
+        val carol = party("carol000")
+        val header = MessageCrypto.header("m2", alice.nodeId, 1L, bob.nodeId)
+        val sealed = alice.crypto.seal(content("hi"), header, mapOf(bob.nodeId to bob.bundle))!!
+
+        val tampered = sealed.envelope.copy(ct = sealed.envelope.ct.dropLast(4) + "AAAA")
+        assertFalse(carol.crypto.verifyEnvelope(alice.bundle, sealed.sig, header, tampered))
+        assertFalse(carol.crypto.verifyEnvelope(mallory.bundle, sealed.sig, header, sealed.envelope))
+        assertFalse(carol.crypto.verifyEnvelope(alice.bundle, null, header, sealed.envelope))
+    }
+
+    @Test
     fun publicKeyBundleEncodeDecodeRoundTrips() {
         val alice = party("alice000")
         val decoded = PublicKeyBundle.decode(alice.bundle.encoded)

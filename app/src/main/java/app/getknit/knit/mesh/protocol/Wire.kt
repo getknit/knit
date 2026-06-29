@@ -227,6 +227,14 @@ data class BlobRequestFrame(
     override val relayable: Boolean get() = false
 }
 
+/**
+ * Whether this frame is carried for store-and-forward delivery (see `app.getknit.knit.mesh.ForwardSync`).
+ * Only a 1:1 DM [ChatFrame] qualifies: it has a single cleartext [ChatFrame.recipientId] to deliver
+ * toward, and (when encrypted) an envelope signature a carrier can authenticate. The plaintext broadcast
+ * room (no destination) and group messages (no reliable per-member ack) are deliberately excluded.
+ */
+fun Frame.isStorable(): Boolean = this is ChatFrame && recipientId != null && group == null
+
 /** Returns a copy of this frame with its hop count incremented (used when relaying). */
 fun Frame.incrementHop(): Frame = when (this) {
     is ChatFrame -> copy(hops = hops + 1)

@@ -9,6 +9,8 @@ import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
 import app.getknit.knit.data.blob.BlobVerdictEntity
+import app.getknit.knit.data.forward.ForwardDao
+import app.getknit.knit.data.forward.ForwardEntity
 import app.getknit.knit.data.group.GroupDao
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.message.MessageDao
@@ -23,7 +25,7 @@ import java.io.File
 @Database(
     entities = [
         MessageEntity::class, PeerEntity::class, ReactionEntity::class, BlobEntity::class,
-        GroupEntity::class, BlobVerdictEntity::class,
+        GroupEntity::class, BlobVerdictEntity::class, ForwardEntity::class,
     ],
     // v2: messages gained attachmentHash/attachmentMime/attachmentPath (destructive migration).
     // v3: messages gained a mentions JSON column (destructive migration; app not yet public).
@@ -40,7 +42,10 @@ import java.io.File
     // v10: nodeId is now the self-certifying hash of the keypair; peers gained a key-independent
     //      `deviceTag` for block-list continuity. Destructive migration; the prior device-derived
     //      nodeIds (and their pins) are invalidated by the identity change anyway.
-    version = 10,
+    // v11: added the forward_store table for store-and-forward DM custody; messages gained a pendingKey
+    //      flag (a DM saved before its recipient's key was known, retransmitted on key arrival).
+    //      Destructive migration; app not yet public.
+    version = 11,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {
@@ -50,6 +55,7 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun blobDao(): BlobDao
     abstract fun groupDao(): GroupDao
     abstract fun blobVerdictDao(): BlobVerdictDao
+    abstract fun forwardDao(): ForwardDao
 
     companion object {
         /**

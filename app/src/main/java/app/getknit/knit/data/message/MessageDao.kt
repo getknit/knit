@@ -5,6 +5,8 @@ import androidx.room.Query
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
+// A data-access interface: one method per query, so the count naturally exceeds detekt's interface limit.
+@Suppress("TooManyFunctions")
 @Dao
 interface MessageDao {
 
@@ -20,8 +22,24 @@ interface MessageDao {
     @Query("SELECT EXISTS(SELECT 1 FROM messages WHERE id = :id)")
     suspend fun exists(id: String): Boolean
 
+    /**
+     * The [MessageEntity.recipientId] of the stored message [id], or null when it's a broadcast/group
+     * message OR no such message is held. Lets [markReceived] reject a receipt whose sender isn't the
+     * message's addressed DM recipient (a forged-ack guard); broadcast/group keep the best-effort tick.
+     */
+    @Query("SELECT recipientId FROM messages WHERE id = :id")
+    suspend fun recipientOf(id: String): String?
+
     @Query("UPDATE messages SET received = 1 WHERE id = :id")
     suspend fun markReceived(id: String)
+
+    /** Outgoing DMs to [recipientId] saved while their key was unknown, awaiting retransmit on key arrival. */
+    @Query("SELECT * FROM messages WHERE recipientId = :recipientId AND pendingKey = 1")
+    suspend fun pendingForRecipient(recipientId: String): List<MessageEntity>
+
+    /** Clears the [MessageEntity.pendingKey] flag once a stuck DM has been sealed and flooded. */
+    @Query("UPDATE messages SET pendingKey = 0 WHERE id = :id")
+    suspend fun clearPending(id: String)
 
     /** Removes a single message locally (used by the long-press "Delete message" action). */
     @Query("DELETE FROM messages WHERE id = :id")
