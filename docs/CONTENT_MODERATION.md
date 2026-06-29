@@ -6,8 +6,10 @@ check runs locally against bundled assets/models; no cloud moderation API (Persp
 SafeSearch, ML Kit cloud) is usable.
 
 > **Mesh threat model.** There is no central moderator. A tampered client can skip any *sender-side*
-> check, so **receiver-side enforcement is the real protection**; sender-side is good-citizen UX. Knit
-> therefore filters on both ends. No on-device moderation is perfect — classifiers have false
+> check, so **receiver-side hiding is the real protection**; sender-side is good-citizen UX. Knit
+> therefore screens on both ends. Receiver-side hiding is user-controlled by the **Content filtering**
+> toggle (default on — see the *User control* note in §1); the recipient can opt out, but a peer can
+> never force unscreened content onto a recipient who leaves it on. No on-device moderation is perfect — classifiers have false
 > positives/negatives, are English-centric, and are evadable; this raises the bar, it is not a
 > guarantee. These adult-content NSFW models are **not** CSAM detection (a separate, regulated domain).
 
@@ -26,7 +28,13 @@ assets/moderation/       profanity_en.txt, nsfw.tflite (LFS), README.md
 ```
 
 User control: a **Content filtering** toggle (default on) in Profile →
-`SettingsStore.contentFilteringEnabled`; every check short-circuits to "allowed" when off.
+`SettingsStore.contentFilteringEnabled`. It means **"hide sensitive content others send to me"** and
+gates **receive-side hiding only** — the inbound text collapse, the inbound image blur, and the
+explicit-avatar rejection (off → adopt the avatar anyway). The toggle does **not** affect what you can
+send: the sender-side "good-citizen" checks (block abusive text, confirm/hard-block explicit images) and
+the Nearby-room protection always run, and the on-device models always screen (so the receive-side
+hide/reveal flips reactively when the toggle changes, without re-scanning). The hide is applied at
+display/decision time, not at screen time, so a verdict is always cached.
 
 ## 2. Text moderation (implemented)
 
@@ -45,9 +53,11 @@ substrings) to avoid the Scunthorpe problem; `allowedTerms` is an allow-list esc
 - **Outbound (block-on-send):** `MeshManager.sendChat()` returns `false` and stores/sends nothing if
   `isTextFlagged(text)`. `ChatViewModel.send()` keeps the draft and toasts; only an accepted message
   clears the input (via the `clearInput` event).
-- **Inbound (flag-on-receive):** `MeshManager.deliverChat()` stores flagged messages with
-  `MessageEntity.moderation = MODERATION_TEXT_FLAGGED` (still stored, never dropped). The chat bubble
-  collapses them behind tap-to-reveal; block-sender reuses the existing long-press menu.
+- **Inbound (flag-on-receive):** `MeshManager.deliverChat()` always classifies and stores flagged
+  messages with `MessageEntity.moderation = MODERATION_TEXT_FLAGGED` (still stored, never dropped). The
+  chat bubble collapses them behind tap-to-reveal **only when the content-filtering toggle is on** —
+  `ChatViewModel` gates `ChatRow.moderationFlagged` on `contentFilteringEnabled`, so toggling it
+  reveals/hides reactively. Block-sender reuses the existing long-press menu.
 
 ## 3. Image moderation (implemented; model required to activate)
 
@@ -74,15 +84,20 @@ identical bytes are scanned once across send/receive):
   - **Public Nearby broadcast room — hard-blocked (no confirmation bypass):** the flag drops the image
     with a toast and GCs the blob, because it broadcasts to everyone in range.
 
-  A clean image stages immediately; GIFs are screened on their first frame; the receiver blurs flagged
-  images regardless.
-- **Inbound (flag-on-receive):** `MeshBlobStore.saveIncoming()` → `BlobRepository.screenImage()` caches
-  a verdict; the chat UI blurs flagged attachments behind tap-to-view (`AttachmentImage`,
-  `ChatRow.attachmentFlagged`). Bytes are stored regardless, so a false positive never drops content.
-- **Avatars:** received avatars are screened in `saveIncoming` / `MeshManager.onAvatarReceived`; a
-  flagged avatar is **not adopted** (the peer falls back to its monogram), on both the direct-push and
-  multi-hop pull paths. (Own-avatar send-screening is intentionally omitted — every recipient screens
-  what it receives, so an explicit own-avatar is dropped on their side.)
+  A clean image stages immediately; GIFs are screened on their first frame. The send-side checks above
+  always run (they are not gated by the toggle).
+- **Inbound (flag-on-receive):** `MeshBlobStore.saveIncoming()` → `BlobRepository.screenImage()` always
+  caches a verdict; the chat UI blurs flagged attachments behind tap-to-view (`AttachmentImage`,
+  `ChatRow.attachmentFlagged`) **only when the content-filtering toggle is on** — `ChatViewModel` gates
+  `ChatRow.attachmentFlagged` on `contentFilteringEnabled` (reactive). Bytes are stored regardless, so a
+  false positive never drops content.
+- **Avatars:** received avatars are always screened in `saveIncoming` / `MeshManager.onAvatarReceived`;
+  a flagged avatar is **not adopted** (the peer falls back to its monogram) **when the content-filtering
+  toggle is on** — `onAvatarReceived` / `adoptAdvertisedAvatar` gate the reject decision on
+  `contentFilteringEnabled`, so with the toggle off the avatar is adopted anyway (an at-arrival decision,
+  not reactive). Applies on both the direct-push and multi-hop pull paths. (Own-avatar send-screening is
+  intentionally omitted — every recipient screens what it receives, so an explicit own-avatar is dropped
+  on their side when they have filtering on.)
 
 ### 3.1 Bundled NSFW model
 
@@ -155,5 +170,8 @@ the packfile keeps clones fast. `.tflite` is also kept uncompressed in the APK
   classifier and hooks need a device + model and are not JVM-testable.
 - **Build/lint:** `./gradlew :app:assembleDebug :app:lintDebug detekt`.
 - **Device (two physical phones — the mesh can't form on an emulator):** send abusive text → blocked
-  with toast; send an explicit image → blocked; receive both from a peer → text collapsed, image
-  blurred with tap-to-view; flagged avatar → peer shows its monogram; toggle off → no filtering.
+  with toast (both toggle states); send an explicit image → confirm-in-DM / hard-block-in-room (both
+  states); receive both from a peer → with the toggle **on** text is collapsed, image blurred with
+  tap-to-view, and a flagged avatar shows the peer's monogram; with the toggle **off** received text and
+  images are shown and a flagged avatar is adopted. Flipping the toggle while a chat is open reveals/hides
+  already-received text and images reactively.

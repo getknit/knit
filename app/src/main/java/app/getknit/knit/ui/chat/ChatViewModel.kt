@@ -181,13 +181,20 @@ class ChatViewModel(
         val blocked: Set<String>,
         val presentHashes: Set<String>,
         val flaggedHashes: Set<String>,
+        val hideSensitiveContent: Boolean,
         val group: GroupEntity?,
     )
 
-    // Present + moderation-flagged blob hashes, combined upstream so the main bundle stays at the typed
-    // 5-flow combine overload.
-    private val blobState = combine(blobs.observeHashes(), blobs.observeFlaggedHashes()) { present, flagged ->
-        present.toSet() to flagged.toSet()
+    // Present + moderation-flagged blob hashes plus the content-filtering setting, combined upstream so
+    // the main bundle stays at the typed 5-flow combine overload. The setting only gates receive-side
+    // *hiding* (the chat blur + toxic-text collapse below), so toggling it reactively reveals/hides
+    // already-received content without re-screening; what you can send is enforced elsewhere regardless.
+    private val blobState = combine(
+        blobs.observeHashes(),
+        blobs.observeFlaggedHashes(),
+        settings.contentFilteringEnabled,
+    ) { present, flagged, hideSensitive ->
+        Triple(present.toSet(), flagged.toSet(), hideSensitive)
     }
 
     private val messagesWithReactions = combine(
@@ -196,8 +203,10 @@ class ChatViewModel(
         settings.blockedNodeIds,
         blobState,
         groups.observeGroup(conversationId),
-    ) { msgs, reacts, blocked, (present, flagged), group ->
-        MessagesBundle(msgs.filter { it.senderId !in blocked }, reacts, blocked, present, flagged, group)
+    ) { msgs, reacts, blocked, (present, flagged, hideSensitive), group ->
+        MessagesBundle(
+            msgs.filter { it.senderId !in blocked }, reacts, blocked, present, flagged, hideSensitive, group,
+        )
     }
 
     val state: StateFlow<ChatUiState> = combine(
@@ -212,6 +221,7 @@ class ChatViewModel(
         val blocked = bundle.blocked
         val presentHashes = bundle.presentHashes
         val flaggedHashes = bundle.flaggedHashes
+        val hideSensitive = bundle.hideSensitiveContent
         val group = bundle.group
         val isGroup = group != null
         val members = group?.let { GroupMembersStore.decode(it.members) }.orEmpty()
@@ -242,12 +252,12 @@ class ChatViewModel(
                 avatarHash = peersByNode[m.senderId]?.avatarHash,
                 sentAt = m.sentAt,
                 received = m.received,
-                moderationFlagged = m.moderation == MessageEntity.MODERATION_TEXT_FLAGGED,
+                moderationFlagged = hideSensitive && m.moderation == MessageEntity.MODERATION_TEXT_FLAGGED,
                 attachmentHash = m.attachmentHash,
                 attachmentMime = m.attachmentMime,
                 attachmentKey = m.attachmentKey,
                 attachmentReady = m.attachmentHash != null && m.attachmentHash in presentHashes,
-                attachmentFlagged = m.attachmentHash != null && m.attachmentHash in flaggedHashes,
+                attachmentFlagged = hideSensitive && m.attachmentHash != null && m.attachmentHash in flaggedHashes,
                 mentions = MentionStore.decode(m.mentions),
                 reactions = tallies,
             )

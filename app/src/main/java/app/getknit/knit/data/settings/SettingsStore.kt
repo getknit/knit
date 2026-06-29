@@ -68,8 +68,12 @@ class SettingsStore(
     val blockedDeviceTags: Flow<Set<String>> = dataStore.data.map { it[KEY_BLOCKED_TAGS] ?: emptySet() }
 
     /**
-     * Whether on-device content moderation (abusive-text + explicit-image filtering) is enabled.
-     * Defaults to on. When off, outbound content is never blocked and inbound content is never flagged.
+     * Whether to hide sensitive content received from others. Defaults to on. Gates receive-side hiding
+     * only — the inbound toxic-text collapse, the inbound explicit-image blur, and the explicit-avatar
+     * rejection (off → adopt anyway). It does **not** affect sending: the sender-side "good-citizen"
+     * checks (block abusive text, confirm/hard-block explicit images) and the on-device screening always
+     * run regardless, so toggling this flips already-received content's blur/collapse reactively without
+     * re-scanning.
      */
     val contentFilteringEnabled: Flow<Boolean> =
         dataStore.data.map { it[KEY_CONTENT_FILTERING] ?: true }

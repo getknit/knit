@@ -151,7 +151,7 @@
     <string name="profile_avatar_crop_desc">Adjust profile photo</string>
     <string name="profile_change_photo_desc">Change profile photo</string>
     <string name="settings_content_filtering_title">Content filtering</string>
-    <string name="settings_content_filtering_subtitle">Block abusive text and explicit images on this device</string>
+    <string name="settings_content_filtering_subtitle">Hide explicit images and abusive messages you receive from others</string>
 
     <!-- Profile details (another peer) -->
     <string name="profile_details_title">Profile</string>

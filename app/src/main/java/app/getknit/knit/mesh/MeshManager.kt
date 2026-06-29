@@ -838,17 +838,19 @@ class MeshManager(
     }
 
     /**
-     * Whether [text] is non-blank, content filtering is enabled, and the on-device moderator flags it as
-     * abusive. Drives both block-on-send (in [sendChat]) and the stored flag on inbound messages (in
-     * [deliverChat]); a flagged inbound message is still stored and merely collapsed in the UI, so a
-     * false positive never silently drops content. [isRoom] selects the moderation scope: the Nearby
+     * Whether [text] is non-blank and the on-device moderator flags it as abusive. Always runs — not
+     * gated by the content-filtering setting, which only governs receive-side hiding. Drives both
+     * block-on-send (in [sendChat], a send-side "good-citizen"/Nearby check) and the stored flag on
+     * inbound messages (in [deliverChat]); a flagged inbound message is still stored and merely collapsed
+     * in the UI (collapse itself gated at display time by the setting, see [ChatViewModel]), so a false
+     * positive never silently drops content. [isRoom] selects the moderation scope: the Nearby
      * broadcast room gets profanity + toxicity, while DMs and groups get toxicity only (see
      * [ScopedTextModerator]). [direction] (`"outgoing"`/`"incoming"`) only labels the debug log; the
      * verdict score/category/decision is logged under [TEXT_MODERATION_TAG], mirroring the image
      * screen's `ImageModeration` logging — the body itself is never logged (only its length).
      */
     private suspend fun isTextFlagged(text: String, direction: String, isRoom: Boolean): Boolean {
-        if (text.isBlank() || !settings.contentFilteringEnabled.first()) return false
+        if (text.isBlank()) return false
         val verdict = textModeration.classify(text, isRoom)
         Log.d(
             TEXT_MODERATION_TAG,
@@ -1002,8 +1004,9 @@ class MeshManager(
     private suspend fun adoptAdvertisedAvatar(hash: String) {
         val owners = advertisedAvatars.entries.filter { it.value == hash }.map { it.key }
         if (owners.isEmpty()) return
-        // A pulled avatar was screened in MeshBlobStore.saveIncoming; don't adopt it if flagged explicit.
-        if (blobs.isImageFlagged(hash)) {
+        // A pulled avatar was screened in MeshBlobStore.saveIncoming; with content filtering on, don't
+        // adopt it if flagged explicit (the setting gates receive-side hiding, so off → adopt anyway).
+        if (settings.contentFilteringEnabled.first() && blobs.isImageFlagged(hash)) {
             owners.forEach { advertisedAvatars.remove(it) }
             blobs.deleteIfUnreferenced(hash)
             return
@@ -1035,8 +1038,9 @@ class MeshManager(
         File(srcPath).delete()
         advertisedAvatars.remove(nodeId) // pushed directly; no need to also pull it
         blobs.screenImage(hash, bytes)
-        // Don't adopt an explicit avatar: leave the peer on its monogram fallback and drop the blob.
-        if (blobs.isImageFlagged(hash)) {
+        // With content filtering on, don't adopt an explicit avatar: leave the peer on its monogram
+        // fallback and drop the blob (the setting gates receive-side hiding, so off → adopt anyway).
+        if (settings.contentFilteringEnabled.first() && blobs.isImageFlagged(hash)) {
             blobs.deleteIfUnreferenced(hash)
             return
         }
@@ -1062,9 +1066,9 @@ class MeshManager(
      * image, caching the verdict under the ciphertext [hash] — the same key the chat UI's flagged set
      * uses, so a flagged attachment blurs behind a tap-to-reveal. A no-op when there's no [key] (a
      * plaintext/broadcast attachment, already screened on arrival in [MeshBlobStore.saveIncoming]), the
-     * blob isn't stored yet, or decryption fails. [BlobRepository.screenImage] is itself gated on the
-     * content-filtering setting and idempotent per hash, so a repeat call (or a prior ciphertext screen)
-     * is harmless.
+     * blob isn't stored yet, or decryption fails. [BlobRepository.screenImage] is idempotent per hash, so
+     * a repeat call (or a prior ciphertext screen) is harmless; it always caches a verdict (the
+     * content-filtering setting gates only the receive-side blur at display time, not the scan).
      */
     private suspend fun screenEncryptedAttachment(hash: String?, key: String?) {
         if (hash == null || key == null) return
