@@ -18,6 +18,8 @@ class DemoTransport(onlineNodeIds: Set<String>) : MeshTransport {
     override val neighbors: StateFlow<Set<Peer>> =
         MutableStateFlow(onlineNodeIds.map { Peer(it) }.toSet())
 
+    override val health: StateFlow<TransportHealth> = MutableStateFlow(TransportHealth.Healthy)
+
     override val inbound: Flow<InboundFrame> = emptyFlow()
     override val incomingFiles: Flow<ReceivedFile> = emptyFlow()
 

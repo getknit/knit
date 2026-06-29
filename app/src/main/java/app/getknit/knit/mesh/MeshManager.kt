@@ -141,6 +141,9 @@ class MeshManager(
     /** Currently-connected direct neighbors, for the contact picker (message someone on connect). */
     val neighbors: StateFlow<Set<Peer>> get() = transport.neighbors
 
+    /** Radio health for the Diagnostics screen (Healthy vs Degraded — e.g. radios seized by Quick Share). */
+    val transportHealth: StateFlow<TransportHealth> get() = transport.health
+
     fun start() {
         if (started) return
         started = true

@@ -17,6 +17,9 @@ class FakeLoopTransport(val nodeId: String) : MeshTransport {
     private val _neighbors = MutableStateFlow<Set<Peer>>(emptySet())
     override val neighbors = _neighbors.asStateFlow()
 
+    // No real radios, so always healthy.
+    override val health = MutableStateFlow(TransportHealth.Healthy).asStateFlow()
+
     private val _inbound = MutableSharedFlow<InboundFrame>(extraBufferCapacity = 256)
     override val inbound = _inbound.asSharedFlow()
 

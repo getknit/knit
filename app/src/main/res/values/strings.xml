@@ -188,6 +188,14 @@
     <string name="diagnostics_metric_suppressed">Suppressed</string>
     <string name="diagnostics_metric_deduped">Deduped</string>
     <string name="diagnostics_metric_bytes_sent">Bytes sent</string>
+    <string name="diagnostics_controls">Mesh controls</string>
+    <string name="diagnostics_status_healthy">Mesh status: Healthy</string>
+    <string name="diagnostics_status_degraded">Mesh status: Degraded</string>
+    <string name="diagnostics_status_degraded_hint">The radio may be in use by another app like Quick Share. Tap Restart mesh if it doesn\'t recover on its own.</string>
+    <string name="diagnostics_restart_mesh">Restart mesh</string>
+    <string name="diagnostics_scan_now">Scan for nearby devices</string>
+    <string name="diagnostics_mesh_restarted">Mesh restarted</string>
+    <string name="diagnostics_scanning">Scanning for nearby devices…</string>
 
     <!-- Generic actions / content descriptions -->
     <string name="action_send">Send</string>

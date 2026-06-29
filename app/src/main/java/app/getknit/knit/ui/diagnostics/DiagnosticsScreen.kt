@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -17,15 +18,23 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.ui.util.compactTimeAgo
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import org.koin.androidx.compose.koinViewModel
@@ -52,9 +62,23 @@ fun DiagnosticsScreen(
     viewModel: DiagnosticsViewModel = koinViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val health by viewModel.health.collectAsStateWithLifecycle()
     // A ticking clock so each node's "profile updated N ago" label recomposes as time passes; a bare
     // System.currentTimeMillis() read would freeze at first composition (see rememberCurrentTimeMillis).
     val now by rememberCurrentTimeMillis()
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    // Resolve the action-feedback strings at composition (lint forbids LocalContext.getString here),
+    // then map the emitted resource id to the matching message.
+    val restartedMsg = stringResource(R.string.diagnostics_mesh_restarted)
+    val scanningMsg = stringResource(R.string.diagnostics_scanning)
+    LaunchedEffect(restartedMsg, scanningMsg) {
+        viewModel.events.collect { resId ->
+            snackbarHostState.showSnackbar(
+                if (resId == R.string.diagnostics_mesh_restarted) restartedMsg else scanningMsg,
+            )
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -70,12 +94,22 @@ fun DiagnosticsScreen(
                 title = { Text(stringResource(R.string.diagnostics_title)) },
             )
         },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(padding),
             contentPadding = PaddingValues(bottom = 24.dp),
         ) {
             item { SelfSection(name = state.myName, nodeId = state.myNodeId) }
+
+            item { SectionHeader(stringResource(R.string.diagnostics_controls)) }
+            item {
+                MeshControlsSection(
+                    health = health,
+                    onRestart = viewModel::restartMesh,
+                    onScan = viewModel::rescan,
+                )
+            }
 
             item { SectionHeader(stringResource(R.string.diagnostics_metrics)) }
             item { MetricsSection(state.metrics) }
@@ -113,6 +147,44 @@ private fun SelfSection(name: String, nodeId: String) {
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun MeshControlsSection(
+    health: TransportHealth,
+    onRestart: () -> Unit,
+    onScan: () -> Unit,
+) {
+    val degraded = health == TransportHealth.Degraded
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Text(
+            text = stringResource(
+                if (degraded) R.string.diagnostics_status_degraded else R.string.diagnostics_status_healthy,
+            ),
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (degraded) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+        )
+        if (degraded) {
+            Text(
+                text = stringResource(R.string.diagnostics_status_degraded_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        Button(onClick = onRestart, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Filled.RestartAlt, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(stringResource(R.string.diagnostics_restart_mesh))
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Filled.Sync, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(stringResource(R.string.diagnostics_scan_now))
+        }
     }
 }
 

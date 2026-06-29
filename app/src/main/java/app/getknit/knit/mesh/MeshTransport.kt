@@ -8,6 +8,14 @@ import java.io.File
 /** A directly-connected mesh neighbor, identified by its node id. */
 data class Peer(val nodeId: String)
 
+/**
+ * Coarse health of the radio layer. [Degraded] means the last advertise/discover attempt failed —
+ * typically because another app (e.g. Quick Share) has seized the Nearby radios — so the device may
+ * be neither discoverable nor able to find peers until the radio is free again. Surfaced to the UI so
+ * "no neighbors because the radio is broken" is distinguishable from "no neighbors nearby".
+ */
+enum class TransportHealth { Healthy, Degraded }
+
 /** A frame received from a neighbor, tagged with the neighbor it arrived from. */
 data class InboundFrame(val frame: Frame, val fromNodeId: String)
 
@@ -38,6 +46,9 @@ interface MeshTransport {
 
     /** Currently-connected neighbors. */
     val neighbors: StateFlow<Set<Peer>>
+
+    /** Coarse radio health (e.g. flips to [TransportHealth.Degraded] when Quick Share seizes the radios). */
+    val health: StateFlow<TransportHealth>
 
     /** Frames received from neighbors (after transport-level delivery, before mesh dedup/relay). */
     val inbound: Flow<InboundFrame>

@@ -6,13 +6,17 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
+import app.getknit.knit.R
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.TransportHealth
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
@@ -44,7 +48,7 @@ data class DiagnosticsUiState(
  */
 class DiagnosticsViewModel(
     peers: PeerRepository,
-    meshManager: MeshManager,
+    private val meshManager: MeshManager,
     identity: Identity,
     settings: SettingsStore,
     private val metrics: MeshMetrics,
@@ -54,6 +58,26 @@ class DiagnosticsViewModel(
 
     init {
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
+    }
+
+    /** Live radio health, shown as a status line above the mesh controls. */
+    val health: StateFlow<TransportHealth> = meshManager.transportHealth
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TransportHealth.Healthy)
+
+    // One-shot snackbar feedback (a string resource id) for the Restart / Scan actions.
+    private val _events = MutableSharedFlow<Int>(extraBufferCapacity = 1)
+    val events = _events.asSharedFlow()
+
+    /** Bounces the Nearby transport (re-advertise, reconnect, clear stale endpoints); keeps the service. */
+    fun restartMesh() {
+        viewModelScope.launch { meshManager.restart() }
+        _events.tryEmit(R.string.diagnostics_mesh_restarted)
+    }
+
+    /** Triggers an immediate rescan / reconnect. */
+    fun rescan() {
+        viewModelScope.launch { meshManager.heal() }
+        _events.tryEmit(R.string.diagnostics_scanning)
     }
 
     private val metricsTicker: Flow<MeshMetrics.Snapshot> = flow {

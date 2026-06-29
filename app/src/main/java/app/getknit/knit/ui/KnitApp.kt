@@ -1,9 +1,13 @@
 package app.getknit.knit.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -13,6 +17,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshService
 import app.getknit.knit.ui.blocked.BlockedUsersScreen
 import app.getknit.knit.ui.chat.ChatScreen
@@ -66,6 +71,21 @@ fun KnitApp(startRoute: String? = null) {
     LaunchedEffect(backStackEntry?.destination?.route) {
         val route = backStackEntry?.destination?.route
         if (!BuildConfig.SEED_DEMO && route != null && route != Routes.ONBOARDING) MeshService.start(context)
+    }
+
+    // Nudge the mesh to rescan / re-advertise whenever the app returns to the foreground, so it
+    // recovers quickly after another app (e.g. Quick Share) briefly seized the Nearby radios. heal()
+    // no-ops when the mesh isn't running, so this is safe before onboarding; demo builds skip it.
+    if (!BuildConfig.SEED_DEMO) {
+        val meshManager = koinInject<MeshManager>()
+        val lifecycleOwner = LocalLifecycleOwner.current
+        DisposableEffect(lifecycleOwner) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) meshManager.heal()
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        }
     }
 
     // A share arrived (cold start: pending at first composition; warm start: onNewIntent flips it).

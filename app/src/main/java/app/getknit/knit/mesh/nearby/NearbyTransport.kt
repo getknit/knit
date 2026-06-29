@@ -12,11 +12,13 @@ import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
+import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.isValidBlobHash
 import app.getknit.knit.mesh.power.PowerPolicy
 import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.mesh.protocol.Frame
 import app.getknit.knit.mesh.protocol.WireCodec
+import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
@@ -85,6 +87,12 @@ class NearbyTransport(
 
     private val _neighbors = MutableStateFlow<Set<Peer>>(emptySet())
     override val neighbors = _neighbors.asStateFlow()
+
+    // Radio health, driven by the discovery loop and advertising callbacks. Goes Degraded when a
+    // start-advertise/discover fails (the symptom of Quick Share seizing the radios) and back to
+    // Healthy once the radio is usable again. Surfaced to the Diagnostics screen.
+    private val _health = MutableStateFlow(TransportHealth.Healthy)
+    override val health = _health.asStateFlow()
 
     private val _inbound = MutableSharedFlow<InboundFrame>(extraBufferCapacity = 256)
     override val inbound = _inbound.asSharedFlow()
@@ -194,24 +202,56 @@ class NearbyTransport(
             .setLowPower(true)
             .build()
         client.startAdvertising(localNodeId, SERVICE_ID, lifecycleCallback, options)
-            .addOnFailureListener { Log.w(TAG, "startAdvertising failed", it) }
+            .addOnSuccessListener { _health.value = TransportHealth.Healthy }
+            .addOnFailureListener { e ->
+                // STATUS_ALREADY_ADVERTISING is benign — we're still advertising, nothing died. Any
+                // other failure means the advertiser isn't up (e.g. the radio is held by Quick Share);
+                // mark degraded so the discovery loop re-asserts it once the radio frees.
+                val already = (e as? ApiException)?.statusCode ==
+                    ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING
+                if (!already) {
+                    _health.value = TransportHealth.Degraded
+                    Log.w(TAG, "startAdvertising failed", e)
+                }
+            }
     }
 
     /**
      * Repeatedly discovers for a window, connects to what it found, then backs off. The scan window
      * and base idle interval come from [PowerPolicy] (screen/charge/battery aware); the idle is
      * further multiplied by the neighbor count so a denser mesh scans less.
+     *
+     * The loop also self-heals the advertiser: a failed `startDiscovery` is the tell-tale of the radio
+     * being seized by another app (e.g. Quick Share), which also silently kills our advertising with no
+     * callback. So we treat a discovery failure as "degraded", and on the first discovery that succeeds
+     * again we re-assert advertising (stop + start) — recovering discoverability without a manual
+     * restart. `heal()` wakes this loop immediately (heartbeat / motion / app resume), so recovery is
+     * prompt once the radio is free.
      */
     private suspend fun discoveryLoop() {
+        var degraded = false
         while (scope.isActive) {
             val duty = PowerPolicy.dutyCycle(powerState.state.value)
             val options = DiscoveryOptions.Builder()
                 .setStrategy(STRATEGY)
                 .setLowPower(true)
                 .build()
-            runCatching {
+            val discovering = runCatching {
                 client.startDiscovery(SERVICE_ID, discoveryCallback, options)
-            }.onFailure { Log.w(TAG, "startDiscovery failed", it) }
+            }.onFailure { Log.w(TAG, "startDiscovery failed", it) }.isSuccess
+
+            if (discovering) {
+                if (degraded) {
+                    // Radio came back. Advertising most likely died while contended (Nearby gives no
+                    // callback for that), so re-assert it cleanly now.
+                    runCatching { client.stopAdvertising() }
+                    startAdvertising()
+                    degraded = false
+                }
+            } else {
+                degraded = true
+            }
+            _health.value = if (degraded) TransportHealth.Degraded else TransportHealth.Healthy
 
             delay(duty.scanWindowMs)
             runCatching { client.stopDiscovery() }

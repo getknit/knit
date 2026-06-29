@@ -8,6 +8,7 @@ import app.getknit.knit.mesh.MeshRouter
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
+import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.DEFAULT_TTL
@@ -35,6 +36,7 @@ class MeshRouterTest {
         val sent = mutableListOf<Pair<Frame, Peer?>>()
         private val _neighbors = MutableStateFlow(neighborIds.map { Peer(it) }.toSet())
         override val neighbors = _neighbors.asStateFlow()
+        override val health = MutableStateFlow(TransportHealth.Healthy).asStateFlow()
         override val inbound = MutableSharedFlow<InboundFrame>().asSharedFlow()
         override val incomingFiles = emptyFlow<ReceivedFile>()
         override fun start() = Unit
