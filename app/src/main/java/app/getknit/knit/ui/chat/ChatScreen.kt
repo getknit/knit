@@ -71,6 +71,7 @@ import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -182,6 +183,7 @@ fun ChatScreen(
     var headerMenuOpen by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var showLeaveConfirm by remember { mutableStateOf(false) }
+    var showEncryptionInfo by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     // Aspect ratios of already-decoded image attachments, keyed by content hash, kept above the
     // LazyColumn so they survive item disposal. Coil doesn't memory-cache animated GIFs, so each one
@@ -327,6 +329,7 @@ fun ChatScreen(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
+                                EncryptionBadge { showEncryptionInfo = true }
                             }
                         }
                         else -> {
@@ -346,6 +349,7 @@ fun ChatScreen(
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.primary,
                                 )
+                                EncryptionBadge { showEncryptionInfo = true }
                                 if (state.verified) {
                                     Spacer(Modifier.width(6.dp))
                                     Icon(
@@ -545,6 +549,40 @@ fun ChatScreen(
             },
         )
     }
+
+    if (showEncryptionInfo) {
+        AlertDialog(
+            onDismissRequest = { showEncryptionInfo = false },
+            icon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+            title = { Text(stringResource(R.string.chat_encryption_info_title)) },
+            text = { Text(stringResource(R.string.chat_encryption_info_body)) },
+            confirmButton = {
+                TextButton(onClick = { showEncryptionInfo = false }) {
+                    Text(stringResource(R.string.action_close))
+                }
+            },
+        )
+    }
+}
+
+/**
+ * Lock badge shown in the header of encrypted threads (1:1 DMs and groups, never the plaintext Nearby
+ * room). Tapping it explains that the conversation is end-to-end encrypted. Neutral-tinted so it reads
+ * distinctly from the green verified shield it sits to the left of.
+ */
+@Composable
+private fun EncryptionBadge(onClick: () -> Unit) {
+    Spacer(Modifier.width(6.dp))
+    Icon(
+        imageVector = Icons.Filled.Lock,
+        contentDescription = stringResource(R.string.chat_encrypted_desc),
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .padding(3.dp)
+            .size(18.dp),
+    )
 }
 
 /** Circular people glyph used as a group's leading visual, mirroring the chat-list room logo style. */

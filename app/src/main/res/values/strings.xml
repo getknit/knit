@@ -159,6 +159,11 @@
     <string name="profile_details_online">Online</string>
     <string name="profile_details_offline">Offline</string>
 
+    <!-- Encryption indicator in the chat header -->
+    <string name="chat_encrypted_desc">Encrypted</string>
+    <string name="chat_encryption_info_title">End-to-end encrypted</string>
+    <string name="chat_encryption_info_body">Messages in this chat are end-to-end encrypted — only the people in this conversation can read them.</string>
+
     <!-- E2E key verification -->
     <string name="verify_section_title">Encryption</string>
     <string name="verify_verified">Verified</string>
