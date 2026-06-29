@@ -183,6 +183,12 @@ fun ChatScreen(
     var showRenameDialog by remember { mutableStateOf(false) }
     var showLeaveConfirm by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    // Aspect ratios of already-decoded image attachments, keyed by content hash, kept above the
+    // LazyColumn so they survive item disposal. Coil doesn't memory-cache animated GIFs, so each one
+    // re-decodes every time it scrolls back into view; without a reserved height the bubble collapses
+    // to zero mid-decode and snaps back, which is what made the list "skip" when flinging past several
+    // GIFs. Caching the ratio lets a re-entering bubble reserve the right height before it decodes.
+    val imageRatios = remember { HashMap<String, Float>() }
     // A ticking clock so each bubble's relative timestamp ("2 min ago") recomposes as time passes;
     // System.currentTimeMillis() alone is not a tracked read and would freeze at first composition.
     val now by rememberCurrentTimeMillis()
@@ -452,6 +458,7 @@ fun ChatScreen(
                             // In a 1:1 DM the peer's name is in the top bar, so don't repeat it on every
                             // received bubble; show it only where multiple people can speak.
                             showSenderName = state.isRoom || state.isGroup,
+                            imageRatios = imageRatios,
                             onImageClick = { fullscreenImage = it },
                             onOpenProfile = onOpenProfile,
                             onReact = viewModel::react,
@@ -612,6 +619,9 @@ private fun MessageBubble(
     row: ChatRow,
     now: Long,
     showSenderName: Boolean,
+    // Hash-keyed aspect-ratio cache shared across the list so a re-entering image reserves its height
+    // before decode (see [ChatScreen]). Defaulted so the @Preview call sites need no extra wiring.
+    imageRatios: MutableMap<String, Float> = HashMap(),
     onImageClick: (FullscreenImage) -> Unit,
     onOpenProfile: (nodeId: String) -> Unit,
     onReact: (messageId: String, emoji: String) -> Unit,
@@ -681,6 +691,7 @@ private fun MessageBubble(
                                 row.attachmentKey,
                                 row.attachmentReady,
                                 row.attachmentFlagged,
+                                imageRatios = imageRatios,
                                 onImageClick = {
                                     onImageClick(
                                         FullscreenImage(it, row.mine, row.senderName, row.sentAt),
@@ -989,6 +1000,12 @@ private fun ReactionChip(reaction: ReactionSummary, onClick: () -> Unit) {
     }
 }
 
+// A picked GIF/sticker can be tiny in pixel terms, so anchor bubble images to a fixed width (not just
+// a max) to scale them up; cap the height for tall images. The slot is reserved at the image's true
+// aspect ratio once known, so re-decoding never changes its height (see [AttachmentImage]).
+private val ATTACHMENT_WIDTH = 220.dp
+private val ATTACHMENT_MAX_HEIGHT = 260.dp
+
 /** The image inside a bubble: the photo/GIF once fetched (tap to open fullscreen), or a loading placeholder. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -998,6 +1015,7 @@ private fun AttachmentImage(
     key: String?,
     ready: Boolean,
     flagged: Boolean,
+    imageRatios: MutableMap<String, Float>,
     onImageClick: (BlobImage) -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -1049,15 +1067,33 @@ private fun AttachmentImage(
                     modifier = Modifier.padding(horizontal = 12.dp),
                 )
             }
-            image != null -> AsyncImage(
-                model = image,
-                contentDescription = stringResource(R.string.chat_attachment_image_desc),
-                contentScale = ContentScale.Fit,
-                // A fixed width (not just a max) makes small images — e.g. Gboard GIFs/stickers, which are
-                // tiny in pixel terms — scale up to fill the bubble instead of rendering at intrinsic size.
-                // ContentScale.Fit preserves aspect ratio; heightIn caps tall images.
-                modifier = Modifier.width(220.dp).heightIn(max = 260.dp),
-            )
+            image != null -> {
+                // Reserve the bubble at the image's true aspect ratio once we've measured it (cached by
+                // hash above the list). Coil doesn't memory-cache animated GIFs, so each re-decodes as it
+                // scrolls back into view; without a reserved height the slot collapses to zero mid-decode
+                // and snaps back, making the list "skip" when flinging past several GIFs. First view (ratio
+                // unknown) falls back to the width-anchored slot and records the ratio on load for next time.
+                val ratio = hash?.let { imageRatios[it] }
+                val sizeModifier = if (ratio != null && ratio > 0f) {
+                    val h = (ATTACHMENT_WIDTH / ratio).coerceAtMost(ATTACHMENT_MAX_HEIGHT)
+                    Modifier.size(width = h * ratio, height = h)
+                } else {
+                    Modifier.width(ATTACHMENT_WIDTH).heightIn(max = ATTACHMENT_MAX_HEIGHT)
+                }
+                AsyncImage(
+                    model = image,
+                    contentDescription = stringResource(R.string.chat_attachment_image_desc),
+                    // ContentScale.Fit preserves aspect ratio; the reserved box already matches it.
+                    contentScale = ContentScale.Fit,
+                    onSuccess = { state ->
+                        val measured = state.result.image
+                        if (hash != null && measured.width > 0 && measured.height > 0) {
+                            imageRatios[hash] = measured.width.toFloat() / measured.height.toFloat()
+                        }
+                    },
+                    modifier = sizeModifier,
+                )
+            }
             else -> Column(
                 modifier = Modifier
                     .size(160.dp)
