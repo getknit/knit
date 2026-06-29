@@ -103,10 +103,10 @@ dependencies {
     implementation(libs.coil.gif) // animated GIF/WebP decoding (keyboard GIFs)
 
     // On-device ML runtimes (no network; models bundled in assets). See the version catalog for why
-    // the bare TFLite interpreter is used rather than MediaPipe/LiteRT. The text toxicity tokenizer is
-    // pure Kotlin (SentencePieceTokenizer, parses tokenizer.json via kotlinx-serialization) — no native
-    // tokenizer lib, so nothing to 16 KB-align and no .so added to the APK.
-    implementation(libs.tensorflow.lite)
+    // the bare classic interpreter (LiteRT 1.4.x) is used rather than MediaPipe or the heavier LiteRT 2.x.
+    // The text toxicity tokenizer is pure Kotlin (SentencePieceTokenizer, parses tokenizer.json via
+    // kotlinx-serialization) — no native tokenizer lib, so nothing to 16 KB-align and no .so added to the APK.
+    implementation(libs.litert)
 
     // E2E encryption (Tink — Java + native, no Kotlin metadata / no Gradle plugin, like SQLCipher)
     implementation(libs.tink.android)
