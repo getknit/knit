@@ -126,6 +126,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
@@ -149,6 +150,8 @@ import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.openUrl
+import app.getknit.knit.ui.preview.KnitPreview
+import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import coil3.compose.AsyncImage
@@ -1398,4 +1401,151 @@ private fun AttachmentPreview(image: BlobImage, onClear: () -> Unit) {
             }
         }
     }
+}
+
+// Previews exercise the text/no-attachment branches; attachment-bearing rows render only a loading
+// placeholder in a preview (Coil/BlobImage has no DB-backed bytes), so sample rows leave attachments null.
+@Preview(showBackground = true)
+@Composable
+fun MessageBubbleTheirsPreview() = KnitPreview {
+    MessageBubble(
+        row = ChatRow(
+            id = "m1",
+            body = "Hey! Are you coming to the trailhead at 8?",
+            mine = false,
+            senderName = "Ada Lovelace",
+            senderNodeId = "node-ada",
+            avatarHash = null,
+            sentAt = PREVIEW_NOW - 5 * 60_000L,
+            received = false,
+            reactions = listOf(ReactionSummary("👍", 2, false), ReactionSummary("❤️", 1, true)),
+        ),
+        now = PREVIEW_NOW,
+        showSenderName = true,
+        onImageClick = {},
+        onOpenProfile = {},
+        onReact = { _, _ -> },
+        onDelete = {},
+        onBlock = {},
+        onCopy = {},
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun MessageBubbleMinePreview() = KnitPreview {
+    MessageBubble(
+        row = ChatRow(
+            id = "m2",
+            body = "On my way — see you in 10 minutes.",
+            mine = true,
+            senderName = "You",
+            senderNodeId = "node-self",
+            avatarHash = null,
+            sentAt = PREVIEW_NOW - 2 * 60_000L,
+            received = true,
+        ),
+        now = PREVIEW_NOW,
+        showSenderName = false,
+        onImageClick = {},
+        onOpenProfile = {},
+        onReact = { _, _ -> },
+        onDelete = {},
+        onBlock = {},
+        onCopy = {},
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun MessageBubbleWithMentionPreview() = KnitPreview {
+    MessageBubble(
+        row = ChatRow(
+            id = "m3",
+            body = "Thanks @Grace! See you both there.",
+            mine = false,
+            senderName = "Ada Lovelace",
+            senderNodeId = "node-ada",
+            avatarHash = null,
+            sentAt = PREVIEW_NOW - 60 * 60_000L,
+            received = false,
+            mentions = listOf(Mention(nodeId = "node-grace", name = "Grace")),
+        ),
+        now = PREVIEW_NOW,
+        showSenderName = true,
+        onImageClick = {},
+        onOpenProfile = {},
+        onReact = { _, _ -> },
+        onDelete = {},
+        onBlock = {},
+        onCopy = {},
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun ReactionRowPreview() = KnitPreview {
+    ReactionRow(
+        reactions = listOf(
+            ReactionSummary("👍", 3, true),
+            ReactionSummary("❤️", 1, false),
+            ReactionSummary("😂", 5, false),
+        ),
+        onToggle = {},
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun ReactionPickerPreview() = KnitPreview {
+    ReactionPicker(
+        onPick = {},
+        onCopy = {},
+        onDelete = {},
+        onBlock = {},
+        onDismiss = {},
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun MessageInputPreview() = KnitPreview {
+    MessageInput(
+        state = rememberTextFieldState("See you at 8"),
+        pendingAttachment = null,
+        candidates = emptyList(),
+        onMentionAdded = {},
+        onAttachClick = {},
+        onClearAttachment = {},
+        onReceiveImage = {},
+        onSend = {},
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun EmptyStatePreview() = KnitPreview {
+    EmptyState()
+}
+
+@Preview(showBackground = true)
+@Composable
+fun SystemNoticePreview() = KnitPreview {
+    SystemNotice(text = "Ada left the chat")
+}
+
+@Preview(showBackground = true)
+@Composable
+fun RenameGroupDialogPreview() = KnitPreview {
+    RenameGroupDialog(
+        currentName = "Hiking Crew",
+        onDismiss = {},
+        onRename = {},
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun GroupGlyphPreview() = KnitPreview {
+    GroupGlyph(size = 48.dp)
 }

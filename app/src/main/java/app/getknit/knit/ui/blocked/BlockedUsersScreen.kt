@@ -28,10 +28,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.preview.KnitPreview
 import org.koin.androidx.compose.koinViewModel
 
 /**
@@ -110,4 +112,13 @@ private fun BlockedUserRow(user: BlockedUser, onUnblock: () -> Unit) {
             Text(stringResource(R.string.blocked_users_unblock))
         }
     }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun BlockedUserRowPreview() = KnitPreview {
+    BlockedUserRow(
+        user = BlockedUser(nodeId = "8f3a2b1c9d4e", displayName = "Spammer", avatarHash = null),
+        onUnblock = {},
+    )
 }

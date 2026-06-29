@@ -35,9 +35,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.ui.openUrl
+import app.getknit.knit.ui.preview.KnitPreview
 
 /**
  * "Support Knit" screen: Knit is funded entirely by tips, so this links out to the maintainer's
@@ -142,4 +144,18 @@ private fun PlatformRow(platform: DonationPlatform, onClick: () -> Unit) {
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun PlatformRowPreview() = KnitPreview {
+    PlatformRow(platform = DONATION_PLATFORMS.first(), onClick = {})
+}
+
+// DonateScreen takes no ViewModel (LocalContext is only touched inside a click lambda), so the whole
+// screen previews directly without extracting a stateless content composable.
+@Preview(showBackground = true)
+@Composable
+fun DonateScreenPreview() = KnitPreview {
+    DonateScreen(onBack = {})
 }

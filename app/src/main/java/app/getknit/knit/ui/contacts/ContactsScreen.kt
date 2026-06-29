@@ -41,10 +41,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.preview.KnitPreview
 import org.koin.androidx.compose.koinViewModel
 
 /**
@@ -178,4 +180,24 @@ private fun ContactRow(contact: Contact, selected: Boolean, onClick: () -> Unit)
             tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun ContactRowSelectedOnlinePreview() = KnitPreview {
+    ContactRow(
+        contact = Contact(nodeId = "node-ada", displayName = "Ada Lovelace", avatarHash = null, online = true),
+        selected = true,
+        onClick = {},
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun ContactRowUnselectedOfflinePreview() = KnitPreview {
+    ContactRow(
+        contact = Contact(nodeId = "node-grace", displayName = "Grace Hopper", avatarHash = null, online = false),
+        selected = false,
+        onClick = {},
+    )
 }

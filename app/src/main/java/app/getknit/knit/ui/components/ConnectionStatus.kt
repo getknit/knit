@@ -14,8 +14,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
+import app.getknit.knit.ui.preview.KnitPreview
 
 /**
  * Mesh connectivity indicator shared by the chat list and chat screens (and future DM threads): a
@@ -56,3 +58,21 @@ private fun connectionLabel(count: Int): String =
     } else {
         pluralStringResource(R.plurals.chat_connection_count, count, count)
     }
+
+@Preview(showBackground = true)
+@Composable
+fun ConnectionStatusRowConnectedPreview() = KnitPreview {
+    ConnectionStatusRow(neighborCount = 5)
+}
+
+@Preview(showBackground = true)
+@Composable
+fun ConnectionStatusRowSinglePreview() = KnitPreview {
+    ConnectionStatusRow(neighborCount = 1)
+}
+
+@Preview(showBackground = true)
+@Composable
+fun ConnectionStatusRowDisconnectedPreview() = KnitPreview {
+    ConnectionStatusRow(neighborCount = 0)
+}

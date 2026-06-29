@@ -42,11 +42,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.ui.preview.KnitPreview
+import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.util.compactTimeAgo
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import org.koin.androidx.compose.koinViewModel
@@ -284,4 +287,93 @@ private fun EmptyLine(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
     )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun SelfSectionPreview() = KnitPreview {
+    // SelfSection emits a header + a Column as siblings; wrap so the preview lays them out vertically
+    // (the real screen places it in a LazyColumn item).
+    Column { SelfSection(name = "Ada Lovelace", nodeId = "8f3a2b1c9d4e5f60") }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun MeshControlsSectionHealthyPreview() = KnitPreview {
+    MeshControlsSection(health = TransportHealth.Healthy, onRestart = {}, onScan = {})
+}
+
+@Preview(showBackground = true)
+@Composable
+fun MeshControlsSectionDegradedPreview() = KnitPreview {
+    MeshControlsSection(health = TransportHealth.Degraded, onRestart = {}, onScan = {})
+}
+
+@Preview(showBackground = true)
+@Composable
+fun MetricsSectionPopulatedPreview() = KnitPreview {
+    MetricsSection(
+        metrics = MeshMetrics.Snapshot(
+            framesOriginated = 128,
+            framesDelivered = 96,
+            framesRelayed = 1_024,
+            framesSuppressed = 12,
+            framesDeduped = 340,
+            bytesSent = 2_500_000,
+        ),
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun MetricsSectionEmptyPreview() = KnitPreview {
+    MetricsSection(
+        metrics = MeshMetrics.Snapshot(
+            framesOriginated = 0,
+            framesDelivered = 0,
+            framesRelayed = 0,
+            framesSuppressed = 0,
+            framesDeduped = 0,
+            bytesSent = 0,
+        ),
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun NodeRowDirectPreview() = KnitPreview {
+    NodeRow(
+        node = NodeInfo(
+            nodeId = "8f3a2b1c9d4e",
+            displayName = "Ada Lovelace",
+            direct = true,
+            profileUpdatedAt = PREVIEW_NOW - 3 * 60_000L,
+        ),
+        now = PREVIEW_NOW,
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun NodeRowRelayPreview() = KnitPreview {
+    NodeRow(
+        node = NodeInfo(
+            nodeId = "a1b2c3d4e5f6",
+            displayName = "Grace Hopper",
+            direct = false,
+            profileUpdatedAt = null,
+        ),
+        now = PREVIEW_NOW,
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun DiagnosticsRowsPreview() = KnitPreview {
+    Column {
+        SectionHeader(text = "Metrics")
+        MetricRow(label = "Frames originated", value = "128")
+        MetricRow(label = "Frames relayed", value = "1,024")
+        EmptyLine(text = "No nodes connected directly.")
+    }
 }

@@ -22,9 +22,12 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.dp
 import app.getknit.knit.ui.image.BlobImage
+import app.getknit.knit.ui.preview.KnitPreview
 import coil3.compose.AsyncImage
 import java.text.BreakIterator
 
@@ -117,4 +120,18 @@ private fun avatarInitial(name: String): String {
     val end = boundary.next()
     val grapheme = if (end == BreakIterator.DONE) trimmed else trimmed.substring(0, end)
     return grapheme.uppercase()
+}
+
+// Previews use the initial-letter fallback (avatarHash = null); a real hash would render through Coil,
+// which has no DB-backed blob bytes in a preview and so would only show a placeholder.
+@Preview(showBackground = true)
+@Composable
+fun AvatarInitialPreview() = KnitPreview {
+    Avatar(avatarHash = null, name = "Ada Lovelace", size = 40.dp)
+}
+
+@Preview(showBackground = true)
+@Composable
+fun AvatarLargeEmojiPreview() = KnitPreview {
+    Avatar(avatarHash = null, name = "🦊 Fox", size = 96.dp)
 }

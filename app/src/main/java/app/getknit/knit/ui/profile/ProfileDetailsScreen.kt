@@ -52,11 +52,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.image.QrCode
+import app.getknit.knit.ui.preview.KnitPreview
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.koin.androidx.compose.koinViewModel
@@ -329,3 +331,47 @@ private fun VerificationSection(
 }
 
 private const val QR_SIZE_PX = 480
+
+@Preview(showBackground = true)
+@Composable
+fun VerificationSectionVerifiedPreview() = KnitPreview {
+    VerificationSection(
+        state = ProfileDetailsUiState(
+            nodeId = "8f3a2b1c9d4e",
+            displayName = "Ada Lovelace",
+            status = "Hiking this weekend",
+            avatarHash = null,
+            online = true,
+            isBlocked = false,
+            hasKey = true,
+            verified = true,
+            safetyNumber = "12345 67890 12345 67890 12345 67890",
+            myQrPayload = "knit:verify:ada",
+        ),
+        onScan = {},
+        onMarkVerified = {},
+        onClearVerification = {},
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun VerificationSectionUnverifiedPreview() = KnitPreview {
+    VerificationSection(
+        state = ProfileDetailsUiState(
+            nodeId = "a1b2c3d4e5f6",
+            displayName = "Grace Hopper",
+            status = "",
+            avatarHash = null,
+            online = false,
+            isBlocked = false,
+            hasKey = true,
+            verified = false,
+            safetyNumber = "98765 43210 98765 43210 98765 43210",
+            myQrPayload = "knit:verify:grace",
+        ),
+        onScan = {},
+        onMarkVerified = {},
+        onClearVerification = {},
+    )
+}

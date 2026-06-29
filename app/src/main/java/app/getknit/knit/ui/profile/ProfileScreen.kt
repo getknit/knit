@@ -39,6 +39,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -49,6 +50,7 @@ import app.getknit.knit.TextLimits
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.isIgnoringBatteryOptimizations
+import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.requestIgnoreBatteryOptimizations
 import org.koin.androidx.compose.koinViewModel
 
@@ -228,5 +230,23 @@ private fun BatteryOptimizationRow() {
                 Text(stringResource(R.string.battery_allow_button))
             }
         }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun CharCounterPreview() = KnitPreview {
+    Column {
+        CharCounter(length = 12, limit = 40)
+        CharCounter(length = 40, limit = 40)
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun ContentFilteringRowPreview() = KnitPreview {
+    Column {
+        ContentFilteringRow(enabled = true, onToggle = {})
+        ContentFilteringRow(enabled = false, onToggle = {})
     }
 }

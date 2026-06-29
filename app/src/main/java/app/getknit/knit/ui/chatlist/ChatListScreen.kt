@@ -68,6 +68,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
@@ -77,6 +78,8 @@ import app.getknit.knit.ui.invite.ShareKnitDialog
 import app.getknit.knit.ui.invite.SplitApkException
 import app.getknit.knit.ui.invite.launchApkShareChooser
 import app.getknit.knit.ui.invite.prepareKnitApk
+import app.getknit.knit.ui.preview.KnitPreview
+import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.util.compactTimeAgo
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import kotlinx.coroutines.launch
@@ -394,4 +397,61 @@ private fun CircleGlyph(size: androidx.compose.ui.unit.Dp, content: @Composable 
     ) {
         content()
     }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun ConversationListItemDmPreview() = KnitPreview {
+    ConversationListItem(
+        row = ConversationRow(
+            id = "dm-1",
+            title = "Ada Lovelace",
+            avatarHash = null,
+            isRoom = false,
+            isGroup = false,
+            lastPreview = "See you at the meetup tonight!",
+            lastMessageAt = PREVIEW_NOW - 5 * 60_000L,
+            unreadCount = 2,
+        ),
+        now = PREVIEW_NOW,
+        onClick = {},
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun ConversationListItemGroupPreview() = KnitPreview {
+    ConversationListItem(
+        row = ConversationRow(
+            id = "group-1",
+            title = "Hiking Crew",
+            avatarHash = null,
+            isRoom = false,
+            isGroup = true,
+            lastPreview = "Lena: bringing the trail map",
+            lastMessageAt = PREVIEW_NOW - 60 * 60_000L,
+            unreadCount = 0,
+        ),
+        now = PREVIEW_NOW,
+        onClick = {},
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
+fun ConversationListItemRoomPreview() = KnitPreview {
+    ConversationListItem(
+        row = ConversationRow(
+            id = "room",
+            title = "Nearby",
+            avatarHash = null,
+            isRoom = true,
+            isGroup = false,
+            lastPreview = null,
+            lastMessageAt = null,
+            unreadCount = 0,
+        ),
+        now = PREVIEW_NOW,
+        onClick = {},
+    )
 }
