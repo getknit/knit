@@ -11,6 +11,7 @@ import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.Frame
+import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.ReactionFrame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
 import app.getknit.knit.mesh.protocol.isStorable
@@ -73,14 +74,24 @@ class ForwardSyncTest {
     private fun dm(id: String, sender: String, recipient: String) =
         ChatFrame(id = id, senderId = sender, sentAt = 1L, body = "", recipientId = recipient)
 
+    private fun groupMsg(id: String, sender: String, members: List<String>) =
+        ChatFrame(
+            id = id,
+            senderId = sender,
+            sentAt = 1L,
+            body = "",
+            group = GroupInfo(id = "g-test", members = members, createdBy = members.first()),
+        )
+
     private fun ack(messageId: String, by: String) =
         ReceiptFrame(id = "ack-$messageId-$by", senderId = by, ackId = messageId)
 
     // --- pure predicate ---
 
     @Test
-    fun onlyDmChatFramesAreStorable() {
+    fun dmAndGroupChatFramesAreStorableButBroadcastIsNot() {
         assertTrue(dm("m", "a", "b").isStorable())
+        assertTrue(groupMsg("g", "a", listOf("a", "b", "c")).isStorable())
         assertFalse(ChatFrame(id = "r", senderId = "a", sentAt = 1L, body = "hi").isStorable()) // room
         assertFalse(ReceiptFrame(id = "x", senderId = "a", ackId = "m").isStorable())
         assertFalse(ReactionFrame(id = "x", senderId = "a", messageId = "m", sentAt = 1L).isStorable())
@@ -112,15 +123,17 @@ class ForwardSyncTest {
     }
 
     @Test
-    fun broadcastAndGroupFramesAreNotCarried() = runTest {
+    fun broadcastAndNonChatFramesAreNotCarriedButGroupMessagesAre() = runTest {
         val store = FakeForwardStore()
         val sync = ForwardSync(RecordingTransport(), store, clock = { 0L })
 
         sync.onSeen(ChatFrame(id = "r", senderId = "a", sentAt = 1L, body = "hi"), ForwardStore.ORIGIN_RELAY)
         sync.onSeen(ReceiptFrame(id = "x", senderId = "a", ackId = "m"), ForwardStore.ORIGIN_RELAY)
+        sync.onSeen(groupMsg("g1", "a", listOf("a", "b", "c")), ForwardStore.ORIGIN_RELAY)
 
-        assertFalse(store.has("r"))
-        assertFalse(store.has("x"))
+        assertFalse("the plaintext broadcast room has no destination", store.has("r"))
+        assertFalse("a receipt isn't a carried message", store.has("x"))
+        assertTrue("a group message is carried for offline members", store.has("g1"))
     }
 
     // --- vaccine purge ---
@@ -151,6 +164,21 @@ class ForwardSyncTest {
         assertTrue("forged receipt cannot evict an undelivered DM", store.has("m1"))
     }
 
+    @Test
+    fun groupMessageIsNotVaccinePurgedByAReceipt() = runTest {
+        // A group has no single recipient, so the recipient-keyed purge can't apply: a group message is
+        // bounded by TTL/caps only. Even a receipt from a real member must not evict it (other members
+        // may still be offline).
+        val store = FakeForwardStore()
+        val sync = ForwardSync(RecordingTransport(), store, clock = { 0L })
+        sync.onSeen(groupMsg("g1", sender = "a", members = listOf("a", "b", "c")), ForwardStore.ORIGIN_RELAY)
+        assertTrue(store.has("g1"))
+
+        sync.onAck(ack("g1", by = "b")) // a member, but a group frame has no recipientId to match
+
+        assertTrue("a group message is never vaccine-purged", store.has("g1"))
+    }
+
     // --- push on contact ---
 
     @Test
@@ -178,6 +206,19 @@ class ForwardSyncTest {
         sync.onNeighborAdded(Peer("a")) // "a" authored m1
 
         assertTrue("a should not be handed back its own message", transport.sent.isEmpty())
+    }
+
+    @Test
+    fun memberTargetedPushOnlyOffersAGroupMessageToRosterMembers() = runTest {
+        val transport = RecordingTransport()
+        val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
+        sync.onSeen(groupMsg("g1", sender = "a", members = listOf("a", "b", "c")), ForwardStore.ORIGIN_SELF)
+
+        sync.onNeighborAdded(Peer("x")) // not in the roster — must not be sprayed group traffic
+        assertTrue("a non-member is never offered a group message", transport.sent.isEmpty())
+
+        sync.onNeighborAdded(Peer("c")) // a roster member — offered once
+        assertEquals(listOf("g1"), transport.sent.map { it.first.id })
     }
 
     // --- TTL sweep ---
@@ -211,15 +252,25 @@ class ForwardSyncTest {
         private val router = MeshRouter(transport, scope, jitter = { 0L }) { frame, _ -> onDeliver(frame) }
 
         private suspend fun onDeliver(frame: Frame) {
-            // Carry only DMs we're relaying toward someone else, not ones addressed to us (mirrors MeshManager).
-            if (frame is ChatFrame && frame.isStorable() && frame.recipientId != id) {
-                sync.onSeen(frame, ForwardStore.ORIGIN_RELAY)
+            // Carry what we're relaying onward: a DM toward someone else, a group message for other
+            // members (whether or not we're a member ourselves) — mirrors MeshManager's capture gate.
+            if (frame is ChatFrame && frame.isStorable()) {
+                val carry = frame.group != null || frame.recipientId != id
+                if (carry) sync.onSeen(frame, ForwardStore.ORIGIN_RELAY)
             }
             when (frame) {
-                is ChatFrame -> if (frame.recipientId == id) {
-                    if (seenDelivered.add(frame.id)) notified += frame.id // first-delivery notify gate
-                    delivered += frame.id
-                    router.originate(ReceiptFrame(id = "ack-${frame.id}-$id", senderId = id, ackId = frame.id))
+                is ChatFrame -> {
+                    val members = frame.group?.members
+                    val forMe = if (members != null) id in members else frame.recipientId == id
+                    if (forMe) {
+                        if (seenDelivered.add(frame.id)) notified += frame.id // first-delivery notify gate
+                        delivered += frame.id
+                        // Only a DM acks (a group has no single-recipient receipt).
+                        if (members == null) {
+                            val ack = ReceiptFrame(id = "ack-${frame.id}-$id", senderId = id, ackId = frame.id)
+                            router.originate(ack)
+                        }
+                    }
                 }
                 is ReceiptFrame -> sync.onAck(frame)
                 else -> Unit
@@ -265,5 +316,31 @@ class ForwardSyncTest {
         assertEquals("c receives the carried DM exactly once", listOf("dm1"), c.delivered)
         assertEquals("and notifies once", listOf("dm1"), c.notified)
         assertFalse("c's ack vaccinates the carrier b", b.store.has("dm1"))
+    }
+
+    @Test
+    fun groupMessageReachesMemberThatConnectsAfterTheFloodViaACarrier() = runTest(UnconfinedTestDispatcher()) {
+        // Group {a, b, c}. a and c are never connected at the same time; member b carries the message and
+        // re-offers it to c when c finally appears — the temporal-gap delivery, now for a group message.
+        val members = listOf("a", "b", "c")
+        val a = Node("a", backgroundScope)
+        val b = Node("b", backgroundScope)
+        a.transport.connect(b.transport)
+        a.start(backgroundScope); b.start(backgroundScope)
+
+        a.send(groupMsg("g1", sender = "a", members = members))
+        advanceUntilIdle()
+
+        assertTrue("b carries the group message while c is away", b.store.has("g1"))
+
+        // c appears later, connecting only to b (a is gone).
+        val c = Node("c", backgroundScope)
+        c.start(backgroundScope)
+        b.transport.connect(c.transport)
+        advanceUntilIdle()
+
+        assertEquals("c receives the carried group message exactly once", listOf("g1"), c.delivered)
+        assertEquals("and notifies once", listOf("g1"), c.notified)
+        assertTrue("groups aren't vaccine-purged — b keeps carrying it until TTL", b.store.has("g1"))
     }
 }

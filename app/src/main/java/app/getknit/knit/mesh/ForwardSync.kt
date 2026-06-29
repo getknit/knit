@@ -4,15 +4,22 @@ import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.DEFAULT_TTL
 import app.getknit.knit.mesh.protocol.Frame
 import app.getknit.knit.mesh.protocol.ReceiptFrame
+import app.getknit.knit.mesh.protocol.isStorable
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Store-and-forward custody for 1:1 DMs. The mesh floods a frame once and drops it, so a DM whose
- * recipient (or a path to them) isn't connected at that instant never arrives. [ForwardSync] persists
- * the DMs a node originates or relays ([onSeen]) and, when a neighbor joins ([onNeighborAdded]),
- * unicasts the carried DMs to it: if it's the recipient it delivers + acks; otherwise its normal relay
- * floods the frame onward through the new topology. A delivery receipt from the addressed recipient
- * purges the carried copy mesh-wide ([onAck]); a TTL/cap sweep bounds the rest.
+ * Store-and-forward custody for addressed chat messages — 1:1 DMs and group messages. The mesh floods a
+ * frame once and drops it, so a message whose recipient (or a path to them) isn't connected at that
+ * instant never arrives. [ForwardSync] persists the messages a node originates or relays ([onSeen]) and,
+ * when a neighbor joins ([onNeighborAdded]), unicasts the carried ones to it:
+ *
+ * - **DMs** are offered to any newcomer: if it's the recipient it delivers + acks; otherwise its normal
+ *   relay floods the frame onward through the new topology. A delivery receipt from the addressed
+ *   recipient purges the carried copy mesh-wide ([onAck]).
+ * - **Group messages** are offered only to a roster member (the member set rides in cleartext on the
+ *   frame); once any member receives it, the normal flood re-distributes it to the rest. A group has no
+ *   single recipient and no reliable per-member ack, so it is never vaccine-purged — the TTL/cap sweep
+ *   is its only bound.
  *
  * Pure (no Android/Room): the transport and store are injected and authentication is a lambda, so the
  * whole flow is unit-testable with [FakeLoopTransport] and a fake [ForwardStore].
@@ -34,23 +41,31 @@ class ForwardSync(
     private val acked = SeenSet(ttlMillis = ACK_TOMBSTONE_TTL_MS, clock = clock)
 
     /**
-     * Capture a DM we originated ([ForwardStore.ORIGIN_SELF]) or relayed ([ForwardStore.ORIGIN_RELAY])
-     * into the carry store. No-op for anything but a 1:1 DM, an already-carried/already-acked id, or a
-     * relayed frame that fails authentication. The stored copy has its routing reset so it re-floods
-     * with a full hop budget when later re-served (the signature covers neither ttl nor hops).
+     * Capture an addressed chat frame we originated ([ForwardStore.ORIGIN_SELF]) or relayed
+     * ([ForwardStore.ORIGIN_RELAY]) into the carry store. No-op for the broadcast room (not [isStorable]),
+     * an already-carried/already-acked id, or a relayed frame that fails authentication. The stored copy
+     * has its routing reset so it re-floods with a full hop budget when later re-served (the signature
+     * covers neither ttl nor hops).
      */
     suspend fun onSeen(frame: Frame, origin: Int) {
-        if (frame !is ChatFrame || frame.recipientId == null || frame.group != null) return
+        if (frame !is ChatFrame || !frame.isStorable()) return
         if (acked.contains(frame.id) || store.has(frame.id)) return
         if (origin == ForwardStore.ORIGIN_RELAY && !authenticate(frame)) return
         store.store(frame.copy(ttl = DEFAULT_TTL, hops = 0), origin, clock())
     }
 
-    /** A neighbor joined: unicast it every carried DM not yet offered this connection (skipping its own). */
+    /**
+     * A neighbor joined: unicast it every carried message not yet offered this connection (skipping ones
+     * it authored). A DM is offered to any newcomer (the recipient delivers, anyone else relays it
+     * onward); a group message is offered only to a roster member — once any member has it, the normal
+     * flood re-distributes it to the rest, so there's no need to spray it at non-members.
+     */
     suspend fun onNeighborAdded(peer: Peer) {
         val offered = offeredTo.getOrPut(peer.nodeId) { ConcurrentHashMap.newKeySet() }
         store.liveFrames(clock()).forEach { frame ->
-            if (frame.senderId == peer.nodeId) return@forEach // don't hand a DM back to its author
+            if (frame.senderId == peer.nodeId) return@forEach // don't hand a message back to its author
+            val members = frame.group?.members
+            if (members != null && peer.nodeId !in members) return@forEach // group: members only
             if (offered.add(frame.id)) transport.send(frame, peer)
         }
     }

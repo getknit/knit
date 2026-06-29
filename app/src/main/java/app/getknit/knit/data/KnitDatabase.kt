@@ -45,7 +45,10 @@ import java.io.File
     // v11: added the forward_store table for store-and-forward DM custody; messages gained a pendingKey
     //      flag (a DM saved before its recipient's key was known, retransmitted on key arrival).
     //      Destructive migration; app not yet public.
-    version = 11,
+    // v12: forward_store now also carries group chat frames — recipientId became nullable and a
+    //      nullable groupId column was added (exactly one is set; the broadcast room is never carried).
+    //      Destructive migration; app not yet public.
+    version = 12,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

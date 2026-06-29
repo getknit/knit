@@ -163,6 +163,27 @@ class MessageCryptoTest {
     }
 
     @Test
+    fun carrierVerifiesGroupEnvelopeWithGroupThreadHeader() {
+        // A group message's header thread is the group id (not a recipientId), so a carrier must build
+        // the verify header from the group id to authenticate it — this guards MeshManager.canCarry.
+        val alice = party("alice000")
+        val bob = party("bob00000")
+        val carol = party("carol000")
+        val dave = party("dave0000") // the carrier — not a member, holds no wrapped key
+        val header = MessageCrypto.header("g1", alice.nodeId, 5L, "g-team")
+        val sealed = alice.crypto.seal(
+            content("hi team"),
+            header,
+            mapOf(bob.nodeId to bob.bundle, carol.nodeId to carol.bundle),
+        )!!
+
+        assertTrue(dave.crypto.verifyEnvelope(alice.bundle, sealed.sig, header, sealed.envelope))
+        // The old DM-style header (recipientId.orEmpty() == "" for a group) builds the wrong thread and fails.
+        val wrongHeader = MessageCrypto.header("g1", alice.nodeId, 5L, "")
+        assertFalse(dave.crypto.verifyEnvelope(alice.bundle, sealed.sig, wrongHeader, sealed.envelope))
+    }
+
+    @Test
     fun verifyEnvelopeRejectsTamperedEnvelopeWrongSenderAndMissingSig() {
         val alice = party("alice000")
         val bob = party("bob00000")

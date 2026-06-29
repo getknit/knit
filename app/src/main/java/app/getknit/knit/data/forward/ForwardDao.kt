@@ -36,6 +36,10 @@ interface ForwardDao {
     @Query("SELECT COUNT(*) FROM forward_store WHERE senderId = :senderId")
     suspend fun countBySender(senderId: String): Int
 
+    /** How many carried frames a single [groupId] accounts for — enforces the per-group quota. */
+    @Query("SELECT COUNT(*) FROM forward_store WHERE groupId = :groupId")
+    suspend fun countByGroup(groupId: String): Int
+
     /**
      * Drops the [n] lowest-priority rows under cap pressure: relayed frames (origin 0) before our own
      * (origin 1), oldest first within each. Keeps this device's own outbox alive longest.

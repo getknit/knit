@@ -480,14 +480,15 @@ class MeshManager(
         // to is dropped (not delivered locally). We still return normally so MeshRouter relays it
         // onward — other peers verify independently, and we don't become a propagation black hole.
         if (!verifyInbound(frame)) return
-        // Carry a DM we're relaying *toward* its recipient so we can re-offer it to a neighbor that joins
-        // later — store-and-forward. Skip ones addressed to us (we're the destination — deliver, don't
-        // carry) and the broadcast room (no destination). Runs before handleChat returns early on a DM
-        // for another node, and before the router schedules the relay, so the copy is durable pre-flood.
-        if (frame is ChatFrame && frame.isStorable() &&
-            !Conversations.isForMe(frame.recipientId, identity.nodeId())
-        ) {
-            forwardSync.onSeen(frame, ForwardStore.ORIGIN_RELAY)
+        // Carry an addressed chat frame we're relaying so we can re-offer it to a neighbor that joins
+        // later — store-and-forward. A DM is carried only when relaying it *toward* someone else (skip
+        // ones addressed to us — we're the destination, so deliver, don't carry); a group message is
+        // always carried, for other members who may be offline, whether or not we're a member ourselves.
+        // The broadcast room (no destination) is excluded by isStorable(). Runs before handleChat returns
+        // early and before the router schedules the relay, so the copy is durable pre-flood.
+        if (frame is ChatFrame && frame.isStorable()) {
+            val carry = frame.group != null || !Conversations.isForMe(frame.recipientId, identity.nodeId())
+            if (carry) forwardSync.onSeen(frame, ForwardStore.ORIGIN_RELAY)
         }
         when (frame) {
             is ChatFrame -> handleChat(frame)
@@ -663,18 +664,21 @@ class MeshManager(
     }
 
     /**
-     * Whether we should carry a relayed DM for store-and-forward (the [ForwardSync] authenticate hook).
-     * The sender must be pinned and not blocked, and the envelope signature must verify against that
-     * pinned key — so a node never stores unauthenticated junk, only DMs an identified sender actually
-     * authored. A carrier can't read the ciphertext (it isn't a recipient) but can authenticate it
-     * without decrypting (see [MessageCrypto.verifyEnvelope]). Our own sends bypass this check.
+     * Whether we should carry a relayed DM or group message for store-and-forward (the [ForwardSync]
+     * authenticate hook). The sender must be pinned and not blocked, and the envelope signature must
+     * verify against that pinned key — so a node never stores unauthenticated junk, only messages an
+     * identified sender actually authored. A carrier can't read the ciphertext (it isn't a recipient)
+     * but can authenticate it without decrypting (see [MessageCrypto.verifyEnvelope]). The verify header
+     * threads the group id for a group message and the recipient id for a DM, matching what the sender
+     * signed (see [decrypt]). Our own sends bypass this check.
      */
     private suspend fun canCarry(frame: ChatFrame): Boolean {
         if (frame.senderId in settings.blockedNodeIds.first()) return false
-        val envelope = frame.enc ?: return false // only encrypted DMs are carried
+        val envelope = frame.enc ?: return false // only encrypted DM/group messages are carried
         val bundle = peers.find(frame.senderId)?.pubKey?.let { PublicKeyBundle.decode(it) } ?: return false
         if (NodeId.fromPublicKeyBundle(bundle.encoded) != frame.senderId) return false
-        val header = MessageCrypto.header(frame.id, frame.senderId, frame.sentAt, frame.recipientId.orEmpty())
+        val thread = frame.group?.id ?: frame.recipientId.orEmpty()
+        val header = MessageCrypto.header(frame.id, frame.senderId, frame.sentAt, thread)
         return messageCrypto.verifyEnvelope(bundle, frame.sig, header, envelope)
     }
 
