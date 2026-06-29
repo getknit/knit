@@ -98,6 +98,7 @@
     <string name="chat_group_leave_confirm_title">Leave group?</string>
     <string name="chat_group_leave_confirm_body">You\'ll stop receiving messages and this chat will be removed from this device.</string>
     <string name="chat_group_leave_confirm_action">Leave</string>
+    <string name="chat_group_member_left">%1$s left the chat</string>
     <string name="blocked_users_title">Blocked users</string>
     <string name="blocked_users_empty">No blocked users</string>
     <string name="blocked_users_unblock">Unblock</string>

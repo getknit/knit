@@ -44,6 +44,9 @@ data class ChatRow(
     val mine: Boolean,
     val senderName: String,
     val senderNodeId: String,
+    // A non-[MessageEntity.KIND_NORMAL] row is a status notice (e.g. [MessageEntity.KIND_MEMBER_LEFT]),
+    // rendered as a centered line using [senderName] instead of a chat bubble.
+    val kind: Int = MessageEntity.KIND_NORMAL,
     val avatarHash: String?,
     val sentAt: Long,
     val received: Boolean,
@@ -233,6 +236,7 @@ class ChatViewModel(
                 mine = mine,
                 senderName = name,
                 senderNodeId = m.senderId,
+                kind = m.kind,
                 avatarHash = peersByNode[m.senderId]?.avatarHash,
                 sentAt = m.sentAt,
                 received = m.received,
@@ -346,6 +350,10 @@ class ChatViewModel(
      */
     fun leaveGroup() {
         viewModelScope.launch {
+            // Tell the other members first (we're still a member, our key is known), then tombstone and
+            // wipe locally. The leave frame floods once; it's not custodied, so an offline member learns
+            // of the smaller roster from the next group message rather than this frame.
+            meshManager.sendGroupLeave(conversationId)
             groups.leave(conversationId)
             _closeChat.tryEmit(Unit)
         }

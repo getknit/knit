@@ -21,6 +21,13 @@ import kotlinx.serialization.json.Json
  * [left] is the leave tombstone: once true, inbound group frames are dropped and never re-upserted, so
  * a self-describing frame can't resurrect a group the user left. The row is kept (not deleted) so that
  * tombstone survives; its messages are deleted on leave.
+ *
+ * [departed] is a JSON-encoded `List<String>` of node ids of members who have *left* this group (each
+ * recorded from that member's own signed `GroupLeaveFrame`). [members] always holds the *effective*
+ * roster (the original set minus [departed]); the tombstone is what makes a departure stick when a
+ * straggler re-broadcasts the old full roster — `reconcileGroup` re-subtracts [departed] every time. It
+ * only ever grows (there is no add-member feature), so it stays bounded by the cap. (De)serialized by
+ * [GroupMembersStore], same as [members].
  */
 @Entity(tableName = "groups")
 data class GroupEntity(
@@ -31,6 +38,7 @@ data class GroupEntity(
     val createdAt: Long,
     val nameUpdatedAt: Long = 0L,
     val left: Boolean = false,
+    val departed: String = "[]",
 )
 
 /**

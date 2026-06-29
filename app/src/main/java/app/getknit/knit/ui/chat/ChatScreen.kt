@@ -139,6 +139,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
+import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.components.Avatar
@@ -436,30 +437,34 @@ fun ChatScreen(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 items(state.rows, key = { it.id }) { row ->
-                    MessageBubble(
-                        row,
-                        now = now,
-                        // In a 1:1 DM the peer's name is in the top bar, so don't repeat it on every
-                        // received bubble; show it only where multiple people can speak.
-                        showSenderName = state.isRoom || state.isGroup,
-                        onImageClick = { fullscreenImage = it },
-                        onOpenProfile = onOpenProfile,
-                        onReact = viewModel::react,
-                        onDelete = viewModel::deleteMessage,
-                        onBlock = viewModel::block,
-                        onCopy = { text ->
-                            copyScope.launch {
-                                clipboard.setClipEntry(
-                                    ClipData.newPlainText("message", text).toClipEntry(),
-                                )
-                                // Android 13+ shows its own copy confirmation; skip the toast there
-                                // so the user doesn't see a duplicate.
-                                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                                    viewModel.onMessageCopied()
+                    if (row.kind == MessageEntity.KIND_MEMBER_LEFT) {
+                        SystemNotice(stringResource(R.string.chat_group_member_left, row.senderName))
+                    } else {
+                        MessageBubble(
+                            row,
+                            now = now,
+                            // In a 1:1 DM the peer's name is in the top bar, so don't repeat it on every
+                            // received bubble; show it only where multiple people can speak.
+                            showSenderName = state.isRoom || state.isGroup,
+                            onImageClick = { fullscreenImage = it },
+                            onOpenProfile = onOpenProfile,
+                            onReact = viewModel::react,
+                            onDelete = viewModel::deleteMessage,
+                            onBlock = viewModel::block,
+                            onCopy = { text ->
+                                copyScope.launch {
+                                    clipboard.setClipEntry(
+                                        ClipData.newPlainText("message", text).toClipEntry(),
+                                    )
+                                    // Android 13+ shows its own copy confirmation; skip the toast there
+                                    // so the user doesn't see a duplicate.
+                                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                                        viewModel.onMessageCopied()
+                                    }
                                 }
-                            }
-                        },
-                    )
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -1178,6 +1183,18 @@ private fun EmptyState(modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+}
+
+/** A centered, muted status line in the thread (e.g. "Alice left the chat"); not a sender bubble. */
+@Composable
+private fun SystemNotice(text: String) {
+    Text(
+        text = text,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp, horizontal = 16.dp),
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)

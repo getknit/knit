@@ -109,7 +109,14 @@ class ChatListViewModel(
             val last = threadMsgs.lastOrNull()
             val lastReadAt = lastReadAll[conversationId] ?: 0L
             // Until our own id resolves, count nothing as unread so our own messages aren't miscounted.
-            val unread = if (me == null) 0 else threadMsgs.count { it.sentAt > lastReadAt && it.senderId != me }
+            // Status notices (e.g. "X left the chat") are quiet — they never raise an unread badge.
+            val unread = if (me == null) {
+                0
+            } else {
+                threadMsgs.count {
+                    it.sentAt > lastReadAt && it.senderId != me && it.kind == MessageEntity.KIND_NORMAL
+                }
+            }
             return ConversationRow(
                 id = conversationId,
                 title = title,
@@ -170,6 +177,14 @@ class ChatListViewModel(
         me: String?,
         isDm: Boolean,
     ): String {
+        // Status notices have an empty body and their senderId is the event's subject (the member who
+        // left); render the localized line directly rather than "Sender: " with a blank body.
+        if (message.kind == MessageEntity.KIND_MEMBER_LEFT) {
+            return context.getString(
+                R.string.chat_group_member_left,
+                displayNameFor(peersByNode[message.senderId]?.name, message.senderId),
+            )
+        }
         val body = when {
             message.body.isNotBlank() -> message.body
             message.attachmentHash != null -> context.getString(R.string.chat_list_preview_photo)

@@ -155,6 +155,26 @@ data class GroupUpdateFrame(
     override val hops: Int = 0,
 ) : Frame
 
+/**
+ * Announces that [senderId] has left the group [groupId]. The leaver floods this on departure so the
+ * remaining members drop them from the roster (member count shrinks) and show a status notice. The
+ * leaver IS [senderId], so the frame's Ed25519 signature ([Frame.sig], verified against the key that
+ * derives to [senderId]) proves the departure is self-asserted — a forged leave can't evict a third
+ * party. Carries no roster: a receiver removes only [senderId] from the group it already holds.
+ * Flooded once (like [GroupUpdateFrame]); not custodied for store-and-forward.
+ */
+@Serializable
+@SerialName("groupleave")
+data class GroupLeaveFrame(
+    override val id: String,
+    override val senderId: String,
+    val sentAt: Long,
+    val groupId: String,
+    override val sig: String? = null,
+    override val ttl: Int = DEFAULT_TTL,
+    override val hops: Int = 0,
+) : Frame
+
 @Serializable
 @SerialName("profile")
 data class ProfileFrame(
@@ -240,6 +260,7 @@ fun Frame.isStorable(): Boolean = this is ChatFrame && (recipientId != null || g
 fun Frame.incrementHop(): Frame = when (this) {
     is ChatFrame -> copy(hops = hops + 1)
     is GroupUpdateFrame -> copy(hops = hops + 1)
+    is GroupLeaveFrame -> copy(hops = hops + 1)
     is ProfileFrame -> copy(hops = hops + 1)
     is ReceiptFrame -> copy(hops = hops + 1)
     is ReactionFrame -> copy(hops = hops + 1)
@@ -255,6 +276,7 @@ fun Frame.incrementHop(): Frame = when (this) {
 fun Frame.cappedTtl(max: Int): Frame = if (ttl <= max) this else when (this) {
     is ChatFrame -> copy(ttl = max)
     is GroupUpdateFrame -> copy(ttl = max)
+    is GroupLeaveFrame -> copy(ttl = max)
     is ProfileFrame -> copy(ttl = max)
     is ReceiptFrame -> copy(ttl = max)
     is ReactionFrame -> copy(ttl = max)
@@ -275,6 +297,7 @@ fun Frame.signedBytes(): ByteArray = WireCodec.encode(canonicalForSig())
 private fun Frame.canonicalForSig(): Frame = when (this) {
     is ChatFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
     is GroupUpdateFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
+    is GroupLeaveFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
     is ProfileFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
     is ReceiptFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
     is ReactionFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
@@ -285,6 +308,7 @@ private fun Frame.canonicalForSig(): Frame = when (this) {
 fun Frame.withSig(sig: String): Frame = when (this) {
     is ChatFrame -> copy(sig = sig)
     is GroupUpdateFrame -> copy(sig = sig)
+    is GroupLeaveFrame -> copy(sig = sig)
     is ProfileFrame -> copy(sig = sig)
     is ReceiptFrame -> copy(sig = sig)
     is ReactionFrame -> copy(sig = sig)

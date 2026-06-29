@@ -5,6 +5,7 @@ import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.DEFAULT_TTL
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.GroupInfo
+import app.getknit.knit.mesh.protocol.GroupLeaveFrame
 import app.getknit.knit.mesh.protocol.GroupUpdateFrame
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileFrame
@@ -84,6 +85,33 @@ class WireSerializationTest {
     }
 
     @Test
+    fun groupLeaveFrameRoundTrips() {
+        val frame = GroupLeaveFrame(
+            id = "l1", senderId = "alice000", sentAt = 88L,
+            groupId = "11111111-2222-3333-4444-555555555555", sig = "c2ln",
+        )
+        assertEquals(frame, WireCodec.decode(WireCodec.encode(frame)))
+    }
+
+    @Test
+    fun groupLeaveSignedBytesStableAcrossRelayMutation() {
+        // The leave frame floods and is relayed; its signature must survive ttl/hops mutation so every
+        // hop reproduces exactly the bytes the leaver signed.
+        val origin = GroupLeaveFrame(id = "l2", senderId = "alice000", sentAt = 9L, groupId = "g-abc")
+        val relayed = origin.withSig("c2ln").incrementHop().incrementHop().cappedTtl(DEFAULT_TTL)
+        assertArrayEquals(origin.signedBytes(), relayed.signedBytes())
+    }
+
+    @Test
+    fun groupLeaveSignedBytesBindGroupId() {
+        // The groupId is covered by the signature, so a captured leave can't be replayed against another
+        // group (and a fresh id can't dodge dedup without invalidating the signature).
+        val leave = GroupLeaveFrame(id = "l3", senderId = "alice000", sentAt = 9L, groupId = "g-abc")
+        assertFalse(leave.signedBytes().contentEquals(leave.copy(groupId = "g-xyz").signedBytes()))
+        assertFalse(leave.signedBytes().contentEquals(leave.copy(id = "l4").signedBytes()))
+    }
+
+    @Test
     fun unnamedGroupChatFrameRoundTripsWithNullName() {
         // An unnamed group carries no name on the wire (each device titles it locally); null must survive.
         val frame = ChatFrame(
@@ -151,6 +179,7 @@ class WireSerializationTest {
                 id = "gu", senderId = "a", sentAt = 1L,
                 group = GroupInfo(id = "grp", name = "Crew", members = listOf("a", "b"), createdBy = "a"),
             ),
+            GroupLeaveFrame(id = "gl", senderId = "a", sentAt = 1L, groupId = "grp"),
             ProfileFrame(id = "p", senderId = "b", sentAt = 2L, name = "Bob", status = "ok"),
             ReceiptFrame(id = "r", senderId = "c", ackId = "m"),
             ReactionFrame(id = "x", senderId = "c", messageId = "m", emoji = "👍", sentAt = 3L),
@@ -211,6 +240,7 @@ class WireSerializationTest {
                 id = "gu", senderId = "a", sentAt = 1L,
                 group = GroupInfo(id = "g", members = listOf("a", "b"), createdBy = "a"), sig = "c2ln",
             ),
+            GroupLeaveFrame(id = "gl", senderId = "a", sentAt = 1L, groupId = "g", sig = "c2ln"),
             ProfileFrame(id = "p", senderId = "b", sentAt = 2L, name = "Bob", status = "ok", sig = "c2ln"),
             ReceiptFrame(id = "r", senderId = "c", ackId = "m", sig = "c2ln"),
             ReactionFrame(id = "x", senderId = "c", messageId = "m", emoji = "👍", sentAt = 3L, sig = "c2ln"),

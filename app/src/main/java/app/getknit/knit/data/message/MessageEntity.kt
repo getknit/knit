@@ -32,6 +32,10 @@ import kotlinx.serialization.json.Json
  * the recipient's public key wasn't known (distinct from [received], which can't tell "never sent" from
  * "sent, awaiting ack"). It stays true until the recipient's profile arrives and `MeshManager` re-seals
  * and floods it (see `flushPendingFor`). Always false for received messages and broadcast/group sends.
+ *
+ * [kind] discriminates an ordinary chat message ([KIND_NORMAL]) from a locally-generated status notice
+ * ([KIND_MEMBER_LEFT], rendered as a centered "X left the chat" line rather than a bubble). A status row
+ * has an empty [body] and its [senderId] is the subject of the event (the member who left).
  */
 @Entity(tableName = "messages", indices = [Index("conversationId")])
 data class MessageEntity(
@@ -48,6 +52,7 @@ data class MessageEntity(
     val attachmentKey: String? = null,
     val moderation: Int = MODERATION_NONE,
     val pendingKey: Boolean = false,
+    val kind: Int = KIND_NORMAL,
 ) {
     companion object {
         /** [moderation]: text passed (or was not checked). */
@@ -55,6 +60,12 @@ data class MessageEntity(
 
         /** [moderation]: the body was flagged as abusive by the on-device text moderator. */
         const val MODERATION_TEXT_FLAGGED = 1
+
+        /** [kind]: an ordinary chat message, shown as a sender bubble. */
+        const val KIND_NORMAL = 0
+
+        /** [kind]: a "member left the group" status notice, shown as a centered line. */
+        const val KIND_MEMBER_LEFT = 1
     }
 }
 

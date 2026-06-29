@@ -62,7 +62,7 @@ val appModule = module {
     single { ReactionRepository(get()) }
     // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, imageModerator.
     single { BlobRepository(get(), get(), get(), get(), get(), get()) }
-    single { GroupRepository(get(), get()) }
+    single { GroupRepository(get(), get(), get()) }
     // Store-and-forward custody for DMs, backed by the encrypted forward_store table.
     single<ForwardStore> { ForwardRepository(get()) }
 }

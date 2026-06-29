@@ -27,6 +27,7 @@ import app.getknit.knit.mesh.protocol.BlobRequestFrame
 import app.getknit.knit.mesh.protocol.ChatFrame
 import app.getknit.knit.mesh.protocol.Frame
 import app.getknit.knit.mesh.protocol.GroupInfo
+import app.getknit.knit.mesh.protocol.GroupLeaveFrame
 import app.getknit.knit.mesh.protocol.GroupUpdateFrame
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileFrame
@@ -326,6 +327,23 @@ class MeshManager(
     }
 
     /**
+     * Floods a signed [GroupLeaveFrame] announcing that we've left [groupId], so the remaining members
+     * drop us from their roster and show a status notice. Sent on departure (before the local tombstone);
+     * the leaver is the signer, so a forged leave can't evict anyone else. Flooded once (not custodied),
+     * like [sendGroupUpdate].
+     */
+    suspend fun sendGroupLeave(groupId: String) {
+        originateSigned(
+            GroupLeaveFrame(
+                id = UUID.randomUUID().toString(),
+                senderId = identity.nodeId(),
+                sentAt = System.currentTimeMillis(),
+                groupId = groupId,
+            ),
+        )
+    }
+
+    /**
      * Toggles this device's emoji reaction on [messageId] and floods the change. Tapping the emoji you
      * already chose retracts it; tapping a different one replaces it (one reaction per person). The
      * change is stored optimistically and propagates as a [ReactionFrame]; [sentAt] is the wall clock
@@ -493,6 +511,7 @@ class MeshManager(
         when (frame) {
             is ChatFrame -> handleChat(frame)
             is GroupUpdateFrame -> handleGroupUpdate(frame)
+            is GroupLeaveFrame -> handleGroupLeave(frame)
             is ProfileFrame -> handleProfile(frame)
             is ReceiptFrame -> handleReceipt(frame)
             is ReactionFrame -> handleReaction(frame)
@@ -556,6 +575,7 @@ class MeshManager(
     private fun Frame.kind(): String = when (this) {
         is ChatFrame -> "chat"
         is GroupUpdateFrame -> "groupupdate"
+        is GroupLeaveFrame -> "groupleave"
         is ProfileFrame -> "profile"
         is ReceiptFrame -> "receipt"
         is ReactionFrame -> "reaction"
@@ -691,6 +711,19 @@ class MeshManager(
     }
 
     /**
+     * Handles a member's departure. [verifyInbound] has already proven the frame is signed by the key
+     * that derives to [GroupLeaveFrame.senderId], so the leaver is authenticated and can only remove
+     * itself. [GroupRepository.recordDeparture] shrinks the roster (the count drops reactively), records
+     * the tombstone, and inserts the status notice — atomically, and as a no-op (returns false) for a
+     * blocked sender's frame, a replay, a non-member, or a group we've left. We additionally skip a
+     * blocked sender up front so neither the notice nor the roster change is applied for them.
+     */
+    private suspend fun handleGroupLeave(frame: GroupLeaveFrame) {
+        if (frame.senderId in settings.blockedNodeIds.first()) return
+        groups.recordDeparture(frame.groupId, frame.senderId, frame.sentAt)
+    }
+
+    /**
      * Brings the locally-stored group in line with a self-describing [group] roster carried on a frame
      * from [senderId] (stamped [sentAt]). Returns true when the group is active for us (so a chat frame
      * should be delivered), false when the frame must be ignored: blocked sender, a group we've left
@@ -714,15 +747,21 @@ class MeshManager(
         val keepName = existing?.name.orEmpty()
         val keepClock = existing?.nameUpdatedAt ?: 0L
         val takeIncoming = incomingName != null && sentAt >= keepClock
+        // Preserve our departure tombstone across the wholesale roster overwrite and re-subtract it, so a
+        // member who left stays gone even when this frame carries the stale pre-departure roster (a
+        // straggler who never saw the GroupLeaveFrame). The set only grows, so this can't re-add a leaver.
+        val keepDeparted = existing?.let { GroupMembersStore.decode(it.departed) }.orEmpty()
+        val effective = group.members.filter { it !in keepDeparted }
         groups.upsert(
             GroupEntity(
                 groupId = group.id,
                 name = if (takeIncoming) incomingName else keepName,
-                members = GroupMembersStore.encode(group.members),
+                members = GroupMembersStore.encode(effective),
                 createdBy = group.createdBy,
                 createdAt = existing?.createdAt ?: sentAt,
                 nameUpdatedAt = if (takeIncoming) sentAt else keepClock,
                 left = false,
+                departed = GroupMembersStore.encode(keepDeparted),
             ),
         )
         return true

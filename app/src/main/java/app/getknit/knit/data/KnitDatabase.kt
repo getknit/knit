@@ -48,7 +48,10 @@ import java.io.File
     // v12: forward_store now also carries group chat frames — recipientId became nullable and a
     //      nullable groupId column was added (exactly one is set; the broadcast room is never carried).
     //      Destructive migration; app not yet public.
-    version = 12,
+    // v13: groups gained a `departed` roster-tombstone column (node ids that left, so a departure sticks
+    //      against straggler re-broadcasts); messages gained a `kind` discriminator for the
+    //      locally-generated "member left" status notice. Destructive migration; app not yet public.
+    version = 13,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {
