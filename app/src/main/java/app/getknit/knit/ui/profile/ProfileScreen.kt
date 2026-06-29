@@ -33,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -44,6 +45,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
+import app.getknit.knit.TextLimits
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.isIgnoringBatteryOptimizations
@@ -115,17 +117,23 @@ fun ProfileScreen(
             OutlinedTextField(
                 value = name,
                 onValueChange = viewModel::setDisplayName,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { if (!it.isFocused) viewModel.commitDisplayName() },
                 label = { Text(stringResource(R.string.profile_display_name_label)) },
                 placeholder = { if (alias.isNotEmpty()) Text(alias) },
                 singleLine = true,
+                supportingText = { CharCounter(name.length, TextLimits.DISPLAY_NAME) },
             )
             OutlinedTextField(
                 value = status,
                 onValueChange = viewModel::setStatus,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { if (!it.isFocused) viewModel.commitStatus() },
                 label = { Text(stringResource(R.string.profile_status_label)) },
                 singleLine = true,
+                supportingText = { CharCounter(status.length, TextLimits.STATUS) },
             )
             Text(
                 text = stringResource(R.string.profile_node_id, nodeId),
@@ -141,6 +149,18 @@ fun ProfileScreen(
             BatteryOptimizationRow()
         }
     }
+}
+
+/** Right-aligned "used / limit" counter shown beneath a capped single-line field. */
+@Composable
+private fun CharCounter(length: Int, limit: Int) {
+    Text(
+        text = "$length / $limit",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textAlign = TextAlign.End,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 /** Toggle for on-device content moderation (abusive-text + explicit-image filtering). */

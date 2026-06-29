@@ -38,7 +38,9 @@ import app.getknit.knit.mesh.protocol.mention
 import app.getknit.knit.mesh.protocol.signedBytes
 import app.getknit.knit.mesh.protocol.withSig
 import android.util.Log
+import app.getknit.knit.TextLimits
 import app.getknit.knit.moderation.ScopedTextModerator
+import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.incomingNotification
 import app.getknit.knit.notifications.mentionNotification
@@ -465,8 +467,10 @@ class MeshManager(
             id = "profile-$me-$profileVersion",
             senderId = me,
             sentAt = profileVersion,
-            name = settings.displayName.first(),
-            status = settings.status.first(),
+            // Normalize/cap defensively: covers legacy values stored before the field gained a cap and
+            // the rare process-death-before-the-blur-commit case, so peers never receive an oversized name.
+            name = normalizeSingleLine(settings.displayName.first()).take(TextLimits.DISPLAY_NAME),
+            status = normalizeSingleLine(settings.status.first()).take(TextLimits.STATUS),
             avatarHash = settings.ownAvatarHash.first(),
             pubKey = identity.publicKeyBundle(),
             deviceTag = identity.deviceTag(),
@@ -746,7 +750,7 @@ class MeshManager(
 
         // The name is shared only when explicitly set; an unnamed (blank/null) frame never clears a name
         // someone else set. Adopt an incoming name only if it's newer (last-writer-wins on sentAt).
-        val incomingName = group.name?.takeIf { it.isNotBlank() }
+        val incomingName = group.name?.takeIf { it.isNotBlank() }?.take(TextLimits.GROUP_NAME)
         val keepName = existing?.name.orEmpty()
         val keepClock = existing?.nameUpdatedAt ?: 0L
         val takeIncoming = incomingName != null && sentAt >= keepClock
@@ -928,8 +932,9 @@ class MeshManager(
         // already excluded above.)
         peers.upsert(
             (existing ?: PeerEntity(frame.senderId)).copy(
-                name = frame.name,
-                status = frame.status,
+                // Clamp inbound too: our own cap only bounds what we originate, not what a peer sends.
+                name = frame.name.take(TextLimits.DISPLAY_NAME),
+                status = frame.status.take(TextLimits.STATUS),
                 pubKey = pubKey,
                 verified = existing?.verified ?: false,
                 deviceTag = frame.deviceTag ?: existing?.deviceTag,

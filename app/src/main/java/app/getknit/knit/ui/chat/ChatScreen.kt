@@ -50,9 +50,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
+import androidx.compose.foundation.text.input.maxLength
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
@@ -139,6 +141,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
+import app.getknit.knit.TextLimits
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.mesh.protocol.Mention
@@ -567,9 +570,18 @@ private fun RenameGroupDialog(
         text = {
             OutlinedTextField(
                 value = name,
-                onValueChange = { name = it },
+                onValueChange = { name = it.take(TextLimits.GROUP_NAME) },
                 singleLine = true,
                 label = { Text(stringResource(R.string.chat_group_name_label)) },
+                supportingText = {
+                    Text(
+                        text = "${name.length} / ${TextLimits.GROUP_NAME}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.End,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                },
             )
         },
         confirmButton = {
@@ -1323,6 +1335,7 @@ private fun MessageInput(
                             .fillMaxWidth()
                             .contentReceiver(receiveContentListener)
                             .semantics { contentDescription = messageHint },
+                        inputTransformation = InputTransformation.maxLength(TextLimits.MESSAGE),
                         textStyle = MaterialTheme.typography.bodyLarge.copy(
                             color = MaterialTheme.colorScheme.onSurface,
                         ),

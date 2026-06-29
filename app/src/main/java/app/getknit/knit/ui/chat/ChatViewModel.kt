@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.R
+import app.getknit.knit.TextLimits
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GallerySaver
@@ -25,6 +26,7 @@ import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.notifications.Notifier
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -290,7 +292,7 @@ class ChatViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom))
 
     fun send(text: String, mentions: List<Mention> = emptyList()) {
-        val trimmed = text.trim()
+        val trimmed = text.trim().take(TextLimits.MESSAGE)
         val attachment = _pendingAttachment.value
         if (trimmed.isEmpty() && attachment == null) return
         viewModelScope.launch {
@@ -327,7 +329,7 @@ class ChatViewModel(
      * converge right away (no waiting for the next message). The name is last-writer-wins by timestamp.
      */
     fun renameGroup(newName: String) {
-        val trimmed = newName.trim()
+        val trimmed = normalizeSingleLine(newName).take(TextLimits.GROUP_NAME)
         if (trimmed.isEmpty()) return
         viewModelScope.launch {
             val group = groups.find(conversationId) ?: return@launch

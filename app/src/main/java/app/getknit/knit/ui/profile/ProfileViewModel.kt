@@ -5,11 +5,13 @@ import android.net.Uri
 import androidx.compose.ui.geometry.Offset
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.getknit.knit.TextLimits
 import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.ui.util.computeAvatarCrop
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -62,19 +64,40 @@ class ProfileViewModel(
             val id = identity.nodeId()
             nodeId.value = id
             alias.value = Alias.aliasFor(id)
-            _displayName.value = settings.displayName.first()
-            _status.value = settings.status.first()
+            _displayName.value = normalizeSingleLine(settings.displayName.first()).take(TextLimits.DISPLAY_NAME)
+            _status.value = normalizeSingleLine(settings.status.first()).take(TextLimits.STATUS)
         }
     }
 
     fun setDisplayName(value: String) {
-        _displayName.value = value
-        viewModelScope.launch { settings.setDisplayName(value) }
+        val capped = value.take(TextLimits.DISPLAY_NAME)
+        _displayName.value = capped
+        // The field holds exactly what's typed (so a space *between* words isn't eaten mid-keystroke),
+        // but everything that reads the name — the wire, notifications, diagnostics — gets the trimmed
+        // form. Persisting the normalized value here means leaving by Back (which fires no focus event,
+        // so onFocusChanged/commit never runs) still leaves a clean value in DataStore.
+        viewModelScope.launch { settings.setDisplayName(normalizeSingleLine(capped)) }
     }
 
     fun setStatus(value: String) {
-        _status.value = value
-        viewModelScope.launch { settings.setStatus(value) }
+        val capped = value.take(TextLimits.STATUS)
+        _status.value = capped
+        viewModelScope.launch { settings.setStatus(normalizeSingleLine(capped)) }
+    }
+
+    /**
+     * Snaps the *visible* display-name field to its normalized form when it loses focus (DataStore was
+     * already kept clean by [setDisplayName]; this just stops the box showing stray whitespace once
+     * you tab away). Done on commit, not per keystroke — trimming the trailing space on every keystroke
+     * would block typing a space mid-name. A no-op when already normalized.
+     */
+    fun commitDisplayName() {
+        _displayName.value = normalizeSingleLine(_displayName.value)
+    }
+
+    /** Status counterpart of [commitDisplayName]. */
+    fun commitStatus() {
+        _status.value = normalizeSingleLine(_status.value)
     }
 
     fun setContentFilteringEnabled(value: Boolean) {
