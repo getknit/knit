@@ -1,5 +1,6 @@
 package app.getknit.knit
 
+import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.FakeLoopTransport
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.ForwardStore
@@ -10,11 +11,13 @@ import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.TransportHealth
-import app.getknit.knit.mesh.protocol.ChatFrame
-import app.getknit.knit.mesh.protocol.Frame
+import app.getknit.knit.mesh.protocol.ChatContent
+import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupInfo
-import app.getknit.knit.mesh.protocol.ReactionFrame
-import app.getknit.knit.mesh.protocol.ReceiptFrame
+import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.ReceiptContent
+import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.isStorable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -39,17 +42,17 @@ class ForwardSyncTest {
 
     /** In-memory [ForwardStore]; TTL/order mirror the real repository closely enough for the sync logic. */
     private class FakeForwardStore(private val ttlMs: Long = 60_000L) : ForwardStore {
-        private data class Row(val frame: ChatFrame, val origin: Int, val expiresAt: Long)
+        private data class Row(val frame: CarriedFrame, val origin: Int, val expiresAt: Long)
         private val rows = ConcurrentHashMap<String, Row>()
 
-        override suspend fun store(frame: ChatFrame, origin: Int, now: Long) {
-            rows.putIfAbsent(frame.id, Row(frame, origin, now + ttlMs))
+        override suspend fun store(frame: CarriedFrame, origin: Int, now: Long) {
+            rows.putIfAbsent(frame.envelope.id, Row(frame, origin, now + ttlMs))
         }
 
-        override suspend fun liveFrames(now: Long): List<ChatFrame> =
+        override suspend fun liveFrames(now: Long): List<CarriedFrame> =
             rows.values.filter { it.expiresAt >= now }.sortedByDescending { it.expiresAt }.map { it.frame }
 
-        override suspend fun recipientOf(id: String): String? = rows[id]?.frame?.recipientId
+        override suspend fun recipientOf(id: String): String? = rows[id]?.frame?.envelope?.recipientId
         override suspend fun has(id: String): Boolean = rows.containsKey(id)
         override suspend fun remove(id: String) { rows.remove(id) }
         override suspend fun sweepExpired(now: Long): Int {
@@ -61,7 +64,7 @@ class ForwardSyncTest {
 
     /** Records what the sync sends and exposes a fixed neighbor set. */
     private class RecordingTransport : MeshTransport {
-        val sent = mutableListOf<Pair<Frame, Peer?>>()
+        val sent = mutableListOf<Pair<WireEnvelope, Peer?>>()
         override val neighbors = MutableStateFlow<Set<Peer>>(emptySet()).asStateFlow()
         override val health = MutableStateFlow(TransportHealth.Healthy).asStateFlow()
         override val inbound = MutableSharedFlow<InboundFrame>().asSharedFlow()
@@ -69,24 +72,30 @@ class ForwardSyncTest {
         override fun start() = Unit
         override fun stop() = Unit
         override fun heal() = Unit
-        override suspend fun send(frame: Frame, to: Peer?) { sent += frame to to }
+        override suspend fun send(wire: WireEnvelope, to: Peer?) { sent += wire to to }
         override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) = Unit
     }
 
-    private fun dm(id: String, sender: String, recipient: String) =
-        ChatFrame(id = id, senderId = sender, sentAt = 1L, body = "", recipientId = recipient)
+    private fun dm(id: String, sender: String, recipient: String) = RelayEnvelope(
+        type = FrameType.CHAT, id = id, senderId = sender, sentAt = 1L, recipientId = recipient,
+        payload = WireCodec.encodePayload(ChatContent(body = "")),
+    )
 
-    private fun groupMsg(id: String, sender: String, members: List<String>) =
-        ChatFrame(
-            id = id,
-            senderId = sender,
-            sentAt = 1L,
-            body = "",
-            group = GroupInfo(id = "g-test", members = members, createdBy = members.first()),
-        )
+    private fun groupMsg(id: String, sender: String, members: List<String>) = RelayEnvelope(
+        type = FrameType.CHAT, id = id, senderId = sender, sentAt = 1L,
+        group = GroupInfo(id = "g-test", members = members, createdBy = members.first()),
+        payload = WireCodec.encodePayload(ChatContent(body = "")),
+    )
 
-    private fun ack(messageId: String, by: String) =
-        ReceiptFrame(id = "ack-$messageId-$by", senderId = by, ackId = messageId)
+    private fun broadcast(id: String) = RelayEnvelope(type = FrameType.CHAT, id = id, senderId = "a", sentAt = 1L, payload = ByteArray(0))
+
+    private fun receipt(id: String) = RelayEnvelope(type = FrameType.RECEIPT, id = id, senderId = "a", payload = ByteArray(0))
+
+    /** Wraps an envelope with an empty signature (these tests authenticate via the lambda, not crypto). */
+    private fun wireOf(env: RelayEnvelope) = WireEnvelope(sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
+
+    /** Decodes the id of a frame the transport sent (the wrapper carries only the opaque signed blob). */
+    private fun WireEnvelope.frameId(): String = WireCodec.decodeEnvelope(signed)!!.id
 
     // --- pure predicate ---
 
@@ -94,21 +103,20 @@ class ForwardSyncTest {
     fun dmAndGroupChatFramesAreStorableButBroadcastIsNot() {
         assertTrue(dm("m", "a", "b").isStorable())
         assertTrue(groupMsg("g", "a", listOf("a", "b", "c")).isStorable())
-        assertFalse(ChatFrame(id = "r", senderId = "a", sentAt = 1L, body = "hi").isStorable()) // room
-        assertFalse(ReceiptFrame(id = "x", senderId = "a", ackId = "m").isStorable())
-        assertFalse(ReactionFrame(id = "x", senderId = "a", messageId = "m", sentAt = 1L).isStorable())
+        assertFalse(broadcast("r").isStorable())
+        assertFalse(receipt("x").isStorable())
     }
 
     // --- onSeen capture & authentication ---
 
     @Test
     fun relayedDmIsCarriedOnlyWhenAuthenticated() = runTest {
-        val rejecting = ForwardSync(RecordingTransport(), FakeForwardStore(), clock = { 0L }, authenticate = { false })
+        val rejecting = ForwardSync(RecordingTransport(), FakeForwardStore(), clock = { 0L }, authenticate = { _, _ -> false })
         val store = FakeForwardStore()
-        val accepting = ForwardSync(RecordingTransport(), store, clock = { 0L }, authenticate = { true })
+        val accepting = ForwardSync(RecordingTransport(), store, clock = { 0L }, authenticate = { _, _ -> true })
 
-        rejecting.onSeen(dm("m1", "a", "b"), ForwardStore.ORIGIN_RELAY)
-        accepting.onSeen(dm("m2", "a", "b"), ForwardStore.ORIGIN_RELAY)
+        rejecting.onSeen(wireOf(dm("m1", "a", "b")), dm("m1", "a", "b"), ForwardStore.ORIGIN_RELAY)
+        accepting.onSeen(wireOf(dm("m2", "a", "b")), dm("m2", "a", "b"), ForwardStore.ORIGIN_RELAY)
 
         assertTrue("authenticated relay is carried", store.has("m2"))
     }
@@ -117,9 +125,10 @@ class ForwardSyncTest {
     fun ownSendBypassesAuthentication() = runTest {
         // We can't authenticate our own DM against a pinned key (we don't pin ourselves), so SELF skips it.
         val store = FakeForwardStore()
-        val sync = ForwardSync(RecordingTransport(), store, clock = { 0L }, authenticate = { false })
+        val sync = ForwardSync(RecordingTransport(), store, clock = { 0L }, authenticate = { _, _ -> false })
 
-        sync.onSeen(dm("m1", "me", "b"), ForwardStore.ORIGIN_SELF)
+        val env = dm("m1", "me", "b")
+        sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_SELF)
 
         assertTrue(store.has("m1"))
     }
@@ -129,9 +138,10 @@ class ForwardSyncTest {
         val store = FakeForwardStore()
         val sync = ForwardSync(RecordingTransport(), store, clock = { 0L })
 
-        sync.onSeen(ChatFrame(id = "r", senderId = "a", sentAt = 1L, body = "hi"), ForwardStore.ORIGIN_RELAY)
-        sync.onSeen(ReceiptFrame(id = "x", senderId = "a", ackId = "m"), ForwardStore.ORIGIN_RELAY)
-        sync.onSeen(groupMsg("g1", "a", listOf("a", "b", "c")), ForwardStore.ORIGIN_RELAY)
+        sync.onSeen(wireOf(broadcast("r")), broadcast("r"), ForwardStore.ORIGIN_RELAY)
+        sync.onSeen(wireOf(receipt("x")), receipt("x"), ForwardStore.ORIGIN_RELAY)
+        val g = groupMsg("g1", "a", listOf("a", "b", "c"))
+        sync.onSeen(wireOf(g), g, ForwardStore.ORIGIN_RELAY)
 
         assertFalse("the plaintext broadcast room has no destination", store.has("r"))
         assertFalse("a receipt isn't a carried message", store.has("x"))
@@ -144,14 +154,15 @@ class ForwardSyncTest {
     fun recipientAckPurgesCarriedDmAndTombstonesIt() = runTest {
         val store = FakeForwardStore()
         val sync = ForwardSync(RecordingTransport(), store, clock = { 0L })
-        sync.onSeen(dm("m1", "a", "b"), ForwardStore.ORIGIN_RELAY)
+        val env = dm("m1", "a", "b")
+        sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
         assertTrue(store.has("m1"))
 
-        sync.onAck(ack("m1", by = "b")) // ack from the addressed recipient
+        sync.onAck("m1", senderId = "b") // ack from the addressed recipient
         assertFalse("delivered DM is purged", store.has("m1"))
 
         // A copy re-offered from an unvaccinated peer must not be re-stored (tombstone).
-        sync.onSeen(dm("m1", "a", "b"), ForwardStore.ORIGIN_RELAY)
+        sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
         assertFalse("tombstone blocks re-store", store.has("m1"))
     }
 
@@ -159,24 +170,23 @@ class ForwardSyncTest {
     fun forgedAckFromNonRecipientDoesNotPurge() = runTest {
         val store = FakeForwardStore()
         val sync = ForwardSync(RecordingTransport(), store, clock = { 0L })
-        sync.onSeen(dm("m1", "a", "b"), ForwardStore.ORIGIN_RELAY)
+        val env = dm("m1", "a", "b")
+        sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
 
-        sync.onAck(ack("m1", by = "attacker")) // not the recipient "b"
+        sync.onAck("m1", senderId = "attacker") // not the recipient "b"
 
         assertTrue("forged receipt cannot evict an undelivered DM", store.has("m1"))
     }
 
     @Test
     fun groupMessageIsNotVaccinePurgedByAReceipt() = runTest {
-        // A group has no single recipient, so the recipient-keyed purge can't apply: a group message is
-        // bounded by TTL/caps only. Even a receipt from a real member must not evict it (other members
-        // may still be offline).
         val store = FakeForwardStore()
         val sync = ForwardSync(RecordingTransport(), store, clock = { 0L })
-        sync.onSeen(groupMsg("g1", sender = "a", members = listOf("a", "b", "c")), ForwardStore.ORIGIN_RELAY)
+        val g = groupMsg("g1", sender = "a", members = listOf("a", "b", "c"))
+        sync.onSeen(wireOf(g), g, ForwardStore.ORIGIN_RELAY)
         assertTrue(store.has("g1"))
 
-        sync.onAck(ack("g1", by = "b")) // a member, but a group frame has no recipientId to match
+        sync.onAck("g1", senderId = "b") // a member, but a group frame has no recipientId to match
 
         assertTrue("a group message is never vaccine-purged", store.has("g1"))
     }
@@ -188,22 +198,24 @@ class ForwardSyncTest {
         val transport = RecordingTransport()
         val store = FakeForwardStore()
         val sync = ForwardSync(transport, store, clock = { 0L })
-        sync.onSeen(dm("m1", "a", "b"), ForwardStore.ORIGIN_SELF)
+        val env = dm("m1", "a", "b")
+        sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_SELF)
 
         sync.onNeighborAdded(Peer("b"))
         sync.onNeighborAdded(Peer("b")) // memo: not re-offered on a re-emit/flap
-        assertEquals(listOf("m1"), transport.sent.map { it.first.id })
+        assertEquals(listOf("m1"), transport.sent.map { it.first.frameId() })
 
         sync.onNeighborRemoved("b")
         sync.onNeighborAdded(Peer("b")) // memo cleared on departure → re-offered
-        assertEquals(listOf("m1", "m1"), transport.sent.map { it.first.id })
+        assertEquals(listOf("m1", "m1"), transport.sent.map { it.first.frameId() })
     }
 
     @Test
     fun doesNotPushADmBackToItsAuthor() = runTest {
         val transport = RecordingTransport()
         val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
-        sync.onSeen(dm("m1", "a", "b"), ForwardStore.ORIGIN_RELAY)
+        val env = dm("m1", "a", "b")
+        sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
 
         sync.onNeighborAdded(Peer("a")) // "a" authored m1
 
@@ -214,13 +226,14 @@ class ForwardSyncTest {
     fun memberTargetedPushOnlyOffersAGroupMessageToRosterMembers() = runTest {
         val transport = RecordingTransport()
         val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
-        sync.onSeen(groupMsg("g1", sender = "a", members = listOf("a", "b", "c")), ForwardStore.ORIGIN_SELF)
+        val g = groupMsg("g1", sender = "a", members = listOf("a", "b", "c"))
+        sync.onSeen(wireOf(g), g, ForwardStore.ORIGIN_SELF)
 
         sync.onNeighborAdded(Peer("x")) // not in the roster — must not be sprayed group traffic
         assertTrue("a non-member is never offered a group message", transport.sent.isEmpty())
 
         sync.onNeighborAdded(Peer("c")) // a roster member — offered once
-        assertEquals(listOf("g1"), transport.sent.map { it.first.id })
+        assertEquals(listOf("g1"), transport.sent.map { it.first.frameId() })
     }
 
     // --- TTL sweep ---
@@ -230,7 +243,8 @@ class ForwardSyncTest {
         val store = FakeForwardStore(ttlMs = 100L)
         var now = 0L
         val sync = ForwardSync(RecordingTransport(), store, clock = { now })
-        sync.onSeen(dm("m1", "a", "b"), ForwardStore.ORIGIN_RELAY)
+        val env = dm("m1", "a", "b")
+        sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
 
         now = 50L
         sync.sweepExpired()
@@ -243,7 +257,7 @@ class ForwardSyncTest {
 
     // --- integration: store-and-forward across a temporal gap ---
 
-    /** A node that carries DMs, delivers ones addressed to it, and acks — a minimal MeshManager stand-in. */
+    /** A node that carries frames, delivers ones addressed to it, and acks — a minimal MeshManager stand-in. */
     private class Node(val id: String, scope: CoroutineScope) {
         val transport = FakeLoopTransport(id)
         val store = FakeForwardStore()
@@ -251,30 +265,35 @@ class ForwardSyncTest {
         val notified = mutableListOf<String>()
         private val seenDelivered = mutableSetOf<String>()
         val sync = ForwardSync(transport, store, clock = { 0L })
-        private val router = MeshRouter(transport, scope, jitter = { 0L }) { frame, _ -> onDeliver(frame) }
+        private val router = MeshRouter(transport, scope, jitter = { 0L }) { wire, env, _ -> onDeliver(wire, env) }
 
-        private suspend fun onDeliver(frame: Frame) {
+        private suspend fun onDeliver(wire: WireEnvelope, env: RelayEnvelope) {
             // Carry what we're relaying onward: a DM toward someone else, a group message for other
             // members (whether or not we're a member ourselves) — mirrors MeshManager's capture gate.
-            if (frame is ChatFrame && frame.isStorable()) {
-                val carry = frame.group != null || frame.recipientId != id
-                if (carry) sync.onSeen(frame, ForwardStore.ORIGIN_RELAY)
+            if (env.isStorable()) {
+                val carry = env.group != null || env.recipientId != id
+                if (carry) sync.onSeen(wire, env, ForwardStore.ORIGIN_RELAY)
             }
-            when (frame) {
-                is ChatFrame -> {
-                    val members = frame.group?.members
-                    val forMe = if (members != null) id in members else frame.recipientId == id
+            when (env.type) {
+                FrameType.CHAT -> {
+                    val members = env.group?.members
+                    val forMe = if (members != null) id in members else env.recipientId == id
                     if (forMe) {
-                        if (seenDelivered.add(frame.id)) notified += frame.id // first-delivery notify gate
-                        delivered += frame.id
-                        // Only a DM acks (a group has no single-recipient receipt).
-                        if (members == null) {
-                            val ack = ReceiptFrame(id = "ack-${frame.id}-$id", senderId = id, ackId = frame.id)
-                            router.originate(ack)
+                        if (seenDelivered.add(env.id)) notified += env.id // first-delivery notify gate
+                        delivered += env.id
+                        if (members == null) { // only a DM acks (a group has no single-recipient receipt)
+                            val ack = RelayEnvelope(
+                                type = FrameType.RECEIPT, id = "ack-${env.id}-$id", senderId = id,
+                                payload = WireCodec.encodePayload(ReceiptContent(env.id)),
+                            )
+                            router.originate(WireEnvelope(sig = ByteArray(0), signed = WireCodec.encodeEnvelope(ack)), ack.id)
                         }
                     }
                 }
-                is ReceiptFrame -> sync.onAck(frame)
+                FrameType.RECEIPT -> {
+                    val ackId = WireCodec.decodePayload<ReceiptContent>(env.payload)?.ackId ?: return
+                    sync.onAck(ackId, env.senderId)
+                }
                 else -> Unit
             }
         }
@@ -290,15 +309,15 @@ class ForwardSyncTest {
             }
         }
 
-        suspend fun send(frame: ChatFrame) {
-            router.originate(frame)
-            sync.onSeen(frame, ForwardStore.ORIGIN_SELF)
+        suspend fun send(env: RelayEnvelope) {
+            val wire = WireEnvelope(sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
+            router.originate(wire, env.id)
+            sync.onSeen(wire, env, ForwardStore.ORIGIN_SELF)
         }
     }
 
     @Test
     fun dmReachesRecipientThatConnectsAfterTheFloodViaACarrier() = runTest(UnconfinedTestDispatcher()) {
-        // a and c are never connected at the same time; b is the carrier that bridges the temporal gap.
         val a = Node("a", backgroundScope)
         val b = Node("b", backgroundScope)
         a.transport.connect(b.transport)
@@ -322,8 +341,6 @@ class ForwardSyncTest {
 
     @Test
     fun groupMessageReachesMemberThatConnectsAfterTheFloodViaACarrier() = runTest(UnconfinedTestDispatcher()) {
-        // Group {a, b, c}. a and c are never connected at the same time; member b carries the message and
-        // re-offers it to c when c finally appears — the temporal-gap delivery, now for a group message.
         val members = listOf("a", "b", "c")
         val a = Node("a", backgroundScope)
         val b = Node("b", backgroundScope)

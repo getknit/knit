@@ -23,7 +23,7 @@ class GroupRepository(
     suspend fun upsert(group: GroupEntity) = dao.upsert(group)
 
     /**
-     * Records that [leaverId] left [groupId] (from their own signed `GroupLeaveFrame`): drops them from
+     * Records that [leaverId] left [groupId] (from their own signed `groupleave` frame): drops them from
      * the roster, tombstones them in [GroupEntity.departed] so a straggler's stale full roster can't
      * re-add them, and inserts a "member left" status notice stamped [leftAt] (the frame's sentAt, for
      * stable cross-device ordering). The whole read-modify-write plus the message insert run in one

@@ -4,7 +4,11 @@ import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
+import app.getknit.knit.mesh.protocol.ChatContent
+import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.WireCodec
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
 import org.junit.Assert.assertEquals
@@ -29,14 +33,16 @@ class MessageCryptoTest {
     private fun content(body: String) =
         MessageContent(body = body, mentions = listOf(Mention("bob00000", "Bob"))).encode()
 
+    // --- seal / open (encrypt-only; authentication is the separate frame signature) ---
+
     @Test
     fun dmRoundTrips() {
         val alice = party("alice000")
         val bob = party("bob00000")
         val header = MessageCrypto.header("m1", alice.nodeId, 100L, bob.nodeId)
 
-        val sealed = alice.crypto.seal(content("hi bob"), header, mapOf(bob.nodeId to bob.bundle))!!
-        val opened = bob.crypto.open(sealed.envelope, sealed.sig, header, bob.nodeId, alice.bundle)
+        val envelope = alice.crypto.seal(content("hi bob"), header, mapOf(bob.nodeId to bob.bundle))!!
+        val opened = bob.crypto.open(envelope, header, bob.nodeId)
 
         assertEquals("hi bob", opened?.body)
         assertEquals("Bob", opened?.mentions?.firstOrNull()?.name)
@@ -49,14 +55,13 @@ class MessageCryptoTest {
         val carol = party("carol000")
         val header = MessageCrypto.header("g1", alice.nodeId, 5L, "g-team")
 
-        val sealed = alice.crypto.seal(
-            content("hi team"),
-            header,
+        val envelope = alice.crypto.seal(
+            content("hi team"), header,
             mapOf(bob.nodeId to bob.bundle, carol.nodeId to carol.bundle),
         )!!
 
-        assertEquals("hi team", bob.crypto.open(sealed.envelope, sealed.sig, header, bob.nodeId, alice.bundle)?.body)
-        assertEquals("hi team", carol.crypto.open(sealed.envelope, sealed.sig, header, carol.nodeId, alice.bundle)?.body)
+        assertEquals("hi team", bob.crypto.open(envelope, header, bob.nodeId)?.body)
+        assertEquals("hi team", carol.crypto.open(envelope, header, carol.nodeId)?.body)
     }
 
     @Test
@@ -66,9 +71,9 @@ class MessageCryptoTest {
         val eve = party("eve00000")
         val header = MessageCrypto.header("m2", alice.nodeId, 1L, bob.nodeId)
 
-        val sealed = alice.crypto.seal(content("secret"), header, mapOf(bob.nodeId to bob.bundle))!!
+        val envelope = alice.crypto.seal(content("secret"), header, mapOf(bob.nodeId to bob.bundle))!!
         // Eve has no wrapped key for her node id at all.
-        assertNull(eve.crypto.open(sealed.envelope, sealed.sig, header, eve.nodeId, alice.bundle))
+        assertNull(eve.crypto.open(envelope, header, eve.nodeId))
     }
 
     @Test
@@ -77,21 +82,9 @@ class MessageCryptoTest {
         val bob = party("bob00000")
         val header = MessageCrypto.header("m3", alice.nodeId, 1L, bob.nodeId)
 
-        val sealed = alice.crypto.seal(content("hi"), header, mapOf(bob.nodeId to bob.bundle))!!
-        val tampered = sealed.envelope.copy(ct = sealed.envelope.ct.dropLast(4) + "AAAA")
-        assertNull(bob.crypto.open(tampered, sealed.sig, header, bob.nodeId, alice.bundle))
-    }
-
-    @Test
-    fun wrongSenderBundleFailsSignatureCheck() {
-        val alice = party("alice000")
-        val bob = party("bob00000")
-        val mallory = party("mallory0")
-        val header = MessageCrypto.header("m4", alice.nodeId, 1L, bob.nodeId)
-
-        val sealed = alice.crypto.seal(content("hi"), header, mapOf(bob.nodeId to bob.bundle))!!
-        // Verifying against the wrong identity's signing key must fail.
-        assertNull(bob.crypto.open(sealed.envelope, sealed.sig, header, bob.nodeId, mallory.bundle))
+        val envelope = alice.crypto.seal(content("hi"), header, mapOf(bob.nodeId to bob.bundle))!!
+        val tampered = envelope.copy(ct = envelope.ct.dropLast(4) + "AAAA")
+        assertNull(bob.crypto.open(tampered, header, bob.nodeId))
     }
 
     @Test
@@ -101,18 +94,9 @@ class MessageCryptoTest {
         val header = MessageCrypto.header("m5", alice.nodeId, 1L, bob.nodeId)
         val wrongHeader = MessageCrypto.header("m5", alice.nodeId, 2L, bob.nodeId) // different sentAt
 
-        val sealed = alice.crypto.seal(content("hi"), header, mapOf(bob.nodeId to bob.bundle))!!
-        assertNull(bob.crypto.open(sealed.envelope, sealed.sig, wrongHeader, bob.nodeId, alice.bundle))
-    }
-
-    @Test
-    fun missingSignatureIsRejected() {
-        val alice = party("alice000")
-        val bob = party("bob00000")
-        val header = MessageCrypto.header("m6", alice.nodeId, 1L, bob.nodeId)
-
-        val sealed = alice.crypto.seal(content("hi"), header, mapOf(bob.nodeId to bob.bundle))!!
-        assertNull(bob.crypto.open(sealed.envelope, null, header, bob.nodeId, alice.bundle))
+        val envelope = alice.crypto.seal(content("hi"), header, mapOf(bob.nodeId to bob.bundle))!!
+        // The header is the AEAD AAD, so unwrapping/decrypting under the wrong header fails.
+        assertNull(bob.crypto.open(envelope, wrongHeader, bob.nodeId))
     }
 
     @Test
@@ -122,17 +106,42 @@ class MessageCryptoTest {
         assertNull(alice.crypto.seal(content("hi"), header, emptyMap()))
     }
 
+    // --- the one frame signature authenticates without decryption (the carrier path) ---
+
+    @Test
+    fun carrierAuthenticatesFrameWithoutDecrypting() {
+        // A carrier (not a recipient, holds no wrapped key) authenticates a DM by verifying the frame
+        // signature over the signed routing-envelope bytes — exactly MeshManager.canCarry.
+        val alice = party("alice000")
+        val bob = party("bob00000")
+        val carol = party("carol000") // the carrier
+        val header = MessageCrypto.header("m1", alice.nodeId, 100L, bob.nodeId)
+        val envelope = alice.crypto.seal(content("hi bob"), header, mapOf(bob.nodeId to bob.bundle))!!
+
+        val env = RelayEnvelope(
+            type = FrameType.CHAT, id = "m1", senderId = alice.nodeId, sentAt = 100L, recipientId = bob.nodeId,
+            payload = WireCodec.encodePayload(ChatContent(enc = envelope)),
+        )
+        val signed = WireCodec.encodeEnvelope(env)
+        val sig = alice.crypto.signRaw(signed)
+
+        assertTrue("carrier verifies authorship", MessageCrypto.verify(alice.bundle, sig, signed))
+        assertNull("but cannot read it — no wrapped key", carol.crypto.open(envelope, header, carol.nodeId))
+    }
+
+    // --- generic raw sign / verify (frame-level signing) ---
+
     @Test
     fun genericSignAndVerifyRoundTrips() {
         val alice = party("alice000")
         val bytes = "frame-canonical-bytes".toByteArray()
-        assertTrue(MessageCrypto.verify(alice.bundle, alice.crypto.sign(bytes), bytes))
+        assertTrue(MessageCrypto.verify(alice.bundle, alice.crypto.signRaw(bytes), bytes))
     }
 
     @Test
     fun genericVerifyRejectsTamperedBytes() {
         val alice = party("alice000")
-        val sig = alice.crypto.sign("frame-canonical-bytes".toByteArray())
+        val sig = alice.crypto.signRaw("frame-canonical-bytes".toByteArray())
         assertFalse(MessageCrypto.verify(alice.bundle, sig, "frame-canonical-bytez".toByteArray()))
     }
 
@@ -141,7 +150,7 @@ class MessageCryptoTest {
         val alice = party("alice000")
         val mallory = party("mallory0")
         val bytes = "frame-canonical-bytes".toByteArray()
-        assertFalse(MessageCrypto.verify(mallory.bundle, alice.crypto.sign(bytes), bytes))
+        assertFalse(MessageCrypto.verify(mallory.bundle, alice.crypto.signRaw(bytes), bytes))
     }
 
     @Test
@@ -150,53 +159,7 @@ class MessageCryptoTest {
         assertFalse(MessageCrypto.verify(alice.bundle, null, "frame-canonical-bytes".toByteArray()))
     }
 
-    @Test
-    fun carrierVerifiesEnvelopeWithoutDecrypting() {
-        // A relay/carrier (not a recipient, holds no wrapped key) authenticates a DM before carrying it.
-        val alice = party("alice000")
-        val bob = party("bob00000")
-        val carol = party("carol000") // the carrier
-        val header = MessageCrypto.header("m1", alice.nodeId, 100L, bob.nodeId)
-        val sealed = alice.crypto.seal(content("hi bob"), header, mapOf(bob.nodeId to bob.bundle))!!
-
-        assertTrue(carol.crypto.verifyEnvelope(alice.bundle, sealed.sig, header, sealed.envelope))
-    }
-
-    @Test
-    fun carrierVerifiesGroupEnvelopeWithGroupThreadHeader() {
-        // A group message's header thread is the group id (not a recipientId), so a carrier must build
-        // the verify header from the group id to authenticate it — this guards MeshManager.canCarry.
-        val alice = party("alice000")
-        val bob = party("bob00000")
-        val carol = party("carol000")
-        val dave = party("dave0000") // the carrier — not a member, holds no wrapped key
-        val header = MessageCrypto.header("g1", alice.nodeId, 5L, "g-team")
-        val sealed = alice.crypto.seal(
-            content("hi team"),
-            header,
-            mapOf(bob.nodeId to bob.bundle, carol.nodeId to carol.bundle),
-        )!!
-
-        assertTrue(dave.crypto.verifyEnvelope(alice.bundle, sealed.sig, header, sealed.envelope))
-        // The old DM-style header (recipientId.orEmpty() == "" for a group) builds the wrong thread and fails.
-        val wrongHeader = MessageCrypto.header("g1", alice.nodeId, 5L, "")
-        assertFalse(dave.crypto.verifyEnvelope(alice.bundle, sealed.sig, wrongHeader, sealed.envelope))
-    }
-
-    @Test
-    fun verifyEnvelopeRejectsTamperedEnvelopeWrongSenderAndMissingSig() {
-        val alice = party("alice000")
-        val bob = party("bob00000")
-        val mallory = party("mallory0")
-        val carol = party("carol000")
-        val header = MessageCrypto.header("m2", alice.nodeId, 1L, bob.nodeId)
-        val sealed = alice.crypto.seal(content("hi"), header, mapOf(bob.nodeId to bob.bundle))!!
-
-        val tampered = sealed.envelope.copy(ct = sealed.envelope.ct.dropLast(4) + "AAAA")
-        assertFalse(carol.crypto.verifyEnvelope(alice.bundle, sealed.sig, header, tampered))
-        assertFalse(carol.crypto.verifyEnvelope(mallory.bundle, sealed.sig, header, sealed.envelope))
-        assertFalse(carol.crypto.verifyEnvelope(alice.bundle, null, header, sealed.envelope))
-    }
+    // --- bundle round-trip ---
 
     @Test
     fun publicKeyBundleEncodeDecodeRoundTrips() {

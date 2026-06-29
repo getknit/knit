@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh
 
-import app.getknit.knit.mesh.protocol.Frame
+import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -41,9 +42,9 @@ class FakeLoopTransport(val nodeId: String) : MeshTransport {
     override fun stop() = Unit
     override fun heal() = Unit
 
-    override suspend fun send(frame: Frame, to: Peer?) {
+    override suspend fun send(wire: WireEnvelope, to: Peer?) {
         val targets = if (to == null) links.values.toList() else listOfNotNull(links[to.nodeId])
-        targets.forEach { it.deliver(frame, nodeId) }
+        targets.forEach { it.deliver(wire, nodeId) }
     }
 
     override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) {
@@ -53,8 +54,10 @@ class FakeLoopTransport(val nodeId: String) : MeshTransport {
         )
     }
 
-    private suspend fun deliver(frame: Frame, fromNodeId: String) {
-        _inbound.emit(InboundFrame(frame, fromNodeId))
+    private suspend fun deliver(wire: WireEnvelope, fromNodeId: String) {
+        // Mirror the real transport: decode the routing envelope on receipt (drop undecodable bytes).
+        val envelope = WireCodec.decodeEnvelope(wire.signed) ?: return
+        _inbound.emit(InboundFrame(wire, envelope, fromNodeId))
     }
 
     private fun refreshNeighbors() {

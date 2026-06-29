@@ -1,6 +1,6 @@
 package app.getknit.knit.mesh
 
-import app.getknit.knit.mesh.protocol.Frame
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +26,6 @@ class DemoTransport(onlineNodeIds: Set<String>) : MeshTransport {
     override fun start() = Unit
     override fun stop() = Unit
     override fun heal() = Unit
-    override suspend fun send(frame: Frame, to: Peer?) = Unit
+    override suspend fun send(wire: WireEnvelope, to: Peer?) = Unit
     override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) = Unit
 }

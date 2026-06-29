@@ -29,7 +29,7 @@ class Identity(
     suspend fun nodeId(): String =
         cachedNodeId ?: NodeId.fromPublicKeyBundle(publicKeyBundle()).also { cachedNodeId = it }
 
-    /** The base64 public-key bundle this device advertises in its profile (`ProfileFrame.pubKey`). */
+    /** The base64 public-key bundle this device advertises in its profile (`ProfileContent.pubKey`). */
     fun publicKeyBundle(): String = keyStore.keys().publicBundle.encoded
 
     /** This device's soft block-continuity tag (null when the platform reports no stable device id). */

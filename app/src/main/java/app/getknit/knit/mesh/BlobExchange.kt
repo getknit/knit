@@ -1,6 +1,10 @@
 package app.getknit.knit.mesh
 
-import app.getknit.knit.mesh.protocol.BlobRequestFrame
+import app.getknit.knit.mesh.protocol.BlobReqContent
+import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -30,7 +34,7 @@ class BlobExchange(
     suspend fun want(hash: String) {
         if (store.has(hash)) return
         if (!fetching.add(hash)) return
-        val req = BlobRequestFrame(id = newRequestId(), senderId = selfId(), hash = hash)
+        val req = blobRequest(selfId(), hash)
         transport.neighbors.value.forEach { transport.send(req, it) }
     }
 
@@ -38,9 +42,20 @@ class BlobExchange(
     suspend fun onNeighborAdded(peer: Peer) {
         if (fetching.isEmpty()) return
         val me = selfId()
-        fetching.forEach { hash ->
-            transport.send(BlobRequestFrame(id = newRequestId(), senderId = me, hash = hash), peer)
-        }
+        fetching.forEach { hash -> transport.send(blobRequest(me, hash), peer) }
+    }
+
+    /**
+     * A point-to-point, unsigned blob request wrapped for the transport: `relay = false` so the router
+     * never floods it (it propagates hop-by-hop via [onRequest]), and an empty signature (blob requests
+     * are unsigned by design — see `MeshManager.verifyInbound`).
+     */
+    private fun blobRequest(me: String, hash: String): WireEnvelope {
+        val env = RelayEnvelope(
+            type = FrameType.BLOB_REQ, id = newRequestId(), senderId = me,
+            payload = WireCodec.encodePayload(BlobReqContent(hash)),
+        )
+        return WireEnvelope(relay = false, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
     }
 
     /** A neighbor asked us for [hash]: serve it if held, else record the wanter and pull it ourselves. */

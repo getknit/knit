@@ -89,19 +89,30 @@ frames.
 - **DI:** declare singletons/ViewModels in the `di/` modules; resolve ViewModels in Compose with
   `org.koin.androidx.compose.koinViewModel()` and the ViewModel DSL from
   `org.koin.core.module.dsl.viewModel` (not the deprecated `androidx.viewmodel.dsl` one).
-- **Wire format** (`mesh/protocol/Wire.kt`) is a `@Serializable sealed interface Frame` serialized as
-  **binary CBOR** (`WireCodec`, `encodeDefaults = false`) — not JSON. New frame types are added as
-  sealed subclasses with a `@SerialName` (current set: `chat`, `groupupdate`, `profile`, `receipt`,
-  `reaction`, `blobreq`); a non-flooded control frame overrides `relayable` to `false`.
-  `ChatFrame.recipientId`/`group` address DMs/groups (cleartext, for routing); `ChatFrame.enc` +
-  `sig` carry the E2E envelope + Ed25519 signature and `ProfileFrame.pubKey` the public-key bundle —
-  all now in use (see the E2E section below). **Every flooded frame is Ed25519-signed** (`Frame.sig`,
-  hoisted onto the interface alongside `senderId`): `Frame.signedBytes()` is the canonical blob
-  (the frame's own CBOR with the mutable `ttl`/`hops` and the `sig` slot normalized out, so relays
-  can't break it); `blobreq` is the only unsigned frame. `MeshManager` signs on origination and
-  `verifyInbound` drops any flooded frame whose signature is missing/invalid or whose key doesn't
-  derive to `senderId`. Changing the encoding or a frame's shape is a coordinated wire-format break
-  (no version negotiation yet).
+- **Wire format** (`mesh/protocol/Wire.kt`) is **layered** binary CBOR (`WireCodec`,
+  `encodeDefaults = false`, `ignoreUnknownKeys = true`) — not JSON, and deliberately structured so it
+  can evolve *additively* without another break. **Read `docs/WIRE_COMPAT.md` before changing any wire
+  type.** The three layers:
+  - `WireEnvelope` (frozen, the on-radio unit): mutable `ttl`/`hops`, a `relay` flag, the raw `sig`, and
+    the opaque `signed` blob. It is the ONLY thing a relay re-encodes — `WireEnvelope.relayed()` rewrites
+    just ttl/hops; `signed`+`sig` pass through **byte-for-byte**, so the originator's signed bytes
+    survive every hop (this is what kills the old "an old relay re-encodes and breaks the signature"
+    bomb). `sig`/`signed`/`payload` are `@ByteString ByteArray` (opaque), never nested objects.
+  - `RelayEnvelope` (what `signed` decodes to): the cleartext routing fields a relay/carrier needs —
+    `type` (a plain **string** discriminator, so an unknown future type decodes instead of throwing),
+    `id`, `senderId`, `sentAt`, `recipientId`, `group` — plus the opaque per-type `payload`.
+  - Per-type content (`ChatContent`, `ProfileContent`, `GroupLeaveContent`, `ReceiptContent`,
+    `ReactionContent`, `BlobReqContent`) lives inside `payload`; only endpoints parse it. Current
+    `type`s: `chat`, `groupupdate`, `profile`, `receipt`, `reaction`, `groupleave`, `blobreq`.
+  **One signature authenticates every type**: `WireEnvelope.sig` is raw Ed25519 over `signed` (which
+  binds `type`/`id`/`senderId`), verified byte-exact in `MeshManager.verifyInbound`; `blobreq` (with
+  `relay = false`) is the only unsigned frame. `MeshManager` signs on origination; `verifyInbound` drops
+  any flooded frame whose signature is missing/invalid or whose key doesn't derive to `senderId`, but
+  the router still relays unknown/unverifiable frames verbatim so an old build is never a black hole.
+  `Protocol.VERSION`/`capabilities` ride (unauthenticated) in the Nearby endpoint-info and
+  (authenticated) on `ProfileContent`. Changing `WireEnvelope`'s shape, the `WireCodec` config, the
+  signing input, the `SERVICE_ID`, or removing/renaming a field/type is a coordinated wire break;
+  adding a nullable/defaulted field or a new `type` is additive — see `docs/WIRE_COMPAT.md`.
 - **Pure, testable mesh logic.** `MeshRouter`, `SeenSet`, `WireCodec`, `MeshMetrics`, `BlobExchange`,
   and `Conversations` have no Android dependencies and are unit-tested with `FakeLoopTransport`/fakes.
   Keep them that way. `MeshRouter` relay timing is driven by an injectable `jitter` lambda so tests
@@ -149,25 +160,29 @@ into `/sdcard/Pictures` if you need an image to select.
 
 DMs and group chats are E2E-encrypted; the broadcast "Nearby" room stays plaintext by design (no fixed
 recipient set). Scheme (static keys, no ratchet): a per-message random content key AES-256-GCM-encrypts
-the `MessageContent` (body + mentions + attachment refs) into `ChatFrame.enc`, the content key is
-wrapped (Tink HPKE/X25519) to each recipient, and the envelope is Ed25519-signed into `ChatFrame.sig`.
+the `MessageContent` (body + mentions + attachment refs) into an `EncEnvelope` carried inside the
+encrypted `ChatContent.enc` payload, and the content key is wrapped (Tink HPKE/X25519) to each recipient.
 Identity keypairs live in `IdentityKeyStore` (AndroidKeyStore-wrapped, **outside** the destructively-
-migrated DB), advertised via `ProfileFrame.pubKey`, pinned TOFU into `PeerEntity.pubKey`, and confirmed
+migrated DB), advertised via `ProfileContent.pubKey`, pinned TOFU into `PeerEntity.pubKey`, and confirmed
 out of band via the safety-number/QR screen (`PeerEntity.verified`). Image attachments are encrypted to
 a per-attachment key and content-addressed by ciphertext hash, so `BlobExchange`/`BlobStore` are
 unchanged. **Decrypt/verify failures must never throw out of the inbound handler** — `onDeliver` runs
 before the router schedules the relay, so a throw would stop forwarding (see `MeshManager.decryptAndDeliver`).
 
-The **plaintext** flooded frames (broadcast `chat`, `profile`, `groupupdate`, `reaction`, `receipt`)
-are not encrypted but are now **authenticated**: each is Ed25519-signed with the sender's identity key
-over `Frame.signedBytes()`, and `MeshManager.verifyInbound` (the gate at the top of `onDeliver`) drops
-any that fail — closing the prior gap where a relay could forge a frame (e.g. a profile with a
-different name) under another node's `senderId`. Verification reuses the encrypted-chat key path
-(`peers.find(senderId).pubKey` → `PublicKeyBundle.verifier()`, guarded by
-`NodeId.fromPublicKeyBundle == senderId`); a `profile` uses its in-band `pubKey` since first contact
-precedes any pin. Encrypted `chat` keeps its *envelope* signature semantics on `sig` (verified by
-`MessageCrypto.open`); `blobreq` stays unsigned. Same no-throw contract applies: `verifyInbound`
-swallows failures and returns false (drop locally) so the router still relays.
+**One signature authenticates every flooded frame** (encrypted *and* plaintext: broadcast `chat`,
+`profile`, `groupupdate`, `groupleave`, `reaction`, `receipt`). `WireEnvelope.sig` is raw Ed25519 over
+`WireEnvelope.signed` (the canonical `RelayEnvelope` CBOR, which includes the encrypted `ChatContent.enc`
+for a DM/group message), and `MeshManager.verifyInbound` (the gate at the top of `onDeliver`) verifies it
+**byte-exact over the received `signed` bytes** — no re-encode — and drops any that fail, closing the gap
+where a relay could forge a frame (e.g. a profile with a different name) under another node's `senderId`.
+Verification reuses the key path (`peers.find(senderId).pubKey` → `PublicKeyBundle.verifier()`, guarded
+by `NodeId.fromPublicKeyBundle == senderId`); a `profile` uses the `pubKey` in its own `ProfileContent`
+payload since first contact precedes any pin. `blobreq` stays unsigned. Same no-throw contract applies:
+`verifyInbound` swallows failures and returns false (drop locally) so the router still relays. The old
+separate envelope signature (`MessageCrypto.signingBytes`/`verifyEnvelope`) is gone — subsumed by the one
+frame signature; `MessageCrypto.open` now only unwraps + AES-decrypts. `EncEnvelope.v`/`MessageContent.v`
+gate the crypto-scheme/content-schema versions in `MeshManager.decrypt` (unknown ⇒ drop locally + count,
+but still relay — a delivery gate, never a relay gate; see `docs/WIRE_COMPAT.md`).
 
 ## Store-and-forward message delivery (implemented)
 
@@ -178,9 +193,10 @@ destination and stays flood-only). A node persists the messages it originates (`
 (`ORIGIN_RELAY`) into the encrypted `forward_store` table, and when a neighbor joins (`watchNeighbors`
 newcomers → `ForwardSync.onNeighborAdded`) **unicasts** the carried ones to it (skipping a
 per-peer-per-session memo + the message's own author). Re-served frames re-enter the existing
-`handleInbound` path — deliver + relay, no separate delivery code. A stored frame is kept routing-reset
-(`hops=0`, default `ttl`, signature intact — `signedBytes()` covers neither), so it re-floods with a full
-hop budget when re-served much later.
+`handleInbound` path — deliver + relay, no separate delivery code. A stored frame keeps only its immutable
+signed blob + signature (`CarriedFrame`); a fresh `WireEnvelope` (full `ttl`, `hops=0`) is stamped around
+it on re-serve, so it re-floods with a full hop budget when re-served much later (the signature covers
+neither ttl nor hops, which live in the unsigned wrapper).
 
 **DMs** are carried only when relayed *toward someone else* (gated `!isForMe` in `onDeliver`) and offered
 to any newcomer: the recipient delivers + acks, anyone else relays the frame onward. A **delivery receipt
@@ -189,7 +205,7 @@ from the addressed recipient** purges the carried copy mesh-wide and tombstones 
 can't evict an undelivered message — the same recipient check also gates `MeshManager.handleReceipt` →
 `markReceived` (fixing a prior tick-spoof where any signed receipt flipped the ✓✓).
 
-**Group messages** carry a cleartext member roster (`ChatFrame.group.members`) on every frame, so custody
+**Group messages** carry a cleartext member roster (`RelayEnvelope.group.members`) on every frame, so custody
 exploits it: a node carries a group message whether or not it is itself a member (for other members who
 may be offline), but **push is member-targeted** — `onNeighborAdded` offers a carried group frame only to
 a roster member; once any member receives it, the normal flood re-distributes it to the rest, so there's
@@ -199,9 +215,8 @@ so it is **never vaccine-purged** — the TTL/cap sweep is its only bound.
 Bounds (`ForwardRepository`): a per-message **TTL** sweep (startup + a 10-min loop + the heartbeat
 `heal()`), a **global cap**, a **per-sender quota**, and a **per-group quota**, all with
 relayed-before-our-own eviction. A carrier stores a message only when its sender is **pinned, not blocked,
-and its envelope signature verifies** (`MeshManager.canCarry` → `MessageCrypto.verifyEnvelope`,
-authenticating without decrypting — the verify header threads the group id for a group message, the
-recipient id for a DM, matching what the sender signed). Notifications fire only on first delivery
+and its frame signature verifies** (`MeshManager.canCarry` → `MessageCrypto.verify` over the received
+`signed` bytes, authenticating without decrypting — a carrier holds no wrapped key). Notifications fire only on first delivery
 (`deliverChat` `isNew` gate, conversation-agnostic) so a re-served message (after the 10-min `SeenSet`
 window, or a restart that empties it) never replays. The pure logic (`ForwardSync`, `ForwardStore`) is
 JVM-tested with `FakeLoopTransport` (`ForwardSyncTest`).

@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.SystemClock
 import android.util.Log
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
@@ -16,8 +17,9 @@ import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.isValidBlobHash
 import app.getknit.knit.mesh.power.PowerPolicy
 import app.getknit.knit.mesh.power.PowerStateSource
-import app.getknit.knit.mesh.protocol.Frame
+import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
@@ -111,9 +113,11 @@ class NearbyTransport(
 
     private data class PendingFile(val endpointId: String, val uri: android.net.Uri)
 
-    // endpointId <-> nodeId (the Nearby endpoint name is the peer's nodeId)
+    // endpointId <-> nodeId (the Nearby endpoint name encodes the peer's nodeId; see [Protocol.parse])
     private val endpointToNode = ConcurrentHashMap<String, String>()
     private val nodeToEndpoint = ConcurrentHashMap<String, String>()
+    // endpointId -> the peer's advertised protocol version + capabilities (parsed from endpoint-info).
+    private val peerWire = ConcurrentHashMap<String, Protocol.PeerWire>()
     private val connected = ConcurrentHashMap.newKeySet<String>() // connected endpointIds
     private val connecting = ConcurrentHashMap.newKeySet<String>() // in-flight connection requests
 
@@ -152,13 +156,14 @@ class NearbyTransport(
         runCatching { client.stopAllEndpoints() }
         runCatching { client.stopAdvertising() }
         runCatching { client.stopDiscovery() }
-        endpointToNode.clear(); nodeToEndpoint.clear(); connected.clear(); connecting.clear()
+        endpointToNode.clear(); nodeToEndpoint.clear(); peerWire.clear()
+        connected.clear(); connecting.clear()
         retry.clear()
         _neighbors.value = emptySet()
     }
 
-    override suspend fun send(frame: Frame, to: Peer?) {
-        val bytes = WireCodec.encode(frame)
+    override suspend fun send(wire: WireEnvelope, to: Peer?) {
+        val bytes = WireCodec.encodeWire(wire)
         val payload = Payload.fromBytes(bytes)
         val targets = if (to == null) {
             connected.toList()
@@ -201,7 +206,7 @@ class NearbyTransport(
             .setStrategy(STRATEGY)
             .setLowPower(true)
             .build()
-        client.startAdvertising(localNodeId, SERVICE_ID, lifecycleCallback, options)
+        client.startAdvertising(Protocol.advertise(localNodeId), SERVICE_ID, lifecycleCallback, options)
             .addOnSuccessListener { _health.value = TransportHealth.Healthy }
             .addOnFailureListener { e ->
                 // STATUS_ALREADY_ADVERTISING is benign — we're still advertising, nothing died. Any
@@ -273,7 +278,7 @@ class NearbyTransport(
         // Requests run one-at-a-time on connectDispatcher; await() lets each finish before the next.
         scope.launch(connectDispatcher) {
             runCatching {
-                client.requestConnection(localNodeId, endpointId, lifecycleCallback).await()
+                client.requestConnection(Protocol.advertise(localNodeId), endpointId, lifecycleCallback).await()
             }.onFailure { e ->
                 connecting.remove(endpointId)
                 scheduleRetry(endpointId)
@@ -291,9 +296,9 @@ class NearbyTransport(
 
     private val discoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            if (info.endpointName == localNodeId) return // discovered self
-            endpointToNode[endpointId] = info.endpointName
-            nodeToEndpoint[info.endpointName] = endpointId
+            val wire = Protocol.parse(info.endpointName)
+            if (wire.nodeId == localNodeId) return // discovered self
+            mapEndpoint(endpointId, wire)
             connectTo(endpointId)
         }
 
@@ -304,8 +309,7 @@ class NearbyTransport(
 
     private val lifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-            endpointToNode[endpointId] = info.endpointName
-            nodeToEndpoint[info.endpointName] = endpointId
+            mapEndpoint(endpointId, Protocol.parse(info.endpointName))
             // Open mesh: accept every connection (Nearby's authenticationDigits are ignored).
             client.acceptConnection(endpointId, payloadCallback)
         }
@@ -328,6 +332,13 @@ class NearbyTransport(
         }
     }
 
+    /** Records the endpoint↔node mapping and the peer's advertised version/capabilities. */
+    private fun mapEndpoint(endpointId: String, wire: Protocol.PeerWire) {
+        endpointToNode[endpointId] = wire.nodeId
+        nodeToEndpoint[wire.nodeId] = endpointId
+        peerWire[endpointId] = wire
+    }
+
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             when (payload.type) {
@@ -346,9 +357,24 @@ class NearbyTransport(
                         tryFinalizeFile(header.payloadId)
                         return
                     }
-                    val frame = WireCodec.decode(bytes) ?: return
-                    val fromNode = endpointToNode[endpointId] ?: return
-                    _inbound.tryEmit(InboundFrame(frame, fromNode))
+                    val wire = WireCodec.decodeWire(bytes)
+                    if (wire == null) {
+                        metrics.onDropped(DropReason.DECODE_FAILED)
+                        Log.w(TAG, "drop payload from $endpointId: undecodable wrapper (${bytes.size}B)")
+                        return
+                    }
+                    val envelope = WireCodec.decodeEnvelope(wire.signed)
+                    if (envelope == null) {
+                        metrics.onDropped(DropReason.DECODE_FAILED)
+                        Log.w(TAG, "drop payload from $endpointId: undecodable envelope")
+                        return
+                    }
+                    val fromNode = endpointToNode[endpointId]
+                    if (fromNode == null) {
+                        metrics.onDropped(DropReason.UNKNOWN_ENDPOINT)
+                        return
+                    }
+                    _inbound.tryEmit(InboundFrame(wire, envelope, fromNode))
                 }
                 Payload.Type.FILE -> {
                     // Capture the destination Uri now; the bytes arrive by onPayloadTransferUpdate.
@@ -439,7 +465,11 @@ class NearbyTransport(
     }
 
     private fun refreshNeighbors() {
-        _neighbors.value = connected.mapNotNull { endpointToNode[it] }.map { Peer(it) }.toSet()
+        _neighbors.value = connected.mapNotNull { endpointId ->
+            val nodeId = endpointToNode[endpointId] ?: return@mapNotNull null
+            val wire = peerWire[endpointId]
+            Peer(nodeId, wire?.protoVersion ?: 0, wire?.capabilities ?: 0L)
+        }.toSet()
     }
 
     private fun encodeFileHeader(header: FileHeaderWire): ByteArray =
@@ -462,7 +492,10 @@ class NearbyTransport(
 
     private companion object {
         const val TAG = "NearbyTransport"
-        const val SERVICE_ID = "app.getknit.knit.MESH"
+        // Bumped to ".v2" with the layered wire-format break: old (pre-layer) builds advertise the
+        // unversioned id, so they hard-partition off this mesh rather than connect and silently drop
+        // each other's frames. Keep in lockstep with any future coordinated wire break.
+        const val SERVICE_ID = "app.getknit.knit.MESH.v2"
         val STRATEGY: Strategy = Strategy.P2P_CLUSTER
 
         // Connection retry backoff: first retry after 5s, doubling to a 5-minute ceiling.

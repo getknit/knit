@@ -201,6 +201,14 @@ private fun MetricsSection(metrics: MeshMetrics.Snapshot) {
             stringResource(R.string.diagnostics_metric_bytes_sent),
             Formatter.formatShortFileSize(context, metrics.bytesSent),
         )
+        // Inbound drops are normally zero; surface a total plus a per-reason breakdown only when any
+        // occur, so a staged rollout can spot a version causing frames to be discarded.
+        if (metrics.framesDropped > 0) {
+            MetricRow(stringResource(R.string.diagnostics_metric_dropped), metrics.framesDropped.toString())
+            metrics.dropsByReason.forEach { (reason, count) ->
+                MetricRow("   ${reason.name}", count.toString())
+            }
+        }
     }
 }
 

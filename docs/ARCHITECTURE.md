@@ -199,7 +199,17 @@ avatar dedup** (§8), `heal()`/`restart()`, the periodic metrics log, and `neigh
 
 ## 4. Wire protocol (`mesh/protocol/Wire.kt`)
 
-A `@Serializable sealed interface Frame` carried as **binary CBOR** in a Nearby `BYTES` payload.
+> **Note (layered wire-format break):** the single `@Serializable sealed interface Frame` described
+> below has been replaced by a **three-layer envelope** — a frozen `WireEnvelope` (ttl/hops/sig/opaque
+> `signed`) wrapping a `RelayEnvelope` (routing fields + opaque `payload`) wrapping per-type content
+> (`ChatContent`, `ProfileContent`, …). Relays forward the `signed` bytes byte-for-byte, so additive
+> fields and new `type`s no longer require a break. The catalog below still describes the *logical*
+> fields (now split: routing fields → `RelayEnvelope`, content → the per-type payloads), and the per-
+> frame signature is now one `WireEnvelope.sig` over `signed`. See **`docs/WIRE_COMPAT.md`** and the
+> "Wire format" bullet in `AGENTS.md` for the current model and the rules that keep changes additive.
+
+Historically (pre-layering) a `@Serializable sealed interface Frame` carried as **binary CBOR** in a
+Nearby `BYTES` payload:
 
 ```kotlin
 sealed interface Frame {

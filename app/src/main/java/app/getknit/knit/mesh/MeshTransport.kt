@@ -1,12 +1,18 @@
 package app.getknit.knit.mesh
 
-import app.getknit.knit.mesh.protocol.Frame
+import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import java.io.File
 
-/** A directly-connected mesh neighbor, identified by its node id. */
-data class Peer(val nodeId: String)
+/**
+ * A directly-connected mesh neighbor, identified by its node id. [protoVersion]/[capabilities] are the
+ * peer's advertised protocol version and feature bits parsed from the Nearby endpoint-info (see
+ * [app.getknit.knit.mesh.protocol.Protocol]); they default to 0 (unknown) for a bare/legacy peer and in
+ * the non-radio fakes. They are an unauthenticated routing hint, never a trust input.
+ */
+data class Peer(val nodeId: String, val protoVersion: Int = 0, val capabilities: Long = 0L)
 
 /**
  * Coarse health of the radio layer. [Degraded] means the last advertise/discover attempt failed —
@@ -16,8 +22,12 @@ data class Peer(val nodeId: String)
  */
 enum class TransportHealth { Healthy, Degraded }
 
-/** A frame received from a neighbor, tagged with the neighbor it arrived from. */
-data class InboundFrame(val frame: Frame, val fromNodeId: String)
+/**
+ * A frame received from a neighbor: the verbatim [wire] (its [WireEnvelope.signed]/[WireEnvelope.sig]
+ * are forwarded byte-for-byte on relay) plus the already-decoded [envelope] (so the router and delivery
+ * paths don't each re-decode it), tagged with the neighbor it arrived from.
+ */
+data class InboundFrame(val wire: WireEnvelope, val envelope: RelayEnvelope, val fromNodeId: String)
 
 /** What a transferred file is, so the receiver can route an avatar apart from a chat attachment. */
 enum class FileKind { AVATAR, ATTACHMENT }
@@ -50,7 +60,7 @@ interface MeshTransport {
     /** Coarse radio health (e.g. flips to [TransportHealth.Degraded] when Quick Share seizes the radios). */
     val health: StateFlow<TransportHealth>
 
-    /** Frames received from neighbors (after transport-level delivery, before mesh dedup/relay). */
+    /** Frames received from neighbors (after transport-level decode, before mesh dedup/relay). */
     val inbound: Flow<InboundFrame>
 
     /** Files received from neighbors (avatars, attachments), emitted once fully transferred and saved. */
@@ -63,8 +73,8 @@ interface MeshTransport {
     /** Hints the transport to rescan / reconnect now (e.g. after device motion or a heartbeat). */
     fun heal()
 
-    /** Sends [frame] to one neighbor, or to all neighbors when [to] is null. */
-    suspend fun send(frame: Frame, to: Peer? = null)
+    /** Sends [wire] to one neighbor, or to all neighbors when [to] is null. */
+    suspend fun send(wire: WireEnvelope, to: Peer? = null)
 
     /** Sends a file (avatar or attachment) tagged with [meta] to a single neighbor. */
     suspend fun sendFile(file: File, to: Peer, meta: FileMeta)

@@ -4,14 +4,10 @@ import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
-import app.getknit.knit.mesh.protocol.DEFAULT_TTL
-import app.getknit.knit.mesh.protocol.Frame
-import app.getknit.knit.mesh.protocol.ProfileFrame
-import app.getknit.knit.mesh.protocol.ReactionFrame
-import app.getknit.knit.mesh.protocol.cappedTtl
-import app.getknit.knit.mesh.protocol.incrementHop
-import app.getknit.knit.mesh.protocol.signedBytes
-import app.getknit.knit.mesh.protocol.withSig
+import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.WireCodec
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
 import org.junit.Assert.assertFalse
@@ -20,11 +16,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * End-to-end frame-level signature authentication for flooded (unencrypted) frames, with real Tink
- * keypairs. A frame is signed over its canonical [signedBytes] with the sender's Ed25519 identity key
- * and verified against a bundle that must derive to the claimed senderId — exactly what
- * `MeshManager.sign` (outbound) and `MeshManager.verifyInbound` (inbound) do. This closes the forgery
- * gap where any relay could fabricate a broadcast chat/reaction/receipt/profile under another node's id.
+ * End-to-end frame-level signature authentication for flooded frames, with real Tink keypairs. The
+ * single [WireEnvelope.sig] is raw Ed25519 over the [WireEnvelope.signed] routing-envelope blob, and is
+ * verified byte-exact against a bundle that must derive to the claimed senderId — exactly what
+ * `MeshManager.sign` (outbound) and `MeshManager.verifyInbound` (inbound) do. Because a relay forwards
+ * `signed`/`sig` verbatim (it only mutates the outer ttl/hops), the signature holds at every hop.
  */
 class FrameSignatureTest {
 
@@ -40,36 +36,32 @@ class FrameSignatureTest {
         return Party(MessageCrypto(hybrid, sig), PublicKeyBundle.fromPrivate(hybrid, sig))
     }
 
-    /** Stamps [frame] with this party's signature (mirrors MeshManager.sign). */
-    private fun Party.sign(frame: Frame): Frame = frame.withSig(crypto.sign(frame.signedBytes()))
+    private fun reaction(senderId: String, id: String = "x1") =
+        RelayEnvelope(type = FrameType.REACTION, id = id, senderId = senderId, sentAt = 1L, payload = ByteArray(0))
 
-    /** Verifies [frame]'s signature against [bundle] (the core of MeshManager.verifyInbound). */
-    private fun verify(bundle: PublicKeyBundle, frame: Frame): Boolean =
-        MessageCrypto.verify(bundle, frame.sig, frame.signedBytes())
+    /** Wraps + signs [env] with this party's key (mirrors MeshManager.sign). */
+    private fun Party.sign(env: RelayEnvelope): WireEnvelope {
+        val signed = WireCodec.encodeEnvelope(env)
+        return WireEnvelope(sig = crypto.signRaw(signed), signed = signed)
+    }
+
+    /** Verifies [wire]'s signature against [bundle] (the core of MeshManager.verifyInbound). */
+    private fun verify(bundle: PublicKeyBundle, wire: WireEnvelope): Boolean =
+        MessageCrypto.verify(bundle, wire.sig, wire.signed)
 
     @Test
     fun signedFrameVerifiesAgainstSenderBundle() {
         val alice = party()
-        val frame = alice.sign(
-            ReactionFrame(id = "x1", senderId = alice.nodeId, messageId = "m1", emoji = "👍", sentAt = 1L),
-        )
-        assertTrue(verify(alice.bundle, frame))
+        assertTrue(verify(alice.bundle, alice.sign(reaction(alice.nodeId))))
     }
 
     @Test
     fun signatureSurvivesRelayHopAndTtlMutation() {
         val alice = party()
-        val origin = alice.sign(
-            ProfileFrame(
-                id = "p1", senderId = alice.nodeId, sentAt = 2L, name = "Alice", status = "hi",
-                pubKey = alice.bundle.encoded,
-            ),
-        )
-        // Simulate several relays: hops climb and ttl is capped — neither is authenticated, so the
-        // signature on the relayed copy must still verify.
-        var relayed: Frame = origin
-        repeat(3) { relayed = relayed.incrementHop() }
-        relayed = relayed.cappedTtl(DEFAULT_TTL)
+        val origin = alice.sign(reaction(alice.nodeId))
+        // Simulate several relays: only the outer wrapper's ttl/hops change; signed + sig are untouched.
+        var relayed = origin
+        repeat(3) { relayed = relayed.relayed() }
         assertNotEquals(origin.hops, relayed.hops)
         assertTrue(verify(alice.bundle, relayed))
     }
@@ -77,18 +69,17 @@ class FrameSignatureTest {
     @Test
     fun tamperedContentFailsVerification() {
         val alice = party()
-        val frame = alice.sign(
-            ReactionFrame(id = "x2", senderId = alice.nodeId, messageId = "m1", emoji = "👍", sentAt = 3L),
-        ) as ReactionFrame
-        // A relay flips the emoji but keeps the original signature.
-        assertFalse(verify(alice.bundle, frame.copy(emoji = "👎")))
+        val origin = alice.sign(reaction(alice.nodeId))
+        // A relay rewrites the routing envelope (different id) but keeps the original signature.
+        val tampered = WireEnvelope(sig = origin.sig, signed = WireCodec.encodeEnvelope(reaction(alice.nodeId, id = "x2")))
+        assertFalse(verify(alice.bundle, tampered))
     }
 
     @Test
     fun unsignedFrameFailsVerification() {
         val alice = party()
-        val frame = ReactionFrame(id = "x3", senderId = alice.nodeId, messageId = "m1", emoji = "👍", sentAt = 4L)
-        assertFalse(verify(alice.bundle, frame)) // sig == null
+        val unsigned = WireEnvelope(sig = ByteArray(0), signed = WireCodec.encodeEnvelope(reaction(alice.nodeId)))
+        assertFalse(verify(alice.bundle, unsigned))
     }
 
     @Test
@@ -96,11 +87,9 @@ class FrameSignatureTest {
         val victim = party()
         val attacker = party()
         // Attacker forges a reaction claiming the victim's nodeId, signed with the attacker's own key.
-        val forged = attacker.sign(
-            ReactionFrame(id = "x4", senderId = victim.nodeId, messageId = "m1", emoji = "💀", sentAt = 5L),
-        )
+        val forged = attacker.sign(reaction(victim.nodeId, id = "x4"))
         // The inbound gate first requires the verifying bundle to derive to senderId; the attacker's
-        // bundle does not, so it could never be selected for verification...
+        // bundle does not...
         assertNotEquals(victim.nodeId, NodeId.fromPublicKeyBundle(attacker.bundle.encoded))
         // ...and verifying the forged signature against the victim's real bundle fails anyway.
         assertFalse(verify(victim.bundle, forged))

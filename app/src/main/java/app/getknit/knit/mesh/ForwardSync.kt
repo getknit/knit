@@ -1,9 +1,7 @@
 package app.getknit.knit.mesh
 
-import app.getknit.knit.mesh.protocol.ChatFrame
-import app.getknit.knit.mesh.protocol.DEFAULT_TTL
-import app.getknit.knit.mesh.protocol.Frame
-import app.getknit.knit.mesh.protocol.ReceiptFrame
+import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.isStorable
 import java.util.concurrent.ConcurrentHashMap
 
@@ -28,9 +26,9 @@ class ForwardSync(
     private val transport: MeshTransport,
     private val store: ForwardStore,
     private val clock: () -> Long = { System.currentTimeMillis() },
-    // Authenticates a relayed DM before we carry it (sender pinned + not blocked + envelope signature
-    // valid), so a node never stores unauthenticated junk. Our own sends skip this (trivially authentic).
-    private val authenticate: suspend (ChatFrame) -> Boolean = { true },
+    // Authenticates a relayed DM before we carry it (sender pinned + not blocked + signature valid), so a
+    // node never stores unauthenticated junk. Our own sends skip this (trivially authentic).
+    private val authenticate: suspend (WireEnvelope, RelayEnvelope) -> Boolean = { _, _ -> true },
 ) {
     // nodeId -> ids already offered to that neighbor this connection, so a flapping peer isn't re-sent
     // the same backlog repeatedly. Cleared when the peer departs (see MeshManager.watchNeighbors).
@@ -43,30 +41,32 @@ class ForwardSync(
     /**
      * Capture an addressed chat frame we originated ([ForwardStore.ORIGIN_SELF]) or relayed
      * ([ForwardStore.ORIGIN_RELAY]) into the carry store. No-op for the broadcast room (not [isStorable]),
-     * an already-carried/already-acked id, or a relayed frame that fails authentication. The stored copy
-     * has its routing reset so it re-floods with a full hop budget when later re-served (the signature
-     * covers neither ttl nor hops).
+     * an already-carried/already-acked id, or a relayed frame that fails authentication. Only the
+     * immutable signed blob + signature are stored — a fresh wrapper is stamped on re-serve, so the frame
+     * re-floods with a full hop budget (the signature covers neither ttl nor hops).
      */
-    suspend fun onSeen(frame: Frame, origin: Int) {
-        if (frame !is ChatFrame || !frame.isStorable()) return
-        if (acked.contains(frame.id) || store.has(frame.id)) return
-        if (origin == ForwardStore.ORIGIN_RELAY && !authenticate(frame)) return
-        store.store(frame.copy(ttl = DEFAULT_TTL, hops = 0), origin, clock())
+    suspend fun onSeen(wire: WireEnvelope, envelope: RelayEnvelope, origin: Int) {
+        if (!envelope.isStorable()) return
+        if (acked.contains(envelope.id) || store.has(envelope.id)) return
+        if (origin == ForwardStore.ORIGIN_RELAY && !authenticate(wire, envelope)) return
+        store.store(CarriedFrame(envelope, wire.sig, wire.signed), origin, clock())
     }
 
     /**
      * A neighbor joined: unicast it every carried message not yet offered this connection (skipping ones
      * it authored). A DM is offered to any newcomer (the recipient delivers, anyone else relays it
      * onward); a group message is offered only to a roster member — once any member has it, the normal
-     * flood re-distributes it to the rest, so there's no need to spray it at non-members.
+     * flood re-distributes it to the rest, so there's no need to spray it at non-members. Each carried
+     * frame is re-wrapped in a fresh [WireEnvelope] (full ttl, hops 0) around its verbatim signed blob.
      */
     suspend fun onNeighborAdded(peer: Peer) {
         val offered = offeredTo.getOrPut(peer.nodeId) { ConcurrentHashMap.newKeySet() }
-        store.liveFrames(clock()).forEach { frame ->
-            if (frame.senderId == peer.nodeId) return@forEach // don't hand a message back to its author
-            val members = frame.group?.members
+        store.liveFrames(clock()).forEach { carried ->
+            val env = carried.envelope
+            if (env.senderId == peer.nodeId) return@forEach // don't hand a message back to its author
+            val members = env.group?.members
             if (members != null && peer.nodeId !in members) return@forEach // group: members only
-            if (offered.add(frame.id)) transport.send(frame, peer)
+            if (offered.add(env.id)) transport.send(WireEnvelope(sig = carried.sig, signed = carried.signed), peer)
         }
     }
 
@@ -76,15 +76,16 @@ class ForwardSync(
     }
 
     /**
-     * A delivery receipt arrived: drop the carried DM it acks — but only if the receipt's sender is that
-     * DM's addressed recipient (the caller has already verified the receipt's signature). This makes the
-     * purge recipient-authenticated, so a forged receipt can't evict an undelivered message. The id is
-     * tombstoned so a copy still circulating from an unvaccinated peer isn't re-accepted by [onSeen].
+     * A delivery receipt arrived ([ackId] acked by [senderId]): drop the carried DM it acks — but only if
+     * [senderId] is that DM's addressed recipient (the caller has already verified the receipt's
+     * signature). This makes the purge recipient-authenticated, so a forged receipt can't evict an
+     * undelivered message. The id is tombstoned so a copy still circulating from an unvaccinated peer
+     * isn't re-accepted by [onSeen].
      */
-    suspend fun onAck(receipt: ReceiptFrame) {
-        if (store.recipientOf(receipt.ackId) != receipt.senderId) return
-        store.remove(receipt.ackId)
-        acked.add(receipt.ackId)
+    suspend fun onAck(ackId: String, senderId: String) {
+        if (store.recipientOf(ackId) != senderId) return
+        store.remove(ackId)
+        acked.add(ackId)
     }
 
     /** Reclaims carried DMs whose TTL has elapsed (startup, periodic, and heartbeat sweeps). */

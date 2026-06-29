@@ -188,6 +188,7 @@
     <string name="diagnostics_metric_suppressed">Suppressed</string>
     <string name="diagnostics_metric_deduped">Deduped</string>
     <string name="diagnostics_metric_bytes_sent">Bytes sent</string>
+    <string name="diagnostics_metric_dropped">Dropped</string>
     <string name="diagnostics_controls">Mesh controls</string>
     <string name="diagnostics_status_healthy">Mesh status: Healthy</string>
     <string name="diagnostics_status_degraded">Mesh status: Degraded</string>

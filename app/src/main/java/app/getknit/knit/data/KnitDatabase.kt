@@ -51,7 +51,11 @@ import java.io.File
     // v13: groups gained a `departed` roster-tombstone column (node ids that left, so a departure sticks
     //      against straggler re-broadcasts); messages gained a `kind` discriminator for the
     //      locally-generated "member left" status notice. Destructive migration; app not yet public.
-    version = 13,
+    // v14: layered wire-format break. forward_store now stores the signed routing-envelope blob + its
+    //      signature (the `bytes` column became `signed`, plus a new `sig` column); peers gained
+    //      `protoVersion`/`capabilities` from the profile frame. Destructive migration (clears any
+    //      old-format carried frames + pins); coordinated with the bumped Nearby SERVICE_ID.
+    version = 14,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

@@ -335,7 +335,7 @@ class ChatViewModel(
     }
 
     /**
-     * Renames this group: updates the local store immediately and floods a [GroupUpdateFrame] so members
+     * Renames this group: updates the local store immediately and floods a group-update frame so members
      * converge right away (no waiting for the next message). The name is last-writer-wins by timestamp.
      */
     fun renameGroup(newName: String) {

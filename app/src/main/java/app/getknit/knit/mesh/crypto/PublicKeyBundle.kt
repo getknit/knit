@@ -14,7 +14,7 @@ import kotlinx.serialization.encodeToByteArray
  * A peer's published end-to-end public keys: a Tink **hybrid** public keyset (to wrap a content key to
  * them) and a Tink **Ed25519** public keyset (to verify their signatures). Carried on the wire as the
  * base64 [encoded] form (CBOR of the two raw Tink public-keyset blobs) — this is exactly what travels
- * in [app.getknit.knit.mesh.protocol.ProfileFrame.pubKey] and is pinned in
+ * in [app.getknit.knit.mesh.protocol.ProfileContent.pubKey] and is pinned in
  * [app.getknit.knit.data.peer.PeerEntity.pubKey].
  *
  * Equality is by [encoded] so two bundles parsed from the same string compare equal (used for

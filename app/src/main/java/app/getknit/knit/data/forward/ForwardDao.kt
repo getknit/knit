@@ -12,9 +12,9 @@ interface ForwardDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(row: ForwardEntity)
 
-    /** Canonical bytes of every non-expired carried frame, newest first — the push-on-contact source. */
-    @Query("SELECT bytes FROM forward_store WHERE expiresAt >= :now ORDER BY receivedAt DESC")
-    suspend fun liveBytes(now: Long): List<ByteArray>
+    /** Every non-expired carried frame, newest first — the push-on-contact source. */
+    @Query("SELECT * FROM forward_store WHERE expiresAt >= :now ORDER BY receivedAt DESC")
+    suspend fun liveRows(now: Long): List<ForwardEntity>
 
     @Query("SELECT EXISTS(SELECT 1 FROM forward_store WHERE id = :id)")
     suspend fun exists(id: String): Boolean

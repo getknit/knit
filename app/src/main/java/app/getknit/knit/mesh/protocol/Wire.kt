@@ -1,8 +1,10 @@
+@file:OptIn(ExperimentalSerializationApi::class) // Cbor + @ByteString are experimental kotlinx APIs
+
 package app.getknit.knit.mesh.protocol
 
 import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.ByteString
 import kotlinx.serialization.cbor.Cbor
 import kotlinx.serialization.decodeFromByteArray
 import kotlinx.serialization.encodeToByteArray
@@ -11,48 +13,144 @@ import kotlinx.serialization.encodeToByteArray
 const val DEFAULT_TTL: Int = 8
 
 /**
- * A unit of data flooded across the mesh. Every frame carries a globally-unique [id] (the dedup
- * key), the originating [senderId], a [ttl] hop limit, and the current [hops] count (incremented at
- * each relay). Flooded frames are authenticated by [sig] (an Ed25519 signature over [signedBytes]);
- * the point-to-point [BlobRequestFrame] is the only unsigned frame type.
+ * The wire is layered so the format can evolve additively without ever forcing another break:
+ *
+ * - [WireEnvelope] (layer 1, the on-radio unit) is **frozen forever** and is the ONLY thing a relay
+ *   re-encodes. It carries the mutable routing counters ([ttl]/[hops]) plus the signature and the
+ *   opaque [signed] blob it covers. A relay rewrites only ttl/hops ([WireEnvelope.relayed]); [signed]
+ *   and [sig] pass through byte-for-byte, so the originator's exact signed bytes survive every hop.
+ * - [RelayEnvelope] (layer 2, what [signed] decodes to) carries only the cleartext fields a relay or
+ *   store-and-forward carrier needs to route ([type]/[id]/[senderId]/[recipientId]/[group]) plus an
+ *   opaque [payload]. Because relays never re-encode it, new fields can be added here too: an old relay
+ *   ignores them on decode ([WireCodec] uses `ignoreUnknownKeys`) yet still forwards the original bytes.
+ * - The per-type content (layer 3: [ChatContent], [ProfileContent], …) lives inside [payload] and is
+ *   parsed only by endpoints, so it evolves freely — new fields and even new [type] values are invisible
+ *   to relays, which forward them verbatim instead of dropping them.
+ *
+ * The single [sig] over [signed] authenticates every type (the previous split between a frame signature
+ * and a separate envelope signature is gone). [type]/[id]/[senderId] ride inside [signed], so a
+ * signature cannot be lifted across frames, replayed under a fresh id, or moved between types.
  */
-@Serializable
-sealed interface Frame {
-    val id: String
-
-    /**
-     * The originator's 8-char node id, cryptographically bound to its public-key bundle (a nodeId IS
-     * the salted hash of the bundle — see [app.getknit.knit.identity.NodeId]). Authenticated by [sig]
-     * on flooded frames, so a relay can't forge a frame under another node's id.
-     */
-    val senderId: String
-    val ttl: Int
-    val hops: Int
-
-    /**
-     * Base64 Ed25519 signature over the frame's canonical bytes ([signedBytes]), proving it was
-     * authored by the holder of [senderId]'s signing key and not tampered with in transit. A computed
-     * getter defaulting to null (so the unsigned [BlobRequestFrame] never serializes one); every
-     * flooded frame overrides it with a stored property. On an *encrypted* [ChatFrame] it instead
-     * carries the E2E envelope signature (verified by [app.getknit.knit.mesh.crypto.MessageCrypto]).
-     */
-    val sig: String? get() = null
-
-    /**
-     * Whether [MeshRouter] should flood this frame onward to other neighbors. True for the
-     * broadcast-room traffic (chat/profile/receipt); false for point-to-point control frames like
-     * [BlobRequestFrame] whose propagation is handled hop-by-hop by [MeshManager]. A computed getter
-     * (not a constructor property) so it never lands in the serialized wire form.
-     */
-    val relayable: Boolean get() = true
+object FrameType {
+    const val CHAT = "chat"
+    const val GROUP_UPDATE = "groupupdate"
+    const val GROUP_LEAVE = "groupleave"
+    const val PROFILE = "profile"
+    const val RECEIPT = "receipt"
+    const val REACTION = "reaction"
+    const val BLOB_REQ = "blobreq"
 }
 
 /**
- * A structured "@" mention inside a [ChatFrame.body]. [nodeId] is the canonical 8-char id used for
- * reliable "did this mention me" detection (display names aren't unique); [name] is the exact display
- * name string the sender rendered, so the receiver can locate the "@name" span in the body for
- * highlighting (handles names containing spaces, which a whitespace split would miss). A plain nested
- * `@Serializable` value — never a [Frame] on its own, so no [SerialName] discriminator.
+ * Layer 1 — the frozen on-radio unit. [ttl] (hop limit) and [hops] (current count) are mutable,
+ * unsigned routing metadata a relay rewrites in flight; [relay] is whether [MeshRouter] floods it
+ * onward (false for point-to-point control frames like a blob request — carried in the wrapper, not
+ * derived from the type, so even an old relay honors a future point-to-point type). [sig] is the raw
+ * Ed25519 signature over [signed] (empty for the unsigned blob request); [signed] is the canonical
+ * [RelayEnvelope] CBOR, forwarded byte-for-byte so every verifier reproduces the bytes the originator
+ * signed. A plain (non-data) class: it holds [ByteArray]s, so value equality would be by reference
+ * anyway; tests compare by decoding.
+ */
+@Serializable
+class WireEnvelope(
+    val ttl: Int = DEFAULT_TTL,
+    val hops: Int = 0,
+    val relay: Boolean = true,
+    @ByteString val sig: ByteArray,
+    @ByteString val signed: ByteArray,
+) {
+    /**
+     * A relay copy: ttl capped to the local [DEFAULT_TTL] and hops incremented, with [sig]/[signed]
+     * reused by reference (never re-encoded). [ttl] is attacker-controlled, so capping it bounds
+     * propagation by hop count regardless of what a peer claims.
+     */
+    fun relayed(): WireEnvelope =
+        WireEnvelope(ttl = minOf(ttl, DEFAULT_TTL), hops = hops + 1, relay = relay, sig = sig, signed = signed)
+}
+
+/**
+ * Layer 2 — the signed routing envelope. Carries only what a relay/carrier needs in cleartext to route
+ * without reading content: [type] (the discriminator, a plain string so an unknown future type still
+ * decodes instead of throwing), [id] (dedup key + message/ack id), [senderId], [sentAt], and the
+ * addressing fields [recipientId] (DM) / [group] (group roster). [payload] is the opaque per-type
+ * content; relays never parse it. A plain class for the same reason as [WireEnvelope].
+ */
+@Serializable
+class RelayEnvelope(
+    val type: String,
+    val id: String,
+    val senderId: String,
+    val sentAt: Long = 0L,
+    val recipientId: String? = null,
+    val group: GroupInfo? = null,
+    @ByteString val payload: ByteArray,
+)
+
+/**
+ * Whether this frame is carried for store-and-forward delivery (see `app.getknit.knit.mesh.ForwardSync`).
+ * An addressed chat qualifies — a 1:1 DM (single cleartext [RelayEnvelope.recipientId] to deliver
+ * toward) or a group message (cleartext [GroupInfo.members] roster). Only the plaintext broadcast room
+ * (no destination: both [RelayEnvelope.recipientId] and [RelayEnvelope.group] null) is excluded.
+ */
+fun RelayEnvelope.isStorable(): Boolean =
+    type == FrameType.CHAT && (recipientId != null || group != null)
+
+// --- Layer 3: per-type content payloads (parsed only by endpoints; evolve additively) ---
+
+/**
+ * Content of a [FrameType.CHAT] frame. For the plaintext broadcast room [body]/[mentions]/[attachment*]
+ * are filled in directly; for an encrypted DM/group message they are blank/null and the real content
+ * lives encrypted in [enc] (which the frame [sig] authenticates). A reference to an out-of-band image
+ * blob (fetched by content hash) travels in [attachmentHash]/[attachmentMime].
+ */
+@Serializable
+data class ChatContent(
+    val body: String = "",
+    val mentions: List<Mention> = emptyList(),
+    val attachmentHash: String? = null,
+    val attachmentMime: String? = null,
+    val enc: EncEnvelope? = null,
+)
+
+/**
+ * Content of a [FrameType.PROFILE] frame: the peer's display [name]/[status], optional [avatarHash]
+ * (content hash of the avatar blob), [pubKey] (base64 [app.getknit.knit.mesh.crypto.PublicKeyBundle];
+ * pins the peer's E2E key, and the nodeId must derive to it), and key-independent [deviceTag] for
+ * block-list continuity. [protoVersion]/[capabilities] advertise the sender's protocol version and
+ * feature bits (see [Protocol]) — additive, authenticated (the frame [sig] covers them), and currently
+ * recorded for diagnostics only.
+ */
+@Serializable
+data class ProfileContent(
+    val name: String,
+    val status: String,
+    val avatarHash: String? = null,
+    val pubKey: String? = null,
+    val deviceTag: String? = null,
+    val protoVersion: Int? = null,
+    val capabilities: Long? = null,
+)
+
+/** Content of a [FrameType.GROUP_LEAVE] frame: the group the (self-asserted) sender is leaving. */
+@Serializable
+data class GroupLeaveContent(val groupId: String)
+
+/** Content of a [FrameType.RECEIPT] frame: the id of the message being acknowledged. */
+@Serializable
+data class ReceiptContent(val ackId: String)
+
+/** Content of a [FrameType.REACTION] frame: the target message and the chosen emoji (null = retract). */
+@Serializable
+data class ReactionContent(val messageId: String, val emoji: String? = null)
+
+/** Content of a [FrameType.BLOB_REQ] frame: the content hash of the requested image blob. */
+@Serializable
+data class BlobReqContent(val hash: String)
+
+/**
+ * A structured "@" mention inside a chat body. [nodeId] is the canonical 8-char id used for reliable
+ * "did this mention me" detection (display names aren't unique); [name] is the exact display name the
+ * sender rendered, so the receiver can locate the "@name" span for highlighting. A plain nested value.
  */
 @Serializable
 data class Mention(
@@ -64,17 +162,13 @@ data class Mention(
 fun List<Mention>.mention(nodeId: String): Boolean = any { it.nodeId == nodeId }
 
 /**
- * Group-chat metadata carried on every group [ChatFrame] so the message is self-describing: any node
- * that receives one can (re)construct the group from scratch, with no separate invite/create frame —
- * robust against flood loss and late joiners on a lossy mesh. [id] is derived deterministically from
- * the member set (see [app.getknit.knit.data.message.Conversations.groupIdFor]) so the same people
- * always resolve to the same group — no duplicate threads — and it can't collide in conversation-id
- * space; [name] is set ONLY by an explicit rename (converges last-writer-wins by the frame's
- * [ChatFrame.sentAt]) and is null for an unnamed group, where each device renders its own default from
- * the members ([app.getknit.knit.data.message.groupTitle]); [members] is the fixed roster (capped at 8
- * incl. the creator); [createdBy] is the creator's node id, used to refuse a group a blocked user tries
- * to start on this device. A plain nested `@Serializable` value (like [Mention]) — never a [Frame], so
- * no [SerialName] discriminator.
+ * Group-chat metadata carried on every group chat/update frame so the message is self-describing: any
+ * node that receives one can (re)construct the group from scratch, with no separate invite/create frame
+ * — robust against flood loss and late joiners. [id] is derived deterministically from the member set
+ * (see [app.getknit.knit.data.message.Conversations.groupIdFor]); [name] is set ONLY by an explicit
+ * rename (converges last-writer-wins by the frame's sentAt) and is null for an unnamed group; [members]
+ * is the fixed roster (capped at 8 incl. the creator); [createdBy] is the creator's node id, used to
+ * refuse a group a blocked user tries to start on this device.
  */
 @Serializable
 data class GroupInfo(
@@ -96,12 +190,12 @@ data class WrappedKey(
 )
 
 /**
- * The end-to-end encryption envelope carried on an encrypted [ChatFrame]. A random per-message content
- * key encrypts the [app.getknit.knit.mesh.crypto.MessageContent] (body + mentions + attachment refs)
- * with AES-256-GCM into [ct] under [nonce] (both base64); that content key is then wrapped once per
- * recipient into [keys]. Only the addressed recipients can unwrap it, so relays — which never read
- * frame contents anyway — carry pure ciphertext. [v] is the scheme version (omitted on the wire while
- * it equals the default). Present only on DM/group messages; the broadcast room is never encrypted.
+ * The end-to-end encryption envelope carried inside an encrypted [ChatContent]. A random per-message
+ * content key encrypts the [app.getknit.knit.mesh.crypto.MessageContent] with AES-256-GCM into [ct]
+ * under [nonce] (both base64); that content key is wrapped once per recipient into [keys]. [v] is the
+ * crypto-scheme version (omitted on the wire while it equals the default); an unsupported version is
+ * dropped on delivery (see `MeshManager.decrypt`). Authenticated by the frame [sig] (which covers the
+ * whole [ChatContent] payload), so a wrapped key or ciphertext can't be replayed into another message.
  */
 @Serializable
 data class EncEnvelope(
@@ -109,233 +203,46 @@ data class EncEnvelope(
     val nonce: String,
     val ct: String,
     val keys: List<WrappedKey>,
-)
-
-@Serializable
-@SerialName("chat")
-data class ChatFrame(
-    override val id: String,
-    override val senderId: String,
-    val sentAt: Long,
-    // Plaintext body for the broadcast room. Empty when [enc] is set: the real body lives encrypted in
-    // the envelope, and mentions/attachment fields below are likewise blank/null on the wire.
-    val body: String,
-    val recipientId: String? = null,
-    override val sig: String? = null,
-    val mentions: List<Mention> = emptyList(),
-    // Reference to an out-of-band image blob (fetched by content hash); null for text-only messages.
-    val attachmentHash: String? = null,
-    val attachmentMime: String? = null,
-    // Set on group-chat messages; null for the broadcast room and 1:1 DMs (recipientId stays null for
-    // groups — the group field, not recipientId, addresses the thread). Omitted on the wire when null.
-    val group: GroupInfo? = null,
-    // End-to-end encryption envelope. Non-null ⇒ this is an encrypted DM/group message: [body] is empty,
-    // [mentions]/[attachment*] are blank/null, and the plaintext lives in [enc] + is authenticated by
-    // [sig]. Null ⇒ a plaintext broadcast-room message (unchanged legacy path).
-    val enc: EncEnvelope? = null,
-    override val ttl: Int = DEFAULT_TTL,
-    override val hops: Int = 0,
-) : Frame
+) {
+    companion object {
+        /** Highest crypto-scheme version this build understands; a higher [v] is dropped on delivery. */
+        const val MAX_SUPPORTED_VERSION = 1
+    }
+}
 
 /**
- * Floods a group's metadata ([group]) on its own, independent of any chat message — so a rename (or a
- * just-created group) reaches members immediately rather than waiting for the next [ChatFrame]. Carries
- * no body; receivers reconcile their stored group (last-writer-wins on [sentAt] for the name) without
- * persisting a message. A member who doesn't yet know the group will create it from the carried roster.
- */
-@Serializable
-@SerialName("groupupdate")
-data class GroupUpdateFrame(
-    override val id: String,
-    override val senderId: String,
-    val sentAt: Long,
-    val group: GroupInfo,
-    override val sig: String? = null,
-    override val ttl: Int = DEFAULT_TTL,
-    override val hops: Int = 0,
-) : Frame
-
-/**
- * Announces that [senderId] has left the group [groupId]. The leaver floods this on departure so the
- * remaining members drop them from the roster (member count shrinks) and show a status notice. The
- * leaver IS [senderId], so the frame's Ed25519 signature ([Frame.sig], verified against the key that
- * derives to [senderId]) proves the departure is self-asserted — a forged leave can't evict a third
- * party. Carries no roster: a receiver removes only [senderId] from the group it already holds.
- * Flooded once (like [GroupUpdateFrame]); not custodied for store-and-forward.
- */
-@Serializable
-@SerialName("groupleave")
-data class GroupLeaveFrame(
-    override val id: String,
-    override val senderId: String,
-    val sentAt: Long,
-    val groupId: String,
-    override val sig: String? = null,
-    override val ttl: Int = DEFAULT_TTL,
-    override val hops: Int = 0,
-) : Frame
-
-@Serializable
-@SerialName("profile")
-data class ProfileFrame(
-    override val id: String,
-    override val senderId: String,
-    val sentAt: Long,
-    val name: String,
-    val status: String,
-    val avatarHash: String? = null,
-    val pubKey: String? = null,
-    // Key-independent device tag for soft block-list continuity (a blocked peer that regenerates its
-    // key returns under a new senderId but the same tag). Optional, so this is a backward-compatible
-    // wire addition (missing → null). Never used for routing/trust — only the local block list.
-    val deviceTag: String? = null,
-    override val sig: String? = null,
-    override val ttl: Int = DEFAULT_TTL,
-    override val hops: Int = 0,
-) : Frame
-
-@Serializable
-@SerialName("receipt")
-data class ReceiptFrame(
-    override val id: String,
-    override val senderId: String,
-    val ackId: String,
-    override val sig: String? = null,
-    override val ttl: Int = DEFAULT_TTL,
-    override val hops: Int = 0,
-) : Frame
-
-/**
- * An emoji reaction to the message identified by [messageId]. Flooded like chat so every device that
- * holds the message converges on the same reaction state. Each reactor ([senderId]) has at most one
- * reaction per message: [emoji] is the chosen emoji, or null to retract. [sentAt] is the last-writer-
- * wins clock — a receiver applies this frame only if it is newer than the reaction it already holds
- * for ([messageId], [senderId]), so out-of-order add/retract/replace frames converge deterministically.
+ * Serializes the wire layers to/from CBOR. [encodeWire]/[decodeWire] handle the outer [WireEnvelope];
+ * [encodeEnvelope]/[decodeEnvelope] the signed [RelayEnvelope]; [encodePayload]/[decodePayload] the
+ * per-type content. All three share one [Cbor] configured with `ignoreUnknownKeys = true` (forward-
+ * compat: tolerate fields a newer peer added) and `encodeDefaults = false` (drop defaulted fields so a
+ * typical frame stays compact). Compact binary CBOR rather than JSON: numbers binary, strings
+ * length-prefixed (no quotes/braces).
  *
- * [id] is a fresh random UUID per emit (NOT derived from messageId/senderId/emoji): the dedup
- * [SeenSet] keys on it, so a later retract or replace must carry a new id to re-flood rather than be
- * swallowed as a duplicate. State dedup is [sentAt]'s job, not the frame id's.
+ * This is a deliberate wire-format break from the pre-layered format: all nodes must run a layered build
+ * to interoperate (the [app.getknit.knit.mesh.nearby.NearbyTransport] service id is bumped in lockstep).
  */
-@Serializable
-@SerialName("reaction")
-data class ReactionFrame(
-    override val id: String,
-    override val senderId: String,
-    val messageId: String,
-    val emoji: String? = null,
-    val sentAt: Long,
-    override val sig: String? = null,
-    override val ttl: Int = DEFAULT_TTL,
-    override val hops: Int = 0,
-) : Frame
-
-/**
- * A point-to-point request for the image blob identified by [hash]. Sent only to direct neighbors
- * and never flooded ([relayable] is false); a neighbor that holds the blob serves it back over the
- * file channel, and one that doesn't recurses the request to its own neighbors. This hop-by-hop
- * pull is how attachments reach peers beyond the originator's direct range.
- */
-@Serializable
-@SerialName("blobreq")
-data class BlobRequestFrame(
-    override val id: String,
-    override val senderId: String,
-    val hash: String,
-    override val ttl: Int = DEFAULT_TTL,
-    override val hops: Int = 0,
-) : Frame {
-    override val relayable: Boolean get() = false
-}
-
-/**
- * Whether this frame is carried for store-and-forward delivery (see `app.getknit.knit.mesh.ForwardSync`).
- * An addressed [ChatFrame] qualifies — a 1:1 DM (single cleartext [ChatFrame.recipientId] to deliver
- * toward) or a group message (cleartext [GroupInfo.members] roster of who to deliver toward) — both of
- * which carry an envelope signature a carrier can authenticate without decrypting. Only the plaintext
- * broadcast room (no destination: both [ChatFrame.recipientId] and [ChatFrame.group] null) is excluded.
- */
-fun Frame.isStorable(): Boolean = this is ChatFrame && (recipientId != null || group != null)
-
-/** Returns a copy of this frame with its hop count incremented (used when relaying). */
-fun Frame.incrementHop(): Frame = when (this) {
-    is ChatFrame -> copy(hops = hops + 1)
-    is GroupUpdateFrame -> copy(hops = hops + 1)
-    is GroupLeaveFrame -> copy(hops = hops + 1)
-    is ProfileFrame -> copy(hops = hops + 1)
-    is ReceiptFrame -> copy(hops = hops + 1)
-    is ReactionFrame -> copy(hops = hops + 1)
-    is BlobRequestFrame -> copy(hops = hops + 1)
-}
-
-/**
- * Returns a copy of this frame with its [ttl] capped at [max] (a no-op when already within bounds).
- * [ttl] is an attacker-controlled wire field, so a forged oversized value (e.g. [Int.MAX_VALUE]) would
- * otherwise let a frame outlive the dedup window and flood the mesh indefinitely; the relayer caps it
- * to the local [DEFAULT_TTL] so the hop count alone bounds propagation.
- */
-fun Frame.cappedTtl(max: Int): Frame = if (ttl <= max) this else when (this) {
-    is ChatFrame -> copy(ttl = max)
-    is GroupUpdateFrame -> copy(ttl = max)
-    is GroupLeaveFrame -> copy(ttl = max)
-    is ProfileFrame -> copy(ttl = max)
-    is ReceiptFrame -> copy(ttl = max)
-    is ReactionFrame -> copy(ttl = max)
-    is BlobRequestFrame -> copy(ttl = max)
-}
-
-/**
- * The canonical bytes a frame's [Frame.sig] is computed over: the frame's own CBOR ([WireCodec]) with
- * the mutable routing fields ([Frame.ttl]/[Frame.hops]) and the signature slot itself normalized to
- * their defaults. The router only mutates ttl/hops in flight, so the originator and every relay-mutated
- * copy a verifier later decodes derive *identical* bytes; routing metadata is deliberately left
- * unauthenticated. The [SerialName] discriminator IS covered (it rides in the CBOR), so a profile
- * signature can't be lifted onto a chat. [id] is covered too, so a captured frame can't be re-flooded
- * under a fresh id (to dodge the dedup [SeenSet]) without invalidating the signature.
- */
-fun Frame.signedBytes(): ByteArray = WireCodec.encode(canonicalForSig())
-
-private fun Frame.canonicalForSig(): Frame = when (this) {
-    is ChatFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
-    is GroupUpdateFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
-    is GroupLeaveFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
-    is ProfileFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
-    is ReceiptFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
-    is ReactionFrame -> copy(ttl = DEFAULT_TTL, hops = 0, sig = null)
-    is BlobRequestFrame -> copy(ttl = DEFAULT_TTL, hops = 0) // unsigned; never actually signed/verified
-}
-
-/** Returns a copy of this frame carrying [sig]. A no-op for the unsigned [BlobRequestFrame]. */
-fun Frame.withSig(sig: String): Frame = when (this) {
-    is ChatFrame -> copy(sig = sig)
-    is GroupUpdateFrame -> copy(sig = sig)
-    is GroupLeaveFrame -> copy(sig = sig)
-    is ProfileFrame -> copy(sig = sig)
-    is ReceiptFrame -> copy(sig = sig)
-    is ReactionFrame -> copy(sig = sig)
-    is BlobRequestFrame -> this // unsigned
-}
-
-/**
- * Serializes [Frame]s to/from the bytes carried in a transport payload, using compact binary CBOR
- * rather than JSON text. CBOR encodes numbers as binary, length-prefixes strings (no quotes/braces),
- * and — with [CborBuilder.encodeDefaults] off — omits defaulted fields entirely, so a typical text
- * frame loses the ~150 bytes of `"recipientId":null,…,"ttl":8,"hops":0` framing JSON carried on the
- * wire. Polymorphism is carried by CBOR's own structure (the [SerialName] discriminators are
- * preserved); the JSON-only `classDiscriminator` option no longer applies.
- *
- * This is a deliberate wire-format break: all nodes must run a CBOR-speaking build to interoperate.
- */
-@OptIn(ExperimentalSerializationApi::class) // Cbor is an experimental kotlinx-serialization API
 object WireCodec {
-    private val cbor = Cbor {
-        ignoreUnknownKeys = true // forward-compat: tolerate fields added by newer peers
-        encodeDefaults = false   // drop default ttl/hops, empty mentions, and null reserved fields
+    @PublishedApi
+    internal val cbor: Cbor = Cbor {
+        ignoreUnknownKeys = true
+        encodeDefaults = false
     }
 
-    fun encode(frame: Frame): ByteArray = cbor.encodeToByteArray<Frame>(frame)
+    fun encodeWire(wire: WireEnvelope): ByteArray = cbor.encodeToByteArray(wire)
 
-    /** Decodes a frame, or returns null if the bytes are malformed/unrecognized. */
-    fun decode(bytes: ByteArray): Frame? = runCatching {
-        cbor.decodeFromByteArray<Frame>(bytes)
-    }.getOrNull()
+    /** Decodes the outer wrapper, or null if the bytes are malformed/unrecognized. */
+    fun decodeWire(bytes: ByteArray): WireEnvelope? =
+        runCatching { cbor.decodeFromByteArray<WireEnvelope>(bytes) }.getOrNull()
+
+    fun encodeEnvelope(env: RelayEnvelope): ByteArray = cbor.encodeToByteArray(env)
+
+    /** Decodes the signed routing envelope from [signed], or null if malformed. */
+    fun decodeEnvelope(signed: ByteArray): RelayEnvelope? =
+        runCatching { cbor.decodeFromByteArray<RelayEnvelope>(signed) }.getOrNull()
+
+    inline fun <reified T> encodePayload(content: T): ByteArray = cbor.encodeToByteArray(content)
+
+    /** Decodes the opaque per-type [payload] into [T], or null if absent/malformed. */
+    inline fun <reified T> decodePayload(payload: ByteArray): T? =
+        runCatching { cbor.decodeFromByteArray<T>(payload) }.getOrNull()
 }

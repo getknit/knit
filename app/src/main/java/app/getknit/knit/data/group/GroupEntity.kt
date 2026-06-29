@@ -10,8 +10,8 @@ import kotlinx.serialization.json.Json
  * doubles as the message [app.getknit.knit.data.message.MessageEntity.conversationId]). [name] is the
  * explicit group name, or blank (`""`) when unnamed — an unnamed group's title is generated locally per
  * device from its members (see [app.getknit.knit.data.message.groupTitle]). [nameUpdatedAt] is the
- * name's last-writer-wins clock (the [app.getknit.knit.mesh.protocol.ChatFrame.sentAt] of the frame
- * that last set it, or the wall clock for a local rename) so concurrent renames converge.
+ * name's last-writer-wins clock (the `sentAt` of the routing envelope that last set it, or the wall
+ * clock for a local rename) so concurrent renames converge.
  *
  * [members] is a JSON-encoded `List<String>` of node ids (the fixed roster, capped at 8 incl. the
  * creator); kept as a TEXT column so Room needs no TypeConverter and (de)serialization lives with the
@@ -23,7 +23,7 @@ import kotlinx.serialization.json.Json
  * tombstone survives; its messages are deleted on leave.
  *
  * [departed] is a JSON-encoded `List<String>` of node ids of members who have *left* this group (each
- * recorded from that member's own signed `GroupLeaveFrame`). [members] always holds the *effective*
+ * recorded from that member's own signed `groupleave` frame). [members] always holds the *effective*
  * roster (the original set minus [departed]); the tombstone is what makes a departure stick when a
  * straggler re-broadcasts the old full roster — `reconcileGroup` re-subtracts [departed] every time. It
  * only ever grows (there is no add-member feature), so it stays bounded by the cap. (De)serialized by

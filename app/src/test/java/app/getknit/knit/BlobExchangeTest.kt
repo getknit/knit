@@ -5,7 +5,9 @@ import app.getknit.knit.mesh.BlobStore
 import app.getknit.knit.mesh.FakeLoopTransport
 import app.getknit.knit.mesh.MeshRouter
 import app.getknit.knit.mesh.MeshTransport
-import app.getknit.knit.mesh.protocol.BlobRequestFrame
+import app.getknit.knit.mesh.protocol.BlobReqContent
+import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.WireCodec
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -51,8 +53,10 @@ class BlobExchangeTest {
             selfId = { id },
             onObtained = { _, _ -> },
         )
-        private val router = MeshRouter(transport, scope) { frame, fromNodeId ->
-            if (frame is BlobRequestFrame) exchange.onRequest(frame.hash, fromNodeId)
+        private val router = MeshRouter(transport, scope) { _, env, fromNodeId ->
+            if (env.type == FrameType.BLOB_REQ) {
+                WireCodec.decodePayload<BlobReqContent>(env.payload)?.let { exchange.onRequest(it.hash, fromNodeId) }
+            }
         }
 
         fun start(scope: CoroutineScope) {
