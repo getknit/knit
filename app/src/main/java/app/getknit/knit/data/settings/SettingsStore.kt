@@ -80,6 +80,13 @@ class SettingsStore(
 
     suspend fun setDisplayName(value: String) = dataStore.edit { it[KEY_NAME] = value }
     suspend fun setStatus(value: String) = dataStore.edit { it[KEY_STATUS] = value }
+
+    /** Persists display name + status in a single transaction so the profile watcher broadcasts once. */
+    suspend fun setProfile(name: String, status: String) =
+        dataStore.edit {
+            it[KEY_NAME] = name
+            it[KEY_STATUS] = status
+        }
     suspend fun setAvatarUpdatedAt(value: Long) = dataStore.edit { it[KEY_AVATAR_UPDATED_AT] = value }
     suspend fun setOwnAvatarHash(value: String) = dataStore.edit { it[KEY_OWN_AVATAR_HASH] = value }
 

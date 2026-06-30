@@ -13,10 +13,13 @@ import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.ui.util.computeAvatarCrop
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -37,14 +40,30 @@ class ProfileViewModel(
      */
     val alias = MutableStateFlow("")
 
-    // Editable text is held locally and updated synchronously on each keystroke; persistence to
-    // DataStore happens in the background. Binding the field directly to the DataStore flow would
-    // lag a keystroke behind and reset the field (you could only type one character).
+    // Editable text is held locally and updated synchronously on each keystroke; nothing is persisted
+    // until the user taps Save (see [save]). Binding the field directly to the DataStore flow would
+    // lag a keystroke behind and reset the field (you could only type one character), and persisting
+    // per keystroke used to flood a profile packet for every letter typed.
     private val _displayName = MutableStateFlow("")
     val displayName: StateFlow<String> = _displayName.asStateFlow()
 
     private val _status = MutableStateFlow("")
     val status: StateFlow<String> = _status.asStateFlow()
+
+    // The last persisted (normalized) values, used to detect unsaved edits. Updated on load and on Save.
+    private val _savedName = MutableStateFlow("")
+    private val _savedStatus = MutableStateFlow("")
+
+    /** True when the editable fields differ from what's stored — drives the Save button's enabled state. */
+    val isDirty: StateFlow<Boolean> =
+        combine(_displayName, _status, _savedName, _savedStatus) { name, status, savedName, savedStatus ->
+            normalizeSingleLine(name) != savedName || normalizeSingleLine(status) != savedStatus
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    // A one-shot signal that a Save finished persisting, so the screen can navigate back only after the
+    // write lands (popping the screen cancels viewModelScope, which would otherwise abort the write).
+    private val _saved = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val saved = _saved.asSharedFlow()
 
     /** Content hash of the current own avatar (keys the blob Coil renders), or null if none is set. */
     val avatarHash: StateFlow<String?> =
@@ -64,32 +83,48 @@ class ProfileViewModel(
             val id = identity.nodeId()
             nodeId.value = id
             alias.value = Alias.aliasFor(id)
-            _displayName.value = normalizeSingleLine(settings.displayName.first()).take(TextLimits.DISPLAY_NAME)
-            _status.value = normalizeSingleLine(settings.status.first()).take(TextLimits.STATUS)
+            val name = normalizeSingleLine(settings.displayName.first()).take(TextLimits.DISPLAY_NAME)
+            val status = normalizeSingleLine(settings.status.first()).take(TextLimits.STATUS)
+            _displayName.value = name
+            _status.value = status
+            _savedName.value = name
+            _savedStatus.value = status
         }
     }
 
     fun setDisplayName(value: String) {
-        val capped = value.take(TextLimits.DISPLAY_NAME)
-        _displayName.value = capped
-        // The field holds exactly what's typed (so a space *between* words isn't eaten mid-keystroke),
-        // but everything that reads the name — the wire, notifications, diagnostics — gets the trimmed
-        // form. Persisting the normalized value here means leaving by Back (which fires no focus event,
-        // so onFocusChanged/commit never runs) still leaves a clean value in DataStore.
-        viewModelScope.launch { settings.setDisplayName(normalizeSingleLine(capped)) }
+        // Hold exactly what's typed (capped) so a space *between* words isn't eaten mid-keystroke;
+        // normalization + persistence happen in [save].
+        _displayName.value = value.take(TextLimits.DISPLAY_NAME)
     }
 
     fun setStatus(value: String) {
-        val capped = value.take(TextLimits.STATUS)
-        _status.value = capped
-        viewModelScope.launch { settings.setStatus(normalizeSingleLine(capped)) }
+        _status.value = value.take(TextLimits.STATUS)
     }
 
     /**
-     * Snaps the *visible* display-name field to its normalized form when it loses focus (DataStore was
-     * already kept clean by [setDisplayName]; this just stops the box showing stray whitespace once
-     * you tab away). Done on commit, not per keystroke — trimming the trailing space on every keystroke
-     * would block typing a space mid-name. A no-op when already normalized.
+     * Normalizes both fields, persists them in a single transaction, and signals [saved] so the screen
+     * can navigate back once the write has landed. The mesh layer watches DataStore and re-broadcasts the
+     * profile once — so a profile packet is sent only here, never per keystroke.
+     */
+    fun save() {
+        val name = normalizeSingleLine(_displayName.value)
+        val status = normalizeSingleLine(_status.value)
+        _displayName.value = name
+        _status.value = status
+        _savedName.value = name
+        _savedStatus.value = status
+        viewModelScope.launch {
+            settings.setProfile(name, status)
+            _saved.emit(Unit)
+        }
+    }
+
+    /**
+     * Snaps the *visible* display-name field to its normalized form when it loses focus — just stops the
+     * box showing stray whitespace once you tab away; nothing is persisted until [save]. Done on commit,
+     * not per keystroke — trimming the trailing space on every keystroke would block typing a space
+     * mid-name. A no-op when already normalized.
      */
     fun commitDisplayName() {
         _displayName.value = normalizeSingleLine(_displayName.value)

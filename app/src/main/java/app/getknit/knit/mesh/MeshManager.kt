@@ -56,6 +56,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -446,8 +447,13 @@ class MeshManager(
 
     private fun watchProfileChanges(session: CoroutineScope) {
         session.launch {
-            combine(settings.displayName, settings.status, settings.avatarUpdatedAt) { _, _, _ -> }
+            combine(settings.displayName, settings.status, settings.avatarUpdatedAt) { name, status, avatarAt ->
+                Triple(name, status, avatarAt)
+            }
                 .drop(1) // skip the initial stored value; only react to real edits
+                // A Save writes name+status in one transaction; without this the duplicate flow
+                // re-emits would broadcast more than once. Also drops no-op saves.
+                .distinctUntilChanged()
                 .collect {
                     profileVersion = System.currentTimeMillis()
                     broadcastProfile()
