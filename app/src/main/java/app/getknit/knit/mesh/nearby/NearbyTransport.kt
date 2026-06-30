@@ -113,20 +113,11 @@ class NearbyTransport(
 
     private data class PendingFile(val endpointId: String, val uri: android.net.Uri)
 
-    // endpointId <-> nodeId (the Nearby endpoint name encodes the peer's nodeId; see [Protocol.parse])
-    private val endpointToNode = ConcurrentHashMap<String, String>()
-    private val nodeToEndpoint = ConcurrentHashMap<String, String>()
-    // endpointId -> the peer's advertised protocol version + capabilities (parsed from endpoint-info).
-    private val peerWire = ConcurrentHashMap<String, Protocol.PeerWire>()
-    private val connected = ConcurrentHashMap.newKeySet<String>() // connected endpointIds
-    private val connecting = ConcurrentHashMap.newKeySet<String>() // in-flight connection requests
-
-    // Per-endpoint connection backoff. A failed connect (often a transient BLE GATT-bootstrap failure
-    // when the peer's radio is busy) widens the next-attempt delay exponentially, so an unreachable
-    // peer isn't re-attempted every discovery burst — which would waste BLE airtime that the working
-    // links and discovery need. Cleared on a successful connection so a later drop reconnects promptly.
-    private data class Retry(val attemptAt: Long, val delayMs: Long)
-    private val retry = ConcurrentHashMap<String, Retry>()
+    // Endpoint↔node mappings plus per-endpoint connection state (connected / in-flight / retry
+    // backoff), encapsulated so a peer that returns to range is remapped cleanly and a dead endpoint
+    // id can't strand reconnection behind a stale backoff. See [EndpointRegistry]. Backoff timing uses
+    // elapsed-realtime so it survives wall-clock changes.
+    private val registry = EndpointRegistry { SystemClock.elapsedRealtime() }
 
     private lateinit var localNodeId: String
     private var discoveryJob: Job? = null
@@ -156,9 +147,7 @@ class NearbyTransport(
         runCatching { client.stopAllEndpoints() }
         runCatching { client.stopAdvertising() }
         runCatching { client.stopDiscovery() }
-        endpointToNode.clear(); nodeToEndpoint.clear(); peerWire.clear()
-        connected.clear(); connecting.clear()
-        retry.clear()
+        registry.clear()
         _neighbors.value = emptySet()
     }
 
@@ -166,16 +155,16 @@ class NearbyTransport(
         val bytes = WireCodec.encodeWire(wire)
         val payload = Payload.fromBytes(bytes)
         val targets = if (to == null) {
-            connected.toList()
+            registry.connectedEndpoints()
         } else {
-            listOfNotNull(nodeToEndpoint[to.nodeId]).filter { it in connected }
+            listOfNotNull(registry.endpointFor(to.nodeId)).filter { registry.isConnected(it) }
         }
         targets.forEach { endpointId -> client.sendPayload(endpointId, payload) }
         metrics.onBytesSent(bytes.size.toLong() * targets.size)
     }
 
     override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) {
-        val endpointId = nodeToEndpoint[to.nodeId] ?: return
+        val endpointId = registry.endpointFor(to.nodeId) ?: return
         val payload = Payload.fromFile(file)
         // Announce the file (its payload id + kind/key/mime) just before the bytes so the receiver
         // can tell an avatar from an attachment and name it correctly.
@@ -189,12 +178,10 @@ class NearbyTransport(
         // an explicit recovery signal (heartbeat / motion / Bluetooth recovery) that fires rarely, so
         // it clears each disconnected peer's backoff to force an immediate fresh attempt.
         healSignal.trySend(Unit)
-        endpointToNode.keys
-            .filter { it !in connected }
-            .forEach { endpointId ->
-                retry.remove(endpointId)
-                connectTo(endpointId)
-            }
+        registry.unconnectedEndpoints().forEach { endpointId ->
+            registry.clearRetry(endpointId)
+            connectTo(endpointId)
+        }
     }
 
     // --- Advertising / discovery ---
@@ -235,6 +222,7 @@ class NearbyTransport(
      */
     private suspend fun discoveryLoop() {
         var degraded = false
+        var lonelySince = 0L // elapsed-realtime when we last became isolated (0 ⇒ not isolated)
         while (scope.isActive) {
             val duty = PowerPolicy.dutyCycle(powerState.state.value)
             val options = DiscoveryOptions.Builder()
@@ -261,82 +249,79 @@ class NearbyTransport(
             delay(duty.scanWindowMs)
             runCatching { client.stopDiscovery() }
 
-            // Back off as the mesh grows (more neighbors → scan less often), but wake early when
-            // heal() is signaled (heartbeat / motion / Bluetooth recovery) or power state changes.
-            withTimeoutOrNull(duty.baseIntervalMs * (1 + connected.size)) {
-                healSignal.receive()
+            // Idle before the next burst. An isolated node scans almost continuously so it rejoins in
+            // seconds; a connected mesh backs off as it grows. Wake early when heal() is signaled
+            // (heartbeat / motion / Bluetooth recovery) or power state changes. Keeping the periodic
+            // stop/start (rather than discovering continuously) preserves the startDiscovery-fails →
+            // re-assert-advertising self-heal, just on a faster cadence while alone.
+            val now = SystemClock.elapsedRealtime()
+            if (registry.isIsolated()) {
+                if (lonelySince == 0L) lonelySince = now
+            } else {
+                lonelySince = 0L
             }
+            val lonelyForMs = if (lonelySince == 0L) 0L else now - lonelySince
+            val idle = PowerPolicy.idleAfterScan(powerState.state.value, registry.connectedCount(), lonelyForMs)
+            val woken = withTimeoutOrNull(idle) { healSignal.receive() } != null
+            // A heal nudge while still alone (e.g. motion as we walk back into range) restarts the
+            // aggressive window so we keep scanning hard until we actually reconnect.
+            if (woken && registry.isIsolated()) lonelySince = 0L
         }
     }
 
     private fun connectTo(endpointId: String) {
-        if (endpointId in connected) return
-        // Honor the per-endpoint backoff window: a peer that just failed isn't re-attempted until its
-        // next-attempt time, even though discovery keeps re-finding it and calling connectTo.
-        retry[endpointId]?.let { if (SystemClock.elapsedRealtime() < it.attemptAt) return }
-        if (!connecting.add(endpointId)) return // a request is already in flight for this endpoint
+        // One atomic gate: skip if already connected, still inside the retry-backoff window, or a
+        // request is already in flight — even though discovery keeps re-finding the peer and calling us.
+        if (!registry.beginConnecting(endpointId)) return
         // Requests run one-at-a-time on connectDispatcher; await() lets each finish before the next.
         scope.launch(connectDispatcher) {
             runCatching {
                 client.requestConnection(Protocol.advertise(localNodeId), endpointId, lifecycleCallback).await()
             }.onFailure { e ->
-                connecting.remove(endpointId)
-                scheduleRetry(endpointId)
+                registry.endConnecting(endpointId)
+                registry.scheduleRetry(endpointId)
                 Log.w(TAG, "requestConnection to $endpointId failed; backing off", e)
             }
         }
-    }
-
-    /** Widen this endpoint's retry delay (exponential, capped) and stamp its next eligible attempt. */
-    private fun scheduleRetry(endpointId: String) {
-        val prev = retry[endpointId]?.delayMs ?: 0L
-        val next = if (prev <= 0L) RETRY_BASE_MS else (prev * 2).coerceAtMost(RETRY_MAX_MS)
-        retry[endpointId] = Retry(SystemClock.elapsedRealtime() + next, next)
     }
 
     private val discoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             val wire = Protocol.parse(info.endpointName)
             if (wire.nodeId == localNodeId) return // discovered self
-            mapEndpoint(endpointId, wire)
+            registry.map(endpointId, wire)
             connectTo(endpointId)
         }
 
         override fun onEndpointLost(endpointId: String) {
-            // Keep the id->node mapping; the connection callback manages connected state.
+            // Nearby reassigns endpoint ids on rediscovery, so a lost id is dead. Forget its mapping +
+            // backoff so the peer's return gets a fresh, immediate attempt and heal() doesn't chase it;
+            // an active connection is left for onDisconnected (registry.onLost skips connected ids).
+            registry.onLost(endpointId)
         }
     }
 
     private val lifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-            mapEndpoint(endpointId, Protocol.parse(info.endpointName))
+            registry.map(endpointId, Protocol.parse(info.endpointName))
             // Open mesh: accept every connection (Nearby's authenticationDigits are ignored).
             client.acceptConnection(endpointId, payloadCallback)
         }
 
         override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
-            connecting.remove(endpointId)
             if (resolution.status.statusCode == ConnectionsStatusCodes.STATUS_OK) {
-                connected.add(endpointId)
-                retry.remove(endpointId) // reset backoff so a later drop reconnects without delay
+                registry.markConnected(endpointId) // also clears the in-flight flag + backoff
                 refreshNeighbors()
             } else {
-                scheduleRetry(endpointId)
+                registry.endConnecting(endpointId)
+                registry.scheduleRetry(endpointId)
             }
         }
 
         override fun onDisconnected(endpointId: String) {
-            connecting.remove(endpointId)
-            connected.remove(endpointId)
+            registry.markDisconnected(endpointId)
             refreshNeighbors()
         }
-    }
-
-    /** Records the endpoint↔node mapping and the peer's advertised version/capabilities. */
-    private fun mapEndpoint(endpointId: String, wire: Protocol.PeerWire) {
-        endpointToNode[endpointId] = wire.nodeId
-        nodeToEndpoint[wire.nodeId] = endpointId
-        peerWire[endpointId] = wire
     }
 
     private val payloadCallback = object : PayloadCallback() {
@@ -369,7 +354,7 @@ class NearbyTransport(
                         Log.w(TAG, "drop payload from $endpointId: undecodable envelope")
                         return
                     }
-                    val fromNode = endpointToNode[endpointId]
+                    val fromNode = registry.nodeFor(endpointId)
                     if (fromNode == null) {
                         metrics.onDropped(DropReason.UNKNOWN_ENDPOINT)
                         return
@@ -402,7 +387,7 @@ class NearbyTransport(
         if (!completedFiles.remove(payloadId)) return
         pendingFiles.remove(payloadId)
         fileHeaders.remove(payloadId)
-        val nodeId = endpointToNode[pending.endpointId] ?: return
+        val nodeId = registry.nodeFor(pending.endpointId) ?: return
         scope.launch(Dispatchers.IO) { saveIncomingFile(nodeId, pending.uri, meta) }
     }
 
@@ -465,11 +450,7 @@ class NearbyTransport(
     }
 
     private fun refreshNeighbors() {
-        _neighbors.value = connected.mapNotNull { endpointId ->
-            val nodeId = endpointToNode[endpointId] ?: return@mapNotNull null
-            val wire = peerWire[endpointId]
-            Peer(nodeId, wire?.protoVersion ?: 0, wire?.capabilities ?: 0L)
-        }.toSet()
+        _neighbors.value = registry.neighbors()
     }
 
     private fun encodeFileHeader(header: FileHeaderWire): ByteArray =
@@ -497,10 +478,6 @@ class NearbyTransport(
         // each other's frames. Keep in lockstep with any future coordinated wire break.
         const val SERVICE_ID = "app.getknit.knit.MESH.v2"
         val STRATEGY: Strategy = Strategy.P2P_CLUSTER
-
-        // Connection retry backoff: first retry after 5s, doubling to a 5-minute ceiling.
-        const val RETRY_BASE_MS = 5_000L
-        const val RETRY_MAX_MS = 5 * 60_000L
 
         // Receive-side ceiling on a FILE payload. The send side bounds attachments to 8 MiB
         // (AttachmentStore.MAX_BYTES); the extra headroom covers E2E framing (GCM IV+tag) and avatar

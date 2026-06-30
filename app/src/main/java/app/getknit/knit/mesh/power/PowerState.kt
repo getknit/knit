@@ -39,6 +39,23 @@ object PowerPolicy {
         else -> DutyCycle(IDLE_WINDOW_MS, IDLE_INTERVAL_MS)
     }
 
+    /**
+     * How long to idle after a scan window before the next discovery burst, given the current
+     * [neighborCount] and how long the node has been isolated ([lonelyForMs], 0 when not isolated).
+     *
+     * With neighbors, the connected mesh duty-cycles and backs off as it grows (the original
+     * `baseIntervalMs * (1 + neighborCount)`). An **isolated** node instead prioritizes rejoining and
+     * scans almost back-to-back ([LONELY_IDLE_MS]); while interactive or charging it does so for as
+     * long as it stays alone, but a screen-off-on-battery node caps that aggressive phase to
+     * [LONELY_AGGRESSIVE_WINDOW_MS] and then relaxes to the power-policy idle to bound drain when no
+     * peers are around at all.
+     */
+    fun idleAfterScan(state: PowerState, neighborCount: Int, lonelyForMs: Long): Long {
+        if (neighborCount > 0) return dutyCycle(state).baseIntervalMs * (1 + neighborCount)
+        val aggressive = state.interactive || state.charging || lonelyForMs < LONELY_AGGRESSIVE_WINDOW_MS
+        return if (aggressive) LONELY_IDLE_MS else dutyCycle(state).baseIntervalMs
+    }
+
     // Screen on or charging: the original aggressive cadence.
     private const val ACTIVE_WINDOW_MS = 12_000L
     private const val ACTIVE_INTERVAL_MS = 30_000L
@@ -49,6 +66,14 @@ object PowerPolicy {
 
     // Screen off and battery low: most relaxed.
     private const val LOW_BATTERY_INTERVAL_MS = 300_000L
+
+    // Isolated (zero-neighbor) reconnect cadence: scan almost continuously so a node that moved back
+    // into range rejoins in seconds instead of waiting out a 2–5 min duty-cycle gap.
+    private const val LONELY_IDLE_MS = 5_000L
+
+    // On battery with the screen off, only stay in the aggressive isolated cadence this long before
+    // relaxing — bounds drain for a node that is simply alone (e.g. left in a drawer).
+    private const val LONELY_AGGRESSIVE_WINDOW_MS = 3 * 60_000L
 }
 
 /**
