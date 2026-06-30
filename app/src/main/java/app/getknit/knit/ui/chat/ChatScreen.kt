@@ -30,12 +30,10 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -219,36 +217,17 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(state.rows.size) {
-        if (state.rows.isNotEmpty()) listState.animateScrollToItem(state.rows.lastIndex)
-    }
-
-    // Keep the newest messages visible as the soft keyboard slides in/out. The input bar is
-    // imePadding-lifted, so when the IME opens the Scaffold shrinks the list's viewport from the
-    // bottom; a top-anchored LazyColumn keeps its first visible item pinned, which pushes the most
-    // recent bubbles off-screen behind the keyboard. If the user was already at the bottom, re-pin to
-    // the last item on every IME animation frame so it stays glued to the bottom; if they'd scrolled
-    // up to read history, leave their position untouched (the top stays anchored on its own).
-    val density = LocalDensity.current
-    val imeInsets = WindowInsets.ime
-    LaunchedEffect(listState, imeInsets) {
-        var following = false
-        var prevImeBottom = 0
-        snapshotFlow { imeInsets.getBottom(density) }.collect { imeBottom ->
-            // Decide whether to follow at the moment the keyboard starts to appear, before the
-            // viewport has meaningfully shrunk and could falsely report we've left the bottom.
-            if (imeBottom > 0 && prevImeBottom == 0) {
-                val info = listState.layoutInfo
-                val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-                following = lastVisible >= info.totalItemsCount - 1
-            }
-            if (imeBottom == 0) following = false
-            if (following) {
-                val lastIndex = listState.layoutInfo.totalItemsCount - 1
-                if (lastIndex >= 0) listState.scrollToItem(lastIndex)
-            }
-            prevImeBottom = imeBottom
-        }
+    // The thread is rendered bottom-anchored (the LazyColumn below uses reverseLayout), so it opens
+    // already resting on the newest message — no initial scroll, no visible glide through history — and
+    // the newest bubble stays glued to the bottom as the soft keyboard slides in and as late-loading
+    // images change earlier bubbles' heights. When a new trailing message arrives, follow it to the
+    // bottom if it's our own or the user is already parked there; if they've scrolled up to read
+    // history, leave their position untouched. After a prepend, reverseLayout shifts the bottom anchor
+    // from index 0 to 1, so treat <= 1 as "was at the bottom".
+    val newest = state.rows.lastOrNull()
+    LaunchedEffect(newest?.id) {
+        val row = newest ?: return@LaunchedEffect
+        if (row.mine || listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
     }
 
     // Surface one-shot results (e.g. image saved) as toasts; a toast shows over the fullscreen Dialog,
@@ -450,9 +429,14 @@ fun ChatScreen(
                 state = listState,
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                // Bottom-anchored so the thread opens on the newest message with no scroll; the data is
+                // reversed to match, making index 0 the newest row, drawn at the bottom. Arrangement.Bottom
+                // keeps a short thread (fewer rows than fit on screen) resting just above the input rather
+                // than floating at the top with a gap beneath the newest bubble.
+                verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom),
+                reverseLayout = true,
             ) {
-                items(state.rows, key = { it.id }) { row ->
+                items(state.rows.asReversed(), key = { it.id }) { row ->
                     if (row.kind == MessageEntity.KIND_MEMBER_LEFT) {
                         SystemNotice(stringResource(R.string.chat_group_member_left, row.senderName))
                     } else {
