@@ -39,6 +39,7 @@ object FrameType {
     const val RECEIPT = "receipt"
     const val REACTION = "reaction"
     const val BLOB_REQ = "blobreq"
+    const val KEY_REQ = "keyreq"
 }
 
 /**
@@ -146,6 +147,17 @@ data class ReactionContent(val messageId: String, val emoji: String? = null)
 /** Content of a [FrameType.BLOB_REQ] frame: the content hash of the requested image blob. */
 @Serializable
 data class BlobReqContent(val hash: String)
+
+/**
+ * Content of a [FrameType.KEY_REQ] frame: the node ids whose public-key bundle (i.e. profile) the sender
+ * is missing and can't otherwise verify frames from. A holder replies by re-serving each peer's cached,
+ * already-signed [FrameType.PROFILE] frame verbatim (the response rides the existing profile path, which
+ * self-certifies on pin), so no separate response type is needed. A list — not a single id — so a node
+ * that's missing several peers (e.g. just after a restart) asks in one frame; v1 senders may use a
+ * single-element list. The request itself is signed and point-to-point (`relay = false`), never flooded.
+ */
+@Serializable
+data class KeyReqContent(val nodeIds: List<String>)
 
 /**
  * A structured "@" mention inside a chat body. [nodeId] is the canonical 8-char id used for reliable

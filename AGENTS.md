@@ -102,8 +102,9 @@ frames.
     `type` (a plain **string** discriminator, so an unknown future type decodes instead of throwing),
     `id`, `senderId`, `sentAt`, `recipientId`, `group` — plus the opaque per-type `payload`.
   - Per-type content (`ChatContent`, `ProfileContent`, `GroupLeaveContent`, `ReceiptContent`,
-    `ReactionContent`, `BlobReqContent`) lives inside `payload`; only endpoints parse it. Current
-    `type`s: `chat`, `groupupdate`, `profile`, `receipt`, `reaction`, `groupleave`, `blobreq`.
+    `ReactionContent`, `BlobReqContent`, `KeyReqContent`) lives inside `payload`; only endpoints parse it.
+    Current `type`s: `chat`, `groupupdate`, `profile`, `receipt`, `reaction`, `groupleave`, `blobreq`,
+    `keyreq`.
   **One signature authenticates every type**: `WireEnvelope.sig` is raw Ed25519 over `signed` (which
   binds `type`/`id`/`senderId`), verified byte-exact in `MeshManager.verifyInbound`; `blobreq` (with
   `relay = false`) is the only unsigned frame. `MeshManager` signs on origination; `verifyInbound` drops
@@ -225,6 +226,23 @@ A complementary **retransmit-on-key-arrival** path closes the most common "it ne
 composed before the recipient's key is known is saved `pendingKey` (not flooded), and `handleProfile`
 re-seals + floods it once the key arrives (`flushPendingFor`). Groups don't get this — see Out of scope.
 
+The **inbound** complement (`KeyExchange`, `keyreq`) closes the *receive* side: a profile floods once on
+connect/edit under a one-shot `SeenSet`-deduped id, so a node that joined late or sits more than one hop
+from the originator can permanently miss it and then drop every frame that peer floods with
+`NO_SENDER_KEY`. When `verifyInbound` hits that drop it calls `keyExchange.want(senderId)`, which sends a
+**signed, point-to-point** (`relay = false`) `keyreq` to its neighbors; a neighbor that holds the peer's
+profile re-serves it verbatim (the response rides the existing self-certifying `profile` path — no new
+response type, no re-signing), and one that doesn't records the requester and recurses, so the profile
+walks hop-by-hop to the requester exactly like a `BlobExchange` blob pull — deliberately request/response,
+not another flood. The request is signed (not unsigned like `blobreq`) so a responder authenticates it
+against the requester's pinned key — always present, since direct neighbors exchange profiles on connect —
+and can ignore a blocked/unknown asker; signing is free precisely because the request never leaves the
+direct-neighbor hop. Throttled by a per-peer cooldown + a `missing` set re-asked of each newcomer
+(`onNeighborAdded`) and on `heal()`; bookkeeping is in-memory and repopulates as profiles re-arrive.
+Recovery is visible in Diagnostics (`keyRequestsSent`/`keysServed`/`keysRecovered`) and JVM-tested with
+`FakeLoopTransport` (`KeyExchangeTest`). `handleProfile` also gained a last-writer-wins `sentAt` guard so
+a re-served (older) profile can never revert a newer name/status — the key itself is immutable per nodeId.
+
 ## Out of scope (deferred, by design)
 
 Alternate transports (Wi-Fi Aware/BLE); **true DM routing** (DMs still flood — only the addressed
@@ -235,7 +253,7 @@ floods to the members whose keys are known, so reaching a member whose key arriv
 re-seal, not custody), or replacing push-on-contact with a **digest/pull anti-entropy** exchange
 (efficiency only); and for E2E specifically:
 **forward secrecy / a ratchet** (static keys only), **encrypting** reactions/receipts (they are signed
-now — see the E2E section — but still flood as cleartext metadata), encrypting the broadcast room, and an
-**inbound key-request** protocol for a frame *received* from a not-yet-pinned sender (still dropped by
-`verifyInbound` — the complementary *outbound* retransmit-on-key-arrival is now implemented, see above).
+now — see the E2E section — but still flood as cleartext metadata), and encrypting the broadcast room.
+(The **inbound key-request** for a frame received from a not-yet-pinned sender — the inbound complement of
+retransmit-on-key-arrival — is now implemented; see `KeyExchange` above.)
 Don't start these without explicit direction.

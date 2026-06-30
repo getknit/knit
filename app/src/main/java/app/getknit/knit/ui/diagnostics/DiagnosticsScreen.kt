@@ -212,6 +212,14 @@ private fun MetricsSection(metrics: MeshMetrics.Snapshot) {
                 MetricRow("   ${reason.name}", count.toString())
             }
         }
+        // Key recovery (inbound key-request): surfaced only once it's been exercised, so a mesh that never
+        // hit a missing-key drop stays uncluttered. A rising NO_SENDER_KEY drop with a matching rise in
+        // recovered keys is the signal that the gap is self-healing rather than losing frames.
+        if (metrics.keyRequestsSent > 0) {
+            MetricRow(stringResource(R.string.diagnostics_metric_key_requests), metrics.keyRequestsSent.toString())
+            MetricRow(stringResource(R.string.diagnostics_metric_keys_served), metrics.keysServed.toString())
+            MetricRow(stringResource(R.string.diagnostics_metric_keys_recovered), metrics.keysRecovered.toString())
+        }
     }
 }
 

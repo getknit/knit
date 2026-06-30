@@ -37,7 +37,7 @@ Each evolves independently; bump the right one:
   handshake hint, known at connection time, **unauthenticated** — a routing/degradation hint only, never
   a trust input.
 - **`RelayEnvelope.type` registry**: `chat`, `groupupdate`, `groupleave`, `profile`, `receipt`,
-  `reaction`, `blobreq`.
+  `reaction`, `blobreq`, `keyreq`.
 - **`EncEnvelope.v`**: the E2E crypto scheme (AES-GCM + HPKE wrap).
 - **`MessageContent.v`**: the decrypted plaintext schema.
 

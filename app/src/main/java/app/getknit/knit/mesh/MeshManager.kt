@@ -24,6 +24,7 @@ import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.protocol.BlobReqContent
+import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameType
@@ -120,6 +121,17 @@ class MeshManager(
         authenticate = ::canCarry,
     )
 
+    // Demand-driven recovery of a peer's key/profile: a frame dropped for a missing sender key (the
+    // NO_SENDER_KEY case in verifyInbound) triggers a signed, point-to-point request that walks hop-by-hop
+    // to a holder, which re-serves the peer's cached signed profile so future frames from it verify.
+    private val keyExchange = KeyExchange(
+        transport = transport,
+        selfId = { identity.nodeId() },
+        signRaw = messageCrypto::signRaw,
+        isBlocked = { it in settings.blockedNodeIds.first() },
+        metrics = metrics,
+    )
+
     @Volatile
     private var started = false
 
@@ -187,7 +199,13 @@ class MeshManager(
         if (!started) return
         transport.heal()
         // Piggyback the forward-store TTL sweep on the 15-min heartbeat so it runs while backgrounded.
-        sessionScope?.launch { forwardSync.sweepExpired() }
+        // Also re-ask neighbors for any key we're still missing, in case the holder is reachable now but
+        // never arrived as a fresh neighbor (so onNeighborAdded didn't fire) — belt-and-suspenders for the
+        // ongoing-drops retry already driven by want()'s cooldown.
+        sessionScope?.launch {
+            forwardSync.sweepExpired()
+            keyExchange.retryMissing()
+        }
     }
 
     /** Tears down and re-establishes the transport (e.g. after Bluetooth toggles back on). */
@@ -420,6 +438,7 @@ class MeshManager(
                     pushProfileTo(it)
                     blobExchange.onNeighborAdded(it) // re-ask the new neighbor for blobs we still need
                     forwardSync.onNeighborAdded(it) // re-offer carried DMs addressed to / routable via it
+                    keyExchange.onNeighborAdded(it) // re-ask the new neighbor for keys we're still missing
                 }
             }
         }
@@ -539,18 +558,27 @@ class MeshManager(
             val carry = env.group != null || !Conversations.isForMe(env.recipientId, identity.nodeId())
             if (carry) forwardSync.onSeen(wire, env, ForwardStore.ORIGIN_RELAY)
         }
-        // A plain `when` over the type string: an unknown future type that decoded (the discriminator is
-        // a string, so it doesn't throw) hits `else` — not delivered locally, but the router still relays
-        // it verbatim, so an old build is never a black hole for a frame type it doesn't understand.
+        dispatchByType(env, wire, fromNodeId)
+    }
+
+    /**
+     * Routes a verified inbound frame to its type handler. A plain `when` over the type string: an unknown
+     * future type that decoded (the discriminator is a string, so it doesn't throw) hits `else` — not
+     * delivered locally, but the router still relays it verbatim, so an old build is never a black hole for
+     * a frame type it doesn't understand.
+     */
+    private suspend fun dispatchByType(env: RelayEnvelope, wire: WireEnvelope, fromNodeId: String) {
         when (env.type) {
             FrameType.CHAT -> handleChat(env)
             FrameType.GROUP_UPDATE -> handleGroupUpdate(env)
             FrameType.GROUP_LEAVE -> handleGroupLeave(env)
-            FrameType.PROFILE -> handleProfile(env)
+            FrameType.PROFILE -> handleProfile(env, wire)
             FrameType.RECEIPT -> handleReceipt(env)
             FrameType.REACTION -> handleReaction(env)
             FrameType.BLOB_REQ ->
                 WireCodec.decodePayload<BlobReqContent>(env.payload)?.let { blobExchange.onRequest(it.hash, fromNodeId) }
+            FrameType.KEY_REQ ->
+                WireCodec.decodePayload<KeyReqContent>(env.payload)?.let { keyExchange.onRequest(it.nodeIds, fromNodeId) }
             else -> Unit
         }
     }
@@ -592,6 +620,11 @@ class MeshManager(
         }
         if (bundle == null) {
             metrics.onDropped(DropReason.NO_SENDER_KEY)
+            // Try to recover the sender's key so future frames from it verify (the inbound key-request
+            // path). Excludes a key request itself (don't request keys for key-requesters — no recursion)
+            // and a profile (its key rides in-band, so a null bundle there means a malformed key, not an
+            // absent pin that a request could fill). Safe inside verifyInbound's runCatching — never throws.
+            if (env.type != FrameType.KEY_REQ && env.type != FrameType.PROFILE) keyExchange.want(env.senderId)
             Log.w(TAG, "drop ${env.type} ${env.id} from ${env.senderId}: no key to verify it")
             return false
         }
@@ -942,7 +975,7 @@ class MeshManager(
         notifier.notifyMention(incoming, me, settings.displayName.first(), selfAvatar)
     }
 
-    private suspend fun handleProfile(env: RelayEnvelope) {
+    private suspend fun handleProfile(env: RelayEnvelope, wire: WireEnvelope) {
         val content = WireCodec.decodePayload<ProfileContent>(env.payload) ?: return
         // Self-certifying identity: a peer's nodeId IS the hash of its public-key bundle, so a profile
         // is only trustworthy if the advertised key actually derives back to the claimed senderId.
@@ -955,6 +988,11 @@ class MeshManager(
             return
         }
         val existing = peers.find(env.senderId)
+        // Last-writer-wins: ignore a profile older than the one we already hold. The key is immutable per
+        // nodeId (a different key would be a hash collision, excluded above), so an out-of-order or
+        // re-served copy can never change the pinned key — it could only revert name/status. A first
+        // profile (existing == null) is always accepted, so this never blocks recovering a missing key.
+        if (existing != null && env.sentAt < existing.updatedAt) return
         val advertised = content.avatarHash
         // The stored avatarHash means "bytes are present locally": adopt the advertised hash only once
         // we hold its blob, otherwise keep the current avatar (if any) until the new one is fetched.
@@ -980,6 +1018,9 @@ class MeshManager(
         pullRelayAvatarIfNeeded(env.senderId, advertised, haveAvatar)
         // The sender's key is now pinned: retransmit any DMs to them that were stuck awaiting it.
         flushPendingFor(env.senderId)
+        // Cache this peer's verbatim signed profile so we can re-serve its key to a neighbor that asks, and
+        // resolve any key request we (or a node we're relaying for) had outstanding for it.
+        keyExchange.onProfilePinned(env.senderId, wire)
     }
 
     /**
@@ -1128,7 +1169,8 @@ class MeshManager(
                     "metrics: originated=${s.framesOriginated} delivered=${s.framesDelivered} " +
                         "relayed=${s.framesRelayed} suppressed=${s.framesSuppressed} " +
                         "deduped=${s.framesDeduped} bytesSent=${s.bytesSent} " +
-                        "dropped=${s.framesDropped} drops=${s.dropsByReason}",
+                        "dropped=${s.framesDropped} drops=${s.dropsByReason} " +
+                        "keyReq=${s.keyRequestsSent} keyServed=${s.keysServed} keyRecovered=${s.keysRecovered}",
                 )
             }
         }

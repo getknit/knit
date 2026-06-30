@@ -55,6 +55,9 @@ class MeshMetrics {
     private val framesSuppressed = AtomicLong()
     private val framesDeduped = AtomicLong()
     private val bytesSent = AtomicLong()
+    private val keyRequestsSent = AtomicLong()
+    private val keysServed = AtomicLong()
+    private val keysRecovered = AtomicLong()
 
     // Fixed key set → no allocation on the hot path, every reason always present.
     private val drops: Map<DropReason, AtomicLong> = DropReason.entries.associateWith { AtomicLong() }
@@ -80,6 +83,15 @@ class MeshMetrics {
     /** An inbound frame we wanted was dropped for [reason] (not a policy drop — see [DropReason]). */
     fun onDropped(reason: DropReason) { drops.getValue(reason).incrementAndGet() }
 
+    /** A key-request frame we sent to recover a peer's missing profile/key (see [KeyExchange]). */
+    fun onKeyRequested() { keyRequestsSent.incrementAndGet() }
+
+    /** A cached peer profile we re-served in answer to another node's key request. */
+    fun onKeyServed() { keysServed.incrementAndGet() }
+
+    /** A previously-missing peer key we recovered (a frame that was dropping NO_SENDER_KEY can now verify). */
+    fun onKeyRecovered() { keysRecovered.incrementAndGet() }
+
     fun snapshot(): Snapshot {
         val byReason = drops.mapValues { it.value.get() }
         return Snapshot(
@@ -91,6 +103,9 @@ class MeshMetrics {
             bytesSent = bytesSent.get(),
             framesDropped = byReason.values.sum(),
             dropsByReason = byReason.filterValues { it > 0 },
+            keyRequestsSent = keyRequestsSent.get(),
+            keysServed = keysServed.get(),
+            keysRecovered = keysRecovered.get(),
         )
     }
 
@@ -103,5 +118,8 @@ class MeshMetrics {
         val bytesSent: Long,
         val framesDropped: Long = 0,
         val dropsByReason: Map<DropReason, Long> = emptyMap(),
+        val keyRequestsSent: Long = 0,
+        val keysServed: Long = 0,
+        val keysRecovered: Long = 0,
     )
 }
