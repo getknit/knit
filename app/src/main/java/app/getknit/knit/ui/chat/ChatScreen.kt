@@ -110,6 +110,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -127,6 +128,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
@@ -882,8 +884,14 @@ private fun MessageBubble(
                 }
             }
             if (row.reactions.isNotEmpty()) {
-                Spacer(Modifier.height(4.dp))
-                ReactionRow(reactions = row.reactions, onToggle = { emoji -> onReact(row.id, emoji) })
+                // Signal-style: lift the chips so their top third tucks under the bubble's bottom edge
+                // instead of floating below it. [overlapTop] both shifts the row up and reclaims that
+                // height, so the next message moves up too (no dead gap left behind).
+                ReactionRow(
+                    reactions = row.reactions,
+                    onToggle = { emoji -> onReact(row.id, emoji) },
+                    modifier = Modifier.overlapTop(REACTION_OVERLAP),
+                )
             }
         }
     }
@@ -1021,11 +1029,37 @@ private fun ReactionPicker(
     }
 }
 
+/**
+ * How far the reaction row is pulled up into the bubble's bottom edge. Each chip carries a tall
+ * invisible touch-target margin (`minimumInteractiveComponentSize`, ~48.dp box around a ~26.dp pill),
+ * so this absorbs that margin plus a little more to leave roughly the chip's top third overlapping the
+ * bubble. Tune by a few dp on-device if the overlap looks off.
+ */
+private val REACTION_OVERLAP = 16.dp
+
+/**
+ * Pull a composable up by [amount] *and* shrink the height it reports to its parent by the same amount,
+ * so it overlaps whatever sits above it while letting following content move up to meet it (a plain
+ * `offset` would leave a dead gap below). Used to tuck reaction chips under the message bubble.
+ */
+private fun Modifier.overlapTop(amount: Dp) = this.layout { measurable, constraints ->
+    val placeable = measurable.measure(constraints)
+    val dy = amount.roundToPx()
+    layout(placeable.width, (placeable.height - dy).coerceAtLeast(0)) {
+        placeable.place(0, -dy)
+    }
+}
+
 /** Aggregated reaction chips shown below a bubble; tapping a chip toggles the local user's reaction. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ReactionRow(reactions: List<ReactionSummary>, onToggle: (String) -> Unit) {
+private fun ReactionRow(
+    reactions: List<ReactionSummary>,
+    onToggle: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     FlowRow(
+        modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
