@@ -134,6 +134,11 @@ class MeshManager(
         metrics = metrics,
     )
 
+    // Bounded in-memory buffer of frames dropped for a missing sender key: parked alongside the key
+    // request in verifyInbound and replayed through the deliver path once handleProfile pins the key, so
+    // a frame that raced ahead of its sender's profile still lands. The inbound complement of flushPendingFor.
+    private val pendingInbound = PendingInbound(metrics = metrics)
+
     @Volatile
     private var started = false
 
@@ -212,6 +217,7 @@ class MeshManager(
         // ongoing-drops retry already driven by want()'s cooldown.
         sessionScope?.launch {
             forwardSync.sweepExpired()
+            pendingInbound.sweepExpired()
             keyExchange.retryMissing()
         }
     }
@@ -415,6 +421,7 @@ class MeshManager(
             blobs.deleteOrphans() // reclaim blobs left by attachments staged but never sent
             reactions.deleteOrphans(System.currentTimeMillis()) // reclaim reactions left by deleted messages
             forwardSync.sweepExpired() // drop carried DMs whose TTL elapsed while we were down
+            pendingInbound.sweepExpired() // and any key-wait frames whose TTL lapsed (in-memory, so usually a no-op)
             messages.hashesNeedingFetch().forEach { blobExchange.want(it) }
         }
     }
@@ -425,6 +432,7 @@ class MeshManager(
             while (true) {
                 delay(FORWARD_SWEEP_INTERVAL_MS)
                 forwardSync.sweepExpired()
+                pendingInbound.sweepExpired()
             }
         }
     }
@@ -560,7 +568,7 @@ class MeshManager(
         // Strict authentication gate: a flooded frame that isn't signed by the key its senderId binds
         // to is dropped (not delivered locally). We still return normally so MeshRouter relays it
         // onward — other peers verify independently, and we don't become a propagation black hole.
-        if (!verifyInbound(env, wire)) return
+        if (!verifyInbound(env, wire, fromNodeId)) return
         // Carry an addressed chat frame we're relaying so we can re-offer it to a neighbor that joins
         // later — store-and-forward. A DM is carried only when relaying it *toward* someone else (skip
         // ones addressed to us — we're the destination, so deliver, don't carry); a group message is
@@ -624,7 +632,7 @@ class MeshManager(
      * Wrapped in [runCatching] so it NEVER throws out of [onDeliver]: any failure returns false =
      * "drop locally", and the router still schedules the relay (it runs after onDeliver returns).
      */
-    private suspend fun verifyInbound(env: RelayEnvelope, wire: WireEnvelope): Boolean = runCatching {
+    private suspend fun verifyInbound(env: RelayEnvelope, wire: WireEnvelope, fromNodeId: String): Boolean = runCatching {
         if (env.type == FrameType.BLOB_REQ) return true
         val bundle = when (env.type) {
             FrameType.PROFILE ->
@@ -637,7 +645,12 @@ class MeshManager(
             // path). Excludes a key request itself (don't request keys for key-requesters — no recursion)
             // and a profile (its key rides in-band, so a null bundle there means a malformed key, not an
             // absent pin that a request could fill). Safe inside verifyInbound's runCatching — never throws.
-            if (env.type != FrameType.KEY_REQ && env.type != FrameType.PROFILE) keyExchange.want(env.senderId)
+            if (env.type != FrameType.KEY_REQ && env.type != FrameType.PROFILE) {
+                keyExchange.want(env.senderId)
+                // Park a deliverable frame so it's replayed once the key arrives (handleProfile), instead of
+                // being lost — the inbound complement of the outbound pendingKey/flushPendingFor retransmit.
+                if (FrameType.isReplayable(env.type)) pendingInbound.hold(wire, env, fromNodeId)
+            }
             Log.w(TAG, "drop ${env.type} ${env.id} from ${env.senderId}: no key to verify it")
             return false
         }
@@ -1124,6 +1137,15 @@ class MeshManager(
         // Cache this peer's verbatim signed profile so we can re-serve its key to a neighbor that asks, and
         // resolve any key request we (or a node we're relaying for) had outstanding for it.
         keyExchange.onProfilePinned(env.senderId, wire)
+        // Replay any frames we parked from this sender while we couldn't verify them. Must run last: the
+        // key is now pinned (so the replayed verifyInbound passes instead of re-parking) and any deviceTag
+        // block has been applied (so a blocked sender is dropped on replay, not delivered). Replay bypasses
+        // the router — no second flood, no SeenSet hit — and onDeliver's isNew/idempotent-save gates make a
+        // later store-and-forward re-serve of the same frame a no-op.
+        pendingInbound.release(env.senderId).forEach {
+            metrics.onFrameReplayed()
+            onDeliver(it.wire, it.env, it.fromNodeId)
+        }
     }
 
     /**
@@ -1273,7 +1295,8 @@ class MeshManager(
                         "relayed=${s.framesRelayed} suppressed=${s.framesSuppressed} " +
                         "deduped=${s.framesDeduped} bytesSent=${s.bytesSent} " +
                         "dropped=${s.framesDropped} drops=${s.dropsByReason} " +
-                        "keyReq=${s.keyRequestsSent} keyServed=${s.keysServed} keyRecovered=${s.keysRecovered}",
+                        "keyReq=${s.keyRequestsSent} keyServed=${s.keysServed} keyRecovered=${s.keysRecovered} " +
+                        "framesHeld=${s.framesHeld} framesReplayed=${s.framesReplayed}",
                 )
             }
         }

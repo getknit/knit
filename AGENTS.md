@@ -259,6 +259,19 @@ Recovery is visible in Diagnostics (`keyRequestsSent`/`keysServed`/`keysRecovere
 `FakeLoopTransport` (`KeyExchangeTest`). `handleProfile` also gained a last-writer-wins `sentAt` guard so
 a re-served (older) profile can never revert a newer name/status — the key itself is immutable per nodeId.
 
+The dropped frame that *triggered* the request is no longer lost: `verifyInbound` also **parks** it in
+`PendingInbound` (an in-memory, bounded, ~2-min-TTL buffer — the inbound complement of the outbound
+`flushPendingFor`), and once `handleProfile` pins the key it **replays** every parked frame for that
+sender back through `onDeliver` (`pendingInbound.release(...)`, the last statement so the key + any
+deviceTag block are applied first). Replay bypasses the router (no re-flood, no `SeenSet` hit) and
+`deliverChat`'s `isNew`/idempotent-save gates keep a later store-and-forward re-serve a no-op. The buffer
+is in-memory by design (a parked frame is unauthenticated until its key arrives, so it's never persisted)
+and bounded by a global cap (the real bound — the senderId is an unauthenticated claim), a per-sender cap,
+and the TTL. Only the locally-delivered types are held (`FrameType.isReplayable`). Note the asymmetry:
+DM/group frames also degrade gracefully via store-and-forward re-serve after the buffer expires, but a
+**broadcast-room** frame (not store-and-forwarded) has the `PendingInbound` TTL as its only recovery
+window. Surfaced in Diagnostics (`framesHeld`/`framesReplayed`) and JVM-tested (`PendingInboundTest`).
+
 ## Out of scope (deferred, by design)
 
 Alternate transports (Wi-Fi Aware/BLE); **true DM routing** (DMs still flood — only the addressed

@@ -58,6 +58,8 @@ class MeshMetrics {
     private val keyRequestsSent = AtomicLong()
     private val keysServed = AtomicLong()
     private val keysRecovered = AtomicLong()
+    private val framesHeld = AtomicLong()
+    private val framesReplayed = AtomicLong()
 
     // Fixed key set → no allocation on the hot path, every reason always present.
     private val drops: Map<DropReason, AtomicLong> = DropReason.entries.associateWith { AtomicLong() }
@@ -92,6 +94,12 @@ class MeshMetrics {
     /** A previously-missing peer key we recovered (a frame that was dropping NO_SENDER_KEY can now verify). */
     fun onKeyRecovered() { keysRecovered.incrementAndGet() }
 
+    /** A frame dropped for a missing sender key that we parked to replay once the key arrives (see [PendingInbound]). */
+    fun onFrameHeld() { framesHeld.incrementAndGet() }
+
+    /** A parked frame we replayed through the deliver path after its sender's key was pinned. */
+    fun onFrameReplayed() { framesReplayed.incrementAndGet() }
+
     fun snapshot(): Snapshot {
         val byReason = drops.mapValues { it.value.get() }
         return Snapshot(
@@ -106,6 +114,8 @@ class MeshMetrics {
             keyRequestsSent = keyRequestsSent.get(),
             keysServed = keysServed.get(),
             keysRecovered = keysRecovered.get(),
+            framesHeld = framesHeld.get(),
+            framesReplayed = framesReplayed.get(),
         )
     }
 
@@ -121,5 +131,7 @@ class MeshMetrics {
         val keyRequestsSent: Long = 0,
         val keysServed: Long = 0,
         val keysRecovered: Long = 0,
+        val framesHeld: Long = 0,
+        val framesReplayed: Long = 0,
     )
 }

@@ -40,6 +40,16 @@ object FrameType {
     const val REACTION = "reaction"
     const val BLOB_REQ = "blobreq"
     const val KEY_REQ = "keyreq"
+
+    /**
+     * Whether a frame of [type] is worth parking for replay when it's dropped for a missing sender key
+     * (see `app.getknit.knit.mesh.PendingInbound`): the locally-delivered types only. PROFILE and KEY_REQ
+     * are excluded (they bootstrap keys, never wait on one), as are the point-to-point BLOB_REQ and any
+     * unknown future type — none of which `dispatchByType` would deliver on replay, so holding them would
+     * just occupy a slot.
+     */
+    fun isReplayable(type: String): Boolean =
+        type == CHAT || type == REACTION || type == RECEIPT || type == GROUP_UPDATE || type == GROUP_LEAVE
 }
 
 /**
