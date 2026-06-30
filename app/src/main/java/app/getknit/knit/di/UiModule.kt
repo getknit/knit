@@ -17,7 +17,7 @@ val uiModule = module {
     viewModel { params ->
         ChatViewModel(
             params.get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(),
-            androidContext(),
+            get(), androidContext(),
         )
     }
     viewModel { ChatListViewModel(get(), get(), get(), get(), get(), get(), androidContext()) }

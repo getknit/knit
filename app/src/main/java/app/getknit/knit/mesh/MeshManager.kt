@@ -105,11 +105,12 @@ class MeshManager(
         store = blobStore,
         selfId = { identity.nodeId() },
         // The chat list observes the blobs table for presence, so no per-message path write is needed
-        // when an attachment arrives. A pulled blob may also be a (multi-hop) peer's avatar, so attribute
-        // it back to whoever advertised it, and — for an E2E attachment — screen its decrypted bytes now
-        // that both the ciphertext and (from the delivered message) its key are on hand.
+        // when an attachment arrives. A pulled blob may also be a (multi-hop) peer's avatar or a group
+        // photo, so attribute it back to whoever advertised it, and — for an E2E attachment — screen its
+        // decrypted bytes now that both the ciphertext and (from the delivered message) its key are on hand.
         onObtained = { hash, _ ->
             adoptAdvertisedAvatar(hash)
+            adoptAdvertisedGroupPhoto(hash)
             screenObtainedAttachment(hash)
         },
     )
@@ -148,6 +149,12 @@ class MeshManager(
     // nodeId -> avatar hash a non-direct peer advertised but whose bytes we're still pulling, so a blob
     // arriving via the multi-hop BlobExchange can be attributed back to the peer that advertised it.
     private val advertisedAvatars = ConcurrentHashMap<String, String>()
+
+    // groupId -> the group photo (hash + its last-writer-wins clock) a group frame advertised but whose
+    // bytes we're still pulling, so a blob arriving via the multi-hop BlobExchange can be adopted onto the
+    // right group (and only if still current — the clock guards against a superseded photo, see
+    // [adoptAdvertisedGroupPhoto]). The group analogue of [advertisedAvatars].
+    private val advertisedGroupPhotos = ConcurrentHashMap<String, AdvertisedPhoto>()
 
     /** Number of directly-connected neighbors, for the UI status header. */
     val neighborCount: StateFlow<Int> =
@@ -804,13 +811,8 @@ class MeshManager(
      * across the mesh converge.
      */
     private suspend fun reconcileGroup(group: GroupInfo, senderId: String, sentAt: Long, me: String): Boolean {
-        val blocked = settings.blockedNodeIds.first()
         val existing = groups.find(group.id)
-        val refuse = senderId in blocked || // blocked sender's frame
-            existing?.left == true || // a group we've left — never re-upsert, so it can't be resurrected
-            !Conversations.isGroupMember(group.members, me) || // not for us; we're only relaying it
-            (existing == null && group.createdBy in blocked) // a blocked user starting a new group here
-        if (refuse) return false
+        if (groupFrameRefused(group, senderId, existing, me)) return false
 
         // The name is shared only when explicitly set; an unnamed (blank/null) frame never clears a name
         // someone else set. Adopt an incoming name only if it's newer (last-writer-wins on sentAt).
@@ -818,6 +820,7 @@ class MeshManager(
         val keepName = existing?.name.orEmpty()
         val keepClock = existing?.nameUpdatedAt ?: 0L
         val takeIncoming = incomingName != null && sentAt >= keepClock
+        val photo = groupPhotoDecision(existing, group)
         // Preserve our departure tombstone across the wholesale roster overwrite and re-subtract it, so a
         // member who left stays gone even when this frame carries the stale pre-departure roster (a
         // straggler who never saw the GroupLeaveFrame). The set only grows, so this can't re-add a leaver.
@@ -833,10 +836,104 @@ class MeshManager(
                 nameUpdatedAt = if (takeIncoming) sentAt else keepClock,
                 left = false,
                 departed = GroupMembersStore.encode(keepDeparted),
+                photoHash = photo.hash,
+                photoUpdatedAt = photo.clock,
             ),
         )
+        // A newer photo whose bytes we don't hold yet: pull it hop-by-hop (after the upsert advanced the
+        // clock, so the adopt-on-arrival clock check matches), then adopt on arrival.
+        photo.pull?.let { pullGroupPhoto(group.id, it, photo.clock) }
         return true
     }
+
+    /**
+     * Whether an inbound group frame must be ignored: a blocked sender, a group we've left (never
+     * re-upserted so a frame can't resurrect it), one we're not a member of, or a *new* group whose
+     * creator we've blocked (covers the proxy case where a non-blocked member relays the first frame
+     * carrying a blocked createdBy).
+     */
+    private suspend fun groupFrameRefused(
+        group: GroupInfo,
+        senderId: String,
+        existing: GroupEntity?,
+        me: String,
+    ): Boolean {
+        val blocked = settings.blockedNodeIds.first()
+        return senderId in blocked ||
+            existing?.left == true ||
+            !Conversations.isGroupMember(group.members, me) ||
+            (existing == null && group.createdBy in blocked)
+    }
+
+    /**
+     * Resolves a group's photo last-writer-wins on its own clock ([GroupInfo.photoUpdatedAt]), independent
+     * of the name's sentAt clock so a stale chat message re-asserting an old photo can't revert a newer one.
+     * The clock advances as soon as a newer photo is announced (so a later frame can't re-open the race),
+     * but the visible [PhotoDecision.hash] only swaps to the new photo once its bytes are local (a
+     * peer-avatar-style invariant — a stored photoHash always renders); otherwise [PhotoDecision.pull] names
+     * the hash to fetch and the old photo is kept until it arrives.
+     */
+    private suspend fun groupPhotoDecision(existing: GroupEntity?, group: GroupInfo): PhotoDecision {
+        val incomingPhoto = group.photoHash
+        val incomingPhotoClock = group.photoUpdatedAt ?: 0L
+        val keepPhoto = existing?.photoHash
+        val keepPhotoClock = existing?.photoUpdatedAt ?: 0L
+        val takePhoto =
+            incomingPhoto != null && incomingPhoto != keepPhoto && incomingPhotoClock >= keepPhotoClock
+        if (!takePhoto) return PhotoDecision(keepPhoto, keepPhotoClock, pull = null)
+        val haveBytes = blobStore.has(incomingPhoto)
+        return PhotoDecision(
+            hash = if (haveBytes) incomingPhoto else keepPhoto,
+            clock = incomingPhotoClock,
+            pull = if (haveBytes) null else incomingPhoto,
+        )
+    }
+
+    /** A reconciled group photo: the hash to store, its clock, and (if its bytes aren't local) the hash to pull. */
+    private data class PhotoDecision(val hash: String?, val clock: Long, val pull: String?)
+
+    /**
+     * Records a group's advertised-but-not-yet-local photo and pulls its bytes over the same
+     * content-addressed [BlobExchange] that carries avatars/attachments. Attributed back to the group in
+     * [adoptAdvertisedGroupPhoto] on arrival. Group photos are pull-only (no direct push like avatars), so
+     * this runs for direct neighbors too — the holder serves the blob when [BlobExchange.want] reaches it.
+     */
+    private suspend fun pullGroupPhoto(groupId: String, hash: String, clock: Long) {
+        advertisedGroupPhotos[groupId] = AdvertisedPhoto(hash, clock)
+        blobExchange.want(hash)
+    }
+
+    /**
+     * A pulled blob just landed: if any group advertised it as its photo (see [reconcileGroup]), adopt it
+     * onto that group now that the bytes are local — but only if it's still the group's current photo (the
+     * clock still matches; a newer photo arriving meanwhile supersedes it) and, with content filtering on,
+     * not flagged explicit by the screen in [MeshBlobStore.saveIncoming]. A no-op for blobs no group wants.
+     */
+    private suspend fun adoptAdvertisedGroupPhoto(hash: String) {
+        val targets = advertisedGroupPhotos.entries.filter { it.value.hash == hash }.map { it.key }
+        if (targets.isEmpty()) return
+        // Mirror the avatar gate: don't adopt an explicit photo when filtering is on (the setting gates
+        // receive-side hiding, so off -> adopt anyway); drop the now-unwanted blob.
+        if (settings.contentFilteringEnabled.first() && blobs.isImageFlagged(hash)) {
+            targets.forEach { advertisedGroupPhotos.remove(it) }
+            blobs.deleteIfUnreferenced(hash)
+            return
+        }
+        targets.forEach { groupId ->
+            val advertised = advertisedGroupPhotos[groupId] ?: return@forEach
+            if (advertised.hash != hash) return@forEach // superseded by a newer photo; leave it pending
+            advertisedGroupPhotos.remove(groupId)
+            val group = groups.find(groupId) ?: return@forEach
+            // The stored clock must still equal what we recorded — else a newer photo won the race.
+            if (group.photoUpdatedAt != advertised.clock || group.photoHash == hash) return@forEach
+            val oldHash = group.photoHash
+            groups.upsert(group.copy(photoHash = hash))
+            if (oldHash != null && oldHash != hash) blobs.deleteIfUnreferenced(oldHash)
+        }
+    }
+
+    /** A group's advertised photo (content hash + its last-writer-wins clock) whose bytes are being pulled. */
+    private data class AdvertisedPhoto(val hash: String, val clock: Long)
 
     /**
      * Persists an inbound chat into [conversationId], starts pulling any attachment blob we don't hold,

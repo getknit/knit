@@ -28,13 +28,14 @@ interface BlobDao {
     fun observeHashes(): Flow<List<String>>
 
     /**
-     * Blob hashes referenced by no message attachment and no peer avatar. The caller must still exclude
-     * the device's own-avatar hash (it lives in DataStore, not a table) before deleting.
+     * Blob hashes referenced by no message attachment, no peer avatar, and no group photo. The caller
+     * must still exclude the device's own-avatar hash (it lives in DataStore, not a table) before deleting.
      */
     @Query(
         "SELECT hash FROM blobs WHERE " +
             "hash NOT IN (SELECT attachmentHash FROM messages WHERE attachmentHash IS NOT NULL) AND " +
-            "hash NOT IN (SELECT avatarHash FROM peers WHERE avatarHash IS NOT NULL)",
+            "hash NOT IN (SELECT avatarHash FROM peers WHERE avatarHash IS NOT NULL) AND " +
+            "hash NOT IN (SELECT photoHash FROM groups WHERE photoHash IS NOT NULL)",
     )
     suspend fun orphanHashes(): List<String>
 

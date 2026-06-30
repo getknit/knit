@@ -107,6 +107,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboard
@@ -149,6 +150,7 @@ import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.openUrl
+import app.getknit.knit.ui.profile.AvatarCropDialog
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.share.ShareInbox
@@ -196,6 +198,21 @@ fun ChatScreen(
     // Modern Android Photo Picker — needs no runtime permission. ImageOnly still includes GIFs.
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         uri?.let(viewModel::attach)
+    }
+
+    // Separate picker for the group photo (any member can set it); the picked image goes through the crop
+    // dialog before it's saved + flooded. Mirrors the profile-avatar pick → crop → save flow.
+    val groupPhotoCropTarget by viewModel.groupPhotoCropTarget.collectAsStateWithLifecycle()
+    val groupPhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        uri?.let(viewModel::pickGroupPhoto)
+    }
+    groupPhotoCropTarget?.let { bmp ->
+        val image = remember(bmp) { bmp.asImageBitmap() }
+        AvatarCropDialog(
+            bitmap = image,
+            onCancel = viewModel::cancelGroupPhotoCrop,
+            onConfirm = viewModel::confirmGroupPhoto,
+        )
     }
 
     // Suppress message notifications while the chat is on screen, and clear any active one. The NavHost
@@ -285,11 +302,24 @@ fun ChatScreen(
                             }
                         }
                         state.isGroup -> {
-                            // Group: a people glyph + name + member count.
+                            // Group: its photo (or a people glyph when unset) + name + member count.
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                GroupGlyph(size = 36.dp)
+                                val groupPhoto = state.avatarHash
+                                if (groupPhoto != null) {
+                                    AsyncImage(
+                                        model = BlobImage(groupPhoto),
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.size(36.dp).clip(CircleShape),
+                                    )
+                                } else {
+                                    GroupGlyph(size = 36.dp)
+                                }
                                 Spacer(Modifier.width(10.dp))
-                                Column {
+                                // Weight (fill = false) lets a long group name ellipsize while the
+                                // fixed-size badge — measured first as a non-weighted child — always
+                                // keeps its room. Short names stay snug against the icon.
+                                Column(modifier = Modifier.weight(1f, fill = false)) {
                                     Text(
                                         text = state.title,
                                         style = MaterialTheme.typography.titleLarge,
@@ -327,6 +357,12 @@ fun ChatScreen(
                                     style = MaterialTheme.typography.titleLarge,
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    // Weight (fill = false) lets a long name ellipsize while the
+                                    // fixed-size badges — measured first as non-weighted children —
+                                    // always keep their room. Short names stay snug against the icons.
+                                    modifier = Modifier.weight(1f, fill = false),
                                 )
                                 EncryptionBadge { showEncryptionInfo = true }
                                 if (state.verified) {
@@ -357,6 +393,20 @@ fun ChatScreen(
                                 onDismissRequest = { headerMenuOpen = false },
                             ) {
                                 if (state.isGroup) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.chat_group_set_photo)) },
+                                        leadingIcon = {
+                                            Icon(Icons.Filled.AddPhotoAlternate, contentDescription = null)
+                                        },
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            groupPhotoPicker.launch(
+                                                PickVisualMediaRequest(
+                                                    ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                                ),
+                                            )
+                                        },
+                                    )
                                     DropdownMenuItem(
                                         text = { Text(stringResource(R.string.chat_group_rename)) },
                                         leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },

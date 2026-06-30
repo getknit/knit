@@ -55,7 +55,10 @@ import java.io.File
     //      signature (the `bytes` column became `signed`, plus a new `sig` column); peers gained
     //      `protoVersion`/`capabilities` from the profile frame. Destructive migration (clears any
     //      old-format carried frames + pins); coordinated with the bumped Nearby SERVICE_ID.
-    version = 14,
+    // v15: groups gained `photoHash`/`photoUpdatedAt` for the (last-writer-wins) group photo. Additive
+    //      wire change (new nullable GroupInfo fields), so no SERVICE_ID bump; destructive DB migration as
+    //      usual (app not yet public).
+    version = 15,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

@@ -92,6 +92,7 @@
         <item quantity="other">%d members</item>
     </plurals>
     <string name="chat_group_rename">Rename group</string>
+    <string name="chat_group_set_photo">Set group photo</string>
     <string name="chat_group_name_label">Group name</string>
     <string name="chat_group_rename_action">Rename</string>
     <string name="chat_group_leave">Leave group</string>

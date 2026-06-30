@@ -1,12 +1,15 @@
 package app.getknit.knit.ui.chat
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
+import androidx.compose.ui.geometry.Offset
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.R
 import app.getknit.knit.TextLimits
 import app.getknit.knit.data.AttachmentStore
+import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GallerySaver
 import app.getknit.knit.data.GroupRepository
@@ -28,6 +31,7 @@ import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.notifications.Notifier
+import app.getknit.knit.ui.util.computeAvatarCrop
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -119,6 +123,7 @@ class ChatViewModel(
     private val notifier: Notifier,
     private val attachments: AttachmentStore,
     private val blobs: BlobRepository,
+    private val avatars: AvatarStore,
     private val gallerySaver: GallerySaver,
     private val context: Context,
 ) : ViewModel() {
@@ -292,8 +297,11 @@ class ChatViewModel(
                 isRoom -> context.getString(R.string.nearby_title)
                 else -> displayNameFor(peersByNode[conversationId]?.name, conversationId)
             },
-            // Groups and the room use a glyph, not a peer avatar.
-            avatarHash = if (isRoom || isGroup) null else peersByNode[conversationId]?.avatarHash,
+            // The room uses a glyph; a group shows its photo (or the glyph when unset); a DM the peer avatar.
+            avatarHash = when {
+                isRoom -> null
+                else -> group?.photoHash ?: peersByNode[conversationId]?.avatarHash
+            },
             isBlocked = !isRoom && !isGroup && conversationId in blocked,
             verified = !isRoom && !isGroup && peersByNode[conversationId]?.verified == true,
             isGroup = isGroup,
@@ -310,14 +318,7 @@ class ChatViewModel(
             // pending rename rides this message (its GroupInfo.name converges last-writer-wins).
             val group = if (isRoom) null else groups.find(conversationId)
             val sent = if (group != null) {
-                val info = GroupInfo(
-                    id = group.groupId,
-                    // Only a renamed group carries a shared name; unnamed groups stay locally-titled.
-                    name = group.name.takeIf { it.isNotBlank() },
-                    members = GroupMembersStore.decode(group.members),
-                    createdBy = group.createdBy,
-                )
-                meshManager.sendChat(trimmed, attachment, mentions, recipientId = null, group = info)
+                meshManager.sendChat(trimmed, attachment, mentions, recipientId = null, group = group.toInfo())
             } else {
                 // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
                 val recipientId = if (isRoom) null else conversationId
@@ -335,6 +336,21 @@ class ChatViewModel(
     }
 
     /**
+     * The self-describing [GroupInfo] flooded on every group frame, built from the local row so each
+     * message/update re-asserts the current name **and** photo (both converge last-writer-wins, by their
+     * own clocks). Centralized so the chat-send, rename, and set-photo paths can't drift.
+     */
+    private fun GroupEntity.toInfo() = GroupInfo(
+        id = groupId,
+        // Only a renamed group carries a shared name; unnamed groups stay locally-titled.
+        name = name.takeIf { it.isNotBlank() },
+        members = GroupMembersStore.decode(members),
+        createdBy = createdBy,
+        photoHash = photoHash,
+        photoUpdatedAt = photoUpdatedAt.takeIf { it > 0L },
+    )
+
+    /**
      * Renames this group: updates the local store immediately and floods a group-update frame so members
      * converge right away (no waiting for the next message). The name is last-writer-wins by timestamp.
      */
@@ -345,15 +361,43 @@ class ChatViewModel(
             val group = groups.find(conversationId) ?: return@launch
             val updated = group.copy(name = trimmed, nameUpdatedAt = System.currentTimeMillis())
             groups.upsert(updated)
-            meshManager.sendGroupUpdate(
-                GroupInfo(
-                    id = updated.groupId,
-                    name = updated.name,
-                    members = GroupMembersStore.decode(updated.members),
-                    createdBy = updated.createdBy,
-                ),
-            )
+            meshManager.sendGroupUpdate(updated.toInfo())
         }
+    }
+
+    // The picked group photo awaiting crop (held here, not in SavedStateHandle — a Bitmap is large and not
+    // parcel-friendly — so the crop survives configuration changes). Mirrors ProfileViewModel's avatar crop.
+    private val _groupPhotoCropTarget = MutableStateFlow<Bitmap?>(null)
+    val groupPhotoCropTarget: StateFlow<Bitmap?> = _groupPhotoCropTarget.asStateFlow()
+
+    /** Picks an image for this group's photo and shows the crop UI; the save happens in [confirmGroupPhoto]. */
+    fun pickGroupPhoto(uri: Uri) {
+        viewModelScope.launch { _groupPhotoCropTarget.value = avatars.loadForCrop(uri) }
+    }
+
+    /**
+     * Persists the cropped group photo and floods a group-update frame carrying its hash + clock, so every
+     * member converges last-writer-wins and pulls the bytes. Any member can set it; the local row's photo
+     * is updated immediately (the bytes are local), so it shows right away. [scale]/[offset]/[diameter]
+     * come from the crop dialog's transform — the same flow as the profile avatar.
+     */
+    fun confirmGroupPhoto(scale: Float, offset: Offset, diameter: Float) {
+        val source = _groupPhotoCropTarget.value ?: return
+        _groupPhotoCropTarget.value = null
+        viewModelScope.launch {
+            val group = groups.find(conversationId) ?: return@launch
+            val crop = computeAvatarCrop(source.width, source.height, diameter, scale, offset.x, offset.y)
+            val newHash = avatars.saveOwnAvatar(source, crop) ?: return@launch
+            val oldHash = group.photoHash
+            val updated = group.copy(photoHash = newHash, photoUpdatedAt = System.currentTimeMillis())
+            groups.upsert(updated)
+            meshManager.sendGroupUpdate(updated.toInfo())
+            if (oldHash != null && oldHash != newHash) blobs.deleteIfUnreferenced(oldHash)
+        }
+    }
+
+    fun cancelGroupPhotoCrop() {
+        _groupPhotoCropTarget.value = null
     }
 
     /**
@@ -478,5 +522,10 @@ class ChatViewModel(
     fun onChatBackground() {
         chatForeground.value = false
         notifier.setVisibleConversation(null)
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        _groupPhotoCropTarget.value = null // drop the (large) pending crop bitmap
     }
 }

@@ -27,9 +27,9 @@ import kotlinx.coroutines.launch
 
 /**
  * One row in the conversation list: the [Conversations.NEARBY] broadcast room ([isRoom] true), a
- * group chat ([isGroup] true, keyed by the group id, [title] is the group name), or a 1:1 DM keyed by
- * the peer's node id with the peer's [title]/[avatarHash]. [lastPreview]/[lastMessageAt] are null when
- * the conversation has no messages yet.
+ * group chat ([isGroup] true, keyed by the group id, [title] is the group name, [avatarHash] its photo
+ * or null for the glyph), or a 1:1 DM keyed by the peer's node id with the peer's [title]/[avatarHash].
+ * [lastPreview]/[lastMessageAt] are null when the conversation has no messages yet.
  */
 data class ConversationRow(
     val id: String,
@@ -145,7 +145,7 @@ class ChatListViewModel(
             ) { id -> displayNameFor(peersByNode[id]?.name, id) }
             val row = rowFor(
                 g.groupId, byConversation[g.groupId].orEmpty(),
-                title = title, isRoom = false, isGroup = true, avatarHash = null,
+                title = title, isRoom = false, isGroup = true, avatarHash = g.photoHash,
             )
             // An empty group sorts/labels by its creation time so it isn't stranded at the bottom.
             if (row.lastMessageAt == null) row.copy(lastMessageAt = g.createdAt) else row

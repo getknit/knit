@@ -120,6 +120,29 @@ class WireSerializationTest {
         assertNull(WireCodec.decodeEnvelope(WireCodec.encodeEnvelope(env))!!.group?.name)
     }
 
+    @Test
+    fun groupPhotoFieldsRoundTrip() {
+        val env = envelope(
+            group = GroupInfo(
+                "g", members = listOf("a", "b"), createdBy = "a",
+                photoHash = "a".repeat(64), photoUpdatedAt = 1234L,
+            ),
+        )
+        val decoded = WireCodec.decodeEnvelope(WireCodec.encodeEnvelope(env))!!.group!!
+        assertEquals("a".repeat(64), decoded.photoHash)
+        assertEquals(1234L, decoded.photoUpdatedAt)
+    }
+
+    @Test
+    fun groupWithoutPhotoDecodesPhotoFieldsAsNull() {
+        // Additive fields: a group that sets no photo omits them on the wire (encodeDefaults = false),
+        // and an old or photo-less frame decodes both as null — never a spurious photo.
+        val env = envelope(group = GroupInfo("g", members = listOf("a", "b"), createdBy = "a"))
+        val decoded = WireCodec.decodeEnvelope(WireCodec.encodeEnvelope(env))!!.group!!
+        assertNull(decoded.photoHash)
+        assertNull(decoded.photoUpdatedAt)
+    }
+
     // --- per-type content payload round-trips ---
 
     @Test

@@ -20,6 +20,10 @@ interface GroupDao {
     @Upsert
     suspend fun upsert(group: GroupEntity)
 
+    /** How many groups reference [hash] as their photo — guards blob GC (a shared photo stays referenced). */
+    @Query("SELECT COUNT(*) FROM groups WHERE photoHash = :hash")
+    suspend fun countByPhotoHash(hash: String): Int
+
     /** Marks the group left so inbound frames are dropped and it's hidden from the list. */
     @Query("UPDATE groups SET left = 1 WHERE groupId = :groupId")
     suspend fun markLeft(groupId: String)

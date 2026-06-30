@@ -5,6 +5,7 @@ import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
 import app.getknit.knit.data.blob.BlobVerdictEntity
+import app.getknit.knit.data.group.GroupDao
 import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.peer.PeerDao
 import app.getknit.knit.data.settings.SettingsStore
@@ -13,9 +14,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 
 /**
- * Single source of truth for content-addressed image blobs (attachments + avatars) held in the
- * encrypted database. Wraps [BlobDao] and owns the cross-table reference check used to garbage-collect
- * an orphaned blob once nothing points at it.
+ * Single source of truth for content-addressed image blobs (attachments + avatars + group photos) held
+ * in the encrypted database. Wraps [BlobDao] and owns the cross-table reference check used to
+ * garbage-collect an orphaned blob once nothing points at it.
  *
  * It is also the on-device image-moderation hub: it screens images against [imageModerator] and caches
  * the NSFW verdict by content hash in [verdicts]. Screening always runs; the content-filtering setting
@@ -32,6 +33,7 @@ class BlobRepository(
     private val settings: SettingsStore,
     private val verdicts: BlobVerdictDao,
     private val imageModerator: ImageModerator,
+    private val groups: GroupDao,
 ) {
     suspend fun insert(hash: String, mime: String, bytes: ByteArray) =
         blobs.insert(BlobEntity(hash, mime, bytes))
@@ -98,15 +100,16 @@ class BlobRepository(
 
     /**
      * Deletes the blob for [hash] only if nothing references it any more — no message attachment, no
-     * peer avatar, and not the device's own avatar. Safe to call after deleting a message, swapping an
-     * avatar, or discarding a staged-but-unsent attachment; a no-op (and tolerates a null hash) when the
-     * blob is still in use.
+     * peer avatar, no group photo, and not the device's own avatar. Safe to call after deleting a
+     * message, swapping an avatar/group photo, or discarding a staged-but-unsent attachment; a no-op
+     * (and tolerates a null hash) when the blob is still in use.
      */
     suspend fun deleteIfUnreferenced(hash: String?) {
         if (hash == null) return
         if (hash == settings.ownAvatarHash.first()) return
         if (messages.countByAttachmentHash(hash) > 0) return
         if (peers.countByAvatarHash(hash) > 0) return
+        if (groups.countByPhotoHash(hash) > 0) return
         blobs.delete(hash)
         verdicts.delete(hash)
     }

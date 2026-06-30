@@ -53,6 +53,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
@@ -74,6 +75,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
+import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.invite.ShareKnitDialog
 import app.getknit.knit.ui.invite.SplitApkException
 import app.getknit.knit.ui.invite.launchApkShareChooser
@@ -82,6 +84,7 @@ import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.util.compactTimeAgo
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
+import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 
@@ -362,10 +365,14 @@ internal fun ConversationListItem(
     }
 }
 
-/** The circular leading glyph: the knit logo for the room, a people glyph for a group, an [Avatar] for a DM. */
+/**
+ * The circular leading glyph: the knit logo for the room, a group's photo (or a people glyph when unset)
+ * for a group, an [Avatar] for a DM.
+ */
 @Composable
 private fun LeadingVisual(row: ConversationRow) {
     val size = 52.dp
+    val groupPhoto = row.avatarHash
     when {
         row.isRoom -> CircleGlyph(size) {
             Icon(
@@ -374,6 +381,12 @@ private fun LeadingVisual(row: ConversationRow) {
                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
             )
         }
+        row.isGroup && groupPhoto != null -> AsyncImage(
+            model = BlobImage(groupPhoto),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(size).clip(CircleShape),
+        )
         row.isGroup -> CircleGlyph(size) {
             Icon(
                 Icons.Filled.Group,

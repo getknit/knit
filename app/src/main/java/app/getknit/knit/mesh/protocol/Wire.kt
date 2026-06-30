@@ -181,6 +181,13 @@ fun List<Mention>.mention(nodeId: String): Boolean = any { it.nodeId == nodeId }
  * rename (converges last-writer-wins by the frame's sentAt) and is null for an unnamed group; [members]
  * is the fixed roster (capped at 8 incl. the creator); [createdBy] is the creator's node id, used to
  * refuse a group a blocked user tries to start on this device.
+ *
+ * [photoHash] is the content hash of the group's photo blob (pulled out of band like a peer avatar, via
+ * [FrameType.BLOB_REQ]); null means "no change / unset" (never "clear", same as [name]). [photoUpdatedAt]
+ * is the photo's own last-writer-wins clock (the wall clock at which a member set it) — distinct from the
+ * frame's sentAt that clocks [name], so a stale chat message re-asserting an old photo can't revert a
+ * newer one. Both are additive nullable fields (see `docs/WIRE_COMPAT.md`): an old peer ignores them and
+ * still relays the frame verbatim.
  */
 @Serializable
 data class GroupInfo(
@@ -188,6 +195,8 @@ data class GroupInfo(
     val name: String? = null,
     val members: List<String>,
     val createdBy: String,
+    val photoHash: String? = null,
+    val photoUpdatedAt: Long? = null,
 )
 
 /**

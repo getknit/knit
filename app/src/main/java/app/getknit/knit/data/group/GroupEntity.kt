@@ -18,6 +18,13 @@ import kotlinx.serialization.json.Json
  * type via [GroupMembersStore]. [createdBy] is the creator's node id, used to refuse a group a blocked
  * user tries to start here.
  *
+ * [photoHash] is the content hash (in the encrypted `blobs` table) of the group's photo, or null for the
+ * default people glyph. Any member can set it; it converges last-writer-wins on [photoUpdatedAt] (its own
+ * clock, distinct from [nameUpdatedAt], so a stale chat message can't revert a newer photo). Mirrors a
+ * peer avatar: the hash is stored only once its bytes are present locally and pass on-device screening
+ * (`MeshManager.adoptAdvertisedGroupPhoto`), so a non-null [photoHash] always renders. Set/replace only —
+ * there is no wire convention to clear it back to the glyph (a null carries "no change", like [name]).
+ *
  * [left] is the leave tombstone: once true, inbound group frames are dropped and never re-upserted, so
  * a self-describing frame can't resurrect a group the user left. The row is kept (not deleted) so that
  * tombstone survives; its messages are deleted on leave.
@@ -39,6 +46,8 @@ data class GroupEntity(
     val nameUpdatedAt: Long = 0L,
     val left: Boolean = false,
     val departed: String = "[]",
+    val photoHash: String? = null,
+    val photoUpdatedAt: Long = 0L,
 )
 
 /**
