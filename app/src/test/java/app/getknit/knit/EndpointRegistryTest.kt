@@ -77,6 +77,53 @@ class EndpointRegistryTest {
     }
 
     @Test
+    fun onLostPreservesAStillConnectingEndpoint() {
+        val reg = EndpointRegistry { 0L }
+        reg.map("e1", wire("nodeA"))
+        reg.beginConnecting("e1") // handshake in flight
+        reg.onLost("e1") // Nearby drops the discovery beacon mid-bootstrap (GATT outlasts the scan)
+        // The mapping must survive so the in-flight connect, if it succeeds, isn't stranded unmapped.
+        assertEquals("mapping kept while connecting", "nodeA", reg.nodeFor("e1"))
+        reg.markConnected("e1")
+        assertEquals(
+            "connected peer is a neighbor, not silently unmapped",
+            setOf(Peer("nodeA", 1, 0L)),
+            reg.neighbors(),
+        )
+    }
+
+    @Test
+    fun prunePreservesAStillConnectingOldId() {
+        val reg = EndpointRegistry { 0L }
+        reg.map("e1", wire("nodeA"))
+        reg.beginConnecting("e1") // mid-handshake on the old id
+        reg.map("e2", wire("nodeA")) // same node re-advertised under a fresh ephemeral id
+        assertEquals("connecting old id kept", "nodeA", reg.nodeFor("e1"))
+        assertTrue("still tracked as in flight", reg.isConnecting())
+    }
+
+    @Test
+    fun markConnectedMakesItsEndpointAuthoritativeForTheNode() {
+        val reg = EndpointRegistry { 0L }
+        reg.map("e1", wire("nodeA"))
+        reg.beginConnecting("e1")
+        reg.map("e2", wire("nodeA")) // newer id repoints nodeToEndpoint at e2 while e1 still connecting
+        reg.markConnected("e1") // but e1 is the one that actually connected
+        assertEquals("send() resolves the live link", "e1", reg.endpointFor("nodeA"))
+    }
+
+    @Test
+    fun isConnectingReflectsInFlightRequests() {
+        val reg = EndpointRegistry { 0L }
+        assertFalse(reg.isConnecting())
+        reg.map("e1", wire("nodeA"))
+        reg.beginConnecting("e1")
+        assertTrue("a request is in flight", reg.isConnecting())
+        reg.markConnected("e1")
+        assertFalse("cleared once connected", reg.isConnecting())
+    }
+
+    @Test
     fun beginConnectingGatesUntilBackoffWindowElapses() {
         var now = 0L
         val reg = EndpointRegistry { now }

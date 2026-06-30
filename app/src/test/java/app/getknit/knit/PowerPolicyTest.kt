@@ -75,7 +75,7 @@ class PowerPolicyTest {
             PowerState(interactive = false, charging = false, batteryLow = true),
         )
         everyState.forEach { state ->
-            assertEquals(5_000L, PowerPolicy.idleAfterScan(state, neighborCount = 0, lonelyForMs = 0L))
+            assertEquals(12_000L, PowerPolicy.idleAfterScan(state, neighborCount = 0, lonelyForMs = 0L))
         }
     }
 
@@ -93,7 +93,7 @@ class PowerPolicyTest {
     fun isolatedWhileInteractiveOrChargingStaysAggressiveEvenWhenStale() {
         val stale = 10 * 60_000L // long past the window, but the cap only applies on battery
         val charging = PowerState(interactive = false, charging = true)
-        assertEquals(5_000L, PowerPolicy.idleAfterScan(PowerState(interactive = true), neighborCount = 0, lonelyForMs = stale))
-        assertEquals(5_000L, PowerPolicy.idleAfterScan(charging, neighborCount = 0, lonelyForMs = stale))
+        assertEquals(12_000L, PowerPolicy.idleAfterScan(PowerState(interactive = true), neighborCount = 0, lonelyForMs = stale))
+        assertEquals(12_000L, PowerPolicy.idleAfterScan(charging, neighborCount = 0, lonelyForMs = stale))
     }
 }

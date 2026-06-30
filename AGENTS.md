@@ -130,6 +130,22 @@ frames.
   (`connectJob = scope.launch { connectJob?.join(); … }`) made the coroutine await itself and
   deadlock, so connections never formed. Requests now run on a single-thread dispatcher with
   `await()` — see `NearbyTransport.connectTo`.
+- **BLE radio contention: don't scan while connecting.** BLE *scanning* (discovery) and the BLE
+  *GATT/L2CAP bootstrap* of a new connection share the one radio. Scanning over an in-flight handshake
+  starves it — the GMS layer logs `STATUS_RADIO_ERROR` (ApiException 8007) /
+  `ESTABLISH_GATT_CONNECTION_FAILED` / "Failed to retrieve a physical BLE socket", and the connection
+  never forms (verified on three Pixels, June 2026). This bit us when an *isolated* node was made to
+  scan near-continuously to rejoin fast (commit `6bb071f`, 5 s idle ⇒ ~70 % scan airtime): the
+  aggressive scan sabotaged the very connect that would end the isolation, **and** blocked inbound
+  connections from peers, so the node could discover others yet connect to no one — a self-reinforcing
+  trap (the last node left alone never escapes, while paired nodes drop to a calm cadence and are fine).
+  Rules, all in `NearbyTransport.discoveryLoop` / `PowerPolicy`: (1) the loop **pauses discovery while
+  any connect is in flight** (`registry.isConnecting()`); (2) the isolated cadence keeps a radio-quiet
+  gap (`LONELY_IDLE_MS`, 12 s — *not* back-to-back); (3) a `MIN_SCAN_GAP_MS` floor caps how fast
+  `heal()` nudges can churn startDiscovery/stopDiscovery (rapid churn also wedges the controller). The
+  WiFi upgrade only happens *after* connecting, so a stuck-isolated node never leaves contended BLE —
+  which is exactly why connected nodes are stable but a lone one isn't. Reproduce/inspect with
+  `adb logcat | grep -E 'NearbyMediums.*MEDIUM_ERROR|STATUS_RADIO_ERROR'`.
 - **Nearby needs physical devices.** An emulator generally can't mesh with a real phone (NAT'd
   network). Use `FakeLoopTransport` for logic tests and two physical phones for connectivity.
 - **Keep the `<Frame>` type argument on the CBOR codec.** `WireCodec` calls

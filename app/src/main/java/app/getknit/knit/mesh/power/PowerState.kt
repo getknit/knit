@@ -45,7 +45,7 @@ object PowerPolicy {
      *
      * With neighbors, the connected mesh duty-cycles and backs off as it grows (the original
      * `baseIntervalMs * (1 + neighborCount)`). An **isolated** node instead prioritizes rejoining and
-     * scans almost back-to-back ([LONELY_IDLE_MS]); while interactive or charging it does so for as
+     * scans on a short [LONELY_IDLE_MS] gap; while interactive or charging it does so for as
      * long as it stays alone, but a screen-off-on-battery node caps that aggressive phase to
      * [LONELY_AGGRESSIVE_WINDOW_MS] and then relaxes to the power-policy idle to bound drain when no
      * peers are around at all.
@@ -67,9 +67,15 @@ object PowerPolicy {
     // Screen off and battery low: most relaxed.
     private const val LOW_BATTERY_INTERVAL_MS = 300_000L
 
-    // Isolated (zero-neighbor) reconnect cadence: scan almost continuously so a node that moved back
-    // into range rejoins in seconds instead of waiting out a 2–5 min duty-cycle gap.
-    private const val LONELY_IDLE_MS = 5_000L
+    // Isolated (zero-neighbor) reconnect cadence: scan often so a node that moved back into range
+    // rejoins quickly instead of waiting out a 2–5 min duty-cycle gap — but NOT back-to-back. BLE
+    // scanning and a GATT/L2CAP connection handshake share the one radio; near-continuous scanning
+    // (the original 5s) starves the very handshake that ends the isolation, so an isolated node could
+    // discover a peer yet never connect to it (STATUS_RADIO_ERROR / ESTABLISH_GATT_CONNECTION_FAILED).
+    // 12s leaves a radio-quiet gap after each ~12s scan for an inbound handshake to complete; the
+    // transport additionally pauses scanning outright while its own connect is in flight. See "BLE
+    // radio contention" in AGENTS.md.
+    private const val LONELY_IDLE_MS = 12_000L
 
     // On battery with the screen off, only stay in the aggressive isolated cadence this long before
     // relaxing — bounds drain for a node that is simply alone (e.g. left in a drawer).

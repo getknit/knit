@@ -29,19 +29,31 @@ internal class EndpointRegistry(private val clock: () -> Long) {
     private val connecting = HashSet<String>()
     private val retry = HashMap<String, Retry>()
 
-    /** Record an endpoint↔node mapping, pruning any stale (different, unconnected) id for this node. */
+    /** Record an endpoint↔node mapping, pruning any stale (different, idle) id for this node. */
     fun map(endpointId: String, wire: Protocol.PeerWire) = synchronized(lock) {
         val stale = nodeToEndpoint[wire.nodeId]
-        if (stale != null && stale != endpointId && stale !in connected) forget(stale)
+        // Never prune an id we're connected to OR mid-handshake on: forgetting a connecting id strips
+        // its mapping, so a later markConnected would land it in `connected` with no node mapping.
+        if (stale != null && stale != endpointId && !isActive(stale)) forget(stale)
         endpointToNode[endpointId] = wire.nodeId
         nodeToEndpoint[wire.nodeId] = endpointId
         peerWire[endpointId] = wire
     }
 
-    /** A discovery loss: forget the endpoint unless it's an active connection (handled by [markDisconnected]). */
+    /**
+     * A discovery loss: forget the endpoint unless a connection is live ([markDisconnected] owns those)
+     * or being established on it. A still-`connecting` id must keep its mapping — Nearby commonly emits
+     * onEndpointLost mid-handshake (the slow BLE GATT bootstrap outlasts the scan window), and
+     * forgetting it here would leave a subsequent successful onConnectionResult in `connected` with no
+     * node mapping: empty neighbors, inbound dropped as UNKNOWN_ENDPOINT, and unsendable.
+     */
     fun onLost(endpointId: String) = synchronized(lock) {
-        if (endpointId !in connected) forget(endpointId)
+        if (!isActive(endpointId)) forget(endpointId)
     }
+
+    /** Connected or mid-handshake — an id whose mapping must not be pruned. Caller holds [lock]. */
+    private fun isActive(endpointId: String): Boolean =
+        endpointId in connected || endpointId in connecting
 
     /** Drop every trace of an endpoint id. Caller holds [lock]. */
     private fun forget(endpointId: String) {
@@ -76,6 +88,10 @@ internal class EndpointRegistry(private val clock: () -> Long) {
         connecting.remove(endpointId)
         connected.add(endpointId)
         retry.remove(endpointId) // reset backoff so a later drop reconnects without delay
+        // Make this endpoint authoritative for its node: if the peer re-advertised a fresh id mid-
+        // handshake, `map` may have repointed nodeToEndpoint at the newer id — the one that actually
+        // connected wins, so endpointFor(node)/send() resolve to the live link.
+        endpointToNode[endpointId]?.let { node -> nodeToEndpoint[node] = endpointId }
         Unit
     }
 
@@ -100,6 +116,10 @@ internal class EndpointRegistry(private val clock: () -> Long) {
     // --- lookups ---
 
     fun isConnected(endpointId: String): Boolean = synchronized(lock) { endpointId in connected }
+
+    /** True while any outbound connection request is in flight — the discovery loop yields the radio to it. */
+    fun isConnecting(): Boolean = synchronized(lock) { connecting.isNotEmpty() }
+
     fun isIsolated(): Boolean = synchronized(lock) { connected.isEmpty() }
     fun connectedCount(): Int = synchronized(lock) { connected.size }
 

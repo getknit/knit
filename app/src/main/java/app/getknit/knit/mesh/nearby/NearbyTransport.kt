@@ -213,6 +213,12 @@ class NearbyTransport(
      * and base idle interval come from [PowerPolicy] (screen/charge/battery aware); the idle is
      * further multiplied by the neighbor count so a denser mesh scans less.
      *
+     * While a connection handshake is in flight the loop pauses scanning entirely: BLE scanning and
+     * the GATT/L2CAP bootstrap share the one radio, so scanning over a handshake starves it
+     * (STATUS_RADIO_ERROR) — fatal for an isolated node, whose aggressive scan would otherwise sabotage
+     * the very connect that ends its isolation. A [MIN_SCAN_GAP_MS] floor on the idle further caps how
+     * fast a burst of `heal()` nudges can churn startDiscovery/stopDiscovery (which can wedge the radio).
+     *
      * The loop also self-heals the advertiser: a failed `startDiscovery` is the tell-tale of the radio
      * being seized by another app (e.g. Quick Share), which also silently kills our advertising with no
      * callback. So we treat a discovery failure as "degraded", and on the first discovery that succeeds
@@ -224,6 +230,15 @@ class NearbyTransport(
         var degraded = false
         var lonelySince = 0L // elapsed-realtime when we last became isolated (0 ⇒ not isolated)
         while (scope.isActive) {
+            // Yield the radio while a connection is bootstrapping. BLE scanning and the GATT/L2CAP
+            // handshake contend for the one radio; scanning over a handshake starves it
+            // (STATUS_RADIO_ERROR), and an isolated node that scans hard would sabotage the very
+            // connect that ends its isolation. Advertising stays on, so a peer can still connect to us.
+            // See "BLE radio contention" in AGENTS.md.
+            if (registry.isConnecting()) {
+                withTimeoutOrNull(CONNECTING_YIELD_MS) { healSignal.receive() }
+                continue
+            }
             val duty = PowerPolicy.dutyCycle(powerState.state.value)
             val options = DiscoveryOptions.Builder()
                 .setStrategy(STRATEGY)
@@ -262,7 +277,13 @@ class NearbyTransport(
             }
             val lonelyForMs = if (lonelySince == 0L) 0L else now - lonelySince
             val idle = PowerPolicy.idleAfterScan(powerState.state.value, registry.connectedCount(), lonelyForMs)
-            val woken = withTimeoutOrNull(idle) { healSignal.receive() } != null
+            // Enforce a minimum radio-quiet gap that heal() can't bypass, so a burst of heal nudges
+            // (motion / heartbeat / app resume) can't churn startDiscovery/stopDiscovery fast enough to
+            // wedge the BLE controller. heal() still wakes us for the remainder of a longer idle.
+            val floor = idle.coerceAtMost(MIN_SCAN_GAP_MS)
+            delay(floor)
+            val remaining = idle - floor
+            val woken = remaining > 0L && withTimeoutOrNull(remaining) { healSignal.receive() } != null
             // A heal nudge while still alone (e.g. motion as we walk back into range) restarts the
             // aggressive window so we keep scanning hard until we actually reconnect.
             if (woken && registry.isIsolated()) lonelySince = 0L
@@ -478,6 +499,14 @@ class NearbyTransport(
         // each other's frames. Keep in lockstep with any future coordinated wire break.
         const val SERVICE_ID = "app.getknit.knit.MESH.v2"
         val STRATEGY: Strategy = Strategy.P2P_CLUSTER
+
+        // BLE radio-contention guards (see discoveryLoop / "BLE radio contention" in AGENTS.md).
+        // Floor on how soon a new scan may start after the previous one ends, even when heal() fires —
+        // caps startDiscovery/stopDiscovery churn that can wedge the controller.
+        const val MIN_SCAN_GAP_MS = 4_000L
+        // How long the loop yields (re-checking) while a connection handshake is in flight, so the
+        // radio is free for the BLE GATT bootstrap instead of scanning over it.
+        const val CONNECTING_YIELD_MS = 2_000L
 
         // Receive-side ceiling on a FILE payload. The send side bounds attachments to 8 MiB
         // (AttachmentStore.MAX_BYTES); the extra headroom covers E2E framing (GCM IV+tag) and avatar
