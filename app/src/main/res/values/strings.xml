@@ -151,6 +151,7 @@
     <string name="profile_avatar_crop_hint">Drag and pinch to adjust</string>
     <string name="profile_avatar_crop_desc">Adjust profile photo</string>
     <string name="profile_change_photo_desc">Change profile photo</string>
+    <string name="profile_remove_photo_desc">Remove profile photo</string>
     <string name="settings_content_filtering_title">Content filtering</string>
     <string name="settings_content_filtering_subtitle">Hide explicit images and abusive messages you receive from others</string>
 

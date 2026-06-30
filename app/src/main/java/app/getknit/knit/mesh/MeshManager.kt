@@ -1124,12 +1124,13 @@ class MeshManager(
                 pubKey = pubKey,
                 verified = existing?.verified ?: false,
                 deviceTag = content.deviceTag ?: existing?.deviceTag,
-                avatarHash = if (haveAvatar) advertised else existing?.avatarHash,
+                avatarHash = resolveAvatarHash(advertised, haveAvatar, existing?.avatarHash),
                 protoVersion = content.protoVersion ?: existing?.protoVersion,
                 capabilities = content.capabilities ?: existing?.capabilities,
                 updatedAt = env.sentAt,
             ),
         )
+        reclaimRemovedAvatarIfCleared(env.senderId, advertised, existing?.avatarHash)
         applyDeviceTagBlockContinuity(env.senderId, content.deviceTag)
         pullRelayAvatarIfNeeded(env.senderId, advertised, haveAvatar)
         // The sender's key is now pinned: retransmit any DMs to them that were stuck awaiting it.
@@ -1174,6 +1175,33 @@ class MeshManager(
             advertisedAvatars[senderId] = advertised
             blobExchange.want(advertised)
         }
+    }
+
+    /**
+     * The avatar hash to store for a peer from an inbound profile. [advertised] is what the profile
+     * carries (null = the peer has no avatar):
+     *  - adopt [advertised] once its blob is local ([haveAvatar]);
+     *  - null when the peer advertises no avatar — an explicit removal, since a set avatar always rides as
+     *    a non-null hash and [handleProfile]'s last-writer-wins gate guarantees this profile is the newest
+     *    state, so the clear propagates instead of clinging to the old photo;
+     *  - otherwise keep [current] until the advertised (but not-yet-fetched) blob arrives.
+     */
+    private fun resolveAvatarHash(advertised: String?, haveAvatar: Boolean, current: String?): String? =
+        when {
+            haveAvatar -> advertised
+            advertised == null -> null
+            else -> current
+        }
+
+    /**
+     * When an inbound profile cleared a peer's avatar (null [advertised] over a non-null [previous] hash),
+     * cancel any in-flight pull and reclaim the now-orphaned blob. Must run *after* the peer row is upserted
+     * to null, so [BlobRepository.deleteIfUnreferenced] no longer sees the peer pointing at it.
+     */
+    private suspend fun reclaimRemovedAvatarIfCleared(senderId: String, advertised: String?, previous: String?) {
+        if (advertised != null || previous == null) return
+        advertisedAvatars.remove(senderId) // cancel any pending pull of the now-removed avatar
+        blobs.deleteIfUnreferenced(previous)
     }
 
     /**

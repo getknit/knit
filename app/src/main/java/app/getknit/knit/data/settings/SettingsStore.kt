@@ -90,6 +90,9 @@ class SettingsStore(
     suspend fun setAvatarUpdatedAt(value: Long) = dataStore.edit { it[KEY_AVATAR_UPDATED_AT] = value }
     suspend fun setOwnAvatarHash(value: String) = dataStore.edit { it[KEY_OWN_AVATAR_HASH] = value }
 
+    /** Removes the stored own-avatar hash so [ownAvatarHash] emits null again (the user cleared their photo). */
+    suspend fun clearOwnAvatarHash() = dataStore.edit { it.remove(KEY_OWN_AVATAR_HASH) }
+
     suspend fun setLastReadAt(conversationId: String, value: Long) =
         dataStore.edit { it[lastReadKey(conversationId)] = value }
 

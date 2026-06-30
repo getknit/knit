@@ -170,6 +170,23 @@ class ProfileViewModel(
         _cropTarget.value = null
     }
 
+    /**
+     * Clears the user's avatar photo: drops the stored hash (so [avatarHash] emits null and the screen
+     * falls back to the initial), stamps [SettingsStore.setAvatarUpdatedAt] to re-broadcast the now
+     * photo-less profile, and deletes the blob if nothing else references it. Also recovers a *dangling*
+     * hash whose blob is already gone (deleteIfUnreferenced tolerates the missing blob). Note: peers treat
+     * a null advertised hash as "unchanged", so this drops the photo locally and for newly-met peers, but
+     * doesn't retroactively evict it from peers that already pinned it — matching existing avatar semantics.
+     */
+    fun clearAvatar() {
+        viewModelScope.launch {
+            val oldHash = settings.ownAvatarHash.first() ?: return@launch
+            settings.clearOwnAvatarHash()
+            settings.setAvatarUpdatedAt(System.currentTimeMillis()) // triggers a profile re-broadcast
+            blobs.deleteIfUnreferenced(oldHash)
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         _cropTarget.value = null

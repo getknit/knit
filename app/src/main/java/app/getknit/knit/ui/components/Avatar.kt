@@ -10,6 +10,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,29 +82,46 @@ fun Avatar(
             ),
         contentAlignment = Alignment.Center,
     ) {
-        if (avatarHash != null) {
+        // Show the avatar image when its blob is present; fall back to the initial letter otherwise.
+        // "Otherwise" includes a *dangling* hash — one whose content-addressed blob is gone (GC'd, or
+        // lost to a destructive DB migration) while the hash itself lingers in DataStore. AsyncImage
+        // draws nothing on a failed load, so without the onError fallback a dangling hash renders a
+        // permanently blank circle with no initial (the own-profile avatar hit this; a peer's hash is
+        // null until known, so chat rows never did). Keyed on [avatarHash] so a fresh hash retries.
+        var imageFailed by remember(avatarHash) { mutableStateOf(false) }
+        if (avatarHash != null && !imageFailed) {
             AsyncImage(
                 model = BlobImage(avatarHash),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
+                onError = { imageFailed = true },
             )
         } else {
-            // Scale the initial to ~half the circle's diameter (Google/Signal-style fill) instead of a
-            // fixed type ramp that looks tiny in large avatars. Derive the size from the dp diameter via
-            // toSp() so it ignores the user's font scale and always fits the fixed-size circle. Reset the
-            // inherited lineHeight so the (now much larger) glyph isn't clipped by the base style's box.
-            val initialSize = with(LocalDensity.current) { (size * 0.5f).toSp() }
-            Text(
-                text = avatarInitial(name),
-                style = textStyle.copy(fontSize = initialSize, lineHeight = TextUnit.Unspecified),
-                color = contentColor,
-                textAlign = TextAlign.Center,
-                // Decorative: the Box (or an adjacent name label) carries the accessible name.
-                modifier = Modifier.clearAndSetSemantics {},
-            )
+            AvatarInitial(name = name, size = size, textStyle = textStyle, contentColor = contentColor)
         }
     }
+}
+
+/**
+ * The fallback shown when there's no usable avatar image: a single uppercased initial of [name],
+ * centered in the circle. Scaled to ~half the circle's diameter (Google/Signal-style fill) instead of
+ * a fixed type ramp that looks tiny in large avatars — the size is derived from the dp diameter via
+ * [androidx.compose.ui.unit.Dp.toSp] so it ignores the user's font scale and always fits the fixed-size
+ * circle. The inherited lineHeight is reset so the (now much larger) glyph isn't clipped by the base
+ * style's box.
+ */
+@Composable
+private fun AvatarInitial(name: String, size: Dp, textStyle: TextStyle, contentColor: Color) {
+    val initialSize = with(LocalDensity.current) { (size * 0.5f).toSp() }
+    Text(
+        text = avatarInitial(name),
+        style = textStyle.copy(fontSize = initialSize, lineHeight = TextUnit.Unspecified),
+        color = contentColor,
+        textAlign = TextAlign.Center,
+        // Decorative: the Box (or an adjacent name label) carries the accessible name.
+        modifier = Modifier.clearAndSetSemantics {},
+    )
 }
 
 /**
