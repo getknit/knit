@@ -775,17 +775,21 @@ class MeshManager(
     }
 
     /**
-     * Whether we should carry a relayed DM or group message for store-and-forward (the [ForwardSync]
-     * authenticate hook). The sender must be pinned and not blocked, the payload must carry an encryption
-     * envelope, and the frame signature must verify against the pinned key — so a node never stores
-     * unauthenticated junk, only messages an identified sender actually authored. A carrier can't read
-     * the ciphertext (it isn't a recipient) but authenticates it byte-exact over the received signed
-     * bytes, same as [verifyInbound]. Our own sends bypass this check.
+     * Whether we should carry a relayed DM, group, or broadcast message for store-and-forward (the
+     * [ForwardSync] authenticate hook). The sender must be pinned and not blocked and the frame signature must
+     * verify against the pinned key — so a node never stores unauthenticated junk, only messages an identified
+     * sender actually authored, authenticated byte-exact over the received signed bytes (same as
+     * [verifyInbound]). A DM/group message is carried only in its encrypted form (a carrier holds it without
+     * reading); the broadcast room is plaintext by design (no fixed recipient set to seal to), so it has no
+     * enc envelope and is carried on its signature alone. Without carrying broadcasts, only a message's author
+     * would hold it (via ORIGIN_SELF), so broadcast custody / cue-plane anti-entropy would never converge
+     * between peers. Our own sends bypass this check.
      */
     private suspend fun canCarry(wire: WireEnvelope, env: RelayEnvelope): Boolean {
         if (env.senderId in settings.blockedNodeIds.first()) return false
         val content = WireCodec.decodePayload<ChatContent>(env.payload) ?: return false
-        if (content.enc == null) return false // only encrypted DM/group messages are carried
+        val isBroadcast = env.recipientId == null && env.group == null
+        if (!isBroadcast && content.enc == null) return false // DM/group must be carried encrypted
         val bundle = peers.find(env.senderId)?.pubKey?.let { PublicKeyBundle.decode(it) }
         if (bundle == null || NodeId.fromPublicKeyBundle(bundle.encoded) != env.senderId) {
             metrics.onDropped(DropReason.CARRY_REFUSED)
