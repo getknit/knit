@@ -829,8 +829,16 @@ class WifiAwareTransport(
             val now = SystemClock.elapsedRealtime()
             val idle = now - conn.lastActivityAt
             val held = now - conn.linkStartedAt
-            val done = if (isInitiator) idle >= QUIESCENCE_MS || held >= SYNC_MAX_WINDOW_MS
-            else idle >= RESPONDER_QUIESCENCE_MS || held >= RESPONDER_MAX_HOLD_MS
+            val done = if (isInitiator) {
+                // Cut the post-backfill linger short when another pair is waiting on our single NDI, so a
+                // message reaches the next neighbor without paying the full QUIESCENCE_MS idle hold — the
+                // main lever on multi-node propagation latency (one NDP at a time). Full linger only when no
+                // one else is sync-wanted, so an active 1:1 chat still re-uses the warm NDP.
+                val quiescence = if (otherSyncWanted(conn.nodeId)) CONTENDED_QUIESCENCE_MS else QUIESCENCE_MS
+                idle >= quiescence || held >= SYNC_MAX_WINDOW_MS
+            } else {
+                idle >= RESPONDER_QUIESCENCE_MS || held >= RESPONDER_MAX_HOLD_MS
+            }
             if (done) {
                 // Record the sync at our *post-backfill* digest: if we gained nothing new after ingesting the
                 // peer's data, our version now equals theirs and the pair stays quiet (the identical-digest
@@ -840,6 +848,19 @@ class WifiAwareTransport(
                 teardownPeer(conn.nodeId, backoffMs = 0) // clean sync: no anti-churn backoff needed
                 break
             }
+        }
+    }
+
+    /**
+     * True if some peer *other than* [current] is sync-wanted and we're its initiator — i.e. another pair is
+     * waiting on our single NDI. Lets [superviseLink] cut the post-backfill linger short so the next neighbor
+     * gets the message without the full [QUIESCENCE_MS] hold. Reads the concurrent [cueTarget] (every peer we
+     * hear cues from — the signal [rediscoverDelayMs] also uses); [DigestTracker] is internally synchronized.
+     */
+    private fun otherSyncWanted(current: String): Boolean {
+        val localVersion = storeDigest.version.value
+        return cueTarget.keys.any { nodeId ->
+            nodeId != current && localNodeId > nodeId && digestTracker.reconcileWanted(nodeId, localVersion)
         }
     }
 
@@ -1323,9 +1344,13 @@ class WifiAwareTransport(
         // the responder after the slightly longer RESPONDER_QUIESCENCE_MS so the initiator usually drives —
         // but the responder MUST self-detect quiescence because an NDP teardown delivers no FIN/RST, so it
         // can't rely on its read loop seeing EOF (else it pins its one NDI for RESPONDER_MAX_HOLD_MS, the
-        // dead-initiator backstop, after every clean sync). QUIESCENCE_MS must exceed the
-        // watchNeighbors→onNeighborAdded backfill-start latency.
+        // dead-initiator backstop, after every clean sync). Both windows must exceed the
+        // watchNeighbors→onNeighborAdded backfill-start latency. QUIESCENCE_MS also doubles as a *linger* so
+        // an active 1:1 chat re-uses the warm NDP instead of re-paying setup per message — but when another
+        // peer is sync-wanted that linger just idles the one NDI, so the initiator drops to
+        // CONTENDED_QUIESCENCE_MS and yields the radio to the next pair (superviseLink → otherSyncWanted).
         const val QUIESCENCE_MS = 5_000L
+        const val CONTENDED_QUIESCENCE_MS = 2_000L
         const val QUIESCENCE_POLL_MS = 1_000L
         const val RESPONDER_QUIESCENCE_MS = 8_000L
         const val SYNC_MAX_WINDOW_MS = 30_000L
