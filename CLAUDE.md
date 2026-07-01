@@ -14,5 +14,6 @@ design notes are in `docs/ARCHITECTURE.md`.
   overridden to 2.4.0** (KGP on the root buildscript classpath, since AGP bundles 2.2.10), and
   `android.disallowKotlinSourceSets=false` is required — see `AGENTS.md` for why before changing
   dependencies or build config.
-- Keep all `com.google.android.gms.*` imports inside `mesh/nearby/`; everything else talks to the
-  `MeshTransport` interface.
+- The transport is **Wi-Fi Aware (NAN)**, not Google Nearby/GMS. Keep all `android.net.wifi.aware.*`
+  (and the NAN data-path `ConnectivityManager`/`NetworkRequest`) imports inside `mesh/wifiaware/`;
+  everything else talks to the `MeshTransport` interface. minSdk is 33.

@@ -31,7 +31,7 @@ Single Gradle module `:app`, package root `app.getknit.knit`.
 | `ui/` | Compose screens + ViewModels: `onboarding/`, `chatlist/` (conversation list), `chat/` (thread + `MentionText`), `contacts/` (new-DM picker), `profile/`, shared `components/` (`Avatar`, `ConnectionStatus`), `theme/`, `util/RelativeTime`, `KnitApp` (Navigation Compose), `Permissions.kt`, `Battery.kt` |
 | `mesh/` | `MeshTransport` (interface), `MeshRouter` (dedup + jittered/suppressed flood), `MeshManager` (orchestrator), `MeshService` (foreground service), `MeshMetrics` (counters), `SeenSet`, `FakeLoopTransport`, `BlobExchange` + `BlobStore` (content-addressed pull), `protocol/Wire.kt` |
 | `mesh/crypto/` | End-to-end crypto (Google Tink), pure & JVM-testable: `MessageCrypto` (per-message seal/open + signature), `PublicKeyBundle`, `MessageContent` (the encrypted payload), `AttachmentCrypto`, `SafetyNumber`, `VerifyPayload`, `Crypto.kt` (`TinkInit`/`AesGcm`) |
-| `mesh/nearby/` | `NearbyTransport` — the **only** code that touches `com.google.android.gms.*` |
+| `mesh/wifiaware/` | `WifiAwareTransport` + `AwareFraming` — the **only** code that touches `android.net.wifi.aware.*` |
 | `data/` | Room (`KnitDatabase`, `message/`, `peer/`, `reaction/`, `blob/`, `group/`), repositories, `AttachmentStore`, `AvatarStore`, `settings/SettingsStore` (DataStore), `crypto/` (`DatabaseKey`, `IdentityKeyStore`, `KeystoreSecret` — AndroidKeyStore-wrapped secrets) |
 | `identity/` | `Identity` (stable node id **+ E2E public-key bundle**), `NodeId` (derivation), `DeviceIdSource` (`AndroidDeviceIdSource`), `Alias` (deterministic display-name fallback) |
 | `notifications/` | `Notifier` (interface) + `MessageNotifier`, `NotificationHistory`, `NotificationDismissReceiver` |
@@ -82,41 +82,61 @@ data class ReceivedFile(val fromNodeId: String, val path: String, val kind: File
 the blob-exchange pull (§7).
 
 Two implementations:
-- **`NearbyTransport`** — production, over Nearby Connections.
+- **`WifiAwareTransport`** — production, over Wi-Fi Aware (NAN); see §3.2.
 - **`FakeLoopTransport`** — in-process double; `connect()` wires instances into an arbitrary
   topology so a multi-hop mesh (including relay and blob pulls) can be exercised on the JVM with no
   radios.
 
-Future Wi-Fi Aware / BLE transports drop in as additional implementations.
+A future sibling transport (e.g. a BLE fallback for non-NAN devices — deliberately not built) would
+drop in as an additional implementation behind the same interface.
 
-### 3.2 Nearby specifics (`mesh/nearby/NearbyTransport.kt`)
+### 3.2 Wi-Fi Aware specifics (`mesh/wifiaware/WifiAwareTransport.kt`)
 
-- **Strategy `P2P_CLUSTER`** (many-to-many) for both advertising and discovery. Service id
-  `app.getknit.knit.MESH`.
-- The device's 8-char **node id is the Nearby endpoint name**, so peers recognize each other and a
-  device rejects discovering itself.
-- **Advertise-always, discover-in-bursts:** Nearby can't reliably advertise *and* discover
-  continuously, so advertising runs constantly while discovery runs in ~12s windows separated by a
-  backoff that grows with neighbor count (more peers → scan less). The backoff wait is interruptible
-  by `heal()` (heartbeat / motion / Bluetooth-recovery) via a conflated channel.
-- **Open mesh:** every connection is auto-accepted (`acceptConnection`); Nearby's
-  `authenticationDigits` are ignored.
-- **Serialized connection requests:** `requestConnection` calls run one-at-a-time on
-  `Dispatchers.IO.limitedParallelism(1)` with `await()`, guarded by a `connecting` set. Nearby fails
-  if multiple requests fire concurrently. (See §15 for the deadlock this replaced.)
-- **Endpoint bookkeeping:** `endpointToNode` / `nodeToEndpoint` maps, `connected`, `connecting`,
-  `errorCounts`, and a `blacklisted` set (after `MAX_ENDPOINT_ERRORS` failures).
-- **Payloads:**
-  - `BYTES` carry either a **CBOR-serialized `Frame`** (→ `inbound`) or a **file header**. The two
-    are told apart by a 4-byte magic prefix `FILE_HEADER_MAGIC = "KFH1"` (`0x4B 0x46 0x48 0x31`):
-    `decodeFileHeader` returns the parsed header iff the bytes start with the magic, otherwise the
-    bytes are decoded as a frame via `WireCodec.decode`. A CBOR frame never begins with the magic
-    (a polymorphic CBOR value starts with a map/array marker), and a guard test in
-    `WireSerializationTest` pins this invariant down. The header *body* is JSON (transport-internal,
-    magic-prefixed — it does not need to migrate to CBOR).
-  - `FILE` payloads (avatars + attachments) are buffered by payload id on receipt; on
-    `onPayloadTransferUpdate(SUCCESS)` the content `Uri` is copied to local storage and announced on
-    `incomingFiles` as a `ReceivedFile` carrying the `FileMeta` (kind + key + mime) sent with it.
+- **Service `SERVICE_NAME = "app.getknit.knit.MESH.v2"`.** Each node `attach()`es once, then both
+  **publishes and subscribes** the service — the symmetric analogue of Nearby's `P2P_CLUSTER`. The
+  device's 8-char **node id + version + caps** (`Protocol.advertise`) ride in the publish
+  `serviceSpecificInfo`, so a subscriber learns a peer's identity on discovery with zero round-trips
+  and rejects discovering itself.
+- **Two channels.** The discovery channel (`serviceSpecificInfo`, ~255 B) carries only the advert. The
+  reliable, high-bandwidth path is a **NAN data path (NDP): a TCP socket over link-local IPv6**, which
+  carries every frame and file (and the connect handshake).
+- **Persistent accept-any responder + loop-driven clients.** Each node runs **one** responder built from
+  its *publish* session with **no peer handle** (`WifiAwareNetworkSpecifier.Builder(publishSession)
+  .setPort(port)`) + one `ServerSocket` that accepts a data path from **any** initiator — because
+  per-peer responders don't compose (a device already serving one peer can't stand up a second, which
+  stranded a third phone joining a pair). A deterministic tie-break gives one link per pair: the
+  **larger** nodeId is the client (subscriber-side initiator via
+  `Builder(subscribeSession, peerHandle)`, reads the responder's IPv6+port from `WifiAwareNetworkInfo`,
+  connects the socket), the smaller is the server. Since accept-any doesn't reveal who connected, the
+  **initiator sends its advert as the first `AwareFraming.Type.HELLO` record**; the responder reads it to
+  identify the peer. `discoveryLoop` drives client initiations to *all* eligible discovered peers
+  (serialized, one at a time), so a connected device still links to more — a real multi-node mesh. A fixed
+  app-wide PSK encrypts the link; real authentication is the per-frame signature + E2E layer above.
+- **Neighbor = live socket.** A peer enters `neighbors` once its socket is up (triggering the
+  store-and-forward / key-exchange "new neighbor" hooks upstream) and leaves on socket close /
+  network `onLost`. Client links own a per-peer `NetworkCallback` (unregistered on teardown); server
+  links share the responder (its callback is left alone when one client leaves).
+- **Instant Communication Mode** (API 33, when supported) speeds discovery + data-path bring-up for the
+  brief-encounter (festival) case.
+- **Self-healing without disturbing live links.** `onServiceDiscovered` fires only *once* per subscribe
+  session per peer, so re-firing discovery means restarting subscribe — but closing a session **tears
+  down the NDPs anchored to it** on real chipsets. So `rearmSubscribe()` restarts **only subscribe**
+  (publish + responder stay up) and **only while isolated** (`peers.isEmpty()`), woken by a `healSignal`
+  channel (peer discovered, link up/down, `heal()`, screen-on). A periodic `AwareFraming.Type.KEEPALIVE`
+  record on each socket keeps an idle NDP from timing out. A time-boxed client `requestNetwork`
+  (`HANDSHAKE_TIMEOUT_MS`) + a per-peer backoff prevent leaked requests exhausting NAN's scarce data
+  interfaces.
+- **Bounded.** Total links capped at `MAX_LINKS`; client handshakes serialized one-at-a-time (NAN has
+  only 1–2 data interfaces). `ACTION_WIFI_AWARE_STATE_CHANGED` drives `health` (→ `Degraded` when
+  Wi-Fi is off or another Wi-Fi mode seizes the radio) and re-attach on recovery. Hardware without
+  `FEATURE_WIFI_AWARE` has no fallback — the transport stays `Degraded` and the UI gates with an
+  "unsupported" state.
+- **Socket framing (`mesh/wifiaware/AwareFraming.kt`).** A raw socket is a byte stream, so records are
+  length-prefixed `[type:1][len:4 big-endian][payload]`: a `FRAME` carries one CBOR `WireEnvelope`
+  (→ `inbound`); a file streams as `FILE_HEADER` (JSON `FileHeaderWire`: kind + key + mime) →
+  `FILE_CHUNK`s → `FILE_END`, saved to the cache and announced on `incomingFiles` as a `ReceivedFile`.
+  The writer serializes files and interleaves live frames *between* chunks so an 8 MiB blob never
+  stalls traffic; a per-file receive ceiling matches the 8 MiB send cap.
 - **Byte metrics:** `send` records `metrics.onBytesSent(bytes.size * targets.size)` — one frame
   broadcast to N neighbors counts as `frameSize × N`, so the CBOR win is measurable in the field.
   (`sendFile` is not counted.)
@@ -166,7 +186,7 @@ clock). Combined with the per-frame TTL/hop-count, propagation is guaranteed to 
 
 A pure-JVM, thread-safe counter set (`AtomicLong`s; no Android deps, so it lives in `mesh/` and is
 asserted from the same unit tests as `MeshRouter`). It is a Koin singleton injected into both
-`NearbyTransport` and (via `MeshManager`) `MeshRouter`. Counters: `framesOriginated`,
+`WifiAwareTransport` and (via `MeshManager`) `MeshRouter`. Counters: `framesOriginated`,
 `framesDelivered`, `framesRelayed`, `framesSuppressed`, `framesDeduped`, `bytesSent`; `snapshot()`
 returns an immutable `Snapshot`. `MeshManager.logMetricsPeriodically()` logs a snapshot every
 `60_000 ms`. The `framesSuppressed : framesRelayed` ratio quantifies how much rebroadcasting the
@@ -459,8 +479,8 @@ A typed foreground service (`connectedDevice`) hosts `MeshManager` so the mesh s
 - **Heartbeat:** inexact ~15-min `AlarmManager` alarm → `ACTION_HEAL` → `MeshManager.heal()`.
 - **Significant motion:** a `TriggerEventListener` (re-armed after each fire) → `heal()` (moving
   likely means new peers in range).
-- **Bluetooth recovery:** a `RECEIVER_NOT_EXPORTED` receiver for `ACTION_STATE_CHANGED` → on
-  `STATE_ON`, `MeshManager.restart()`.
+- **Radio availability** (Wi-Fi Aware turning on/off, or another Wi-Fi mode seizing it) is handled
+  inside `WifiAwareTransport` itself via `ACTION_WIFI_AWARE_STATE_CHANGED`, not here.
 - All cleaned up in `onDestroy` (including `MeshManager.stop()`, which cancels pending relays). The
   message notification channels are registered up front in `KnitApplication` so they appear in system
   settings before the first notification. Battery optimization is surfaced in onboarding and the
@@ -468,15 +488,17 @@ A typed foreground service (`connectedDevice`) hosts `MeshManager` so the mesh s
 
 ## 14. Encryption posture
 
-**Two layers.** (1) *In transit:* Nearby Connections encrypts each link. (2) *End-to-end:* DM and
-group messages are encrypted to their recipients so relays — which flood every message hop-by-hop —
-only ever carry ciphertext. *At rest:* the Room DB is encrypted with SQLCipher (§9). The public
-**Nearby broadcast room is plaintext by design** (no fixed recipient set), so a room message takes the
-legacy unencrypted path.
+**Two layers.** (1) *In transit:* each Wi-Fi Aware data path (NDP) is a PSK-encrypted link. (2)
+*End-to-end:* DM and group messages are encrypted to their recipients so relays — which flood every
+message hop-by-hop — only ever carry ciphertext. *At rest:* the Room DB is encrypted with SQLCipher
+(§9). The public **broadcast room is plaintext by design** (no fixed recipient set), so a room message
+takes the unencrypted path (it is still signed, and now store-and-forward-carried — §store-and-forward).
 
 **Library.** Google **Tink** (`tink-android`) — HPKE/X25519 hybrid encryption, Ed25519 signatures,
-and AES-GCM. Chosen because `minSdk 29` predates the platform `XDH`/`Ed25519` JCA algorithms (API 33+),
-and Tink is a pure-runtime dep (no Gradle plugin) that can't perturb the bleeding-edge toolchain.
+and AES-GCM. Originally chosen because the then-`minSdk 29` predated the platform `XDH`/`Ed25519` JCA
+algorithms (API 33+); the mesh transport since raised `minSdk` to 33, but Tink stays — it's a
+pure-runtime dep (no Gradle plugin) that can't perturb the bleeding-edge toolchain, and there's no
+reason to re-implement working, audited crypto against the platform APIs.
 
 **Identity keys** (`data/crypto/IdentityKeyStore`). Each device generates a Tink **hybrid** keypair
 (wraps content keys) and an **Ed25519** keypair (signs) on first run. The private keysets are

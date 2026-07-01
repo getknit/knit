@@ -5,34 +5,38 @@ import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.protocol.WireCodec
 
 /**
- * [ForwardStore] backed by the encrypted `forward_store` table. Persists carried DM and group chat
- * frames as canonical CBOR (signed blob + signature) and enforces the store's bounds so epidemic carry
- * can't grow without limit:
+ * [ForwardStore] backed by the encrypted `forward_store` table. Persists carried DM, group, and
+ * broadcast-room chat frames as canonical CBOR (signed blob + signature) and enforces the store's bounds
+ * so epidemic carry can't grow without limit:
  *
- *  - a per-message **TTL** ([ttlMs]) after which the TTL sweep reclaims a frame even if never acked
- *    (the *only* purge path for group messages — which have no reliable per-member ack — and the
- *    backstop for DMs whose delivery receipt never arrives);
+ *  - a per-message **TTL** ([ttlMs] for DMs/groups, the shorter [broadcastTtlMs] for the ambient
+ *    broadcast room) after which the sweep reclaims a frame even if never acked (the *only* purge path
+ *    for group/broadcast messages — no reliable ack — and the backstop for DMs whose receipt never arrives);
  *  - a **per-sender quota** ([maxPerSender]) so one identity (Sybil is cheap on this mesh) can't fill
  *    the buffer with junk we'd re-offer to everyone;
  *  - a **per-group quota** ([maxPerGroup]) so one busy group can't monopolize the buffer either;
+ *  - a **broadcast quota** ([maxBroadcast]) so ambient broadcast chatter can't crowd out addressed messages;
  *  - a **global cap** ([maxRows]) with oldest-first, relayed-before-our-own eviction.
  */
 class ForwardRepository(
     private val dao: ForwardDao,
     private val ttlMs: Long = DEFAULT_TTL_MS,
+    private val broadcastTtlMs: Long = DEFAULT_BROADCAST_TTL_MS,
     private val maxRows: Int = DEFAULT_MAX_ROWS,
     private val maxPerSender: Int = DEFAULT_MAX_PER_SENDER,
     private val maxPerGroup: Int = DEFAULT_MAX_PER_GROUP,
+    private val maxBroadcast: Int = DEFAULT_MAX_BROADCAST,
 ) : ForwardStore {
 
     override suspend fun store(frame: CarriedFrame, origin: Int, now: Long) {
         val env = frame.envelope
         val groupId = env.group?.id
-        if (env.recipientId == null && groupId == null) return // the broadcast room is never carried
+        val isBroadcast = env.recipientId == null && groupId == null
         // Quotas apply to traffic we relay for others, not our own outbox.
         if (origin == ForwardStore.ORIGIN_RELAY) {
             if (dao.countBySender(env.senderId) >= maxPerSender) return
             if (groupId != null && dao.countByGroup(groupId) >= maxPerGroup) return
+            if (isBroadcast && dao.countBroadcast() >= maxBroadcast) return
         }
         dao.insert(
             ForwardEntity(
@@ -44,7 +48,9 @@ class ForwardRepository(
                 signed = frame.signed,
                 sig = frame.sig,
                 receivedAt = now,
-                expiresAt = now + ttlMs,
+                // Broadcast is ambient, higher-volume, lower-value chatter with no ack to purge it, so it
+                // gets a shorter TTL than an addressed DM/group message.
+                expiresAt = now + if (isBroadcast) broadcastTtlMs else ttlMs,
             ),
         )
         val overflow = dao.count() - maxRows
@@ -65,8 +71,11 @@ class ForwardRepository(
     override suspend fun sweepExpired(now: Long): Int = dao.deleteExpired(now)
 
     private companion object {
-        /** Carry a DM for at most 24h before the TTL sweep reclaims it. */
+        /** Carry a DM/group message for at most 24h before the TTL sweep reclaims it. */
         const val DEFAULT_TTL_MS = 24 * 60 * 60_000L
+
+        /** Carry a broadcast-room message for a shorter window (ambient, higher-volume, no ack to purge it). */
+        const val DEFAULT_BROADCAST_TTL_MS = 6 * 60 * 60_000L
 
         /** Cap total carried frames; oldest relayed traffic is evicted first. */
         const val DEFAULT_MAX_ROWS = 500
@@ -76,5 +85,8 @@ class ForwardRepository(
 
         /** Cap carried frames per group, so one busy group can't monopolize the buffer. */
         const val DEFAULT_MAX_PER_GROUP = 100
+
+        /** Cap carried broadcast-room frames, so ambient chatter can't crowd out addressed messages. */
+        const val DEFAULT_MAX_BROADCAST = 100
     }
 }

@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 
 @Dao
+@Suppress("TooManyFunctions") // a handful of small carry-store queries; splitting them would obscure, not clarify
 interface ForwardDao {
 
     /** Stores [row]; keyed by frame id, so a frame we already carry is silently ignored (dedup). */
@@ -39,6 +40,14 @@ interface ForwardDao {
     /** How many carried frames a single [groupId] accounts for — enforces the per-group quota. */
     @Query("SELECT COUNT(*) FROM forward_store WHERE groupId = :groupId")
     suspend fun countByGroup(groupId: String): Int
+
+    /**
+     * How many carried broadcast-room frames are held — enforces the broadcast quota. Broadcast rows are
+     * the only ones with no recipient and no group (that pair uniquely identifies them), so no schema
+     * discriminator is needed.
+     */
+    @Query("SELECT COUNT(*) FROM forward_store WHERE recipientId IS NULL AND groupId IS NULL")
+    suspend fun countBroadcast(): Int
 
     /**
      * Drops the [n] lowest-priority rows under cap pressure: relayed frames (origin 0) before our own

@@ -99,12 +99,13 @@ class RelayEnvelope(
 
 /**
  * Whether this frame is carried for store-and-forward delivery (see `app.getknit.knit.mesh.ForwardSync`).
- * An addressed chat qualifies — a 1:1 DM (single cleartext [RelayEnvelope.recipientId] to deliver
- * toward) or a group message (cleartext [GroupInfo.members] roster). Only the plaintext broadcast room
- * (no destination: both [RelayEnvelope.recipientId] and [RelayEnvelope.group] null) is excluded.
+ * Every chat frame qualifies: a 1:1 DM (single cleartext [RelayEnvelope.recipientId] to deliver toward),
+ * a group message (cleartext [GroupInfo.members] roster), and — so two phones that meet only briefly can
+ * still backfill each other — the plaintext **broadcast room** (no destination: both
+ * [RelayEnvelope.recipientId] and [RelayEnvelope.group] null). Broadcast has no recipient/ack, so it is
+ * bounded by a shorter TTL + cap only (never vaccine-purged), like a group message.
  */
-fun RelayEnvelope.isStorable(): Boolean =
-    type == FrameType.CHAT && (recipientId != null || group != null)
+fun RelayEnvelope.isStorable(): Boolean = type == FrameType.CHAT
 
 // --- Layer 3: per-type content payloads (parsed only by endpoints; evolve additively) ---
 
@@ -250,7 +251,7 @@ data class EncEnvelope(
  * length-prefixed (no quotes/braces).
  *
  * This is a deliberate wire-format break from the pre-layered format: all nodes must run a layered build
- * to interoperate (the [app.getknit.knit.mesh.nearby.NearbyTransport] service id is bumped in lockstep).
+ * to interoperate (the [app.getknit.knit.mesh.wifiaware.WifiAwareTransport] service name is bumped in lockstep).
  */
 object WireCodec {
     @PublishedApi

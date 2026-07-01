@@ -69,10 +69,10 @@ Each evolves independently; bump the right one:
 
 ## Is this change wire-breaking?
 
-**Breaking** (needs a coordinated one-time bump of `SERVICE_ID` + the DB version) if it: removes,
+**Breaking** (needs a coordinated one-time bump of `SERVICE_NAME` + the DB version) if it: removes,
 renames, re-types, or repurposes a field or a `type`; changes `WireCodec`'s config or the `@ByteString`
 opacity of `signed`/`sig`/`payload`; changes what `signed` is signed over, the AEAD `header`, the
-`NodeId` derivation, or `SERVICE_ID`; or makes `RelayEnvelope.type` polymorphic.
+`NodeId` derivation, or `SERVICE_NAME`; or makes `RelayEnvelope.type` polymorphic.
 
 **Additive** (safe) if it only adds a nullable/defaulted field to a content/envelope type, a new `type`
 string with its own content class, or a new capability bit — and rule 4 holds.

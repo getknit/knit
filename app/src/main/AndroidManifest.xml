@@ -2,30 +2,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Mesh transport (Nearby Connections uses Bluetooth + Wi-Fi radios) -->
-    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <!-- Mesh transport: Wi-Fi Aware (NAN). No Bluetooth, and crucially NO location permission —
+         NEARBY_WIFI_DEVICES with neverForLocation covers Wi-Fi Aware discovery on API 33+. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
 
-    <!-- Android 12+ runtime Bluetooth -->
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Data path (NDP): request the Aware network and open a TCP socket over its link-local IPv6. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Android 13+ nearby Wi-Fi -->
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
-
-    <!-- Location: Nearby Connections' discovery requires location at runtime on ALL supported API
-         levels, including Android 13+. neverForLocation does NOT exempt it (verified: capping these
-         to maxSdkVersion=32 caused error 8034 on API 36). Keep them uncapped and granted.
-         BACKGROUND_LOCATION ("Allow all the time") is required so discovery keeps running with the
-         screen off: a "while in use" grant is only delivered to MeshService while the app is in the
-         foreground, so an overnight/backgrounded device stops discovering (error 8034) and can only
-         be found, never initiate — see the foreground-service location type below. -->
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- Wi-Fi Aware is a hardware feature; required=false so the app still installs on devices without
+         it (they surface an "unsupported" state at runtime rather than being filtered off the store). -->
+    <uses-feature android:name="android.hardware.wifi.aware" android:required="false" />
 
     <!-- QR identity verification (scan a peer's key) -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -34,8 +24,6 @@
     <!-- Always-on mesh foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-    <!-- Lets MeshService deliver "while in use" location to Nearby discovery while backgrounded. -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
@@ -77,7 +65,7 @@
         <service
             android:name=".mesh.MeshService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|location" />
+            android:foregroundServiceType="connectedDevice" />
 
         <receiver
             android:name=".notifications.NotificationDismissReceiver"

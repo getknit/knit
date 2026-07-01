@@ -9,7 +9,7 @@ import org.junit.Test
 
 /**
  * Guards the blob content-address validation that backs the path-traversal and cache-poisoning
- * defences (`MeshBlobStore`, `NearbyTransport.saveIncomingFile`, `MeshManager.onAvatarReceived`).
+ * defences (`MeshBlobStore`, `WifiAwareTransport.finalizeIncomingFile`, `MeshManager.onAvatarReceived`).
  */
 class BlobHashTest {
 

@@ -3,11 +3,11 @@ package app.getknit.knit.mesh
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 
 /**
- * An addressed chat frame carried for store-and-forward: the decoded routing [envelope] plus the
- * immutable, re-floodable core — the frame [signed] bytes and their [sig]. The throwaway routing
- * counters (ttl/hops) are deliberately NOT stored: a fresh [app.getknit.knit.mesh.protocol.WireEnvelope]
- * wrapper is stamped around [signed]/[sig] each time the frame is re-served, so it re-floods with a full
- * hop budget. A plain class (it holds [ByteArray]s); identity is the frame id ([envelope].id).
+ * A chat frame carried for store-and-forward: the decoded routing [envelope] plus the immutable,
+ * re-floodable core — the frame [signed] bytes and their [sig]. The throwaway routing counters
+ * (ttl/hops) are deliberately NOT stored: a fresh [app.getknit.knit.mesh.protocol.WireEnvelope] wrapper
+ * is stamped around [signed]/[sig] each time the frame is re-served, so it re-floods with a full hop
+ * budget. A plain class (it holds [ByteArray]s); identity is the frame id ([envelope].id).
  */
 class CarriedFrame(
     val envelope: RelayEnvelope,
@@ -18,9 +18,9 @@ class CarriedFrame(
 /**
  * Durable store of chat frames carried for store-and-forward, abstracted so [ForwardSync] stays free of
  * Android/Room (and unit-testable). The app's implementation is backed by the encrypted database (see
- * `ForwardRepository`); methods are `suspend` because they read/write it. Only addressed DM/group chat
- * frames are ever stored — they carry a cleartext recipient/roster to deliver toward and a signature to
- * authenticate.
+ * `ForwardRepository`); methods are `suspend` because they read/write it. DM, group, and broadcast-room
+ * chat frames are stored (all signed, so a carrier authenticates without decrypting); a DM carries a
+ * cleartext recipient to deliver toward, a group its roster, and a broadcast neither (offered to all).
  */
 interface ForwardStore {
 

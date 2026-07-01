@@ -96,7 +96,7 @@ class MeshManager(
     private var router = MeshRouter(transport, scope, metrics = metrics, onDeliver = ::onDeliver)
 
     // Per-session scope for the collectors + metrics loop + router; cancelled in stop() so they don't
-    // accumulate across start/stop cycles (e.g. restart() on Bluetooth recovery).
+    // accumulate across start/stop cycles (e.g. a Diagnostics-triggered restart()).
     private var sessionScope: CoroutineScope? = null
 
     // Content-addressed image fetch over the mesh, backed by the encrypted blob store.
@@ -569,14 +569,16 @@ class MeshManager(
         // to is dropped (not delivered locally). We still return normally so MeshRouter relays it
         // onward — other peers verify independently, and we don't become a propagation black hole.
         if (!verifyInbound(env, wire, fromNodeId)) return
-        // Carry an addressed chat frame we're relaying so we can re-offer it to a neighbor that joins
-        // later — store-and-forward. A DM is carried only when relaying it *toward* someone else (skip
-        // ones addressed to us — we're the destination, so deliver, don't carry); a group message is
-        // always carried, for other members who may be offline, whether or not we're a member ourselves.
-        // The broadcast room (no destination) is excluded by isStorable(). Runs before handleChat returns
-        // early and before the router schedules the relay, so the copy is durable pre-flood.
+        // Carry a chat frame we're relaying so we can re-offer it to a neighbor that joins later —
+        // store-and-forward. A DM is carried only when relaying it *toward* someone else (skip ones
+        // addressed to us — we're the destination, so deliver, don't carry); a group message is always
+        // carried, for other members who may be offline, whether or not we're a member ourselves; a
+        // broadcast-room message is always carried, so a passing phone can backfill our ambient history.
+        // Runs before handleChat returns early and before the router schedules the relay, so the copy is
+        // durable pre-flood.
         if (env.isStorable()) {
-            val carry = env.group != null || !Conversations.isForMe(env.recipientId, identity.nodeId())
+            val isBroadcast = env.recipientId == null && env.group == null
+            val carry = isBroadcast || env.group != null || !Conversations.isForMe(env.recipientId, identity.nodeId())
             if (carry) forwardSync.onSeen(wire, env, ForwardStore.ORIGIN_RELAY)
         }
         dispatchByType(env, wire, fromNodeId)

@@ -15,7 +15,9 @@ android {
 
     defaultConfig {
         applicationId = "app.getknit.knit"
-        minSdk = 29
+        // Wi-Fi Aware transport needs API 33: Instant Communication Mode (fast discovery + data-path
+        // bring-up) and NEARBY_WIFI_DEVICES + neverForLocation (so the mesh needs no location permission).
+        minSdk = 33
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -78,7 +80,6 @@ dependencies {
 
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.kotlinx.coroutines.play.services)
 
     // Serialization (wire protocol: CBOR for compact mesh frames; JSON for the file-header sidecar)
     implementation(libs.kotlinx.serialization.json)
@@ -95,8 +96,7 @@ dependencies {
     implementation(libs.koin.android)
     implementation(libs.koin.androidx.compose)
 
-    // Mesh transport
-    implementation(libs.play.services.nearby)
+    // Mesh transport is Wi-Fi Aware (android.net.wifi.aware.*, framework API) — no external dependency.
 
     // Images
     implementation(libs.coil.compose)

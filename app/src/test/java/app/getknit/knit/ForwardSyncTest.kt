@@ -100,10 +100,10 @@ class ForwardSyncTest {
     // --- pure predicate ---
 
     @Test
-    fun dmAndGroupChatFramesAreStorableButBroadcastIsNot() {
+    fun everyChatFrameIsStorableIncludingBroadcastButNonChatIsNot() {
         assertTrue(dm("m", "a", "b").isStorable())
         assertTrue(groupMsg("g", "a", listOf("a", "b", "c")).isStorable())
-        assertFalse(broadcast("r").isStorable())
+        assertTrue("broadcast is now carried so brief encounters backfill it", broadcast("r").isStorable())
         assertFalse(receipt("x").isStorable())
     }
 
@@ -134,7 +134,7 @@ class ForwardSyncTest {
     }
 
     @Test
-    fun broadcastAndNonChatFramesAreNotCarriedButGroupMessagesAre() = runTest {
+    fun everyChatFrameIsCarriedIncludingBroadcastButNonChatIsNot() = runTest {
         val store = FakeForwardStore()
         val sync = ForwardSync(RecordingTransport(), store, clock = { 0L })
 
@@ -143,9 +143,23 @@ class ForwardSyncTest {
         val g = groupMsg("g1", "a", listOf("a", "b", "c"))
         sync.onSeen(wireOf(g), g, ForwardStore.ORIGIN_RELAY)
 
-        assertFalse("the plaintext broadcast room has no destination", store.has("r"))
+        assertTrue("broadcast is carried so a passing phone backfills our ambient history", store.has("r"))
         assertFalse("a receipt isn't a carried message", store.has("x"))
         assertTrue("a group message is carried for offline members", store.has("g1"))
+    }
+
+    @Test
+    fun pushesCarriedBroadcastToAnyNewcomerButNotItsAuthor() = runTest {
+        val transport = RecordingTransport()
+        val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
+        val env = broadcast("r1") // authored by "a"
+        sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
+
+        sync.onNeighborAdded(Peer("a")) // the author — never handed its own message back
+        assertTrue("broadcast isn't offered back to its author", transport.sent.isEmpty())
+
+        sync.onNeighborAdded(Peer("z")) // anyone else — offered once (no recipient/roster to target)
+        assertEquals(listOf("r1"), transport.sent.map { it.first.frameId() })
     }
 
     // --- vaccine purge ---

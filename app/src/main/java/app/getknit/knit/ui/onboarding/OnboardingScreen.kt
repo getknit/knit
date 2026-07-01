@@ -1,6 +1,5 @@
 package app.getknit.knit.ui.onboarding
 
-import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -26,33 +25,26 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.ui.hasAllMeshPermissions
-import app.getknit.knit.ui.hasBackgroundLocation
+import app.getknit.knit.ui.hasWifiAwareHardware
 import app.getknit.knit.ui.requestIgnoreBatteryOptimizations
 import app.getknit.knit.ui.requiredMeshPermissions
 
 /**
- * First-run gate: explains why the mesh needs nearby/Bluetooth permissions and (optionally) battery
- * exemption, requests them, then hands off to the chat once permissions are granted. Like the legacy
- * app, the mesh can start even if some permissions were denied — it just degrades.
+ * First-run gate: explains why the Wi-Fi Aware mesh needs its nearby-Wi-Fi + notification permissions
+ * and (optionally) battery exemption, requests them, then hands off to the chat once granted. The mesh
+ * can start even if a permission was denied — it just degrades. On hardware without Wi-Fi Aware it shows
+ * a clear "unsupported" notice (there is no fallback transport) but still lets the user in.
  */
 @Composable
 fun OnboardingScreen(onReady: () -> Unit) {
     val context = LocalContext.current
+    val meshSupported = remember { hasWifiAwareHardware(context) }
     var granted by remember { mutableStateOf(hasAllMeshPermissions(context)) }
-    var backgroundLocation by remember { mutableStateOf(hasBackgroundLocation(context)) }
 
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
         granted = hasAllMeshPermissions(context)
-    }
-
-    // Background ("all the time") location must be a separate request made after foreground location
-    // is granted — the system silently denies it if bundled into the request above on API 30+.
-    val backgroundLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) {
-        backgroundLocation = hasBackgroundLocation(context)
     }
 
     Surface(
@@ -77,6 +69,16 @@ fun OnboardingScreen(onReady: () -> Unit) {
                 modifier = Modifier.padding(vertical = 24.dp),
             )
 
+            if (!meshSupported) {
+                Text(
+                    text = stringResource(R.string.onboarding_unsupported),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+            }
+
             Button(
                 onClick = { launcher.launch(requiredMeshPermissions()) },
                 modifier = Modifier.fillMaxWidth(),
@@ -88,34 +90,6 @@ fun OnboardingScreen(onReady: () -> Unit) {
                         stringResource(R.string.onboarding_grant_permissions)
                     },
                 )
-            }
-
-            // Only ask for "all the time" location once foreground location is granted — the system won't
-            // offer the option before then, and without it the mesh stops finding peers when backgrounded.
-            if (granted) {
-                Text(
-                    text = stringResource(R.string.onboarding_background_location_blurb),
-                    style = MaterialTheme.typography.bodySmall,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 16.dp),
-                )
-                OutlinedButton(
-                    onClick = {
-                        backgroundLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-                    },
-                    enabled = !backgroundLocation,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp),
-                ) {
-                    Text(
-                        if (backgroundLocation) {
-                            stringResource(R.string.onboarding_background_location_granted)
-                        } else {
-                            stringResource(R.string.onboarding_background_location)
-                        },
-                    )
-                }
             }
 
             OutlinedButton(

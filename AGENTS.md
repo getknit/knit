@@ -6,10 +6,11 @@ build config, the mesh layer, or the DI graph. For full design detail see
 
 ## What this is
 
-An Android app (Kotlin/Compose) implementing an offline Bluetooth/Wi-Fi **mesh messenger** on top of
-Google Nearby Connections. Single Gradle module `:app`, package `app.getknit.knit`,
-minSdk 29 / targetSdk 36 / compileSdk 36.1. It surfaces a "Nearby" broadcast room plus 1:1 DMs,
-with profiles, emoji reactions, @-mentions, and content-addressed image attachments.
+An Android app (Kotlin/Compose) implementing an offline **Wi-Fi Aware (NAN) mesh messenger** — a direct
+`android.net.wifi.aware.*` implementation, no Google Nearby / GMS. Single Gradle module `:app`, package
+`app.getknit.knit`, minSdk 33 / targetSdk 36 / compileSdk 36.1 (minSdk 33 is required for Wi-Fi Aware
+Instant Communication Mode + `NEARBY_WIFI_DEVICES`/`neverForLocation`). It surfaces a "Nearby" broadcast
+room plus 1:1 DMs, with profiles, emoji reactions, @-mentions, and content-addressed image attachments.
 
 ## Commands
 
@@ -64,10 +65,11 @@ ui/            Compose screens (onboarding, chatlist, chat, contacts, profile) +
 mesh/          MeshTransport (interface) · MeshRouter (dedup + jittered/suppressed flood)
                · MeshManager (orchestrator) · MeshService (foreground service) · MeshMetrics
                · BlobExchange/BlobStore (content-addressed pull) · ForwardSync/ForwardStore
-               (store-and-forward DM + group custody) · protocol/Wire.kt (CBOR Frame)
+               (store-and-forward DM + group + broadcast custody) · protocol/Wire.kt (CBOR Frame)
 mesh/crypto/   E2E (Tink): MessageCrypto (per-msg seal/open) · PublicKeyBundle · MessageContent
                · AttachmentCrypto · SafetyNumber · VerifyPayload (pure, JVM-testable)
-mesh/nearby/   NearbyTransport — the ONLY place that imports com.google.android.gms.*
+mesh/wifiaware/ WifiAwareTransport (+ AwareFraming socket codec) — the ONLY place that imports
+               android.net.wifi.aware.*
 data/          Room (messages, peers, reactions, forward_store) + repositories · settings/SettingsStore (DataStore)
                · AvatarStore + AttachmentStore (image files) · message/Conversations (DM keys)
                · crypto/ DatabaseKey + IdentityKeyStore (AndroidKeyStore-wrapped secrets) + KeystoreSecret
@@ -83,9 +85,10 @@ frames.
 
 ## Conventions
 
-- **Keep GMS/Nearby behind `MeshTransport`.** Nothing outside `mesh/nearby/` should import
-  `com.google.android.gms.*`. New transports (Wi-Fi Aware, BLE) go in sibling packages implementing
-  the same interface.
+- **Keep Wi-Fi Aware behind `MeshTransport`.** Nothing outside `mesh/wifiaware/` should import
+  `android.net.wifi.aware.*` (or `ConnectivityManager`/`NetworkRequest` for the NAN data path).
+  Everything above the transport talks only to the `MeshTransport` interface, so a future sibling
+  transport (e.g. a BLE fallback) drops in without touching orchestration.
 - **DI:** declare singletons/ViewModels in the `di/` modules; resolve ViewModels in Compose with
   `org.koin.androidx.compose.koinViewModel()` and the ViewModel DSL from
   `org.koin.core.module.dsl.viewModel` (not the deprecated `androidx.viewmodel.dsl` one).
@@ -110,10 +113,11 @@ frames.
   `relay = false`) is the only unsigned frame. `MeshManager` signs on origination; `verifyInbound` drops
   any flooded frame whose signature is missing/invalid or whose key doesn't derive to `senderId`, but
   the router still relays unknown/unverifiable frames verbatim so an old build is never a black hole.
-  `Protocol.VERSION`/`capabilities` ride (unauthenticated) in the Nearby endpoint-info and
-  (authenticated) on `ProfileContent`. Changing `WireEnvelope`'s shape, the `WireCodec` config, the
-  signing input, the `SERVICE_ID`, or removing/renaming a field/type is a coordinated wire break;
-  adding a nullable/defaulted field or a new `type` is additive — see `docs/WIRE_COMPAT.md`.
+  `Protocol.VERSION`/`capabilities` ride (unauthenticated) in the Wi-Fi Aware `serviceSpecificInfo`
+  advert and (authenticated) on `ProfileContent`. Changing `WireEnvelope`'s shape, the `WireCodec`
+  config, the signing input, the `SERVICE_NAME` (`WifiAwareTransport`), or removing/renaming a field/type
+  is a coordinated wire break; adding a nullable/defaulted field or a new `type` is additive — see
+  `docs/WIRE_COMPAT.md`.
 - **Pure, testable mesh logic.** `MeshRouter`, `SeenSet`, `WireCodec`, `MeshMetrics`, `BlobExchange`,
   and `Conversations` have no Android dependencies and are unit-tested with `FakeLoopTransport`/fakes.
   Keep them that way. `MeshRouter` relay timing is driven by an injectable `jitter` lambda so tests
@@ -126,28 +130,65 @@ frames.
   round-trip lags a keystroke and resets the field (you can only type one character). Hold editable
   text in a local `MutableStateFlow` in the ViewModel and persist to DataStore in the background —
   see `ProfileViewModel`.
-- **Serialize Nearby `requestConnection` calls** and never self-join. A previous bug
-  (`connectJob = scope.launch { connectJob?.join(); … }`) made the coroutine await itself and
-  deadlock, so connections never formed. Requests now run on a single-thread dispatcher with
-  `await()` — see `NearbyTransport.connectTo`.
-- **BLE radio contention: don't scan while connecting.** BLE *scanning* (discovery) and the BLE
-  *GATT/L2CAP bootstrap* of a new connection share the one radio. Scanning over an in-flight handshake
-  starves it — the GMS layer logs `STATUS_RADIO_ERROR` (ApiException 8007) /
-  `ESTABLISH_GATT_CONNECTION_FAILED` / "Failed to retrieve a physical BLE socket", and the connection
-  never forms (verified on three Pixels, June 2026). This bit us when an *isolated* node was made to
-  scan near-continuously to rejoin fast (commit `6bb071f`, 5 s idle ⇒ ~70 % scan airtime): the
-  aggressive scan sabotaged the very connect that would end the isolation, **and** blocked inbound
-  connections from peers, so the node could discover others yet connect to no one — a self-reinforcing
-  trap (the last node left alone never escapes, while paired nodes drop to a calm cadence and are fine).
-  Rules, all in `NearbyTransport.discoveryLoop` / `PowerPolicy`: (1) the loop **pauses discovery while
-  any connect is in flight** (`registry.isConnecting()`); (2) the isolated cadence keeps a radio-quiet
-  gap (`LONELY_IDLE_MS`, 12 s — *not* back-to-back); (3) a `MIN_SCAN_GAP_MS` floor caps how fast
-  `heal()` nudges can churn startDiscovery/stopDiscovery (rapid churn also wedges the controller). The
-  WiFi upgrade only happens *after* connecting, so a stuck-isolated node never leaves contended BLE —
-  which is exactly why connected nodes are stable but a lone one isn't. Reproduce/inspect with
-  `adb logcat | grep -E 'NearbyMediums.*MEDIUM_ERROR|STATUS_RADIO_ERROR'`.
-- **Nearby needs physical devices.** An emulator generally can't mesh with a real phone (NAT'd
-  network). Use `FakeLoopTransport` for logic tests and two physical phones for connectivity.
+- **Per-peer responders DON'T compose — use one persistent accept-any responder.** The intuitive design
+  (each incoming peer gets its own `WifiAwareNetworkSpecifier.Builder(session, peerHandle).setPort(...)`
+  responder + `ServerSocket`) works for *two* devices but silently fails for a third: a device already
+  acting as responder for one peer cannot stand up a second per-peer responder, so a phone joining an
+  existing pair is stranded (its client `requestNetwork` just times out; verified — 7 couldn't join an
+  8+9 pair). The fix in `WifiAwareTransport`: each node runs **one** responder built from its *publish*
+  session with **no peer handle** (`WifiAwareNetworkSpecifier.Builder(publishSession).setPort(port)`),
+  which accepts a data path from **any** initiator over a single `ServerSocket`; all clients share it.
+  Because an accept-any responder doesn't know who connected, the **initiator sends its advert as the
+  first `AwareFraming.Type.HELLO` record** over the socket, and the responder reads it to identify the
+  peer. Tie-break still gives one link per pair (larger nodeId = client/initiator, smaller = server);
+  `discoveryLoop` drives client initiations to *all* eligible discovered peers (serialized), so a
+  connected device still links to more — a real multi-node mesh, not just pairs. The responder is anchored
+  to the publish session, so **only *subscribe* is ever re-armed** (publish/responder stay up), which also
+  respects the "restarting a session kills its NDPs" rule below.
+- **Wi-Fi Aware discovery is one-shot, and restarting a session KILLS its data paths — so re-discover
+  only when isolated, and keepalive live links.** Two hard-won facts, both from Pixel 7 + Pixel 9 testing:
+  (1) `onServiceDiscovered` fires **once** per subscribe session per peer — the framework never re-reports
+  a peer it already matched — so after a data path drops (`Software caused connection abort`), nothing
+  re-initiates on its own; the only lever to re-fire discovery is to **restart** publish/subscribe. But
+  (2) **closing a discovery session tears down the NDP `Network` anchored to it** on these chipsets — so
+  restarting sessions while a link is live *drops that live link*. (This bit us twice: the old
+  `rearmInstantMode`-on-screen-change dropped the first connection, then a re-discovery loop that re-armed
+  while connected dropped adjacent phones every ~30 s and left "link up but no messages" churn.) The
+  resolution in `WifiAwareTransport`: `discoveryLoop`/`rearmSubscribe()` restart **only the subscribe**
+  session (publish + its accept-any responder stay up, so live server-side links and discoverability are
+  untouched) and **only while isolated** (`peers.isEmpty()` — no client-side NDP to lose). To stop an
+  *idle* NDP between two stationary phones from being torn down by NAN's inactivity timeout, each socket
+  carries a periodic `AwareFraming.Type.KEEPALIVE` record (`KEEPALIVE_INTERVAL_MS`). Consequence to know:
+  a peer whose link drops while we still have *other* neighbors is re-linked only once it re-appears on the
+  live subscribe session (or we go isolated) — an accepted trade to never tear down healthy links.
+- **NDP data interfaces are scarce — serialize handshakes and time-box every `requestNetwork`.** A phone
+  has only 1–2 NAN *data interfaces*, so firing `requestNetwork` at several discovered peers at once
+  fails with `WifiAwareDataPathStMgr: ... NdpInfos[] - no interfaces available!` and wedges the radio.
+  Worse: the 3-arg `requestNetwork(request, cb, handler)` has **no timeout**, so a request that can't be
+  fulfilled stays pending *forever* — its `NetworkCallback` never unregisters and its interface
+  reservation never frees, so after a few failed attempts the node exhausts its interfaces and can never
+  connect again (observed: a Pixel 7 stuck in a `terminate: already terminated` loop, connecting to
+  nobody, while a Pixel 8+9 pair was fine). Two rules in `WifiAwareTransport`: (1) `beginConnect`
+  **serializes** — one in-flight handshake at a time (mirrors the old Nearby transport's serialized
+  `requestConnection`); (2) always use the **timeout** overload `requestNetwork(req, cb, handler,
+  HANDSHAKE_TIMEOUT_MS)` and clean up in `onUnavailable`, plus a short per-peer `CONNECT_BACKOFF_MS` so a
+  failed handshake yields to a *different* discovered peer instead of storming the same one.
+- **NDP slots are finite.** A radio sustains only a handful of concurrent data paths
+  (`getAvailableAwareResources().availableDataPathsCount`); the transport caps links at `MAX_LINKS` and
+  defers the rest (logged), serving a dense crowd in waves. Don't assume every discovered peer gets a
+  live socket at once.
+- **Wi-Fi Aware availability flaps, and may be absent entirely.** `WifiAwareManager.isAvailable()` goes
+  false when Wi-Fi is off or Wi-Fi Direct / SoftAP / hotspot seizes the radio; the transport watches
+  `ACTION_WIFI_AWARE_STATE_CHANGED`, flips `health` to `Degraded`, tears links down, and re-attaches on
+  recovery. `PackageManager.FEATURE_WIFI_AWARE` can be missing outright (some budget/older + certain
+  Samsung models) — **there is no fallback transport**, so the UI gates with a clear "unsupported" state
+  (`hasWifiAwareHardware`).
+- **One file streams at a time per socket.** `AwareFraming` multiplexes frames + files over the single
+  NDP socket; the writer serializes file transfers and interleaves live frames *between* chunks (so an
+  8 MiB blob never stalls traffic), which is why a `FILE_HEADER`→`FILE_CHUNK`s→`FILE_END` run needs no
+  file id. Don't push two files down one socket expecting them to interleave.
+- **Wi-Fi Aware needs physical devices.** An emulator can't do NAN. Use `FakeLoopTransport` for logic
+  tests and two physical Wi-Fi-Aware-capable phones (e.g. Pixels) for real discovery → data path → relay.
 - **Keep the `<Frame>` type argument on the CBOR codec.** `WireCodec` calls
   `cbor.encodeToByteArray<Frame>(frame)` / `decodeFromByteArray<Frame>(bytes)` — the explicit
   `<Frame>` selects polymorphic encoding (the `@SerialName` discriminator). Dropping it serializes the
@@ -205,8 +246,9 @@ but still relay — a delivery gate, never a relay gate; see `docs/WIRE_COMPAT.m
 
 The mesh floods a frame once and forgets it, so a message whose recipient (or a path to them) isn't
 connected at that instant never arrives. **`ForwardSync` + `ForwardStore`** add delay-tolerant custody
-for **addressed chat messages — 1:1 DMs and group messages** (the plaintext broadcast room has no
-destination and stays flood-only). A node persists the messages it originates (`ORIGIN_SELF`) or relays
+for **every chat message — 1:1 DMs, group messages, and the plaintext broadcast room** (so two phones
+that meet only briefly backfill each other's ambient history — the festival case). A node persists the
+messages it originates (`ORIGIN_SELF`) or relays
 (`ORIGIN_RELAY`) into the encrypted `forward_store` table, and when a neighbor joins (`watchNeighbors`
 newcomers → `ForwardSync.onNeighborAdded`) **unicasts** the carried ones to it (skipping a
 per-peer-per-session memo + the message's own author). Re-served frames re-enter the existing
@@ -229,9 +271,16 @@ a roster member; once any member receives it, the normal flood re-distributes it
 no spraying group traffic at non-members. A group has no single recipient and no reliable per-member ack,
 so it is **never vaccine-purged** — the TTL/cap sweep is its only bound.
 
+**Broadcast-room messages** (`recipientId == null && group == null` — the natural discriminator, no schema
+column) are carried too and offered to **every** newcomer (no destination to target), gated only by the
+capture path explicitly carrying them (`isForMe(null)` is true, so the DM `!isForMe` gate would otherwise
+skip them — see `MeshManager.onDeliver`). Like a group they have no ack, so a **shorter TTL** + a
+**broadcast quota** are their only bound; they are never vaccine-purged. `isStorable()` is now simply
+`type == CHAT`.
+
 Bounds (`ForwardRepository`): a per-message **TTL** sweep (startup + a 10-min loop + the heartbeat
-`heal()`), a **global cap**, a **per-sender quota**, and a **per-group quota**, all with
-relayed-before-our-own eviction. A carrier stores a message only when its sender is **pinned, not blocked,
+`heal()`; broadcast gets a shorter TTL than DMs/groups), a **global cap**, a **per-sender quota**, a
+**per-group quota**, and a **broadcast quota**, all with relayed-before-our-own eviction. A carrier stores a message only when its sender is **pinned, not blocked,
 and its frame signature verifies** (`MeshManager.canCarry` → `MessageCrypto.verify` over the received
 `signed` bytes, authenticating without decrypting — a carrier holds no wrapped key). Notifications fire only on first delivery
 (`deliverChat` `isNew` gate, conversation-agnostic) so a re-served message (after the 10-min `SeenSet`
@@ -267,20 +316,21 @@ deviceTag block are applied first). Replay bypasses the router (no re-flood, no 
 `deliverChat`'s `isNew`/idempotent-save gates keep a later store-and-forward re-serve a no-op. The buffer
 is in-memory by design (a parked frame is unauthenticated until its key arrives, so it's never persisted)
 and bounded by a global cap (the real bound — the senderId is an unauthenticated claim), a per-sender cap,
-and the TTL. Only the locally-delivered types are held (`FrameType.isReplayable`). Note the asymmetry:
-DM/group frames also degrade gracefully via store-and-forward re-serve after the buffer expires, but a
-**broadcast-room** frame (not store-and-forwarded) has the `PendingInbound` TTL as its only recovery
-window. Surfaced in Diagnostics (`framesHeld`/`framesReplayed`) and JVM-tested (`PendingInboundTest`).
+and the TTL. Only the locally-delivered types are held (`FrameType.isReplayable`). `PendingInbound` is now
+just the fast path: DM, group, **and** broadcast frames all also degrade gracefully via store-and-forward
+re-serve after the buffer expires (broadcast custody closed the old gap where a broadcast frame had the
+`PendingInbound` TTL as its only recovery window). Surfaced in Diagnostics (`framesHeld`/`framesReplayed`)
+and JVM-tested (`PendingInboundTest`).
 
 ## Out of scope (deferred, by design)
 
-Alternate transports (Wi-Fi Aware/BLE); **true DM routing** (DMs still flood — only the addressed
-recipient delivers/acks; store-and-forward now *carries* undelivered DMs, see above, but there is still
-no routing table); extending store-and-forward to the **broadcast room** (plaintext, no destination), a
-**group key-gap retransmit** (the group analogue of the DM `flushPendingFor`: a group message already
-floods to the members whose keys are known, so reaching a member whose key arrives *later* needs a fresh
-re-seal, not custody), or replacing push-on-contact with a **digest/pull anti-entropy** exchange
-(efficiency only); and for E2E specifically:
+A **BLE / Nearby fallback transport** for devices without Wi-Fi Aware hardware (we deliberately went
+pure NAN — non-NAN devices are gated as "unsupported", not fallen back); **true DM routing** (DMs still
+flood — only the addressed recipient delivers/acks; store-and-forward now *carries* undelivered DMs, see
+above, but there is still no routing table); a **group key-gap retransmit** (the group analogue of the DM
+`flushPendingFor`: a group message already floods to the members whose keys are known, so reaching a
+member whose key arrives *later* needs a fresh re-seal, not custody), or replacing push-on-contact with a
+**digest/pull anti-entropy** exchange (efficiency only); and for E2E specifically:
 **forward secrecy / a ratchet** (static keys only), **encrypting** reactions/receipts (they are signed
 now — see the E2E section — but still flood as cleartext metadata), and encrypting the broadcast room.
 (The **inbound key-request** for a frame received from a not-yet-pinned sender — the inbound complement of

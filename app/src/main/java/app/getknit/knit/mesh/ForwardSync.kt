@@ -6,10 +6,10 @@ import app.getknit.knit.mesh.protocol.isStorable
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Store-and-forward custody for addressed chat messages — 1:1 DMs and group messages. The mesh floods a
- * frame once and drops it, so a message whose recipient (or a path to them) isn't connected at that
- * instant never arrives. [ForwardSync] persists the messages a node originates or relays ([onSeen]) and,
- * when a neighbor joins ([onNeighborAdded]), unicasts the carried ones to it:
+ * Store-and-forward custody for chat messages — 1:1 DMs, group messages, and the broadcast room. The
+ * mesh floods a frame once and drops it, so a message whose recipient (or a path to them) isn't
+ * connected at that instant never arrives. [ForwardSync] persists the messages a node originates or
+ * relays ([onSeen]) and, when a neighbor joins ([onNeighborAdded]), unicasts the carried ones to it:
  *
  * - **DMs** are offered to any newcomer: if it's the recipient it delivers + acks; otherwise its normal
  *   relay floods the frame onward through the new topology. A delivery receipt from the addressed
@@ -18,6 +18,9 @@ import java.util.concurrent.ConcurrentHashMap
  *   frame); once any member receives it, the normal flood re-distributes it to the rest. A group has no
  *   single recipient and no reliable per-member ack, so it is never vaccine-purged — the TTL/cap sweep
  *   is its only bound.
+ * - **Broadcast-room** messages are offered to every newcomer (no destination to target), so two phones
+ *   that meet only briefly backfill each other's ambient history. Like a group they have no ack, so the
+ *   (shorter) TTL/cap sweep is their only bound.
  *
  * Pure (no Android/Room): the transport and store are injected and authentication is a lambda, so the
  * whole flow is unit-testable with [FakeLoopTransport] and a fake [ForwardStore].
@@ -39,11 +42,12 @@ class ForwardSync(
     private val acked = SeenSet(ttlMillis = ACK_TOMBSTONE_TTL_MS, clock = clock)
 
     /**
-     * Capture an addressed chat frame we originated ([ForwardStore.ORIGIN_SELF]) or relayed
-     * ([ForwardStore.ORIGIN_RELAY]) into the carry store. No-op for the broadcast room (not [isStorable]),
-     * an already-carried/already-acked id, or a relayed frame that fails authentication. Only the
-     * immutable signed blob + signature are stored — a fresh wrapper is stamped on re-serve, so the frame
-     * re-floods with a full hop budget (the signature covers neither ttl nor hops).
+     * Capture a chat frame we originated ([ForwardStore.ORIGIN_SELF]) or relayed
+     * ([ForwardStore.ORIGIN_RELAY]) into the carry store — a DM, group, or broadcast-room message (all
+     * [isStorable]). No-op for a non-chat frame, an already-carried/already-acked id, or a relayed frame
+     * that fails authentication. Only the immutable signed blob + signature are stored — a fresh wrapper
+     * is stamped on re-serve, so the frame re-floods with a full hop budget (the signature covers neither
+     * ttl nor hops).
      */
     suspend fun onSeen(wire: WireEnvelope, envelope: RelayEnvelope, origin: Int) {
         if (!envelope.isStorable()) return
@@ -55,9 +59,10 @@ class ForwardSync(
     /**
      * A neighbor joined: unicast it every carried message not yet offered this connection (skipping ones
      * it authored). A DM is offered to any newcomer (the recipient delivers, anyone else relays it
-     * onward); a group message is offered only to a roster member — once any member has it, the normal
-     * flood re-distributes it to the rest, so there's no need to spray it at non-members. Each carried
-     * frame is re-wrapped in a fresh [WireEnvelope] (full ttl, hops 0) around its verbatim signed blob.
+     * onward); a broadcast-room message is likewise offered to any newcomer (no destination to target); a
+     * group message is offered only to a roster member — once any member has it, the normal flood
+     * re-distributes it to the rest, so there's no need to spray it at non-members. Each carried frame is
+     * re-wrapped in a fresh [WireEnvelope] (full ttl, hops 0) around its verbatim signed blob.
      */
     suspend fun onNeighborAdded(peer: Peer) {
         val offered = offeredTo.getOrPut(peer.nodeId) { ConcurrentHashMap.newKeySet() }
@@ -65,7 +70,7 @@ class ForwardSync(
             val env = carried.envelope
             if (env.senderId == peer.nodeId) return@forEach // don't hand a message back to its author
             val members = env.group?.members
-            if (members != null && peer.nodeId !in members) return@forEach // group: members only
+            if (members != null && peer.nodeId !in members) return@forEach // group: members only (DM/broadcast: anyone)
             if (offered.add(env.id)) transport.send(WireEnvelope(sig = carried.sig, signed = carried.signed), peer)
         }
     }

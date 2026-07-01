@@ -2,11 +2,8 @@ package app.getknit.knit.mesh
 
 import android.app.AlarmManager
 import android.app.PendingIntent
-import android.bluetooth.BluetoothAdapter
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.hardware.Sensor
 import android.hardware.SensorManager
@@ -26,9 +23,10 @@ import org.koin.android.ext.android.inject
 
 /**
  * Foreground service that keeps the mesh alive while the app is backgrounded. Hosts the singleton
- * [MeshManager] and adds the background-survival machinery: a periodic heartbeat alarm, a
- * significant-motion trigger (new location → likely new peers), and Bluetooth-recovery — all of
- * which nudge the transport to rescan/reconnect. The UI controls the mesh by starting/stopping it.
+ * [MeshManager] and adds the background-survival machinery: a periodic heartbeat alarm and a
+ * significant-motion trigger (new location → likely new peers), both of which nudge the transport to
+ * rediscover/reconnect. (Wi-Fi Aware availability changes are handled inside the transport itself.)
+ * The UI controls the mesh by starting/stopping it.
  */
 class MeshService : LifecycleService() {
 
@@ -45,15 +43,6 @@ class MeshService : LifecycleService() {
         }
     }
 
-    private val bluetoothReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
-            if (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1) == BluetoothAdapter.STATE_ON) {
-                meshManager.restart()
-            }
-        }
-    }
-
     override fun onCreate() {
         super.onCreate()
         // Channels are normally created at app startup (KnitApplication); ensure defensively in case
@@ -64,12 +53,6 @@ class MeshService : LifecycleService() {
         meshManager.start()
         scheduleHeartbeat()
         armSignificantMotion()
-        ContextCompat.registerReceiver(
-            this,
-            bluetoothReceiver,
-            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
-            ContextCompat.RECEIVER_NOT_EXPORTED,
-        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -85,7 +68,6 @@ class MeshService : LifecycleService() {
     }
 
     override fun onDestroy() {
-        runCatching { unregisterReceiver(bluetoothReceiver) }
         powerMonitor.stop()
         significantMotion?.let { sensorManager.cancelTriggerSensor(motionListener, it) }
         cancelHeartbeat()
@@ -139,11 +121,9 @@ class MeshService : LifecycleService() {
             NOTIFICATION_ID,
             notification,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                // location lets Nearby discovery keep scanning while backgrounded (screen off); without
-                // it a "while in use" location grant is withheld from the service and discovery fails
-                // with error 8034 — see AndroidManifest.xml.
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+                // Wi-Fi Aware needs no location, so the service is connectedDevice-only (the runtime type
+                // must match the manifest's foregroundServiceType — see AndroidManifest.xml).
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             } else {
                 0
             },

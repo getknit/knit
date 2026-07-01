@@ -3,25 +3,17 @@ package app.getknit.knit.ui
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.os.Build
 import androidx.core.content.ContextCompat
 
-/** Runtime permissions Nearby Connections needs, varying by SDK level. */
-fun requiredMeshPermissions(): Array<String> = buildList {
-    // Nearby Connections discovery requires location on every supported API level (neverForLocation
-    // does not exempt it), so always request it — see the note in AndroidManifest.xml.
-    add(Manifest.permission.ACCESS_FINE_LOCATION)
-    add(Manifest.permission.ACCESS_COARSE_LOCATION)
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        add(Manifest.permission.BLUETOOTH_SCAN)
-        add(Manifest.permission.BLUETOOTH_ADVERTISE)
-        add(Manifest.permission.BLUETOOTH_CONNECT)
-    }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        add(Manifest.permission.NEARBY_WIFI_DEVICES)
-        add(Manifest.permission.POST_NOTIFICATIONS)
-    }
-}.toTypedArray()
+/**
+ * Runtime permissions the Wi-Fi Aware mesh needs. Unlike the old Nearby transport, Wi-Fi Aware on
+ * API 33+ needs **no location** — `NEARBY_WIFI_DEVICES` carries the `neverForLocation` flag (see the
+ * manifest) — and no Bluetooth. Just nearby-Wi-Fi discovery and notifications.
+ */
+fun requiredMeshPermissions(): Array<String> = arrayOf(
+    Manifest.permission.NEARBY_WIFI_DEVICES,
+    Manifest.permission.POST_NOTIFICATIONS,
+)
 
 fun hasAllMeshPermissions(context: Context): Boolean =
     requiredMeshPermissions().all {
@@ -29,15 +21,10 @@ fun hasAllMeshPermissions(context: Context): Boolean =
     }
 
 /**
- * Whether "Allow all the time" (background) location is granted. Nearby discovery keeps scanning with
- * the screen off only when [MeshService] can reach location while backgrounded, which needs this on
- * top of foreground location — without it a backgrounded device stops discovering (error 8034) and
- * can only be found, never initiate. Request it *separately and after* [requiredMeshPermissions] are
- * granted: the system only offers "all the time" once foreground location is held, and silently
- * denies it if bundled into the same request on API 30+.
+ * Whether this device has the Wi-Fi Aware radio the mesh runs on. False on hardware lacking
+ * [PackageManager.FEATURE_WIFI_AWARE] (some budget/older and certain Samsung models); since there is no
+ * fallback transport, the UI surfaces a clear "can't mesh on this device" state rather than an empty
+ * neighbor list.
  */
-fun hasBackgroundLocation(context: Context): Boolean =
-    ContextCompat.checkSelfPermission(
-        context,
-        Manifest.permission.ACCESS_BACKGROUND_LOCATION,
-    ) == PackageManager.PERMISSION_GRANTED
+fun hasWifiAwareHardware(context: Context): Boolean =
+    context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)

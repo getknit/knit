@@ -192,10 +192,10 @@ class WireSerializationTest {
     // --- isStorable predicate ---
 
     @Test
-    fun isStorableForAddressedChatNotBroadcastOrControl() {
+    fun isStorableForEveryChatFrameIncludingBroadcastButNotControl() {
         assertTrue(envelope(type = FrameType.CHAT, recipientId = "b").isStorable())
         assertTrue(envelope(type = FrameType.CHAT, group = GroupInfo("g", members = listOf("a", "b"), createdBy = "a")).isStorable())
-        assertFalse("the broadcast room has no destination", envelope(type = FrameType.CHAT).isStorable())
+        assertTrue("the broadcast room is now carried too", envelope(type = FrameType.CHAT).isStorable())
         assertFalse(envelope(type = FrameType.RECEIPT, recipientId = "b").isStorable())
     }
 
@@ -215,22 +215,5 @@ class WireSerializationTest {
     @Test
     fun malformedWrapperBytesDecodeToNull() {
         assertNull(WireCodec.decodeWire("not a frame".encodeToByteArray()))
-    }
-
-    @Test
-    fun encodedWrappersNeverCollideWithFileHeaderMagic() {
-        // NearbyTransport tells a file-header BYTES payload from a frame by this 4-byte prefix; a CBOR
-        // wrapper must never begin with it (mirrors NearbyTransport.FILE_HEADER_MAGIC = "KFH1").
-        val magic = byteArrayOf(0x4B, 0x46, 0x48, 0x31)
-        val wrappers = listOf(
-            wrap(envelope(type = FrameType.CHAT, payload = WireCodec.encodePayload(ChatContent(body = "hi")))),
-            wrap(envelope(type = FrameType.PROFILE, payload = WireCodec.encodePayload(ProfileContent("Bob", "ok")))),
-            wrap(envelope(type = FrameType.BLOB_REQ, payload = WireCodec.encodePayload(BlobReqContent("abc")))),
-            wrap(envelope(type = FrameType.RECEIPT, payload = WireCodec.encodePayload(ReceiptContent("m"))), sig = byteArrayOf(1, 2, 3)),
-        )
-        wrappers.forEach { wire ->
-            val bytes = WireCodec.encodeWire(wire)
-            assertFalse(bytes.size >= magic.size && magic.indices.all { bytes[it] == magic[it] })
-        }
     }
 }
