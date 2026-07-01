@@ -159,8 +159,16 @@ the message can strand on its author until a share-stuck re-attach.
     after one serve (a bare `startResponder` re-arm doesn't clear it), which strands the pure-initiator hub.
     Phase 1a is correct in isolation (the digest decides right); it just can't be *demonstrated* converging
     until the responders stay serve-able.
-- **Phase 2 — deliberate re-attach.** Serve-reattach policy; retire share-stuck + long-backoff. Depends on
-  Phase 0(b).
+- **Phase 2 — deliberate re-attach.** ✅ **DONE.** `teardownPeer` now re-attaches after a **server** link ends
+  (a served responder is wedged; only a full re-attach clears it) and a pure initiator never re-attaches;
+  retired share-stuck and the long-backoff escalation (kept the fast-fail handle-drop for re-discovery), and
+  the after-serve re-attach stamps `lastReattachAt` so the subscribe-wedge recovery doesn't cascade on top.
+  **On-device (Phase 1+2 together):** the hub does back-to-back syncs with **0 re-attach**; a responder
+  **serves one client → re-attaches → serves the next** in a clean cycle; and a **freshly composed broadcast
+  from the smallest node reached all three** (`PHASE2OK`, P9 → P7 & P8). Remaining cost: during active
+  propagation a responder re-attaches once per serve (plus the occasional chipset subscribe-wedge re-attach) —
+  bounded, and it quiesces once the digest shows stores match. Accumulated multi-day test stores don't fully
+  converge to an identical version (key gaps / DM addressing), but new traffic propagates cleanly.
 
 ## Wire / compat
 

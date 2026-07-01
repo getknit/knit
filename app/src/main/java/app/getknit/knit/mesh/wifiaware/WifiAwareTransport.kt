@@ -79,13 +79,13 @@ import java.util.concurrent.atomic.AtomicInteger
  * - **Coordination plane** — Wi-Fi Aware *messages* ([DiscoverySession.sendMessage], ~255 B, best-effort)
  *   which ride discovery follow-up frames and need **no data path**. They reach every discovered neighbor
  *   at once and keep working even while the one NDP is busy. Each node advertises a tiny **cue**
- *   (`nodeId|storeEpoch`, see [SyncEpoch]) so a neighbor can tell when we hold something new.
+ *   (`nodeId|version`, see [StoreDigest]) so a neighbor can tell when its carried set differs from ours.
  * - **Data plane** — a single ephemeral NDP TCP socket (link-local IPv6, framed by [AwareFraming]) brought
  *   up **on demand** only to sync, then torn down, freeing the NDI for the next pair.
  *
  * ## Sync lifecycle
- * A node listens (publish + its accept-any responder up, NDI free) and exchanges cues. When [CueTracker]
- * says a peer diverged (its cue advanced, or our own [SyncEpoch] did), the **larger** nodeId (the tie-break)
+ * A node listens (publish + its accept-any responder up, NDI free) and exchanges cues. When [DigestTracker]
+ * says a peer's digest differs from ours (and isn't already reconciled), the **larger** nodeId (the tie-break)
  * brings up one NDP to it; on link-up the upstream `onNeighborAdded` backfill drains the carried
  * store-and-forward / key / blob state both ways. When the link goes quiescent (no data for
  * [QUIESCENCE_MS], no file mid-transfer) the initiator tears it down and records the sync — so an idle mesh
@@ -175,14 +175,9 @@ class WifiAwareTransport(
     private val inFlight = HashSet<String>()
     private val discovered = HashMap<String, DiscoveredPeer>()
     private val retryAfter = HashMap<String, Long>()
-    // Consecutive fast (stale-signature) init failures per peer. A genuine stale handle clears in 1-2 (a
-    // re-discovered handle links); a value that keeps climbing means our own NDI is wedged (a prior responder
-    // link left it reserved — state=104 holding aware_data0 — blocking the client role), which only a full
-    // re-attach frees. Guarded by [lock].
-    private val connectFailures = HashMap<String, Int>()
     private var accepting = false
 
-    // Anti-entropy state for the cue plane: each peer's advertised epoch + our last-synced watermarks.
+    // Anti-entropy state for the cue plane: each peer's advertised digest version + our last-synced version.
     private val digestTracker = DigestTracker()
 
     // nodeId -> where to send a cue (a PeerHandle valid on a specific discovery session). Populated from
@@ -204,18 +199,10 @@ class WifiAwareTransport(
     // single NDI before the next requestNetwork (else "no interfaces available").
     @Volatile private var lastLinkEndedAt = 0L
 
-    // elapsedRealtime of the last recovery re-attach, so a wedged subscribe is reset at most once per
-    // REATTACH_COOLDOWN_MS rather than in a tight loop.
+    // elapsedRealtime of the last recovery re-attach. A re-attach-after-serve stamps it so the wedged-subscribe
+    // recovery doesn't also fire in the same window (they'd cascade); the subscribe recovery honours it as a
+    // cooldown.
     @Volatile private var lastReattachAt = 0L
-
-    // Our SyncEpoch as of our last completed data-path link (so new state past it is "unshared"), and when we
-    // first noticed unshared state. If unshared state lingers while peers are reachable but no link forms
-    // (SHARE_STUCK_MS), our responder is wedged — these chipsets serve ~one client per Aware session — so a
-    // peer can't pull our fresh message; re-attaching refreshes the responder. Without this, a node that
-    // already synced once this session silently can't share anything new (verified: a just-composed broadcast
-    // stranded on its author while a larger peer retried the pull in vain).
-    @Volatile private var versionAtLastLink = 0L
-    @Volatile private var unsharedSince = 0L
 
     // elapsedRealtime of the last subscribe re-arm (to re-discover a peer whose handle staled), rate-limited
     // by REARM_COOLDOWN_MS so we don't churn subscribe (its wedge trigger) hunting a peer that's really gone.
@@ -248,16 +235,10 @@ class WifiAwareTransport(
             attach()
             loopJob = scope.launch { discoveryLoop() }
             powerJob = scope.launch { powerState.state.drop(1).collect { healSignal.trySend(Unit) } }
-            // Re-cue neighbors the moment our syncable state changes (a message/profile), so they can pull it,
-            // and wake the loop so it can notice if that new state stays unshared (a wedged responder).
+            // Re-cue neighbors and wake the loop the moment our carried set changes, so a peer that now wants
+            // our new data can pull it.
             cueJob = scope.launch {
-                storeDigest.version.drop(1).collect {
-                    if (storeDigest.version.value != versionAtLastLink && unsharedSince == 0L) {
-                        unsharedSince = SystemClock.elapsedRealtime()
-                    }
-                    cueAll()
-                    healSignal.trySend(Unit)
-                }
+                storeDigest.version.drop(1).collect { cueAll(); healSignal.trySend(Unit) }
             }
             // Heartbeat cue covers best-effort message loss + a peer that hasn't discovered us yet.
             cueHeartbeatJob = scope.launch {
@@ -310,10 +291,8 @@ class WifiAwareTransport(
         attaching.set(false)
         subscribing.set(false)
         lastLinkEndedAt = 0L
-        versionAtLastLink = 0L
-        unsharedSince = 0L
         synchronized(lock) {
-            inFlight.clear(); discovered.clear(); retryAfter.clear(); connectFailures.clear(); accepting = false
+            inFlight.clear(); discovered.clear(); retryAfter.clear(); accepting = false
         }
         cueTarget.clear()
         lastSeenAt.clear()
@@ -446,7 +425,7 @@ class WifiAwareTransport(
 
     /**
      * The connection engine. Each tick: if the single NDI slot is free and a discovered peer we're the
-     * initiator for is sync-wanted ([CueTracker]), bring up one NDP to it; if nothing is worth syncing and
+     * initiator for is sync-wanted ([DigestTracker]), bring up one NDP to it; if nothing is worth syncing and
      * the slot is free, re-arm subscribe to re-discover. While a link/handshake is up, do nothing — the
      * per-link supervisor tears it down on quiescence. Woken early by [healSignal] (cue, link up/down +
      * settle, heal(), screen-on).
@@ -470,13 +449,6 @@ class WifiAwareTransport(
                     lastRearmAt = now
                     rearmSubscribe()
                 }
-                // New data that no peer has pulled while reachable → our responder is wedged (serves ~one
-                // client per session); a full re-attach refreshes it so the data can flow. Rate-limited.
-                shareStuck() && now - lastReattachAt > REATTACH_COOLDOWN_MS -> {
-                    lastReattachAt = now
-                    Log.w(TAG, "re-attaching to share stuck data (ver=${storeDigest.version.value} != shared=$versionAtLastLink)")
-                    reattach()
-                }
                 else -> Unit
             }
         }
@@ -488,7 +460,7 @@ class WifiAwareTransport(
 
     /**
      * Brings up an NDP to the next peer we're the initiator for (`localNodeId > nodeId`, the tie-break), not
-     * yet linked, not backing off, and **sync-wanted** per [CueTracker]. The handle comes from [discovered] —
+     * yet linked, not backing off, and **sync-wanted** per [DigestTracker]. The handle comes from [discovered] —
      * a **subscribe**-session handle — because on these chipsets only a subscribe handle can initiate a data
      * path; a publish-session handle (learned from an inbound cue) makes `requestNetwork` silently time out
      * (verified on-device: every `initiating (via pub)` failed, every `(via sub)` linked). A peer whose
@@ -496,13 +468,13 @@ class WifiAwareTransport(
      * [needsRediscovery] re-arming subscribe. Returns true if it started a handshake.
      */
     private fun driveSync(): Boolean {
-        val localEpoch = storeDigest.version.value
+        val localVersion = storeDigest.version.value
         val now = SystemClock.elapsedRealtime()
         val target = synchronized(lock) {
             discovered.entries.firstOrNull { (nodeId, _) ->
                 localNodeId > nodeId && nodeId !in peers.keys &&
                     (retryAfter[nodeId]?.let { now >= it } ?: true) &&
-                    digestTracker.reconcileWanted(nodeId, localEpoch)
+                    digestTracker.reconcileWanted(nodeId, localVersion)
             }?.let { it.key to it.value }
         } ?: return false
         initiateTo(target.first, target.second.advert, target.second.peerHandle)
@@ -519,7 +491,7 @@ class WifiAwareTransport(
      */
     private fun needsRediscovery(): Boolean {
         if (cueTarget.isEmpty()) return true
-        val localEpoch = storeDigest.version.value
+        val localVersion = storeDigest.version.value
         val disc = synchronized(lock) { discovered.keys.toSet() }
         // A peer we hear cues from (alive, nearby), want to sync, are the initiator for, yet hold no subscribe
         // handle for — either never discovered, or its handle just fast-failed and failConnect dropped it
@@ -527,31 +499,18 @@ class WifiAwareTransport(
         // churn on the normal fight for the single NDI.
         return cueTarget.keys.any { nodeId ->
             localNodeId > nodeId && nodeId !in peers.keys && nodeId !in disc &&
-                digestTracker.reconcileWanted(nodeId, localEpoch)
+                digestTracker.reconcileWanted(nodeId, localVersion)
         }
     }
-
-    /**
-     * True when we hold syncable state advanced past our last link, peers are reachable, and it has stayed
-     * unshared for [SHARE_STUCK_MS] — i.e. no peer managed to pull it. On these chipsets that means our
-     * responder is wedged (it serves ~one client per Aware session), so a full re-attach is the only way to
-     * let the data out. This is what makes a freshly composed message reach the mesh from a node that has
-     * already synced once this session.
-     */
-    private fun shareStuck(): Boolean =
-        _reachable.value.isNotEmpty() && unsharedSince != 0L &&
-            storeDigest.version.value != versionAtLastLink &&
-            SystemClock.elapsedRealtime() - unsharedSince > SHARE_STUCK_MS
 
     private fun rediscoverDelayMs(): Long {
         // Tick soon while a sync is still owed (a sync-wanted peer we initiate to, maybe backed off / busy)
         // so we retry promptly; hunt aggressively when we know of nobody; otherwise relax (a cue with a new
         // epoch wakes us via healSignal). Doubled when screen-off on battery.
-        val localEpoch = storeDigest.version.value
+        val localVersion = storeDigest.version.value
         val base = when {
             cueTarget.isEmpty() -> REDISCOVER_LONELY_MS // blind (no cue targets) → rediscover / recover fast
-            storeDigest.version.value != versionAtLastLink -> SYNC_RETRY_IDLE_MS // unshared data → re-check share-stuck promptly
-            cueTarget.keys.any { localNodeId > it && digestTracker.reconcileWanted(it, localEpoch) } -> SYNC_RETRY_IDLE_MS
+            cueTarget.keys.any { localNodeId > it && digestTracker.reconcileWanted(it, localVersion) } -> SYNC_RETRY_IDLE_MS
             else -> REDISCOVER_IDLE_MS
         }
         val power = powerState.state.value
@@ -841,7 +800,7 @@ class WifiAwareTransport(
         conn.lastActivityAt = now // start the quiescence window at link-up (backfill will extend it)
         val prev = peers.put(peerNodeId, conn)
         prev?.close() // a stale link to the same peer (shouldn't happen, but never leak it)
-        synchronized(lock) { inFlight.remove(peerNodeId); retryAfter.remove(peerNodeId); connectFailures.remove(peerNodeId) }
+        synchronized(lock) { inFlight.remove(peerNodeId); retryAfter.remove(peerNodeId) }
         conn.readerJob = scope.launch(Dispatchers.IO) { readLoop(conn, input) }
         conn.writerJob = scope.launch(Dispatchers.IO) { writeLoop(conn) }
         conn.reaperJob = scope.launch { superviseLink(conn) }
@@ -890,28 +849,16 @@ class WifiAwareTransport(
         staleHandle: Boolean,
     ) {
         runCatching { connectivity.unregisterNetworkCallback(callback) }
-        var longBackoff = false
         synchronized(lock) {
             inFlight.remove(peerNodeId)
-            if (staleHandle) {
-                // Fast failure: drop the handle so needsRediscovery re-arms subscribe for a fresh one. If we
-                // keep fast-failing this peer despite fresh handles, a direct link just isn't happening right
-                // now — our one NDI is tied up as a responder for another peer, or this pair won't pair — so
-                // stop hammering it: a long backoff lets store-and-forward relay carry its data via a
-                // reachable hub instead of churning subscribe on a link that won't form.
-                discovered.remove(peerNodeId)
-                val n = (connectFailures[peerNodeId] ?: 0) + 1
-                connectFailures[peerNodeId] = n
-                longBackoff = n >= FAILS_BEFORE_LONG_BACKOFF
-                if (longBackoff) connectFailures.remove(peerNodeId)
-            } else {
-                connectFailures.remove(peerNodeId) // a slow (contention) failure isn't a wedge; keep the handle
-            }
-            retryAfter[peerNodeId] = SystemClock.elapsedRealtime() +
-                if (longBackoff) LONG_BACKOFF_MS else CONNECT_BACKOFF_MS
+            retryAfter[peerNodeId] = SystemClock.elapsedRealtime() + CONNECT_BACKOFF_MS
+            // A *fast* failure means this subscribe handle is dead (the peer restarted): drop it so
+            // needsRediscovery re-arms subscribe for a fresh one. A slow (contention) failure keeps the handle
+            // — the peer was just busy on its one NDI, and with Phase 2 its responder re-attaches to free up.
+            if (staleHandle) discovered.remove(peerNodeId)
         }
         noteLinkEnded() // yield to a different sync-wanted peer once the radio settles
-        Log.i(TAG, "handshake with $peerNodeId ended without a link (stale=$staleHandle${if (longBackoff) " long-backoff" else ""})")
+        Log.i(TAG, "handshake with $peerNodeId ended without a link (stale=$staleHandle)")
     }
 
     private fun teardownPeer(peerNodeId: String, backoffMs: Long = REFUSED_BACKOFF_MS) {
@@ -927,25 +874,24 @@ class WifiAwareTransport(
         if (conn.networkCallback != null && backoffMs > 0) {
             synchronized(lock) { retryAfter[peerNodeId] = SystemClock.elapsedRealtime() + backoffMs }
         }
-        // A link that lasted long enough to run the backfill carried our state to that peer: mark everything
-        // up to now shared, so the share-stuck watchdog doesn't re-attach over data that did propagate.
-        if (SystemClock.elapsedRealtime() - conn.linkStartedAt > MIN_SHARE_LINK_MS) {
-            versionAtLastLink = storeDigest.version.value
-            unsharedSince = 0L
-        }
         noteLinkEnded()
         refreshNeighbors()
         Log.i(TAG, "link down: $peerNodeId")
-        // A served client just left. On these chipsets the accept-any responder does NOT keep accepting after
-        // its first NDP tears down — the next initiator's requestNetwork silently times out (verified: P9
-        // served one client, then a second could never reach it). It used to recover only incidentally, when a
-        // dead link's onLost fired a re-arm; the quiescence teardown removed that. So re-arm explicitly (fresh
-        // ServerSocket + responder requestNetwork) once the NDI has settled, whenever the slot is free again.
+        // A served client just left. On these chipsets a responder that has served one NDP is wedged — it
+        // won't accept a second client, and it blocks this node's own client role — and a bare responder
+        // re-arm (fresh requestNetwork) does NOT clear it; only a full re-attach does (Phase 0, on-device).
+        // So re-attach after every serve to restore serve-ability, once the NDI settles and the slot is free.
+        // A pure initiator never serves, so it never hits this path — it keeps initiating on one session
+        // (verified Phase 0: 7 initiates / 0 re-attach). Stamps lastReattachAt so the wedged-subscribe
+        // recovery doesn't pile a second re-attach on top.
         if (wasServerLink) {
-            handler.postDelayed(
-                { if (session != null && publishSession != null && !slotBusy()) startResponder() },
-                SETTLE_MS,
-            )
+            handler.postDelayed({
+                if (session != null && publishSession != null && !slotBusy()) {
+                    lastReattachAt = SystemClock.elapsedRealtime()
+                    Log.i(TAG, "re-attach after serving $peerNodeId")
+                    reattach()
+                }
+            }, SETTLE_MS)
         }
     }
 
@@ -1382,15 +1328,6 @@ class WifiAwareTransport(
         const val QUIESCENCE_MS = 5_000L
         const val QUIESCENCE_POLL_MS = 1_000L
         const val RESPONDER_QUIESCENCE_MS = 8_000L
-
-        // A data-path link must last at least this long to count as having run the store-and-forward backfill
-        // (so our state reached the peer) — a shorter one dropped before exchanging anything.
-        const val MIN_SHARE_LINK_MS = 3_000L
-
-        // How long freshly-composed state may sit unshared (peers reachable, but no link pulled it) before we
-        // conclude our responder is wedged and re-attach to free it. Long enough for a normal cue→pull round
-        // trip (discovery + handshake + a first-contact sync), short enough that a stuck message isn't lost.
-        const val SHARE_STUCK_MS = 30_000L
         const val SYNC_MAX_WINDOW_MS = 30_000L
         const val RESPONDER_MAX_HOLD_MS = 45_000L
 
@@ -1408,12 +1345,6 @@ class WifiAwareTransport(
         // departed peer's cue target is pruned (cue send fails) before we'd re-arm again, so we don't churn
         // subscribe toward its wedge state; short enough that a restarted peer is reconnected within ~1 tick.
         const val REARM_COOLDOWN_MS = 15_000L
-
-        // Consecutive fast (stale-signature) init failures to one peer — despite re-discovery handing us fresh
-        // handles — before we stop hammering a direct link that won't form (our NDI is busy as a responder, or
-        // the pair won't pair) and long-back-off, leaving store-and-forward relay to carry that peer's data.
-        const val FAILS_BEFORE_LONG_BACKOFF = 3
-        const val LONG_BACKOFF_MS = 180_000L
 
         // Receive-side ceiling on a file, matching the send cap (AttachmentStore.MAX_BYTES = 8 MiB) plus
         // headroom for E2E framing (GCM IV+tag) — refuses an unbounded malicious stream that exhausts disk.
