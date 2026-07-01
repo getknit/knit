@@ -46,11 +46,11 @@ interface ForwardDao {
     suspend fun countByGroup(groupId: String): Int
 
     /**
-     * How many carried broadcast-room frames are held — enforces the broadcast quota. Broadcast rows are
-     * the only ones with no recipient and no group (that pair uniquely identifies them), so no schema
-     * discriminator is needed.
+     * How many carried broadcast-room *chat* frames are held — enforces the broadcast quota. Reactions,
+     * receipts, and profiles share the null recipient/group shape, so the [ForwardEntity.type] discriminator
+     * is required to count only broadcast chat and not starve those metadata frames on the broadcast quota.
      */
-    @Query("SELECT COUNT(*) FROM forward_store WHERE recipientId IS NULL AND groupId IS NULL")
+    @Query("SELECT COUNT(*) FROM forward_store WHERE type = 'chat' AND recipientId IS NULL AND groupId IS NULL")
     suspend fun countBroadcast(): Int
 
     /**

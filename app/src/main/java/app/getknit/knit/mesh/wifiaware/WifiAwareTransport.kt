@@ -641,6 +641,23 @@ class WifiAwareTransport(
     }
 
     /**
+     * Targeted sibling of [fastFanout] (see [MeshTransport.fastSend]): send a small point-to-point frame to one
+     * peer over the coordination plane, **no data path** — e.g. a broadcast/group delivery receipt straight back
+     * to the message's author, so the tick works even when the message was delivered by a fast-fanout with no
+     * live NDP. Best-effort: no-op if [to] isn't a current cue target or the frame won't fit ([COORD_MSG_MAX]).
+     */
+    override fun fastSend(wire: WireEnvelope, to: Peer) {
+        if (!hasHardware) return
+        val target = cueTarget[to.nodeId] ?: return // not coordination-plane-reachable → best-effort skip
+        val bytes = WireCodec.encodeWire(wire)
+        if (bytes.size + 1 > COORD_MSG_MAX) return
+        val msg = ByteArray(bytes.size + 1).also { it[0] = MSG_FRAME_TAG; bytes.copyInto(it, 1) }
+        Log.i(TAG, "fast-send ${bytes.size}B → ${to.nodeId}") // TEMP diag
+        runCatching { target.session.sendMessage(target.handle, msgSeq.getAndIncrement(), msg) }
+            .onFailure { cueTarget.remove(to.nodeId) } // stale handle/session; refreshed on next discover/receive
+    }
+
+    /**
      * A broadcast frame arrived over the coordination plane (tagged [MSG_FRAME_TAG] by a peer's [fastFanout]):
      * decode it and inject it into the normal inbound path exactly like a data-path frame, so the router
      * dedups, relays, and delivers it with no NDP. A later flood/custody copy is dropped by the receiver's

@@ -91,6 +91,12 @@ class ForwardSyncTest {
 
     private fun receipt(id: String) = RelayEnvelope(type = FrameType.RECEIPT, id = id, senderId = "a", payload = ByteArray(0))
 
+    private fun reaction(id: String) = RelayEnvelope(type = FrameType.REACTION, id = id, senderId = "a", payload = ByteArray(0))
+
+    private fun profile(id: String) = RelayEnvelope(type = FrameType.PROFILE, id = id, senderId = "a", payload = ByteArray(0))
+
+    private fun keyReq(id: String) = RelayEnvelope(type = FrameType.KEY_REQ, id = id, senderId = "a", payload = ByteArray(0))
+
     /** Wraps an envelope with an empty signature (these tests authenticate via the lambda, not crypto). */
     private fun wireOf(env: RelayEnvelope) = WireEnvelope(sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
 
@@ -100,11 +106,14 @@ class ForwardSyncTest {
     // --- pure predicate ---
 
     @Test
-    fun everyChatFrameIsStorableIncludingBroadcastButNonChatIsNot() {
+    fun everyFloodableFrameIsStorableButControlFramesAreNot() {
         assertTrue(dm("m", "a", "b").isStorable())
         assertTrue(groupMsg("g", "a", listOf("a", "b", "c")).isStorable())
-        assertTrue("broadcast is now carried so brief encounters backfill it", broadcast("r").isStorable())
-        assertFalse(receipt("x").isStorable())
+        assertTrue("broadcast is carried so brief encounters backfill it", broadcast("r").isStorable())
+        assertTrue("receipts are now custodied so the ✓✓ converges mesh-wide", receipt("x").isStorable())
+        assertTrue("reactions are now custodied so every peer eventually sees them", reaction("k").isStorable())
+        assertTrue("profiles are now custodied so they propagate delay-tolerantly", profile("p").isStorable())
+        assertFalse("a point-to-point key request is never carried", keyReq("q").isStorable())
     }
 
     // --- onSeen capture & authentication ---
@@ -134,18 +143,24 @@ class ForwardSyncTest {
     }
 
     @Test
-    fun everyChatFrameIsCarriedIncludingBroadcastButNonChatIsNot() = runTest {
+    fun everyFloodableFrameIsCarriedIncludingMetadataButControlIsNot() = runTest {
         val store = FakeForwardStore()
         val sync = ForwardSync(RecordingTransport(), store, clock = { 0L })
 
         sync.onSeen(wireOf(broadcast("r")), broadcast("r"), ForwardStore.ORIGIN_RELAY)
         sync.onSeen(wireOf(receipt("x")), receipt("x"), ForwardStore.ORIGIN_RELAY)
+        sync.onSeen(wireOf(reaction("k")), reaction("k"), ForwardStore.ORIGIN_RELAY)
+        sync.onSeen(wireOf(profile("p")), profile("p"), ForwardStore.ORIGIN_RELAY)
         val g = groupMsg("g1", "a", listOf("a", "b", "c"))
         sync.onSeen(wireOf(g), g, ForwardStore.ORIGIN_RELAY)
+        sync.onSeen(wireOf(keyReq("q")), keyReq("q"), ForwardStore.ORIGIN_RELAY)
 
         assertTrue("broadcast is carried so a passing phone backfills our ambient history", store.has("r"))
-        assertFalse("a receipt isn't a carried message", store.has("x"))
+        assertTrue("a receipt is now carried so the ✓✓ converges mesh-wide", store.has("x"))
+        assertTrue("a reaction is now carried so it converges mesh-wide", store.has("k"))
+        assertTrue("a profile is now carried so it propagates delay-tolerantly", store.has("p"))
         assertTrue("a group message is carried for offline members", store.has("g1"))
+        assertFalse("a point-to-point key request is not carried", store.has("q"))
     }
 
     @Test
@@ -160,6 +175,22 @@ class ForwardSyncTest {
 
         sync.onNeighborAdded(Peer("z")) // anyone else — offered once (no recipient/roster to target)
         assertEquals(listOf("r1"), transport.sent.map { it.first.frameId() })
+    }
+
+    @Test
+    fun pushesCarriedReactionAndProfileToAnyNewcomerButNotTheirAuthor() = runTest {
+        val transport = RecordingTransport()
+        val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
+        val react = reaction("k1") // authored by "a"
+        val prof = profile("p1") // authored by "a"
+        sync.onSeen(wireOf(react), react, ForwardStore.ORIGIN_RELAY)
+        sync.onSeen(wireOf(prof), prof, ForwardStore.ORIGIN_RELAY)
+
+        sync.onNeighborAdded(Peer("a")) // the author — never handed its own metadata back
+        assertTrue("metadata isn't offered back to its author", transport.sent.isEmpty())
+
+        sync.onNeighborAdded(Peer("z")) // anyone else — both offered (no recipient/roster to target)
+        assertEquals(listOf("k1", "p1"), transport.sent.map { it.first.frameId() }.sorted())
     }
 
     // --- vaccine purge ---

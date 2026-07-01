@@ -100,6 +100,16 @@ interface MeshTransport {
      */
     fun fastFanout(wire: WireEnvelope) {}
 
+    /**
+     * Best-effort **coordination-plane** send of [wire] to a single peer [to] — the targeted sibling of
+     * [fastFanout], for a small point-to-point reply that must reach one node with **no data path** (e.g. a
+     * broadcast/group delivery receipt back to the message's author, which works whether the message arrived
+     * over an NDP flood or a coordination-plane fast-fanout). No-op if [to] isn't currently reachable over the
+     * coordination plane or [wire] won't fit the ~255 B message channel. Default no-op — only a transport with
+     * a message channel (Wi-Fi Aware) overrides it; the fakes ignore it.
+     */
+    fun fastSend(wire: WireEnvelope, to: Peer) {}
+
     /** Sends a file (avatar or attachment) tagged with [meta] to a single neighbor. */
     suspend fun sendFile(file: File, to: Peer, meta: FileMeta)
 }

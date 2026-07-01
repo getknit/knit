@@ -58,7 +58,11 @@ import java.io.File
     // v15: groups gained `photoHash`/`photoUpdatedAt` for the (last-writer-wins) group photo. Additive
     //      wire change (new nullable GroupInfo fields), so no SERVICE_ID bump; destructive DB migration as
     //      usual (app not yet public).
-    version = 15,
+    // v16: store-and-forward custody generalized to every floodable frame (reactions, receipts, group
+    //      updates/leaves, profiles — not just chat); forward_store gained a `type` column so per-type
+    //      policy (the broadcast quota + shorter TTL) doesn't starve the metadata frames that share the
+    //      null recipient/group shape. No wire change; destructive DB migration as usual (app not yet public).
+    version = 16,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

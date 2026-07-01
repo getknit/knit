@@ -192,11 +192,17 @@ class WireSerializationTest {
     // --- isStorable predicate ---
 
     @Test
-    fun isStorableForEveryChatFrameIncludingBroadcastButNotControl() {
+    fun isStorableForEveryFloodableFrameButNotControl() {
         assertTrue(envelope(type = FrameType.CHAT, recipientId = "b").isStorable())
         assertTrue(envelope(type = FrameType.CHAT, group = GroupInfo("g", members = listOf("a", "b"), createdBy = "a")).isStorable())
-        assertTrue("the broadcast room is now carried too", envelope(type = FrameType.CHAT).isStorable())
-        assertFalse(envelope(type = FrameType.RECEIPT, recipientId = "b").isStorable())
+        assertTrue("the broadcast room is carried too", envelope(type = FrameType.CHAT).isStorable())
+        assertTrue("reactions are now custodied", envelope(type = FrameType.REACTION).isStorable())
+        assertTrue("receipts are now custodied", envelope(type = FrameType.RECEIPT, recipientId = "b").isStorable())
+        assertTrue("profiles are now custodied", envelope(type = FrameType.PROFILE).isStorable())
+        assertTrue("group updates are now custodied", envelope(type = FrameType.GROUP_UPDATE).isStorable())
+        assertTrue("group leaves are now custodied", envelope(type = FrameType.GROUP_LEAVE).isStorable())
+        assertFalse("a point-to-point key request is never carried", envelope(type = FrameType.KEY_REQ).isStorable())
+        assertFalse("a point-to-point blob request is never carried", envelope(type = FrameType.BLOB_REQ).isStorable())
     }
 
     // --- signature binding (the bytes the wrapper signature covers) ---

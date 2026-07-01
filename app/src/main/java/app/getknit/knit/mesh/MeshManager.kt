@@ -554,13 +554,25 @@ class MeshManager(
         val wire = sign(env)
         router.originate(wire, env.id)
         forwardSync.onSeen(wire, env, ForwardStore.ORIGIN_SELF)
-        // Fast path: a broadcast-room chat frame small enough to ride the ~255 B coordination-plane message
-        // channel is *also* fanned out to every neighbor at once with no data path, so it arrives near-instantly
-        // instead of waiting for a cue-driven pairwise NDP sync. The transport gates on size (no-op if it won't
-        // fit) and the receiver's SeenSet dedups the copy that also comes over the flood/custody backstop.
-        // Broadcast-only for now: a DM/group frame carries wrapped keys and won't fit, and the room is plaintext
-        // so there's no per-recipient concern (see MeshTransport.fastFanout).
-        if (env.type == FrameType.CHAT && env.recipientId == null && env.group == null) transport.fastFanout(wire)
+        if (shouldFastFanout(env)) transport.fastFanout(wire)
+    }
+
+    /**
+     * Whether [env] should *also* ride the [MeshTransport.fastFanout] coordination-plane fast path — a
+     * best-effort fan-out to every neighbor at once with **no data path** — on top of the normal flood and
+     * store-and-forward custody. It's for small, flood-to-everyone frames: the plaintext broadcast room plus the
+     * cleartext metadata frames (reactions, delivery receipts, group roster updates/leaves, profiles) — exactly
+     * the non-chat [FrameType.isCustodial] types. In an idle cue-driven mesh no NDP is up, so a plain flood
+     * reaches the ≤1 live neighbor (usually zero); the fast path delivers to every neighbor at once and custody
+     * backstops any peer that was away. Reused on both origination ([originateSigned]) and relay ([onDeliver]),
+     * so a frame hops the mesh at message-plane speed rather than only one hop from the originator. E2E DM/group
+     * *chat* frames are excluded (the broadcast-only arm): they carry wrapped keys and won't fit the ~255 B
+     * channel, so they ride the NDP flood + custody. The transport still size-gates (no-op if a frame won't
+     * fit), and the receiver's SeenSet dedups any copy that also arrives over the flood/custody backstop.
+     */
+    private fun shouldFastFanout(env: RelayEnvelope): Boolean = when (env.type) {
+        FrameType.CHAT -> env.recipientId == null && env.group == null // broadcast room only (DM/group are E2E)
+        else -> FrameType.isCustodial(env.type) // reaction/receipt/group-*/profile; blobreq/keyreq excluded
     }
 
     /** Sends a locally-built [env] to a single [peer] (targeted profile push), signed. */
@@ -583,18 +595,27 @@ class MeshManager(
         // to is dropped (not delivered locally). We still return normally so MeshRouter relays it
         // onward — other peers verify independently, and we don't become a propagation black hole.
         if (!verifyInbound(env, wire, fromNodeId)) return
-        // Carry a chat frame we're relaying so we can re-offer it to a neighbor that joins later —
+        // Carry a floodable frame we're relaying so we can re-offer it to a neighbor that joins later —
         // store-and-forward. A DM is carried only when relaying it *toward* someone else (skip ones
         // addressed to us — we're the destination, so deliver, don't carry); a group message is always
         // carried, for other members who may be offline, whether or not we're a member ourselves; a
-        // broadcast-room message is always carried, so a passing phone can backfill our ambient history.
+        // broadcast-room message and the cleartext metadata frames (reaction/receipt/group-meta/profile,
+        // all recipient/group null) are always carried, so a passing phone backfills our ambient state.
         // Runs before handleChat returns early and before the router schedules the relay, so the copy is
-        // durable pre-flood.
-        if (env.isStorable()) {
+        // durable pre-flood. Only flood frames (relay = true) are custodied — a point-to-point frame
+        // (relay = false, e.g. a broadcast/group delivery receipt) is delivered to its addressee and stops.
+        if (env.isStorable() && wire.relay) {
             val isBroadcast = env.recipientId == null && env.group == null
             val carry = isBroadcast || env.group != null || !Conversations.isForMe(env.recipientId, identity.nodeId())
             if (carry) forwardSync.onSeen(wire, env, ForwardStore.ORIGIN_RELAY)
         }
+        // Multi-hop coordination-plane fan-out: re-fan a small flood frame to our own neighbors so it spreads
+        // across the mesh at message-plane speed (no data path), not just one hop from the originator. onDeliver
+        // runs once per first-seen frame (MeshRouter gates on its SeenSet), so each node re-fans it exactly once
+        // and the echo dies out — no storm; fastFanout size-gates, so anything too big just no-ops. Only flood
+        // frames re-fan; a point-to-point frame (relay = false, e.g. a broadcast receipt) reaches its addressee
+        // and goes no further.
+        if (wire.relay && shouldFastFanout(env)) transport.fastFanout(wire)
         dispatchByType(env, wire, fromNodeId)
     }
 
@@ -637,6 +658,19 @@ class MeshManager(
     }
 
     /**
+     * Resolves the public-key bundle a flooded frame's signature must verify against: a [FrameType.PROFILE]
+     * carries its bundle in-band (first contact arrives before any pin), every other type uses the sender's
+     * pinned key. Shared by [verifyInbound] (the delivery gate) and [canCarry] (the custody gate) so both
+     * authenticate a profile the same way — via its own key — instead of a pin it may not have yet. Null when
+     * there is no key to verify with (an unpinned non-profile sender, or a malformed in-band key).
+     */
+    private suspend fun verifierBundle(env: RelayEnvelope): PublicKeyBundle? = when (env.type) {
+        FrameType.PROFILE ->
+            WireCodec.decodePayload<ProfileContent>(env.payload)?.pubKey?.let { PublicKeyBundle.decode(it) }
+        else -> peers.find(env.senderId)?.pubKey?.let { PublicKeyBundle.decode(it) }
+    }
+
+    /**
      * Authenticates a flooded frame: the frame [WireEnvelope.sig] must verify (byte-exact, over the
      * received [WireEnvelope.signed]) against a public-key bundle that derives back to the
      * [RelayEnvelope.senderId]. A profile carries that bundle in-band (first contact arrives before any
@@ -650,11 +684,7 @@ class MeshManager(
      */
     private suspend fun verifyInbound(env: RelayEnvelope, wire: WireEnvelope, fromNodeId: String): Boolean = runCatching {
         if (env.type == FrameType.BLOB_REQ) return true
-        val bundle = when (env.type) {
-            FrameType.PROFILE ->
-                WireCodec.decodePayload<ProfileContent>(env.payload)?.pubKey?.let { PublicKeyBundle.decode(it) }
-            else -> peers.find(env.senderId)?.pubKey?.let { PublicKeyBundle.decode(it) }
-        }
+        val bundle = verifierBundle(env)
         if (bundle == null) {
             metrics.onDropped(DropReason.NO_SENDER_KEY)
             // Try to recover the sender's key so future frames from it verify (the inbound key-request
@@ -784,22 +814,25 @@ class MeshManager(
     }
 
     /**
-     * Whether we should carry a relayed DM, group, or broadcast message for store-and-forward (the
-     * [ForwardSync] authenticate hook). The sender must be pinned and not blocked and the frame signature must
-     * verify against the pinned key — so a node never stores unauthenticated junk, only messages an identified
-     * sender actually authored, authenticated byte-exact over the received signed bytes (same as
-     * [verifyInbound]). A DM/group message is carried only in its encrypted form (a carrier holds it without
-     * reading); the broadcast room is plaintext by design (no fixed recipient set to seal to), so it has no
-     * enc envelope and is carried on its signature alone. Without carrying broadcasts, only a message's author
-     * would hold it (via ORIGIN_SELF), so broadcast custody / cue-plane anti-entropy would never converge
-     * between peers. Our own sends bypass this check.
+     * Whether we should carry a relayed frame for store-and-forward (the [ForwardSync] authenticate hook for
+     * ORIGIN_RELAY). The sender must not be blocked and the frame signature must verify byte-exact over the
+     * received signed bytes against the key that derives to its senderId (via [verifierBundle], so a profile
+     * authenticates on its in-band key and every other type on the sender's pinned key) — a node never stores
+     * unauthenticated junk, only frames an identified sender actually authored. A DM/group *chat* frame is
+     * carried only in its encrypted form (a carrier holds it without reading); the broadcast room and the
+     * cleartext metadata frames (reaction/receipt/group-update/group-leave/profile) carry no enc envelope and
+     * are held on their signature alone. Without carrying these, only a frame's author would hold it (via
+     * ORIGIN_SELF), so custody / cue-plane anti-entropy would never converge between peers. Our own sends
+     * bypass this check.
      */
     private suspend fun canCarry(wire: WireEnvelope, env: RelayEnvelope): Boolean {
         if (env.senderId in settings.blockedNodeIds.first()) return false
-        val content = WireCodec.decodePayload<ChatContent>(env.payload) ?: return false
-        val isBroadcast = env.recipientId == null && env.group == null
-        if (!isBroadcast && content.enc == null) return false // DM/group must be carried encrypted
-        val bundle = peers.find(env.senderId)?.pubKey?.let { PublicKeyBundle.decode(it) }
+        if (env.type == FrameType.CHAT) {
+            val content = WireCodec.decodePayload<ChatContent>(env.payload) ?: return false
+            val isBroadcast = env.recipientId == null && env.group == null
+            if (!isBroadcast && content.enc == null) return false // DM/group must be carried encrypted
+        }
+        val bundle = verifierBundle(env)
         if (bundle == null || NodeId.fromPublicKeyBundle(bundle.encoded) != env.senderId) {
             metrics.onDropped(DropReason.CARRY_REFUSED)
             return false
@@ -1056,10 +1089,14 @@ class MeshManager(
     }
 
     /**
-     * Sends a delivery receipt for [frame]. A DM addressed to us floods its receipt via the router so
-     * it reaches the sender across multiple hops (the recipient is the only one who acks). Broadcast
-     * and group messages keep the legacy behaviour: ack only if the author is a direct neighbor (relays
-     * don't) — group messages carry recipientId null, so the tick is best-effort, not per-member.
+     * Sends a delivery receipt for [frame]. A DM addressed to us floods its receipt via the router
+     * ([originateSigned], relay = true) so it reaches the sender across multiple hops and is custodied like any
+     * flood frame (the recipient is the only one who acks). Broadcast and group messages have no single
+     * recipient, so the tick is best-effort: a **point-to-point** receipt (relay = false) is sent straight back
+     * to the author over the coordination plane ([MeshTransport.fastSend]), which needs no data path — so it
+     * works whether the message arrived via an NDP flood *or* a coordination-plane fast-fanout. (The old
+     * direct-neighbor NDP send silently dropped the fast-fanned case: with no live NDP link, `neighbors` is
+     * empty and the ack was never sent.) No-ops if the author isn't currently reachable.
      */
     private suspend fun acknowledge(env: RelayEnvelope, me: String) {
         val ack = RelayEnvelope(
@@ -1067,10 +1104,12 @@ class MeshManager(
             payload = WireCodec.encodePayload(ReceiptContent(env.id)),
         )
         if (env.recipientId == me) {
-            originateSigned(ack)
+            originateSigned(ack) // DM: flood so it reaches the sender across hops
         } else {
-            val direct = transport.neighbors.value.firstOrNull { it.nodeId == env.senderId } ?: return
-            transport.send(sign(ack), direct)
+            // Broadcast/group: point-to-point tick straight back to the author over the coordination plane (no
+            // NDP required, so a fast-fanned message gets its receipt too). relay = false so the author just
+            // consumes it — onDeliver won't re-fan or custody a point-to-point frame.
+            transport.fastSend(sign(ack, relay = false), Peer(env.senderId))
         }
     }
 

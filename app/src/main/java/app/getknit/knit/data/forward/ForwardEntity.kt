@@ -5,7 +5,8 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
- * A DM, group, or broadcast-room chat frame this device is carrying for store-and-forward delivery. The
+ * A floodable frame this device is carrying for store-and-forward delivery — a DM/group/broadcast-room chat
+ * message, or a metadata frame (reaction/receipt/group-update/group-leave/profile). The
  * mesh floods a frame once and forgets it; this table lets a node keep a message and re-offer it to a
  * neighbor that joins later (the DM recipient / a relay toward them, a group member, or anyone for a
  * broadcast) — see `app.getknit.knit.mesh.ForwardSync`.
@@ -18,7 +19,9 @@ import androidx.room.PrimaryKey
  * frame** (offered to every newcomer, TTL/cap-bounded only). [recipientId] lets a carrier push a DM
  * toward that peer and require a delivery receipt to come *from* that peer before purging it; a group
  * has no single recipient (TTL/caps purge only), and the member roster to push toward is read from the
- * decoded envelope ([signed]). [groupId] bounds the per-group quota. [origin] distinguishes a frame we
+ * decoded envelope ([signed]). [groupId] bounds the per-group quota. [type] is the wire frame type, so the
+ * store buckets per-type policy — the broadcast quota + shorter TTL apply only to broadcast-room chat, not the
+ * reaction/receipt/profile frames that share its null recipient/group shape. [origin] distinguishes a frame we
  * relayed for others (`ORIGIN_RELAY`) from one we authored (`ORIGIN_SELF`) so cap eviction sheds carried
  * traffic before our own outbox. [receivedAt] orders eviction; [expiresAt] drives the TTL sweep.
  */
@@ -31,6 +34,7 @@ data class ForwardEntity(
     val recipientId: String?,
     val groupId: String?,
     val senderId: String,
+    val type: String,
     val origin: Int,
     val signed: ByteArray,
     val sig: ByteArray,

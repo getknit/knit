@@ -50,6 +50,17 @@ object FrameType {
      */
     fun isReplayable(type: String): Boolean =
         type == CHAT || type == REACTION || type == RECEIPT || type == GROUP_UPDATE || type == GROUP_LEAVE
+
+    /**
+     * Whether a frame of [type] is carried for store-and-forward custody and eligible for the
+     * coordination-plane fast-fanout (see [isStorable] / `MeshManager.shouldFastFanout`): every floodable
+     * type — the locally-delivered [isReplayable] family plus [PROFILE] (which self-certifies its key
+     * in-band, so it can be authenticated and re-served without a prior pin). Excludes the point-to-point
+     * [BLOB_REQ]/[KEY_REQ] requests (relayed hop-by-hop, not flooded, and transient — nothing to custody)
+     * and any unknown future type (a carrier can't authenticate what it can't place).
+     */
+    fun isCustodial(type: String): Boolean =
+        isReplayable(type) || type == PROFILE
 }
 
 /**
@@ -99,13 +110,19 @@ class RelayEnvelope(
 
 /**
  * Whether this frame is carried for store-and-forward delivery (see `app.getknit.knit.mesh.ForwardSync`).
- * Every chat frame qualifies: a 1:1 DM (single cleartext [RelayEnvelope.recipientId] to deliver toward),
- * a group message (cleartext [GroupInfo.members] roster), and — so two phones that meet only briefly can
- * still backfill each other — the plaintext **broadcast room** (no destination: both
- * [RelayEnvelope.recipientId] and [RelayEnvelope.group] null). Broadcast has no recipient/ack, so it is
- * bounded by a shorter TTL + cap only (never vaccine-purged), like a group message.
+ * Every floodable type qualifies ([FrameType.isCustodial]), so the whole mesh converges on the same state
+ * rather than only in-range/one-hop peers seeing a change:
+ *  - **chat** — a 1:1 DM (single cleartext [RelayEnvelope.recipientId] to deliver toward), a group message
+ *    (cleartext [GroupInfo.members] roster), and the plaintext **broadcast room** (no destination: both
+ *    [RelayEnvelope.recipientId] and [RelayEnvelope.group] null) so two phones that meet only briefly still
+ *    backfill each other;
+ *  - **reaction / receipt / group-update / group-leave / profile** — small metadata that also flood once and
+ *    would otherwise be lost to any peer that wasn't connected at that instant. Carried as immutable frames
+ *    keyed by id (no compaction): a superseded version — a re-toggled reaction, a second rename, an edited
+ *    profile — simply lingers until its TTL, and the receiver resolves last-writer-wins on `sentAt`.
+ * None have a single recipient/ack (a DM does), so they are bounded by TTL + cap only (never vaccine-purged).
  */
-fun RelayEnvelope.isStorable(): Boolean = type == FrameType.CHAT
+fun RelayEnvelope.isStorable(): Boolean = FrameType.isCustodial(type)
 
 // --- Layer 3: per-type content payloads (parsed only by endpoints; evolve additively) ---
 

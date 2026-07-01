@@ -3,6 +3,7 @@ package app.getknit.knit.data.forward
 import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.StoreDigest
+import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.WireCodec
 
 /**
@@ -35,12 +36,15 @@ class ForwardRepository(
     override suspend fun store(frame: CarriedFrame, origin: Int, now: Long) {
         val env = frame.envelope
         val groupId = env.group?.id
-        val isBroadcast = env.recipientId == null && groupId == null
+        // Only broadcast-room *chat* is the ambient, higher-volume, shorter-lived class. Reactions, receipts,
+        // and profiles share its null recipient/group shape but are higher-value metadata, so they must be
+        // bucketed apart (by type) — else they'd inherit the broadcast quota/TTL and be starved or expire early.
+        val isBroadcastChat = env.type == FrameType.CHAT && env.recipientId == null && groupId == null
         // Quotas apply to traffic we relay for others, not our own outbox.
         if (origin == ForwardStore.ORIGIN_RELAY) {
             if (dao.countBySender(env.senderId) >= maxPerSender) return
             if (groupId != null && dao.countByGroup(groupId) >= maxPerGroup) return
-            if (isBroadcast && dao.countBroadcast() >= maxBroadcast) return
+            if (isBroadcastChat && dao.countBroadcast() >= maxBroadcast) return
         }
         dao.insert(
             ForwardEntity(
@@ -48,13 +52,15 @@ class ForwardRepository(
                 recipientId = env.recipientId,
                 groupId = groupId,
                 senderId = env.senderId,
+                type = env.type,
                 origin = origin,
                 signed = frame.signed,
                 sig = frame.sig,
                 receivedAt = now,
-                // Broadcast is ambient, higher-volume, lower-value chatter with no ack to purge it, so it
-                // gets a shorter TTL than an addressed DM/group message.
-                expiresAt = now + if (isBroadcast) broadcastTtlMs else ttlMs,
+                // Broadcast-room chat is ambient, higher-volume, no-ack chatter, so it gets a shorter TTL than an
+                // addressed DM/group message or a carried metadata frame (reaction/receipt/profile keep the full
+                // TTL, so they never expire before the message/peer they describe).
+                expiresAt = now + if (isBroadcastChat) broadcastTtlMs else ttlMs,
             ),
         )
         digest.add(env.id)
