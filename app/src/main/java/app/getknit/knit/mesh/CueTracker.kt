@@ -70,6 +70,11 @@ class CueTracker {
         syncedPeer.clear()
     }
 
+    /** Diagnostic snapshot: per-peer `id(peerEpoch,syncedLocal,syncedPeer)`. Temporary debugging aid. */
+    @Synchronized
+    fun debug(): String = (peerEpoch.keys + syncedLocal.keys + syncedPeer.keys).toSortedSet()
+        .joinToString(" ") { "$it(pe=${peerEpoch[it]},sl=${syncedLocal[it]},sp=${syncedPeer[it]})" }
+
     private companion object {
         // Sentinel "never synced": below any real epoch (which starts at 0), so a first cue is sync-wanted.
         const val UNSYNCED = -1L
