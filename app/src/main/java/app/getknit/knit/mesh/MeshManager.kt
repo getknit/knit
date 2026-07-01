@@ -90,6 +90,7 @@ class MeshManager(
     private val messageCrypto: MessageCrypto,
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
+    private val syncEpoch: SyncEpoch,
 ) {
     // Reconstructed per session so its inbound collector + relay jobs live on the session scope and
     // are cancelled by stop() (rather than leaking on the never-cancelled app scope).
@@ -121,6 +122,7 @@ class MeshManager(
         transport = transport,
         store = forwardStore,
         authenticate = ::canCarry,
+        onChanged = syncEpoch::bump, // carry store grew → re-cue neighbors over the coordination plane
     )
 
     // Demand-driven recovery of a peer's key/profile: a frame dropped for a missing sender key (the
@@ -161,14 +163,18 @@ class MeshManager(
     // [adoptAdvertisedGroupPhoto]). The group analogue of [advertisedAvatars].
     private val advertisedGroupPhotos = ConcurrentHashMap<String, AdvertisedPhoto>()
 
-    /** Number of directly-connected neighbors, for the UI status header. */
+    /**
+     * Number of nearby peers for the UI status header — the smoothed [MeshTransport.reachable] set (seen
+     * over the coordination plane), not the ≤1 live data-path link, so the header doesn't blink as the
+     * cue-driven transport rotates through ephemeral syncs.
+     */
     val neighborCount: StateFlow<Int> =
-        transport.neighbors
+        transport.reachable
             .map { it.size }
             .stateIn(scope, SharingStarted.Eagerly, 0)
 
-    /** Currently-connected direct neighbors, for the contact picker (message someone on connect). */
-    val neighbors: StateFlow<Set<Peer>> get() = transport.neighbors
+    /** Nearby peers for the contact picker (message someone nearby) — the smoothed [MeshTransport.reachable] set. */
+    val neighbors: StateFlow<Set<Peer>> get() = transport.reachable
 
     /** Radio health for the Diagnostics screen (Healthy vs Degraded — e.g. radios seized by Quick Share). */
     val transportHealth: StateFlow<TransportHealth> get() = transport.health
@@ -445,10 +451,10 @@ class MeshManager(
             transport.neighbors.collect { current ->
                 val currentIds = current.map { it.nodeId }.toSet()
                 val newcomers = current.filter { it.nodeId !in known }
-                (known - currentIds).forEach { // forget departed peers
-                    sentAvatarHashes.remove(it)
-                    forwardSync.onNeighborRemoved(it)
-                }
+                // No departure cleanup: under the cue-driven transport a data-path link is ephemeral and
+                // reconnects on every sync, so we deliberately keep sentAvatarHashes and ForwardSync's
+                // offered-set (now TTL-bounded) across the flap — clearing them would re-push the whole
+                // backlog on each brief contact. A peer that truly leaves ages out of both by TTL.
                 known = currentIds
                 newcomers.forEach {
                     pushProfileTo(it)
@@ -472,6 +478,7 @@ class MeshManager(
                 .collect {
                     profileVersion = System.currentTimeMillis()
                     broadcastProfile()
+                    syncEpoch.bump() // our profile changed → re-cue neighbors so they pull it even if idle
                 }
         }
     }

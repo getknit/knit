@@ -54,8 +54,21 @@ data class ReceivedFile(
  */
 interface MeshTransport {
 
-    /** Currently-connected neighbors. */
+    /**
+     * Currently-connected neighbors — the peers we hold a live data-path link to *right now*. Under the
+     * Wi-Fi Aware cue-driven transport this is at most one and flaps as ephemeral syncs come and go, so it
+     * is the routing target for [send]/[sendFile] and the sync-on-contact hooks, **not** a UI signal; use
+     * [reachable] for "who's nearby".
+     */
     val neighbors: StateFlow<Set<Peer>>
+
+    /**
+     * Smoothed "who's nearby" set for the UI: peers seen recently over the coordination plane (discovery +
+     * cues), which does not require a data path — so it stays steady while [neighbors] flaps through
+     * ephemeral data-path syncs. Defaults to [neighbors] for transports (fakes, demo) that don't
+     * distinguish the two.
+     */
+    val reachable: StateFlow<Set<Peer>> get() = neighbors
 
     /** Coarse radio health (e.g. flips to [TransportHealth.Degraded] when Quick Share seizes the radios). */
     val health: StateFlow<TransportHealth>

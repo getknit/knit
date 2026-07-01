@@ -208,19 +208,20 @@ class ForwardSyncTest {
     // --- push on contact ---
 
     @Test
-    fun pushesCarriedDmsToNewcomerOnceUntilItDeparts() = runTest {
+    fun pushesCarriedDmToNewcomerOnceThenAgainOnlyAfterTheOfferTtl() = runTest {
         val transport = RecordingTransport()
-        val store = FakeForwardStore()
-        val sync = ForwardSync(transport, store, clock = { 0L })
+        val store = FakeForwardStore(ttlMs = 10 * 60_000L) // outlive the 5-min offer-dedup window
+        var now = 0L
+        val sync = ForwardSync(transport, store, clock = { now })
         val env = dm("m1", "a", "b")
         sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_SELF)
 
         sync.onNeighborAdded(Peer("b"))
-        sync.onNeighborAdded(Peer("b")) // memo: not re-offered on a re-emit/flap
+        sync.onNeighborAdded(Peer("b")) // re-add within the TTL (a link flap) → not re-offered
         assertEquals(listOf("m1"), transport.sent.map { it.first.frameId() })
 
-        sync.onNeighborRemoved("b")
-        sync.onNeighborAdded(Peer("b")) // memo cleared on departure → re-offered
+        now += 6 * 60_000L // past the 5-min offer-dedup TTL: the ephemeral link reconnected much later
+        sync.onNeighborAdded(Peer("b")) // TTL elapsed → offered again
         assertEquals(listOf("m1", "m1"), transport.sent.map { it.first.frameId() })
     }
 

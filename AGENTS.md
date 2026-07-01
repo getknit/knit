@@ -65,7 +65,8 @@ ui/            Compose screens (onboarding, chatlist, chat, contacts, profile) +
 mesh/          MeshTransport (interface) · MeshRouter (dedup + jittered/suppressed flood)
                · MeshManager (orchestrator) · MeshService (foreground service) · MeshMetrics
                · BlobExchange/BlobStore (content-addressed pull) · ForwardSync/ForwardStore
-               (store-and-forward DM + group + broadcast custody) · protocol/Wire.kt (CBOR Frame)
+               (store-and-forward DM + group + broadcast custody) · SyncEpoch + CueTracker (pure
+               anti-entropy for the cue plane) · protocol/Wire.kt (CBOR Frame)
 mesh/crypto/   E2E (Tink): MessageCrypto (per-msg seal/open) · PublicKeyBundle · MessageContent
                · AttachmentCrypto · SafetyNumber · VerifyPayload (pure, JVM-testable)
 mesh/wifiaware/ WifiAwareTransport (+ AwareFraming socket codec) — the ONLY place that imports
@@ -140,43 +141,48 @@ frames.
   which accepts a data path from **any** initiator over a single `ServerSocket`; all clients share it.
   Because an accept-any responder doesn't know who connected, the **initiator sends its advert as the
   first `AwareFraming.Type.HELLO` record** over the socket, and the responder reads it to identify the
-  peer. Tie-break still gives one link per pair (larger nodeId = client/initiator, smaller = server);
-  `discoveryLoop` drives client initiations to *all* eligible discovered peers (serialized), so a
-  connected device still links to more — a real multi-node mesh, not just pairs. The responder is anchored
-  to the publish session, so **only *subscribe* is ever re-armed** (publish/responder stay up), which also
-  respects the "restarting a session kills its NDPs" rule below.
-- **Wi-Fi Aware discovery is one-shot, and restarting a session KILLS its data paths — so re-discover
-  only when isolated, and keepalive live links.** Two hard-won facts, both from Pixel 7 + Pixel 9 testing:
-  (1) `onServiceDiscovered` fires **once** per subscribe session per peer — the framework never re-reports
-  a peer it already matched — so after a data path drops (`Software caused connection abort`), nothing
-  re-initiates on its own; the only lever to re-fire discovery is to **restart** publish/subscribe. But
-  (2) **closing a discovery session tears down the NDP `Network` anchored to it** on these chipsets — so
-  restarting sessions while a link is live *drops that live link*. (This bit us twice: the old
-  `rearmInstantMode`-on-screen-change dropped the first connection, then a re-discovery loop that re-armed
-  while connected dropped adjacent phones every ~30 s and left "link up but no messages" churn.) The
-  resolution in `WifiAwareTransport`: `discoveryLoop`/`rearmSubscribe()` restart **only the subscribe**
-  session (publish + its accept-any responder stay up, so live server-side links and discoverability are
-  untouched) and **only while isolated** (`peers.isEmpty()` — no client-side NDP to lose). To stop an
-  *idle* NDP between two stationary phones from being torn down by NAN's inactivity timeout, each socket
-  carries a periodic `AwareFraming.Type.KEEPALIVE` record (`KEEPALIVE_INTERVAL_MS`). Consequence to know:
-  a peer whose link drops while we still have *other* neighbors is re-linked only once it re-appears on the
-  live subscribe session (or we go isolated) — an accepted trade to never tear down healthy links.
-- **NDP data interfaces are scarce — serialize handshakes and time-box every `requestNetwork`.** A phone
-  has only 1–2 NAN *data interfaces*, so firing `requestNetwork` at several discovered peers at once
-  fails with `WifiAwareDataPathStMgr: ... NdpInfos[] - no interfaces available!` and wedges the radio.
-  Worse: the 3-arg `requestNetwork(request, cb, handler)` has **no timeout**, so a request that can't be
-  fulfilled stays pending *forever* — its `NetworkCallback` never unregisters and its interface
-  reservation never frees, so after a few failed attempts the node exhausts its interfaces and can never
-  connect again (observed: a Pixel 7 stuck in a `terminate: already terminated` loop, connecting to
-  nobody, while a Pixel 8+9 pair was fine). Two rules in `WifiAwareTransport`: (1) `beginConnect`
-  **serializes** — one in-flight handshake at a time (mirrors the old Nearby transport's serialized
-  `requestConnection`); (2) always use the **timeout** overload `requestNetwork(req, cb, handler,
-  HANDSHAKE_TIMEOUT_MS)` and clean up in `onUnavailable`, plus a short per-peer `CONNECT_BACKOFF_MS` so a
-  failed handshake yields to a *different* discovered peer instead of storming the same one.
-- **NDP slots are finite.** A radio sustains only a handful of concurrent data paths
-  (`getAvailableAwareResources().availableDataPathsCount`); the transport caps links at `MAX_LINKS` and
-  defers the rest (logged), serving a dense crowd in waves. Don't assume every discovered peer gets a
-  live socket at once.
+  peer. Tie-break gives one link per pair (larger nodeId = client/initiator, smaller = server). The
+  responder is anchored to the publish session, so **only *subscribe* is ever re-armed** (publish/responder
+  stay up), respecting the "one data interface" rule below.
+- **One NAN data interface (`maxNdiInterfaces == 1`) → one data path at a time → cue-driven ephemeral
+  sync.** The single hardest constraint, confirmed on Pixel 7/8/9 (`dumpsys wifiaware` →
+  `maxNdiInterfaces=1`): a node can hold an NDP to exactly **one** peer at once — a second data path to a
+  *different* peer is refused with `WifiAwareDataPathStMgr: ... NdpInfos[] - no interfaces available!`. So
+  the old "everyone links to everyone they're larger than" model can't work for 3+ nodes: the largest node
+  tries two initiator NDPs and strands the third phone (verified: Pixel 7, largest, couldn't reach Pixel 9
+  while linked to Pixel 8). `WifiAwareTransport` therefore runs **two planes**:
+  - **Coordination plane** — Wi-Fi Aware *messages* (`DiscoverySession.sendMessage` / `onMessageReceived`,
+    ~255 B, best-effort, `maxQueuedTransmitMessages=8`) ride discovery follow-up frames and need **no data
+    path**, so they reach every neighbor at once *and* keep working while the one NDP is busy. Each node
+    cues `nodeId|storeEpoch` — a `SyncEpoch` monotonic counter bumped on every carry-store / own-profile
+    write — and `CueTracker` (pure, JVM-tested) flags a peer *sync-wanted* when either side's epoch advanced
+    since the last sync. A cue also bootstraps the reverse handle, so a node whose own *subscribe* is broken
+    (e.g. Pixel 9 post-kill) still cues larger peers to pull from it.
+  - **Data plane** — one ephemeral NDP, brought up **only** when a peer is sync-wanted (the larger id
+    initiates, via the unchanged `initiateTo` + accept-any responder), drained by the existing
+    `onNeighborAdded` backfill, then torn down on **quiescence** (no data for `QUIESCENCE_MS`, never
+    mid-file) — freeing the NDI for the next pair. The initiator drives teardown and records the sync in
+    `CueTracker` (it alone consults it); the responder just sees the socket close, with a longer
+    `RESPONDER_MAX_HOLD_MS` safety cap for a dead initiator.
+
+  Net: an **idle mesh does zero data-path work** (just beacons + occasional cues); a new message triggers a
+  targeted sync with only the peers that need it; and everything stays delay-tolerant (store-and-forward
+  custody carries what one flood doesn't reach — a rotating series of pairwise syncs propagates
+  epidemically). Single-slot admission (`beginConnect`/`beginAccept`: at most one link/handshake/accept,
+  plus a `SETTLE_MS` gap after a link ends so the NDI is released before the next `requestNetwork`) keeps
+  the radio off the "no interfaces available" wedge. `discoveryLoop`/`rearmSubscribe()` re-fire one-shot
+  discovery **only while the slot is free** (never with a live NDP, whose client side rides the subscribe
+  session and would be dropped by a re-arm).
+- **`requestNetwork` with no timeout leaks the one interface forever — always time-box it.** The 3-arg
+  `requestNetwork(request, cb, handler)` has no timeout, so a request that can't be fulfilled stays pending
+  forever — its `NetworkCallback` never unregisters and its NDI reservation never frees, so the node
+  exhausts its single interface and can never connect again (observed: a Pixel 7 stuck in a
+  `terminate: already terminated` loop). Always use the **timeout** overload
+  `requestNetwork(req, cb, handler, HANDSHAKE_TIMEOUT_MS)`, clean up in `onUnavailable`, and back a failed
+  peer off (`CONNECT_BACKOFF_MS`) so a different sync-wanted peer gets the slot next. Note `neighbors` is the
+  ≤1 live link (send routing + the `onNeighborAdded` sync hooks); the **UI reads the smoothed `reachable`
+  set** (coordination-plane sightings, lingered `REACHABLE_LINGER_MS`) so it doesn't blink as ephemeral
+  syncs come and go.
 - **Wi-Fi Aware availability flaps, and may be absent entirely.** `WifiAwareManager.isAvailable()` goes
   false when Wi-Fi is off or Wi-Fi Direct / SoftAP / hotspot seizes the radio; the transport watches
   `ACTION_WIFI_AWARE_STATE_CHANGED`, flips `health` to `Degraded`, tears links down, and re-attaches on
