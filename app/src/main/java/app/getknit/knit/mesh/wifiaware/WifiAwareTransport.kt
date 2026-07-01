@@ -586,6 +586,7 @@ class WifiAwareTransport(
     /** A cue arrived from a peer: learn its handle+epoch, note it reachable, and wake the loop if diverged. */
     private fun onCueReceived(handle: PeerHandle, message: ByteArray, session: DiscoverySession?) {
         val sess = session ?: return
+        if (message.isNotEmpty() && message[0] == MSG_FRAME_TAG) { onFastFrame(message); return }
         val cue = parseCue(message) ?: return
         if (cue.nodeId == localNodeId) return
         val firstContact = cueTarget.put(cue.nodeId, CueTarget(handle, sess)) == null
@@ -615,6 +616,43 @@ class WifiAwareTransport(
         if (i <= 0) return null
         val version = s.substring(i + 1).toLongOrNull() ?: return null
         return Cue(s.substring(0, i), version)
+    }
+
+    /**
+     * Fast path (see [MeshTransport.fastFanout]): fan a small broadcast frame out to every neighbor over the
+     * coordination plane — one Wi-Fi Aware message each, **no data path** — so it lands near-instantly instead
+     * of waiting for a cue-driven pairwise NDP sync. Skips a frame that won't fit the message channel
+     * ([COORD_MSG_MAX]); those ride the normal data-path flood + store-and-forward instead. Tagged
+     * [MSG_FRAME_TAG] so the receiver ([onFastFrame]) tells it apart from a cue. Best-effort by design (the
+     * message channel can drop, like a cue); the reliable copy still arrives via flood/custody and is deduped.
+     */
+    override fun fastFanout(wire: WireEnvelope) {
+        if (!hasHardware) return
+        val bytes = WireCodec.encodeWire(wire)
+        if (bytes.size + 1 > COORD_MSG_MAX) return
+        val msg = ByteArray(bytes.size + 1).also { it[0] = MSG_FRAME_TAG; bytes.copyInto(it, 1) }
+        val targets = cueTarget.keys.toList()
+        Log.i(TAG, "fast-fanout ${bytes.size}B → ${targets.size} peers") // TEMP diag
+        targets.forEach { nodeId ->
+            val target = cueTarget[nodeId] ?: return@forEach
+            runCatching { target.session.sendMessage(target.handle, msgSeq.getAndIncrement(), msg) }
+                .onFailure { cueTarget.remove(nodeId) } // stale handle/session; refreshed on next discover/receive
+        }
+    }
+
+    /**
+     * A broadcast frame arrived over the coordination plane (tagged [MSG_FRAME_TAG] by a peer's [fastFanout]):
+     * decode it and inject it into the normal inbound path exactly like a data-path frame, so the router
+     * dedups, relays, and delivers it with no NDP. A later flood/custody copy is dropped by the receiver's
+     * SeenSet, so a dropped fast frame self-heals — the fast path is a latency win layered over the reliable one.
+     */
+    private fun onFastFrame(message: ByteArray) {
+        val wire = WireCodec.decodeWire(message.copyOfRange(1, message.size)) ?: return
+        val envelope = WireCodec.decodeEnvelope(wire.signed) ?: return
+        if (envelope.senderId == localNodeId) return // our own frame echoed back — ignore
+        Log.i(TAG, "fast-frame from ${envelope.senderId} id=${envelope.id}") // TEMP diag
+        noteReachable(Peer(envelope.senderId))
+        _inbound.tryEmit(InboundFrame(wire, envelope, envelope.senderId))
     }
 
     // --- Client side (initiator) ---
@@ -1289,6 +1327,17 @@ class WifiAwareTransport(
 
         // Separator in a cue's `nodeId|epoch` payload (nodeIds/epochs never contain it).
         const val CUE_SEP = '|'
+
+        // Coordination-plane message multiplexing. A cue is a plain "nodeId|version" text string whose first
+        // byte is a printable base64 nodeId char, so a single non-printable tag byte cleanly distinguishes the
+        // other kind of message: a small broadcast frame fanned out over the message channel (fastFanout /
+        // onFastFrame). Cues stay untagged (byte-for-byte unchanged), so only the new fast-path frame carries it.
+        const val MSG_FRAME_TAG: Byte = 0x01
+
+        // Max coordination-plane message the radio accepts (maxServiceSpecificInfoLen = 255 on Pixel 7/8/9, via
+        // dumpsys wifiaware). A frame plus its 1-byte tag must fit; a larger frame skips the fast path and rides
+        // the data-path flood + store-and-forward instead.
+        const val COORD_MSG_MAX = 255
 
         // Timeout for a client handshake (its requestNetwork timeout overload fires onUnavailable) so an
         // attempt that can't complete frees its slot vs. leaking the interface reservation forever.

@@ -554,6 +554,13 @@ class MeshManager(
         val wire = sign(env)
         router.originate(wire, env.id)
         forwardSync.onSeen(wire, env, ForwardStore.ORIGIN_SELF)
+        // Fast path: a broadcast-room chat frame small enough to ride the ~255 B coordination-plane message
+        // channel is *also* fanned out to every neighbor at once with no data path, so it arrives near-instantly
+        // instead of waiting for a cue-driven pairwise NDP sync. The transport gates on size (no-op if it won't
+        // fit) and the receiver's SeenSet dedups the copy that also comes over the flood/custody backstop.
+        // Broadcast-only for now: a DM/group frame carries wrapped keys and won't fit, and the room is plaintext
+        // so there's no per-recipient concern (see MeshTransport.fastFanout).
+        if (env.type == FrameType.CHAT && env.recipientId == null && env.group == null) transport.fastFanout(wire)
     }
 
     /** Sends a locally-built [env] to a single [peer] (targeted profile push), signed. */

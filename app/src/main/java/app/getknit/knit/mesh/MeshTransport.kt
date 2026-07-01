@@ -89,6 +89,17 @@ interface MeshTransport {
     /** Sends [wire] to one neighbor, or to all neighbors when [to] is null. */
     suspend fun send(wire: WireEnvelope, to: Peer? = null)
 
+    /**
+     * Best-effort **coordination-plane** fan-out of [wire] to every neighbor at once, with **no data path** —
+     * a fast path for a frame small enough to ride the tiny Wi-Fi Aware message channel (~255 B). Because it
+     * needs no NDP it reaches every neighbor simultaneously (the closest thing to a star on hardware capped at
+     * one data path at a time), instead of waiting for a cue-driven pairwise sync. The reliable path (the
+     * normal [send] flood + store-and-forward custody) always runs regardless; this only makes a small frame
+     * *also* arrive near-instantly, deduped by the receiver's [MeshRouter] SeenSet. Default no-op — only a
+     * transport with a message channel (Wi-Fi Aware) overrides it; the fakes ignore it.
+     */
+    fun fastFanout(wire: WireEnvelope) {}
+
     /** Sends a file (avatar or attachment) tagged with [meta] to a single neighbor. */
     suspend fun sendFile(file: File, to: Peer, meta: FileMeta)
 }
