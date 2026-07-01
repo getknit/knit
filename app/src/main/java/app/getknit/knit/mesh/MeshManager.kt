@@ -451,9 +451,11 @@ class MeshManager(
                 val currentIds = current.map { it.nodeId }.toSet()
                 val newcomers = current.filter { it.nodeId !in known }
                 // No departure cleanup: under the cue-driven transport a data-path link is ephemeral and
-                // reconnects on every sync, so we deliberately keep sentAvatarHashes and ForwardSync's
-                // offered-set (now TTL-bounded) across the flap — clearing them would re-push the whole
-                // backlog on each brief contact. A peer that truly leaves ages out of both by TTL.
+                // reconnects on every sync, so we deliberately keep sentAvatarHashes across the flap —
+                // clearing it would re-push every avatar on each brief contact. A peer that truly leaves
+                // ages out by TTL. (ForwardSync, by contrast, *does* re-offer its whole carried set on each
+                // join now: the digest gate makes a fresh link mean the stores differ, so re-pushing is how
+                // an offer lost to a torn-down link self-heals — see ForwardSync.onNeighborAdded.)
                 known = currentIds
                 newcomers.forEach {
                     pushProfileTo(it)

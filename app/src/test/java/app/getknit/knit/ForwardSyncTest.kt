@@ -208,21 +208,21 @@ class ForwardSyncTest {
     // --- push on contact ---
 
     @Test
-    fun pushesCarriedDmToNewcomerOnceThenAgainOnlyAfterTheOfferTtl() = runTest {
+    fun reOffersCarriedDmOnEveryNeighborAddSoALostOfferSelfHeals() = runTest {
         val transport = RecordingTransport()
-        val store = FakeForwardStore(ttlMs = 10 * 60_000L) // outlive the 5-min offer-dedup window
-        var now = 0L
-        val sync = ForwardSync(transport, store, clock = { now })
+        val store = FakeForwardStore(ttlMs = 10 * 60_000L)
+        val sync = ForwardSync(transport, store, clock = { 0L })
         val env = dm("m1", "a", "b")
         sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_SELF)
 
+        // A data-path link only forms when the digest gate says the two stores differ, so each fresh
+        // neighbor-add re-offers the carried set: an offer lost to a torn-down ephemeral link self-heals
+        // on the next contact (seconds) rather than stalling for a dedup timer. A duplicate that did land
+        // is dropped by the receiver's own SeenSet, so re-offering only ever costs bytes.
         sync.onNeighborAdded(Peer("b"))
-        sync.onNeighborAdded(Peer("b")) // re-add within the TTL (a link flap) → not re-offered
-        assertEquals(listOf("m1"), transport.sent.map { it.first.frameId() })
-
-        now += 6 * 60_000L // past the 5-min offer-dedup TTL: the ephemeral link reconnected much later
-        sync.onNeighborAdded(Peer("b")) // TTL elapsed → offered again
-        assertEquals(listOf("m1", "m1"), transport.sent.map { it.first.frameId() })
+        sync.onNeighborAdded(Peer("b"))
+        sync.onNeighborAdded(Peer("b"))
+        assertEquals(listOf("m1", "m1", "m1"), transport.sent.map { it.first.frameId() })
     }
 
     @Test
