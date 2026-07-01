@@ -33,6 +33,10 @@ interface ForwardDao {
     @Query("SELECT COUNT(*) FROM forward_store")
     suspend fun count(): Int
 
+    /** Every carried frame id — the source for (re)building the [app.getknit.knit.mesh.StoreDigest] content digest. */
+    @Query("SELECT id FROM forward_store")
+    suspend fun allIds(): List<String>
+
     /** How many carried frames a single [senderId] accounts for — enforces the per-sender quota. */
     @Query("SELECT COUNT(*) FROM forward_store WHERE senderId = :senderId")
     suspend fun countBySender(senderId: String): Int

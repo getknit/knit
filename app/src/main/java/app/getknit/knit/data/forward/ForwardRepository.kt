@@ -2,6 +2,7 @@ package app.getknit.knit.data.forward
 
 import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.ForwardStore
+import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.WireCodec
 
 /**
@@ -20,6 +21,9 @@ import app.getknit.knit.mesh.protocol.WireCodec
  */
 class ForwardRepository(
     private val dao: ForwardDao,
+    // Content digest of the carried set; kept in lockstep with the table so the transport can cue it and skip
+    // no-op syncs. Maintained here (the one place that sees every mutation) rather than in the pure ForwardSync.
+    private val digest: StoreDigest,
     private val ttlMs: Long = DEFAULT_TTL_MS,
     private val broadcastTtlMs: Long = DEFAULT_BROADCAST_TTL_MS,
     private val maxRows: Int = DEFAULT_MAX_ROWS,
@@ -53,8 +57,12 @@ class ForwardRepository(
                 expiresAt = now + if (isBroadcast) broadcastTtlMs else ttlMs,
             ),
         )
+        digest.add(env.id)
         val overflow = dao.count() - maxRows
-        if (overflow > 0) dao.evictOldest(overflow)
+        if (overflow > 0) {
+            dao.evictOldest(overflow)
+            digest.setMessages(dao.allIds()) // eviction removed unknown ids → rebuild wholesale
+        }
     }
 
     override suspend fun liveFrames(now: Long): List<CarriedFrame> =
@@ -66,9 +74,18 @@ class ForwardRepository(
 
     override suspend fun has(id: String): Boolean = dao.exists(id)
 
-    override suspend fun remove(id: String) = dao.delete(id)
+    override suspend fun remove(id: String) {
+        dao.delete(id)
+        digest.remove(id)
+    }
 
-    override suspend fun sweepExpired(now: Long): Int = dao.deleteExpired(now)
+    override suspend fun sweepExpired(now: Long): Int {
+        val removed = dao.deleteExpired(now)
+        // Runs at startup, periodically, and on heartbeat — also our reliable point to (re)sync the digest to
+        // the table (initialises it after a restart, and reconciles any drift from eviction).
+        digest.setMessages(dao.allIds())
+        return removed
+    }
 
     private companion object {
         /** Carry a DM/group message for at most 24h before the TTL sweep reclaims it. */

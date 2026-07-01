@@ -63,6 +63,7 @@ val appModule = module {
     // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, imageModerator, groupDao.
     single { BlobRepository(get(), get(), get(), get(), get(), get(), get()) }
     single { GroupRepository(get(), get(), get()) }
-    // Store-and-forward custody for DMs, backed by the encrypted forward_store table.
-    single<ForwardStore> { ForwardRepository(get()) }
+    // Store-and-forward custody for DMs, backed by the encrypted forward_store table. Takes the shared
+    // StoreDigest (from meshModule) so every carry-store mutation keeps the cue-plane content digest in sync.
+    single<ForwardStore> { ForwardRepository(get(), get()) }
 }

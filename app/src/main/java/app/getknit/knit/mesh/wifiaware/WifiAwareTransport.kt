@@ -27,7 +27,7 @@ import android.os.HandlerThread
 import android.os.SystemClock
 import android.util.Log
 import app.getknit.knit.identity.Identity
-import app.getknit.knit.mesh.CueTracker
+import app.getknit.knit.mesh.DigestTracker
 import app.getknit.knit.mesh.DropReason
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.FileMeta
@@ -36,7 +36,7 @@ import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
-import app.getknit.knit.mesh.SyncEpoch
+import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.isValidBlobHash
 import app.getknit.knit.mesh.power.PowerStateSource
@@ -101,14 +101,15 @@ import java.util.concurrent.atomic.AtomicInteger
  * missing, so the Aware calls are marked [SuppressLint] for "MissingPermission".
  */
 @SuppressLint("MissingPermission")
-@Suppress("TooManyFunctions") // a transport is inherently many small methods (lifecycle, discovery, sockets, files, cues)
+// A transport is inherently many small methods (lifecycle, discovery, sockets, files, cues) and one big class.
+@Suppress("TooManyFunctions", "LargeClass")
 class WifiAwareTransport(
     context: Context,
     private val identity: Identity,
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
     private val powerState: PowerStateSource,
-    private val syncEpoch: SyncEpoch,
+    private val storeDigest: StoreDigest,
 ) : MeshTransport {
 
     private val appContext = context.applicationContext
@@ -182,7 +183,7 @@ class WifiAwareTransport(
     private var accepting = false
 
     // Anti-entropy state for the cue plane: each peer's advertised epoch + our last-synced watermarks.
-    private val cueTracker = CueTracker()
+    private val digestTracker = DigestTracker()
 
     // nodeId -> where to send a cue (a PeerHandle valid on a specific discovery session). Populated from
     // discovery (subscribe handle) and from inbound cues (the session the message arrived on — which is how
@@ -213,7 +214,7 @@ class WifiAwareTransport(
     // peer can't pull our fresh message; re-attaching refreshes the responder. Without this, a node that
     // already synced once this session silently can't share anything new (verified: a just-composed broadcast
     // stranded on its author while a larger peer retried the pull in vain).
-    @Volatile private var epochAtLastLink = 0L
+    @Volatile private var versionAtLastLink = 0L
     @Volatile private var unsharedSince = 0L
 
     // elapsedRealtime of the last subscribe re-arm (to re-discover a peer whose handle staled), rate-limited
@@ -250,8 +251,8 @@ class WifiAwareTransport(
             // Re-cue neighbors the moment our syncable state changes (a message/profile), so they can pull it,
             // and wake the loop so it can notice if that new state stays unshared (a wedged responder).
             cueJob = scope.launch {
-                syncEpoch.state.drop(1).collect {
-                    if (syncEpoch.state.value > epochAtLastLink && unsharedSince == 0L) {
+                storeDigest.version.drop(1).collect {
+                    if (storeDigest.version.value != versionAtLastLink && unsharedSince == 0L) {
                         unsharedSince = SystemClock.elapsedRealtime()
                     }
                     cueAll()
@@ -276,18 +277,18 @@ class WifiAwareTransport(
 
     /** Temporary diagnostic: dump the connection-engine decision state so an idle-but-unsynced mesh is visible. */
     private fun logState() {
-        val e = syncEpoch.state.value
+        val v = storeDigest.version.value
         val now = SystemClock.elapsedRealtime()
         val disc: Set<String>
         val backoff: Map<String, Long>
         synchronized(lock) { disc = discovered.keys.toSet(); backoff = retryAfter.toMap() }
         val cues = cueTarget.keys.toSet()
-        val wanted = cues.filter { localNodeId > it && cueTracker.syncWanted(it, e) }
+        val wanted = cues.filter { localNodeId > it && digestTracker.reconcileWanted(it, v) }
         val initiable = wanted.filter { it in disc && (backoff[it]?.let { t -> now >= t } ?: true) }
         Log.i(
             TAG,
-            "state epoch=$e live=${peers.keys} disc=$disc cue=$cues wanted=$wanted " +
-                "initiable=$initiable reach=${_reachable.value.map { it.nodeId }} tracker[${cueTracker.debug()}]",
+            "state ver=$v live=${peers.keys} disc=$disc cue=$cues wanted=$wanted " +
+                "initiable=$initiable reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}]",
         )
     }
 
@@ -309,7 +310,7 @@ class WifiAwareTransport(
         attaching.set(false)
         subscribing.set(false)
         lastLinkEndedAt = 0L
-        epochAtLastLink = 0L
+        versionAtLastLink = 0L
         unsharedSince = 0L
         synchronized(lock) {
             inFlight.clear(); discovered.clear(); retryAfter.clear(); connectFailures.clear(); accepting = false
@@ -317,7 +318,7 @@ class WifiAwareTransport(
         cueTarget.clear()
         lastSeenAt.clear()
         reachablePeers.clear()
-        cueTracker.clear()
+        digestTracker.clear()
         _neighbors.value = emptySet()
         _reachable.value = emptySet()
     }
@@ -473,7 +474,7 @@ class WifiAwareTransport(
                 // client per session); a full re-attach refreshes it so the data can flow. Rate-limited.
                 shareStuck() && now - lastReattachAt > REATTACH_COOLDOWN_MS -> {
                     lastReattachAt = now
-                    Log.w(TAG, "re-attaching to share stuck data (epoch=${syncEpoch.state.value} > shared=$epochAtLastLink)")
+                    Log.w(TAG, "re-attaching to share stuck data (ver=${storeDigest.version.value} != shared=$versionAtLastLink)")
                     reattach()
                 }
                 else -> Unit
@@ -495,13 +496,13 @@ class WifiAwareTransport(
      * [needsRediscovery] re-arming subscribe. Returns true if it started a handshake.
      */
     private fun driveSync(): Boolean {
-        val localEpoch = syncEpoch.state.value
+        val localEpoch = storeDigest.version.value
         val now = SystemClock.elapsedRealtime()
         val target = synchronized(lock) {
             discovered.entries.firstOrNull { (nodeId, _) ->
                 localNodeId > nodeId && nodeId !in peers.keys &&
                     (retryAfter[nodeId]?.let { now >= it } ?: true) &&
-                    cueTracker.syncWanted(nodeId, localEpoch)
+                    digestTracker.reconcileWanted(nodeId, localEpoch)
             }?.let { it.key to it.value }
         } ?: return false
         initiateTo(target.first, target.second.advert, target.second.peerHandle)
@@ -518,7 +519,7 @@ class WifiAwareTransport(
      */
     private fun needsRediscovery(): Boolean {
         if (cueTarget.isEmpty()) return true
-        val localEpoch = syncEpoch.state.value
+        val localEpoch = storeDigest.version.value
         val disc = synchronized(lock) { discovered.keys.toSet() }
         // A peer we hear cues from (alive, nearby), want to sync, are the initiator for, yet hold no subscribe
         // handle for — either never discovered, or its handle just fast-failed and failConnect dropped it
@@ -526,7 +527,7 @@ class WifiAwareTransport(
         // churn on the normal fight for the single NDI.
         return cueTarget.keys.any { nodeId ->
             localNodeId > nodeId && nodeId !in peers.keys && nodeId !in disc &&
-                cueTracker.syncWanted(nodeId, localEpoch)
+                digestTracker.reconcileWanted(nodeId, localEpoch)
         }
     }
 
@@ -539,18 +540,18 @@ class WifiAwareTransport(
      */
     private fun shareStuck(): Boolean =
         _reachable.value.isNotEmpty() && unsharedSince != 0L &&
-            syncEpoch.state.value > epochAtLastLink &&
+            storeDigest.version.value != versionAtLastLink &&
             SystemClock.elapsedRealtime() - unsharedSince > SHARE_STUCK_MS
 
     private fun rediscoverDelayMs(): Long {
         // Tick soon while a sync is still owed (a sync-wanted peer we initiate to, maybe backed off / busy)
         // so we retry promptly; hunt aggressively when we know of nobody; otherwise relax (a cue with a new
         // epoch wakes us via healSignal). Doubled when screen-off on battery.
-        val localEpoch = syncEpoch.state.value
+        val localEpoch = storeDigest.version.value
         val base = when {
             cueTarget.isEmpty() -> REDISCOVER_LONELY_MS // blind (no cue targets) → rediscover / recover fast
-            syncEpoch.state.value > epochAtLastLink -> SYNC_RETRY_IDLE_MS // unshared data → re-check share-stuck promptly
-            cueTarget.keys.any { localNodeId > it && cueTracker.syncWanted(it, localEpoch) } -> SYNC_RETRY_IDLE_MS
+            storeDigest.version.value != versionAtLastLink -> SYNC_RETRY_IDLE_MS // unshared data → re-check share-stuck promptly
+            cueTarget.keys.any { localNodeId > it && digestTracker.reconcileWanted(it, localEpoch) } -> SYNC_RETRY_IDLE_MS
             else -> REDISCOVER_IDLE_MS
         }
         val power = powerState.state.value
@@ -630,7 +631,7 @@ class WifiAwareTransport(
         if (cue.nodeId == localNodeId) return
         val firstContact = cueTarget.put(cue.nodeId, CueTarget(handle, sess)) == null
         noteReachable(Peer(cue.nodeId))
-        if (cueTracker.onCue(cue.nodeId, cue.epoch)) healSignal.trySend(Unit) // became sync-wanted
+        if (digestTracker.onCue(cue.nodeId, cue.version)) healSignal.trySend(Unit) // became reconcile-wanted
         // Cue back exactly once on first contact so the peer learns our epoch (a pure responder whose own
         // subscribe is down bootstraps its reverse-direction handle here). Not a reply to every cue → no
         // ping-pong; steady state is covered by discovery, epoch-change, and heartbeat cues.
@@ -645,16 +646,16 @@ class WifiAwareTransport(
 
     private fun cueAll() = cueTarget.keys.toList().forEach { sendCue(it) }
 
-    private fun encodeCue(): ByteArray = "$localNodeId$CUE_SEP${syncEpoch.state.value}".encodeToByteArray()
+    private fun encodeCue(): ByteArray = "$localNodeId$CUE_SEP${storeDigest.version.value}".encodeToByteArray()
 
-    private data class Cue(val nodeId: String, val epoch: Long)
+    private data class Cue(val nodeId: String, val version: Long)
 
     private fun parseCue(bytes: ByteArray): Cue? {
         val s = runCatching { bytes.decodeToString() }.getOrNull() ?: return null
         val i = s.lastIndexOf(CUE_SEP)
         if (i <= 0) return null
-        val epoch = s.substring(i + 1).toLongOrNull() ?: return null
-        return Cue(s.substring(0, i), epoch)
+        val version = s.substring(i + 1).toLongOrNull() ?: return null
+        return Cue(s.substring(0, i), version)
     }
 
     // --- Client side (initiator) ---
@@ -778,6 +779,7 @@ class WifiAwareTransport(
         Log.i(TAG, "responder listening on port ${ss.localPort}")
     }
 
+    @Suppress("LoopWithTooManyJumpStatements") // accept → admit-or-close is naturally break+continue
     private fun acceptLoop(ss: ServerSocket) {
         while (scope.isActive && !ss.isClosed) {
             val socket = runCatching { ss.accept() }.getOrNull() ?: break
@@ -837,7 +839,6 @@ class WifiAwareTransport(
         val now = SystemClock.elapsedRealtime()
         conn.linkStartedAt = now
         conn.lastActivityAt = now // start the quiescence window at link-up (backfill will extend it)
-        conn.startLocalEpoch = syncEpoch.state.value
         val prev = peers.put(peerNodeId, conn)
         prev?.close() // a stale link to the same peer (shouldn't happen, but never leak it)
         synchronized(lock) { inFlight.remove(peerNodeId); retryAfter.remove(peerNodeId); connectFailures.remove(peerNodeId) }
@@ -860,6 +861,7 @@ class WifiAwareTransport(
      * [PeerConn.lastActivityAt] is touched on both read and write, so an idle window means *neither* side has
      * more to send — a premature teardown just re-triggers on the next cue.
      */
+    @Suppress("LoopWithTooManyJumpStatements") // poll → skip-mid-file (continue) or done (break)
     private suspend fun superviseLink(conn: PeerConn) {
         val isInitiator = conn.networkCallback != null
         while (scope.isActive && peers[conn.nodeId] === conn) {
@@ -871,9 +873,10 @@ class WifiAwareTransport(
             val done = if (isInitiator) idle >= QUIESCENCE_MS || held >= SYNC_MAX_WINDOW_MS
             else idle >= RESPONDER_QUIESCENCE_MS || held >= RESPONDER_MAX_HOLD_MS
             if (done) {
-                // Record the sync at the epoch as of link-up: anything ingested during the link re-triggers a
-                // fresh sync (never marks it delivered without having pushed it). Initiator-only — see kdoc.
-                if (isInitiator) cueTracker.onSynced(conn.nodeId, conn.startLocalEpoch)
+                // Record the sync at our *post-backfill* digest: if we gained nothing new after ingesting the
+                // peer's data, our version now equals theirs and the pair stays quiet (the identical-digest
+                // skip); if we later gain something, the version moves and re-triggers. Initiator-only — see kdoc.
+                if (isInitiator) digestTracker.onReconciled(conn.nodeId, storeDigest.version.value)
                 Log.i(TAG, "sync with ${conn.nodeId} done (initiator=$isInitiator idle=${idle}ms held=${held}ms) — disconnecting")
                 teardownPeer(conn.nodeId, backoffMs = 0) // clean sync: no anti-churn backoff needed
                 break
@@ -927,7 +930,7 @@ class WifiAwareTransport(
         // A link that lasted long enough to run the backfill carried our state to that peer: mark everything
         // up to now shared, so the share-stuck watchdog doesn't re-attach over data that did propagate.
         if (SystemClock.elapsedRealtime() - conn.linkStartedAt > MIN_SHARE_LINK_MS) {
-            epochAtLastLink = syncEpoch.state.value
+            versionAtLastLink = storeDigest.version.value
             unsharedSince = 0L
         }
         noteLinkEnded()
@@ -1013,6 +1016,7 @@ class WifiAwareTransport(
         }
     }
 
+    @Suppress("NestedBlockDepth") // header → (drain frames → read chunk → write chunk) loop → end
     private fun streamFile(conn: PeerConn, out: OutputStream, item: Outbound.FileSend) {
         conn.txInProgress = true // don't let the supervisor tear down mid transfer
         try {
@@ -1192,7 +1196,6 @@ class WifiAwareTransport(
         // Quiescence bookkeeping for the per-link supervisor (elapsedRealtime).
         @Volatile var linkStartedAt = 0L
         @Volatile var lastActivityAt = 0L
-        @Volatile var startLocalEpoch = 0L
         @Volatile var rxInProgress = false
         @Volatile var txInProgress = false
 
@@ -1305,9 +1308,10 @@ class WifiAwareTransport(
     private companion object {
         const val TAG = "WifiAwareTransport"
 
-        // The NAN service both nodes publish/subscribe. Reuses the ".v2" wire-break marker so a build
-        // that predates a future coordinated wire break hard-partitions rather than silently misdecodes.
-        const val SERVICE_NAME = "app.getknit.knit.MESH.v2"
+        // The NAN service both nodes publish/subscribe. Bumped to ".v3" for the cue-format change (the cue now
+        // carries a content-digest version, not a monotone epoch counter — a v2 node would misread it), so a
+        // build across the break hard-partitions at discovery rather than silently mis-deciding syncs.
+        const val SERVICE_NAME = "app.getknit.knit.MESH.v3"
 
         // Fixed app-wide passphrase for link-layer (NDP) encryption. Real authentication is the per-frame
         // Ed25519 signature + E2E layer above the transport; this only keeps the data path off open air.

@@ -8,7 +8,7 @@ import app.getknit.knit.mesh.DemoTransport
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
-import app.getknit.knit.mesh.SyncEpoch
+import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.wifiaware.WifiAwareTransport
 import app.getknit.knit.mesh.power.PowerMonitor
@@ -24,10 +24,10 @@ val meshModule = module {
     // Application-lifetime scope for the mesh engine.
     single<CoroutineScope> { CoroutineScope(SupervisorJob() + Dispatchers.Default) }
     single { MeshMetrics() }
-    // Monotonic version of this node's syncable state; shared between MeshManager (bumps it on store/
-    // profile writes) and WifiAwareTransport (cues it to neighbors) — a singleton so neither has to
-    // construct the other (MeshManager already depends on the transport).
-    single { SyncEpoch() }
+    // Content digest of this node's syncable state; shared between the forward-store impl (maintains the
+    // message set), MeshManager (folds in profile changes), and WifiAwareTransport (cues it to neighbors) —
+    // a singleton so none has to construct the other (MeshManager already depends on the transport).
+    single { StoreDigest() }
     // Tracks screen/charge/battery state and feeds it to the transport's discovery duty cycle.
     single { PowerStateSource() }
     single { PowerMonitor(androidContext(), get()) }
@@ -45,11 +45,11 @@ val meshModule = module {
         MessageCrypto(keys.hybridPrivate, keys.sigPrivate)
     }
     // Constructor order: transport, messages, groups, reactions, peers, identity, settings, blobs,
-    // blobStore, forwardStore, notifier, textModeration, messageCrypto, scope, metrics, syncEpoch.
+    // blobStore, forwardStore, notifier, textModeration, messageCrypto, scope, metrics.
     single {
         MeshManager(
             get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(),
-            get(), get(), get(),
+            get(), get(),
         )
     }
 }

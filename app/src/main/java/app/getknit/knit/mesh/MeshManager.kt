@@ -90,7 +90,6 @@ class MeshManager(
     private val messageCrypto: MessageCrypto,
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
-    private val syncEpoch: SyncEpoch,
 ) {
     // Reconstructed per session so its inbound collector + relay jobs live on the session scope and
     // are cancelled by stop() (rather than leaking on the never-cancelled app scope).
@@ -122,7 +121,7 @@ class MeshManager(
         transport = transport,
         store = forwardStore,
         authenticate = ::canCarry,
-        onChanged = syncEpoch::bump, // carry store grew → re-cue neighbors over the coordination plane
+        // (The carry store grew → the store impl folds the id into StoreDigest, whose version change re-cues.)
     )
 
     // Demand-driven recovery of a peer's key/profile: a frame dropped for a missing sender key (the
@@ -478,7 +477,6 @@ class MeshManager(
                 .collect {
                     profileVersion = System.currentTimeMillis()
                     broadcastProfile()
-                    syncEpoch.bump() // our profile changed → re-cue neighbors so they pull it even if idle
                 }
         }
     }
