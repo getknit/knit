@@ -72,6 +72,16 @@
             </intent-filter>
         </activity>
 
+        <!-- ZXing's CaptureActivity (QR identity scanner) is declared android:screenOrientation="sensorLandscape"
+             in the library manifest, which forces the scanner into landscape. We scan with
+             setOrientationLocked(false) (ProfileDetailsScreen), so ZXing leaves the manifest orientation in
+             force rather than pinning the current one — override it to fullUser so the scanner opens in the
+             device's current orientation (typically portrait) and still rotates to landscape per auto-rotate. -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="fullUser"
+            tools:replace="android:screenOrientation" />
+
         <service
             android:name=".mesh.MeshService"
             android:exported="false"
