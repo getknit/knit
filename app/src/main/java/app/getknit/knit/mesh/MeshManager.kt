@@ -143,11 +143,6 @@ class MeshManager(
     @Volatile
     private var started = false
 
-    // Bumped when this device's profile changes; part of the profile frame id so a changed profile
-    // re-floods while an unchanged one dedups at peers that already have it.
-    @Volatile
-    private var profileVersion = 0L
-
     // nodeId -> avatar hash we last sent that neighbor, so we don't re-push an unchanged avatar on
     // every profile edit or reconnect. Cleared per-peer when they disconnect (see watchNeighbors).
     private val sentAvatarHashes = ConcurrentHashMap<String, String>()
@@ -181,7 +176,6 @@ class MeshManager(
     fun start() {
         if (started) return
         started = true
-        profileVersion = System.currentTimeMillis()
         blobStore.clearTransfers() // drop any plaintext transfer temp files left by a previous session
         // Child of the app Job so app-scope cancellation still propagates; SupervisorJob isolates a
         // single collector's failure from the rest of the session.
@@ -477,7 +471,9 @@ class MeshManager(
                 // re-emits would broadcast more than once. Also drops no-op saves.
                 .distinctUntilChanged()
                 .collect {
-                    profileVersion = System.currentTimeMillis()
+                    // Monotonic bump, persisted: a version that's stable across restarts is what keeps a
+                    // custodied profile from minting a new frame every launch (see SettingsStore.profileVersion).
+                    settings.setProfileVersion(maxOf(System.currentTimeMillis(), settings.profileVersion.first() + 1))
                     broadcastProfile()
                 }
         }
@@ -496,7 +492,14 @@ class MeshManager(
     }
 
     private suspend fun pushProfileTo(peer: Peer) {
-        sendOwnSigned(currentProfileEnvelope(), peer)
+        val env = currentProfileEnvelope()
+        val wire = sign(env)
+        // Custody our own profile (ORIGIN_SELF), exactly as a peer that receives it carries it (ORIGIN_RELAY).
+        // Without this our store is permanently missing our own profile while every peer holds it, so the
+        // store-and-forward digests never converge and the mesh churns NDPs forever. Idempotent on the (now
+        // persisted, restart-stable) version, so repeated connects don't re-store it.
+        forwardSync.onSeen(wire, env, ForwardStore.ORIGIN_SELF)
+        router.sendOwn(wire, env.id, peer)
         sendAvatarIfNeeded(peer)
     }
 
@@ -523,6 +526,9 @@ class MeshManager(
 
     private suspend fun currentProfileEnvelope(): RelayEnvelope {
         val me = identity.nodeId()
+        // Persisted, so the profile frame's id + sentAt are stable across restarts — an unchanged profile
+        // re-broadcasts as the *same* custodied frame instead of a new one, letting the digests converge.
+        val version = settings.profileVersion.first()
         val content = ProfileContent(
             // Normalize/cap defensively: covers legacy values stored before the field gained a cap and
             // the rare process-death-before-the-blur-commit case, so peers never receive an oversized name.
@@ -536,9 +542,9 @@ class MeshManager(
         )
         return RelayEnvelope(
             type = FrameType.PROFILE,
-            id = "profile-$me-$profileVersion",
+            id = "profile-$me-$version",
             senderId = me,
-            sentAt = profileVersion,
+            sentAt = version,
             payload = WireCodec.encodePayload(content),
         )
     }
@@ -574,10 +580,6 @@ class MeshManager(
         FrameType.CHAT -> env.recipientId == null && env.group == null // broadcast room only (DM/group are E2E)
         else -> FrameType.isCustodial(env.type) // reaction/receipt/group-*/profile; blobreq/keyreq excluded
     }
-
-    /** Sends a locally-built [env] to a single [peer] (targeted profile push), signed. */
-    private suspend fun sendOwnSigned(env: RelayEnvelope, peer: Peer) =
-        router.sendOwn(sign(env), env.id, peer)
 
     /**
      * Wraps [env] in a signed [WireEnvelope]: the canonical envelope bytes plus our raw Ed25519 signature

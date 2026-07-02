@@ -591,7 +591,15 @@ class WifiAwareTransport(
         if (cue.nodeId == localNodeId) return
         val firstContact = cueTarget.put(cue.nodeId, CueTarget(handle, sess)) == null
         noteReachable(Peer(cue.nodeId))
-        if (digestTracker.onCue(cue.nodeId, cue.version)) healSignal.trySend(Unit) // became reconcile-wanted
+        // The peer's digest moved, so a sync *may* be wanted — but wake the loop only after a short settle. A
+        // broadcast fast-fanout cues its new epoch and pushes the frame back-to-back; if we reacted to the cue
+        // immediately we'd bring up a redundant NDP that churns the coordination plane (dropping the receipts
+        // riding it) just as the fast-frame is about to arrive and converge our digest (DigestTracker's
+        // identical-digest skip → no sync). Deferring lets the fast path win the race; the NDP still fires after
+        // the settle for data the fast-fanout genuinely missed, or a message too big to fan out.
+        if (digestTracker.onCue(cue.nodeId, cue.version)) {
+            scope.launch { delay(CUE_SETTLE_MS); healSignal.trySend(Unit) }
+        }
         // Cue back exactly once on first contact so the peer learns our epoch (a pure responder whose own
         // subscribe is down bootstraps its reverse-direction handle here). Not a reply to every cue → no
         // ping-pong; steady state is covered by discovery, epoch-change, and heartbeat cues.
@@ -1392,6 +1400,12 @@ class WifiAwareTransport(
         // Gap after a link/handshake ends before the next requestNetwork, so the framework releases the one
         // NDI first (else "no interfaces available"). Mirrors RESPONDER_REARM_MS.
         const val SETTLE_MS = 1_500L
+
+        // Wait this long after a peer's cue advances its digest before waking the sync loop, so a broadcast
+        // fast-fanout racing the cue can deliver + carry the frame and converge the digest first — turning the
+        // NDP sync into a fallback for genuinely-missed data instead of a reflex that fights the fanout for the
+        // coordination plane. Short: the cue and the fast-frame are sent back-to-back, so they arrive within it.
+        const val CUE_SETTLE_MS = 600L
 
         // Idle discovery-loop cadence: aggressive when we know of nobody (re-fire one-shot discovery), long
         // once we've discovered/heard peers (a cue with a new epoch wakes us via healSignal). ×2 screen-off.
