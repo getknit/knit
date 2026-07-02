@@ -207,6 +207,14 @@
     <string name="diagnostics_scan_now">Scan for nearby devices</string>
     <string name="diagnostics_mesh_restarted">Mesh restarted</string>
     <string name="diagnostics_scanning">Scanning for nearby devices…</string>
+    <string name="diagnostics_transports">Transports</string>
+    <string name="diagnostics_none_transports">No active transports</string>
+    <string name="diagnostics_transport_bluetooth">Bluetooth</string>
+    <string name="diagnostics_transport_wifi_aware">Wi-Fi Aware</string>
+    <string name="diagnostics_transport_other">Other</string>
+    <string name="diagnostics_transport_counts">%1$d nearby · %2$d linked</string>
+    <string name="diagnostics_tag_ble">BLE</string>
+    <string name="diagnostics_tag_nan">NAN</string>
 
     <!-- Generic actions / content descriptions -->
     <string name="action_send">Send</string>

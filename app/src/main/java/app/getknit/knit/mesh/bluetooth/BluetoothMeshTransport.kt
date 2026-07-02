@@ -25,6 +25,7 @@ import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.link.FramedLink
 import app.getknit.knit.mesh.link.LinkCallbacks
 import app.getknit.knit.mesh.link.LinkHandshake
@@ -120,6 +121,8 @@ class BluetoothMeshTransport(
 
     private val _incomingDigests = MutableSharedFlow<ReceivedDigest>(extraBufferCapacity = 32)
     override val incomingDigests = _incomingDigests.asSharedFlow()
+
+    override val kind = TransportKind.Bluetooth
 
     private lateinit var localNodeId: String
 

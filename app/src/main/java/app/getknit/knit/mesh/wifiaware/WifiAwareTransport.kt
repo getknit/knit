@@ -39,6 +39,7 @@ import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.link.FramedLink
 import app.getknit.knit.mesh.link.LinkCallbacks
 import app.getknit.knit.mesh.link.LinkHandshake
@@ -147,6 +148,8 @@ class WifiAwareTransport(
     // Wi-Fi Aware has a coordination-plane message channel (cues/fastFanout), so the composite routes the
     // fast-path (fastFanout/fastSend) here; a Bluetooth sibling with only persistent links leaves this false.
     override val hasFastPlane = true
+
+    override val kind = TransportKind.WifiAware
 
     // Aware + connectivity callbacks are delivered on this dedicated thread's handler.
     private val callbackThread = HandlerThread("wifi-aware-cb").apply { start() }

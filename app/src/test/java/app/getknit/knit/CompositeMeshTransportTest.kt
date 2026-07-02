@@ -9,6 +9,8 @@ import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.TransportKind
+import app.getknit.knit.mesh.TransportStatus
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -28,7 +30,10 @@ import java.io.File
 class CompositeMeshTransportTest {
 
     /** A controllable child transport that records what the composite routes to it. */
-    private class FakeChild(override val hasFastPlane: Boolean = false) : MeshTransport {
+    private class FakeChild(
+        override val hasFastPlane: Boolean = false,
+        override val kind: TransportKind = TransportKind.Other,
+    ) : MeshTransport {
         private val _neighbors = MutableStateFlow<Set<Peer>>(emptySet())
         override val neighbors = _neighbors.asStateFlow()
         private val _reachable = MutableStateFlow<Set<Peer>>(emptySet())
@@ -270,6 +275,57 @@ class CompositeMeshTransportTest {
         bt.setNeighbors(Peer("p")) // q drops off BLE
         advanceUntilIdle()
         assertEquals("q resumes on NAN once it leaves the preferred plane", setOf("p"), nan.suppressCalls.last())
+    }
+
+    @Test
+    fun statusesReportPerChildKindHealthAndCounts() = runTest(UnconfinedTestDispatcher()) {
+        val bt = FakeChild(kind = TransportKind.Bluetooth)
+        val nan = FakeChild(hasFastPlane = true, kind = TransportKind.WifiAware)
+        val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+        bt.setNeighbors(Peer("p"), Peer("q")) // 2 live links
+        bt.setReachable(Peer("p"), Peer("q"), Peer("r")) // 3 nearby
+        nan.setNeighbors(Peer("x")) // 1 live link
+        nan.setReachable(Peer("x"), Peer("y")) // 2 nearby
+        nan.setHealth(TransportHealth.Degraded)
+        advanceUntilIdle()
+
+        val statuses = composite.statuses.value
+        assertEquals(
+            "one entry per child, in preference order",
+            listOf(TransportKind.Bluetooth, TransportKind.WifiAware),
+            statuses.map { it.kind },
+        )
+        assertEquals(
+            TransportStatus(TransportKind.Bluetooth, TransportHealth.Healthy, linked = 2, nearby = 3),
+            statuses.first { it.kind == TransportKind.Bluetooth },
+        )
+        assertEquals(
+            TransportStatus(TransportKind.WifiAware, TransportHealth.Degraded, linked = 1, nearby = 2),
+            statuses.first { it.kind == TransportKind.WifiAware },
+        )
+    }
+
+    @Test
+    fun peerTransportsTagEachNodeByTheRadiosItIsReachableOver() = runTest(UnconfinedTestDispatcher()) {
+        val bt = FakeChild(kind = TransportKind.Bluetooth)
+        val nan = FakeChild(kind = TransportKind.WifiAware)
+        val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+        // Keyed off reachable (not neighbors), matching the "directly connected" classification.
+        bt.setReachable(Peer("both"), Peer("bleOnly"))
+        nan.setReachable(Peer("both"), Peer("nanOnly"))
+        advanceUntilIdle()
+
+        val map = composite.peerTransports.value
+        assertEquals(setOf(TransportKind.Bluetooth, TransportKind.WifiAware), map["both"])
+        assertEquals(setOf(TransportKind.Bluetooth), map["bleOnly"])
+        assertEquals(setOf(TransportKind.WifiAware), map["nanOnly"])
+    }
+
+    @Test
+    fun statusesAndPeerTransportsAreEmptyWithNoChildren() = runTest(UnconfinedTestDispatcher()) {
+        val composite = CompositeMeshTransport(emptyList(), backgroundScope)
+        assertEquals(emptyList<TransportStatus>(), composite.statuses.value)
+        assertEquals(emptyMap<String, Set<TransportKind>>(), composite.peerTransports.value)
     }
 
     private fun envelope(id: String, senderId: String) =

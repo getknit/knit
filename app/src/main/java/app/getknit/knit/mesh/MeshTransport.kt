@@ -24,6 +24,25 @@ data class Peer(val nodeId: String, val protoVersion: Int = 0, val capabilities:
 enum class TransportHealth { Healthy, Degraded }
 
 /**
+ * Which physical radio a [MeshTransport] drives. Used only for diagnostics — [CompositeMeshTransport] tags
+ * each child so the Diagnostics screen can attribute a peer/count to Bluetooth vs Wi-Fi Aware. [Other] is the
+ * default for fakes / the demo transport, which have no real radio.
+ */
+enum class TransportKind { Bluetooth, WifiAware, Other }
+
+/**
+ * A per-radio status line for the Diagnostics screen, produced by [CompositeMeshTransport.statuses]. [linked]
+ * is the count of live data-path links right now (≤1 for Wi-Fi Aware's ephemeral NDP, up to the link budget
+ * for Bluetooth); [nearby] is the smoothed coordination-plane [MeshTransport.reachable] count.
+ */
+data class TransportStatus(
+    val kind: TransportKind,
+    val health: TransportHealth,
+    val linked: Int,
+    val nearby: Int,
+)
+
+/**
  * A frame received from a neighbor: the verbatim [wire] (its [WireEnvelope.signed]/[WireEnvelope.sig]
  * are forwarded byte-for-byte on relay) plus the already-decoded [envelope] (so the router and delivery
  * paths don't each re-decode it), tagged with the neighbor it arrived from.
@@ -87,6 +106,13 @@ interface MeshTransport {
      * (Bluetooth) leaves this false: for it, a normal [send] over its live links *is* the fast path.
      */
     val hasFastPlane: Boolean get() = false
+
+    /**
+     * Which physical radio this transport is, for the Diagnostics screen — so a merged
+     * [CompositeMeshTransport] can attribute peers and counts to Bluetooth vs Wi-Fi Aware. Defaults to
+     * [TransportKind.Other]; only the real radio transports override it.
+     */
+    val kind: TransportKind get() = TransportKind.Other
 
     /** Frames received from neighbors (after transport-level decode, before mesh dedup/relay). */
     val inbound: Flow<InboundFrame>

@@ -173,6 +173,24 @@ class MeshManager(
     /** Radio health for the Diagnostics screen (Healthy vs Degraded — e.g. radios seized by Quick Share). */
     val transportHealth: StateFlow<TransportHealth> get() = transport.health
 
+    /**
+     * Per-radio status for the Diagnostics screen (Bluetooth vs Wi-Fi Aware: health + live-link/nearby counts),
+     * so the merged [transportHealth]/[neighbors] can be broken back out by plane. In production the transport is
+     * always a [CompositeMeshTransport]; the fallback describes a single non-composite transport (demo/fakes) as
+     * one entry.
+     */
+    val transportStatuses: StateFlow<List<TransportStatus>> =
+        (transport as? CompositeMeshTransport)?.statuses
+            ?: combine(transport.neighbors, transport.reachable, transport.health) { linked, nearby, health ->
+                listOf(TransportStatus(transport.kind, health, linked.size, nearby.size))
+            }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /** nodeId → the radios each node is reachable over, so Diagnostics can tag a connected node BLE / NAN. */
+    val peerTransports: StateFlow<Map<String, Set<TransportKind>>> =
+        (transport as? CompositeMeshTransport)?.peerTransports
+            ?: transport.reachable.map { set -> set.associate { it.nodeId to setOf(transport.kind) } }
+                .stateIn(scope, SharingStarted.Eagerly, emptyMap())
+
     fun start() {
         if (started) return
         started = true

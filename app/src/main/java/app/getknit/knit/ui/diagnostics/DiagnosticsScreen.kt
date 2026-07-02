@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.RestartAlt
@@ -48,6 +49,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.TransportKind
+import app.getknit.knit.mesh.TransportStatus
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.util.compactTimeAgo
@@ -113,6 +116,9 @@ fun DiagnosticsScreen(
                     onScan = viewModel::rescan,
                 )
             }
+
+            item { SectionHeader(stringResource(R.string.diagnostics_transports)) }
+            item { TransportsSection(state.transports) }
 
             item { SectionHeader(stringResource(R.string.diagnostics_metrics)) }
             item { MetricsSection(state.metrics) }
@@ -242,6 +248,80 @@ private fun MetricRow(label: String, value: String) {
 }
 
 @Composable
+private fun TransportsSection(statuses: List<TransportStatus>) {
+    if (statuses.isEmpty()) {
+        EmptyLine(stringResource(R.string.diagnostics_none_transports))
+        return
+    }
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        statuses.forEach { TransportRow(it) }
+    }
+}
+
+@Composable
+private fun TransportRow(status: TransportStatus) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Health dot mirrors the mesh-controls colors: tertiary when Healthy, error when Degraded.
+        val dotColor = if (status.health == TransportHealth.Healthy) {
+            MaterialTheme.colorScheme.tertiary
+        } else {
+            MaterialTheme.colorScheme.error
+        }
+        Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(dotColor))
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = transportName(status.kind),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = stringResource(R.string.diagnostics_transport_counts, status.nearby, status.linked),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun transportName(kind: TransportKind): String = stringResource(
+    when (kind) {
+        TransportKind.Bluetooth -> R.string.diagnostics_transport_bluetooth
+        TransportKind.WifiAware -> R.string.diagnostics_transport_wifi_aware
+        TransportKind.Other -> R.string.diagnostics_transport_other
+    },
+)
+
+/** BLE / NAN / BLE·NAN for a connected node, or null when it isn't reachable over a tagged radio. */
+@Composable
+private fun transportTag(transports: Set<TransportKind>): String? {
+    val ble = stringResource(R.string.diagnostics_tag_ble)
+    val nan = stringResource(R.string.diagnostics_tag_nan)
+    val parts = buildList {
+        if (TransportKind.Bluetooth in transports) add(ble)
+        if (TransportKind.WifiAware in transports) add(nan)
+    }
+    return parts.joinToString("·").ifEmpty { null }
+}
+
+@Composable
+private fun TransportTag(label: String) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Medium,
+        color = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = Modifier
+            .clip(RoundedCornerShape(4.dp))
+            .background(MaterialTheme.colorScheme.secondaryContainer)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    )
+}
+
+@Composable
 private fun NodeRow(node: NodeInfo, now: Long) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
@@ -265,12 +345,13 @@ private fun NodeRow(node: NodeInfo, now: Long) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        node.profileUpdatedAt?.let { updatedAt ->
+        val tag = transportTag(node.transports)
+        val age = node.profileUpdatedAt?.let { compactTimeAgo(it, now) }
+        tag?.let { TransportTag(it) }
+        if (tag != null && age != null) Spacer(Modifier.width(8.dp))
+        age?.let {
             Text(
-                text = stringResource(
-                    R.string.diagnostics_profile_age,
-                    compactTimeAgo(updatedAt, now),
-                ),
+                text = stringResource(R.string.diagnostics_profile_age, it),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -351,6 +432,17 @@ fun MetricsSectionEmptyPreview() = KnitPreview {
 
 @Preview(showBackground = true)
 @Composable
+fun TransportsSectionPreview() = KnitPreview {
+    TransportsSection(
+        statuses = listOf(
+            TransportStatus(TransportKind.Bluetooth, TransportHealth.Healthy, linked = 3, nearby = 5),
+            TransportStatus(TransportKind.WifiAware, TransportHealth.Healthy, linked = 1, nearby = 4),
+        ),
+    )
+}
+
+@Preview(showBackground = true)
+@Composable
 fun NodeRowDirectPreview() = KnitPreview {
     NodeRow(
         node = NodeInfo(
@@ -358,6 +450,7 @@ fun NodeRowDirectPreview() = KnitPreview {
             displayName = "Ada Lovelace",
             direct = true,
             profileUpdatedAt = PREVIEW_NOW - 3 * 60_000L,
+            transports = setOf(TransportKind.Bluetooth, TransportKind.WifiAware),
         ),
         now = PREVIEW_NOW,
     )

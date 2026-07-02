@@ -74,6 +74,43 @@ class CompositeMeshTransport(
             }.stateIn(scope, SharingStarted.Eagerly, TransportHealth.Healthy)
         }
 
+    /**
+     * A per-radio status line for each child, in preference order (Bluetooth first) — the Diagnostics screen's
+     * window into the individual planes that [neighbors]/[reachable]/[health] otherwise merge away. Read-only;
+     * derived purely from the children's existing flows, so it never perturbs routing.
+     */
+    val statuses: StateFlow<List<TransportStatus>> =
+        if (children.isEmpty()) {
+            MutableStateFlow(emptyList())
+        } else {
+            combine(
+                children.map { child ->
+                    combine(child.neighbors, child.reachable, child.health) { linked, nearby, health ->
+                        TransportStatus(child.kind, health, linked.size, nearby.size)
+                    }
+                },
+            ) { it.toList() }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+        }
+
+    /**
+     * nodeId → the set of radios it's currently reachable over, so the Diagnostics screen can tag a connected
+     * node BLE / NAN / both. Keyed off each child's [reachable] (not [neighbors]) to match the "directly
+     * connected" classification, which reads the smoothed [reachable] set, and to avoid Wi-Fi Aware's ≤1
+     * flapping live-link set.
+     */
+    val peerTransports: StateFlow<Map<String, Set<TransportKind>>> =
+        if (children.isEmpty()) {
+            MutableStateFlow(emptyMap())
+        } else {
+            combine(children.map { it.reachable }) { sets ->
+                val byNode = HashMap<String, MutableSet<TransportKind>>()
+                children.forEachIndexed { i, child ->
+                    sets[i].forEach { byNode.getOrPut(it.nodeId) { mutableSetOf() }.add(child.kind) }
+                }
+                byNode.mapValues { it.value.toSet() }
+            }.stateIn(scope, SharingStarted.Eagerly, emptyMap())
+        }
+
     override val inbound: Flow<InboundFrame> =
         if (children.isEmpty()) emptyFlow() else children.map { it.inbound }.merge()
 

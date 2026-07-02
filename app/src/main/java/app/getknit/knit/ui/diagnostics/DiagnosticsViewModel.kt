@@ -10,6 +10,8 @@ import app.getknit.knit.R
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.TransportKind
+import app.getknit.knit.mesh.TransportStatus
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -29,6 +31,8 @@ data class NodeInfo(
     val direct: Boolean,
     // When this node's cached profile was last updated (millis); null if we've never received one.
     val profileUpdatedAt: Long?,
+    // Which radios this node is currently reachable over (BLE / NAN); empty for relay-only nodes.
+    val transports: Set<TransportKind> = emptySet(),
 )
 
 data class DiagnosticsUiState(
@@ -37,6 +41,15 @@ data class DiagnosticsUiState(
     val directNodes: List<NodeInfo> = emptyList(),
     val relayNodes: List<NodeInfo> = emptyList(),
     val metrics: MeshMetrics.Snapshot = MeshMetrics.Snapshot(0, 0, 0, 0, 0, 0),
+    // Per-radio status (Bluetooth vs Wi-Fi Aware), one entry per active transport.
+    val transports: List<TransportStatus> = emptyList(),
+)
+
+/** The three flows folded into the [DiagnosticsViewModel.state] combine's fifth slot (combine tops out at 5). */
+private data class DiagExtras(
+    val metrics: MeshMetrics.Snapshot,
+    val statuses: List<TransportStatus>,
+    val peerTransports: Map<String, Set<TransportKind>>,
 )
 
 /**
@@ -87,13 +100,21 @@ class DiagnosticsViewModel(
         }
     }
 
+    // Metrics + per-transport status + per-peer transport map, pre-combined so the main [state] combine stays
+    // within its five-source limit.
+    private val extras: Flow<DiagExtras> = combine(
+        metricsTicker,
+        meshManager.transportStatuses,
+        meshManager.peerTransports,
+    ) { snapshot, statuses, peerTransports -> DiagExtras(snapshot, statuses, peerTransports) }
+
     val state: StateFlow<DiagnosticsUiState> = combine(
         peers.observePeers(),
         meshManager.neighbors,
         myNodeId,
         settings.displayName,
-        metricsTicker,
-    ) { peerList, neighbors, me, myName, snapshot ->
+        extras,
+    ) { peerList, neighbors, me, myName, extra ->
         val online = neighbors.map { it.nodeId }.toSet()
         val byNode = peerList.associateBy { it.nodeId }
         val nodeIds = (peerList.map { it.nodeId } + online).toSet() - setOfNotNull(me)
@@ -103,6 +124,7 @@ class DiagnosticsViewModel(
                 displayName = displayNameFor(byNode[id]?.name, id),
                 direct = id in online,
                 profileUpdatedAt = byNode[id]?.updatedAt?.takeIf { it > 0L },
+                transports = extra.peerTransports[id].orEmpty(),
             )
         }
         DiagnosticsUiState(
@@ -110,7 +132,8 @@ class DiagnosticsViewModel(
             myName = displayNameFor(myName, me.orEmpty()),
             directNodes = nodes.filter { it.direct }.sortedBy { it.displayName.lowercase() },
             relayNodes = nodes.filterNot { it.direct }.sortedBy { it.displayName.lowercase() },
-            metrics = snapshot,
+            metrics = extra.metrics,
+            transports = extra.statuses,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DiagnosticsUiState())
 
