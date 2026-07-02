@@ -108,6 +108,17 @@ interface MeshTransport {
     /** Hints the transport to rescan / reconnect now (e.g. after device motion or a heartbeat). */
     fun heal()
 
+    /**
+     * Hints that [peers] (by nodeId) are currently served by a **higher-preference** plane, so this transport
+     * should not spend an on-demand data-path sync bringing up its own link to them — the other plane already
+     * carries their data. It still relays/floods over any link it does hold and stays discoverable; only the
+     * cue-driven sync is suppressed. When a peer leaves the set (loses the other plane), syncing to it resumes.
+     * Driven by [CompositeMeshTransport] from the higher-preference children's live links. Default no-op — only
+     * a transport with a scarce on-demand data path (Wi-Fi Aware) overrides it; link-based/fake transports and
+     * the always-linked Bluetooth plane ignore it.
+     */
+    fun suppressDataPath(peers: Set<String>) {}
+
     /** Sends [wire] to one neighbor, or to all neighbors when [to] is null. */
     suspend fun send(wire: WireEnvelope, to: Peer? = null)
 

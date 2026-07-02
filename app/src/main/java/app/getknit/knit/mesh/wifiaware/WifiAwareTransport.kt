@@ -211,6 +211,12 @@ class WifiAwareTransport(
     // Anti-entropy state for the cue plane: each peer's advertised digest version + our last-synced version.
     private val digestTracker = DigestTracker()
 
+    // Peers currently served by a higher-preference plane (Bluetooth), pushed by CompositeMeshTransport: we
+    // don't bring up an NDP sync to them (BLE carries their data) until they drop off it. Volatile — written
+    // from the composite's collector, read on the discovery/handler threads.
+    @Volatile
+    private var suppressed: Set<String> = emptySet()
+
     // nodeId -> where to send a cue (a PeerHandle valid on a specific discovery session). Populated from
     // discovery (subscribe handle) and from inbound cues (the session the message arrived on — which is how
     // a pure responder, whose own subscribe is down, still learns a handle to cue larger peers back).
@@ -313,7 +319,7 @@ class WifiAwareTransport(
         val backoff: Map<String, Long>
         synchronized(lock) { disc = discovered.keys.toSet(); backoff = retryAfter.toMap() }
         val cues = cueTarget.keys.toSet()
-        val wanted = cues.filter { localNodeId > it && digestTracker.reconcileWanted(it, v) }
+        val wanted = cues.filter { localNodeId > it && syncWanted(it, v) }
         val initiable = wanted.filter { it in disc && (backoff[it]?.let { t -> now >= t } ?: true) }
         Log.i(
             TAG,
@@ -325,7 +331,7 @@ class WifiAwareTransport(
     /** True if any reachable peer's advertised digest differs from ours — a sync is owed (in either direction). */
     private fun anySyncOwed(): Boolean {
         val v = storeDigest.version.value
-        return cueTarget.keys.any { digestTracker.reconcileWanted(it, v) }
+        return cueTarget.keys.any { syncWanted(it, v) }
     }
 
     /**
@@ -388,6 +394,13 @@ class WifiAwareTransport(
 
     override fun heal() {
         if (!hasHardware) return
+        healSignal.trySend(Unit)
+    }
+
+    override fun suppressDataPath(peers: Set<String>) {
+        if (peers == suppressed) return
+        suppressed = peers
+        // A peer just became Bluetooth-covered (skip syncing it) or dropped off (resume) — re-evaluate now.
         healSignal.trySend(Unit)
     }
 
@@ -598,6 +611,18 @@ class WifiAwareTransport(
         synchronized(lock) { peers.isNotEmpty() || inFlight.isNotEmpty() || accepting }
 
     /**
+     * Whether an on-demand NDP sync to [nodeId] is worth bringing up: its advertised digest differs from ours
+     * ([DigestTracker.reconcileWanted]) **and** it isn't already covered by a higher-preference plane. When the
+     * composite reports [nodeId] as Bluetooth-linked (see [suppressDataPath]), BLE carries its data, so we spend
+     * our single NDP elsewhere; the moment it drops off Bluetooth it's no longer [suppressed] and syncing to it
+     * resumes. This gate is applied at every sync-decision site (drive/rediscover/linger/wedge), so a
+     * BLE-covered peer never counts as a sync we owe — which also stops the wedge watchdog from ever firing on a
+     * "sync" the other plane is quietly handling.
+     */
+    private fun syncWanted(nodeId: String, localVersion: Long): Boolean =
+        nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion)
+
+    /**
      * Brings up an NDP to the next peer we're the initiator for (`localNodeId > nodeId`, the tie-break), not
      * yet linked, not backing off, and **sync-wanted** per [DigestTracker]. The handle comes from [discovered] —
      * a **subscribe**-session handle — because on these chipsets only a subscribe handle can initiate a data
@@ -613,7 +638,7 @@ class WifiAwareTransport(
             discovered.entries.firstOrNull { (nodeId, _) ->
                 localNodeId > nodeId && nodeId !in peers.keys &&
                     (retryAfter[nodeId]?.let { now >= it } ?: true) &&
-                    digestTracker.reconcileWanted(nodeId, localVersion)
+                    syncWanted(nodeId, localVersion)
             }?.let { it.key to it.value }
         } ?: return false
         initiateTo(target.first, target.second.advert, target.second.peerHandle)
@@ -638,7 +663,7 @@ class WifiAwareTransport(
         // churn on the normal fight for the single NDI.
         return cueTarget.keys.any { nodeId ->
             localNodeId > nodeId && nodeId !in peers.keys && nodeId !in disc &&
-                digestTracker.reconcileWanted(nodeId, localVersion)
+                syncWanted(nodeId, localVersion)
         }
     }
 
@@ -655,7 +680,7 @@ class WifiAwareTransport(
         val localVersion = storeDigest.version.value
         val base = when {
             cueTarget.isEmpty() -> REDISCOVER_LONELY_MS // blind (no cue targets) → rediscover / recover fast
-            cueTarget.keys.any { localNodeId > it && digestTracker.reconcileWanted(it, localVersion) } -> SYNC_RETRY_IDLE_MS
+            cueTarget.keys.any { localNodeId > it && syncWanted(it, localVersion) } -> SYNC_RETRY_IDLE_MS
             else -> REDISCOVER_IDLE_MS
         }
         val power = powerState.state.value
@@ -1064,7 +1089,7 @@ class WifiAwareTransport(
     private fun otherSyncWanted(current: String): Boolean {
         val localVersion = storeDigest.version.value
         return cueTarget.keys.any { nodeId ->
-            nodeId != current && localNodeId > nodeId && digestTracker.reconcileWanted(nodeId, localVersion)
+            nodeId != current && localNodeId > nodeId && syncWanted(nodeId, localVersion)
         }
     }
 

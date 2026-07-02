@@ -83,6 +83,24 @@ class CompositeMeshTransport(
     override val incomingDigests: Flow<ReceivedDigest> =
         if (children.isEmpty()) emptyFlow() else children.map { it.incomingDigests }.merge()
 
+    init {
+        // Suppress the on-demand data-path sync in a lower-preference child for any peer a higher-preference
+        // child already holds a **live link** to — e.g. don't run a Wi-Fi Aware NDP sync to a peer that's on a
+        // Bluetooth link, since it gets its data over Bluetooth. Recomputed whenever any child's live-link set
+        // changes, so a peer that drops off the preferred plane is un-suppressed and the fallback plane resumes.
+        if (children.size > 1) {
+            scope.launch {
+                combine(children.map { it.neighbors }) { it }.collect { sets ->
+                    for (i in children.indices) {
+                        val covered = HashSet<String>()
+                        for (j in 0 until i) sets[j].forEach { covered.add(it.nodeId) }
+                        children[i].suppressDataPath(covered)
+                    }
+                }
+            }
+        }
+    }
+
     override fun start() {
         children.forEach { it.start() }
     }

@@ -47,6 +47,7 @@ class CompositeMeshTransportTest {
         val sentDigests = mutableListOf<Pair<Peer, List<String>>>()
         val fastFanouts = mutableListOf<WireEnvelope>()
         val fastSends = mutableListOf<Peer>()
+        val suppressCalls = mutableListOf<Set<String>>()
         var starts = 0
         var stops = 0
         var heals = 0
@@ -54,6 +55,7 @@ class CompositeMeshTransportTest {
         override fun start() { starts++ }
         override fun stop() { stops++ }
         override fun heal() { heals++ }
+        override fun suppressDataPath(peers: Set<String>) { suppressCalls += peers }
         override suspend fun send(wire: WireEnvelope, to: Peer?) { sends += wire to to }
         override fun fastFanout(wire: WireEnvelope) { fastFanouts += wire }
         override fun fastSend(wire: WireEnvelope, to: Peer) { fastSends += to }
@@ -253,6 +255,21 @@ class CompositeMeshTransportTest {
         assertEquals(setOf("p"), composite.neighbors.value.map { it.nodeId }.toSet())
         composite.send(wire(), Peer("p"))
         assertEquals(1, only.sends.size)
+    }
+
+    @Test
+    fun suppressesLowerPreferenceSyncForPeersHeldByHigherPreferenceChild() = runTest(UnconfinedTestDispatcher()) {
+        val bt = FakeChild() // index 0 — higher preference
+        val nan = FakeChild() // index 1 — lower preference
+        CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+        bt.setNeighbors(Peer("p"), Peer("q")) // BLE holds live links to p and q
+        advanceUntilIdle()
+        assertEquals("NAN suppresses the BLE-covered peers", setOf("p", "q"), nan.suppressCalls.last())
+        assertTrue("nothing is higher-preference than BT, so it suppresses nothing", bt.suppressCalls.all { it.isEmpty() })
+
+        bt.setNeighbors(Peer("p")) // q drops off BLE
+        advanceUntilIdle()
+        assertEquals("q resumes on NAN once it leaves the preferred plane", setOf("p"), nan.suppressCalls.last())
     }
 
     private fun envelope(id: String, senderId: String) =
