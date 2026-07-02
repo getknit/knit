@@ -57,7 +57,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.TextLimits
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.FullscreenImageViewer
 import app.getknit.knit.ui.components.GroupAvatar
+import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.profile.AvatarCropDialog
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
@@ -82,6 +84,7 @@ fun GroupDetailsScreen(
     var menuOpen by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var showLeaveConfirm by remember { mutableStateOf(false) }
+    var showPhotoFullscreen by remember { mutableStateOf(false) }
 
     // Leaving tombstones the group and deletes its messages; pop back past the chat once it persists.
     LaunchedEffect(Unit) {
@@ -167,7 +170,15 @@ fun GroupDetailsScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            GroupAvatar(photoHash = state.photoHash, size = 96.dp)
+            // Tappable only when a custom photo is set: the default people glyph has nothing to enlarge,
+            // so onClick stays null and GroupAvatar renders non-interactive (no ripple / no touch target).
+            GroupAvatar(
+                photoHash = state.photoHash,
+                size = 96.dp,
+                contentDescription = if (state.photoHash != null) state.title else null,
+                onClickLabel = stringResource(R.string.group_details_view_photo),
+                onClick = if (state.photoHash != null) ({ showPhotoFullscreen = true }) else null,
+            )
 
             Text(
                 text = state.title,
@@ -200,6 +211,15 @@ fun GroupDetailsScreen(
                 }
             }
         }
+    }
+
+    if (showPhotoFullscreen && state.photoHash != null) {
+        FullscreenImageViewer(
+            model = BlobImage(state.photoHash!!),
+            contentDescription = stringResource(R.string.chat_image_viewer_desc),
+            title = state.title,
+            onDismiss = { showPhotoFullscreen = false },
+        )
     }
 
     if (showRenameDialog) {

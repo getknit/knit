@@ -101,6 +101,7 @@
     <string name="chat_group_member_left">%1$s left the chat</string>
     <string name="group_details_title">Group info</string>
     <string name="group_details_members">Members</string>
+    <string name="group_details_view_photo">View photo</string>
     <string name="blocked_users_title">Blocked users</string>
     <string name="blocked_users_empty">No blocked users</string>
     <string name="blocked_users_unblock">Unblock</string>
