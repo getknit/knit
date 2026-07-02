@@ -52,11 +52,22 @@ class AttachmentStore(private val context: Context, private val blobs: BlobRepos
             val bitmap = decodeOrientedBounded(context, uri, MAX_DIMENSION)
                 ?: return@withContext IngestResult.Failed
             val scaled = downscale(bitmap, MAX_DIMENSION)
-            val jpeg = ByteArrayOutputStream().use { out ->
-                scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
-                out.toByteArray()
+            // JPEG has no alpha channel, so a transparent PNG would flatten its transparent regions to
+            // black. When the source carries transparency, re-encode as lossy WebP instead — it keeps
+            // the alpha channel and still compresses well; opaque photos stay JPEG (smallest).
+            if (scaled.hasAlpha()) {
+                val webp = ByteArrayOutputStream().use { out ->
+                    scaled.compress(Bitmap.CompressFormat.WEBP_LOSSY, WEBP_QUALITY, out)
+                    out.toByteArray()
+                }
+                "image/webp" to webp
+            } else {
+                val jpeg = ByteArrayOutputStream().use { out ->
+                    scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+                    out.toByteArray()
+                }
+                "image/jpeg" to jpeg
             }
-            "image/jpeg" to jpeg
         }
         if (bytes.isEmpty() || bytes.size > MAX_BYTES) return@withContext IngestResult.Failed
         // Screen the exact bytes we store and transmit (decoded at the receiver's bound), so the
@@ -75,6 +86,7 @@ class AttachmentStore(private val context: Context, private val blobs: BlobRepos
     private companion object {
         const val MAX_DIMENSION = 1280
         const val JPEG_QUALITY = 85
+        const val WEBP_QUALITY = 85
         const val MAX_BYTES = 8 * 1024 * 1024 // 8 MiB cap (mostly bounds verbatim GIFs)
     }
 }
