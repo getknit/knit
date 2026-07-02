@@ -273,6 +273,17 @@ the message can strand on its author until a share-stuck re-attach.
     heartbeats). `REACHABLE_LINGER_MS` (150 s) < `WEDGE_RESTART_MS` (180 s), so a peer that goes *silent* can
     never sustain a full owed-while-reachable window, while a genuine leaked-request wedge keeps the peer
     cueing us over the NDP-free coordination plane, stays reachable, and still trips the restart.
+  - **Stale-`cueTarget` root cause reaped (2026-07-02).** The ghost the watchdog fix defends against also
+    caused real churn on the *other* side: `cueTarget` was only ever pruned when a *cue send threw*, which a
+    best-effort cue to an out-of-range peer never does — so a departed peer's cue handle, `reachablePeers`
+    entry, and `DigestTracker` digest lingered forever, despite `needsRediscovery`'s doc asserting "a truly-gone
+    peer is pruned within a heartbeat." Left stale, an **initiator** (larger id) fast-ticks (`SYNC_RETRY_IDLE_MS`
+    3 s) and re-arms subscribe (`needsRediscovery`) hunting the ghost, and every node heartbeat-cues it every
+    `CUE_HEARTBEAT_MS`. **Fix:** a `pruneAbsentPeers()` staleness backstop, run from the cue heartbeat on the
+    handler thread (so it serializes with the `onDiscovered`/`onCueReceived` add sites), reaps any peer with no
+    live link and no coordination-plane sighting within `REACHABLE_LINGER_MS`; a reappearing peer is re-added
+    normally and correctly re-syncs. This makes reality match the "gone peers are pruned" claim the engine
+    already relied on, and complements the watchdog gate (which covers the 150–180 s window before the reap).
   - Unit tests + `assembleDebug` + detekt green.
 
 ## Wire / compat

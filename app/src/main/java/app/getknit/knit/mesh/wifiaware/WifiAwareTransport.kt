@@ -292,11 +292,13 @@ class WifiAwareTransport(
             cueJob = scope.launch {
                 storeDigest.version.drop(1).collect { cueAll(); healSignal.trySend(Unit) }
             }
-            // Heartbeat cue covers best-effort message loss + a peer that hasn't discovered us yet.
+            // Heartbeat cue covers best-effort message loss + a peer that hasn't discovered us yet. It also
+            // reaps peers that have gone silent (see [pruneAbsentPeers]) first, on the handler thread so the
+            // prune serializes with the onDiscovered/onCueReceived add sites and never races a fresh cue.
             cueHeartbeatJob = scope.launch {
                 while (scope.isActive) {
                     delay(CUE_HEARTBEAT_MS)
-                    cueAll()
+                    onHandler { pruneAbsentPeers(); cueAll() }
                 }
             }
             diagJob = scope.launch {
@@ -667,8 +669,9 @@ class WifiAwareTransport(
      * cues from (so it's alive and nearby) is sync-wanted and we're its initiator, yet we can't initiate to it
      * — we hold no fresh **subscribe** handle for it (never discovered, or it restarted and our handle keeps
      * failing, so it's backing off). Re-arming subscribe ([rearmSubscribe] clears + refetches [discovered])
-     * gets a fresh handle. Rate-limited by [REARM_COOLDOWN_MS] so a truly-gone peer (whose cue target is
-     * pruned within a heartbeat once our cues to it fail) can't spin subscribe into its wedge state.
+     * gets a fresh handle. Rate-limited by [REARM_COOLDOWN_MS] so a truly-gone peer — whose cue target
+     * [pruneAbsentPeers] reaps after [REACHABLE_LINGER_MS] of silence — can't spin subscribe into its wedge
+     * state past that bounded window.
      */
     private fun needsRediscovery(): Boolean {
         if (cueTarget.isEmpty()) return true
@@ -1230,6 +1233,30 @@ class WifiAwareTransport(
         val liveIds = live.mapTo(HashSet()) { it.nodeId }
         val nearby = reachablePeers.filterKeys { it in lastSeenAt.keys && it !in liveIds }.values
         _reachable.value = (live + nearby).toSet()
+    }
+
+    /**
+     * Reap peers we've neither linked to nor heard from on the coordination plane within [REACHABLE_LINGER_MS]
+     * (5 cue heartbeats) from all coordination-plane bookkeeping — [cueTarget], [reachablePeers], and the
+     * [digestTracker] digest. A best-effort cue to a peer that simply walked out of range never *throws*, so
+     * the [sendCue] failure-prune never fires for it; left alone its state lingers forever. That is what the
+     * connection engine calls "a truly-gone peer, pruned within a heartbeat once our cues fail" ([needsRediscovery])
+     * — a prune the failure path alone never actually delivered. Stale, a ghost makes an **initiator** (larger
+     * id) fast-tick ([SYNC_RETRY_IDLE_MS]) and re-arm subscribe hunting it, and keeps us heartbeat-cueing it
+     * every [CUE_HEARTBEAT_MS] for nothing. Forgetting its digest means a later reappearance correctly re-syncs
+     * (it was gone far longer than a link blip, which is why [DigestTracker.forget] is otherwise link-churn-shy).
+     * A reappearing peer is re-added by [onDiscovered]/[onCueReceived]. **Handler-thread only** (called via
+     * [onHandler]) so it serializes with those two add sites and never races a fresh cue's insert.
+     */
+    private fun pruneAbsentPeers() {
+        val now = SystemClock.elapsedRealtime()
+        cueTarget.keys.filter { nodeId ->
+            !peers.containsKey(nodeId) && (lastSeenAt[nodeId]?.let { now - it > REACHABLE_LINGER_MS } ?: true)
+        }.forEach { nodeId ->
+            cueTarget.remove(nodeId)
+            reachablePeers.remove(nodeId)
+            digestTracker.forget(nodeId)
+        }
     }
 
     // --- Availability ---
