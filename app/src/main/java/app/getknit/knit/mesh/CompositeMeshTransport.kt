@@ -85,8 +85,13 @@ class CompositeMeshTransport(
         } else {
             combine(
                 children.map { child ->
-                    combine(child.neighbors, child.reachable, child.health) { linked, nearby, health ->
-                        TransportStatus(child.kind, health, linked.size, nearby.size)
+                    combine(
+                        child.neighbors,
+                        child.reachable,
+                        child.health,
+                        child.radioContended,
+                    ) { linked, nearby, health, contended ->
+                        TransportStatus(child.kind, health, linked.size, nearby.size, contended)
                     }
                 },
             ) { it.toList() }.stateIn(scope, SharingStarted.Eagerly, emptyList())

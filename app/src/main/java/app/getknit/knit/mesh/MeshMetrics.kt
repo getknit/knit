@@ -40,6 +40,30 @@ enum class DropReason {
 }
 
 /**
+ * Why a Bluetooth L2CAP connect attempt to a peer failed — surfaced per-reason in
+ * [MeshMetrics.Snapshot.btConnectFailsByReason] and the failure log, so an intermittent "can link one peer
+ * but not the second" (the suspected BLE ↔ A2DP-audio radio contention) is *attributable* rather than a
+ * silent retry. Best-effort buckets classified from the (otherwise-discarded) connect exception; the raw
+ * throwable is always logged alongside.
+ */
+enum class ConnectFailReason {
+    /** The blocking connect() (or HELLO exchange) didn't complete before the watchdog closed the socket. */
+    TIMEOUT,
+
+    /** The Bluetooth stack reported a radio/resource error — the radio-saturation signature. */
+    RADIO,
+
+    /** The peer refused or reset the channel (advertised a PSM but isn't accepting on it). */
+    REFUSED,
+
+    /** The socket connected but the identity (HELLO) exchange failed. */
+    HANDSHAKE,
+
+    /** Any other/unclassified failure — see the logged throwable. */
+    OTHER,
+}
+
+/**
  * Thread-safe counters for mesh transmission, so the effect of flood suppression and the CBOR wire
  * format is measurable in the field. Pure JVM (no Android dependencies) so it can live in [mesh] and
  * be asserted from the same unit tests as [MeshRouter].
@@ -63,6 +87,9 @@ class MeshMetrics {
 
     // Fixed key set → no allocation on the hot path, every reason always present.
     private val drops: Map<DropReason, AtomicLong> = DropReason.entries.associateWith { AtomicLong() }
+    private val connectFails: Map<ConnectFailReason, AtomicLong> =
+        ConnectFailReason.entries.associateWith { AtomicLong() }
+    private val btLinksEstablished = AtomicLong()
 
     /** A frame this device authored and injected into the mesh. */
     fun onOriginated() { framesOriginated.incrementAndGet() }
@@ -100,8 +127,15 @@ class MeshMetrics {
     /** A parked frame we replayed through the deliver path after its sender's key was pinned. */
     fun onFrameReplayed() { framesReplayed.incrementAndGet() }
 
+    /** A Bluetooth L2CAP connect attempt to a peer failed for [reason] (see [ConnectFailReason]). */
+    fun onBtConnectFailed(reason: ConnectFailReason) { connectFails.getValue(reason).incrementAndGet() }
+
+    /** A Bluetooth L2CAP link came up — context for the connect-failure counts (success vs failure rate). */
+    fun onBtLinkEstablished() { btLinksEstablished.incrementAndGet() }
+
     fun snapshot(): Snapshot {
         val byReason = drops.mapValues { it.value.get() }
+        val connectByReason = connectFails.mapValues { it.value.get() }
         return Snapshot(
             framesOriginated = framesOriginated.get(),
             framesDelivered = framesDelivered.get(),
@@ -116,6 +150,9 @@ class MeshMetrics {
             keysRecovered = keysRecovered.get(),
             framesHeld = framesHeld.get(),
             framesReplayed = framesReplayed.get(),
+            btConnectFails = connectByReason.values.sum(),
+            btConnectFailsByReason = connectByReason.filterValues { it > 0 },
+            btLinksEstablished = btLinksEstablished.get(),
         )
     }
 
@@ -133,5 +170,8 @@ class MeshMetrics {
         val keysRecovered: Long = 0,
         val framesHeld: Long = 0,
         val framesReplayed: Long = 0,
+        val btConnectFails: Long = 0,
+        val btConnectFailsByReason: Map<ConnectFailReason, Long> = emptyMap(),
+        val btLinksEstablished: Long = 0,
     )
 }

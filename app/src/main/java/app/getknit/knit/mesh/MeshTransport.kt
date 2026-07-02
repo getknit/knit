@@ -3,6 +3,7 @@ package app.getknit.knit.mesh
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import java.io.File
@@ -33,14 +34,20 @@ enum class TransportKind { Bluetooth, WifiAware, Other }
 /**
  * A per-radio status line for the Diagnostics screen, produced by [CompositeMeshTransport.statuses]. [linked]
  * is the count of live data-path links right now (≤1 for Wi-Fi Aware's ephemeral NDP, up to the link budget
- * for Bluetooth); [nearby] is the smoothed coordination-plane [MeshTransport.reachable] count.
+ * for Bluetooth); [nearby] is the smoothed coordination-plane [MeshTransport.reachable] count. [contended] is
+ * this radio's [MeshTransport.radioContended] hint (Bluetooth ↔ A2DP audio), shown as a diagnostic flag.
  */
 data class TransportStatus(
     val kind: TransportKind,
     val health: TransportHealth,
     val linked: Int,
     val nearby: Int,
+    val contended: Boolean = false,
 )
+
+/** Shared "never contended" default for [MeshTransport.radioContended], so a transport without the signal
+ *  allocates nothing (only the Bluetooth plane overrides it). */
+internal val NOT_CONTENDED: StateFlow<Boolean> = MutableStateFlow(false)
 
 /**
  * A frame received from a neighbor: the verbatim [wire] (its [WireEnvelope.signed]/[WireEnvelope.sig]
@@ -113,6 +120,14 @@ interface MeshTransport {
      * [TransportKind.Other]; only the real radio transports override it.
      */
     val kind: TransportKind get() = TransportKind.Other
+
+    /**
+     * Whether this transport currently believes its radio is contended by another user of the same radio —
+     * for Bluetooth, A2DP audio streaming to a speaker (which can starve an L2CAP connect). Diagnostic-only:
+     * surfaced in the Diagnostics transport row; connections are **not** gated on it. Defaults to never
+     * contended ([NOT_CONTENDED]); only the Bluetooth plane overrides it.
+     */
+    val radioContended: StateFlow<Boolean> get() = NOT_CONTENDED
 
     /** Frames received from neighbors (after transport-level decode, before mesh dedup/relay). */
     val inbound: Flow<InboundFrame>

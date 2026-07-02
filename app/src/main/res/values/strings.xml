@@ -204,6 +204,7 @@
     <string name="diagnostics_metric_keys_recovered">Keys recovered</string>
     <string name="diagnostics_metric_frames_held">Frames held for key</string>
     <string name="diagnostics_metric_frames_replayed">Frames replayed</string>
+    <string name="diagnostics_metric_bt_connect_fails">BT connect failures</string>
     <string name="diagnostics_controls">Mesh controls</string>
     <string name="diagnostics_status_healthy">Mesh status: Healthy</string>
     <string name="diagnostics_status_degraded">Mesh status: Degraded</string>
@@ -220,6 +221,7 @@
     <string name="diagnostics_transport_counts">%1$d nearby · %2$d linked</string>
     <string name="diagnostics_tag_ble">BLE</string>
     <string name="diagnostics_tag_nan">NAN</string>
+    <string name="diagnostics_transport_audio">audio</string>
 
     <!-- Generic actions / content descriptions -->
     <string name="action_send">Send</string>

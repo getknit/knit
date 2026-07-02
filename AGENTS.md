@@ -368,8 +368,15 @@ and JVM-tested (`PendingInboundTest`).
 
 ## Out of scope (deferred, by design)
 
-A **BLE / Nearby fallback transport** for devices without Wi-Fi Aware hardware (we deliberately went
-pure NAN — non-NAN devices are gated as "unsupported", not fallen back); **true DM routing** (DMs still
+> **Correction:** a **Bluetooth LE plane is implemented** (`mesh/bluetooth/`) and runs *simultaneously* with
+> Wi-Fi Aware behind `CompositeMeshTransport` (wired in `di/MeshModule.kt`) — BLE advertise/scan presence +
+> persistent L2CAP CoC data links, *preferred* over NAN's ephemeral NDP, with per-peer escalating connect
+> backoff and A2DP-audio instrumentation. It is a co-plane, **not** a "fallback", and BLE-capable devices use
+> it regardless of Wi-Fi Aware support. Several passages elsewhere in this file still say "pure Wi-Fi Aware /
+> no BLE" (e.g. the intro, the `mesh/wifiaware/` "ONLY place" note) and are stale pending a broader doc pass.
+
+Still deferred (by design): a **BLE promotion gate on A2DP audio** (the monitor observes but does not yet
+throttle connects while streaming — see the plan); **true DM routing** (DMs still
 flood — only the addressed recipient delivers/acks; store-and-forward now *carries* undelivered DMs, see
 above, but there is still no routing table); a **group key-gap retransmit** (the group analogue of the DM
 `flushPendingFor`: a group message already floods to the members whose keys are known, so reaching a

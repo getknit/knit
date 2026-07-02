@@ -228,6 +228,14 @@ private fun MetricsSection(metrics: MeshMetrics.Snapshot) {
             MetricRow(stringResource(R.string.diagnostics_metric_frames_held), metrics.framesHeld.toString())
             MetricRow(stringResource(R.string.diagnostics_metric_frames_replayed), metrics.framesReplayed.toString())
         }
+        // Bluetooth connect failures: shown only once any occur, with a per-reason breakdown, so an
+        // intermittent "can link one peer but not the second" is visible and attributable (RADIO vs other).
+        if (metrics.btConnectFails > 0) {
+            MetricRow(stringResource(R.string.diagnostics_metric_bt_connect_fails), metrics.btConnectFails.toString())
+            metrics.btConnectFailsByReason.forEach { (reason, count) ->
+                MetricRow("   ${reason.name}", count.toString())
+            }
+        }
     }
 }
 
@@ -278,6 +286,11 @@ private fun TransportRow(status: TransportStatus) {
             fontWeight = FontWeight.Medium,
             modifier = Modifier.weight(1f),
         )
+        // Diagnostic flag: this radio reports itself contended (Bluetooth ↔ A2DP audio streaming).
+        if (status.contended) {
+            TransportTag(stringResource(R.string.diagnostics_transport_audio))
+            Spacer(Modifier.width(8.dp))
+        }
         Text(
             text = stringResource(R.string.diagnostics_transport_counts, status.nearby, status.linked),
             style = MaterialTheme.typography.bodyMedium,
@@ -435,7 +448,7 @@ fun MetricsSectionEmptyPreview() = KnitPreview {
 fun TransportsSectionPreview() = KnitPreview {
     TransportsSection(
         statuses = listOf(
-            TransportStatus(TransportKind.Bluetooth, TransportHealth.Healthy, linked = 3, nearby = 5),
+            TransportStatus(TransportKind.Bluetooth, TransportHealth.Healthy, linked = 3, nearby = 5, contended = true),
             TransportStatus(TransportKind.WifiAware, TransportHealth.Healthy, linked = 1, nearby = 4),
         ),
     )
