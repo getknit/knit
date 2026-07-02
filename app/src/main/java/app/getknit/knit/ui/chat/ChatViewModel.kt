@@ -1,15 +1,12 @@
 package app.getknit.knit.ui.chat
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.net.Uri
-import androidx.compose.ui.geometry.Offset
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.R
 import app.getknit.knit.TextLimits
 import app.getknit.knit.data.AttachmentStore
-import app.getknit.knit.data.AvatarStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GallerySaver
 import app.getknit.knit.data.GroupRepository
@@ -29,9 +26,7 @@ import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
-import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.notifications.Notifier
-import app.getknit.knit.ui.util.computeAvatarCrop
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -123,7 +118,6 @@ class ChatViewModel(
     private val notifier: Notifier,
     private val attachments: AttachmentStore,
     private val blobs: BlobRepository,
-    private val avatars: AvatarStore,
     private val gallerySaver: GallerySaver,
     private val context: Context,
 ) : ViewModel() {
@@ -350,71 +344,6 @@ class ChatViewModel(
         photoUpdatedAt = photoUpdatedAt.takeIf { it > 0L },
     )
 
-    /**
-     * Renames this group: updates the local store immediately and floods a group-update frame so members
-     * converge right away (no waiting for the next message). The name is last-writer-wins by timestamp.
-     */
-    fun renameGroup(newName: String) {
-        val trimmed = normalizeSingleLine(newName).take(TextLimits.GROUP_NAME)
-        if (trimmed.isEmpty()) return
-        viewModelScope.launch {
-            val group = groups.find(conversationId) ?: return@launch
-            val updated = group.copy(name = trimmed, nameUpdatedAt = System.currentTimeMillis())
-            groups.upsert(updated)
-            meshManager.sendGroupUpdate(updated.toInfo())
-        }
-    }
-
-    // The picked group photo awaiting crop (held here, not in SavedStateHandle — a Bitmap is large and not
-    // parcel-friendly — so the crop survives configuration changes). Mirrors ProfileViewModel's avatar crop.
-    private val _groupPhotoCropTarget = MutableStateFlow<Bitmap?>(null)
-    val groupPhotoCropTarget: StateFlow<Bitmap?> = _groupPhotoCropTarget.asStateFlow()
-
-    /** Picks an image for this group's photo and shows the crop UI; the save happens in [confirmGroupPhoto]. */
-    fun pickGroupPhoto(uri: Uri) {
-        viewModelScope.launch { _groupPhotoCropTarget.value = avatars.loadForCrop(uri) }
-    }
-
-    /**
-     * Persists the cropped group photo and floods a group-update frame carrying its hash + clock, so every
-     * member converges last-writer-wins and pulls the bytes. Any member can set it; the local row's photo
-     * is updated immediately (the bytes are local), so it shows right away. [scale]/[offset]/[diameter]
-     * come from the crop dialog's transform — the same flow as the profile avatar.
-     */
-    fun confirmGroupPhoto(scale: Float, offset: Offset, diameter: Float) {
-        val source = _groupPhotoCropTarget.value ?: return
-        _groupPhotoCropTarget.value = null
-        viewModelScope.launch {
-            val group = groups.find(conversationId) ?: return@launch
-            val crop = computeAvatarCrop(source.width, source.height, diameter, scale, offset.x, offset.y)
-            val newHash = avatars.saveOwnAvatar(source, crop) ?: return@launch
-            val oldHash = group.photoHash
-            val updated = group.copy(photoHash = newHash, photoUpdatedAt = System.currentTimeMillis())
-            groups.upsert(updated)
-            meshManager.sendGroupUpdate(updated.toInfo())
-            if (oldHash != null && oldHash != newHash) blobs.deleteIfUnreferenced(oldHash)
-        }
-    }
-
-    fun cancelGroupPhotoCrop() {
-        _groupPhotoCropTarget.value = null
-    }
-
-    /**
-     * Leaves this group: tombstones it (so its frames stop being delivered and it can't be resurrected)
-     * and deletes its messages, then closes the screen. Emitted only after the leave persists.
-     */
-    fun leaveGroup() {
-        viewModelScope.launch {
-            // Tell the other members first (we're still a member, our key is known), then tombstone and
-            // wipe locally. The leave frame floods once; it's not custodied, so an offline member learns
-            // of the smaller roster from the next group message rather than this frame.
-            meshManager.sendGroupLeave(conversationId)
-            groups.leave(conversationId)
-            _closeChat.tryEmit(Unit)
-        }
-    }
-
     /** Toggles the local user's [emoji] reaction on [messageId] (add / replace / remove) and floods it. */
     fun react(messageId: String, emoji: String) {
         viewModelScope.launch { meshManager.sendReaction(messageId, emoji) }
@@ -522,10 +451,5 @@ class ChatViewModel(
     fun onChatBackground() {
         chatForeground.value = false
         notifier.setVisibleConversation(null)
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        _groupPhotoCropTarget.value = null // drop the (large) pending crop bitmap
     }
 }

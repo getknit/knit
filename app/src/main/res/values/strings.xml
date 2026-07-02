@@ -75,6 +75,7 @@
     <string name="chat_action_block">Block user</string>
     <string name="chat_action_unblock">Unblock user</string>
     <string name="chat_view_profile">View %1$s\'s profile</string>
+    <string name="chat_view_group_info">View group info</string>
     <string name="chat_react_with">React with %1$s</string>
     <plurals name="chat_reaction_count">
         <item quantity="one">%2$s, %1$d reaction</item>
@@ -98,6 +99,8 @@
     <string name="chat_group_leave_confirm_body">You\'ll stop receiving messages and this chat will be removed from this device.</string>
     <string name="chat_group_leave_confirm_action">Leave</string>
     <string name="chat_group_member_left">%1$s left the chat</string>
+    <string name="group_details_title">Group info</string>
+    <string name="group_details_members">Members</string>
     <string name="blocked_users_title">Blocked users</string>
     <string name="blocked_users_empty">No blocked users</string>
     <string name="blocked_users_unblock">Unblock</string>

@@ -29,6 +29,7 @@ import app.getknit.knit.ui.chatlist.ChatListScreen
 import app.getknit.knit.ui.contacts.ContactsScreen
 import app.getknit.knit.ui.diagnostics.DiagnosticsScreen
 import app.getknit.knit.ui.donate.DonateScreen
+import app.getknit.knit.ui.group.GroupDetailsScreen
 import app.getknit.knit.ui.onboarding.OnboardingScreen
 import app.getknit.knit.ui.profile.ProfileDetailsScreen
 import app.getknit.knit.ui.profile.ProfileScreen
@@ -49,6 +50,8 @@ private object Routes {
     fun chat(conversationId: String) = "chat/$conversationId"
     const val PROFILE_DETAILS = "profileDetails/{nodeId}"
     fun profileDetails(nodeId: String) = "profileDetails/$nodeId"
+    const val GROUP_DETAILS = "groupDetails/{groupId}"
+    fun groupDetails(groupId: String) = "groupDetails/$groupId"
 }
 
 /**
@@ -173,6 +176,7 @@ fun KnitApp(startRoute: String? = null) {
                 conversationId = conversationId,
                 onBack = { navController.popBackStack() },
                 onOpenProfile = { id -> navController.navigate(Routes.profileDetails(id)) },
+                onOpenGroupDetails = { id -> navController.navigate(Routes.groupDetails(id)) },
             )
         }
         composable(
@@ -191,6 +195,19 @@ fun KnitApp(startRoute: String? = null) {
                         launchSingleTop = true
                     }
                 },
+            )
+        }
+        composable(
+            route = Routes.GROUP_DETAILS,
+            arguments = listOf(navArgument("groupId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val groupId = backStackEntry.arguments?.getString("groupId") ?: return@composable
+            GroupDetailsScreen(
+                groupId = groupId,
+                onBack = { navController.popBackStack() },
+                onOpenMemberProfile = { id -> navController.navigate(Routes.profileDetails(id)) },
+                // Leaving deletes the thread, so pop past this screen AND the chat, back to the list.
+                onLeft = { navController.popBackStack(Routes.CHAT_LIST, inclusive = false) },
             )
         }
         composable(Routes.PROFILE) {

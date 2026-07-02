@@ -57,7 +57,6 @@ import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Block
@@ -67,8 +66,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -83,7 +80,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Surface
@@ -107,7 +103,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
@@ -151,9 +146,9 @@ import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
+import app.getknit.knit.ui.components.GroupAvatar
 import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.openUrl
-import app.getknit.knit.ui.profile.AvatarCropDialog
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.share.ShareInbox
@@ -171,6 +166,7 @@ fun ChatScreen(
     conversationId: String,
     onBack: () -> Unit,
     onOpenProfile: (nodeId: String) -> Unit,
+    onOpenGroupDetails: (conversationId: String) -> Unit,
     viewModel: ChatViewModel = koinViewModel { parametersOf(conversationId) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -184,8 +180,6 @@ fun ChatScreen(
     val pendingMentions = remember { mutableStateListOf<Mention>() }
     var fullscreenImage by remember { mutableStateOf<FullscreenImage?>(null) }
     var headerMenuOpen by remember { mutableStateOf(false) }
-    var showRenameDialog by remember { mutableStateOf(false) }
-    var showLeaveConfirm by remember { mutableStateOf(false) }
     var showEncryptionInfo by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     // Aspect ratios of already-decoded image attachments, keyed by content hash, kept above the
@@ -201,21 +195,6 @@ fun ChatScreen(
     // Modern Android Photo Picker — needs no runtime permission. ImageOnly still includes GIFs.
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         uri?.let(viewModel::attach)
-    }
-
-    // Separate picker for the group photo (any member can set it); the picked image goes through the crop
-    // dialog before it's saved + flooded. Mirrors the profile-avatar pick → crop → save flow.
-    val groupPhotoCropTarget by viewModel.groupPhotoCropTarget.collectAsStateWithLifecycle()
-    val groupPhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        uri?.let(viewModel::pickGroupPhoto)
-    }
-    groupPhotoCropTarget?.let { bmp ->
-        val image = remember(bmp) { bmp.asImageBitmap() }
-        AvatarCropDialog(
-            bitmap = image,
-            onCancel = viewModel::cancelGroupPhotoCrop,
-            onConfirm = viewModel::confirmGroupPhoto,
-        )
     }
 
     // Suppress message notifications while the chat is on screen, and clear any active one. The NavHost
@@ -306,18 +285,15 @@ fun ChatScreen(
                         }
                         state.isGroup -> {
                             // Group: its photo (or a people glyph when unset) + name + member count.
+                            // Tapping the avatar opens the group details / settings screen.
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                val groupPhoto = state.avatarHash
-                                if (groupPhoto != null) {
-                                    AsyncImage(
-                                        model = BlobImage(groupPhoto),
-                                        contentDescription = null,
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier.size(36.dp).clip(CircleShape),
-                                    )
-                                } else {
-                                    GroupGlyph(size = 36.dp)
-                                }
+                                GroupAvatar(
+                                    photoHash = state.avatarHash,
+                                    size = 36.dp,
+                                    modifier = Modifier.testTag("chat_group_avatar"),
+                                    contentDescription = stringResource(R.string.chat_view_group_info),
+                                    onClick = { onOpenGroupDetails(conversationId) },
+                                )
                                 Spacer(Modifier.width(10.dp))
                                 // Weight (fill = false) lets a long group name ellipsize while the
                                 // fixed-size badge — measured first as a non-weighted child — always
@@ -382,8 +358,9 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // The overflow lives on DM and group threads — the broadcast room has no actions.
-                    if (!state.isRoom) {
+                    // The overflow lives on DM threads only: the broadcast room has no actions, and a
+                    // group's actions moved to the group-details screen (tap the group avatar to open it).
+                    if (!state.isRoom && !state.isGroup) {
                         Box {
                             IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(48.dp)) {
                                 Icon(
@@ -395,57 +372,22 @@ fun ChatScreen(
                                 expanded = headerMenuOpen,
                                 onDismissRequest = { headerMenuOpen = false },
                             ) {
-                                if (state.isGroup) {
-                                    DropdownMenuItem(
-                                        text = { Text(stringResource(R.string.chat_group_set_photo)) },
-                                        leadingIcon = {
-                                            Icon(Icons.Filled.AddPhotoAlternate, contentDescription = null)
-                                        },
-                                        onClick = {
-                                            headerMenuOpen = false
-                                            groupPhotoPicker.launch(
-                                                PickVisualMediaRequest(
-                                                    ActivityResultContracts.PickVisualMedia.ImageOnly,
-                                                ),
-                                            )
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text(stringResource(R.string.chat_group_rename)) },
-                                        leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
-                                        onClick = {
-                                            headerMenuOpen = false
-                                            showRenameDialog = true
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text(stringResource(R.string.chat_group_leave)) },
-                                        leadingIcon = {
-                                            Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null)
-                                        },
-                                        onClick = {
-                                            headerMenuOpen = false
-                                            showLeaveConfirm = true
-                                        },
-                                    )
-                                } else {
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                stringResource(
-                                                    if (state.isBlocked) R.string.chat_action_unblock
-                                                    else R.string.chat_action_block,
-                                                ),
-                                            )
-                                        },
-                                        leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
-                                        onClick = {
-                                            headerMenuOpen = false
-                                            if (state.isBlocked) viewModel.unblock(conversationId)
-                                            else viewModel.block(conversationId)
-                                        },
-                                    )
-                                }
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            stringResource(
+                                                if (state.isBlocked) R.string.chat_action_unblock
+                                                else R.string.chat_action_block,
+                                            ),
+                                        )
+                                    },
+                                    leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
+                                    onClick = {
+                                        headerMenuOpen = false
+                                        if (state.isBlocked) viewModel.unblock(conversationId)
+                                        else viewModel.block(conversationId)
+                                    },
+                                )
                             }
                         }
                     }
@@ -552,41 +494,6 @@ fun ChatScreen(
         )
     }
 
-    if (showRenameDialog) {
-        RenameGroupDialog(
-            currentName = state.title,
-            onDismiss = { showRenameDialog = false },
-            onRename = { name ->
-                viewModel.renameGroup(name)
-                showRenameDialog = false
-            },
-        )
-    }
-
-    if (showLeaveConfirm) {
-        AlertDialog(
-            onDismissRequest = { showLeaveConfirm = false },
-            title = { Text(stringResource(R.string.chat_group_leave_confirm_title)) },
-            text = { Text(stringResource(R.string.chat_group_leave_confirm_body)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    showLeaveConfirm = false
-                    viewModel.leaveGroup()
-                }) {
-                    Text(
-                        text = stringResource(R.string.chat_group_leave_confirm_action),
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showLeaveConfirm = false }) {
-                    Text(stringResource(android.R.string.cancel))
-                }
-            },
-        )
-    }
-
     if (showEncryptionInfo) {
         AlertDialog(
             onDismissRequest = { showEncryptionInfo = false },
@@ -619,69 +526,6 @@ private fun EncryptionBadge(onClick: () -> Unit) {
             .clickable(onClick = onClick)
             .padding(3.dp)
             .size(18.dp),
-    )
-}
-
-/** Circular people glyph used as a group's leading visual, mirroring the chat-list room logo style. */
-@Composable
-private fun GroupGlyph(size: androidx.compose.ui.unit.Dp) {
-    Box(
-        modifier = Modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.secondaryContainer),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            Icons.Filled.Group,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-            modifier = Modifier.size(size * 0.6f),
-        )
-    }
-}
-
-/** Dialog to rename a group; pre-fills the current name and disables Rename when the field is blank. */
-@Composable
-private fun RenameGroupDialog(
-    currentName: String,
-    onDismiss: () -> Unit,
-    onRename: (String) -> Unit,
-) {
-    var name by remember { mutableStateOf(currentName) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.chat_group_rename)) },
-        text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it.take(TextLimits.GROUP_NAME) },
-                singleLine = true,
-                label = { Text(stringResource(R.string.chat_group_name_label)) },
-                supportingText = {
-                    Text(
-                        text = "${name.length} / ${TextLimits.GROUP_NAME}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.End,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                },
-            )
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { onRename(name) },
-                enabled = name.isNotBlank(),
-            ) {
-                Text(stringResource(R.string.chat_group_rename_action))
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(android.R.string.cancel))
-            }
-        },
     )
 }
 
@@ -1676,20 +1520,4 @@ fun EmptyStatePreview() = KnitPreview {
 @Composable
 fun SystemNoticePreview() = KnitPreview {
     SystemNotice(text = "Ada left the chat")
-}
-
-@Preview(showBackground = true)
-@Composable
-fun RenameGroupDialogPreview() = KnitPreview {
-    RenameGroupDialog(
-        currentName = "Hiking Crew",
-        onDismiss = {},
-        onRename = {},
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun GroupGlyphPreview() = KnitPreview {
-    GroupGlyph(size = 48.dp)
 }

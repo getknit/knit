@@ -5,6 +5,7 @@ import app.getknit.knit.ui.chat.ChatViewModel
 import app.getknit.knit.ui.chatlist.ChatListViewModel
 import app.getknit.knit.ui.contacts.ContactsViewModel
 import app.getknit.knit.ui.diagnostics.DiagnosticsViewModel
+import app.getknit.knit.ui.group.GroupDetailsViewModel
 import app.getknit.knit.ui.profile.ProfileDetailsViewModel
 import app.getknit.knit.ui.profile.ProfileViewModel
 import org.koin.android.ext.koin.androidContext
@@ -17,7 +18,7 @@ val uiModule = module {
     viewModel { params ->
         ChatViewModel(
             params.get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get(),
-            get(), androidContext(),
+            androidContext(),
         )
     }
     viewModel { ChatListViewModel(get(), get(), get(), get(), get(), get(), androidContext()) }
@@ -26,5 +27,9 @@ val uiModule = module {
     viewModel { ProfileViewModel(get(), get(), get(), get()) }
     // ProfileDetailsViewModel takes the tapped peer's node id as a runtime param.
     viewModel { params -> ProfileDetailsViewModel(params.get(), get(), get(), get(), get()) }
+    // GroupDetailsViewModel takes the group id as a runtime param; the rest are resolved by type.
+    viewModel { params ->
+        GroupDetailsViewModel(params.get(), get(), get(), get(), get(), get(), get(), androidContext())
+    }
     viewModel { BlockedUsersViewModel(get(), get()) }
 }
