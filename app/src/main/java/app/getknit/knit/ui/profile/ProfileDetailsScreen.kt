@@ -57,6 +57,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.FullscreenImageViewer
+import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.image.QrCode
 import app.getknit.knit.ui.preview.KnitPreview
 import com.journeyapps.barcodescanner.ScanContract
@@ -81,6 +83,7 @@ fun ProfileDetailsScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val scanResult by viewModel.scanResult.collectAsStateWithLifecycle()
     var menuOpen by remember { mutableStateOf(false) }
+    var showAvatarFullscreen by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     val matchMessage = stringResource(R.string.verify_match)
@@ -157,6 +160,11 @@ fun ProfileDetailsScreen(
                 background = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                 textStyle = MaterialTheme.typography.displaySmall,
+                // Tappable only when a photo is set: a default (initials) avatar has nothing to enlarge,
+                // so onClick stays null and Avatar renders non-interactive (no ripple / no touch target).
+                contentDescription = if (state.avatarHash != null) state.displayName else null,
+                onClickLabel = stringResource(R.string.profile_details_view_photo),
+                onClick = if (state.avatarHash != null) ({ showAvatarFullscreen = true }) else null,
             )
 
             Text(
@@ -227,6 +235,15 @@ fun ProfileDetailsScreen(
                 onClearVerification = viewModel::clearVerification,
             )
         }
+    }
+
+    if (showAvatarFullscreen && state.avatarHash != null) {
+        FullscreenImageViewer(
+            model = BlobImage(state.avatarHash!!),
+            contentDescription = stringResource(R.string.chat_image_viewer_desc),
+            title = state.displayName,
+            onDismiss = { showAvatarFullscreen = false },
+        )
     }
 }
 

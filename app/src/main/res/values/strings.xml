@@ -161,6 +161,7 @@
     <string name="profile_details_message">Message</string>
     <string name="profile_details_online">Online</string>
     <string name="profile_details_offline">Offline</string>
+    <string name="profile_details_view_photo">View photo</string>
 
     <!-- Encryption indicator in the chat header -->
     <string name="chat_encrypted_desc">Encrypted</string>
