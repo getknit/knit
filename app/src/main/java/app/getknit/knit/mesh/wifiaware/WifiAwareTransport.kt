@@ -175,6 +175,9 @@ class WifiAwareTransport(
     private val inFlight = HashSet<String>()
     private val discovered = HashMap<String, DiscoveredPeer>()
     private val retryAfter = HashMap<String, Long>()
+    // Consecutive real (non-stale) connect failures per peer: at [REATTACH_HINT_THRESHOLD] we nudge the peer to
+    // re-attach (its accept-any responder is likely wedged). Reset on a successful link / a stale fast-fail.
+    private val consecutiveFails = HashMap<String, Int>()
     private var accepting = false
 
     // Anti-entropy state for the cue plane: each peer's advertised digest version + our last-synced version.
@@ -292,7 +295,7 @@ class WifiAwareTransport(
         subscribing.set(false)
         lastLinkEndedAt = 0L
         synchronized(lock) {
-            inFlight.clear(); discovered.clear(); retryAfter.clear(); accepting = false
+            inFlight.clear(); discovered.clear(); retryAfter.clear(); consecutiveFails.clear(); accepting = false
         }
         cueTarget.clear()
         lastSeenAt.clear()
@@ -587,6 +590,7 @@ class WifiAwareTransport(
     private fun onCueReceived(handle: PeerHandle, message: ByteArray, session: DiscoverySession?) {
         val sess = session ?: return
         if (message.isNotEmpty() && message[0] == MSG_FRAME_TAG) { onFastFrame(message); return }
+        if (message.isNotEmpty() && message[0] == REATTACH_TAG) { onReattachHint(message); return }
         val cue = parseCue(message) ?: return
         if (cue.nodeId == localNodeId) return
         val firstContact = cueTarget.put(cue.nodeId, CueTarget(handle, sess)) == null
@@ -613,6 +617,37 @@ class WifiAwareTransport(
     }
 
     private fun cueAll() = cueTarget.keys.toList().forEach { sendCue(it) }
+
+    /**
+     * Nudge [nodeId] to re-attach its (apparently wedged) accept-any responder: we keep failing to bring up a
+     * data path to it even though it's still reachable on the coordination plane. A tagged message carrying our
+     * own nodeId (so the receiver can corroborate + log it); best-effort, like a cue.
+     */
+    private fun sendReattachHint(nodeId: String) {
+        val target = cueTarget[nodeId] ?: return
+        val id = localNodeId.encodeToByteArray()
+        val msg = ByteArray(id.size + 1).also { it[0] = REATTACH_TAG; id.copyInto(it, 1) }
+        Log.i(TAG, "re-attach hint → $nodeId") // its responder looks wedged; ask it to re-attach
+        runCatching { target.session.sendMessage(target.handle, msgSeq.getAndIncrement(), msg) }
+            .onFailure { cueTarget.remove(nodeId) } // stale handle/session; refreshed on next discover/receive
+    }
+
+    /**
+     * A peer that keeps failing to reach us over the data path asked us to re-attach ([REATTACH_TAG]). Our
+     * accept-any responder is probably wedged (served one NDP, now won't accept another). Re-attach — but only
+     * when idle (never drop a live link), from a peer we're actually in contact with, and at most once per
+     * [REATTACH_COOLDOWN_MS]. That global cooldown is the DoS bound: no volume of hints (or spoofed senders) can
+     * force more than one brief re-attach per window, and a busy/healthy node ignores them (slot not free).
+     */
+    private fun onReattachHint(message: ByteArray) {
+        val sender = runCatching { message.copyOfRange(1, message.size).decodeToString() }.getOrNull() ?: return
+        if (!cueTarget.containsKey(sender)) return // not a peer we hold coordination-plane contact with
+        val now = SystemClock.elapsedRealtime()
+        if (slotBusy() || now - lastReattachAt <= REATTACH_COOLDOWN_MS) return
+        lastReattachAt = now
+        Log.i(TAG, "re-attach on hint from $sender")
+        handler.postDelayed({ reattach() }, REATTACH_DELAY_MS)
+    }
 
     private fun encodeCue(): ByteArray = "$localNodeId$CUE_SEP${storeDigest.version.value}".encodeToByteArray()
 
@@ -863,7 +898,7 @@ class WifiAwareTransport(
         conn.lastActivityAt = now // start the quiescence window at link-up (backfill will extend it)
         val prev = peers.put(peerNodeId, conn)
         prev?.close() // a stale link to the same peer (shouldn't happen, but never leak it)
-        synchronized(lock) { inFlight.remove(peerNodeId); retryAfter.remove(peerNodeId) }
+        synchronized(lock) { inFlight.remove(peerNodeId); retryAfter.remove(peerNodeId); consecutiveFails.remove(peerNodeId) }
         conn.readerJob = scope.launch(Dispatchers.IO) { readLoop(conn, input) }
         conn.writerJob = scope.launch(Dispatchers.IO) { writeLoop(conn) }
         conn.reaperJob = scope.launch { superviseLink(conn) }
@@ -933,14 +968,25 @@ class WifiAwareTransport(
         staleHandle: Boolean,
     ) {
         runCatching { connectivity.unregisterNetworkCallback(callback) }
-        synchronized(lock) {
+        val nudge = synchronized(lock) {
             inFlight.remove(peerNodeId)
             retryAfter[peerNodeId] = SystemClock.elapsedRealtime() + CONNECT_BACKOFF_MS
             // A *fast* failure means this subscribe handle is dead (the peer restarted): drop it so
             // needsRediscovery re-arms subscribe for a fresh one. A slow (contention) failure keeps the handle
             // — the peer was just busy on its one NDI, and with Phase 2 its responder re-attaches to free up.
-            if (staleHandle) discovered.remove(peerNodeId)
+            if (staleHandle) {
+                discovered.remove(peerNodeId)
+                consecutiveFails.remove(peerNodeId) // restarted peer, not a wedge — re-discovery handles it
+                false
+            } else {
+                // A real timeout / half-open NDP: the peer's accept-any responder may be wedged (it won't
+                // complete our data path). Count consecutive ones and, once clearly stuck, nudge it to re-attach.
+                val n = (consecutiveFails[peerNodeId] ?: 0) + 1
+                consecutiveFails[peerNodeId] = n
+                n >= REATTACH_HINT_THRESHOLD
+            }
         }
+        if (nudge) sendReattachHint(peerNodeId)
         noteLinkEnded() // yield to a different sync-wanted peer once the radio settles
         Log.i(TAG, "handshake with $peerNodeId ended without a link (stale=$staleHandle)")
     }
@@ -1355,9 +1401,11 @@ class WifiAwareTransport(
 
         // Coordination-plane message multiplexing. A cue is a plain "nodeId|version" text string whose first
         // byte is a printable base64 nodeId char, so a single non-printable tag byte cleanly distinguishes the
-        // other kind of message: a small broadcast frame fanned out over the message channel (fastFanout /
-        // onFastFrame). Cues stay untagged (byte-for-byte unchanged), so only the new fast-path frame carries it.
+        // other kinds of message: a small broadcast frame fanned out over the message channel (fastFanout /
+        // onFastFrame, [MSG_FRAME_TAG]) and a "please re-attach" nudge to a peer whose responder looks wedged
+        // ([REATTACH_TAG], payload = tag + our nodeId). Cues stay untagged (byte-for-byte unchanged).
         const val MSG_FRAME_TAG: Byte = 0x01
+        const val REATTACH_TAG: Byte = 0x02
 
         // Max coordination-plane message the radio accepts (maxServiceSpecificInfoLen = 255 on Pixel 7/8/9, via
         // dumpsys wifiaware). A frame plus its 1-byte tag must fit; a larger frame skips the fast path and rides
@@ -1445,6 +1493,11 @@ class WifiAwareTransport(
         // before the reset fires.
         const val REATTACH_COOLDOWN_MS = 20_000L
         const val REATTACH_DELAY_MS = 800L
+
+        // Consecutive real (non-stale) connect failures to a peer before we nudge it to re-attach its (likely
+        // wedged) responder over the coordination plane. A stale fast-fail resets the count — a restarted peer,
+        // handled by re-discovery, not a wedge.
+        const val REATTACH_HINT_THRESHOLD = 3
 
         // Min spacing between subscribe re-arms to re-discover a stale/missing peer handle: long enough that a
         // departed peer's cue target is pruned (cue send fails) before we'd re-arm again, so we don't churn
