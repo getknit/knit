@@ -1,12 +1,57 @@
 # Proposal: digest-pull anti-entropy + deliberate re-attach
 
-**Status:** design proposal (not yet implemented). Follow-up to `b6293ae`
+**Status:** Parts A (digest-pull) and B (deliberate re-attach) are **implemented and on-device-validated**
+(Phases 1a/1b/2, commits after `b6293ae`). A subsequent field diagnosis found the reactive-re-attach model
+had a **second, more severe wedge** it could neither fix nor avoid causing; the transport lifecycle was then
+hardened to eliminate it at the root (see **Two distinct wedges** below). Follow-up to `b6293ae`
 (*fix(mesh): harden NAN transport against single-NDI chipset wedge cases*).
 
 This reworks how the Wi-Fi Aware transport decides **when** to sync, **what** to transfer, and **how it
 manages the one NAN data interface** — replacing the coarse-epoch push-all model + reactive re-attach patches
 with (A) a content-digest pull that only syncs real diffs, and (B) a deliberate re-attach policy that turns
 the chipset's NDI limits from a source of wedges into a predictable lifecycle.
+
+## Two distinct wedges (correction — this supersedes the "serving wedge / re-attach" framing below)
+
+Field forensics (`dumpsys wifiaware` + logcat, 3 Pixels, 2026-07-01) showed the transport was conflating
+**two** different failures under "the responder wedges after serving":
+
+1. **Session-serving wedge (the ★ fact below, real).** After the accept-any responder serves one client,
+   its *tracked* `requestNetwork` sits at `state=104` holding `aware_data0` and won't accept a second client.
+   A bare `startResponder()` re-arm doesn't clear it; a full **`reattach()`** (closing the whole Aware
+   session) does. Part B's re-attach-after-serve handles this correctly.
+2. **Leaked-request wedge (the real mesh-killer, undocumented until now).** A framework RESPONDER
+   `requestNetwork` (`role=1`) gets **orphaned** — registered with the framework but no longer referenced by
+   the transport (so never `unregisterNetworkCallback`'d) — stuck at `state=104` on a **stale port** while the
+   NDI is *actually free* (`Active NDPs{}`, `mUsedNdis:[]`). With `mMaxNdpInApp=1` that ghost reserves the
+   app's one NDP slot, so every incoming NDP is refused and the responder can never accept. **`reattach()`
+   cannot clear it** (the callback ref is lost); only **process death** frees it. And re-attach *churn* is
+   what leaks it — concurrent triggers (subscribe-wedge + after-serve + the re-attach hint) racing a
+   non-single-flight `reattach()` and an unguarded `onLost → startResponder` re-arm.
+
+So Part B's premise — *"a served responder is wedged; a fresh session is the only reliable reset"* — is only
+half true: `reattach()` clears wedge 1 but is powerless against wedge 2, and Part B's own machinery caused
+wedge 2. **Fix (implemented):**
+- **Prevention.** The whole attach→publish→subscribe→responder lifecycle now runs on the single callback
+  handler thread with a **generation token** (stale `onAttached`/`onPublishStarted` close their session and
+  never arm a responder); `reattach()` is **single-flight**; `startResponder()` is **idempotent** (one
+  responder request per publish session, `responderCallback` always unregistered before replacement); the
+  racy `onLost → startResponder` re-arm is removed. The responder request can no longer be orphaned ⇒ wedge 2
+  cannot form. All in `WifiAwareTransport.kt`.
+- **The re-attach hint is removed** (`SERVICE_NAME` → `.v6`): its premise is false for wedge 2 and its churn
+  during a wedge is what leaked the request. The subscribe-wedge and after-serve re-attaches remain, now
+  single-flight + generation-guarded.
+- **Recovery safety net.** A watchdog (`checkWedge`) detects the leaked-request signature — Aware healthy, a
+  sync owed to a reachable peer, NDI slot free, yet no data-path link for `WEDGE_RESTART_MS` — and, since
+  `reattach()` can't help, self-heals via `Process.killProcess` (MeshService is `START_STICKY`). It should
+  ~never fire once prevention holds; rate-limited so it can't restart-storm.
+
+**Also note (supersedes the latency/churn analysis below):** since this doc was written, the
+**coordination-plane fast-path** (`fastFanout`/`fastSend`) + general custody (`FrameType.isCustodial`)
+propagate **all small floodable frames** (broadcast chat, reactions, receipts, group-meta, profiles ≤255 B)
+with **zero NDP**. The wedge-prone NDP/serving path is now needed only for **bulk** (large encrypted
+DMs/groups >255 B, media blobs, backlog catch-up), so serving — hence re-attach churn — is already far rarer
+than the model below assumes.
 
 ## Why
 
@@ -32,7 +77,9 @@ These drive the design; **Phase 0 re-verifies the two starred ones before we bui
   the tie-break rejects clients) synced with *both* peers back-to-back in one session, zero re-attach.
 - **★ Serving (responding) wedges the session.** After a node accepts **one** client its responder sits at
   `state=104/101` holding `aware_data0`; it won't accept a second client, and it **blocks that node's own
-  client role** too. `requestNetwork` re-arm does *not* clear it — only a full **re-attach** does.
+  client role** too. `requestNetwork` re-arm does *not* clear it — only a full **re-attach** does. **(This is
+  wedge 1 — see "Two distinct wedges" above. It is real, but re-attach's role as "the reliable reset" holds
+  ONLY for this wedge, not for the leaked-request wedge 2.)**
 - Only a **subscribe**-session `PeerHandle` can initiate an NDP (a publish handle from a cue silently times
   out). NDP teardown delivers no FIN to the responder. A half-open NDP (`peerIpv6=null`) pins the NDI.
   (All three already handled in `b6293ae`.)
@@ -110,6 +157,11 @@ Replace the reactive re-attach triggers with one rule derived from the ★ facts
   handling from `b6293ae`. **Drop** share-stuck and the long-backoff escalation — digest-pull + serve-reattach
   make "my new message is stuck" impossible: the hub notices the version diff and initiates to pull it, and
   the leaf's post-serve re-attach keeps it serve-able.
+- **Also dropped (post-hardening): the coordination-plane re-attach hint** (`60fd6c5`, tag `0x02`). It was
+  net-negative — it can't clear the leaked-request wedge 2, and its firing *during* a wedge is what leaked the
+  request. The surviving re-attaches (subscribe-wedge, after-serve) now run through a **single-flight,
+  generation-guarded** `reattach()`, so they can neither cascade nor orphan a responder request. See
+  **Two distinct wedges** above for the full prevention design + the `checkWedge` recovery watchdog.
 
 ### Fast re-attach
 
@@ -174,13 +226,40 @@ the message can strand on its author until a share-stuck re-attach.
   propagation a responder re-attaches once per serve (plus the occasional chipset subscribe-wedge re-attach) —
   bounded, and it quiesces once the digest shows stores match. Accumulated multi-day test stores don't fully
   converge to an identical version (key gaps / DM addressing), but new traffic propagates cleanly.
+- **Phase 3 — leaked-request wedge fix.** ✅ **Implemented** (this session). The reactive-re-attach machinery
+  could neither fix nor avoid *causing* the leaked-request wedge (wedge 2, see **Two distinct wedges**). Root
+  cause: the responder/re-attach lifecycle wasn't single-owner — concurrent triggers + a non-single-flight
+  `reattach()` + an unguarded `onLost → startResponder` re-arm could orphan a responder `requestNetwork`
+  (`state=104`, stale port) that `reattach()` never unregisters, pinning the single NDI until process death.
+  Fix: serialize the whole attach/publish/subscribe/responder lifecycle on the callback handler thread with a
+  **generation token**, make `reattach()` **single-flight** and `startResponder()` **idempotent**, remove the
+  `onLost` re-arm, **remove the re-attach hint** (`SERVICE_NAME` → `.v6`), and add a `checkWedge` **process-
+  restart watchdog** as a last-resort safety net (MeshService is `START_STICKY`).
+  - **On-device 3-Pixel validation (2026-07-02) surfaced a regression the fix introduced, now fixed too.** The
+    watchdog worked (P7 self-restarted after `no link in 207291ms` and recovered), but the data plane was still
+    *trivially* wedgeable. Root cause: after `reattach()` tore the session down, its inline `attach()` couldn't
+    re-enable NAN immediately (the chipset needs a beat post-teardown; `isAvailable` is transiently false and
+    closing our own session fires no availability broadcast), so recovery fell to the discovery loop's
+    `session == null -> attach()` — but the loop was already blocked in a **long** `withTimeoutOrNull` computed
+    while the session was live, so it slept a full `REDISCOVER_IDLE_MS` (~120 s) with **no responder** before
+    retrying (`dumpsys` showed `mNetworkRequestsCache: {}` — no `role=1` responder — on the wedged nodes).
+    **Fixes:** `reattach()` now **pokes `healSignal`** after nulling the session so the loop re-evaluates
+    immediately; `rediscoverDelayMs()` returns a short `ATTACH_RETRY_MS` (3 s) while `session == null`;
+    `attach()` **self-heals a stuck `attaching` guard** past `ATTACH_WATCHDOG_MS`; and the after-serve
+    re-attach **reschedules** (never drops) if the slot is momentarily busy. **Result (measured, 3 Pixels):**
+    post-serve responder recovery **~120 s → ~3.3 s** (`re-attach after serving` → `responder listening`),
+    validated under both single and simultaneous-restart contention; all three nodes hold their `role=1`
+    responder, converge to one digest, go idle, and **no watchdog restart is needed**.
+  - Unit tests + `assembleDebug` + detekt green.
 
 ## Wire / compat
 
 - The cue and the `DIGEST` record are **transport-internal** (inside the NDP socket / discovery messages), not
-  the flooded `WireEnvelope`, so `docs/WIRE_COMPAT.md` doesn't gate them. But both ends must agree ⇒ bump a
-  transport marker. `SERVICE_NAME` already carries `.v2`; a hard cut goes `.v3` (old/new builds simply don't
-  discover each other, which is cleaner than mixed cue formats). Decide: hard cut vs. version-negotiated cue.
+  the flooded `WireEnvelope`, so `docs/WIRE_COMPAT.md` doesn't gate them. But both ends must agree ⇒ bump the
+  `SERVICE_NAME` transport marker on every such change (a **hard cut**: old/new builds simply don't discover
+  each other, cleaner than mixing formats). History: `.v3` cue format → `.v4` E2E byte-string re-type → `.v5`
+  `DIGEST` record → **`.v6`** removed the re-attach hint (Phase 3). Hard-cut chosen throughout over a
+  version-negotiated cue.
 
 ## Testing
 
@@ -194,5 +273,7 @@ the message can strand on its author until a share-stuck re-attach.
    filter (also hints *direction*, but FP-prone and won't fit a large store in 255 B).
 2. **Data-path digest:** full sorted ID list (exact, fine for a TTL/cap-bounded store — *recommended for v1*)
    vs. Merkle/IBLT set-reconciliation (scales to huge stores, much more code).
-3. **Transport version:** hard `.v3` cut vs. negotiate the cue format for a rolling upgrade.
-4. **Phase 0(b) outcome** decides whether Phase 2 ships or we stay on reactive re-attach.
+3. ~~**Transport version:** hard `.v3` cut vs. negotiate the cue format for a rolling upgrade.~~ **Resolved:**
+   hard cut throughout; now at `.v6`.
+4. ~~**Phase 0(b) outcome** decides whether Phase 2 ships or we stay on reactive re-attach.~~ **Resolved:**
+   Phase 2 shipped; Phase 3 then eliminated the leaked-request wedge that reactive re-attach caused.
