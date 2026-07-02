@@ -6,12 +6,18 @@ import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 
 /**
- * Runtime permissions the Wi-Fi Aware mesh needs. Unlike the old Nearby transport, Wi-Fi Aware on
- * API 33+ needs **no location** — `NEARBY_WIFI_DEVICES` carries the `neverForLocation` flag (see the
- * manifest) — and no Bluetooth. Just nearby-Wi-Fi discovery and notifications.
+ * Runtime permissions the mesh needs across both transport planes. Wi-Fi Aware on API 33+ needs **no
+ * location** — `NEARBY_WIFI_DEVICES` carries `neverForLocation` — and neither does the Bluetooth LE plane,
+ * whose `BLUETOOTH_SCAN` also carries `neverForLocation` (identity is the nodeId, RSSI is proximity-only). A
+ * device missing either radio is handled at runtime (the transport self-degrades, and the composite runs the
+ * plane that is present), so requesting all four here is safe — an unsupported permission is simply a grant
+ * the app never exercises.
  */
 fun requiredMeshPermissions(): Array<String> = arrayOf(
     Manifest.permission.NEARBY_WIFI_DEVICES,
+    Manifest.permission.BLUETOOTH_SCAN,
+    Manifest.permission.BLUETOOTH_ADVERTISE,
+    Manifest.permission.BLUETOOTH_CONNECT,
     Manifest.permission.POST_NOTIFICATIONS,
 )
 
@@ -21,10 +27,16 @@ fun hasAllMeshPermissions(context: Context): Boolean =
     }
 
 /**
- * Whether this device has the Wi-Fi Aware radio the mesh runs on. False on hardware lacking
- * [PackageManager.FEATURE_WIFI_AWARE] (some budget/older and certain Samsung models); since there is no
- * fallback transport, the UI surfaces a clear "can't mesh on this device" state rather than an empty
- * neighbor list.
+ * Whether this device has the Wi-Fi Aware radio the primary mesh plane runs on. False on hardware lacking
+ * [PackageManager.FEATURE_WIFI_AWARE] (some budget/older and certain Samsung models).
  */
 fun hasWifiAwareHardware(context: Context): Boolean =
     context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)
+
+/**
+ * Whether this device has the Bluetooth LE radio the secondary mesh plane runs on. Together with
+ * [hasWifiAwareHardware] this gates the "can this device mesh at all?" onboarding state: a device with
+ * **either** radio can participate (the composite runs whichever plane is present).
+ */
+fun hasBleHardware(context: Context): Boolean =
+    context.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)

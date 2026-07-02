@@ -1,4 +1,4 @@
-package app.getknit.knit.mesh.wifiaware
+package app.getknit.knit.mesh.link
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -10,8 +10,10 @@ import java.nio.ByteBuffer
 
 /**
  * The length-prefixed framing that multiplexes mesh frames and out-of-band file transfers over a
- * single Wi-Fi Aware data-path (NDP) TCP socket — the transport's own little record protocol, since a
- * raw socket is just a byte stream with no message boundaries (unlike Nearby's discrete `Payload`s).
+ * single connected byte stream — the transport's own little record protocol, since a raw socket is just
+ * a byte stream with no message boundaries. **Transport-neutral**: it runs over any
+ * [InputStream]/[OutputStream], so both the Wi-Fi Aware NDP TCP socket and the Bluetooth L2CAP socket
+ * ([app.getknit.knit.mesh.link.LinkSocket]) share it unchanged.
  *
  * Each record is `[type:1][len:4 big-endian][payload:len]`. [Type.FRAME] carries one CBOR
  * [app.getknit.knit.mesh.protocol.WireEnvelope]; a file is streamed as [Type.FILE_HEADER] (a
@@ -19,9 +21,9 @@ import java.nio.ByteBuffer
  * at a time per socket (the writer serializes them), so chunks need no file id — but FRAME records may
  * be interleaved *between* a file's chunks so a large blob never stalls live frames.
  *
- * Pure (no Android), so the codec is JVM-unit-testable ([AwareFramingTest]).
+ * Pure (no Android), so the codec is JVM-unit-testable ([app.getknit.knit.LinkFramingTest]).
  */
-internal object AwareFraming {
+internal object LinkFraming {
 
     /** Record discriminator (the leading byte of every record); the byte values are the on-wire tags. */
     @Suppress("MagicNumber")
@@ -31,13 +33,14 @@ internal object AwareFraming {
         FILE_CHUNK(3),
         FILE_END(4),
 
-        /** Transport-internal idle heartbeat: keeps the NDP/TCP alive so an idle link isn't torn down. Reader ignores it. */
+        /** Transport-internal idle heartbeat: keeps an idle link's socket alive. Reader ignores it. */
         KEEPALIVE(5),
 
         /**
-         * First record an initiator sends after connecting: its advert ([Protocol.advertise] bytes), so
-         * the accept-any-peer responder — which accepts a connection without knowing the peer up front —
-         * learns which node it is. Consumed once at accept; ignored thereafter.
+         * First record an initiator sends after connecting: its advert
+         * ([app.getknit.knit.mesh.protocol.Protocol.advertise] bytes), so an accept-any responder — which
+         * accepts a connection without knowing the peer up front — learns which node it is. Consumed once at
+         * accept (see [LinkHandshake]); ignored thereafter.
          */
         HELLO(6),
 
@@ -132,7 +135,7 @@ internal object AwareFraming {
 }
 
 /**
- * Sent as the [AwareFraming.Type.FILE_HEADER] record ahead of a file's chunks so the receiver can route
+ * Sent as the [LinkFraming.Type.FILE_HEADER] record ahead of a file's chunks so the receiver can route
  * it: [kind] (avatar vs attachment), [key] (avatar's node id or attachment content hash), and [mime].
  */
 @Serializable
@@ -143,7 +146,7 @@ internal data class FileHeaderWire(
 )
 
 /**
- * Sent as the [AwareFraming.Type.DIGEST] record on link-up: the message [ids] this node currently holds in
+ * Sent as the [LinkFraming.Type.DIGEST] record on link-up: the message [ids] this node currently holds in
  * store-and-forward custody. The peer diffs it against its own set and pushes back only the frames this node
  * lacks (and vice versa), so a sync transfers the set difference rather than the whole store.
  */

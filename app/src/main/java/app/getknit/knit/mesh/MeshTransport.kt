@@ -80,6 +80,14 @@ interface MeshTransport {
     /** Coarse radio health (e.g. flips to [TransportHealth.Degraded] when Quick Share seizes the radios). */
     val health: StateFlow<TransportHealth>
 
+    /**
+     * True if this transport has a **coordination plane** — a small best-effort message channel that reaches
+     * neighbors with no data path (Wi-Fi Aware cues) — so [CompositeMeshTransport] routes the fast path
+     * ([fastFanout]/[fastSend]) here. A transport whose reliable [send] already rides persistent links
+     * (Bluetooth) leaves this false: for it, a normal [send] over its live links *is* the fast path.
+     */
+    val hasFastPlane: Boolean get() = false
+
     /** Frames received from neighbors (after transport-level decode, before mesh dedup/relay). */
     val inbound: Flow<InboundFrame>
 
@@ -129,8 +137,8 @@ interface MeshTransport {
 
     /**
      * Advertises the custody message [ids] we hold to a single neighbor [to] over the data-path socket (an
-     * [app.getknit.knit.mesh.wifiaware.AwareFraming.Type.DIGEST] record), so it replies with only the frames we
-     * lack. Default no-op — only Wi-Fi Aware (which has a data path) overrides it; the fakes/demo ignore it.
+     * [app.getknit.knit.mesh.link.LinkFraming.Type.DIGEST] record), so it replies with only the frames we
+     * lack. Default no-op — only a transport with a data path overrides it; the fakes/demo ignore it.
      */
     suspend fun sendDigest(to: Peer, ids: List<String>) {}
 }

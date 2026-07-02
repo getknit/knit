@@ -26,20 +26,22 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.ui.hasAllMeshPermissions
+import app.getknit.knit.ui.hasBleHardware
 import app.getknit.knit.ui.hasWifiAwareHardware
 import app.getknit.knit.ui.requestIgnoreBatteryOptimizations
 import app.getknit.knit.ui.requiredMeshPermissions
 
 /**
- * First-run gate: explains why the Wi-Fi Aware mesh needs its nearby-Wi-Fi + notification permissions
+ * First-run gate: explains why the mesh needs its nearby-Wi-Fi + Bluetooth + notification permissions
  * and (optionally) battery exemption, requests them, then hands off to the chat once granted. The mesh
- * can start even if a permission was denied — it just degrades. On hardware without Wi-Fi Aware it shows
- * a clear "unsupported" notice (there is no fallback transport) but still lets the user in.
+ * can start even if a permission was denied — it just degrades. Only on hardware with **neither** Wi-Fi
+ * Aware nor Bluetooth LE does it show a clear "unsupported" notice (but still lets the user in).
  */
 @Composable
 fun OnboardingScreen(onReady: () -> Unit) {
     val context = LocalContext.current
-    val meshSupported = remember { hasWifiAwareHardware(context) }
+    // The mesh runs on either radio plane, so a device with Wi-Fi Aware OR Bluetooth LE can participate.
+    val meshSupported = remember { hasWifiAwareHardware(context) || hasBleHardware(context) }
     var granted by remember { mutableStateOf(hasAllMeshPermissions(context)) }
 
     val launcher = rememberLauncherForActivityResult(

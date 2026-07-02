@@ -190,6 +190,7 @@ class MeshManager(
         watchIncomingDigests(session)
         resumePendingFetches(session)
         pruneForwardStorePeriodically(session)
+        reofferToNeighborsPeriodically(session)
         logMetricsPeriodically(session)
     }
 
@@ -437,6 +438,30 @@ class MeshManager(
         }
     }
 
+    /**
+     * Periodically re-runs the neighbor-join re-offer hooks for **currently-linked** neighbors — the timer-driven
+     * anti-entropy a persistent link needs. [watchNeighbors] fires these once per newcomer, which suffices for the
+     * cue-driven Wi-Fi Aware transport (its ephemeral links re-join on every sync, so the re-offer re-runs for
+     * free), but a Bluetooth link stays up continuously — and the composite masks a NAN→BT handoff as one
+     * continuous neighbor — so without this a custody divergence that appears (or an offer lost to a race) after
+     * link-up would never reconcile: the peer keeps advertising a differing store digest and no sync ever closes
+     * it, which also leaves the Wi-Fi Aware plane forever *wanting* a sync it can't complete. Cheap and idempotent:
+     * [ForwardSync.onDigest] returns only the set difference, a duplicate is dropped by the receiver's SeenSet, and
+     * a peer no longer holding a live link is a no-op (the send routes to no transport).
+     */
+    private fun reofferToNeighborsPeriodically(session: CoroutineScope) {
+        session.launch {
+            while (true) {
+                delay(NEIGHBOR_REOFFER_INTERVAL_MS)
+                transport.neighbors.value.forEach { peer ->
+                    forwardSync.onNeighborAdded(peer) // re-advertise our custody digest → pull anything we lack
+                    blobExchange.onNeighborAdded(peer) // re-ask for blobs we still need
+                    keyExchange.onNeighborAdded(peer) // re-ask for keys we still need
+                }
+            }
+        }
+    }
+
     // --- Profile broadcasting ---
 
     private fun watchNeighbors(session: CoroutineScope) {
@@ -450,7 +475,9 @@ class MeshManager(
                 // clearing it would re-push every avatar on each brief contact. A peer that truly leaves
                 // ages out by TTL. (ForwardSync, by contrast, *does* re-offer its whole carried set on each
                 // join now: the digest gate makes a fresh link mean the stores differ, so re-pushing is how
-                // an offer lost to a torn-down link self-heals — see ForwardSync.onNeighborAdded.)
+                // an offer lost to a torn-down link self-heals — see ForwardSync.onNeighborAdded. A persistent
+                // link (Bluetooth) only joins once, so reofferToNeighborsPeriodically re-runs these hooks on a
+                // timer for currently-linked neighbors — the anti-entropy a non-flapping link needs.)
                 known = currentIds
                 newcomers.forEach {
                     pushProfileTo(it)
@@ -1404,6 +1431,12 @@ class MeshManager(
         const val TEXT_MODERATION_TAG = "TextModeration"
         const val METRICS_LOG_INTERVAL_MS = 60_000L
         const val FORWARD_SWEEP_INTERVAL_MS = 10 * 60_000L
+
+        // Re-run the neighbor re-offer hooks (custody digest + blob/key re-asks) for currently-linked neighbors
+        // this often, so a persistent link (Bluetooth) gets the anti-entropy that Wi-Fi Aware's flapping
+        // ephemeral links get for free. Short enough to converge a missed message within ~a minute, long enough
+        // to stay cheap on battery/bandwidth.
+        const val NEIGHBOR_REOFFER_INTERVAL_MS = 60_000L
 
         /** Payload for a frame whose content lives entirely in the routing envelope (e.g. a group update). */
         val EMPTY_PAYLOAD = ByteArray(0)

@@ -30,8 +30,6 @@ import android.os.SystemClock
 import android.util.Log
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.DigestTracker
-import app.getknit.knit.mesh.DropReason
-import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshMetrics
@@ -41,7 +39,11 @@ import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportHealth
-import app.getknit.knit.mesh.isValidBlobHash
+import app.getknit.knit.mesh.link.FramedLink
+import app.getknit.knit.mesh.link.LinkCallbacks
+import app.getknit.knit.mesh.link.LinkHandshake
+import app.getknit.knit.mesh.link.LinkSocket
+import app.getknit.knit.mesh.link.NetSocketLink
 import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -59,11 +61,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.BufferedInputStream
-import java.io.BufferedOutputStream
 import java.io.File
-import java.io.IOException
-import java.io.OutputStream
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
@@ -83,7 +81,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *   which ride discovery follow-up frames and need **no data path**. They reach every discovered neighbor
  *   at once and keep working even while the one NDP is busy. Each node advertises a tiny **cue**
  *   (`nodeId|version`, see [StoreDigest]) so a neighbor can tell when its carried set differs from ours.
- * - **Data plane** — a single ephemeral NDP TCP socket (link-local IPv6, framed by [AwareFraming]) brought
+ * - **Data plane** — a single ephemeral NDP TCP socket (link-local IPv6, framed by [FramedLink]) brought
  *   up **on demand** only to sync, then torn down, freeing the NDI for the next pair.
  *
  * ## Sync lifecycle
@@ -97,7 +95,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * pairwise syncs propagates epidemically.
  *
  * The accept-any responder is anchored to the *publish* session (accepts a data path from **any**
- * initiator, learning who via the first [AwareFraming.Type.HELLO] record); only *subscribe* is ever
+ * initiator, learning who via the first HELLO record — see [LinkHandshake]); only *subscribe* is ever
  * re-armed (to re-fire one-shot discovery while idle), never while a live NDP is up.
  *
  * Permissions are gated by onboarding; the mesh starts regardless and degrades if a permission/hardware is
@@ -146,6 +144,10 @@ class WifiAwareTransport(
     private val _incomingDigests = MutableSharedFlow<ReceivedDigest>(extraBufferCapacity = 32)
     override val incomingDigests = _incomingDigests.asSharedFlow()
 
+    // Wi-Fi Aware has a coordination-plane message channel (cues/fastFanout), so the composite routes the
+    // fast-path (fastFanout/fastSend) here; a Bluetooth sibling with only persistent links leaves this false.
+    override val hasFastPlane = true
+
     // Aware + connectivity callbacks are delivered on this dedicated thread's handler.
     private val callbackThread = HandlerThread("wifi-aware-cb").apply { start() }
     private val handler = Handler(callbackThread.looper)
@@ -184,8 +186,18 @@ class WifiAwareTransport(
     @Volatile private var responderCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var acceptJob: Job? = null
 
-    // The single live data-path link, keyed by peer nodeId (at most one entry — one NDI).
-    private val peers = ConcurrentHashMap<String, PeerConn>()
+    // The single live data-path link, keyed by peer nodeId (at most one entry — one NDI). [NanLink] wraps the
+    // shared [FramedLink] (socket I/O) with the NAN-specific per-peer network callback + quiescence supervisor.
+    private val peers = ConcurrentHashMap<String, NanLink>()
+
+    // Forwards a live [FramedLink]'s decoded records into our flows and its teardown into [teardownPeer].
+    // onLinkDown can fire twice (read + write loop end) but teardownPeer is idempotent.
+    private val linkCallbacks = object : LinkCallbacks {
+        override fun onInbound(frame: InboundFrame) { _inbound.tryEmit(frame) }
+        override fun onDigest(digest: ReceivedDigest) { _incomingDigests.tryEmit(digest) }
+        override fun onFile(file: ReceivedFile) { _incomingFiles.tryEmit(file) }
+        override fun onLinkDown(nodeId: String) { teardownPeer(nodeId) }
+    }
 
     // Connection bookkeeping guarded by [lock]: peers discovered via subscribe (with a subscribe-session
     // PeerHandle for NDP initiation), the single in-flight handshake, an in-flight accept, and per-peer
@@ -382,17 +394,15 @@ class WifiAwareTransport(
     override suspend fun send(wire: WireEnvelope, to: Peer?) {
         val bytes = WireCodec.encodeWire(wire)
         val targets = if (to == null) peers.values.toList() else listOfNotNull(peers[to.nodeId])
-        targets.forEach { it.outbound.trySend(Outbound.Frame(bytes)) }
-        if (targets.isNotEmpty()) metrics.onBytesSent(bytes.size.toLong() * targets.size)
+        targets.forEach { it.link.send(bytes) } // FramedLink.send accounts the bytes
     }
 
     override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) {
-        peers[to.nodeId]?.outbound?.trySend(Outbound.FileSend(file, meta))
+        peers[to.nodeId]?.link?.sendFile(file, meta)
     }
 
     override suspend fun sendDigest(to: Peer, ids: List<String>) {
-        peers[to.nodeId]?.outbound?.trySend(Outbound.Digest(ids))
-        Log.d(TAG, "digest → ${to.nodeId}: ${ids.size} ids") // temp diag (strip with the other logState diags)
+        peers[to.nodeId]?.link?.sendDigest(ids)
     }
 
     // --- Attach / discovery ---
@@ -873,17 +883,14 @@ class WifiAwareTransport(
     ) {
         val socket = runCatching { network.socketFactory.createSocket(ip, port) }.getOrNull()
             ?: return failConnect(peerNodeId, cb, staleHandle = false) // NDP came up; socket issue, not a handle problem
+        val link = NetSocketLink(socket)
         // Send our identity first so the accept-any responder on the other side knows who connected.
-        val sent = runCatching {
-            val out = socket.getOutputStream()
-            out.write(AwareFraming.encode(AwareFraming.Type.HELLO, helloBytes()))
-            out.flush()
-        }.isSuccess
+        val sent = runCatching { LinkHandshake.writeHello(link.output, localNodeId) }.isSuccess
         if (!sent) {
-            runCatching { socket.close() }
+            link.close()
             return failConnect(peerNodeId, cb, staleHandle = false)
         }
-        registerConn(peerNodeId, advert, socket, BufferedInputStream(socket.getInputStream()), cb)
+        registerConn(peerNodeId, advert, link, cb)
     }
 
     // --- Server side (persistent accept-any responder) ---
@@ -944,23 +951,23 @@ class WifiAwareTransport(
     /** A client connected to our accept-any responder: read its identity (HELLO), then register the link. */
     private fun handleAcceptedSocket(socket: Socket) {
         try {
-            val input = BufferedInputStream(socket.getInputStream())
+            val link = NetSocketLink(socket)
             runCatching { socket.soTimeout = ACCEPT_HELLO_TIMEOUT_MS } // bound the identity read so a stall can't pin the slot
-            val first = runCatching { AwareFraming.read(input) }.getOrNull()
-            if (first?.type != AwareFraming.Type.HELLO) {
-                runCatching { socket.close() }
+            // Reads the HELLO from the cached buffered stream that the FramedLink read loop then reuses.
+            val advert = LinkHandshake.readHello(link.input)
+            if (advert == null) {
+                link.close()
                 return
             }
-            val advert = Protocol.parse(first.payload.decodeToString())
             val clientNodeId = advert.nodeId
             // Enforce the tie-break server side (we must be the smaller id) and don't double-link.
             if (clientNodeId == localNodeId || localNodeId >= clientNodeId || clientNodeId in peers.keys) {
-                runCatching { socket.close() }
+                link.close()
                 return
             }
             runCatching { socket.soTimeout = 0 } // back to blocking reads for the normal loop
             Log.i(TAG, "accepted client $clientNodeId")
-            registerConn(clientNodeId, advert, socket, input, callback = null) // shared responder: no per-peer callback
+            registerConn(clientNodeId, advert, link, callback = null) // shared responder: no per-peer callback
         } finally {
             endAccept()
         }
@@ -980,20 +987,26 @@ class WifiAwareTransport(
     private fun registerConn(
         peerNodeId: String,
         advert: Protocol.PeerWire,
-        socket: Socket,
-        input: BufferedInputStream,
+        link: LinkSocket,
         callback: ConnectivityManager.NetworkCallback?,
     ) {
-        val conn = PeerConn(peerNodeId, advert, socket, callback)
-        val now = SystemClock.elapsedRealtime()
-        conn.linkStartedAt = now
-        conn.lastActivityAt = now // start the quiescence window at link-up (backfill will extend it)
-        lastLinkOrAcceptAt = now // the data plane produced a link (either role) — clears the wedge watchdog
+        val framed = FramedLink(
+            nodeId = peerNodeId,
+            peer = Peer(peerNodeId, advert.protoVersion, advert.capabilities),
+            socket = link,
+            scope = scope,
+            cacheDir = appContext.cacheDir,
+            metrics = metrics,
+            callbacks = linkCallbacks,
+            now = SystemClock::elapsedRealtime, // share the supervisor's clock for quiescence
+            log = { msg -> Log.d(TAG, msg) },
+        )
+        val conn = NanLink(framed, callback)
+        lastLinkOrAcceptAt = SystemClock.elapsedRealtime() // the data plane produced a link (either role) — clears the wedge watchdog
         val prev = peers.put(peerNodeId, conn)
         prev?.close() // a stale link to the same peer (shouldn't happen, but never leak it)
         synchronized(lock) { inFlight.remove(peerNodeId); retryAfter.remove(peerNodeId) }
-        conn.readerJob = scope.launch(Dispatchers.IO) { readLoop(conn, input) }
-        conn.writerJob = scope.launch(Dispatchers.IO) { writeLoop(conn) }
+        framed.start() // launches read + write loops; stamps linkStartedAt/lastActivityAt at link-up
         conn.reaperJob = scope.launch { superviseLink(conn) }
         noteReachable(Peer(peerNodeId, advert.protoVersion, advert.capabilities))
         refreshNeighbors()
@@ -1008,18 +1021,18 @@ class WifiAwareTransport(
      * race, but it is **essential**: tearing an NDP down does not deliver a TCP FIN/RST to the far side, so a
      * responder that waited only for its read loop to see EOF would pin its single NDI for the full
      * [RESPONDER_MAX_HOLD_MS] backstop after every clean sync (observed: `idle=45103ms`), choking the mesh.
-     * [PeerConn.lastActivityAt] is touched on both read and write, so an idle window means *neither* side has
+     * [FramedLink.lastActivityAt] is touched on both read and write, so an idle window means *neither* side has
      * more to send — a premature teardown just re-triggers on the next cue.
      */
     @Suppress("LoopWithTooManyJumpStatements") // poll → skip-mid-file (continue) or done (break)
-    private suspend fun superviseLink(conn: PeerConn) {
-        val isInitiator = conn.networkCallback != null
+    private suspend fun superviseLink(conn: NanLink) {
+        val isInitiator = conn.isInitiator
         while (scope.isActive && peers[conn.nodeId] === conn) {
             delay(QUIESCENCE_POLL_MS)
-            if (conn.rxInProgress || conn.txInProgress) continue // never tear down mid file transfer
+            if (conn.link.rxInProgress || conn.link.txInProgress) continue // never tear down mid file transfer
             val now = SystemClock.elapsedRealtime()
-            val idle = now - conn.lastActivityAt
-            val held = now - conn.linkStartedAt
+            val idle = now - conn.link.lastActivityAt
+            val held = now - conn.link.linkStartedAt
             val done = if (isInitiator) {
                 // Cut the post-backfill linger short when another pair is waiting on our single NDI, so a
                 // message reaches the next neighbor without paying the full QUIESCENCE_MS idle hold — the
@@ -1080,13 +1093,13 @@ class WifiAwareTransport(
         val conn = peers.remove(peerNodeId) ?: return
         conn.close()
         // Only client links own a per-peer network callback; server links share the responder — leave it.
-        val wasServerLink = conn.networkCallback == null
-        conn.networkCallback?.let { runCatching { connectivity.unregisterNetworkCallback(it) } }
+        val wasServerLink = !conn.isInitiator
+        conn.callback?.let { runCatching { connectivity.unregisterNetworkCallback(it) } }
         // Back off an *initiator* link that ended without a clean sync (a reset — usually the responder was
         // busy on its one NDI, or the NDP dropped), so we don't immediately re-hammer a peer we can't reach
         // yet. A clean quiescence teardown passes backoffMs = 0: it already recorded the sync, so the peer
         // isn't sync-wanted anyway, and this keeps active-chat re-sync latency low.
-        if (conn.networkCallback != null && backoffMs > 0) {
+        if (conn.isInitiator && backoffMs > 0) {
             synchronized(lock) { retryAfter[peerNodeId] = SystemClock.elapsedRealtime() + backoffMs }
         }
         noteLinkEnded()
@@ -1129,142 +1142,6 @@ class WifiAwareTransport(
         scope.launch { delay(SETTLE_MS); healSignal.trySend(Unit) }
     }
 
-    // --- Socket I/O ---
-
-    private suspend fun readLoop(conn: PeerConn, input: BufferedInputStream) {
-        try {
-            while (scope.isActive) {
-                val msg = AwareFraming.read(input) ?: break
-                when (msg.type) {
-                    AwareFraming.Type.FRAME -> { conn.touch(); handleFrame(conn, msg.payload) }
-                    AwareFraming.Type.FILE_HEADER -> { conn.touch(); conn.beginRxFile(msg.payload) }
-                    AwareFraming.Type.FILE_CHUNK -> { conn.touch(); conn.appendRxFile(msg.payload) }
-                    AwareFraming.Type.FILE_END -> { conn.touch(); endRxFile(conn) }
-                    AwareFraming.Type.DIGEST -> { conn.touch(); handleDigest(conn, msg.payload) }
-                    AwareFraming.Type.KEEPALIVE -> Unit // legacy record from an older peer; ignore
-                    AwareFraming.Type.HELLO -> Unit // identity already consumed at accept; ignore any stray
-                }
-            }
-        } catch (e: IOException) {
-            Log.d(TAG, "read loop ended for ${conn.nodeId}: ${e.message}")
-        } finally {
-            teardownPeer(conn.nodeId)
-        }
-    }
-
-    private fun handleFrame(conn: PeerConn, bytes: ByteArray) {
-        val wire = WireCodec.decodeWire(bytes)
-        if (wire == null) {
-            metrics.onDropped(DropReason.DECODE_FAILED)
-            return
-        }
-        val envelope = WireCodec.decodeEnvelope(wire.signed)
-        if (envelope == null) {
-            metrics.onDropped(DropReason.DECODE_FAILED)
-            return
-        }
-        _inbound.tryEmit(InboundFrame(wire, envelope, conn.nodeId))
-    }
-
-    private fun handleDigest(conn: PeerConn, payload: ByteArray) {
-        val digest = AwareFraming.decodeDigest(payload) ?: return
-        Log.d(TAG, "digest ← ${conn.nodeId}: ${digest.ids.size} ids") // temp diag (strip with the other logState diags)
-        _incomingDigests.tryEmit(ReceivedDigest(conn.nodeId, digest.ids))
-    }
-
-    /**
-     * Drains a peer's outbound queue to its socket. Frames are written immediately; a file is streamed
-     * as header→chunks→end, but pending frames are flushed *between* chunks so a large blob never stalls
-     * live traffic. Only one file streams at a time (later files wait in [PeerConn.stash]).
-     */
-    private suspend fun writeLoop(conn: PeerConn) {
-        try {
-            val out = BufferedOutputStream(conn.socket.getOutputStream())
-            while (scope.isActive) {
-                val item = conn.nextOutbound() ?: break
-                when (item) {
-                    is Outbound.Frame -> {
-                        AwareFraming.write(out, AwareFraming.Type.FRAME, item.bytes)
-                        out.flush()
-                        conn.touch()
-                    }
-                    is Outbound.Digest -> {
-                        AwareFraming.write(out, AwareFraming.Type.DIGEST, AwareFraming.encodeDigest(DigestWire(item.ids)))
-                        out.flush()
-                        conn.touch()
-                    }
-                    is Outbound.FileSend -> streamFile(conn, out, item)
-                }
-            }
-        } catch (e: IOException) {
-            Log.d(TAG, "write loop ended for ${conn.nodeId}: ${e.message}")
-            teardownPeer(conn.nodeId)
-        }
-    }
-
-    @Suppress("NestedBlockDepth") // header → (drain frames → read chunk → write chunk) loop → end
-    private fun streamFile(conn: PeerConn, out: OutputStream, item: Outbound.FileSend) {
-        conn.txInProgress = true // don't let the supervisor tear down mid transfer
-        try {
-            val header = FileHeaderWire(item.meta.kind.name, item.meta.key, item.meta.mime)
-            AwareFraming.write(out, AwareFraming.Type.FILE_HEADER, AwareFraming.encodeFileHeader(header))
-            item.file.inputStream().use { input ->
-                val buf = ByteArray(AwareFraming.FILE_CHUNK_BYTES)
-                while (true) {
-                    conn.drainFramesInto(out) // interleave live frames between chunks
-                    val n = input.read(buf)
-                    if (n == -1) break
-                    AwareFraming.write(out, AwareFraming.Type.FILE_CHUNK, if (n == buf.size) buf else buf.copyOf(n))
-                    conn.touch()
-                }
-            }
-            AwareFraming.write(out, AwareFraming.Type.FILE_END)
-            out.flush()
-            conn.touch()
-        } finally {
-            conn.txInProgress = false
-        }
-    }
-
-    private fun endRxFile(conn: PeerConn) {
-        val (temp, meta) = conn.finishRxFile() ?: return
-        scope.launch(Dispatchers.IO) { finalizeIncomingFile(conn.nodeId, temp, meta) }
-    }
-
-    /** Moves a fully-received file into the cache under a safe name and announces it (avatar by node, attachment by hash). */
-    private fun finalizeIncomingFile(nodeId: String, temp: File, meta: FileMeta) {
-        // [meta.key] is peer-supplied and interpolated into the filename: reject anything but a 64-hex
-        // content hash so a "../" can't escape the cache dir (path traversal → arbitrary in-sandbox write).
-        if (!isValidBlobHash(meta.key)) {
-            temp.delete()
-            Log.w(TAG, "Rejecting ${meta.kind} from $nodeId: malformed blob key")
-            return
-        }
-        val dest = when (meta.kind) {
-            FileKind.AVATAR -> {
-                appContext.cacheDir.listFiles { f -> f.name.startsWith("avatar-$nodeId-") }?.forEach { it.delete() }
-                File(appContext.cacheDir, "avatar-$nodeId-${meta.key}.jpg")
-            }
-            FileKind.ATTACHMENT -> File(appContext.cacheDir, "attach-${meta.key}.${extForMime(meta.mime)}")
-        }
-        val cacheRoot = appContext.cacheDir.canonicalPath + File.separator
-        if (!dest.canonicalPath.startsWith(cacheRoot)) {
-            temp.delete()
-            Log.w(TAG, "Rejecting ${meta.kind} from $nodeId: path escapes cache dir")
-            return
-        }
-        runCatching {
-            temp.copyTo(dest, overwrite = true)
-            temp.delete()
-        }.onSuccess {
-            _incomingFiles.tryEmit(ReceivedFile(nodeId, dest.absolutePath, meta.kind, meta.key, meta.mime))
-        }.onFailure {
-            temp.delete()
-            dest.delete()
-            Log.w(TAG, "Failed saving ${meta.kind} from $nodeId", it)
-        }
-    }
-
     // --- Connection admission (single NDI slot) ---
 
     private fun beginConnect(peerNodeId: String): Boolean = synchronized(lock) {
@@ -1291,7 +1168,7 @@ class WifiAwareTransport(
     }
 
     private fun refreshNeighbors() {
-        _neighbors.value = peers.values.map { Peer(it.nodeId, it.advert.protoVersion, it.advert.capabilities) }.toSet()
+        _neighbors.value = peers.values.map { it.link.peer }.toSet()
         recomputeReachable()
     }
 
@@ -1307,19 +1184,10 @@ class WifiAwareTransport(
     private fun recomputeReachable() {
         val now = SystemClock.elapsedRealtime()
         lastSeenAt.entries.removeAll { now - it.value > REACHABLE_LINGER_MS }
-        val live = peers.values.map { Peer(it.nodeId, it.advert.protoVersion, it.advert.capabilities) }
+        val live = peers.values.map { it.link.peer }
         val liveIds = live.mapTo(HashSet()) { it.nodeId }
         val nearby = reachablePeers.filterKeys { it in lastSeenAt.keys && it !in liveIds }.values
         _reachable.value = (live + nearby).toSet()
-    }
-
-    private fun helloBytes(): ByteArray = Protocol.advertise(localNodeId).encodeToByteArray()
-
-    private fun extForMime(mime: String): String = when (mime.lowercase()) {
-        "image/gif" -> "gif"
-        "image/png" -> "png"
-        "image/webp" -> "webp"
-        else -> "jpg"
     }
 
     // --- Availability ---
@@ -1367,137 +1235,33 @@ class WifiAwareTransport(
         availabilityRegistered = false
     }
 
-    /** One live data-path link to a peer: the socket, its outbound queue, I/O jobs, and inbound-file state. */
-    private inner class PeerConn(
-        val nodeId: String,
-        val advert: Protocol.PeerWire,
-        val socket: Socket,
-        // Non-null for a client link (its own per-peer network request); null for a server link (shares
-        // the accept-any responder network — which must NOT be unregistered when one client leaves).
-        val networkCallback: ConnectivityManager.NetworkCallback?,
+    /**
+     * NAN-specific wrapper around a shared [FramedLink]: the per-peer initiator network callback (null for a
+     * server link that shares the accept-any responder — which must NOT be unregistered when one client
+     * leaves) and the quiescence supervisor job. [FramedLink] owns the socket I/O; this owns what only NAN
+     * needs (the single-NDI teardown policy).
+     */
+    private inner class NanLink(
+        val link: FramedLink,
+        val callback: ConnectivityManager.NetworkCallback?,
     ) {
-        val outbound = Channel<Outbound>(Channel.UNLIMITED)
-        var readerJob: Job? = null
-        var writerJob: Job? = null
+        val nodeId: String get() = link.nodeId
+        val isInitiator: Boolean get() = callback != null
         var reaperJob: Job? = null
 
-        // Quiescence bookkeeping for the per-link supervisor (elapsedRealtime).
-        @Volatile var linkStartedAt = 0L
-        @Volatile var lastActivityAt = 0L
-        @Volatile var rxInProgress = false
-        @Volatile var txInProgress = false
-
-        // Files queued behind an in-progress file transfer (only one streams at a time).
-        private val stash = ArrayDeque<Outbound.FileSend>()
-
-        // Inbound file reassembly (one active file per socket, so no per-file id needed).
-        private var rxOut: OutputStream? = null
-        private var rxTemp: File? = null
-        private var rxMeta: FileMeta? = null
-        private var rxBytes = 0L
-        private var rxAborted = false
-
-        /** Mark data-path activity so the supervisor's quiescence window resets (frames + file records only). */
-        fun touch() {
-            lastActivityAt = SystemClock.elapsedRealtime()
-        }
-
-        /** Next outbound item: a file stashed during a prior transfer, else the channel head. */
-        suspend fun nextOutbound(): Outbound? =
-            stash.removeFirstOrNull() ?: outbound.receiveCatching().getOrNull()
-
-        /** Write any queued frames now (called between file chunks); stash any files for later. */
-        fun drainFramesInto(out: OutputStream) {
-            while (true) {
-                val item = outbound.tryReceive().getOrNull() ?: break
-                when (item) {
-                    is Outbound.Frame -> AwareFraming.write(out, AwareFraming.Type.FRAME, item.bytes)
-                    is Outbound.Digest ->
-                        AwareFraming.write(out, AwareFraming.Type.DIGEST, AwareFraming.encodeDigest(DigestWire(item.ids)))
-                    is Outbound.FileSend -> stash.addLast(item)
-                }
-            }
-        }
-
-        fun beginRxFile(headerPayload: ByteArray) {
-            closeRx()
-            val header = AwareFraming.decodeFileHeader(headerPayload) ?: run { rxAborted = true; return }
-            val temp = File.createTempFile("nan-rx-", ".tmp", appContext.cacheDir)
-            rxTemp = temp
-            rxOut = BufferedOutputStream(temp.outputStream())
-            rxMeta = FileMeta(
-                kind = runCatching { FileKind.valueOf(header.kind) }.getOrDefault(FileKind.ATTACHMENT),
-                key = header.key,
-                mime = header.mime,
-            )
-            rxBytes = 0L
-            rxAborted = false
-            rxInProgress = true
-        }
-
-        fun appendRxFile(chunk: ByteArray) {
-            if (rxAborted) return
-            val out = rxOut ?: return
-            rxBytes += chunk.size
-            if (rxBytes > MAX_INCOMING_FILE_BYTES) {
-                Log.w(TAG, "incoming file from $nodeId exceeds ceiling; aborting")
-                abortRx()
-                return
-            }
-            runCatching { out.write(chunk) }.onFailure { abortRx() }
-        }
-
-        /** Finish the active file, returning (temp, meta) to finalize, or null if none/aborted. */
-        fun finishRxFile(): Pair<File, FileMeta>? {
-            val out = rxOut
-            val temp = rxTemp
-            val meta = rxMeta
-            rxOut = null; rxTemp = null; rxMeta = null
-            rxInProgress = false
-            runCatching { out?.close() }
-            if (rxAborted || temp == null || meta == null) {
-                temp?.delete()
-                return null
-            }
-            return temp to meta
-        }
-
-        private fun abortRx() {
-            rxAborted = true
-            rxInProgress = false
-            runCatching { rxOut?.close() }
-            rxOut = null
-            rxTemp?.delete()
-            rxTemp = null
-        }
-
-        private fun closeRx() {
-            rxInProgress = false
-            runCatching { rxOut?.close() }
-            rxOut = null
-            rxTemp?.delete()
-            rxTemp = null
-            rxMeta = null
-        }
-
         fun close() {
-            readerJob?.cancel()
-            writerJob?.cancel()
             reaperJob?.cancel()
-            outbound.close()
-            closeRx()
-            runCatching { socket.close() }
+            link.close()
         }
     }
 
-    private sealed interface Outbound {
-        class Frame(val bytes: ByteArray) : Outbound
-        class Digest(val ids: List<String>) : Outbound
-        class FileSend(val file: File, val meta: FileMeta) : Outbound
-    }
-
-    private companion object {
+    internal companion object {
         const val TAG = "WifiAwareTransport"
+
+        /** True on a device with Wi-Fi Aware hardware — the composite includes this plane only if so. */
+        fun isSupported(context: Context): Boolean =
+            context.getSystemService(Context.WIFI_AWARE_SERVICE) != null &&
+                context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_WIFI_AWARE)
 
         // The NAN service both nodes publish/subscribe. Bumped on every breaking wire change so a build across
         // the break hard-partitions at discovery rather than silently mis-decoding. ".v3" was the cue-format
@@ -1625,9 +1389,5 @@ class WifiAwareTransport(
         // departed peer's cue target is pruned (cue send fails) before we'd re-arm again, so we don't churn
         // subscribe toward its wedge state; short enough that a restarted peer is reconnected within ~1 tick.
         const val REARM_COOLDOWN_MS = 15_000L
-
-        // Receive-side ceiling on a file, matching the send cap (AttachmentStore.MAX_BYTES = 8 MiB) plus
-        // headroom for E2E framing (GCM IV+tag) — refuses an unbounded malicious stream that exhausts disk.
-        const val MAX_INCOMING_FILE_BYTES = 8L * 1024 * 1024 + 64 * 1024
     }
 }
