@@ -1,11 +1,11 @@
 package app.getknit.knit.mesh
 
 import app.getknit.knit.mesh.protocol.BlobReqContent
+import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
-import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -23,7 +23,7 @@ class BlobExchange(
     private val store: BlobStore,
     private val selfId: suspend () -> String,
     private val onObtained: suspend (hash: String, path: String) -> Unit,
-    private val newRequestId: () -> String = { UUID.randomUUID().toString() },
+    private val newRequestId: () -> String = { FrameId.new() },
 ) {
     // hash -> neighbors awaiting the blob from us (forwarded to once we obtain it).
     private val wanters = ConcurrentHashMap<String, MutableSet<Peer>>()

@@ -27,6 +27,7 @@ import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.EncEnvelope
+import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.GroupLeaveContent
@@ -63,7 +64,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
-import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -251,7 +251,7 @@ class MeshManager(
     ): Boolean {
         if (isTextFlagged(text, "outgoing", isRoom = recipientId == null && group == null)) return false
         val me = identity.nodeId()
-        val id = UUID.randomUUID().toString()
+        val id = FrameId.new()
         val sentAt = System.currentTimeMillis()
         val conversationId = Conversations.idFor(me, recipientId, me, group?.id)
 
@@ -364,7 +364,7 @@ class MeshManager(
         originateSigned(
             RelayEnvelope(
                 type = FrameType.GROUP_UPDATE,
-                id = UUID.randomUUID().toString(),
+                id = FrameId.new(),
                 senderId = identity.nodeId(),
                 sentAt = System.currentTimeMillis(),
                 group = group,
@@ -384,7 +384,7 @@ class MeshManager(
         originateSigned(
             RelayEnvelope(
                 type = FrameType.GROUP_LEAVE,
-                id = UUID.randomUUID().toString(),
+                id = FrameId.new(),
                 senderId = me,
                 sentAt = System.currentTimeMillis(),
                 payload = WireCodec.encodePayload(GroupLeaveContent(groupId)),
@@ -406,7 +406,7 @@ class MeshManager(
         originateSigned(
             RelayEnvelope(
                 type = FrameType.REACTION,
-                id = UUID.randomUUID().toString(),
+                id = FrameId.new(),
                 senderId = me,
                 sentAt = now,
                 payload = WireCodec.encodePayload(ReactionContent(messageId, next)),
@@ -1102,7 +1102,7 @@ class MeshManager(
      */
     private suspend fun acknowledge(env: RelayEnvelope, me: String) {
         val ack = RelayEnvelope(
-            type = FrameType.RECEIPT, id = UUID.randomUUID().toString(), senderId = me,
+            type = FrameType.RECEIPT, id = FrameId.new(), senderId = me,
             payload = WireCodec.encodePayload(ReceiptContent(env.id)),
         )
         if (env.recipientId == me) {

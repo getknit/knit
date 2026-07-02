@@ -53,9 +53,9 @@ class MessageCrypto(
         val key = AesGcm.randomKey()
         val (iv, ct) = AesGcm.encrypt(key, content, header)
         val wrapped = recipients.entries.sortedBy { it.key }.map { (to, bundle) ->
-            WrappedKey(to, b64(bundle.hybridEncrypt().encrypt(key, header)))
+            WrappedKey(to, bundle.hybridEncrypt().encrypt(key, header))
         }
-        return EncEnvelope(nonce = b64(iv), ct = b64(ct), keys = wrapped)
+        return EncEnvelope(nonce = iv, ct = ct, keys = wrapped)
     }
 
     /**
@@ -70,8 +70,8 @@ class MessageCrypto(
         myNodeId: String,
     ): MessageContent? = runCatching {
         val wrapped = envelope.keys.firstOrNull { it.to == myNodeId } ?: return null
-        val key = hybridDecrypt.decrypt(b64d(wrapped.wk), header)
-        MessageContent.decode(AesGcm.decrypt(key, b64d(envelope.nonce), b64d(envelope.ct), header))
+        val key = hybridDecrypt.decrypt(wrapped.wk, header)
+        MessageContent.decode(AesGcm.decrypt(key, envelope.nonce, envelope.ct, header))
     }.getOrNull()
 
     companion object {

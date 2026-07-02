@@ -1384,10 +1384,11 @@ class WifiAwareTransport(
     private companion object {
         const val TAG = "WifiAwareTransport"
 
-        // The NAN service both nodes publish/subscribe. Bumped to ".v3" for the cue-format change (the cue now
-        // carries a content-digest version, not a monotone epoch counter — a v2 node would misread it), so a
-        // build across the break hard-partitions at discovery rather than silently mis-deciding syncs.
-        const val SERVICE_NAME = "app.getknit.knit.MESH.v3"
+        // The NAN service both nodes publish/subscribe. Bumped on every breaking wire change so a build across
+        // the break hard-partitions at discovery rather than silently mis-decoding. ".v3" was the cue-format
+        // change (content-digest version, not a monotone epoch); ".v4" re-typed EncEnvelope nonce/ct +
+        // WrappedKey.wk from base64 String to raw CBOR @ByteString (a v3 node can't decode a v4 E2E frame).
+        const val SERVICE_NAME = "app.getknit.knit.MESH.v4"
 
         // Fixed app-wide passphrase for link-layer (NDP) encryption. Real authentication is the per-frame
         // Ed25519 signature + E2E layer above the transport; this only keeps the data path off open air.

@@ -62,7 +62,12 @@ import java.io.File
     //      updates/leaves, profiles — not just chat); forward_store gained a `type` column so per-type
     //      policy (the broadcast quota + shorter TTL) doesn't starve the metadata frames that share the
     //      null recipient/group shape. No wire change; destructive DB migration as usual (app not yet public).
-    version = 16,
+    // v17: EncEnvelope nonce/ct + WrappedKey.wk re-typed from base64 String to raw CBOR @ByteString,
+    //      dropping the ~33% base64 tax every E2E DM/group frame paid. A *breaking* wire change (a field
+    //      re-type), so SERVICE_NAME bumps in lockstep (v3 → v4) to partition old builds and this
+    //      destructive wipe clears any custodied old-format frames. No schema-column change — the version
+    //      bump is the coordinated wire/DB break the format requires (see docs/WIRE_COMPAT.md).
+    version = 17,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

@@ -1,11 +1,11 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
-import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -40,7 +40,7 @@ class KeyExchange(
     // Don't chase the key of a blocked peer (we drop its frames anyway); MeshManager passes its block set.
     private val isBlocked: suspend (String) -> Boolean = { false },
     private val now: () -> Long = { System.currentTimeMillis() },
-    private val newRequestId: () -> String = { UUID.randomUUID().toString() },
+    private val newRequestId: () -> String = { FrameId.new() },
     private val metrics: MeshMetrics = MeshMetrics(),
     private val requestCooldownMs: Long = REQUEST_COOLDOWN_MS,
 ) {

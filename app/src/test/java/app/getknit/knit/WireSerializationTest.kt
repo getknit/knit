@@ -156,15 +156,20 @@ class WireSerializationTest {
 
     @Test
     fun encryptedChatContentRoundTrips() {
+        val nonce = byteArrayOf(10, 20, 30)
+        val ct = byteArrayOf(40, 50, 60, 70)
+        val wk = byteArrayOf(80, 90)
         val content = ChatContent(
-            enc = EncEnvelope(
-                nonce = "bm9uY2U=", ct = "Y2lwaGVydGV4dA==",
-                keys = listOf(WrappedKey("bob00000", "d3JhcHBlZA==")),
-            ),
+            enc = EncEnvelope(nonce = nonce, ct = ct, keys = listOf(WrappedKey("bob00000", wk))),
         )
         val decoded = WireCodec.decodePayload<ChatContent>(WireCodec.encodePayload(content))
         assertEquals("", decoded?.body)
-        assertEquals("bob00000", decoded?.enc?.keys?.firstOrNull()?.to)
+        val key = decoded?.enc?.keys?.firstOrNull()
+        assertEquals("bob00000", key?.to)
+        // The @ByteString fields must round-trip as raw bytes (regression guard for the base64 → bytes change).
+        assertArrayEquals(nonce, decoded?.enc?.nonce)
+        assertArrayEquals(ct, decoded?.enc?.ct)
+        assertArrayEquals(wk, key?.wk)
     }
 
     @Test

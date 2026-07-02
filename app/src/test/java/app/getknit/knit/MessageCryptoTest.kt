@@ -5,6 +5,7 @@ import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
 import app.getknit.knit.mesh.protocol.ChatContent
+import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.RelayEnvelope
@@ -49,6 +50,22 @@ class MessageCryptoTest {
     }
 
     @Test
+    fun sealedEnvelopeSurvivesTheWireCodec() {
+        val alice = party("alice000")
+        val bob = party("bob00000")
+        val header = MessageCrypto.header("m6", alice.nodeId, 1L, bob.nodeId)
+
+        // End-to-end guard for the base64 → @ByteString re-type: seal, carry the envelope through the CBOR
+        // payload codec exactly as a real `chat` frame does, then decrypt the *decoded* copy (not the
+        // in-memory object). Proves nonce/ct/wk survive the wire encoding as raw bytes.
+        val envelope = alice.crypto.seal(content("over the wire"), header, mapOf(bob.nodeId to bob.bundle))!!
+        val payload = WireCodec.encodePayload(ChatContent(enc = envelope))
+        val decodedEnc = WireCodec.decodePayload<ChatContent>(payload)?.enc
+        assertNotNull(decodedEnc)
+        assertEquals("over the wire", bob.crypto.open(decodedEnc!!, header, bob.nodeId)?.body)
+    }
+
+    @Test
     fun groupMessageDecryptsForEveryMember() {
         val alice = party("alice000")
         val bob = party("bob00000")
@@ -83,7 +100,10 @@ class MessageCryptoTest {
         val header = MessageCrypto.header("m3", alice.nodeId, 1L, bob.nodeId)
 
         val envelope = alice.crypto.seal(content("hi"), header, mapOf(bob.nodeId to bob.bundle))!!
-        val tampered = envelope.copy(ct = envelope.ct.dropLast(4) + "AAAA")
+        // Flip the last ciphertext byte (EncEnvelope is a plain `class` now, so rebuild rather than copy);
+        // the GCM tag then fails to verify and open() returns null.
+        val corrupted = envelope.ct.copyOf().also { it[it.lastIndex] = (it[it.lastIndex] + 1).toByte() }
+        val tampered = EncEnvelope(v = envelope.v, nonce = envelope.nonce, ct = corrupted, keys = envelope.keys)
         assertNull(bob.crypto.open(tampered, header, bob.nodeId))
     }
 

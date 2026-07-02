@@ -228,29 +228,34 @@ data class GroupInfo(
 )
 
 /**
- * One recipient's copy of the per-message content key [wk] (base64), wrapped (Tink hybrid / HPKE) to
- * that recipient's published encryption key and tagged by their node id [to]. A group message carries
- * one [WrappedKey] per member (minus the sender); a DM carries exactly one.
+ * One recipient's copy of the per-message content key [wk] (raw HPKE-wrapped bytes), wrapped (Tink
+ * hybrid / HPKE) to that recipient's published encryption key and tagged by their node id [to]. A group
+ * message carries one [WrappedKey] per member (minus the sender); a DM carries exactly one. A plain
+ * `class` (not `data class`, like [WireEnvelope]/[RelayEnvelope]): a `@ByteString` field only gets a
+ * reference-identity `equals`/`hashCode` from `data`, so we omit them rather than ship a broken one.
  */
 @Serializable
-data class WrappedKey(
+class WrappedKey(
     val to: String,
-    val wk: String,
+    @ByteString val wk: ByteArray,
 )
 
 /**
  * The end-to-end encryption envelope carried inside an encrypted [ChatContent]. A random per-message
  * content key encrypts the [app.getknit.knit.mesh.crypto.MessageContent] with AES-256-GCM into [ct]
- * under [nonce] (both base64); that content key is wrapped once per recipient into [keys]. [v] is the
- * crypto-scheme version (omitted on the wire while it equals the default); an unsupported version is
- * dropped on delivery (see `MeshManager.decrypt`). Authenticated by the frame [sig] (which covers the
- * whole [ChatContent] payload), so a wrapped key or ciphertext can't be replayed into another message.
+ * under [nonce] (both raw byte strings — CBOR `@ByteString`, not base64: the envelope already rides a
+ * binary CBOR frame, so base64 only inflated these ~33%); that content key is wrapped once per recipient
+ * into [keys]. [v] is the crypto-scheme version (omitted on the wire while it equals the default); an
+ * unsupported version is dropped on delivery (see `MeshManager.decrypt`). Authenticated by the frame
+ * [sig] (which covers the whole [ChatContent] payload), so a wrapped key or ciphertext can't be replayed
+ * into another message. A plain `class` (see [WrappedKey]) so the `@ByteString` fields don't inherit a
+ * broken data-class `equals`.
  */
 @Serializable
-data class EncEnvelope(
+class EncEnvelope(
     val v: Int = 1,
-    val nonce: String,
-    val ct: String,
+    @ByteString val nonce: ByteArray,
+    @ByteString val ct: ByteArray,
     val keys: List<WrappedKey>,
 ) {
     companion object {
