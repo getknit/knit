@@ -227,10 +227,14 @@ class WifiAwareTransport(
     // by REARM_COOLDOWN_MS so we don't churn subscribe (its wedge trigger) hunting a peer that's really gone.
     @Volatile private var lastRearmAt = 0L
 
-    // Watchdog state for the leaked-request wedge (see [checkWedge]): elapsedRealtime of the last successful
-    // data-path link/accept (either role), and of the last self-restart (loop guard). A data plane that stays
-    // dead — no link for WEDGE_RESTART_MS while a sync is owed and the NDI reads free — is the wedge signature.
+    // Watchdog state for the leaked-request wedge (see [checkWedge]). [lastLinkOrAcceptAt] = elapsedRealtime of
+    // the last successful data-path link/accept (either role) — the "progress" signal. [syncOwedSince] = start
+    // of the current episode where a sync is owed AND no link has formed since (0 = no episode). The wedge is
+    // *a sync owed continuously for WEDGE_RESTART_MS with no link* — NOT merely "no link in a while" (an idle,
+    // converged mesh does zero data-path work for long stretches, so time-since-last-link is meaningless until
+    // something is actually owed). [lastRestartAt] rate-limits the self-restart.
     @Volatile private var lastLinkOrAcceptAt = 0L
+    @Volatile private var syncOwedSince = 0L
     @Volatile private var lastRestartAt = 0L
 
     private var powerJob: Job? = null
@@ -316,20 +320,26 @@ class WifiAwareTransport(
      * Last-resort self-heal for the **leaked-request wedge** (a framework RESPONDER `requestNetwork` orphaned at
      * `state=104`, pinning the app's single NDP slot even though the NDI reads free — see
      * `docs/DIGEST_PULL_REATTACH.md`). The single-owner/single-flight lifecycle above should make it impossible;
-     * this catches any residual/unknown path. Signature: Aware is healthy and a sync is owed to a reachable
-     * peer, yet the NDI slot has read **free** and **no** data-path link (either role) has come up for
-     * [WEDGE_RESTART_MS]. `reattach()` cannot clear this wedge — the orphaned callback ref is lost, so it is
-     * never unregistered — so the only proven cure is **process death**; MeshService is `START_STICKY`, so the
-     * foreground service is recreated. Rate-limited so it can never restart-storm.
+     * this catches any residual/unknown path. The signature is **a sync owed continuously for [WEDGE_RESTART_MS]
+     * with no data-path link forming in that whole window**, while Aware is healthy. It is measured as an
+     * *owed-episode* ([syncOwedSince]), NOT as time-since-last-link: an idle, converged mesh does zero data-path
+     * work for long stretches, so the moment a fresh message makes a sync owed, "no link in N minutes" would be
+     * instantly (and wrongly) true — which killed the app the instant the user sent a message. The episode clock
+     * starts when divergence appears and **resets on any link** (progress) or on convergence, so a restart only
+     * happens when the mesh genuinely cannot sync for the full window. `reattach()` cannot clear this wedge (the
+     * orphaned callback ref is lost, so it is never unregistered), so the only proven cure is **process death**;
+     * MeshService is `START_STICKY`, so the foreground service is recreated. Rate-limited so it can't restart-storm.
      */
     private fun checkWedge() {
         val now = SystemClock.elapsedRealtime()
-        val wedged = hasHardware && _health.value == TransportHealth.Healthy && session != null &&
-            !slotBusy() && anySyncOwed() && now - lastLinkOrAcceptAt >= WEDGE_RESTART_MS
-        if (!wedged) return
+        val owed = hasHardware && _health.value == TransportHealth.Healthy && session != null && anySyncOwed()
+        if (!owed) { syncOwedSince = 0L; return } // nothing owed (or can't sync) → not wedged; clear the episode
+        // Episode not yet started, or a data-path link formed since it began → making progress → (re)start it.
+        if (syncOwedSince == 0L || lastLinkOrAcceptAt >= syncOwedSince) { syncOwedSince = now; return }
+        if (now - syncOwedSince < WEDGE_RESTART_MS) return // owed, but not long enough with zero links yet
         if (now - lastRestartAt < WEDGE_RESTART_MS) return // never restart-storm
         lastRestartAt = now
-        Log.e(TAG, "NAN data plane wedged (sync owed, NDI free, no link in ${now - lastLinkOrAcceptAt}ms) — restarting process")
+        Log.e(TAG, "NAN data plane wedged (sync owed ${now - syncOwedSince}ms with no link) — restarting process")
         logState()
         Process.killProcess(Process.myPid())
     }
@@ -1605,8 +1615,8 @@ class WifiAwareTransport(
         // (normally its onAttached/onAttachFailed clears it in well under a second). Bounds "stuck reattaching".
         const val ATTACH_WATCHDOG_MS = 10_000L
 
-        // Leaked-request wedge watchdog ([checkWedge]): how often to evaluate, and how long the data plane must
-        // stay dead (no link/accept while a sync is owed and the NDI reads free) before self-restarting. The
+        // Leaked-request wedge watchdog ([checkWedge]): how often to evaluate, and how long a sync must stay
+        // *owed with no link forming* (the owed-episode, not time-since-last-link) before self-restarting. The
         // restart window doubles as the min restart spacing so a persistently-unreachable peer can't loop us.
         const val WEDGE_CHECK_MS = 30_000L
         const val WEDGE_RESTART_MS = 180_000L

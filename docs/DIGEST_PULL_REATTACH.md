@@ -250,6 +250,16 @@ the message can strand on its author until a share-stuck re-attach.
     post-serve responder recovery **~120 s → ~3.3 s** (`re-attach after serving` → `responder listening`),
     validated under both single and simultaneous-restart contention; all three nodes hold their `role=1`
     responder, converge to one digest, go idle, and **no watchdog restart is needed**.
+  - **Watchdog false-positive fixed (2026-07-02).** After the above, sending a message on a long-idle,
+    converged node **instantly killed the app** (`sync owed ... no link in 583429ms`). Cause: the watchdog
+    measured *time since last data-path link*, which grows unbounded during healthy idle (a converged mesh does
+    zero data-path work). The moment a fresh message made a sync owed, "no link in N minutes" was already true,
+    so it fired before the mesh could even sync. **Fix:** the watchdog now times an **owed-episode**
+    ([syncOwedSince]) — how long a sync has been owed *with no link forming* — starting the clock when
+    divergence appears and **resetting it on any link (progress) or on convergence**. So a restart happens only
+    if the mesh genuinely can't sync for the whole window, never as a reflex to a normal send. **Validated
+    (3 Pixels):** an idle-converged node (last link ~4 min stale) sent an encrypted group message → **not
+    killed** → message reached both peers and the mesh re-converged in ~30 s; 0 watchdog fires across all three.
   - Unit tests + `assembleDebug` + detekt green.
 
 ## Wire / compat
