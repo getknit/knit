@@ -331,10 +331,24 @@ class WifiAwareTransport(
         )
     }
 
-    /** True if any reachable peer's advertised digest differs from ours — a sync is owed (in either direction). */
+    /**
+     * True if any **currently reachable** peer's advertised digest differs from ours — a sync is owed (in
+     * either direction). Reachability is load-bearing, not decorative: a peer that has walked out of range on
+     * every plane lingers in [cueTarget] with a stale divergent digest (its cue handle only prunes when a
+     * *send* to it throws, which an out-of-range peer's best-effort cue does not), so a digest-only check stays
+     * true forever with nobody to sync. [checkWedge] reads this, and an owed-but-unreachable episode is
+     * isolation, not a stuck data plane — counting it ran the owed clock to the 180 s self-kill with no peer
+     * present (three-Pixel capture, 2026-07-02). A live link or a coordination-plane sighting within
+     * [REACHABLE_LINGER_MS] (5 cue heartbeats) counts as reachable; a genuine leaked-request wedge keeps the
+     * peer cueing us over the (NDP-free) coordination plane, so it stays reachable and still trips the wedge.
+     */
     private fun anySyncOwed(): Boolean {
         val v = storeDigest.version.value
-        return cueTarget.keys.any { syncWanted(it, v) }
+        val now = SystemClock.elapsedRealtime()
+        return cueTarget.keys.any { nodeId ->
+            syncWanted(nodeId, v) &&
+                (peers.containsKey(nodeId) || lastSeenAt[nodeId]?.let { now - it <= REACHABLE_LINGER_MS } == true)
+        }
     }
 
     /**

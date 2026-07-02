@@ -260,6 +260,19 @@ the message can strand on its author until a share-stuck re-attach.
     if the mesh genuinely can't sync for the whole window, never as a reflex to a normal send. **Validated
     (3 Pixels):** an idle-converged node (last link ~4 min stale) sent an encrypted group message → **not
     killed** → message reached both peers and the mesh re-converged in ~30 s; 0 watchdog fires across all three.
+  - **Second watchdog false-positive fixed (2026-07-02).** The owed-episode fix above still killed a node when
+    its peers **left**: a P9 (the *smaller* id of its pair, so pure responder — never an initiator) was linked
+    to two peers, they walked out of range on **every** plane (BLE then NAN), the user sent a group message,
+    and ~3 min later the app self-killed (`sync owed 180013ms with no link`). Cause: `anySyncOwed()` was a
+    **digest-only** check over `cueTarget`, with no reachability test despite its docstring claiming one. A
+    departed peer lingers in `cueTarget` with a stale divergent digest — its cue handle only prunes when a
+    *send* to it throws, which an out-of-range peer's best-effort cue never does — so the owed clock ran
+    unopposed to the kill with **no peer to sync with and, for a responder, nothing it could even do**. The
+    data plane wasn't wedged; the peers were just gone. **Fix:** `anySyncOwed()` now counts a peer only if it
+    is a **live link or was heard on the coordination plane within `REACHABLE_LINGER_MS`** (150 s = 5 cue
+    heartbeats). `REACHABLE_LINGER_MS` (150 s) < `WEDGE_RESTART_MS` (180 s), so a peer that goes *silent* can
+    never sustain a full owed-while-reachable window, while a genuine leaked-request wedge keeps the peer
+    cueing us over the NDP-free coordination plane, stays reachable, and still trips the restart.
   - Unit tests + `assembleDebug` + detekt green.
 
 ## Wire / compat
