@@ -35,6 +35,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -106,6 +107,7 @@ fun ContactsScreen(
                             viewModel.createGroup(selected.toList())
                         }
                     },
+                    modifier = Modifier.testTag("contacts_fab"),
                 ) {
                     Icon(
                         Icons.Filled.Check,
@@ -148,6 +150,7 @@ private fun ContactRow(contact: Contact, selected: Boolean, onClick: () -> Unit)
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .testTag("contact_${contact.nodeId}")
             // A selection control: expose the whole row as one checkbox so a screen reader announces
             // "<name>, checkbox, checked/not checked" and the selection-state icon is decorative.
             .toggleable(value = selected, onValueChange = { onClick() }, role = Role.Checkbox)

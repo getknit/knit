@@ -4,7 +4,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -52,6 +56,7 @@ private object Routes {
  * with Navigation Compose. The chat route carries a `conversationId` — the "Nearby" broadcast room, a
  * peer's node id for a 1:1 DM, or a group id. Starts the mesh foreground service once past onboarding.
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun KnitApp(startRoute: String? = null) {
     val context = LocalContext.current
@@ -101,7 +106,14 @@ fun KnitApp(startRoute: String? = null) {
         navController.navigate(Routes.SHARE) { launchSingleTop = true }
     }
 
-    NavHost(navController = navController, startDestination = start) {
+    NavHost(
+        navController = navController,
+        startDestination = start,
+        // Surface Compose testTags as uiautomator resource-ids across the whole screen graph, so an
+        // automation agent can locate elements (send button, message input, conversation rows) by a
+        // stable id instead of pixel bounds. Set once at the root; the whole subtree inherits it.
+        modifier = Modifier.semantics { testTagsAsResourceId = true },
+    ) {
         composable(Routes.ONBOARDING) {
             OnboardingScreen(
                 onReady = {

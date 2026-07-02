@@ -23,9 +23,15 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // A cold-start share: stage the payload before composition so KnitApp opens the picker.
         handleShareIntent(intent)
-        // Demo-screenshot builds may deep-link to a screen for deterministic capture, e.g.
-        // `adb shell am start -n app.getknit.knit/.MainActivity --es demo_route chat/nearby`.
-        val startRoute = if (BuildConfig.SEED_DEMO) intent?.getStringExtra(EXTRA_DEMO_ROUTE) else null
+        // Debug builds honor a deep-link route extra so screenshots (demo builds) and automation agents
+        // (any debug build, over the real mesh) can jump straight to a screen, e.g.
+        // `adb shell am start -n app.getknit.knit/.MainActivity --es demo_route chat/nearby`. Gated to
+        // debug so release never reads it. (Demo builds still swap in DemoTransport via SEED_DEMO.)
+        val startRoute = if (BuildConfig.SEED_DEMO || BuildConfig.DEBUG) {
+            intent?.getStringExtra(EXTRA_DEMO_ROUTE)
+        } else {
+            null
+        }
         setContent {
             KnitTheme {
                 KnitApp(startRoute = startRoute)

@@ -67,6 +67,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -178,7 +179,10 @@ fun ChatListScreen(
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = onNewMessage) {
+            FloatingActionButton(
+                onClick = onNewMessage,
+                modifier = Modifier.semantics { testTag = "chatlist_fab" },
+            ) {
                 Icon(
                     Icons.AutoMirrored.Filled.Message,
                     contentDescription = stringResource(R.string.contacts_new_message),
@@ -263,6 +267,9 @@ internal fun ConversationListItem(
                 .then(clickModifier)
                 .padding(horizontal = 16.dp, vertical = 10.dp)
                 .clearAndSetSemantics {
+                    // Stable id for automation (surfaces as a uiautomator resource-id); "nearby" for the
+                    // broadcast room, a peer node id for a DM, or a "g-…" group id.
+                    testTag = "chat_row_${row.id}"
                     contentDescription = rowDescription
                     role = Role.Button
                     onClick { onClick(); true }

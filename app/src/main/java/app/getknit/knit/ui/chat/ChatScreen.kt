@@ -121,6 +121,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -1479,6 +1480,7 @@ private fun MessageInput(
                         modifier = Modifier
                             .fillMaxWidth()
                             .contentReceiver(receiveContentListener)
+                            .testTag("chat_input")
                             .semantics { contentDescription = messageHint },
                         inputTransformation = InputTransformation.maxLength(TextLimits.MESSAGE),
                         textStyle = MaterialTheme.typography.bodyLarge.copy(
@@ -1494,7 +1496,7 @@ private fun MessageInput(
                 FilledIconButton(
                     onClick = { if (canSend) onSend() else onAttachClick() },
                     shape = CircleShape,
-                    modifier = Modifier.size(48.dp).align(Alignment.CenterVertically),
+                    modifier = Modifier.size(48.dp).align(Alignment.CenterVertically).testTag("chat_send"),
                 ) {
                     Icon(
                         imageVector = if (canSend) Icons.AutoMirrored.Filled.Send else Icons.Filled.AddPhotoAlternate,

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-only overlay: registers the DebugBridgeReceiver so an automation agent can drive the app
+     over `adb shell am broadcast` (send messages, read state). The manifest merger folds this in for
+     debug variants only, so neither the receiver nor this entry ships in a release build. Exported so
+     the `shell` uid (adb) can deliver to it; debug-only, so an exported custom-action receiver is fine. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <receiver
+            android:name="app.getknit.knit.debug.DebugBridgeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="app.getknit.knit.debug.SEND" />
+                <action android:name="app.getknit.knit.debug.STATE" />
+                <action android:name="app.getknit.knit.debug.REACT" />
+                <action android:name="app.getknit.knit.debug.HEAL" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

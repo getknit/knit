@@ -46,6 +46,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
@@ -153,6 +154,7 @@ fun ProfileScreen(
                 onValueChange = viewModel::setDisplayName,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .testTag("profile_name")
                     .onFocusChanged { if (!it.isFocused) viewModel.commitDisplayName() },
                 label = { Text(stringResource(R.string.profile_display_name_label)) },
                 placeholder = { if (alias.isNotEmpty()) Text(alias) },
@@ -164,6 +166,7 @@ fun ProfileScreen(
                 onValueChange = viewModel::setStatus,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .testTag("profile_status")
                     .onFocusChanged { if (!it.isFocused) viewModel.commitStatus() },
                 label = { Text(stringResource(R.string.profile_status_label)) },
                 singleLine = true,
@@ -185,7 +188,7 @@ fun ProfileScreen(
             Button(
                 onClick = viewModel::save,
                 enabled = isDirty,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().testTag("profile_save"),
             ) {
                 Text(stringResource(R.string.action_save))
             }

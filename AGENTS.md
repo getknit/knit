@@ -220,6 +220,44 @@ When driving the emulator over `adb`: the soft keyboard overlaps via `adjustResi
 coordinates from `uiautomator dump` rather than guessing; seed the photo picker by `screencap`-ing
 into `/sdcard/Pictures` if you need an image to select.
 
+## Driving the app on a device (debug builds)
+
+Debug builds carry three affordances so an agent can drive the send→verify loop **without** screenshots
+or hunting the (unlabeled, state-dependent) send button's pixel bounds. All are **debug-only** — the
+bridge receiver and its manifest entry live in `app/src/debug/` (so the release APK has neither), and the
+route extra is gated on `BuildConfig.DEBUG`. `app/build.gradle.kts` is untouched.
+
+- **Headless bridge** (`app/src/debug/.../debug/DebugBridgeReceiver.kt`) — an exported `BroadcastReceiver`
+  that calls `MeshManager` directly and returns JSON. Fire with `am broadcast` (target the package with
+  `-p app.getknit.knit`); the reply prints on stdout as `Broadcast completed: … data="{…}"` and is also
+  logged one-line under tag `KnitBridge` (`adb logcat -d -s KnitBridge:I`). Actions:
+  - `…debug.SEND` — `--es text <body>` + a target: `--es conv <id>` (`nearby` room, a peer node id for a
+    DM, or a `g-…` group id) or `--es to <peerNodeId>` (DM shorthand). No target ⇒ broadcast room. Text is
+    passed verbatim — spaces/emoji survive (unlike `adb shell input text`) **provided you quote for the
+    on-device shell**: `adb` re-parses the command on the device, so a bare `--es text "hi there"` is
+    word-split and truncated to `hi`. Wrap the whole remote command in double quotes and single-quote the
+    value (see the example).
+  - `…debug.STATE` — self id/name, transport health, reachable peers, and mesh metrics. Add `--es conv <id>`
+    to also dump that thread's latest messages (`--ei limit N`, default 20), each with its `received`
+    delivery tick — this is how you **verify receipt on the other device without a screenshot**.
+  - `…debug.REACT` — `--es id <messageId> --es emoji <emoji>`. `…debug.HEAL` — nudge rescan/re-advertise.
+  ```
+  # send on A, then confirm it landed on B — no UI, no screenshots. Outer quotes matter: adb re-parses
+  # on the device, so quote the whole command and single-quote the text (a bare --es text is word-split).
+  adb -s A shell "am broadcast -a app.getknit.knit.debug.SEND  -p app.getknit.knit --es text 'hi there 😀' --es conv nearby"
+  adb -s B shell  am broadcast -a app.getknit.knit.debug.STATE -p app.getknit.knit --es conv nearby
+  # → data="{…,"messages":[{"from":"<A>","body":"hi there 😀","received":…}]}"
+  ```
+- **Stable resource-ids** — the root sets `testTagsAsResourceId` (in `KnitApp`), so `Modifier.testTag`s
+  surface in `uiautomator dump` as `resource-id="app.getknit.knit:id/<tag>"`. Tagged so far: `chat_input`,
+  `chat_send`, `chat_row_<conversationId>` (e.g. `chat_row_nearby`), `chatlist_fab`, `contacts_fab`,
+  `contact_<nodeId>`, `onboarding_grant`, `onboarding_start`, `profile_name`, `profile_status`,
+  `profile_save`. Use these when you must drive the real UI; add more with the same snake_case,
+  screen-prefixed convention.
+- **Cold-start navigation** — `adb shell am start -n app.getknit.knit/.MainActivity --es demo_route chat/<id>`
+  opens a thread directly (`chat/nearby`, `chat/<nodeId>`, `chat/g-…`). Cold-start only; for a
+  running instance tap a `chat_row_*` element instead.
+
 ## End-to-end encryption (implemented)
 
 DMs and group chats are E2E-encrypted; the broadcast "Nearby" room stays plaintext by design (no fixed

@@ -19,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
@@ -81,7 +82,7 @@ fun OnboardingScreen(onReady: () -> Unit) {
 
             Button(
                 onClick = { launcher.launch(requiredMeshPermissions()) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().testTag("onboarding_grant"),
             ) {
                 Text(
                     if (granted) {
@@ -106,7 +107,8 @@ fun OnboardingScreen(onReady: () -> Unit) {
                 enabled = granted,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 24.dp),
+                    .padding(top = 24.dp)
+                    .testTag("onboarding_start"),
             ) {
                 Text(stringResource(R.string.onboarding_start))
             }
