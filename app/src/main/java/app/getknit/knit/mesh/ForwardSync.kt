@@ -54,27 +54,37 @@ class ForwardSync(
     }
 
     /**
-     * A neighbor joined: unicast it every carried message it didn't author. A DM is offered to any
-     * newcomer (the recipient delivers, anyone else relays it onward); a broadcast-room message is
-     * likewise offered to any newcomer (no destination to target); a group message is offered only to a
-     * roster member — once any member has it, the normal flood re-distributes it to the rest, so there's
-     * no need to spray it at non-members. Each carried frame is re-wrapped in a fresh [WireEnvelope] (full
-     * ttl, hops 0) around its verbatim signed blob.
+     * A neighbor joined: **advertise the ids we hold** so it replies (over [MeshTransport.incomingDigests] →
+     * [onDigest]) with only the frames we lack — and it does the same to us. A sync then transfers the set
+     * *difference*, not the whole store (the data-path id-diff; see `docs/DIGEST_PULL_REATTACH.md`).
      *
-     * Re-offers the whole carried set on **every** join, deliberately. The digest cue plane brings a
-     * data-path link up only when the two stores differ ([DigestTracker.reconcileWanted]'s identical-skip),
-     * so a link forming at all means there is something to reconcile — and re-pushing is what lets an
-     * offer lost to an ephemeral link's teardown self-heal on the *next* contact (seconds) instead of
-     * stalling until a timer expires. A duplicate that did land is dropped by the receiver's SeenSet, so
-     * re-offering only ever costs bytes, never correctness. (Sending a peer just the frames it is *missing*,
-     * not its whole set, is the deferred data-path id-diff — see `docs/DIGEST_PULL_REATTACH.md`.)
+     * Re-advertises on **every** join, deliberately. The digest cue plane brings a data-path link up only when
+     * the two stores differ ([DigestTracker.reconcileWanted]'s identical-skip), so a link forming at all means
+     * there is something to reconcile — and re-advertising is what lets an offer lost to an ephemeral link's
+     * teardown self-heal on the *next* contact (seconds) rather than stalling for a timer. It is now cheap: the
+     * peer's reply is only the diff, and a duplicate that did land is dropped by the receiver's SeenSet.
      */
     suspend fun onNeighborAdded(peer: Peer) {
+        transport.sendDigest(peer, store.liveIds(clock()))
+    }
+
+    /**
+     * A neighbor advertised the custody ids it holds ([theirIds]): unicast it every carried frame **it lacks** —
+     * the set difference that replaces pushing the whole store. Same targeting as before: never hand a message
+     * back to its author, and offer a group message only to a roster member (a DM/broadcast goes to any
+     * newcomer). Each frame is re-wrapped in a fresh [WireEnvelope] (full ttl, hops 0) around its verbatim
+     * signed blob; a duplicate that races in is still dropped by the receiver's SeenSet, so a stale digest only
+     * ever costs bytes, never correctness.
+     */
+    suspend fun onDigest(fromNodeId: String, theirIds: List<String>) {
+        val peer = transport.neighbors.value.find { it.nodeId == fromNodeId } ?: Peer(fromNodeId)
+        val have = theirIds.toHashSet()
         store.liveFrames(clock()).forEach { carried ->
             val env = carried.envelope
-            if (env.senderId == peer.nodeId) return@forEach // don't hand a message back to its author
+            if (env.id in have) return@forEach // the diff: skip frames the peer already holds
+            if (env.senderId == fromNodeId) return@forEach // don't hand a message back to its author
             val members = env.group?.members
-            if (members != null && peer.nodeId !in members) return@forEach // group: members only (DM/broadcast: anyone)
+            if (members != null && fromNodeId !in members) return@forEach // group: members only (DM/broadcast: anyone)
             transport.send(WireEnvelope(sig = carried.sig, signed = carried.signed), peer)
         }
     }

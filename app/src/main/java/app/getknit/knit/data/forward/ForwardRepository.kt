@@ -76,6 +76,8 @@ class ForwardRepository(
             WireCodec.decodeEnvelope(row.signed)?.let { CarriedFrame(it, row.sig, row.signed) }
         }
 
+    override suspend fun liveIds(now: Long): List<String> = dao.liveIds(now)
+
     override suspend fun recipientOf(id: String): String? = dao.recipientOf(id)
 
     override suspend fun has(id: String): Boolean = dao.exists(id)

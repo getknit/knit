@@ -4,6 +4,7 @@ import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import java.io.File
 
 /**
@@ -48,6 +49,12 @@ data class ReceivedFile(
 )
 
 /**
+ * A store-and-forward digest received from a neighbor: the message [ids] it currently holds in custody, so we
+ * push back only the frames it lacks (see [MeshTransport.sendDigest] / `ForwardSync.onDigest`).
+ */
+data class ReceivedDigest(val fromNodeId: String, val ids: List<String>)
+
+/**
  * Abstraction over the radio layer that discovers neighbors and exchanges [Frame]s with them.
  * The current implementation is Nearby Connections; this interface keeps the rest of the app
  * independent of it so Wi-Fi Aware / BLE can be swapped in later.
@@ -78,6 +85,13 @@ interface MeshTransport {
 
     /** Files received from neighbors (avatars, attachments), emitted once fully transferred and saved. */
     val incomingFiles: Flow<ReceivedFile>
+
+    /**
+     * Store-and-forward digests received from neighbors: each advertises the custody ids it holds on link-up so
+     * we reply with just the frames it lacks (the data-path id-diff — see `ForwardSync.onDigest`). Default empty
+     * for transports (fakes, demo) without a data path; only Wi-Fi Aware overrides it.
+     */
+    val incomingDigests: Flow<ReceivedDigest> get() = emptyFlow()
 
     fun start()
 
@@ -112,4 +126,11 @@ interface MeshTransport {
 
     /** Sends a file (avatar or attachment) tagged with [meta] to a single neighbor. */
     suspend fun sendFile(file: File, to: Peer, meta: FileMeta)
+
+    /**
+     * Advertises the custody message [ids] we hold to a single neighbor [to] over the data-path socket (an
+     * [app.getknit.knit.mesh.wifiaware.AwareFraming.Type.DIGEST] record), so it replies with only the frames we
+     * lack. Default no-op — only Wi-Fi Aware (which has a data path) overrides it; the fakes/demo ignore it.
+     */
+    suspend fun sendDigest(to: Peer, ids: List<String>) {}
 }

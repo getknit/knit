@@ -1,6 +1,7 @@
 package app.getknit.knit
 
 import app.getknit.knit.mesh.wifiaware.AwareFraming
+import app.getknit.knit.mesh.wifiaware.DigestWire
 import app.getknit.knit.mesh.wifiaware.FileHeaderWire
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -98,5 +99,21 @@ class AwareFramingTest {
         val header = FileHeaderWire(kind = "AVATAR", key = "abc123", mime = "image/jpeg")
         assertEquals(header, AwareFraming.decodeFileHeader(AwareFraming.encodeFileHeader(header)))
         assertNull(AwareFraming.decodeFileHeader("not json".encodeToByteArray()))
+    }
+
+    @Test
+    fun digestRoundTripsAndGarbageDecodesToNull() {
+        val digest = DigestWire(ids = listOf("a1b2c3", "d4e5f6", "g7h8i9"))
+        assertEquals(digest, AwareFraming.decodeDigest(AwareFraming.encodeDigest(digest)))
+        assertNull(AwareFraming.decodeDigest("not json".encodeToByteArray()))
+    }
+
+    @Test
+    fun digestRecordRoundTripsThroughTheCodec() {
+        val payload = AwareFraming.encodeDigest(DigestWire(ids = listOf("x", "y")))
+        val records = roundTrip(AwareFraming.Type.DIGEST to payload)
+        assertEquals(1, records.size)
+        assertEquals(AwareFraming.Type.DIGEST, records[0].type)
+        assertEquals(DigestWire(listOf("x", "y")), AwareFraming.decodeDigest(records[0].payload))
     }
 }

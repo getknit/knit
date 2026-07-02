@@ -37,6 +37,10 @@ interface ForwardDao {
     @Query("SELECT id FROM forward_store")
     suspend fun allIds(): List<String>
 
+    /** Ids of every non-expired carried frame — advertised on link-up so a peer replies with only what we lack. */
+    @Query("SELECT id FROM forward_store WHERE expiresAt >= :now")
+    suspend fun liveIds(now: Long): List<String>
+
     /** How many carried frames a single [senderId] accounts for — enforces the per-sender quota. */
     @Query("SELECT COUNT(*) FROM forward_store WHERE senderId = :senderId")
     suspend fun countBySender(senderId: String): Int

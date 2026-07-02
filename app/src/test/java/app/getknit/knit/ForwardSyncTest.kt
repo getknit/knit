@@ -52,6 +52,9 @@ class ForwardSyncTest {
         override suspend fun liveFrames(now: Long): List<CarriedFrame> =
             rows.values.filter { it.expiresAt >= now }.sortedByDescending { it.expiresAt }.map { it.frame }
 
+        override suspend fun liveIds(now: Long): List<String> =
+            rows.values.filter { it.expiresAt >= now }.map { it.frame.envelope.id }
+
         override suspend fun recipientOf(id: String): String? = rows[id]?.frame?.envelope?.recipientId
         override suspend fun has(id: String): Boolean = rows.containsKey(id)
         override suspend fun remove(id: String) { rows.remove(id) }
@@ -65,6 +68,7 @@ class ForwardSyncTest {
     /** Records what the sync sends and exposes a fixed neighbor set. */
     private class RecordingTransport : MeshTransport {
         val sent = mutableListOf<Pair<WireEnvelope, Peer?>>()
+        val digestsSent = mutableListOf<Pair<Peer, List<String>>>()
         override val neighbors = MutableStateFlow<Set<Peer>>(emptySet()).asStateFlow()
         override val health = MutableStateFlow(TransportHealth.Healthy).asStateFlow()
         override val inbound = MutableSharedFlow<InboundFrame>().asSharedFlow()
@@ -74,6 +78,7 @@ class ForwardSyncTest {
         override fun heal() = Unit
         override suspend fun send(wire: WireEnvelope, to: Peer?) { sent += wire to to }
         override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) = Unit
+        override suspend fun sendDigest(to: Peer, ids: List<String>) { digestsSent += to to ids }
     }
 
     private fun dm(id: String, sender: String, recipient: String) = RelayEnvelope(
@@ -170,10 +175,10 @@ class ForwardSyncTest {
         val env = broadcast("r1") // authored by "a"
         sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
 
-        sync.onNeighborAdded(Peer("a")) // the author — never handed its own message back
+        sync.onDigest("a", emptyList()) // the author — never handed its own message back
         assertTrue("broadcast isn't offered back to its author", transport.sent.isEmpty())
 
-        sync.onNeighborAdded(Peer("z")) // anyone else — offered once (no recipient/roster to target)
+        sync.onDigest("z", emptyList()) // anyone else — offered once (no recipient/roster to target)
         assertEquals(listOf("r1"), transport.sent.map { it.first.frameId() })
     }
 
@@ -186,10 +191,10 @@ class ForwardSyncTest {
         sync.onSeen(wireOf(react), react, ForwardStore.ORIGIN_RELAY)
         sync.onSeen(wireOf(prof), prof, ForwardStore.ORIGIN_RELAY)
 
-        sync.onNeighborAdded(Peer("a")) // the author — never handed its own metadata back
+        sync.onDigest("a", emptyList()) // the author — never handed its own metadata back
         assertTrue("metadata isn't offered back to its author", transport.sent.isEmpty())
 
-        sync.onNeighborAdded(Peer("z")) // anyone else — both offered (no recipient/roster to target)
+        sync.onDigest("z", emptyList()) // anyone else — both offered (no recipient/roster to target)
         assertEquals(listOf("k1", "p1"), transport.sent.map { it.first.frameId() }.sorted())
     }
 
@@ -239,20 +244,59 @@ class ForwardSyncTest {
     // --- push on contact ---
 
     @Test
-    fun reOffersCarriedDmOnEveryNeighborAddSoALostOfferSelfHeals() = runTest {
+    fun onNeighborAddedAdvertisesOurHeldIdsWithoutPushingFrames() = runTest {
+        val transport = RecordingTransport()
+        val store = FakeForwardStore()
+        val sync = ForwardSync(transport, store, clock = { 0L })
+        val env = dm("m1", "a", "b")
+        sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_SELF)
+
+        sync.onNeighborAdded(Peer("b"))
+
+        assertEquals(
+            "advertises the ids we hold so the peer replies with only what it lacks",
+            listOf(Peer("b") to listOf("m1")), transport.digestsSent,
+        )
+        assertTrue("no frames are pushed until the peer's digest arrives", transport.sent.isEmpty())
+    }
+
+    @Test
+    fun onDigestSendsOnlyTheFramesThePeerLacks() = runTest {
+        val transport = RecordingTransport()
+        val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
+        listOf("r1", "r2", "r3").forEach { val e = broadcast(it); sync.onSeen(wireOf(e), e, ForwardStore.ORIGIN_RELAY) }
+
+        sync.onDigest("z", listOf("r2")) // peer already holds r2 → push only the diff
+
+        assertEquals(setOf("r1", "r3"), transport.sent.map { it.first.frameId() }.toSet())
+    }
+
+    @Test
+    fun onDigestSendsNothingWhenThePeerHoldsEverything() = runTest {
+        val transport = RecordingTransport()
+        val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
+        listOf("r1", "r2").forEach { val e = broadcast(it); sync.onSeen(wireOf(e), e, ForwardStore.ORIGIN_RELAY) }
+
+        sync.onDigest("z", listOf("r1", "r2")) // peer's set is a superset of ours
+
+        assertTrue("an identical/superset digest transfers nothing", transport.sent.isEmpty())
+    }
+
+    @Test
+    fun reOffersOnEveryDigestSoALostOfferSelfHeals() = runTest {
         val transport = RecordingTransport()
         val store = FakeForwardStore(ttlMs = 10 * 60_000L)
         val sync = ForwardSync(transport, store, clock = { 0L })
         val env = dm("m1", "a", "b")
         sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_SELF)
 
-        // A data-path link only forms when the digest gate says the two stores differ, so each fresh
-        // neighbor-add re-offers the carried set: an offer lost to a torn-down ephemeral link self-heals
-        // on the next contact (seconds) rather than stalling for a dedup timer. A duplicate that did land
-        // is dropped by the receiver's own SeenSet, so re-offering only ever costs bytes.
-        sync.onNeighborAdded(Peer("b"))
-        sync.onNeighborAdded(Peer("b"))
-        sync.onNeighborAdded(Peer("b"))
+        // A data-path link forms only when the digest gate says the two stores differ, so each contact re-runs
+        // the diff: a peer that still lacks m1 (its digest doesn't list it) is re-sent it, so an offer lost to a
+        // torn-down ephemeral link self-heals on the next contact rather than stalling for a dedup timer. A
+        // duplicate that did land is dropped by the receiver's SeenSet, so re-offering only ever costs bytes.
+        sync.onDigest("b", emptyList())
+        sync.onDigest("b", emptyList())
+        sync.onDigest("b", emptyList())
         assertEquals(listOf("m1", "m1", "m1"), transport.sent.map { it.first.frameId() })
     }
 
@@ -263,7 +307,7 @@ class ForwardSyncTest {
         val env = dm("m1", "a", "b")
         sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
 
-        sync.onNeighborAdded(Peer("a")) // "a" authored m1
+        sync.onDigest("a", emptyList()) // "a" authored m1
 
         assertTrue("a should not be handed back its own message", transport.sent.isEmpty())
     }
@@ -275,10 +319,10 @@ class ForwardSyncTest {
         val g = groupMsg("g1", sender = "a", members = listOf("a", "b", "c"))
         sync.onSeen(wireOf(g), g, ForwardStore.ORIGIN_SELF)
 
-        sync.onNeighborAdded(Peer("x")) // not in the roster — must not be sprayed group traffic
+        sync.onDigest("x", emptyList()) // not in the roster — must not be sprayed group traffic
         assertTrue("a non-member is never offered a group message", transport.sent.isEmpty())
 
-        sync.onNeighborAdded(Peer("c")) // a roster member — offered once
+        sync.onDigest("c", emptyList()) // a roster member — offered once
         assertEquals(listOf("g1"), transport.sent.map { it.first.frameId() })
     }
 
@@ -352,6 +396,9 @@ class ForwardSyncTest {
                     current.filter { it.nodeId !in known }.forEach { sync.onNeighborAdded(it) }
                     known = current.map { it.nodeId }.toSet()
                 }
+            }
+            scope.launch {
+                transport.incomingDigests.collect { sync.onDigest(it.fromNodeId, it.ids) }
             }
         }
 

@@ -40,6 +40,13 @@ internal object AwareFraming {
          * learns which node it is. Consumed once at accept; ignored thereafter.
          */
         HELLO(6),
+
+        /**
+         * Store-and-forward digest: a [DigestWire] JSON listing the message ids the sender currently holds in
+         * custody. Exchanged on link-up so each side pushes only the frames the other lacks — the id-diff that
+         * replaces push-all (see `docs/DIGEST_PULL_REATTACH.md`).
+         */
+        DIGEST(7),
         ;
 
         companion object {
@@ -117,6 +124,11 @@ internal object AwareFraming {
 
     fun decodeFileHeader(payload: ByteArray): FileHeaderWire? =
         runCatching { json.decodeFromString<FileHeaderWire>(payload.decodeToString()) }.getOrNull()
+
+    fun encodeDigest(digest: DigestWire): ByteArray = json.encodeToString(digest).encodeToByteArray()
+
+    fun decodeDigest(payload: ByteArray): DigestWire? =
+        runCatching { json.decodeFromString<DigestWire>(payload.decodeToString()) }.getOrNull()
 }
 
 /**
@@ -128,4 +140,14 @@ internal data class FileHeaderWire(
     val kind: String,
     val key: String,
     val mime: String,
+)
+
+/**
+ * Sent as the [AwareFraming.Type.DIGEST] record on link-up: the message [ids] this node currently holds in
+ * store-and-forward custody. The peer diffs it against its own set and pushes back only the frames this node
+ * lacks (and vice versa), so a sync transfers the set difference rather than the whole store.
+ */
+@Serializable
+internal data class DigestWire(
+    val ids: List<String>,
 )

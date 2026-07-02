@@ -187,6 +187,7 @@ class MeshManager(
         watchNeighbors(session)
         watchProfileChanges(session)
         watchIncomingFiles(session)
+        watchIncomingDigests(session)
         resumePendingFetches(session)
         pruneForwardStorePeriodically(session)
         logMetricsPeriodically(session)
@@ -488,6 +489,13 @@ class MeshManager(
                         blobExchange.onReceived(file.key, file.mime, file.path, file.fromNodeId)
                 }
             }
+        }
+    }
+
+    private fun watchIncomingDigests(session: CoroutineScope) {
+        session.launch {
+            // A neighbor advertised the custody ids it holds → push it just the frames it lacks (the id-diff).
+            transport.incomingDigests.collect { forwardSync.onDigest(it.fromNodeId, it.ids) }
         }
     }
 

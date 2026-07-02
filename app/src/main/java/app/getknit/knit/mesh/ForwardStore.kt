@@ -33,6 +33,9 @@ interface ForwardStore {
     /** Non-expired carried frames (at [now]), newest first, for re-offering to a freshly-joined neighbor. */
     suspend fun liveFrames(now: Long): List<CarriedFrame>
 
+    /** Ids of the non-expired carried frames (at [now]) — advertised to a neighbor for the data-path id-diff. */
+    suspend fun liveIds(now: Long): List<String>
+
     /** The carried frame [id]'s cleartext recipient, or null if not held. */
     suspend fun recipientOf(id: String): String?
 

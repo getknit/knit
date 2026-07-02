@@ -17,11 +17,12 @@ import kotlinx.coroutines.flow.asStateFlow
  *    us before the restart doesn't miss us (the old session-local counter reset to 0 and could be ignored by
  *    a peer's monotone-max until it climbed back).
  *
- * Deliberately covers **only the carried message set** — the shared state that converges across the mesh — and
- * *not* this device's own profile, which is per-node and never converges (folding it in would make every
- * node's version unique and defeat the "identical ⇒ skip" comparison). A profile edit still propagates: it's
- * flooded on edit and pushed to every newcomer on connect (`MeshManager.pushProfileTo`); it just no longer
- * forces a dedicated data-path sync while the mesh is otherwise idle.
+ * Covers **every id in the carried set** — all custodied frame types (chat, reaction, receipt, group-update/
+ * leave, and profiles), since general custody (commit `b277e06`) put them all in `forward_store` and the store
+ * rebuilds the digest from `dao.allIds()`. Profiles converge despite being per-node because custody is
+ * **symmetric**: each node holds its own profile (`ORIGIN_SELF`) *and* every peer's (`ORIGIN_RELAY`), so once
+ * profiles have propagated the whole mesh shares one id set and the "identical ⇒ skip" comparison still holds.
+ * (This corrects an earlier "message-only, excludes own profile" note from Phase 1a, before general custody.)
  *
  * The fingerprint is XOR of `hash64(id)` over every held id: order-independent and its own inverse, so
  * add/remove is O(1) ([add]/[remove]); [setMessages] rebuilds it wholesale (init, sweep, cap-eviction). Owned

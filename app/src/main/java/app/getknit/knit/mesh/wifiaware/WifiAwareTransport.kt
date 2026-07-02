@@ -35,6 +35,7 @@ import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
+import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportHealth
@@ -139,6 +140,9 @@ class WifiAwareTransport(
 
     private val _incomingFiles = MutableSharedFlow<ReceivedFile>(extraBufferCapacity = 32)
     override val incomingFiles = _incomingFiles.asSharedFlow()
+
+    private val _incomingDigests = MutableSharedFlow<ReceivedDigest>(extraBufferCapacity = 32)
+    override val incomingDigests = _incomingDigests.asSharedFlow()
 
     // Aware + connectivity callbacks are delivered on this dedicated thread's handler.
     private val callbackThread = HandlerThread("wifi-aware-cb").apply { start() }
@@ -319,6 +323,11 @@ class WifiAwareTransport(
 
     override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) {
         peers[to.nodeId]?.outbound?.trySend(Outbound.FileSend(file, meta))
+    }
+
+    override suspend fun sendDigest(to: Peer, ids: List<String>) {
+        peers[to.nodeId]?.outbound?.trySend(Outbound.Digest(ids))
+        Log.d(TAG, "digest → ${to.nodeId}: ${ids.size} ids") // temp diag (strip with the other logState diags)
     }
 
     // --- Attach / discovery ---
@@ -1042,6 +1051,7 @@ class WifiAwareTransport(
                     AwareFraming.Type.FILE_HEADER -> { conn.touch(); conn.beginRxFile(msg.payload) }
                     AwareFraming.Type.FILE_CHUNK -> { conn.touch(); conn.appendRxFile(msg.payload) }
                     AwareFraming.Type.FILE_END -> { conn.touch(); endRxFile(conn) }
+                    AwareFraming.Type.DIGEST -> { conn.touch(); handleDigest(conn, msg.payload) }
                     AwareFraming.Type.KEEPALIVE -> Unit // legacy record from an older peer; ignore
                     AwareFraming.Type.HELLO -> Unit // identity already consumed at accept; ignore any stray
                 }
@@ -1067,6 +1077,12 @@ class WifiAwareTransport(
         _inbound.tryEmit(InboundFrame(wire, envelope, conn.nodeId))
     }
 
+    private fun handleDigest(conn: PeerConn, payload: ByteArray) {
+        val digest = AwareFraming.decodeDigest(payload) ?: return
+        Log.d(TAG, "digest ← ${conn.nodeId}: ${digest.ids.size} ids") // temp diag (strip with the other logState diags)
+        _incomingDigests.tryEmit(ReceivedDigest(conn.nodeId, digest.ids))
+    }
+
     /**
      * Drains a peer's outbound queue to its socket. Frames are written immediately; a file is streamed
      * as header→chunks→end, but pending frames are flushed *between* chunks so a large blob never stalls
@@ -1080,6 +1096,11 @@ class WifiAwareTransport(
                 when (item) {
                     is Outbound.Frame -> {
                         AwareFraming.write(out, AwareFraming.Type.FRAME, item.bytes)
+                        out.flush()
+                        conn.touch()
+                    }
+                    is Outbound.Digest -> {
+                        AwareFraming.write(out, AwareFraming.Type.DIGEST, AwareFraming.encodeDigest(DigestWire(item.ids)))
                         out.flush()
                         conn.touch()
                     }
@@ -1300,6 +1321,8 @@ class WifiAwareTransport(
                 val item = outbound.tryReceive().getOrNull() ?: break
                 when (item) {
                     is Outbound.Frame -> AwareFraming.write(out, AwareFraming.Type.FRAME, item.bytes)
+                    is Outbound.Digest ->
+                        AwareFraming.write(out, AwareFraming.Type.DIGEST, AwareFraming.encodeDigest(DigestWire(item.ids)))
                     is Outbound.FileSend -> stash.addLast(item)
                 }
             }
@@ -1378,6 +1401,7 @@ class WifiAwareTransport(
 
     private sealed interface Outbound {
         class Frame(val bytes: ByteArray) : Outbound
+        class Digest(val ids: List<String>) : Outbound
         class FileSend(val file: File, val meta: FileMeta) : Outbound
     }
 
@@ -1387,8 +1411,9 @@ class WifiAwareTransport(
         // The NAN service both nodes publish/subscribe. Bumped on every breaking wire change so a build across
         // the break hard-partitions at discovery rather than silently mis-decoding. ".v3" was the cue-format
         // change (content-digest version, not a monotone epoch); ".v4" re-typed EncEnvelope nonce/ct +
-        // WrappedKey.wk from base64 String to raw CBOR @ByteString (a v3 node can't decode a v4 E2E frame).
-        const val SERVICE_NAME = "app.getknit.knit.MESH.v4"
+        // WrappedKey.wk from base64 String to raw CBOR @ByteString (a v3 node can't decode a v4 E2E frame);
+        // ".v5" added the DIGEST data-path record (a v4 node has no DIGEST case and drops the link on it).
+        const val SERVICE_NAME = "app.getknit.knit.MESH.v5"
 
         // Fixed app-wide passphrase for link-layer (NDP) encryption. Real authentication is the per-frame
         // Ed25519 signature + E2E layer above the transport; this only keeps the data path off open air.

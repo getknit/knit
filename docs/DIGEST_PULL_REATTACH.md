@@ -152,9 +152,14 @@ the message can strand on its author until a share-stuck re-attach.
     wired through the store impl / DI. Unit-tested (`StoreDigestTest`, `DigestTrackerTest`), detekt-clean.
     On-device: versions are content hashes and **identical across restarts** (the restart-stability fix,
     confirmed). Kills no-op NDPs and the session-local-epoch bug. Cue format ⇒ `SERVICE_NAME` bumped `.v3`.
-  - **1b — deferred** — the data-path `AwareFraming.Type.DIGEST` id-list diff (transfer only the diff instead
-    of push-all). Bandwidth-only (NDP *availability*, not throughput, is the scarce resource), so lower value
-    than 1a; push-all + the receiver's `SeenSet`/offered-guard still work.
+  - **1b ✅ DONE** — the data-path `AwareFraming.Type.DIGEST` id-list diff. On link-up each side advertises the
+    ids it holds (`ForwardSync.onNeighborAdded` → `transport.sendDigest`) and pushes back only the frames the
+    peer lacks (`onDigest`), replacing push-all. Bandwidth-only (NDP *availability*, not throughput, is the
+    scarce resource), so it does **not** move the single-NDI latency floor — it shrinks each sync (and the NDP
+    hold) as stores grow, and makes re-advertising on every contact cheap. Transport-internal record ⇒
+    `SERVICE_NAME` hard cut `.v4` → `.v5` (a `.v4` node has no `DIGEST` case). The advertised list is the
+    **live** id set; `StoreDigest`/`DigestTracker` and the version gate are unchanged. JVM-tested
+    (`ForwardSyncTest` diff/filter cases, `AwareFramingTest` digest round-trip).
   - Note: 1a's *on-device convergence* across 3 nodes is gated on **Phase 2** — the responders still wedge
     after one serve (a bare `startResponder` re-arm doesn't clear it), which strands the pure-initiator hub.
     Phase 1a is correct in isolation (the digest decides right); it just can't be *demonstrated* converging

@@ -27,6 +27,9 @@ class FakeLoopTransport(val nodeId: String) : MeshTransport {
     private val _incomingFiles = MutableSharedFlow<ReceivedFile>(extraBufferCapacity = 32)
     override val incomingFiles = _incomingFiles.asSharedFlow()
 
+    private val _incomingDigests = MutableSharedFlow<ReceivedDigest>(extraBufferCapacity = 32)
+    override val incomingDigests = _incomingDigests.asSharedFlow()
+
     private val links = mutableMapOf<String, FakeLoopTransport>()
 
     /** Bidirectionally links this transport with [other] so they become neighbors. */
@@ -52,6 +55,11 @@ class FakeLoopTransport(val nodeId: String) : MeshTransport {
         links[to.nodeId]?._incomingFiles?.emit(
             ReceivedFile(nodeId, file.absolutePath, meta.kind, meta.key, meta.mime),
         )
+    }
+
+    override suspend fun sendDigest(to: Peer, ids: List<String>) {
+        // In-process round-trip: deliver our advertised ids to the linked peer's incomingDigests.
+        links[to.nodeId]?._incomingDigests?.emit(ReceivedDigest(nodeId, ids))
     }
 
     private suspend fun deliver(wire: WireEnvelope, fromNodeId: String) {
