@@ -739,6 +739,14 @@ class MeshManager(
      */
     private suspend fun verifyInbound(env: RelayEnvelope, wire: WireEnvelope, fromNodeId: String): Boolean = runCatching {
         if (env.type == FrameType.BLOB_REQ) return true
+        // One of our own originated frames looping back to us: a neighbor carried it (store-and-forward) and,
+        // once our SeenSet dedup window lapsed, its re-serve re-flooded it back through a third node. We never
+        // pin our own key in `peers`, so this would otherwise fall through to the NO_SENDER_KEY path below —
+        // spuriously counting a drop, parking it in PendingInbound (which never releases, since a profile for
+        // ourselves never arrives), and asking neighbors for our own key (a KeyExchange.want no-op). We already
+        // delivered it locally when we originated it, so drop it as a silent local no-op; the router still
+        // relays it (that runs after onDeliver returns) and neighbors dedup it, so it dies at the next hop.
+        if (env.senderId == identity.nodeId()) return false
         val bundle = verifierBundle(env)
         if (bundle == null) {
             metrics.onDropped(DropReason.NO_SENDER_KEY)

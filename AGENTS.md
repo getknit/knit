@@ -290,8 +290,10 @@ but still relay — a delivery gate, never a relay gate; see `docs/WIRE_COMPAT.m
 
 The mesh floods a frame once and forgets it, so a message whose recipient (or a path to them) isn't
 connected at that instant never arrives. **`ForwardSync` + `ForwardStore`** add delay-tolerant custody
-for **every chat message — 1:1 DMs, group messages, and the plaintext broadcast room** (so two phones
-that meet only briefly backfill each other's ambient history — the festival case). A node persists the
+for **every floodable frame** — chat (1:1 DMs, group messages, and the plaintext broadcast room) plus the
+small metadata frames (`reaction`/`receipt`/`groupupdate`/`groupleave`/`profile`) — so two phones that meet
+only briefly backfill each other's ambient history (the festival case). The subsections below detail the
+chat cases (the delivery-critical ones); the metadata types ride the same custody path (`FrameType.isCustodial`). A node persists the
 messages it originates (`ORIGIN_SELF`) or relays
 (`ORIGIN_RELAY`) into the encrypted `forward_store` table, and when a neighbor joins (`watchNeighbors`
 newcomers → `ForwardSync.onNeighborAdded`) **unicasts** the carried ones to it (skipping a
@@ -319,8 +321,10 @@ so it is **never vaccine-purged** — the TTL/cap sweep is its only bound.
 column) are carried too and offered to **every** newcomer (no destination to target), gated only by the
 capture path explicitly carrying them (`isForMe(null)` is true, so the DM `!isForMe` gate would otherwise
 skip them — see `MeshManager.onDeliver`). Like a group they have no ack, so a **shorter TTL** + a
-**broadcast quota** are their only bound; they are never vaccine-purged. `isStorable()` is now simply
-`type == CHAT`.
+**broadcast quota** are their only bound; they are never vaccine-purged. `isStorable()` = `FrameType.isCustodial`:
+**every floodable type**, not just `chat` — the `isReplayable` family (`chat`/`reaction`/`receipt`/`groupupdate`/`groupleave`)
+plus `profile` — so the whole mesh converges on the same state (reactions, receipts, renames, and keys included),
+not only the one-hop peers that happened to be present when each first flooded.
 
 Bounds (`ForwardRepository`): a per-message **TTL** sweep (startup + a 10-min loop + the heartbeat
 `heal()`; broadcast gets a shorter TTL than DMs/groups), a **global cap**, a **per-sender quota**, a
@@ -365,6 +369,16 @@ just the fast path: DM, group, **and** broadcast frames all also degrade gracefu
 re-serve after the buffer expires (broadcast custody closed the old gap where a broadcast frame had the
 `PendingInbound` TTL as its only recovery window). Surfaced in Diagnostics (`framesHeld`/`framesReplayed`)
 and JVM-tested (`PendingInboundTest`).
+
+Because custody now carries our **own** frames too, `verifyInbound` short-circuits any frame whose `senderId`
+is our own nodeId — a silent local no-op drop *before* the `NO_SENDER_KEY` path. A neighbor re-serves a carried
+copy of a `chat`/`reaction` we originated, and its re-flood reaches us again once our `SeenSet` window has
+lapsed; since a node never pins its **own** key in `peers` (`handleProfile` only upserts inbound senders), that
+copy would otherwise be counted as `NO_SENDER_KEY`, parked in `PendingInbound` until its TTL (no self-profile
+ever arrives to release it), and trigger a `keyExchange.want(self)` no-op — pure noise for a message we already
+delivered at origination. We drop it silently; the router still relays it and neighbors dedup it one hop out.
+(Field-observed 2026-07-02, idle 3-node mesh: a slow drip of `drop chat/reaction … no key to verify it` from
+the node's *own* id, with `keyReq` stuck at 0 — the `KeyExchange.want` self-guard — and `framesHeld` climbing.)
 
 ## Out of scope (deferred, by design)
 
