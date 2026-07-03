@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -48,6 +50,8 @@ data class ChatListUiState(
     val neighborCount: Int = 0,
     // Radio health, so the connection header can distinguish "nobody nearby" from radios off/seized.
     val transportHealth: TransportHealth = TransportHealth.Healthy,
+    // The radio-off warning banner to show (or null), already accounting for the user's dismissal.
+    val radioWarning: RadioWarning? = null,
 )
 
 /**
@@ -79,6 +83,13 @@ class ChatListViewModel(
         val groups: List<GroupEntity>,
     )
 
+    // Neighbor count + radio health + the (already-dismissal-aware) banner, folded into one source.
+    private data class MeshStatus(
+        val neighborCount: Int,
+        val health: TransportHealth,
+        val warning: RadioWarning?,
+    )
+
     private val messagesAndBlocks = combine(
         messages.observeMessages(), // ORDER BY sentAt ASC -> newest is last()
         settings.blockedNodeIds,
@@ -87,10 +98,31 @@ class ChatListViewModel(
         ListBundle(msgs.filter { it.senderId !in blocked }, blocked, groupList)
     }
 
-    // Neighbor count + radio health folded into one source so the main state combine stays within its
-    // five-flow arity.
-    private val meshStatus =
-        combine(meshManager.neighborCount, meshManager.transportHealth) { count, health -> count to health }
+    // Radio-off banner: which warning the per-radio statuses imply, and whether the user has dismissed it.
+    // The critical AllRadiosOff warning is never stored in [dismissed], so it always shows (not dismissible).
+    private val dismissed = MutableStateFlow<RadioWarning?>(null)
+
+    private val rawWarning = meshManager.transportStatuses
+        .map { radioWarningFor(it) }
+        .distinctUntilChanged()
+
+    private val visibleWarning = combine(rawWarning, dismissed) { warning, hidden ->
+        if (warning != null && warning != hidden) warning else null
+    }
+
+    init {
+        // Re-arm: when radios recover (warning clears), forget any prior dismissal so a later off-episode
+        // shows the banner again.
+        viewModelScope.launch { rawWarning.collect { if (it == null) dismissed.value = null } }
+    }
+
+    // Neighbor count + radio health + the banner folded into one source so the main state combine stays
+    // within its five-flow arity.
+    private val meshStatus = combine(
+        meshManager.neighborCount,
+        meshManager.transportHealth,
+        visibleWarning,
+    ) { count, health, warning -> MeshStatus(count, health, warning) }
 
     val state: StateFlow<ChatListUiState> = combine(
         messagesAndBlocks,
@@ -98,7 +130,7 @@ class ChatListViewModel(
         settings.lastReadAll,
         myNodeId,
         meshStatus,
-    ) { bundle, peerList, lastReadAll, me, (neighborCount, health) ->
+    ) { bundle, peerList, lastReadAll, me, (neighborCount, health, warning) ->
         val msgs = bundle.messages
         val blocked = bundle.blocked
         val activeGroups = bundle.groups.filter { !it.left }
@@ -172,8 +204,19 @@ class ChatListViewModel(
             conversations = (listOf(nearby) + groupRows + dms).sortedByDescending { it.lastMessageAt ?: 0L },
             neighborCount = neighborCount,
             transportHealth = health,
+            radioWarning = warning,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatListUiState())
+
+    /**
+     * Hides the currently-shown radio-off banner. Only the dismissible warnings (Bluetooth/Wi-Fi off) are
+     * recorded — the critical [RadioWarning.AllRadiosOff] is intentionally not dismissible, so a request to
+     * dismiss it is ignored. A recorded dismissal is forgotten once the radios recover (see the re-arm
+     * collector), so a later off-episode shows the banner again.
+     */
+    fun dismissRadioWarning() {
+        state.value.radioWarning?.takeIf { it != RadioWarning.AllRadiosOff }?.let { dismissed.value = it }
+    }
 
     /**
      * "Sender: body" preview, mirroring how ChatViewModel resolves names and labels own messages.

@@ -1,5 +1,8 @@
 package app.getknit.knit.ui.chatlist
 
+import android.content.Context
+import android.content.Intent
+import android.provider.Settings
 import android.text.format.DateUtils
 import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -190,17 +193,28 @@ fun ChatListScreen(
             }
         },
     ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(vertical = 4.dp),
-        ) {
-            items(state.conversations, key = { it.id }) { row ->
-                ConversationListItem(
-                    row = row,
-                    now = now,
-                    onClick = { onOpenConversation(row.id) },
-                    onDelete = viewModel::deleteConversation,
+        Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            // Pinned above the list (not a scrolling item) so a connectivity warning never scrolls away.
+            state.radioWarning?.let { warning ->
+                RadioWarningBanner(
+                    warning = warning,
+                    onOpenSettings = { openRadioSettings(context, warning) },
+                    // The critical "all radios off" banner is not dismissible.
+                    onDismiss = if (warning == RadioWarning.AllRadiosOff) null else viewModel::dismissRadioWarning,
                 )
+            }
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(vertical = 4.dp),
+            ) {
+                items(state.conversations, key = { it.id }) { row ->
+                    ConversationListItem(
+                        row = row,
+                        now = now,
+                        onClick = { onOpenConversation(row.id) },
+                        onDelete = viewModel::deleteConversation,
+                    )
+                }
             }
         }
     }
@@ -226,6 +240,28 @@ fun ChatListScreen(
         )
     }
 }
+
+/**
+ * Deep-links to the system panel that fixes [warning]: Bluetooth settings for a Bluetooth-off warning, Wi-Fi
+ * settings for Wi-Fi-off, and (for all-radios-off) the airplane-mode panel when airplane mode is on else the
+ * top-level wireless panel. Wrapped in [runCatching] since a device may lack the settings activity.
+ */
+private fun openRadioSettings(context: Context, warning: RadioWarning) {
+    val action = when (warning) {
+        RadioWarning.BluetoothOff -> Settings.ACTION_BLUETOOTH_SETTINGS
+        RadioWarning.WifiOff -> Settings.ACTION_WIFI_SETTINGS
+        RadioWarning.AllRadiosOff ->
+            if (isAirplaneModeOn(context)) {
+                Settings.ACTION_AIRPLANE_MODE_SETTINGS
+            } else {
+                Settings.ACTION_WIRELESS_SETTINGS
+            }
+    }
+    runCatching { context.startActivity(Intent(action)) }
+}
+
+private fun isAirplaneModeOn(context: Context): Boolean =
+    Settings.Global.getInt(context.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable

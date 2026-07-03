@@ -57,6 +57,12 @@
     <string name="chat_connection_radio_off">Turn on Wi-Fi or Bluetooth to connect</string>
     <string name="chat_connection_airplane">Airplane mode is on — turn on Wi-Fi or Bluetooth</string>
     <string name="chat_connection_degraded">Mesh radio unavailable — another app may be using it</string>
+    <!-- Chat-list radio-off banner -->
+    <string name="chatlist_radio_banner_bluetooth_off">Bluetooth is off — tap to turn it on for better range and reliability</string>
+    <string name="chatlist_radio_banner_wifi_off">Wi-Fi is off — tap to turn it on for faster, longer-range mesh</string>
+    <string name="chatlist_radio_banner_all_off">Knit can\'t connect — turn on Wi-Fi or Bluetooth to reach people nearby</string>
+    <string name="chatlist_radio_banner_all_off_airplane">Airplane mode is on — turn it off or turn on Wi-Fi/Bluetooth to connect</string>
+    <string name="chatlist_radio_banner_dismiss">Dismiss</string>
     <string name="chat_empty">No messages yet.\nSay hello to nearby devices.</string>
     <string name="chat_message_hint">Knit Message</string>
     <string name="chat_loading_photo">Photo appears when a nearby device has it</string>
