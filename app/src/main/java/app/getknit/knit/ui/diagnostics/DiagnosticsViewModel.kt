@@ -81,7 +81,7 @@ class DiagnosticsViewModel(
     private val _events = MutableSharedFlow<Int>(extraBufferCapacity = 1)
     val events = _events.asSharedFlow()
 
-    /** Bounces the Nearby transport (re-advertise, reconnect, clear stale endpoints); keeps the service. */
+    /** Bounces the mesh transports (re-advertise, reconnect, clear stale peers); keeps the service. */
     fun restartMesh() {
         viewModelScope.launch { meshManager.restart() }
         _events.tryEmit(R.string.diagnostics_mesh_restarted)

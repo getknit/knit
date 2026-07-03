@@ -14,6 +14,8 @@ design notes are in `docs/ARCHITECTURE.md`.
   overridden to 2.4.0** (KGP on the root buildscript classpath, since AGP bundles 2.2.10), and
   `android.disallowKotlinSourceSets=false` is required — see `AGENTS.md` for why before changing
   dependencies or build config.
-- The transport is **Wi-Fi Aware (NAN)**, not Google Nearby/GMS. Keep all `android.net.wifi.aware.*`
-  (and the NAN data-path `ConnectivityManager`/`NetworkRequest`) imports inside `mesh/wifiaware/`;
-  everything else talks to the `MeshTransport` interface. minSdk is 33.
+- The transport runs **two radios at once — Wi-Fi Aware (NAN) + Bluetooth LE** — behind
+  `CompositeMeshTransport`, not Google Nearby/GMS. Keep `android.net.wifi.aware.*` (and the NAN
+  data-path `ConnectivityManager`/`NetworkRequest`) imports inside `mesh/wifiaware/`, and
+  `android.bluetooth.*` inside `mesh/bluetooth/`; everything else talks to the `MeshTransport`
+  interface. minSdk is 33.

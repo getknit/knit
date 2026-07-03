@@ -6,6 +6,12 @@ had a **second, more severe wedge** it could neither fix nor avoid causing; the 
 hardened to eliminate it at the root (see **Two distinct wedges** below). Follow-up to `b6293ae`
 (*fix(mesh): harden NAN transport against single-NDI chipset wedge cases*).
 
+> **Naming note (post-doc):** the socket framing called `AwareFraming` below was later renamed
+> **`LinkFraming`** and made transport-neutral — moved to `mesh/link/`, now shared by the Wi-Fi Aware NDP
+> socket **and** the Bluetooth LE L2CAP socket (`AwareFramingTest` → `LinkFramingTest`). `SyncEpoch` and
+> `CueTracker` are the retired predecessors this proposal replaces with `StoreDigest` / `DigestTracker`,
+> referenced here as history. Otherwise the design below is the shipped one.
+
 This reworks how the Wi-Fi Aware transport decides **when** to sync, **what** to transfer, and **how it
 manages the one NAN data interface** — replacing the coarse-epoch push-all model + reactive re-attach patches
 with (A) a content-digest pull that only syncs real diffs, and (B) a deliberate re-attach policy that turns

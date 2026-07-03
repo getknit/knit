@@ -18,7 +18,7 @@ SafeSearch, ML Kit cloud) is usable.
 ```
 moderation/            TextModerator / ImageModerator interfaces + Verdict types
   LexicalTextFilter      pure-Kotlin profanity filter (deterministic first pass)
-  HybridTextModerator    lexical first, optional ML classifier second (ml = null today)
+  HybridTextModerator    lexical first, ML classifier second (ml = MlTextModerator — Phase 4, wired)
   NsfwImageModerator     TFLite NSFW image classifier (graceful degradation if no model)
   WordList               loads assets/moderation/profanity_en.txt
 di/ModerationModule.kt   Koin: binds TextModerator + ImageModerator
@@ -39,8 +39,8 @@ display/decision time, not at screen time, so a verdict is always cached.
 ## 2. Text moderation (implemented)
 
 Hybrid pipeline (`HybridTextModerator`): the cheap deterministic `LexicalTextFilter` runs first and
-short-circuits on a hit; text it clears is passed to an optional ML classifier (`ml`, currently
-`null` → lexical-only until Phase 4).
+short-circuits on a hit; text it clears is passed to the ML classifier (`ml = MlTextModerator`, wired in
+Phase 4 — §4; it degrades to allow-all if its model assets are missing, so lexical-only still ships).
 
 `LexicalTextFilter` is pure Kotlin (unit-tested, no Android deps) and evasion-tolerant: lowercase +
 NFKD-fold (diacritics/homoglyphs), leetspeak mapping (`$h1t`→`shit`), repeated-run collapse
@@ -66,11 +66,15 @@ is absent or fails to load, it degrades to allow-all** — all hooks and UI stay
 automatically once a model is present. Input shape/dtype are read from the model; scores at
 `unsafeClasses` are summed and compared to `threshold`.
 
-**Runtime choice.** The bare TFLite interpreter (`org.tensorflow:tensorflow-lite`) is used instead of
-MediaPipe `tasks-vision` or `com.google.ai.edge.litert` because it depends only on
-`tensorflow-lite-api` (no telemetry/`datatransport`, no Play on-demand model delivery, no Kotlin
-stdlib, no manifest permissions) — it can't perturb the pinned Kotlin-2.4 graph or the no-`INTERNET`
-offline design.
+**Runtime choice.** The classic TFLite interpreter is used via **`com.google.ai.edge.litert:litert`**
+(LiteRT 1.4.x — upstream's rename of the bare interpreter, keeping the identical
+`org.tensorflow.lite.Interpreter` API), *not* `org.tensorflow:tensorflow-lite`, MediaPipe `tasks-vision`,
+or the heavier LiteRT 2.x. `org.tensorflow:tensorflow-lite` dead-ends at 2.17.0, whose native `.so` are
+only 4 KB-aligned and fail to load on a 16 KB-page image (e.g. the emulator); LiteRT 1.4.x re-links the
+same JNI `.so` 16 KB-aligned across all ABIs while staying bare — no telemetry (`datatransport`), no Play
+on-demand model delivery (`ai-delivery`), no manifest permissions — so it can't perturb the pinned
+Kotlin-2.4 graph or the no-`INTERNET` offline design. (See the version catalog for the full rationale,
+including why not LiteRT 2.x.)
 
 **Hook points** (`BlobRepository` is the hub; verdicts cached by SHA-256 in `blob_verdicts`, so
 identical bytes are scanned once across send/receive):
@@ -129,8 +133,9 @@ exported to TFLite (dynamic int8, ~14.6 MB) by the separate **`detoxify-mobile`*
 - License: Apache-2.0 (Detoxify weights + `albert-base-v2`) — retain attribution when shipping.
 
 We deliberately did **not** use MediaPipe (Model Maker is deprecated) nor a prebuilt native tokenizer.
-The runtime mirrors `NsfwImageModerator` (bare `org.tensorflow:tensorflow-lite` Interpreter — no
-telemetry), and ALBERT's SentencePiece tokenization is a **pure-Kotlin** `SentencePieceTokenizer` that
+The runtime mirrors `NsfwImageModerator` (the same bare LiteRT `com.google.ai.edge.litert:litert`
+`Interpreter` — no telemetry), and ALBERT's SentencePiece tokenization is a **pure-Kotlin**
+`SentencePieceTokenizer` that
 parses `tokenizer.json` — no `.so`, so it's 16 KB-page safe (the prebuilt HF/DJL tokenizers ship only
 4 KB-aligned natives, which fail Android 15's 16 KB requirement). Verified id-for-id against the HF
 tokenizer. Fully offline, no `INTERNET`.

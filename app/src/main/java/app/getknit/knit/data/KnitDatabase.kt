@@ -54,9 +54,9 @@ import java.io.File
     // v14: layered wire-format break. forward_store now stores the signed routing-envelope blob + its
     //      signature (the `bytes` column became `signed`, plus a new `sig` column); peers gained
     //      `protoVersion`/`capabilities` from the profile frame. Destructive migration (clears any
-    //      old-format carried frames + pins); coordinated with the bumped Nearby SERVICE_ID.
+    //      old-format carried frames + pins); coordinated with the bumped mesh SERVICE_NAME.
     // v15: groups gained `photoHash`/`photoUpdatedAt` for the (last-writer-wins) group photo. Additive
-    //      wire change (new nullable GroupInfo fields), so no SERVICE_ID bump; destructive DB migration as
+    //      wire change (new nullable GroupInfo fields), so no SERVICE_NAME bump; destructive DB migration as
     //      usual (app not yet public).
     // v16: store-and-forward custody generalized to every floodable frame (reactions, receipts, group
     //      updates/leaves, profiles — not just chat); forward_store gained a `type` column so per-type

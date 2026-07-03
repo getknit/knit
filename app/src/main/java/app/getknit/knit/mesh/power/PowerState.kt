@@ -101,7 +101,7 @@ object PowerPolicy {
 /**
  * Holds the current [PowerState] as an observable [StateFlow]. [PowerMonitor] writes it from system
  * broadcasts; the transport reads it to drive the discovery loop. Kept Android-free so it stays
- * unit-testable and outside the GMS layer.
+ * unit-testable and outside the radio/transport layer.
  */
 class PowerStateSource {
     private val _state = MutableStateFlow(PowerState())

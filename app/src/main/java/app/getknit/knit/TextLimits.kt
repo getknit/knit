@@ -15,7 +15,7 @@ object TextLimits {
     /** Group title — single line, shown in the chat header. */
     const val GROUP_NAME = 32
 
-    /** Chat message body. Generous, but bounded so a frame stays well within the Nearby payload cap. */
+    /** Chat message body. Generous, but bounded so a frame stays well within the transport's payload budget. */
     const val MESSAGE = 2000
 }
 

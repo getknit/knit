@@ -3,10 +3,11 @@
 Offline, serverless messaging between nearby phones — with **end-to-end encrypted** direct and group
 chats.
 
-Knit forms an ad-hoc **mesh** over Bluetooth and Wi-Fi (via Google Nearby Connections): when you
-send a message, it's transmitted to every device in range, each of which re-transmits it onward, so
-messages can "leap-frog" hop-by-hop across many devices with no internet, cell service, accounts, or
-servers. Duplicate copies are discarded. The interface is a modern Signal-style messenger.
+Knit forms an ad-hoc **mesh** directly over **Wi-Fi Aware** and **Bluetooth LE** — no Google Play
+services, no servers: when you send a message, it's transmitted to every device in range, each of which
+re-transmits it onward, so messages can "leap-frog" hop-by-hop across many devices with no internet,
+cell service, accounts, or servers. Duplicate copies are discarded. The interface is a modern
+Signal-style messenger.
 
 > **Status:** MVP. The current build has a **"Nearby" public broadcast room**, **1:1 direct
 > messages**, and **multi-member group chats**, with profiles (name / status / avatar), emoji
@@ -17,9 +18,10 @@ servers. Duplicate copies are discarded. The interface is a modern Signal-style 
 
 ## Features
 
-- **Mesh relay** over Nearby Connections (`P2P_CLUSTER`): advertise + discover, auto-connect to all
-  nearby peers, flood messages with hop-count/TTL bounds and deduplication. Relays use **jittered,
-  overhear-suppressed** flooding so a dense cluster isn't stormed with redundant rebroadcasts.
+- **Mesh relay** over **Wi-Fi Aware (NAN)** and **Bluetooth LE**, running simultaneously behind one
+  `MeshTransport` abstraction: advertise + discover, connect to nearby peers, flood messages with
+  hop-count/TTL bounds and deduplication. Relays use **jittered, overhear-suppressed** flooding so a
+  dense cluster isn't stormed with redundant rebroadcasts.
 - **Public broadcast chat**, **1:1 direct messages**, and **multi-member group chats** — a
   conversation list and contact picker, message bubbles, relative timestamps, unread badges, and a
   delivery tick (✓).
@@ -41,14 +43,19 @@ servers. Duplicate copies are discarded. The interface is a modern Signal-style 
   DMs/groups; both are **collapsed/blurred behind tap-to-reveal on receive** (receiver-side enforcement
   is what actually protects a user in a mesh), with one-tap block-sender and a user toggle. See
   [`docs/CONTENT_MODERATION.md`](docs/CONTENT_MODERATION.md).
+- **Store-and-forward delivery** — a message whose recipient isn't in range is held in encrypted
+  custody and re-offered when they (or a path to them) later come into range, so two phones that meet
+  only briefly still backfill each other.
 - **Messaging-style notifications** with a separate channel for mentions.
 - **Always-on background mesh** via a foreground service, kept healthy by a heartbeat alarm,
-  significant-motion re-scan, and Bluetooth-recovery; prompts to disable battery optimization.
+  significant-motion re-scan, and radio-availability recovery; prompts to disable battery optimization.
 - **Material 3** UI with a coral brand theme and full dark mode.
 
 ## Requirements
 
-- **Android 10 (API 29) or newer**, with **Google Play services** (Nearby Connections depends on it).
+- **Android 13 (API 33) or newer**, with **Wi-Fi Aware** and/or **Bluetooth LE** hardware (nearly all
+  phones have Bluetooth LE; Wi-Fi Aware is on Pixel 3+ and many recent devices). No Google Play
+  services required.
 - **JDK 21** and the **Android SDK** (compileSdk 36.1) to build.
 - Real mesh testing needs **two or more physical devices** — see [Running](#running).
 
@@ -56,8 +63,9 @@ servers. Duplicate copies are discarded. The interface is a modern Signal-style 
 
 Kotlin 2.4.0 · Jetpack Compose (Material 3) + Navigation Compose · AGP 9.2.1 / Gradle 9.4.1 ·
 Koin (DI) · Room + SQLCipher (encrypted at rest) · DataStore · kotlinx.serialization (**CBOR** wire
-format) · Coil 3 · **Google Tink** (end-to-end crypto) · **ZXing** (QR verification) · TensorFlow Lite
-(on-device NSFW image classifier) · `play-services-nearby`.
+format) · Coil 3 · **Google Tink** (end-to-end crypto) · **ZXing** (QR verification) · LiteRT / TFLite
+(on-device NSFW + toxicity classifiers) · **Wi-Fi Aware + Bluetooth LE** (framework radios — no external
+transport dependency).
 
 ## Build
 
@@ -71,16 +79,16 @@ The debug APK lands at `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Running
 
-Nearby Connections drives Bluetooth/Wi-Fi radios, so the mesh needs **physical devices**:
+The mesh drives the Wi-Fi Aware and Bluetooth LE radios directly, so it needs **physical devices**:
 
-1. Install the debug build on **two (or more) phones** that have Google Play services.
+1. Install the debug build on **two (or more) Wi-Fi-Aware- and/or Bluetooth-LE-capable phones**.
 2. Launch on each, grant the requested permissions, and (recommended) allow background battery use.
 3. Within range, the devices auto-discover and connect ("Connected to N mesh nodes" appears).
 4. Send a message on one — it appears on the others; a third device out of direct range receives it
    relayed through the middle device.
 
-The app launches and the UI works on an emulator, but an emulator generally **cannot** mesh with a
-physical phone (its network is NAT'd), so use real devices for connectivity testing.
+The app launches and the UI works on an emulator, but an emulator cannot form a real mesh (it has no
+Wi-Fi Aware or Bluetooth LE peer radio), so use real devices for connectivity testing.
 
 ## Documentation
 
@@ -94,17 +102,17 @@ physical phone (its network is NAT'd), so use real devices for connectivity test
 ## Roadmap
 
 Implemented and verified: broadcast room, 1:1 DMs, multi-member group chats, profiles, reactions,
-mentions, attachments, at-rest database encryption (SQLCipher), and **end-to-end encryption +
-identity verification** for DMs and group chats. Explicitly deferred:
+mentions, attachments, at-rest database encryption (SQLCipher), **end-to-end encryption + identity
+verification** for DMs and group chats, dual **Wi-Fi Aware + Bluetooth LE** transports behind the
+`MeshTransport` abstraction (no Google Play services), **store-and-forward** delay-tolerant delivery,
+and the **key-request/retransmit** path for a message received before its sender's key is known.
+Explicitly deferred:
 
-- **Alternate transports** (Wi-Fi Aware / BLE) behind the existing `MeshTransport` abstraction —
-  removes the Google Play services dependency.
 - **True DM routing** — DMs currently flood the whole mesh and only the addressed recipient delivers/
   acks them; targeted multi-hop routing is future work.
 - **Forward secrecy** — E2E uses long-term static identity keys (no ratchet), so compromise of a
   device's identity key would expose past intercepted messages.
-- **Encrypting reactions, receipts, and the broadcast room** — these remain cleartext metadata, and
-  a **key-request/retransmit** path for messages received before a sender's key is known.
+- **Encrypting reactions, receipts, and the broadcast room** — these remain cleartext metadata.
 
 ## Security note
 

@@ -37,9 +37,9 @@ val meshModule = module {
     single { MeshBlobStore(get(), File(androidContext().cacheDir, "blobtx")) }
     // Demo-screenshot builds swap in a no-op transport that just reports a few connected neighbors (so the UI
     // looks "connected" against the seeded data). Production wraps every hardware-supported plane in a
-    // CompositeMeshTransport behind the single-transport seam — currently Wi-Fi Aware; the Bluetooth (BLE)
-    // plane is added to the child list here once built. Each plane is gated on isSupported() so an unsupported
-    // one is simply absent (a device with neither yields an inert, Degraded composite).
+    // CompositeMeshTransport behind the single-transport seam — Bluetooth LE and Wi-Fi Aware, in descending
+    // send-preference. Each plane is gated on isSupported() so an unsupported one is simply absent (a device
+    // with neither yields an inert, Degraded composite).
     single<MeshTransport> {
         if (BuildConfig.SEED_DEMO) {
             DemoTransport(DemoSeeder.ONLINE_NODE_IDS)

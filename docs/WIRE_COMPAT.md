@@ -33,9 +33,9 @@ Two load-bearing decisions you must not undo:
 
 Each evolves independently; bump the right one:
 
-- **Endpoint-info `protoVersion` + `capabilities`** (`Protocol.VERSION` / `Protocol.CAP_*`): the Nearby
-  handshake hint, known at connection time, **unauthenticated** — a routing/degradation hint only, never
-  a trust input.
+- **Endpoint-info `protoVersion` + `capabilities`** (`Protocol.VERSION` / `Protocol.CAP_*`): the
+  advert/handshake hint (Wi-Fi Aware `serviceSpecificInfo` / the BLE service-data payload), known at
+  connection time, **unauthenticated** — a routing/degradation hint only, never a trust input.
 - **`RelayEnvelope.type` registry**: `chat`, `groupupdate`, `groupleave`, `profile`, `receipt`,
   `reaction`, `blobreq`, `keyreq`.
 - **`EncEnvelope.v`**: the E2E crypto scheme (AES-GCM + HPKE wrap).

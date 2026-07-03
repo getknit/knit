@@ -5,8 +5,9 @@ import java.io.File
 /**
  * Content-addressed image-blob storage, abstracted so [BlobExchange] stays free of Android/Room
  * dependencies (and unit-testable). The app's implementation is backed by the encrypted database (see
- * `MeshBlobStore`); the methods are `suspend` because they read/write that database. Nearby transfers
- * are inherently file-based, so [fileFor]/[saveIncoming] still trade in [File]s — the implementation
+ * `MeshBlobStore`); the methods are `suspend` because they read/write that database. Mesh file transfers
+ * are inherently file-based (streamed over the data-path socket), so [fileFor]/[saveIncoming] still trade
+ * in [File]s — the implementation
  * materializes short-lived temp files for in-flight transfers.
  */
 interface BlobStore {

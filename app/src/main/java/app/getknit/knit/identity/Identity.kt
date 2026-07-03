@@ -3,7 +3,7 @@ package app.getknit.knit.identity
 import app.getknit.knit.data.crypto.IdentityKeyStore
 
 /**
- * The device's mesh identity: an 8-char [nodeId] (used as the Nearby endpoint name and the author of
+ * The device's mesh identity: an 8-char [nodeId] (used as the mesh advert/endpoint name and the author of
  * messages/profiles) that is the hash of the long-term end-to-end [publicKeyBundle]. Because the
  * nodeId is *derived from* the keypair (see [NodeId.fromPublicKeyBundle]), identity is self-certifying
  * — no peer can claim our nodeId without our private key. The keypair (see [IdentityKeyStore]) is

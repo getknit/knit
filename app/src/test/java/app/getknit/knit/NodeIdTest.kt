@@ -30,7 +30,7 @@ class NodeIdTest {
 
     @Test
     fun idIsAlwaysEightLowercaseAlphanumerics() {
-        // Stays in the historical [a-z0-9]{8} shape so every consumer (Nearby endpoint name, avatar
+        // Stays in the historical [a-z0-9]{8} shape so every consumer (mesh endpoint-info advert, avatar
         // filenames, the friendly alias, the profile-frame id) is unaffected.
         repeat(5_000) {
             val id = NodeId.derive("device-$it")

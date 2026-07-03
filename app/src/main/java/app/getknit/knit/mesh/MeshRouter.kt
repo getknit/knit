@@ -22,7 +22,7 @@ import kotlin.random.Random
  * redundant traffic in dense meshes while still relaying reliably in sparse ones (where no duplicate
  * is overheard). Locally-originated frames bypass this and send immediately.
  *
- * Kept free of Android/Room/Nearby dependencies so it can be unit-tested with a fake transport.
+ * Kept free of Android/Room/transport dependencies so it can be unit-tested with a fake transport.
  */
 class MeshRouter(
     private val transport: MeshTransport,

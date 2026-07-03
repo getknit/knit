@@ -10,13 +10,13 @@ import java.io.File
 
 /**
  * [BlobStore] backed by the encrypted [BlobRepository], bridging the mesh blob-exchange to the
- * database. Nearby file transfers are inherently file-based (`Payload.fromFile`), so this materializes
+ * database. Mesh file transfers stream as `LinkFraming` file records over the data-path socket, so this materializes
  * short-lived plaintext temp files in [transferDir] for outbound sends and ingests inbound staging
  * files into the database — deleting the decrypted staging copy as soon as the bytes are encrypted.
  *
  * [transferDir] holds only in-flight transfer files (never the canonical copy, which lives encrypted
  * in the DB) and is purged on mesh start via [clearTransfers]. The transient plaintext window is no
- * larger than the (currently unencrypted) Nearby transfer itself.
+ * larger than the mesh file transfer itself.
  */
 class MeshBlobStore(
     private val blobs: BlobRepository,

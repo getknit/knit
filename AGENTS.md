@@ -6,11 +6,15 @@ build config, the mesh layer, or the DI graph. For full design detail see
 
 ## What this is
 
-An Android app (Kotlin/Compose) implementing an offline **Wi-Fi Aware (NAN) mesh messenger** — a direct
-`android.net.wifi.aware.*` implementation, no Google Nearby / GMS. Single Gradle module `:app`, package
-`app.getknit.knit`, minSdk 33 / targetSdk 36 / compileSdk 36.1 (minSdk 33 is required for Wi-Fi Aware
-Instant Communication Mode + `NEARBY_WIFI_DEVICES`/`neverForLocation`). It surfaces a "Nearby" broadcast
-room plus 1:1 DMs, with profiles, emoji reactions, @-mentions, and content-addressed image attachments.
+An Android app (Kotlin/Compose) implementing an offline **mesh messenger** that runs two radios at once —
+**Wi-Fi Aware (NAN)** and **Bluetooth LE** — behind a single `MeshTransport` seam
+(`CompositeMeshTransport`). Direct `android.net.wifi.aware.*` / `android.bluetooth.*` implementations, no
+Google Nearby / GMS. Single Gradle module `:app`, package `app.getknit.knit`, minSdk 33 / targetSdk 36 /
+compileSdk 36.1 (minSdk 33 is required for Wi-Fi Aware Instant Communication Mode +
+`NEARBY_WIFI_DEVICES`/`neverForLocation`; a device with only one of the two radios still meshes over that
+one). It surfaces a "Nearby" broadcast room plus 1:1 DMs and group chats, with profiles, emoji reactions,
+@-mentions, content-addressed image attachments, store-and-forward custody, and on-device content
+moderation.
 
 ## Commands
 
@@ -60,23 +64,29 @@ Compose BOM 2026.06). That forces several non-obvious choices:
 ## Architecture in one screen
 
 ```
-ui/            Compose screens (onboarding, chatlist, chat, contacts, profile) + ViewModels
-               (Koin koinViewModel()) · KnitApp (Navigation Compose)
-mesh/          MeshTransport (interface) · MeshRouter (dedup + jittered/suppressed flood)
-               · MeshManager (orchestrator) · MeshService (foreground service) · MeshMetrics
-               · BlobExchange/BlobStore (content-addressed pull) · ForwardSync/ForwardStore
-               (store-and-forward DM + group + broadcast custody) · SyncEpoch + CueTracker (pure
-               anti-entropy for the cue plane) · protocol/Wire.kt (CBOR Frame)
+ui/            Compose screens (onboarding, chatlist, chat, contacts, profile, group, diagnostics,
+               blocked, share, donate) + ViewModels (Koin koinViewModel()) · KnitApp (Navigation Compose)
+mesh/          MeshTransport (interface) · CompositeMeshTransport (runs the radios below simultaneously)
+               · MeshRouter (dedup + jittered/suppressed flood) · MeshManager (orchestrator)
+               · MeshService (foreground service) · MeshMetrics · BlobExchange/BlobStore
+               (content-addressed pull) · ForwardSync/ForwardStore (store-and-forward DM + group +
+               broadcast custody) · KeyExchange (keyreq) + PendingInbound (park-until-key) · StoreDigest
+               + DigestTracker (pure content-digest anti-entropy for the cue plane) · protocol/Wire.kt
+               (layered CBOR WireEnvelope) · link/ (LinkFraming — transport-neutral socket record codec)
 mesh/crypto/   E2E (Tink): MessageCrypto (per-msg seal/open) · PublicKeyBundle · MessageContent
                · AttachmentCrypto · SafetyNumber · VerifyPayload (pure, JVM-testable)
-mesh/wifiaware/ WifiAwareTransport (+ AwareFraming socket codec) — the ONLY place that imports
-               android.net.wifi.aware.*
-data/          Room (messages, peers, reactions, forward_store) + repositories · settings/SettingsStore (DataStore)
-               · AvatarStore + AttachmentStore (image files) · message/Conversations (DM keys)
-               · crypto/ DatabaseKey + IdentityKeyStore (AndroidKeyStore-wrapped secrets) + KeystoreSecret
-identity/      Identity (stable nodeId + E2E keypair) · NodeId (derive) · DeviceIdSource · Alias
-notifications/ Notifier + MessageNotifier (messages + dedicated mentions channel)
-di/            Koin modules: appModule, meshModule, uiModule
+mesh/wifiaware/ WifiAwareTransport — the ONLY place that imports android.net.wifi.aware.*
+mesh/bluetooth/ BluetoothMeshTransport (BLE advertise/scan + persistent L2CAP links) — the ONLY place
+               that imports android.bluetooth.* · ScanDemandPolicy/PromotionPolicy/ConnectBackoffPolicy
+moderation/    on-device TextModerator (LexicalTextFilter + MlTextModerator) + ImageModerator
+               (NsfwImageModerator) — see docs/CONTENT_MODERATION.md
+data/          Room (messages, peers, reactions, blobs, groups, blob_verdicts, forward_store) + repositories
+               · settings/SettingsStore (DataStore) · AvatarStore + AttachmentStore + BlobRepository
+               (image bytes + NSFW verdicts) · message/Conversations (DM keys) · crypto/ DatabaseKey +
+               IdentityKeyStore (AndroidKeyStore-wrapped secrets) + KeystoreSecret
+identity/      Identity (stable nodeId + E2E keypair) · NodeId (derive) · DeviceIdSource · DeviceTag · Alias
+notifications/ Notifier + MessageNotifier (per-context channels: nearby, groups, DMs, mentions)
+di/            Koin modules: appModule, meshModule, moderationModule, uiModule
 ```
 
 Data flow: UI → `MeshManager` → `MeshRouter` (dedup + jittered relay) → `MeshTransport` → radios;
@@ -86,10 +96,13 @@ frames.
 
 ## Conventions
 
-- **Keep Wi-Fi Aware behind `MeshTransport`.** Nothing outside `mesh/wifiaware/` should import
-  `android.net.wifi.aware.*` (or `ConnectivityManager`/`NetworkRequest` for the NAN data path).
-  Everything above the transport talks only to the `MeshTransport` interface, so a future sibling
-  transport (e.g. a BLE fallback) drops in without touching orchestration.
+- **Keep each radio behind `MeshTransport`.** Nothing outside `mesh/wifiaware/` should import
+  `android.net.wifi.aware.*` (or `ConnectivityManager`/`NetworkRequest` for the NAN data path), and
+  nothing outside `mesh/bluetooth/` should import `android.bluetooth.*`. Everything above the transport
+  talks only to the `MeshTransport` interface; `CompositeMeshTransport` runs both radios at once behind
+  that seam (Bluetooth preferred, Wi-Fi Aware second), so orchestration (`MeshManager`/`MeshRouter`) is
+  unchanged and another sibling transport drops in the same way. The socket record codec
+  (`mesh/link/LinkFraming`) is transport-neutral and shared by the NAN NDP socket and the BLE L2CAP socket.
 - **DI:** declare singletons/ViewModels in the `di/` modules; resolve ViewModels in Compose with
   `org.koin.androidx.compose.koinViewModel()` and the ViewModel DSL from
   `org.koin.core.module.dsl.viewModel` (not the deprecated `androidx.viewmodel.dsl` one).
@@ -140,8 +153,9 @@ frames.
   session with **no peer handle** (`WifiAwareNetworkSpecifier.Builder(publishSession).setPort(port)`),
   which accepts a data path from **any** initiator over a single `ServerSocket`; all clients share it.
   Because an accept-any responder doesn't know who connected, the **initiator sends its advert as the
-  first `AwareFraming.Type.HELLO` record** over the socket, and the responder reads it to identify the
-  peer. Tie-break gives one link per pair (larger nodeId = client/initiator, smaller = server). The
+  first `LinkFraming.Type.HELLO` record** over the socket (`mesh/link/LinkHandshake`, shared with BLE), and
+  the responder reads it to identify the peer. Tie-break gives one link per pair (larger nodeId =
+  client/initiator, smaller = server). The
   responder is anchored to the publish session, so **only *subscribe* is ever re-armed** (publish/responder
   stay up), respecting the "one data interface" rule below.
 - **One NAN data interface (`maxNdiInterfaces == 1`) → one data path at a time → cue-driven ephemeral
@@ -154,16 +168,21 @@ frames.
   - **Coordination plane** — Wi-Fi Aware *messages* (`DiscoverySession.sendMessage` / `onMessageReceived`,
     ~255 B, best-effort, `maxQueuedTransmitMessages=8`) ride discovery follow-up frames and need **no data
     path**, so they reach every neighbor at once *and* keep working while the one NDP is busy. Each node
-    cues `nodeId|storeEpoch` — a `SyncEpoch` monotonic counter bumped on every carry-store / own-profile
-    write — and `CueTracker` (pure, JVM-tested) flags a peer *sync-wanted* when either side's epoch advanced
-    since the last sync. A cue also bootstraps the reverse handle, so a node whose own *subscribe* is broken
-    (e.g. Pixel 9 post-kill) still cues larger peers to pull from it.
+    cues `nodeId|version` — a `StoreDigest` **content digest** (XOR over its held custody frame-id set, so
+    it is O(1)-incremental and **restart-stable**: same store ⇒ same version, unlike the old monotone
+    `SyncEpoch` counter it replaced) — and `DigestTracker` (pure, JVM-tested) flags a peer *sync-wanted*
+    when either side's digest changed since the last sync (an identical-digest pair skips the NDP entirely).
+    Small floodable frames (broadcast chat, reactions, receipts, group-meta, profiles ≤255 B) *also* ride
+    this plane as a best-effort **fast fan-out** (`fastFanout`/`fastSend`), deduped by the receiver's
+    `SeenSet`, so they propagate with zero NDP. A cue also bootstraps the reverse handle, so a node whose
+    own *subscribe* is broken (e.g. Pixel 9 post-kill) still cues larger peers to pull from it.
   - **Data plane** — one ephemeral NDP, brought up **only** when a peer is sync-wanted (the larger id
-    initiates, via the unchanged `initiateTo` + accept-any responder), drained by the existing
-    `onNeighborAdded` backfill, then torn down on **quiescence** (no data for `QUIESCENCE_MS`, never
-    mid-file) — freeing the NDI for the next pair. The initiator drives teardown and records the sync in
-    `CueTracker` (it alone consults it); the responder just sees the socket close, with a longer
-    `RESPONDER_MAX_HOLD_MS` safety cap for a dead initiator.
+    initiates, via the unchanged `initiateTo` + accept-any responder). On link-up each side advertises the
+    custody ids it holds (a `LinkFraming.Type.DIGEST` record) and pushes back only the frames the peer lacks
+    (`ForwardSync.onDigest`, replacing the old push-all backfill), then the NDP is torn down on
+    **quiescence** (no data for `QUIESCENCE_MS`, never mid-file) — freeing the NDI for the next pair. The
+    initiator drives teardown and records the sync in `DigestTracker` (it alone consults it); the responder
+    just sees the socket close, with a longer `RESPONDER_MAX_HOLD_MS` safety cap for a dead initiator.
 
   Net: an **idle mesh does zero data-path work** (just beacons + occasional cues); a new message triggers a
   targeted sync with only the peers that need it; and everything stays delay-tolerant (store-and-forward
@@ -187,18 +206,26 @@ frames.
   false when Wi-Fi is off or Wi-Fi Direct / SoftAP / hotspot seizes the radio; the transport watches
   `ACTION_WIFI_AWARE_STATE_CHANGED`, flips `health` to `Degraded`, tears links down, and re-attaches on
   recovery. `PackageManager.FEATURE_WIFI_AWARE` can be missing outright (some budget/older + certain
-  Samsung models) — **there is no fallback transport**, so the UI gates with a clear "unsupported" state
-  (`hasWifiAwareHardware`).
-- **One file streams at a time per socket.** `AwareFraming` multiplexes frames + files over the single
-  NDP socket; the writer serializes file transfers and interleaves live frames *between* chunks (so an
-  8 MiB blob never stalls traffic), which is why a `FILE_HEADER`→`FILE_CHUNK`s→`FILE_END` run needs no
-  file id. Don't push two files down one socket expecting them to interleave.
+  Samsung models) — but the **Bluetooth LE plane still meshes** on those devices, since
+  `CompositeMeshTransport` merges whichever radios are present, so the UI shows the "unsupported" state
+  only when *neither* Wi-Fi Aware nor BLE hardware exists (`hasWifiAwareHardware || hasBleHardware`, in
+  onboarding).
+- **One file streams at a time per socket.** `mesh/link/LinkFraming` (transport-neutral — the same codec
+  runs over the Wi-Fi Aware NDP socket and the BLE L2CAP socket) multiplexes frames + files over one
+  connected byte stream; the writer serializes file transfers and interleaves live frames *between* chunks
+  (so an 8 MiB blob never stalls traffic), which is why a `FILE_HEADER`→`FILE_CHUNK`s→`FILE_END` run needs
+  no file id. Don't push two files down one socket expecting them to interleave.
 - **Wi-Fi Aware needs physical devices.** An emulator can't do NAN. Use `FakeLoopTransport` for logic
   tests and two physical Wi-Fi-Aware-capable phones (e.g. Pixels) for real discovery → data path → relay.
-- **Keep the `<Frame>` type argument on the CBOR codec.** `WireCodec` calls
-  `cbor.encodeToByteArray<Frame>(frame)` / `decodeFromByteArray<Frame>(bytes)` — the explicit
-  `<Frame>` selects polymorphic encoding (the `@SerialName` discriminator). Dropping it serializes the
-  concrete subtype without the discriminator and breaks decode on the other end.
+- **Forward `signed`/`sig` verbatim on relay — never re-encode them.** The wire is layered CBOR of opaque
+  `@ByteString` blobs (`WireEnvelope.signed`/`sig`, `RelayEnvelope.payload`), **not** kotlinx sealed
+  polymorphism, precisely so a relay rewrites only `ttl`/`hops` (`WireEnvelope.relayed()`) and passes
+  `signed`+`sig` through byte-for-byte. Decoding `signed` to a `RelayEnvelope` and re-encoding it could
+  legally reorder CBOR keys and break the originator's Ed25519 signature — the old "an old relay re-encodes
+  and breaks the signature" bomb. Keep `RelayEnvelope.type` a plain `String` too (an unknown future type
+  must *decode and relay*, not throw). `WireCodec` exposes `encodeWire`/`decodeWire` (WireEnvelope),
+  `encodeEnvelope`/`decodeEnvelope` (RelayEnvelope), and `encodePayload`/`decodePayload<T>` (content) — see
+  `docs/WIRE_COMPAT.md`.
 - **After a version bump, regenerate the lockfile for ALL configurations, not just the ones your
   build resolves.** `app/build.gradle.kts` sets `dependencyLocking { lockAllConfigurations() }`, so
   `app/gradle.lockfile` pins every configuration. `--write-locks` only rewrites the configs a given
@@ -432,12 +459,13 @@ the node's *own* id, with `keyReq` stuck at 0 — the `KeyExchange.want` self-gu
 
 ## Out of scope (deferred, by design)
 
-> **Correction:** a **Bluetooth LE plane is implemented** (`mesh/bluetooth/`) and runs *simultaneously* with
-> Wi-Fi Aware behind `CompositeMeshTransport` (wired in `di/MeshModule.kt`) — BLE advertise/scan presence +
-> persistent L2CAP CoC data links, *preferred* over NAN's ephemeral NDP, with per-peer escalating connect
-> backoff and A2DP-audio instrumentation. It is a co-plane, **not** a "fallback", and BLE-capable devices use
-> it regardless of Wi-Fi Aware support. Several passages elsewhere in this file still say "pure Wi-Fi Aware /
-> no BLE" (e.g. the intro, the `mesh/wifiaware/` "ONLY place" note) and are stale pending a broader doc pass.
+> **The Bluetooth LE plane is implemented** (`mesh/bluetooth/`) and runs *simultaneously* with Wi-Fi Aware
+> behind `CompositeMeshTransport` (wired in `di/MeshModule.kt`): BLE advertise/scan presence + persistent
+> L2CAP CoC data links, *preferred* over NAN's ephemeral NDP, with per-peer escalating connect backoff and
+> A2DP-audio instrumentation. It is a co-plane, **not** a fallback, and BLE-capable devices use it
+> regardless of Wi-Fi Aware support. The **digest/pull anti-entropy** exchange that once appeared here as
+> deferred is also implemented — see the cue-plane `StoreDigest`/`DigestTracker` + the data-path
+> `LinkFraming.Type.DIGEST` id-diff (`docs/DIGEST_PULL_REATTACH.md`).
 
 Still deferred (by design): a **BLE promotion gate on A2DP audio** — the adaptive scan throttle now drops the
 **scan** to its floor while streaming (`ScanDemandPolicy` / the demand-gated `scanLoop`), but **connects** are still
@@ -445,8 +473,7 @@ not gated on `contended` (it remains diagnostic-only for the connect path); **tr
 flood — only the addressed recipient delivers/acks; store-and-forward now *carries* undelivered DMs, see
 above, but there is still no routing table); a **group key-gap retransmit** (the group analogue of the DM
 `flushPendingFor`: a group message already floods to the members whose keys are known, so reaching a
-member whose key arrives *later* needs a fresh re-seal, not custody), or replacing push-on-contact with a
-**digest/pull anti-entropy** exchange (efficiency only); and for E2E specifically:
+member whose key arrives *later* needs a fresh re-seal, not custody); and for E2E specifically:
 **forward secrecy / a ratchet** (static keys only), **encrypting** reactions/receipts (they are signed
 now — see the E2E section — but still flood as cleartext metadata), and encrypting the broadcast room.
 (The **inbound key-request** for a frame received from a not-yet-pinned sender — the inbound complement of

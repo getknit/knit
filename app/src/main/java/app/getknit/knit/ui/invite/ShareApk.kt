@@ -15,7 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
-// Sharing the app to a phone that doesn't have Knit can't ride the Nearby mesh (that needs Knit on
+// Sharing the app to a phone that doesn't have Knit can't ride the mesh (that needs Knit on
 // both ends). Instead we expose our own installed APK through a FileProvider and let the user fling
 // it over an OS transport the receiver already has — Quick Share or Bluetooth — fully offline.
 

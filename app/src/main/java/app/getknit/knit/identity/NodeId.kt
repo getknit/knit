@@ -14,7 +14,7 @@ import java.security.MessageDigest
  * for a cryptographic id, where your identity is your key.
  *
  * Pure and Android-free so it can be unit-tested and shared with a future iOS port. The output keeps
- * the historical 8-char `[a-z0-9]` shape so every existing consumer (the Nearby endpoint name,
+ * the historical 8-char `[a-z0-9]` shape so every existing consumer (the mesh endpoint-info advert,
  * `"$nodeId.jpg"` avatar files, the friendly [Alias], the profile-frame id) is unaffected.
  */
 object NodeId {

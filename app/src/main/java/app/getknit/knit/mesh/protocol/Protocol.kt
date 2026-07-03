@@ -1,9 +1,10 @@
 package app.getknit.knit.mesh.protocol
 
 /**
- * The mesh protocol version and capability registry, plus the codec for the Nearby endpoint-info string.
+ * The mesh protocol version and capability registry, plus the codec for the endpoint-info advert string.
  *
- * A peer advertises `nodeId|version|capabilitiesHex` as its Nearby endpoint name ([advertise]); a peer
+ * A peer advertises `nodeId|version|capabilitiesHex` in its discovery advert ([advertise]) — the Wi-Fi
+ * Aware `serviceSpecificInfo` or the BLE service-data payload; a peer
  * that only knows the bare nodeId (a legacy/unknown build) parses to version 0 / no capabilities
  * ([parse], which never throws). This is the *unauthenticated* connection-time hint — known before a
  * single frame flows — used only as a routing/degradation signal, never for trust (trust stays on the

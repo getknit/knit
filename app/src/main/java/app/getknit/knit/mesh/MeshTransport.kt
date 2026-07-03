@@ -10,7 +10,8 @@ import java.io.File
 
 /**
  * A directly-connected mesh neighbor, identified by its node id. [protoVersion]/[capabilities] are the
- * peer's advertised protocol version and feature bits parsed from the Nearby endpoint-info (see
+ * peer's advertised protocol version and feature bits parsed from the endpoint-info advert (Wi-Fi Aware
+ * `serviceSpecificInfo` / the BLE service-data payload; see
  * [app.getknit.knit.mesh.protocol.Protocol]); they default to 0 (unknown) for a bare/legacy peer and in
  * the non-radio fakes. They are an unauthenticated routing hint, never a trust input.
  */
@@ -86,9 +87,11 @@ data class ReceivedFile(
 data class ReceivedDigest(val fromNodeId: String, val ids: List<String>)
 
 /**
- * Abstraction over the radio layer that discovers neighbors and exchanges [Frame]s with them.
- * The current implementation is Nearby Connections; this interface keeps the rest of the app
- * independent of it so Wi-Fi Aware / BLE can be swapped in later.
+ * Abstraction over the radio layer that discovers neighbors and exchanges [WireEnvelope] frames with
+ * them. Implemented by [app.getknit.knit.mesh.wifiaware.WifiAwareTransport] (Wi-Fi Aware / NAN) and
+ * [app.getknit.knit.mesh.bluetooth.BluetoothMeshTransport] (Bluetooth LE), run **simultaneously** by
+ * [CompositeMeshTransport]; keeping the rest of the app behind this interface is what lets the two planes
+ * compose — and another sibling transport drop in — without touching orchestration.
  */
 interface MeshTransport {
 
