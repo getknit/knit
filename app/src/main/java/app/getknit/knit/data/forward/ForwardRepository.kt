@@ -119,15 +119,15 @@ class ForwardRepository(
         const val DEFAULT_BROADCAST_TTL_MS = 6 * 60 * 60_000L
 
         /** Cap total carried frames; oldest relayed traffic is evicted first. */
-        const val DEFAULT_MAX_ROWS = 500
+        const val DEFAULT_MAX_ROWS = 1_000
 
         /** Cap carried frames per sender, so one identity can't monopolize the buffer. */
-        const val DEFAULT_MAX_PER_SENDER = 100
+        const val DEFAULT_MAX_PER_SENDER = 200
 
         /** Cap carried frames per group, so one busy group can't monopolize the buffer. */
-        const val DEFAULT_MAX_PER_GROUP = 100
+        const val DEFAULT_MAX_PER_GROUP = 200
 
         /** Cap carried broadcast-room frames, so ambient chatter can't crowd out addressed messages. */
-        const val DEFAULT_MAX_BROADCAST = 100
+        const val DEFAULT_MAX_BROADCAST = 200
     }
 }
