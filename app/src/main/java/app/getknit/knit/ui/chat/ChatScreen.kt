@@ -878,12 +878,12 @@ private fun ReactionPicker(
 }
 
 /**
- * How far the reaction row is pulled up into the bubble's bottom edge. Each chip carries a tall
- * invisible touch-target margin (`minimumInteractiveComponentSize`, ~48.dp box around a ~26.dp pill),
- * so this absorbs that margin plus a little more to leave roughly the chip's top third overlapping the
- * bubble. Tune by a few dp on-device if the overlap looks off.
+ * How far the reaction row is pulled up into the bubble's bottom edge so the chips' top edge tucks
+ * under it (Signal-style) instead of floating below. The chips are now sized to their visible pill (no
+ * 48.dp min-touch-target margin), so this is the real visible overlap — a few dp of the pill's top.
+ * Tune by a few dp on-device if the overlap looks off.
  */
-private val REACTION_OVERLAP = 16.dp
+private val REACTION_OVERLAP = 6.dp
 
 /**
  * Pull a composable up by [amount] *and* shrink the height it reports to its parent by the same amount,
@@ -933,7 +933,10 @@ private fun ReactionChip(reaction: ReactionSummary, onClick: () -> Unit) {
         modifier = Modifier
             .clip(shape)
             .clickable(role = Role.Button, onClick = onClick)
-            .minimumInteractiveComponentSize()
+            // Deliberately no minimumInteractiveComponentSize(): the 48.dp min-touch box padded each
+            // pill out with invisible margin, spreading the chips far apart. Sizing to the visible pill
+            // packs them tightly like Signal. Toggling an existing reaction is a secondary action (the
+            // long-press picker is the primary path), so the smaller target is an acceptable trade.
             .semantics { contentDescription = chipDescription },
     ) {
         Row(
