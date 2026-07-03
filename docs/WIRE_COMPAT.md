@@ -77,6 +77,17 @@ opacity of `signed`/`sig`/`payload`; changes what `signed` is signed over, the A
 **Additive** (safe) if it only adds a nullable/defaulted field to a content/envelope type, a new `type`
 string with its own content class, or a new capability bit — and rule 4 holds.
 
+**Precedent — populating an existing field in a new case is additive, not a rule-2 repurpose.** DB v19
+began setting the already-existing `ChatContent.attachmentHash`/`attachmentMime` on E2E DM/group frames
+too (with the message's *ciphertext* hash), where they were previously null — only the plaintext
+broadcast room filled them. The field's *meaning* is unchanged ("the content address to pull for this
+message's image"), so an old peer harmlessly ignores it (and on delivery overwrites it with the identical
+value decrypted from `MessageContent`), and the frame still verifies byte-exact. The decryption key stays
+sealed inside `MessageContent`. This lets a relaying **carrier** — blind to the encrypted refs — see the
+blob and custody it (store-and-forward for images). No `SERVICE_NAME` bump; the DB bump is local.
+*Metadata cost:* a carrier learns a message carries an image (~size); a fresh per-send attachment key
+means the ciphertext hash never correlates identical images across sends.
+
 **When you bump a version layer:** add a round-trip test plus an "unknown higher version drops locally
 but is counted" test. New crypto scheme ⇒ bump `EncEnvelope.MAX_SUPPORTED_VERSION` + branch in
 `MeshManager.decrypt`. New content schema ⇒ bump `MessageContent.MAX_SUPPORTED`.

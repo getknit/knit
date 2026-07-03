@@ -1060,7 +1060,12 @@ private fun AttachmentImage(
             ) {
                 CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.height(8.dp))
-                Text(stringResource(R.string.chat_loading_photo), style = MaterialTheme.typography.labelSmall)
+                Text(
+                    stringResource(R.string.chat_loading_photo),
+                    style = MaterialTheme.typography.labelSmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
             }
         }
     }

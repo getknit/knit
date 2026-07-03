@@ -5,6 +5,7 @@ import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
 import app.getknit.knit.data.blob.BlobVerdictEntity
+import app.getknit.knit.data.forward.ForwardDao
 import app.getknit.knit.data.group.GroupDao
 import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.peer.PeerDao
@@ -34,6 +35,7 @@ class BlobRepository(
     private val verdicts: BlobVerdictDao,
     private val imageModerator: ImageModerator,
     private val groups: GroupDao,
+    private val forward: ForwardDao,
 ) {
     suspend fun insert(hash: String, mime: String, bytes: ByteArray) =
         blobs.insert(BlobEntity(hash, mime, bytes))
@@ -100,9 +102,10 @@ class BlobRepository(
 
     /**
      * Deletes the blob for [hash] only if nothing references it any more — no message attachment, no
-     * peer avatar, no group photo, and not the device's own avatar. Safe to call after deleting a
-     * message, swapping an avatar/group photo, or discarding a staged-but-unsent attachment; a no-op
-     * (and tolerates a null hash) when the blob is still in use.
+     * peer avatar, no group photo, no carried store-and-forward frame, and not the device's own avatar.
+     * Safe to call after deleting a message, swapping an avatar/group photo, or discarding a staged-but-
+     * unsent attachment; a no-op (and tolerates a null hash) when the blob is still in use. The forward
+     * check keeps a carrier's custodied image alive until the frame that references it stops being carried.
      */
     suspend fun deleteIfUnreferenced(hash: String?) {
         if (hash == null) return
@@ -110,9 +113,17 @@ class BlobRepository(
         if (messages.countByAttachmentHash(hash) > 0) return
         if (peers.countByAvatarHash(hash) > 0) return
         if (groups.countByPhotoHash(hash) > 0) return
+        if (forward.countByAttachmentHash(hash) > 0) return
         blobs.delete(hash)
         verdicts.delete(hash)
     }
+
+    /**
+     * Bytes held purely for store-and-forward custody (referenced by a carried frame but no local message).
+     * The eager carrier-pull ([`MeshManager.onCarriedFrame`]) uses this as a pull-time soft cap so altruistic
+     * relay of other peers' images stays bounded; see [BlobDao.carrierOnlyBlobBytes].
+     */
+    suspend fun carrierOnlyBlobBytes(): Long = blobs.carrierOnlyBlobBytes()
 
     /**
      * Deletes every blob no longer referenced by a message, a peer avatar, or the own avatar. Run once

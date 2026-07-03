@@ -28,6 +28,13 @@ import androidx.room.PrimaryKey
  * content digest — convergent; without it a chatty originator (which used to bypass the quota outright) held
  * frames a capped carrier could never accept, so the digests never matched. [receivedAt] records local arrival;
  * [expiresAt] drives the TTL sweep.
+ *
+ * [attachmentHash] is the content hash of the frame's image blob, denormalized from the decoded
+ * [app.getknit.knit.mesh.protocol.ChatContent] (null for a non-chat frame or a chat with no image). It lets a
+ * carrier pull + durably hold the blob (so a custodied image survives to a late joiner) and pins the blob against
+ * GC while the frame is carried — see `BlobDao.orphanHashes` / `BlobRepository.deleteIfUnreferenced`. It is
+ * deliberately NOT part of the content digest (the digest folds only [id]), so per-node blob bounding can't
+ * perturb cue-plane convergence.
  */
 @Entity(
     tableName = "forward_store",
@@ -45,6 +52,7 @@ data class ForwardEntity(
     val sentAt: Long,
     val receivedAt: Long,
     val expiresAt: Long,
+    val attachmentHash: String? = null,
 ) {
     // Identity is the frame id. The default data-class equals/hashCode would compare the ByteArrays by
     // reference (and Room/detekt flag a ByteArray in a data class); the id is the only field that

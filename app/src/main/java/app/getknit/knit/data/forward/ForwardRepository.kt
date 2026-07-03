@@ -3,6 +3,7 @@ package app.getknit.knit.data.forward
 import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.StoreDigest
+import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.WireCodec
 
@@ -40,6 +41,15 @@ class ForwardRepository(
         // and profiles share its null recipient/group shape but are higher-value metadata, so they must be
         // bucketed apart (by type) — else they'd inherit the broadcast quota/TTL and be starved or expire early.
         val isBroadcastChat = env.type == FrameType.CHAT && env.recipientId == null && groupId == null
+        // Denormalize the image content hash so the carrier can pull+hold the blob and pin it against GC. This
+        // decode is best-effort metadata ONLY — it must never gate the insert: a null (non-chat, no attachment,
+        // or an unreadable payload) still stores the frame, so `forward_store` ids stay byte-identical mesh-wide
+        // and the content digest converges (the digest folds only `id`, never this column).
+        val attachmentHash = if (env.type == FrameType.CHAT) {
+            WireCodec.decodePayload<ChatContent>(env.payload)?.attachmentHash
+        } else {
+            null
+        }
         dao.insert(
             ForwardEntity(
                 id = env.id,
@@ -52,6 +62,7 @@ class ForwardRepository(
                 sig = frame.sig,
                 sentAt = env.sentAt,
                 receivedAt = now,
+                attachmentHash = attachmentHash,
                 // Broadcast-room chat is ambient, higher-volume, no-ack chatter, so it gets a shorter TTL than an
                 // addressed DM/group message or a carried metadata frame (reaction/receipt/profile keep the full
                 // TTL, so they never expire before the message/peer they describe).
@@ -93,6 +104,8 @@ class ForwardRepository(
         }
 
     override suspend fun liveIds(now: Long): List<String> = dao.liveIds(now)
+
+    override suspend fun attachmentHashesNeedingFetch(): List<String> = dao.attachmentHashesNeedingFetch()
 
     override suspend fun recipientOf(id: String): String? = dao.recipientOf(id)
 

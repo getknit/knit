@@ -200,6 +200,9 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
                     .put("origin", if (r.origin == ForwardStore.ORIGIN_SELF) "self" else "relay")
                     .put("recipient", r.recipientId ?: JSONObject.NULL)
                     .put("group", r.groupId ?: JSONObject.NULL)
+                    // The image blob this frame custodies (see forward_store v19), so a device diff can show
+                    // whether a carrier is holding the referenced attachment for a late joiner.
+                    .put("attachmentHash", r.attachmentHash ?: JSONObject.NULL)
                     .put("ageSec", (now - r.receivedAt) / MILLIS_PER_SEC)
                     .put("ttlLeftSec", (r.expiresAt - now) / MILLIS_PER_SEC)
                     .put("expired", r.expiresAt < now),

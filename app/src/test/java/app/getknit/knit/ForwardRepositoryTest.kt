@@ -13,6 +13,7 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -42,6 +43,10 @@ class ForwardRepositoryTest {
         }
         override suspend fun count() = rows.size
         override suspend fun allIds() = rows.keys.toList()
+        override suspend fun countByAttachmentHash(hash: String) = rows.values.count { it.attachmentHash == hash }
+        // The fake has no `blobs` table to join, so it returns every referenced hash (the SQL "needing fetch"
+        // filtering is exercised by the instrumented DAO test); enough to prove the column is populated.
+        override suspend fun attachmentHashesNeedingFetch() = rows.values.mapNotNull { it.attachmentHash }.distinct()
         override suspend fun liveIds(now: Long) = rows.values.filter { it.expiresAt >= now }.map { it.id }
         override suspend fun allRows() = rows.values.sortedByDescending { it.receivedAt }
         override suspend fun countBySender(senderId: String) = rows.values.count { it.senderId == senderId }
@@ -74,6 +79,52 @@ class ForwardRepositoryTest {
             payload = WireCodec.encodePayload(ChatContent(body = "")),
         )
         return CarriedFrame(env, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
+    }
+
+    /** A chat frame with caller-chosen addressing + [content] (so we can exercise attachment-hash extraction). */
+    private fun chat(id: String, sender: String, sentAt: Long, recipientId: String?, content: ChatContent): CarriedFrame {
+        val env = RelayEnvelope(
+            type = FrameType.CHAT, id = id, senderId = sender, sentAt = sentAt, recipientId = recipientId,
+            payload = WireCodec.encodePayload(content),
+        )
+        return CarriedFrame(env, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
+    }
+
+    /** A chat frame with a raw (here: undecodable) payload — to prove the column decode never gates the insert. */
+    private fun chatRaw(id: String, sender: String, sentAt: Long, payload: ByteArray): CarriedFrame {
+        val env = RelayEnvelope(
+            type = FrameType.CHAT, id = id, senderId = sender, sentAt = sentAt, recipientId = "peer", payload = payload,
+        )
+        return CarriedFrame(env, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
+    }
+
+    @Test
+    fun `store denormalizes the attachment hash but never gates the insert on it`() = runTest {
+        val dao = FakeForwardDao()
+        val digest = StoreDigest()
+        val repo = repo(dao, digest)
+
+        // A DM referencing an image (the E2E ciphertext hash rides cleartext alongside enc; extraction reads it).
+        repo.store(
+            chat("d1", "peer", 1L, "peer", ChatContent(attachmentHash = "CT", attachmentMime = "image/jpeg")),
+            ForwardStore.ORIGIN_RELAY, now = 0L,
+        )
+        // A broadcast image (plaintext hash).
+        repo.store(chat("b1", "peer", 2L, null, ChatContent(body = "hi", attachmentHash = "PT")), ForwardStore.ORIGIN_RELAY, now = 0L)
+        // A chat with no image → null column.
+        repo.store(chat("d2", "peer", 3L, "peer", ChatContent(body = "no image")), ForwardStore.ORIGIN_RELAY, now = 0L)
+        // Guardrail 1: an undecodable CHAT payload must STILL store the frame (null column), so the id set — and
+        // hence the content digest — stays byte-identical mesh-wide.
+        repo.store(chatRaw("d3", "peer", 4L, byteArrayOf(-1, -1, -1)), ForwardStore.ORIGIN_RELAY, now = 0L)
+
+        assertEquals("CT", dao.rows["d1"]!!.attachmentHash)
+        assertEquals("PT", dao.rows["b1"]!!.attachmentHash)
+        assertEquals(null, dao.rows["d2"]!!.attachmentHash)
+        assertTrue("an undecodable payload must not drop the frame", dao.exists("d3"))
+        assertEquals(null, dao.rows["d3"]!!.attachmentHash)
+        assertEquals(1, dao.countByAttachmentHash("CT"))
+        // The denormalized column must not perturb the content digest — it folds only the id set.
+        assertEquals(StoreDigest.fingerprint(dao.allIds()), digest.version.value)
     }
 
     @Test

@@ -36,6 +36,13 @@ interface ForwardStore {
     /** Ids of the non-expired carried frames (at [now]) — advertised to a neighbor for the data-path id-diff. */
     suspend fun liveIds(now: Long): List<String>
 
+    /**
+     * Content hashes referenced by a carried chat frame whose blob we don't yet hold — the carrier's side of
+     * the "still-missing blobs" set. Re-requested on startup / neighbor-join so a carrier keeps pulling the
+     * image it is custodying until it (or the frame's TTL) resolves.
+     */
+    suspend fun attachmentHashesNeedingFetch(): List<String>
+
     /** The carried frame [id]'s cleartext recipient, or null if not held. */
     suspend fun recipientOf(id: String): String?
 

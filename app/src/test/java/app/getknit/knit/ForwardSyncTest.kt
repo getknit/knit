@@ -1,5 +1,7 @@
 package app.getknit.knit
 
+import app.getknit.knit.mesh.BlobExchange
+import app.getknit.knit.mesh.BlobStore
 import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.FakeLoopTransport
 import app.getknit.knit.mesh.FileMeta
@@ -11,6 +13,7 @@ import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupInfo
@@ -19,6 +22,7 @@ import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.isStorable
+import java.nio.file.Files
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -30,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -63,6 +68,13 @@ class ForwardSyncTest {
             rows.entries.removeIf { it.value.expiresAt < now }
             return before - rows.size
         }
+
+        // Attachment hashes of held chat frames (the fake doesn't track blob presence, so it doesn't filter
+        // already-held ones — enough for the sync tests, which drive the pull via the onCarried hook).
+        override suspend fun attachmentHashesNeedingFetch(): List<String> =
+            rows.values.mapNotNull {
+                WireCodec.decodePayload<ChatContent>(it.frame.envelope.payload)?.attachmentHash
+            }.distinct()
     }
 
     /** Records what the sync sends and exposes a fixed neighbor set. */
@@ -84,6 +96,11 @@ class ForwardSyncTest {
     private fun dm(id: String, sender: String, recipient: String) = RelayEnvelope(
         type = FrameType.CHAT, id = id, senderId = sender, sentAt = 1L, recipientId = recipient,
         payload = WireCodec.encodePayload(ChatContent(body = "")),
+    )
+
+    private fun dmWithAttachment(id: String, sender: String, recipient: String, hash: String) = RelayEnvelope(
+        type = FrameType.CHAT, id = id, senderId = sender, sentAt = 1L, recipientId = recipient,
+        payload = WireCodec.encodePayload(ChatContent(body = "", attachmentHash = hash, attachmentMime = "image/jpeg")),
     )
 
     private fun groupMsg(id: String, sender: String, members: List<String>) = RelayEnvelope(
@@ -196,6 +213,55 @@ class ForwardSyncTest {
 
         sync.onDigest("z", emptyList()) // anyone else — both offered (no recipient/roster to target)
         assertEquals(listOf("k1", "p1"), transport.sent.map { it.first.frameId() }.sorted())
+    }
+
+    // --- onCarried hook (blob custody) ---
+
+    @Test
+    fun onCarriedFiresExactlyOnceWhenAFrameIsActuallyStored() = runTest {
+        val carried = mutableListOf<String>()
+        val store = FakeForwardStore()
+        val sync = ForwardSync(RecordingTransport(), store, clock = { 0L }, onCarried = { carried += it.id })
+
+        val relay = dm("m1", "a", "b")
+        sync.onSeen(wireOf(relay), relay, ForwardStore.ORIGIN_RELAY)
+        sync.onSeen(wireOf(relay), relay, ForwardStore.ORIGIN_RELAY) // already held → dedup, no second fire
+        val own = dm("m2", "me", "b")
+        sync.onSeen(wireOf(own), own, ForwardStore.ORIGIN_SELF)
+
+        assertEquals("onCarried fires once per frame actually stored (self + relay)", listOf("m1", "m2"), carried)
+    }
+
+    @Test
+    fun onCarriedDoesNotFireForRejectedOrNonStorableFrames() = runTest {
+        val carried = mutableListOf<String>()
+        val rejecting = ForwardSync(
+            RecordingTransport(), FakeForwardStore(), clock = { 0L },
+            authenticate = { _, _ -> false }, onCarried = { carried += it.id },
+        )
+        val relay = dm("m1", "a", "b")
+        rejecting.onSeen(wireOf(relay), relay, ForwardStore.ORIGIN_RELAY) // auth-rejected → not stored
+
+        val allowing = ForwardSync(RecordingTransport(), FakeForwardStore(), clock = { 0L }, onCarried = { carried += it.id })
+        val kr = keyReq("q")
+        allowing.onSeen(wireOf(kr), kr, ForwardStore.ORIGIN_RELAY) // non-storable control frame → not stored
+
+        assertTrue("no custody pull for an auth-rejected or non-storable frame", carried.isEmpty())
+    }
+
+    @Test
+    fun onCarriedDoesNotFireForAVaccinatedFrame() = runTest {
+        val carried = mutableListOf<String>()
+        val store = FakeForwardStore()
+        val sync = ForwardSync(RecordingTransport(), store, clock = { 0L }, onCarried = { carried += it.id })
+        val env = dm("m1", "a", "b")
+        sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
+        sync.onAck("m1", senderId = "b") // recipient ack → purge + tombstone
+        carried.clear()
+
+        sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY) // tombstoned → not re-stored
+
+        assertTrue("a vaccinated (tombstoned) frame doesn't re-fire the custody pull", carried.isEmpty())
     }
 
     // --- vaccine purge ---
@@ -347,17 +413,49 @@ class ForwardSyncTest {
 
     // --- integration: store-and-forward across a temporal gap ---
 
-    /** A node that carries frames, delivers ones addressed to it, and acks — a minimal MeshManager stand-in. */
+    /** In-memory, content-addressed [BlobStore] over a temp dir (mirrors BlobExchangeTest's fake). */
+    private class FakeBlobStore(private val dir: File) : BlobStore {
+        private val mimes = ConcurrentHashMap<String, String>()
+        fun seed(hash: String, mime: String, bytes: ByteArray) {
+            File(dir, hash).writeBytes(bytes)
+            mimes[hash] = mime
+        }
+        override suspend fun has(hash: String): Boolean = File(dir, hash).exists()
+        override suspend fun fileFor(hash: String): File? = File(dir, hash).takeIf { it.exists() }
+        override suspend fun mimeFor(hash: String): String? = mimes[hash]
+        override suspend fun saveIncoming(hash: String, mime: String, srcPath: String): File {
+            val dest = File(dir, hash)
+            File(srcPath).copyTo(dest, overwrite = true)
+            mimes[hash] = mime
+            return dest
+        }
+    }
+
+    /**
+     * A node that carries frames, delivers ones addressed to it, acks, AND custodies referenced image blobs — a
+     * minimal MeshManager stand-in. The onCarried hook eager-pulls a carried chat frame's blob (so a late joiner
+     * can pull it from this carrier); a delivered chat frame pulls its own blob (the recipient path).
+     */
     private class Node(val id: String, scope: CoroutineScope) {
         val transport = FakeLoopTransport(id)
         val store = FakeForwardStore()
+        val blobStore = FakeBlobStore(Files.createTempDirectory("fwd-blob-$id").toFile())
+        val blobExchange = BlobExchange(transport, blobStore, selfId = { id }, onObtained = { _, _ -> })
         val delivered = mutableListOf<String>()
         val notified = mutableListOf<String>()
         private val seenDelivered = mutableSetOf<String>()
-        val sync = ForwardSync(transport, store, clock = { 0L })
-        private val router = MeshRouter(transport, scope, jitter = { 0L }) { wire, env, _ -> onDeliver(wire, env) }
+        val sync = ForwardSync(transport, store, clock = { 0L }, onCarried = ::onCarried)
+        private val router = MeshRouter(transport, scope, jitter = { 0L }) { wire, env, from -> onDeliver(wire, env, from) }
 
-        private suspend fun onDeliver(wire: WireEnvelope, env: RelayEnvelope) {
+        // Custody a carried chat frame's image: eager-pull the blob so a late joiner can pull it from us
+        // (mirrors MeshManager.onCarriedFrame; no budget cap in the test).
+        private suspend fun onCarried(env: RelayEnvelope) {
+            if (env.type != FrameType.CHAT) return
+            val hash = WireCodec.decodePayload<ChatContent>(env.payload)?.attachmentHash ?: return
+            if (!blobStore.has(hash)) blobExchange.want(hash)
+        }
+
+        private suspend fun onDeliver(wire: WireEnvelope, env: RelayEnvelope, fromNodeId: String) {
             // Carry what we're relaying onward: a DM toward someone else, a group message for other
             // members (whether or not we're a member ourselves) — mirrors MeshManager's capture gate.
             if (env.isStorable()) {
@@ -365,27 +463,33 @@ class ForwardSyncTest {
                 if (carry) sync.onSeen(wire, env, ForwardStore.ORIGIN_RELAY)
             }
             when (env.type) {
-                FrameType.CHAT -> {
-                    val members = env.group?.members
-                    val forMe = if (members != null) id in members else env.recipientId == id
-                    if (forMe) {
-                        if (seenDelivered.add(env.id)) notified += env.id // first-delivery notify gate
-                        delivered += env.id
-                        if (members == null) { // only a DM acks (a group has no single-recipient receipt)
-                            val ack = RelayEnvelope(
-                                type = FrameType.RECEIPT, id = "ack-${env.id}-$id", senderId = id,
-                                payload = WireCodec.encodePayload(ReceiptContent(env.id)),
-                            )
-                            router.originate(WireEnvelope(sig = ByteArray(0), signed = WireCodec.encodeEnvelope(ack)), ack.id)
-                        }
-                    }
-                }
+                FrameType.CHAT -> deliverChat(env)
                 FrameType.RECEIPT -> {
                     val ackId = WireCodec.decodePayload<ReceiptContent>(env.payload)?.ackId ?: return
                     sync.onAck(ackId, env.senderId)
                 }
+                FrameType.BLOB_REQ ->
+                    WireCodec.decodePayload<BlobReqContent>(env.payload)?.let { blobExchange.onRequest(it.hash, fromNodeId) }
                 else -> Unit
             }
+        }
+
+        private suspend fun deliverChat(env: RelayEnvelope) {
+            val members = env.group?.members
+            val forMe = if (members != null) id in members else env.recipientId == id
+            if (!forMe) return
+            if (seenDelivered.add(env.id)) notified += env.id // first-delivery notify gate
+            delivered += env.id
+            // Recipient blob pull: fetch the referenced image unless already held (mirrors MeshManager.deliverChat).
+            WireCodec.decodePayload<ChatContent>(env.payload)?.attachmentHash?.let {
+                if (!blobStore.has(it)) blobExchange.want(it)
+            }
+            if (members != null) return // a group has no single-recipient receipt
+            val ack = RelayEnvelope(
+                type = FrameType.RECEIPT, id = "ack-${env.id}-$id", senderId = id,
+                payload = WireCodec.encodePayload(ReceiptContent(env.id)),
+            )
+            router.originate(WireEnvelope(sig = ByteArray(0), signed = WireCodec.encodeEnvelope(ack)), ack.id)
         }
 
         fun start(scope: CoroutineScope) {
@@ -393,12 +497,16 @@ class ForwardSyncTest {
             scope.launch {
                 var known = emptySet<String>()
                 transport.neighbors.collect { current ->
-                    current.filter { it.nodeId !in known }.forEach { sync.onNeighborAdded(it) }
+                    current.filter { it.nodeId !in known }.forEach {
+                        sync.onNeighborAdded(it)
+                        blobExchange.onNeighborAdded(it)
+                    }
                     known = current.map { it.nodeId }.toSet()
                 }
             }
+            scope.launch { transport.incomingDigests.collect { sync.onDigest(it.fromNodeId, it.ids) } }
             scope.launch {
-                transport.incomingDigests.collect { sync.onDigest(it.fromNodeId, it.ids) }
+                transport.incomingFiles.collect { blobExchange.onReceived(it.key, it.mime, it.path, it.fromNodeId) }
             }
         }
 
@@ -454,5 +562,34 @@ class ForwardSyncTest {
         assertEquals("c receives the carried group message exactly once", listOf("g1"), c.delivered)
         assertEquals("and notifies once", listOf("g1"), c.notified)
         assertTrue("groups aren't vaccine-purged — b keeps carrying it until TTL", b.store.has("g1"))
+    }
+
+    @Test
+    fun custodiedImageReachesRecipientThatConnectsAfterTheSenderLeft() = runTest(UnconfinedTestDispatcher()) {
+        val a = Node("a", backgroundScope) // sender + original blob holder
+        val b = Node("b", backgroundScope) // carrier (relays the DM toward c)
+        a.transport.connect(b.transport)
+        a.start(backgroundScope); b.start(backgroundScope)
+        val bytes = "an-image-blob".toByteArray()
+        a.blobStore.seed("H", "image/jpeg", bytes)
+
+        a.send(dmWithAttachment("dm1", sender = "a", recipient = "c", hash = "H"))
+        advanceUntilIdle()
+
+        assertTrue("b carries the DM while c is away", b.store.has("dm1"))
+        assertTrue("b eager-pulled + holds the image, so it can serve a late joiner", b.blobStore.has("H"))
+
+        // The sender leaves entirely: a is gone, so the ONLY in-range holder for c is the carrier b. Without
+        // blob custody, c's pull would find no source and the image would be lost with the sender.
+        a.transport.disconnect(b.transport)
+
+        val c = Node("c", backgroundScope)
+        c.start(backgroundScope)
+        b.transport.connect(c.transport)
+        advanceUntilIdle()
+
+        assertEquals("c receives the carried DM", listOf("dm1"), c.delivered)
+        assertTrue("c pulls the custodied image from the carrier b (the sender is gone)", c.blobStore.has("H"))
+        assertArrayEquals("and the bytes are intact", bytes, c.blobStore.fileFor("H")!!.readBytes())
     }
 }

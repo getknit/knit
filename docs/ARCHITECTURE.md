@@ -355,7 +355,25 @@ Images are **content-addressed** and pulled on demand, so the (large) bytes don'
     flooded — each hop mints a fresh request id), and never bouncing a blob back to its giver.
 
 On startup, `MeshManager.resumePendingFetches()` re-requests any attachment referenced by a stored
-message whose bytes aren't present yet (`MessageDao.hashesNeedingFetch()`).
+message whose bytes aren't present yet (`MessageDao.hashesNeedingFetch()`) — and, since DB v19, any
+attachment referenced by a **carried store-and-forward frame** whose bytes are missing
+(`ForwardStore.attachmentHashesNeedingFetch()`, gated by the carrier budget below), so a carrier keeps
+retrying the image it is custodying for a late joiner.
+
+**Blob custody (DB v19).** Store-and-forward carries the *frame* but historically not the image bytes,
+so a custodied message re-served to a late joiner — after the sender and every recipient who pulled it
+have left — referenced an image no reachable node held (a permanent "Loading photo" spinner; for E2E
+DMs/groups the carrier couldn't even see the sealed hash). Now a node that *carries* a chat frame also
+eager-pulls its blob (`ForwardSync`'s `onCarried` hook → `MeshManager.onCarriedFrame` →
+`BlobExchange.want`) and holds it, pinned against GC by the `forward_store` reference
+(`BlobDao.orphanHashes` / `BlobRepository.deleteIfUnreferenced`) for the frame's carried lifetime — so
+the bytes gain the same delay-tolerance as the frame. For E2E frames the (ciphertext) hash now rides in
+cleartext (§14 / `docs/WIRE_COMPAT.md`) so a carrier blind to the sealed content can see it; the carrier
+holds ciphertext it can't decrypt or screen (the addressed recipient screens on decrypt). The extra
+"carrier-only" footprint — blobs referenced by a carried frame but no local `messages` row — is bounded
+by a pull-time byte budget (`MeshManager.CARRIER_BLOB_BUDGET_BYTES`, `BlobDao.carrierOnlyBlobBytes()`);
+because these blobs are deliberately **not** folded into the custody content digest (`StoreDigest`, §3.1),
+that budget is a purely local knob that can differ per node without breaking cue-plane convergence.
 
 ## 8. Mentions (`mesh/protocol/Wire.kt`, `data/message/MentionStore`, `ui/chat/MentionText.kt`)
 

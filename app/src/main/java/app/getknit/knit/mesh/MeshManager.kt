@@ -125,6 +125,9 @@ class MeshManager(
         transport = transport,
         store = forwardStore,
         authenticate = ::canCarry,
+        // Fired once when a chat frame is actually carried: eager-pull its image blob so a custodied image
+        // survives to a late joiner (the carrier holds ciphertext it can't read, like the frame itself).
+        onCarried = ::onCarriedFrame,
         // (The carry store grew → the store impl folds the id into StoreDigest, whose version change re-cues.)
     )
 
@@ -329,7 +332,20 @@ class MeshManager(
             Log.w(TAG, "no known keys for recipient(s) of chat $id; not flooded yet")
             return true
         }
-        originateSigned(chatEnvelope(id, me, sentAt, recipientId, group, ChatContent(enc = envelope)))
+        // Expose the (ciphertext) attachment hash + mime in the cleartext frame alongside the sealed content, so
+        // a relaying carrier — blind to the encrypted refs — can custody the blob. The decryption key stays
+        // sealed in MessageContent; a fresh per-send key means the ciphertext hash never correlates identical
+        // images across sends, so this leaks only "this message carries an image (~size)".
+        originateSigned(
+            chatEnvelope(
+                id, me, sentAt, recipientId, group,
+                ChatContent(
+                    enc = envelope,
+                    attachmentHash = sealedAttachment?.hash,
+                    attachmentMime = attachment?.mime,
+                ),
+            ),
+        )
         return true
     }
 
@@ -441,11 +457,20 @@ class MeshManager(
     /** On startup, sweep orphaned blobs/reactions and re-request attachment blobs we're still missing. */
     private fun resumePendingFetches(session: CoroutineScope) {
         session.launch {
-            blobs.deleteOrphans() // reclaim blobs left by attachments staged but never sent
+            blobs.deleteOrphans() // reclaim blobs left by attachments staged but never sent (keeps carried ones)
             reactions.deleteOrphans(System.currentTimeMillis()) // reclaim reactions left by deleted messages
             forwardSync.sweepExpired() // drop carried DMs whose TTL elapsed while we were down
             pendingInbound.sweepExpired() // and any key-wait frames whose TTL lapsed (in-memory, so usually a no-op)
-            messages.hashesNeedingFetch().forEach { blobExchange.want(it) }
+            // Own/received message attachments: always re-pull (uncapped, kept alive by their message row).
+            val ownHashes = messages.hashesNeedingFetch()
+            ownHashes.forEach { blobExchange.want(it) }
+            // Carrier-only custody blobs backfill only while under the byte budget (the same pull-time soft cap
+            // onCarriedFrame applies), so a restart re-attempts pulls that a live-session over-budget skip left
+            // missing; skip ones already re-requested above as our own/received attachments.
+            if (blobs.carrierOnlyBlobBytes() < CARRIER_BLOB_BUDGET_BYTES) {
+                val own = ownHashes.toHashSet()
+                forwardStore.attachmentHashesNeedingFetch().forEach { if (it !in own) blobExchange.want(it) }
+            }
         }
     }
 
@@ -909,6 +934,25 @@ class MeshManager(
             return false
         }
         return true
+    }
+
+    /**
+     * Custody the image blob a just-carried chat frame references (the [ForwardSync] onCarried hook), so a late
+     * joiner can pull it from us long after the sender left. Eager-pulls the content-addressed blob into the
+     * encrypted store, where the forward_store reference (see [BlobDao.orphanHashes]) keeps it durable for the
+     * frame's carried lifetime — upgrading today's transient relay-cache into real custody. A pull-time byte
+     * budget ([CARRIER_BLOB_BUDGET_BYTES]) bounds this altruistic footprint: over budget we skip the pull (the
+     * frame stays carried, only the image is absent) and the [resumePendingFetches]/neighbor-join retry backfills
+     * as older custody frames expire. The carrier holds ciphertext it can't decrypt or screen (a fresh key never
+     * arrives for it, so [screenObtainedAttachment] is a no-op); the addressed recipient screens on decrypt.
+     * A no-op for our own sends and delivered messages — [blobStore] already holds the blob.
+     */
+    private suspend fun onCarriedFrame(env: RelayEnvelope) {
+        if (env.type != FrameType.CHAT) return
+        val hash = WireCodec.decodePayload<ChatContent>(env.payload)?.attachmentHash ?: return
+        if (blobStore.has(hash)) return
+        if (blobs.carrierOnlyBlobBytes() >= CARRIER_BLOB_BUDGET_BYTES) return
+        blobExchange.want(hash)
     }
 
     /**
@@ -1383,7 +1427,15 @@ class MeshManager(
             val envelope = messageCrypto.seal(content.encode(), header, recipientBundles(recipientId, null, me))
                 ?: return@forEach
             originateSigned(
-                chatEnvelope(row.id, me, row.sentAt, recipientId, group = null, ChatContent(enc = envelope)),
+                chatEnvelope(
+                    row.id, me, row.sentAt, recipientId, group = null,
+                    // Same cleartext-hash exposure as sendChat, so a re-sealed pending DM's image is custodied too.
+                    ChatContent(
+                        enc = envelope,
+                        attachmentHash = row.attachmentHash,
+                        attachmentMime = row.attachmentMime,
+                    ),
+                ),
             )
             messages.clearPending(row.id)
         }
@@ -1500,6 +1552,15 @@ class MeshManager(
         // ephemeral links get for free. Short enough to converge a missed message within ~a minute, long enough
         // to stay cheap on battery/bandwidth.
         const val NEIGHBOR_REOFFER_INTERVAL_MS = 60_000L
+
+        /**
+         * Pull-time soft cap on bytes held *purely* to custody other peers' images (a carried frame references
+         * them but no local message does — see [BlobDao.carrierOnlyBlobBytes]). Our own/received images are
+         * uncapped (kept via their message row); this bounds only the altruistic relay footprint. Because these
+         * blobs are NOT folded into the content digest, this is a purely local knob and need not match across
+         * nodes, so it can later be made adaptive to free storage without any convergence risk.
+         */
+        const val CARRIER_BLOB_BUDGET_BYTES = 128L * 1024 * 1024
 
         /** Payload for a frame whose content lives entirely in the routing envelope (e.g. a group update). */
         val EMPTY_PAYLOAD = ByteArray(0)

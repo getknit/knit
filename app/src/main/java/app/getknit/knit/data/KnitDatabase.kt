@@ -72,7 +72,12 @@ import java.io.File
     //      key) and applies the quota to our own sends too, so every node converges on the identical carried
     //      id-set instead of a chatty originator (which bypassed the quota) permanently out-diverging capped
     //      carriers and churning the cue plane forever. No wire change; destructive DB migration as usual.
-    version = 18,
+    // v19: forward_store gained a denormalized `attachmentHash` column so a carrier can custody the image blob a
+    //      carried chat frame references (pull + hold it, pinned against GC while carried). E2E chat frames now
+    //      also carry the (ciphertext) hash in cleartext so carriers — blind to the sealed content — can see it;
+    //      additive wire change, no SERVICE_NAME bump (the column is local, the digest still folds only `id`).
+    //      Destructive DB migration as usual (app not yet public).
+    version = 19,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

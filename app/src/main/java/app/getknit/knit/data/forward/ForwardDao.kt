@@ -37,6 +37,21 @@ interface ForwardDao {
     @Query("SELECT id FROM forward_store")
     suspend fun allIds(): List<String>
 
+    /** How many carried frames reference [hash] as their image blob — pins the blob against GC while any do. */
+    @Query("SELECT COUNT(*) FROM forward_store WHERE attachmentHash = :hash")
+    suspend fun countByAttachmentHash(hash: String): Int
+
+    /**
+     * Content hashes referenced by a carried frame whose bytes aren't in the `blobs` table yet — the carrier's
+     * side of the "still-missing blobs" set (mirrors [app.getknit.knit.data.message.MessageDao.hashesNeedingFetch]).
+     * Re-requested on startup / neighbour-join so a carrier keeps trying to pull the image it's custodying.
+     */
+    @Query(
+        "SELECT DISTINCT attachmentHash FROM forward_store " +
+            "WHERE attachmentHash IS NOT NULL AND attachmentHash NOT IN (SELECT hash FROM blobs)",
+    )
+    suspend fun attachmentHashesNeedingFetch(): List<String>
+
     /**
      * Every carried frame including expired-but-unswept rows, newest first — the `debug.STORE` bridge dump.
      * Mirrors what [allIds] (hence the content digest) covers, so a dump can show *why* the digest differs from

@@ -31,6 +31,10 @@ class ForwardSync(
     // Authenticates a relayed DM before we carry it (sender pinned + not blocked + signature valid), so a
     // node never stores unauthenticated junk. Our own sends skip this (trivially authentic).
     private val authenticate: suspend (WireEnvelope, RelayEnvelope) -> Boolean = { _, _ -> true },
+    // Invoked once when a frame is actually persisted, so the orchestrator can custody any out-of-band blob it
+    // references (an image): the frame carries only a content hash, so the carrier eager-pulls + holds the bytes
+    // keyed to the frame's lifetime. Defaulted to a no-op so the pure tests and non-blob call sites are unaffected.
+    private val onCarried: suspend (RelayEnvelope) -> Unit = {},
 ) {
     // Ids of DMs purged by a delivery receipt: a short-lived tombstone (≤ carry TTL) so a still-
     // circulating copy from an unvaccinated peer isn't re-stored after we've already delivered it.
@@ -51,6 +55,8 @@ class ForwardSync(
         // The store impl folds the new id into the StoreDigest, whose version change re-cues neighbors that
         // we now hold something they may want to pull.
         store.store(CarriedFrame(envelope, wire.sig, wire.signed), origin, clock())
+        // Now custody any blob the frame references (e.g. an image), so a late joiner can still pull it from us.
+        onCarried(envelope)
     }
 
     /**

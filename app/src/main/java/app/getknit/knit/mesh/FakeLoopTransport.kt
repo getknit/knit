@@ -41,6 +41,14 @@ class FakeLoopTransport(val nodeId: String) : MeshTransport {
         other.refreshNeighbors()
     }
 
+    /** Bidirectionally unlinks this transport from [other] (simulates a peer moving out of range). */
+    fun disconnect(other: FakeLoopTransport) {
+        links.remove(other.nodeId)
+        other.links.remove(nodeId)
+        refreshNeighbors()
+        other.refreshNeighbors()
+    }
+
     override fun start() = Unit
     override fun stop() = Unit
     override fun heal() = Unit

@@ -28,16 +28,34 @@ interface BlobDao {
     fun observeHashes(): Flow<List<String>>
 
     /**
-     * Blob hashes referenced by no message attachment, no peer avatar, and no group photo. The caller
-     * must still exclude the device's own-avatar hash (it lives in DataStore, not a table) before deleting.
+     * Blob hashes referenced by no message attachment, no peer avatar, no group photo, and no carried
+     * store-and-forward frame. The caller must still exclude the device's own-avatar hash (it lives in
+     * DataStore, not a table) before deleting. The forward_store clause is what makes a carrier's custodied
+     * image blob durable — held (not reclaimed as an orphan) for as long as the frame that references it is
+     * carried, so it survives to a late joiner.
      */
     @Query(
         "SELECT hash FROM blobs WHERE " +
             "hash NOT IN (SELECT attachmentHash FROM messages WHERE attachmentHash IS NOT NULL) AND " +
             "hash NOT IN (SELECT avatarHash FROM peers WHERE avatarHash IS NOT NULL) AND " +
-            "hash NOT IN (SELECT photoHash FROM groups WHERE photoHash IS NOT NULL)",
+            "hash NOT IN (SELECT photoHash FROM groups WHERE photoHash IS NOT NULL) AND " +
+            "hash NOT IN (SELECT attachmentHash FROM forward_store WHERE attachmentHash IS NOT NULL)",
     )
     suspend fun orphanHashes(): List<String>
+
+    /**
+     * Total bytes of blobs held *purely* for store-and-forward custody — referenced by a carried frame but by
+     * no local `messages` row (our own sends and delivered messages are uncapped, kept via that message ref).
+     * Bounds the altruistic carrier-only footprint; `length(bytes)` reads the row-header length varint, so it
+     * does not decrypt the BLOB. Because these blobs are NOT folded into the content digest, this budget is a
+     * purely *local* knob and need not match across nodes (unlike the frame quotas).
+     */
+    @Query(
+        "SELECT COALESCE(SUM(length(bytes)), 0) FROM blobs WHERE " +
+            "hash IN (SELECT attachmentHash FROM forward_store WHERE attachmentHash IS NOT NULL) AND " +
+            "hash NOT IN (SELECT attachmentHash FROM messages WHERE attachmentHash IS NOT NULL)",
+    )
+    suspend fun carrierOnlyBlobBytes(): Long
 
     @Query("DELETE FROM blobs WHERE hash = :hash")
     suspend fun delete(hash: String)
