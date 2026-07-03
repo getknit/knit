@@ -40,12 +40,6 @@ class ForwardRepository(
         // and profiles share its null recipient/group shape but are higher-value metadata, so they must be
         // bucketed apart (by type) — else they'd inherit the broadcast quota/TTL and be starved or expire early.
         val isBroadcastChat = env.type == FrameType.CHAT && env.recipientId == null && groupId == null
-        // Quotas apply to traffic we relay for others, not our own outbox.
-        if (origin == ForwardStore.ORIGIN_RELAY) {
-            if (dao.countBySender(env.senderId) >= maxPerSender) return
-            if (groupId != null && dao.countByGroup(groupId) >= maxPerGroup) return
-            if (isBroadcastChat && dao.countBroadcast() >= maxBroadcast) return
-        }
         dao.insert(
             ForwardEntity(
                 id = env.id,
@@ -56,6 +50,7 @@ class ForwardRepository(
                 origin = origin,
                 signed = frame.signed,
                 sig = frame.sig,
+                sentAt = env.sentAt,
                 receivedAt = now,
                 // Broadcast-room chat is ambient, higher-volume, no-ack chatter, so it gets a shorter TTL than an
                 // addressed DM/group message or a carried metadata frame (reaction/receipt/profile keep the full
@@ -63,12 +58,33 @@ class ForwardRepository(
                 expiresAt = now + if (isBroadcastChat) broadcastTtlMs else ttlMs,
             ),
         )
-        digest.add(env.id)
-        val overflow = dao.count() - maxRows
-        if (overflow > 0) {
-            dao.evictOldest(overflow)
-            digest.setMessages(dao.allIds()) // eviction removed unknown ids → rebuild wholesale
+        // Enforce each bounded bucket by evicting its *oldest-by-sentAt* rows rather than refusing the new one,
+        // and apply the quotas to our own sends (ORIGIN_SELF) too. sentAt is a frame-global key, so every node —
+        // originator and every carrier — keeps the identical newest-N set and their content digests converge.
+        // The old scheme (refuse-when-full, and never cap our own outbox) let an originator that authored more
+        // than a quota's worth of custodial frames hold rows a capped carrier could never accept, so the
+        // cue-plane digests never matched and the mesh churned NDPs forever — observed with a 117-frame sender
+        // against the 100 per-sender quota. Trim order is fixed (sender, group, broadcast, global) so it's
+        // identical on every node. A just-stored frame older than the bucket's newest-N is evicted here too,
+        // which is correct: we converge on the newest-N regardless of arrival order.
+        var evicted = trim(dao.countBySender(env.senderId) - maxPerSender) { dao.evictOldestBySender(env.senderId, it) }
+        if (groupId != null) {
+            evicted = trim(dao.countByGroup(groupId) - maxPerGroup) { dao.evictOldestByGroup(groupId, it) } || evicted
         }
+        if (isBroadcastChat) {
+            evicted = trim(dao.countBroadcast() - maxBroadcast) { dao.evictOldestBroadcast(it) } || evicted
+        }
+        evicted = trim(dao.count() - maxRows) { dao.evictOldest(it) } || evicted
+        // Eviction removed ids we don't track individually here, so rebuild the fingerprint wholesale; otherwise
+        // fold the single new id in incrementally (the hot path when no bucket is over quota).
+        if (evicted) digest.setMessages(dao.allIds()) else digest.add(env.id)
+    }
+
+    /** Evicts [over] rows via [evict] when a bucket exceeds its quota; returns whether anything was removed. */
+    private suspend fun trim(over: Int, evict: suspend (Int) -> Unit): Boolean {
+        if (over <= 0) return false
+        evict(over)
+        return true
     }
 
     override suspend fun liveFrames(now: Long): List<CarriedFrame> =

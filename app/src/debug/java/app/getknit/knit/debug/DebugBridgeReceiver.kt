@@ -7,6 +7,7 @@ import android.util.Log
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.forward.ForwardDao
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.ConversationKind
@@ -14,8 +15,10 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.GroupInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
@@ -41,6 +44,9 @@ import org.koin.core.component.inject
  * - [ACTION_STATE] — self id/name, transport health, the reachable peer set, and the mesh metrics; add
  *   `--es conv <id>` to also dump that thread's most recent messages (`--ei limit N`, default
  *   [DEFAULT_MESSAGE_LIMIT]) with each message's `received` delivery tick — how "verify receipt" works.
+ * - [ACTION_STORE] — the store-and-forward carry set (the id set the cue-plane content digest is folded over),
+ *   with `digestVersion`, all/live fingerprints, `expiredIds`, the full `allIds`, and capped per-row detail
+ *   (`--ei limit N`, default [DEFAULT_STORE_LIMIT]) — to diff why two devices never converge their digests.
  * - [ACTION_REACT] — `--es id <messageId> --es emoji <emoji>` toggles a reaction.
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  *
@@ -57,6 +63,8 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
     private val metrics: MeshMetrics by inject()
     private val identity: Identity by inject()
     private val settings: SettingsStore by inject()
+    private val forwardDao: ForwardDao by inject()
+    private val digest: StoreDigest by inject()
     private val scope: CoroutineScope by inject()
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -69,6 +77,7 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
                 when (action) {
                     ACTION_SEND -> handleSend(intent)
                     ACTION_STATE -> handleState(intent)
+                    ACTION_STORE -> handleStore(intent)
                     ACTION_REACT -> handleReact(intent)
                     ACTION_HEAL -> { mesh.heal(); reply("ok", "healed") }
                     else -> reply("error", "unknown action: $action")
@@ -159,6 +168,59 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
         return arr
     }
 
+    /**
+     * Dumps the store-and-forward carry set — the exact id set the cue-plane content digest
+     * ([StoreDigest.version]) is folded over, so two devices that never converge (each keeps firing NDPs at the
+     * other) can be diffed to find the stranded id. Reports:
+     *  - `digestVersion` — the live in-memory digest the transport actually cues;
+     *  - `allFingerprint` / `liveFingerprint` — the digest recomputed over *all* rows vs. *non-expired* rows.
+     *    `allFingerprint != digestVersion` ⇒ the in-memory digest drifted from the table; `liveFingerprint !=
+     *    digestVersion` (but `allFingerprint ==`) ⇒ expired-but-unswept rows inflate the digest yet are never
+     *    advertised/exchanged (a sync can't reconcile them until the next TTL sweep — the "syncs succeed but
+     *    never converge" case);
+     *  - `expiredIds` — the offending rows for that case;
+     *  - `allIds` — the full set, for a cross-device diff (`comm`/`diff` the sorted arrays across P7/P8/P9);
+     *  - `rows` — per-frame detail (expired first, then newest), capped by `--ei limit` ([DEFAULT_STORE_LIMIT]).
+     */
+    private suspend fun handleStore(intent: Intent): JSONObject {
+        val now = System.currentTimeMillis()
+        val limit = intent.getIntExtra(EXTRA_LIMIT, DEFAULT_STORE_LIMIT)
+        val rows = forwardDao.allRows()
+        val liveRows = rows.filter { it.expiresAt >= now }
+        val expiredRows = rows.filter { it.expiresAt < now }
+
+        val rowsJson = JSONArray()
+        // Expired first, then newest, so the diagnostically-interesting rows survive a truncated dump.
+        rows.sortedWith(compareBy({ it.expiresAt >= now }, { -it.receivedAt })).take(limit).forEach { r ->
+            rowsJson.put(
+                JSONObject()
+                    .put("id", r.id)
+                    .put("type", r.type)
+                    .put("sender", r.senderId)
+                    .put("origin", if (r.origin == ForwardStore.ORIGIN_SELF) "self" else "relay")
+                    .put("recipient", r.recipientId ?: JSONObject.NULL)
+                    .put("group", r.groupId ?: JSONObject.NULL)
+                    .put("ageSec", (now - r.receivedAt) / MILLIS_PER_SEC)
+                    .put("ttlLeftSec", (r.expiresAt - now) / MILLIS_PER_SEC)
+                    .put("expired", r.expiresAt < now),
+            )
+        }
+
+        return JSONObject()
+            .put("status", "ok")
+            .put("self", JSONObject().put("nodeId", identity.nodeId()).put("name", settings.displayName.first()))
+            .put("digestVersion", digest.version.value.toString())
+            .put("allFingerprint", StoreDigest.fingerprint(rows.map { it.id }).toString())
+            .put("liveFingerprint", StoreDigest.fingerprint(liveRows.map { it.id }).toString())
+            .put(
+                "counts",
+                JSONObject().put("total", rows.size).put("live", liveRows.size).put("expired", expiredRows.size),
+            )
+            .put("expiredIds", JSONArray(expiredRows.map { it.id }))
+            .put("allIds", JSONArray(rows.map { it.id }))
+            .put("rows", rowsJson)
+    }
+
     private fun metricsJson(snap: MeshMetrics.Snapshot): JSONObject = JSONObject()
         .put("originated", snap.framesOriginated)
         .put("delivered", snap.framesDelivered)
@@ -188,6 +250,7 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
 
         const val ACTION_SEND = "app.getknit.knit.debug.SEND"
         const val ACTION_STATE = "app.getknit.knit.debug.STATE"
+        const val ACTION_STORE = "app.getknit.knit.debug.STORE"
         const val ACTION_REACT = "app.getknit.knit.debug.REACT"
         const val ACTION_HEAL = "app.getknit.knit.debug.HEAL"
 
@@ -199,5 +262,10 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
         const val EXTRA_LIMIT = "limit"
 
         const val DEFAULT_MESSAGE_LIMIT = 20
+
+        /** Default cap on per-row detail in the [ACTION_STORE] dump (`allIds`/`expiredIds` are always complete). */
+        const val DEFAULT_STORE_LIMIT = 100
+
+        const val MILLIS_PER_SEC = 1000L
     }
 }

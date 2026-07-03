@@ -37,6 +37,14 @@ interface ForwardDao {
     @Query("SELECT id FROM forward_store")
     suspend fun allIds(): List<String>
 
+    /**
+     * Every carried frame including expired-but-unswept rows, newest first — the `debug.STORE` bridge dump.
+     * Mirrors what [allIds] (hence the content digest) covers, so a dump can show *why* the digest differs from
+     * what a sync (which only exchanges [liveRows]) can reconcile.
+     */
+    @Query("SELECT * FROM forward_store ORDER BY receivedAt DESC")
+    suspend fun allRows(): List<ForwardEntity>
+
     /** Ids of every non-expired carried frame — advertised on link-up so a peer replies with only what we lack. */
     @Query("SELECT id FROM forward_store WHERE expiresAt >= :now")
     suspend fun liveIds(now: Long): List<String>
@@ -58,12 +66,36 @@ interface ForwardDao {
     suspend fun countBroadcast(): Int
 
     /**
-     * Drops the [n] lowest-priority rows under cap pressure: relayed frames (origin 0) before our own
-     * (origin 1), oldest first within each. Keeps this device's own outbox alive longest.
+     * Drops the [n] oldest rows (by [ForwardEntity.sentAt], id as tie-break) under global-cap pressure. Ordered
+     * by the frame-global sentAt rather than local receivedAt/origin so every node evicts the *same* rows and
+     * their content digests stay convergent — the old "relayed-before-our-own, oldest-received-first" order was
+     * per-node, so nodes kept different sets and never converged.
      */
     @Query(
         "DELETE FROM forward_store WHERE id IN " +
-            "(SELECT id FROM forward_store ORDER BY origin ASC, receivedAt ASC LIMIT :n)",
+            "(SELECT id FROM forward_store ORDER BY sentAt ASC, id ASC LIMIT :n)",
     )
     suspend fun evictOldest(n: Int)
+
+    /** Evicts the [n] oldest-by-sentAt frames from [senderId]'s bucket (keeps its newest per the per-sender quota). */
+    @Query(
+        "DELETE FROM forward_store WHERE id IN " +
+            "(SELECT id FROM forward_store WHERE senderId = :senderId ORDER BY sentAt ASC, id ASC LIMIT :n)",
+    )
+    suspend fun evictOldestBySender(senderId: String, n: Int)
+
+    /** Evicts the [n] oldest-by-sentAt frames from [groupId]'s bucket (keeps its newest per the per-group quota). */
+    @Query(
+        "DELETE FROM forward_store WHERE id IN " +
+            "(SELECT id FROM forward_store WHERE groupId = :groupId ORDER BY sentAt ASC, id ASC LIMIT :n)",
+    )
+    suspend fun evictOldestByGroup(groupId: String, n: Int)
+
+    /** Evicts the [n] oldest-by-sentAt broadcast-room chat frames (keeps the newest per the broadcast quota). */
+    @Query(
+        "DELETE FROM forward_store WHERE id IN " +
+            "(SELECT id FROM forward_store WHERE type = 'chat' AND recipientId IS NULL AND groupId IS NULL " +
+            "ORDER BY sentAt ASC, id ASC LIMIT :n)",
+    )
+    suspend fun evictOldestBroadcast(n: Int)
 }

@@ -57,19 +57,27 @@ class StoreDigest {
     fun setMessages(currentIds: Collection<String>) {
         ids.clear()
         ids.addAll(currentIds)
-        _version.value = currentIds.fold(0L) { acc, id -> acc xor hash64(id) }
+        _version.value = fingerprint(currentIds)
     }
 
     /** Snapshot of the held message ids (for the data-path digest exchange). */
     @Synchronized
     fun messageIds(): Set<String> = HashSet(ids)
 
-    private companion object {
+    companion object {
         // FNV-1a 64-bit basis + prime (0xCBF29CE484222325 / 0x100000001B3). A stable, well-distributed hash of
         // an id's UTF-8 bytes — String.hashCode is only 32-bit, so an XOR of those would collide too readily.
         private const val FNV64_OFFSET = -0x340D631B7BDDDCDBL
         private const val FNV64_PRIME = 0x100000001B3L
         private const val BYTE_MASK = 0xFFL
+
+        /**
+         * The content fingerprint of an id set: XOR of [hash64] over every id — order-independent and identical
+         * to the incremental [add]/[remove] fold. Exposed so a diagnostic (the `debug.STORE` dump) can recompute
+         * the digest over an arbitrary subset (live-only vs. all rows) and compare it against [version] to tell
+         * an expired-but-unswept divergence apart from an in-memory-digest drift.
+         */
+        fun fingerprint(ids: Iterable<String>): Long = ids.fold(0L) { acc, id -> acc xor hash64(id) }
 
         fun hash64(s: String): Long {
             var h = FNV64_OFFSET

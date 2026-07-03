@@ -12,6 +12,7 @@
             <intent-filter>
                 <action android:name="app.getknit.knit.debug.SEND" />
                 <action android:name="app.getknit.knit.debug.STATE" />
+                <action android:name="app.getknit.knit.debug.STORE" />
                 <action android:name="app.getknit.knit.debug.REACT" />
                 <action android:name="app.getknit.knit.debug.HEAL" />
             </intent-filter>

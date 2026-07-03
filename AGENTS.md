@@ -208,6 +208,25 @@ frames.
   fails with a wall of "Cannot find a version … {strictly <old>} … enforced by Dependency Locking"
   errors — which look like a resolution break but are just a half-updated lockfile. Always regenerate
   with `./gradlew :app:dependencies --write-locks` (resolves every configuration), then `./gradlew lint`.
+- **A bounded custody quota must be *convergent*, or one chatty node churns the mesh forever.** The
+  store-and-forward caps (`ForwardRepository`) bound how many carried frames a node holds per sender / group /
+  broadcast room. The Wi-Fi Aware cue plane advertises a **content digest** — an XOR over the held frame-id set
+  (`StoreDigest`) — and brings up a scarce NDP *only* when two peers' digests differ (`DigestTracker`'s
+  identical-digest skip). So the quota and the digest are coupled: if a node can hold a frame set a *peer* can
+  never match, their digests never converge and every larger peer re-attempts an NDP on every cue — **forever**.
+  The original quota broke this two ways, and both had to be fixed (DB v18, `forward_store.sentAt`): (1) it
+  applied **only to relayed traffic**, so an originator kept *all* its own sends (`ORIGIN_SELF`) while carriers
+  capped at the quota — field-observed: node `a4gjrq5w` authored 117 custodial frames vs. the 100 per-sender
+  quota, peers held 100, it held 117, so it out-diverged them permanently and the radio never idled (a slow
+  drip of NDP setup/teardown + re-attach churn, `wanted` never emptying); and (2) it **refused the new frame**
+  when full and evicted by local `receivedAt`/origin — both per-node, so even matched counts kept *different*
+  sets. The fix: trim each over-quota bucket to its newest-N by the **frame-global `(sentAt, id)`** on **every**
+  origin, so all nodes keep the identical set and the digests converge. Rule of thumb: **anything the content
+  digest is folded over must be bounded by a rule that's identical on every node** (same key, same direction,
+  same origins). Verify with `…debug.STORE`: `allFingerprint` must match across devices and every sender's
+  carried count must be ≤ its quota. (Aside: the per-sender bucket lumps a node's profile in with its chat, so a
+  node that sends >quota frames evicts its own profile *frame* from custody — harmless, since the pinned key +
+  connect-time `pushProfileTo` / edit re-broadcast are the real profile paths, and every node evicts it alike.)
 
 ## Verifying changes
 
@@ -230,7 +249,10 @@ route extra is gated on `BuildConfig.DEBUG`. `app/build.gradle.kts` is untouched
 - **Headless bridge** (`app/src/debug/.../debug/DebugBridgeReceiver.kt`) — an exported `BroadcastReceiver`
   that calls `MeshManager` directly and returns JSON. Fire with `am broadcast` (target the package with
   `-p app.getknit.knit`); the reply prints on stdout as `Broadcast completed: … data="{…}"` and is also
-  logged one-line under tag `KnitBridge` (`adb logcat -d -s KnitBridge:I`). Actions:
+  logged one-line under tag `KnitBridge` (`adb logcat -d -s KnitBridge:I`). **A new action must be added in
+  *two* places** — the `when` in `DebugBridgeReceiver` *and* the `<intent-filter>` in `app/src/debug/AndroidManifest.xml`;
+  a package-targeted broadcast for an action missing from the filter is silently not delivered (the receiver
+  never runs, and you get `Broadcast completed: result=0` with no `data=` and nothing under `KnitBridge`). Actions:
   - `…debug.SEND` — `--es text <body>` + a target: `--es conv <id>` (`nearby` room, a peer node id for a
     DM, or a `g-…` group id) or `--es to <peerNodeId>` (DM shorthand). No target ⇒ broadcast room. Text is
     passed verbatim — spaces/emoji survive (unlike `adb shell input text`) **provided you quote for the
@@ -240,6 +262,14 @@ route extra is gated on `BuildConfig.DEBUG`. `app/build.gradle.kts` is untouched
   - `…debug.STATE` — self id/name, transport health, reachable peers, and mesh metrics. Add `--es conv <id>`
     to also dump that thread's latest messages (`--ei limit N`, default 20), each with its `received`
     delivery tick — this is how you **verify receipt on the other device without a screenshot**.
+  - `…debug.STORE` — dumps the store-and-forward carry set (the id set the cue-plane content digest is folded
+    over), for diagnosing why two nodes never converge their digests (the churn from a carried-set delta):
+    `digestVersion` (what the transport actually cues), `allFingerprint`/`liveFingerprint` (the digest
+    recomputed over all rows vs. non-expired rows — `allFingerprint != digestVersion` ⇒ the in-memory digest
+    drifted from the table; `liveFingerprint != digestVersion` ⇒ expired-but-unswept rows inflate it), `counts`,
+    `expiredIds`, the full `allIds`, and capped per-row detail (`--ei limit N`, default 100). Diff `allIds`
+    across devices to find the stranded frame(s): `… STORE | sed -n 's/.*data="//;s/"$//p' | jq -r '.allIds[]'
+    | sort` per device, then `comm`/`diff` the files. `allFingerprint` matching across devices = converged.
   - `…debug.REACT` — `--es id <messageId> --es emoji <emoji>`. `…debug.HEAL` — nudge rescan/re-advertise.
   ```
   # send on A, then confirm it landed on B — no UI, no screenshots. Outer quotes matter: adb re-parses
@@ -328,7 +358,11 @@ not only the one-hop peers that happened to be present when each first flooded.
 
 Bounds (`ForwardRepository`): a per-message **TTL** sweep (startup + a 10-min loop + the heartbeat
 `heal()`; broadcast gets a shorter TTL than DMs/groups), a **global cap**, a **per-sender quota**, a
-**per-group quota**, and a **broadcast quota**, all with relayed-before-our-own eviction. A carrier stores a message only when its sender is **pinned, not blocked,
+**per-group quota**, and a **broadcast quota** — each enforced by evicting its **oldest frame by `sentAt`**
+(a frame-global key, so every node keeps the identical newest-N and their content digests converge) rather than
+refusing the new one, and applied to **our own sends too** (not just relayed traffic). Ordering by a per-node
+key (`receivedAt`) or exempting `ORIGIN_SELF` breaks convergence and churns the cue plane forever — see the
+convergent-custody-quota gotcha above. A carrier stores a message only when its sender is **pinned, not blocked,
 and its frame signature verifies** (`MeshManager.canCarry` → `MessageCrypto.verify` over the received
 `signed` bytes, authenticating without decrypting — a carrier holds no wrapped key). Notifications fire only on first delivery
 (`deliverChat` `isNew` gate, conversation-agnostic) so a re-served message (after the 10-min `SeenSet`

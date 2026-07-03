@@ -67,7 +67,12 @@ import java.io.File
     //      re-type), so SERVICE_NAME bumps in lockstep (v3 → v4) to partition old builds and this
     //      destructive wipe clears any custodied old-format frames. No schema-column change — the version
     //      bump is the coordinated wire/DB break the format requires (see docs/WIRE_COMPAT.md).
-    version = 17,
+    // v18: forward_store gained a `sentAt` column (the originator's envelope timestamp). Custody eviction now
+    //      trims each over-quota per-sender/group/broadcast bucket to its newest-N *by sentAt* (a frame-global
+    //      key) and applies the quota to our own sends too, so every node converges on the identical carried
+    //      id-set instead of a chatty originator (which bypassed the quota) permanently out-diverging capped
+    //      carriers and churning the cue plane forever. No wire change; destructive DB migration as usual.
+    version = 18,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

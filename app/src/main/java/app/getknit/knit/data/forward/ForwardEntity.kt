@@ -21,9 +21,13 @@ import androidx.room.PrimaryKey
  * has no single recipient (TTL/caps purge only), and the member roster to push toward is read from the
  * decoded envelope ([signed]). [groupId] bounds the per-group quota. [type] is the wire frame type, so the
  * store buckets per-type policy — the broadcast quota + shorter TTL apply only to broadcast-room chat, not the
- * reaction/receipt/profile frames that share its null recipient/group shape. [origin] distinguishes a frame we
- * relayed for others (`ORIGIN_RELAY`) from one we authored (`ORIGIN_SELF`) so cap eviction sheds carried
- * traffic before our own outbox. [receivedAt] orders eviction; [expiresAt] drives the TTL sweep.
+ * reaction/receipt/profile frames that share its null recipient/group shape. [origin] records whether we
+ * relayed a frame for others (`ORIGIN_RELAY`) or authored it (`ORIGIN_SELF`) — diagnostic only, now that quota
+ * eviction is origin-agnostic. [sentAt] is the originator's envelope clock (identical on every node), so
+ * trimming each over-quota bucket to its newest-N *by [sentAt]* keeps every node's carried set — and hence its
+ * content digest — convergent; without it a chatty originator (which used to bypass the quota outright) held
+ * frames a capped carrier could never accept, so the digests never matched. [receivedAt] records local arrival;
+ * [expiresAt] drives the TTL sweep.
  */
 @Entity(
     tableName = "forward_store",
@@ -38,6 +42,7 @@ data class ForwardEntity(
     val origin: Int,
     val signed: ByteArray,
     val sig: ByteArray,
+    val sentAt: Long,
     val receivedAt: Long,
     val expiresAt: Long,
 ) {
