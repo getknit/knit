@@ -85,6 +85,7 @@
     <string name="chat_action_unblock">Unblock user</string>
     <string name="chat_view_profile">View %1$s\'s profile</string>
     <string name="chat_view_group_info">View group info</string>
+    <string name="chat_group_settings">Settings</string>
     <string name="chat_react_with">React with %1$s</string>
     <plurals name="chat_reaction_count">
         <item quantity="one">%2$s, %1$d reaction</item>

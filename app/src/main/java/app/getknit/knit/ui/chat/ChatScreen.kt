@@ -68,6 +68,7 @@ import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -361,9 +362,10 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // The overflow lives on DM threads only: the broadcast room has no actions, and a
-                    // group's actions moved to the group-details screen (tap the group avatar to open it).
-                    if (!state.isRoom && !state.isGroup) {
+                    // The overflow lives on DM and group threads (the broadcast room has no actions).
+                    // A DM offers Block/Unblock; a group offers Settings, which opens the same
+                    // group-details screen as tapping the group avatar (the avatar tap stays too).
+                    if (!state.isRoom) {
                         Box {
                             IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(48.dp)) {
                                 Icon(
@@ -375,22 +377,34 @@ fun ChatScreen(
                                 expanded = headerMenuOpen,
                                 onDismissRequest = { headerMenuOpen = false },
                             ) {
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            stringResource(
-                                                if (state.isBlocked) R.string.chat_action_unblock
-                                                else R.string.chat_action_block,
-                                            ),
-                                        )
-                                    },
-                                    leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
-                                    onClick = {
-                                        headerMenuOpen = false
-                                        if (state.isBlocked) viewModel.unblock(conversationId)
-                                        else viewModel.block(conversationId)
-                                    },
-                                )
+                                if (state.isGroup) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.chat_group_settings)) },
+                                        leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                                        modifier = Modifier.testTag("chat_group_settings"),
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            onOpenGroupDetails(conversationId)
+                                        },
+                                    )
+                                } else {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                stringResource(
+                                                    if (state.isBlocked) R.string.chat_action_unblock
+                                                    else R.string.chat_action_block,
+                                                ),
+                                            )
+                                        },
+                                        leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            if (state.isBlocked) viewModel.unblock(conversationId)
+                                            else viewModel.block(conversationId)
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
