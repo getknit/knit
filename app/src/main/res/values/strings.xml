@@ -54,6 +54,9 @@
         <item quantity="one">Connected to %d mesh node</item>
         <item quantity="other">Connected to %d mesh nodes</item>
     </plurals>
+    <string name="chat_connection_radio_off">Turn on Wi-Fi or Bluetooth to connect</string>
+    <string name="chat_connection_airplane">Airplane mode is on — turn on Wi-Fi or Bluetooth</string>
+    <string name="chat_connection_degraded">Mesh radio unavailable — another app may be using it</string>
     <string name="chat_empty">No messages yet.\nSay hello to nearby devices.</string>
     <string name="chat_message_hint">Knit Message</string>
     <string name="chat_loading_photo">Loading photo…</string>
@@ -215,6 +218,8 @@
     <string name="diagnostics_status_healthy">Mesh status: Healthy</string>
     <string name="diagnostics_status_degraded">Mesh status: Degraded</string>
     <string name="diagnostics_status_degraded_hint">The radio may be in use by another app like Quick Share. Tap Restart mesh if it doesn\'t recover on its own.</string>
+    <string name="diagnostics_status_unavailable">Mesh status: Radios off</string>
+    <string name="diagnostics_status_unavailable_hint">Wi-Fi and Bluetooth are both off (or airplane mode is on). Turn one on to join the mesh.</string>
     <string name="diagnostics_restart_mesh">Restart mesh</string>
     <string name="diagnostics_scan_now">Scan for nearby devices</string>
     <string name="diagnostics_mesh_restarted">Mesh restarted</string>

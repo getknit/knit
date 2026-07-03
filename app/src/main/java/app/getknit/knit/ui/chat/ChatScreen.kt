@@ -283,7 +283,7 @@ fun ChatScreen(
                                     fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.primary,
                                 )
-                                ConnectionStatusRow(state.neighborCount)
+                                ConnectionStatusRow(state.neighborCount, state.transportHealth)
                             }
                         }
                         state.isGroup -> {

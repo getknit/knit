@@ -18,6 +18,7 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.TransportHealth
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -45,6 +46,8 @@ data class ConversationRow(
 data class ChatListUiState(
     val conversations: List<ConversationRow> = emptyList(),
     val neighborCount: Int = 0,
+    // Radio health, so the connection header can distinguish "nobody nearby" from radios off/seized.
+    val transportHealth: TransportHealth = TransportHealth.Healthy,
 )
 
 /**
@@ -84,13 +87,18 @@ class ChatListViewModel(
         ListBundle(msgs.filter { it.senderId !in blocked }, blocked, groupList)
     }
 
+    // Neighbor count + radio health folded into one source so the main state combine stays within its
+    // five-flow arity.
+    private val meshStatus =
+        combine(meshManager.neighborCount, meshManager.transportHealth) { count, health -> count to health }
+
     val state: StateFlow<ChatListUiState> = combine(
         messagesAndBlocks,
         peers.observePeers(),
         settings.lastReadAll,
         myNodeId,
-        meshManager.neighborCount,
-    ) { bundle, peerList, lastReadAll, me, neighborCount ->
+        meshStatus,
+    ) { bundle, peerList, lastReadAll, me, (neighborCount, health) ->
         val msgs = bundle.messages
         val blocked = bundle.blocked
         val activeGroups = bundle.groups.filter { !it.left }
@@ -163,6 +171,7 @@ class ChatListViewModel(
         ChatListUiState(
             conversations = (listOf(nearby) + groupRows + dms).sortedByDescending { it.lastMessageAt ?: 0L },
             neighborCount = neighborCount,
+            transportHealth = health,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatListUiState())
 

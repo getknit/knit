@@ -121,7 +121,7 @@ fun ChatListScreen(
                             color = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.semantics { heading() },
                         )
-                        ConnectionStatusRow(state.neighborCount)
+                        ConnectionStatusRow(state.neighborCount, state.transportHealth)
                     }
                 },
                 actions = {

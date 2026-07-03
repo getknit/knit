@@ -165,18 +165,30 @@ private fun MeshControlsSection(
     onRestart: () -> Unit,
     onScan: () -> Unit,
 ) {
-    val degraded = health == TransportHealth.Degraded
+    // Status line: distinguish Healthy, Degraded (on but seized), and Unavailable (radios switched off).
+    val statusRes = when (health) {
+        TransportHealth.Healthy -> R.string.diagnostics_status_healthy
+        TransportHealth.Degraded -> R.string.diagnostics_status_degraded
+        TransportHealth.Unavailable -> R.string.diagnostics_status_unavailable
+    }
+    val hintRes = when (health) {
+        TransportHealth.Healthy -> null
+        TransportHealth.Degraded -> R.string.diagnostics_status_degraded_hint
+        TransportHealth.Unavailable -> R.string.diagnostics_status_unavailable_hint
+    }
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Text(
-            text = stringResource(
-                if (degraded) R.string.diagnostics_status_degraded else R.string.diagnostics_status_healthy,
-            ),
+            text = stringResource(statusRes),
             style = MaterialTheme.typography.bodyMedium,
-            color = if (degraded) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+            color = if (health == TransportHealth.Healthy) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.error
+            },
         )
-        if (degraded) {
+        if (hintRes != null) {
             Text(
-                text = stringResource(R.string.diagnostics_status_degraded_hint),
+                text = stringResource(hintRes),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp),
@@ -272,11 +284,12 @@ private fun TransportRow(status: TransportStatus) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Health dot mirrors the mesh-controls colors: tertiary when Healthy, error when Degraded.
-        val dotColor = if (status.health == TransportHealth.Healthy) {
-            MaterialTheme.colorScheme.tertiary
-        } else {
-            MaterialTheme.colorScheme.error
+        // Health dot: tertiary when Healthy, error when Degraded (seized), muted outline when Unavailable
+        // (radio off) — off isn't a fault, so it shouldn't read as alarmingly as a seized radio.
+        val dotColor = when (status.health) {
+            TransportHealth.Healthy -> MaterialTheme.colorScheme.tertiary
+            TransportHealth.Degraded -> MaterialTheme.colorScheme.error
+            TransportHealth.Unavailable -> MaterialTheme.colorScheme.outline
         }
         Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(dotColor))
         Spacer(Modifier.width(12.dp))
@@ -411,6 +424,12 @@ fun MeshControlsSectionHealthyPreview() = KnitPreview {
 @Composable
 fun MeshControlsSectionDegradedPreview() = KnitPreview {
     MeshControlsSection(health = TransportHealth.Degraded, onRestart = {}, onScan = {})
+}
+
+@Preview(showBackground = true)
+@Composable
+fun MeshControlsSectionUnavailablePreview() = KnitPreview {
+    MeshControlsSection(health = TransportHealth.Unavailable, onRestart = {}, onScan = {})
 }
 
 @Preview(showBackground = true)

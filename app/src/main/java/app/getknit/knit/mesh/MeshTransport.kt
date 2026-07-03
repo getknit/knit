@@ -17,12 +17,17 @@ import java.io.File
 data class Peer(val nodeId: String, val protoVersion: Int = 0, val capabilities: Long = 0L)
 
 /**
- * Coarse health of the radio layer. [Degraded] means the last advertise/discover attempt failed —
- * typically because another app (e.g. Quick Share) has seized the Nearby radios — so the device may
- * be neither discoverable nor able to find peers until the radio is free again. Surfaced to the UI so
- * "no neighbors because the radio is broken" is distinguishable from "no neighbors nearby".
+ * Coarse health of the radio layer, surfaced to the UI so "no neighbors because the radio can't run"
+ * is distinguishable from "no neighbors nearby" — and, within that, so an *actionable* radio-off state
+ * is distinguishable from a transient fault:
+ * - [Healthy]: the radio is attached and advertising/discovering.
+ * - [Degraded]: the radio is on but the last advertise/discover/attach attempt failed — typically
+ *   because another app (e.g. Quick Share) has seized it. Usually self-heals; a mesh restart may help.
+ * - [Unavailable]: the radio is switched off (the user turned Wi-Fi/Bluetooth off, or airplane mode is
+ *   on) or absent — nothing the app can do but wait for the user to turn a radio back on. The UI turns
+ *   this into an actionable "turn on Wi-Fi or Bluetooth" hint rather than a generic failure.
  */
-enum class TransportHealth { Healthy, Degraded }
+enum class TransportHealth { Healthy, Degraded, Unavailable }
 
 /**
  * Which physical radio a [MeshTransport] drives. Used only for diagnostics — [CompositeMeshTransport] tags
@@ -103,7 +108,10 @@ interface MeshTransport {
      */
     val reachable: StateFlow<Set<Peer>> get() = neighbors
 
-    /** Coarse radio health (e.g. flips to [TransportHealth.Degraded] when Quick Share seizes the radios). */
+    /**
+     * Coarse radio health: [TransportHealth.Degraded] when Quick Share seizes the radios (on but failing),
+     * [TransportHealth.Unavailable] when the radio is switched off (Wi-Fi/Bluetooth off or airplane mode).
+     */
     val health: StateFlow<TransportHealth>
 
     /**

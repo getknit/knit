@@ -119,7 +119,7 @@ class WifiAwareTransport(
     private val connectivity =
         appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-    /** False on hardware without Wi-Fi Aware — the transport stays [TransportHealth.Degraded] and the UI gates. */
+    /** False on hardware without Wi-Fi Aware — the transport stays [TransportHealth.Unavailable] and the UI gates. */
     private val hasHardware =
         awareManager != null && appContext.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_WIFI_AWARE)
 
@@ -273,7 +273,7 @@ class WifiAwareTransport(
 
     override fun start() {
         if (!hasHardware) {
-            _health.value = TransportHealth.Degraded
+            _health.value = TransportHealth.Unavailable
             Log.w(TAG, "Wi-Fi Aware unsupported on this device; mesh disabled")
             return
         }
@@ -452,7 +452,7 @@ class WifiAwareTransport(
     private fun attach() = onHandler {
         val mgr = awareManager ?: return@onHandler
         if (!mgr.isAvailable) {
-            _health.value = TransportHealth.Degraded
+            _health.value = TransportHealth.Unavailable // Wi-Fi Aware off (Wi-Fi off / airplane mode)
             return@onHandler
         }
         if (session != null) return@onHandler
@@ -495,7 +495,10 @@ class WifiAwareTransport(
                 subscribeSession = null
                 stopResponder()
                 synchronized(lock) { accepting = false }
-                _health.value = TransportHealth.Degraded
+                // A session terminates both when the radio is switched off and when it's seized; distinguish so
+                // the UI can say "radios off" vs "radio busy". The availability receiver corrects this if it flips.
+                _health.value =
+                    if (mgr.isAvailable) TransportHealth.Degraded else TransportHealth.Unavailable
             }
         }
         runCatching { mgr.attach(cb, handler) }.onFailure {
@@ -1267,7 +1270,7 @@ class WifiAwareTransport(
             if (mgr.isAvailable) {
                 attach() // onHandler-funneled; the attaching/session guards make a redundant call a no-op
             } else onHandler {
-                _health.value = TransportHealth.Degraded
+                _health.value = TransportHealth.Unavailable // Wi-Fi Aware switched off (Wi-Fi off / airplane mode)
                 peers.keys.toList().forEach { teardownPeer(it) }
                 ++attachGen // invalidate in-flight discovery callbacks from the torn-down generation
                 stopResponder()
@@ -1284,6 +1287,7 @@ class WifiAwareTransport(
                 cueTarget.clear()
                 lastSeenAt.clear()
                 reachablePeers.clear()
+                _neighbors.value = emptySet() // symmetric with stop(); teardownPeer already recomputes it empty
                 _reachable.value = emptySet()
             }
         }

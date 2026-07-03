@@ -23,8 +23,8 @@ import java.io.File
  * - [neighbors]/[reachable]: the union of the children's sets, **collapsed to one [Peer] per nodeId** (the
  *   richer advertised protoVersion/capabilities wins). Collapsing by nodeId is what makes
  *   `MeshManager.watchNeighbors` fire its newcomer hooks exactly once even when a peer appears on both planes.
- * - [health]: Healthy if **any** child is Healthy (the node can still mesh if one radio works); Degraded only
- *   when every plane is down.
+ * - [health]: Healthy if **any** child is Healthy (the node can still mesh if one radio works); otherwise
+ *   Degraded if any plane is on-but-failing (seized), else Unavailable when every plane is switched off/absent.
  * - [inbound]/[incomingFiles]/[incomingDigests]: merged. A frame that arrives over both planes is de-duped
  *   downstream by `MeshRouter`'s `SeenSet` (10-min TTL), so simultaneous multi-path delivery is safe and free.
  * - [send]: for a specific peer, route to the preferred child holding a live link to it; for a broadcast
@@ -70,7 +70,15 @@ class CompositeMeshTransport(
             MutableStateFlow(TransportHealth.Degraded)
         } else {
             combine(children.map { it.health }) { hs ->
-                if (hs.any { it == TransportHealth.Healthy }) TransportHealth.Healthy else TransportHealth.Degraded
+                when {
+                    // The node can still mesh if any radio is up.
+                    hs.any { it == TransportHealth.Healthy } -> TransportHealth.Healthy
+                    // At least one radio is on but failing (seized) — a fault, not a user-off state, so it
+                    // outranks Unavailable: "radio busy" is the more informative message.
+                    hs.any { it == TransportHealth.Degraded } -> TransportHealth.Degraded
+                    // Every radio is switched off / absent — actionable "turn on Wi-Fi or Bluetooth".
+                    else -> TransportHealth.Unavailable
+                }
             }.stateIn(scope, SharingStarted.Eagerly, TransportHealth.Healthy)
         }
 

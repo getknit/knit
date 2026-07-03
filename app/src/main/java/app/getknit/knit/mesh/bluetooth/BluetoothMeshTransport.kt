@@ -167,7 +167,7 @@ class BluetoothMeshTransport(
 
     override fun start() {
         if (!hasHardware) {
-            _health.value = TransportHealth.Degraded
+            _health.value = TransportHealth.Unavailable
             Log.w(TAG, "Bluetooth LE unsupported on this device; BT plane disabled")
             return
         }
@@ -176,7 +176,7 @@ class BluetoothMeshTransport(
             lastLinkOrStartAt = elapsed()
             registerAvailability()
             audioMonitor.start()
-            if (adapter?.isEnabled == true) bringUp() else _health.value = TransportHealth.Degraded
+            if (adapter?.isEnabled == true) bringUp() else _health.value = TransportHealth.Unavailable
             scanJob = scope.launch { scanLoop() }
             connectJob = scope.launch { connectLoop() }
             // Re-advertise our epoch when the carried set changes so a peer that now wants our data links to pull it.
@@ -488,22 +488,29 @@ class BluetoothMeshTransport(
     // --- Availability (adapter on/off) ---
 
     private val availabilityReceiver = object : BroadcastReceiver() {
+        // onReceive runs on the main thread; the health flip is cheap so it's set inline for an instant UI
+        // update, but bring-up/teardown do blocking radio I/O (opening/closing the L2CAP server socket), so
+        // they run on [scope] — off the main thread — mirroring WifiAwareTransport's handler-thread funnel.
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
                 BluetoothAdapter.STATE_ON -> {
                     Log.i(TAG, "bluetooth adapter on")
-                    bringUp()
-                    healSignal.trySend(Unit)
+                    scope.launch {
+                        bringUp()
+                        healSignal.trySend(Unit)
+                    }
                 }
                 BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
                     Log.i(TAG, "bluetooth adapter off")
-                    _health.value = TransportHealth.Degraded
-                    links.keys.toList().forEach { teardownLink(it, "adapter off") }
-                    tearDownRadio()
-                    presence.clear()
-                    deviceFor.clear()
-                    synchronized(lock) { inFlight.clear(); backoffs.clear() }
-                    _reachable.value = emptySet()
+                    _health.value = TransportHealth.Unavailable // Bluetooth switched off (or airplane mode)
+                    scope.launch {
+                        links.keys.toList().forEach { teardownLink(it, "adapter off") }
+                        tearDownRadio()
+                        presence.clear()
+                        deviceFor.clear()
+                        synchronized(lock) { inFlight.clear(); backoffs.clear() }
+                        _reachable.value = emptySet()
+                    }
                 }
             }
         }

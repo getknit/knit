@@ -24,6 +24,7 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.notifications.Notifier
@@ -90,6 +91,8 @@ data class MentionCandidate(
 data class ChatUiState(
     val rows: List<ChatRow> = emptyList(),
     val neighborCount: Int = 0,
+    // Radio health, so the connection header can distinguish "nobody nearby" from radios off/seized.
+    val transportHealth: TransportHealth = TransportHealth.Healthy,
     val myNodeId: String = "",
     val mentionCandidates: List<MentionCandidate> = emptyList(),
     // Conversation header: the room ([isRoom] true) or a 1:1 DM with [title]/[avatarHash] of the peer.
@@ -208,13 +211,18 @@ class ChatViewModel(
         )
     }
 
+    // Neighbor count + radio health folded into one source so the main state combine stays within its
+    // five-flow arity.
+    private val meshStatus =
+        combine(meshManager.neighborCount, meshManager.transportHealth) { count, health -> count to health }
+
     val state: StateFlow<ChatUiState> = combine(
         messagesWithReactions,
         peers.observePeers(),
-        meshManager.neighborCount,
+        meshStatus,
         myNodeId,
         settings.displayName,
-    ) { bundle, peerList, count, me, myName ->
+    ) { bundle, peerList, (count, health), me, myName ->
         val msgs = bundle.messages
         val reacts = bundle.reactions
         val blocked = bundle.blocked
@@ -278,6 +286,7 @@ class ChatViewModel(
         ChatUiState(
             rows = rows,
             neighborCount = count,
+            transportHealth = health,
             myNodeId = me.orEmpty(),
             mentionCandidates = candidates,
             isRoom = isRoom,

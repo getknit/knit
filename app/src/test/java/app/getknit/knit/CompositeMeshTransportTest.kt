@@ -118,6 +118,29 @@ class CompositeMeshTransportTest {
     }
 
     @Test
+    fun healthIsUnavailableOnlyWhenEveryRadioIsOff() = runTest(UnconfinedTestDispatcher()) {
+        val bt = FakeChild()
+        val nan = FakeChild()
+        val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+
+        // Both radios switched off -> the actionable "turn on a radio" state.
+        bt.setHealth(TransportHealth.Unavailable)
+        nan.setHealth(TransportHealth.Unavailable)
+        advanceUntilIdle()
+        assertEquals(TransportHealth.Unavailable, composite.health.value)
+
+        // One radio on-but-failing outranks the other being off: "radio busy" is the better message.
+        nan.setHealth(TransportHealth.Degraded)
+        advanceUntilIdle()
+        assertEquals("degraded outranks unavailable", TransportHealth.Degraded, composite.health.value)
+
+        // Any healthy radio still wins.
+        bt.setHealth(TransportHealth.Healthy)
+        advanceUntilIdle()
+        assertEquals(TransportHealth.Healthy, composite.health.value)
+    }
+
+    @Test
     fun sendToPeerPrefersBluetoothWhenBothHoldTheLink() = runTest(UnconfinedTestDispatcher()) {
         val bt = FakeChild()
         val nan = FakeChild()
