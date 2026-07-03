@@ -215,12 +215,13 @@ class MessageNotifier(private val context: Context) : Notifier {
             style.addMessage(m.body, m.sentAt, personOf(m.senderId, m.senderName, m.avatarBytes))
         }
 
-        // The conversation avatar (group photo / peer avatar, else a generated letter avatar) shown as the
-        // notification's prominent icon. A plain setLargeIcon is ignored by MessagingStyle, so we publish a
-        // long-lived conversation shortcut carrying this icon and point the notification at it — that gives
-        // the Signal-style avatar in the collapsed, group-child, and heads-up views (Conversations section).
+        // The conversation avatar (group photo / peer avatar, the Nearby room's Knit mark, else a generated
+        // letter avatar) shown as the notification's prominent icon. A plain setLargeIcon is ignored by
+        // MessagingStyle, so we publish a long-lived conversation shortcut carrying this icon and point the
+        // notification at it — that gives the Signal-style avatar in the collapsed, group-child, and heads-up
+        // views (Conversations section).
         val title = displayTitle(r.kind, r.title)
-        val avatar = bitmapFor(r.avatarBytes) ?: letterAvatar(title)
+        val avatar = bitmapFor(r.avatarBytes) ?: fallbackAvatar(r.kind, title)
         pushConversationShortcut(r.conversationId, title, avatar)
 
         val channelId = if (r.isMention) NotificationChannels.MENTIONS else NotificationChannels.channelFor(r.kind)
@@ -380,6 +381,36 @@ class MessageNotifier(private val context: Context) : Notifier {
         bytes?.let { runCatching { BitmapFactory.decodeByteArray(it, 0, it.size) }.getOrNull() }
 
     /**
+     * The photoless avatar for a conversation: the Nearby/broadcast room gets the Knit mesh mark (matching
+     * the chat list's room glyph), everything else gets a [letterAvatar] on its title initial.
+     */
+    private fun fallbackAvatar(kind: ConversationKind, title: String): Bitmap =
+        if (kind == ConversationKind.NEARBY) roomAvatar() else letterAvatar(title)
+
+    /**
+     * The Nearby/broadcast room's icon: the Knit mesh mark ([R.drawable.ic_stat_mesh]) centered on a tinted
+     * circle, the notification twin of the chat list's room glyph (`CircleGlyph` — a `secondaryContainer`
+     * background with the `onSecondaryContainer`-tinted logo). Fixed to the light-scheme pair so the
+     * standalone circular icon stays legible on either a light or dark notification shade (the circle carries
+     * its own contrast). The adaptive mask rounds the filled square exactly as it does for [letterAvatar].
+     */
+    private fun roomAvatar(): Bitmap {
+        // CoralSecondaryContainerLight / CoralOnSecondaryContainerLight — the chat-list room glyph colors.
+        val background = 0xFFE0E0EC.toInt()
+        val logoTint = 0xFF181824.toInt()
+        val bitmap = Bitmap.createBitmap(AVATAR_PX, AVATAR_PX, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(background)
+        ContextCompat.getDrawable(context, R.drawable.ic_stat_mesh)?.mutate()?.apply {
+            setTint(logoTint)
+            val inset = (AVATAR_PX * (1f - ROOM_LOGO_SCALE) / 2f).toInt()
+            setBounds(inset, inset, AVATAR_PX - inset, AVATAR_PX - inset)
+            draw(canvas)
+        }
+        return bitmap
+    }
+
+    /**
      * A generated avatar for [name] when it has no photo: a deterministically-colored circle (the adaptive
      * mask rounds the filled square) with the leading grapheme initial, mirroring the in-app
      * [app.getknit.knit.ui.components.Avatar] fallback so notifications match the rest of the app.
@@ -496,6 +527,10 @@ class MessageNotifier(private val context: Context) : Notifier {
         private const val HUE_STEPS = 360
         private const val AVATAR_SAT = 0.5f
         private const val AVATAR_VAL = 0.65f
+
+        // The room logo occupies ~half the avatar diameter, matching the chat list glyph (a 24dp Icon inside
+        // a 52dp CircleGlyph) and the letter avatar's 0.5 text size.
+        private const val ROOM_LOGO_SCALE = 0.5f
 
         // Request-code action slots (per tag), so open/reply/mark-read/dismiss don't collide.
         private const val CODE_OPEN = 0
