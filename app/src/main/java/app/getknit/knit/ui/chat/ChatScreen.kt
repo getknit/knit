@@ -240,6 +240,9 @@ fun ChatScreen(
         viewModel.clearInput.collect {
             inputState.clearText()
             pendingMentions.clear()
+            // Signal the field is now empty so the ViewModel releases its double-submit guard; releasing
+            // only after the text is gone closes the last window where a rapid tap could re-send a draft.
+            viewModel.onInputCleared()
         }
     }
     // Drain any payload handed in from the system share sheet (see ShareInbox): prefill the text draft

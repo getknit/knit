@@ -303,30 +303,64 @@ class ChatViewModel(
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom))
 
+    /**
+     * Double-submit guard: true from the moment a send is accepted until its input is cleared (success)
+     * or it's rejected (blocked). [send] is a suspending round-trip (seal-to-recipients + DB write +
+     * enqueue), and the input isn't cleared until it returns, so without this a rapid burst of taps on
+     * the always-enabled send button would each read the same still-present draft and flood duplicates.
+     * Main-thread-confined: touched only from [send] and [onInputCleared], both on the main dispatcher.
+     */
+    private var sending = false
+
     fun send(text: String, mentions: List<Mention> = emptyList()) {
         val trimmed = text.trim().take(TextLimits.MESSAGE)
         val attachment = _pendingAttachment.value
         if (trimmed.isEmpty() && attachment == null) return
+        // Ignore re-entrant taps while a send is in flight, and — on success — until the field is
+        // actually cleared, so a tap landing in the gap between sendChat returning and clearText running
+        // can't re-send the same draft. Released in the blocked branch and in onInputCleared().
+        if (sending) return
+        sending = true
         viewModelScope.launch {
-            // Re-read the group at send time so it's never misrouted as a DM in a startup race, and so a
-            // pending rename rides this message (its GroupInfo.name converges last-writer-wins).
-            val group = if (isRoom) null else groups.find(conversationId)
-            val sent = if (group != null) {
-                meshManager.sendChat(trimmed, attachment, mentions, recipientId = null, group = group.toInfo())
-            } else {
-                // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
-                val recipientId = if (isRoom) null else conversationId
-                meshManager.sendChat(trimmed, attachment, mentions, recipientId)
-            }
-            // MeshManager applies block-on-send. Clear the input/attachment only once a message is
-            // accepted; a blocked message keeps the draft and surfaces a toast so the user can edit.
-            if (sent) {
-                _pendingAttachment.value = null
-                _clearInput.tryEmit(Unit)
-            } else {
-                _events.tryEmit(R.string.moderation_text_blocked)
+            // Deferred release: an accepted send keeps the guard held until the field is actually
+            // cleared (onInputCleared); the finally frees it on a block or an unexpected send-path throw
+            // so the guard can never stick and freeze the input.
+            var accepted = false
+            try {
+                // Re-read the group at send time so it's never misrouted as a DM in a startup race, and so
+                // a pending rename rides this message (its GroupInfo.name converges last-writer-wins).
+                val group = if (isRoom) null else groups.find(conversationId)
+                val sent = if (group != null) {
+                    meshManager.sendChat(trimmed, attachment, mentions, recipientId = null, group = group.toInfo())
+                } else {
+                    // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
+                    val recipientId = if (isRoom) null else conversationId
+                    meshManager.sendChat(trimmed, attachment, mentions, recipientId)
+                }
+                // MeshManager applies block-on-send. Clear the input/attachment only once a message is
+                // accepted; a blocked message keeps the draft and surfaces a toast so the user can edit.
+                if (sent) {
+                    accepted = true
+                    _pendingAttachment.value = null
+                    // Guard stays held until the screen reports the field cleared (onInputCleared), so no
+                    // duplicate can slip through the tryEmit -> collect -> clearText hop.
+                    _clearInput.tryEmit(Unit)
+                } else {
+                    _events.tryEmit(R.string.moderation_text_blocked)
+                }
+            } finally {
+                if (!accepted) sending = false
             }
         }
+    }
+
+    /**
+     * The screen finished clearing the input after an accepted send; release the double-submit guard.
+     * Deferred to here (rather than the success branch above) so the guard covers the window between
+     * [send] returning and the field visually clearing — see [sending].
+     */
+    fun onInputCleared() {
+        sending = false
     }
 
     /**
