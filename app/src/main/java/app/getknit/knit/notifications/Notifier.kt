@@ -1,5 +1,6 @@
 package app.getknit.knit.notifications
 
+import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.identity.displayNameFor
 
 /**
@@ -42,30 +43,99 @@ data class NotifMessage(
 }
 
 /**
+ * Conversation-level context for a notification: the resolved thread [title] and its avatar (group photo
+ * / DM peer avatar) shown as the notification's large icon, plus the [kind] used to pick the channel and
+ * MessagingStyle shape. [title] is `null` when the caller has no dynamic name to offer — [MessageNotifier]
+ * then substitutes a per-kind default (the Nearby room title, or an unnamed-group fallback). [avatarBytes]
+ * are raw image bytes from the encrypted blob store (decoded directly, since notifications can't use Coil),
+ * or null for the letter/glyph fallback.
+ */
+data class NotifConversation(
+    val conversationId: String,
+    val title: String?,
+    val avatarBytes: ByteArray?,
+    val kind: ConversationKind,
+) {
+    // ByteArray needs content-based equals/hashCode (the generated reference comparison would make two
+    // otherwise-identical conversations unequal).
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is NotifConversation) return false
+        return conversationId == other.conversationId &&
+            title == other.title &&
+            kind == other.kind &&
+            avatarBytes.contentEquals(other.avatarBytes)
+    }
+
+    override fun hashCode(): Int {
+        var result = conversationId.hashCode()
+        result = 31 * result + (title?.hashCode() ?: 0)
+        result = 31 * result + kind.hashCode()
+        result = 31 * result + (avatarBytes?.contentHashCode() ?: 0)
+        return result
+    }
+}
+
+/**
  * Posts "new message" notifications. Kept behind an interface so [app.getknit.knit.mesh.MeshManager]
  * stays free of Android notification APIs (and so the message-resolution logic can be unit-tested via
- * [incomingNotification] without Robolectric). The Android implementation is [MessageNotifier].
+ * [incomingNotification] without Robolectric). The Android implementation is [MessageNotifier], which
+ * posts one MessagingStyle notification per conversation, all stacked under a single group summary
+ * ("N messages in M chats"), Signal-style.
  */
 interface Notifier {
 
     /** Registers the notification channels + groups. Safe to call repeatedly; called once at startup. */
     fun createChannel()
 
-    /** Records [incoming] and (re)posts the notification on the channel for its conversation kind. */
-    fun notify(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?)
+    /** Records [incoming] and (re)posts the per-conversation notification on the channel for its kind. */
+    fun notify(
+        incoming: NotifMessage,
+        conversation: NotifConversation,
+        selfId: String,
+        selfName: String,
+        selfAvatarBytes: ByteArray?,
+    )
 
-    /** Posts a high-priority "you were mentioned" notification on the separate Mentions channel. */
-    fun notifyMention(incoming: NotifMessage, selfId: String, selfName: String, selfAvatarBytes: ByteArray?)
+    /** Posts a high-priority "you were mentioned" notification (separate Mentions entry for the thread). */
+    fun notifyMention(
+        incoming: NotifMessage,
+        conversation: NotifConversation,
+        selfId: String,
+        selfName: String,
+        selfAvatarBytes: ByteArray?,
+    )
+
+    /**
+     * Echoes an inline reply the user sent from the notification (via the Reply action) into the
+     * notification identified by [notificationTag], so it shows as sent — Signal-style. Passed the self
+     * identity explicitly so it works even after a process restart (no reliance on cached state).
+     */
+    fun onReplied(notificationTag: String, text: String, selfId: String, selfName: String, selfAvatarBytes: ByteArray?)
 
     /**
      * Records which conversation is on screen (null = none). Messages for the visible conversation are
-     * not notified, and opening one clears its already-posted messages from every channel (the user is
-     * reading them). Other conversations keep notifying normally.
+     * not notified, and opening one clears its already-posted notification (the user is reading it).
+     * Other conversations keep notifying normally.
      */
     fun setVisibleConversation(conversationId: String?)
 
-    /** Drops the accumulated state for the dismissed [notificationId] only (notification swiped away). */
-    fun onDismissed(notificationId: Int)
+    /** Clears the posted notification(s) for [conversationId] (its normal + mention entries) — Mark-read. */
+    fun clearConversation(conversationId: String)
+
+    /** Drops the accumulated state for the dismissed [tag] only (notification swiped away). */
+    fun onDismissed(tag: String)
+}
+
+/**
+ * Total buffered messages and the number of distinct conversations with any, for the group summary line
+ * ("N messages in M chats"). Pure so it is unit-tested without Android. Conversations with a zero count
+ * are excluded (they contribute no message and shouldn't inflate the chat count).
+ */
+fun summaryCounts(perConversationCounts: Collection<Int>): Pair<Int, Int> {
+    val messages = perConversationCounts.sum()
+    val chats = perConversationCounts.count { it > 0 }
+    return messages to chats
 }
 
 /**

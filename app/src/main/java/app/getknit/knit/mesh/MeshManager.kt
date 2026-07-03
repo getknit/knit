@@ -9,14 +9,17 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
+import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MentionStore
+import app.getknit.knit.data.message.groupTitle
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
+import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageCrypto
@@ -45,6 +48,7 @@ import android.util.Log
 import app.getknit.knit.TextLimits
 import app.getknit.knit.moderation.ScopedTextModerator
 import app.getknit.knit.normalizeSingleLine
+import app.getknit.knit.notifications.NotifConversation
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.incomingNotification
 import app.getknit.knit.notifications.mentionNotification
@@ -1180,6 +1184,7 @@ class MeshManager(
     private suspend fun notifyIncoming(env: RelayEnvelope, content: ChatContent, conversationId: String) {
         val me = identity.nodeId()
         val peer = peers.find(env.senderId)
+        val peerAvatar = peer?.avatarHash?.let { blobs.bytes(it) }
         // Image-only messages have a blank body; show a placeholder so they still notify.
         val body = content.body.ifBlank { if (content.attachmentHash != null) "📷 Photo" else content.body }
         val incoming = incomingNotification(
@@ -1188,17 +1193,19 @@ class MeshManager(
             sentAt = env.sentAt,
             selfId = me,
             peerName = peer?.name,
-            peerAvatarBytes = peer?.avatarHash?.let { blobs.bytes(it) },
+            peerAvatarBytes = peerAvatar,
             conversationId = conversationId,
         ) ?: return
+        val conversation = resolveConversation(conversationId, env.senderId, peer?.name, peerAvatar, me)
         val selfAvatar = settings.ownAvatarHash.first()?.let { blobs.bytes(it) }
-        notifier.notify(incoming, me, settings.displayName.first(), selfAvatar)
+        notifier.notify(incoming, conversation, me, settings.displayName.first(), selfAvatar)
     }
 
     /** Fires a "you were mentioned" notification on the Mentions channel for an inbound chat in [conversationId]. */
     private suspend fun notifyMention(env: RelayEnvelope, content: ChatContent, conversationId: String) {
         val me = identity.nodeId()
         val peer = peers.find(env.senderId)
+        val peerAvatar = peer?.avatarHash?.let { blobs.bytes(it) }
         val body = content.body.ifBlank { if (content.attachmentHash != null) "📷 Photo" else content.body }
         val incoming = mentionNotification(
             senderId = env.senderId,
@@ -1206,11 +1213,41 @@ class MeshManager(
             sentAt = env.sentAt,
             selfId = me,
             peerName = peer?.name,
-            peerAvatarBytes = peer?.avatarHash?.let { blobs.bytes(it) },
+            peerAvatarBytes = peerAvatar,
             conversationId = conversationId,
         ) ?: return
+        val conversation = resolveConversation(conversationId, env.senderId, peer?.name, peerAvatar, me)
         val selfAvatar = settings.ownAvatarHash.first()?.let { blobs.bytes(it) }
-        notifier.notifyMention(incoming, me, settings.displayName.first(), selfAvatar)
+        notifier.notifyMention(incoming, conversation, me, settings.displayName.first(), selfAvatar)
+    }
+
+    /**
+     * Resolves the conversation-level title + avatar a Signal-style notification shows (the group photo /
+     * DM peer avatar as its large icon, the real thread name as its title). A DM uses the sender's
+     * name/avatar; a group looks up its stored name/photo (falling back to member names via [groupTitle]);
+     * the Nearby room leaves both null so [notifier] substitutes its own defaults.
+     */
+    private suspend fun resolveConversation(
+        conversationId: String,
+        senderId: String,
+        dmName: String?,
+        dmAvatar: ByteArray?,
+        me: String,
+    ): NotifConversation = when (Conversations.kindFor(conversationId)) {
+        ConversationKind.NEARBY -> NotifConversation(conversationId, null, null, ConversationKind.NEARBY)
+        ConversationKind.DM ->
+            NotifConversation(conversationId, displayNameFor(dmName, senderId), dmAvatar, ConversationKind.DM)
+        ConversationKind.GROUP -> {
+            val group = groups.find(conversationId)
+            val memberIds = group?.let { GroupMembersStore.decode(it.members) }.orEmpty()
+            // Pre-resolve member names off the suspend peer lookups, since groupTitle's nameOf is non-suspend.
+            val namesByNode = LinkedHashMap<String, String>()
+            for (id in memberIds) namesByNode[id] = displayNameFor(peers.find(id)?.name, id)
+            val title = group?.let {
+                groupTitle(it.name, memberIds, me, fallback = "") { id -> namesByNode[id] ?: id }.ifBlank { null }
+            }
+            NotifConversation(conversationId, title, group?.photoHash?.let { blobs.bytes(it) }, ConversationKind.GROUP)
+        }
     }
 
     private suspend fun handleProfile(env: RelayEnvelope, wire: WireEnvelope) {

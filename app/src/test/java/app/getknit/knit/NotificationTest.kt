@@ -5,6 +5,7 @@ import app.getknit.knit.notifications.NotifMessage
 import app.getknit.knit.notifications.NotificationHistory
 import app.getknit.knit.notifications.incomingNotification
 import app.getknit.knit.notifications.mentionNotification
+import app.getknit.knit.notifications.summaryCounts
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -135,6 +136,15 @@ class NotificationTest {
             ),
             result,
         )
+    }
+
+    @Test
+    fun summaryCountsSumsMessagesAndCountsNonEmptyChats() {
+        // Total messages across chats, and the number of distinct chats with any (the group-summary line).
+        assertEquals(5 to 2, summaryCounts(listOf(3, 2)))
+        assertEquals(0 to 0, summaryCounts(emptyList()))
+        // Zero-count chats contribute no message and are not counted as a chat.
+        assertEquals(4 to 2, summaryCounts(listOf(0, 1, 3)))
     }
 
     @Test

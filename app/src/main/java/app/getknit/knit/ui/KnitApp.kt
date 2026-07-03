@@ -66,6 +66,8 @@ fun KnitApp(startRoute: String? = null) {
     val navController = rememberNavController()
     val shareInbox = koinInject<ShareInbox>()
     val pendingShare by shareInbox.pending.collectAsStateWithLifecycle()
+    val routeInbox = koinInject<RouteInbox>()
+    val pendingRoute by routeInbox.pending.collectAsStateWithLifecycle()
     // Past onboarding once mesh permissions are granted (demo builds skip the gate).
     val onboarded = BuildConfig.SEED_DEMO || hasAllMeshPermissions(context)
     // Demo-screenshot mode skips the permission gate (and an optional [startRoute] jumps straight to a
@@ -107,6 +109,20 @@ fun KnitApp(startRoute: String? = null) {
             return@LaunchedEffect
         }
         navController.navigate(Routes.SHARE) { launchSingleTop = true }
+    }
+
+    // A notification tap deep-links to a thread (cold start: pending at first composition; warm start:
+    // onNewIntent flips it). The chat opens over the chat list (the start destination), so Back returns
+    // there; launchSingleTop avoids stacking a duplicate when the thread is already on top. A deep-link
+    // that lands before onboarding is dropped. Re-fires even while the app is foregrounded in another chat.
+    LaunchedEffect(pendingRoute) {
+        val route = pendingRoute ?: return@LaunchedEffect
+        if (!onboarded) {
+            routeInbox.clear()
+            return@LaunchedEffect
+        }
+        navController.navigate(route) { launchSingleTop = true }
+        routeInbox.consume()
     }
 
     NavHost(

@@ -24,6 +24,7 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.notifications.MessageNotifier
 import app.getknit.knit.notifications.Notifier
+import app.getknit.knit.ui.RouteInbox
 import app.getknit.knit.ui.share.ShareInbox
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
@@ -47,6 +48,8 @@ val appModule = module {
     single<Notifier> { MessageNotifier(androidContext()) }
     // Single-shot handoff for content arriving via the system share sheet (ACTION_SEND).
     single { ShareInbox() }
+    // Single-shot handoff for a notification-tap deep-link route (drained by KnitApp).
+    single { RouteInbox() }
 
     single { DatabaseKey(androidContext()) }
     single { KnitDatabase.build(androidContext(), get<DatabaseKey>().getOrCreate()) }

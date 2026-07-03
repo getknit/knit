@@ -22,7 +22,9 @@ object NotificationChannels {
 
     // Messages group
     const val NEARBY = "knit_msg_nearby"
-    const val GROUPS = "knit_msg_groups"
+    // Bumped to _v2 to raise importance to HIGH: a channel's importance is immutable once created, so the
+    // DEFAULT-importance `knit_msg_groups` is deleted (see [ensure]) and recreated under a fresh id.
+    const val GROUPS = "knit_msg_groups_v2"
     const val DMS = "knit_msg_dms"
     const val MENTIONS = "knit_msg_mentions"
 
@@ -35,6 +37,9 @@ object NotificationChannels {
 
     private const val LEGACY_MESSAGES = "knit_messages"
     private const val LEGACY_MENTIONS = "knit_mentions"
+
+    // The pre-bump DEFAULT-importance Groups channel; replaced by [GROUPS] (_v2) at HIGH importance.
+    private const val LEGACY_GROUPS = "knit_msg_groups"
 
     /** The message channel for a conversation [kind]. (Mentions route to [MENTIONS] separately.) */
     fun channelFor(kind: ConversationKind): String = when (kind) {
@@ -63,7 +68,7 @@ object NotificationChannels {
                 R.string.channel_nearby_name, R.string.channel_nearby_desc),
         )
         manager.createNotificationChannel(
-            channel(context, GROUPS, GROUP_MESSAGES, NotificationManagerCompat.IMPORTANCE_DEFAULT,
+            channel(context, GROUPS, GROUP_MESSAGES, NotificationManagerCompat.IMPORTANCE_HIGH,
                 R.string.channel_groups_name, R.string.channel_groups_desc),
         )
         manager.createNotificationChannel(
@@ -83,9 +88,10 @@ object NotificationChannels {
                 R.string.channel_alerts_name, R.string.channel_alerts_desc),
         )
 
-        // Drop the pre-reorg flat channels so they don't linger in system settings.
+        // Drop the pre-reorg flat channels + the DEFAULT-importance Groups channel so they don't linger.
         manager.deleteNotificationChannel(LEGACY_MESSAGES)
         manager.deleteNotificationChannel(LEGACY_MENTIONS)
+        manager.deleteNotificationChannel(LEGACY_GROUPS)
     }
 
     private fun channel(

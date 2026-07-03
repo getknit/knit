@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.IntentCompat
 import app.getknit.knit.ui.KnitApp
+import app.getknit.knit.ui.RouteInbox
 import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.share.SharedContent
 import app.getknit.knit.ui.theme.KnitTheme
@@ -18,11 +19,16 @@ class MainActivity : ComponentActivity() {
     // Single-shot holder for content arriving via the system share sheet; KnitApp/ChatScreen drain it.
     private val shareInbox: ShareInbox by inject()
 
+    // Single-shot holder for a notification-tap deep-link route (e.g. "chat/<id>"); KnitApp drains it.
+    private val routeInbox: RouteInbox by inject()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         // A cold-start share: stage the payload before composition so KnitApp opens the picker.
         handleShareIntent(intent)
+        // A cold-start notification tap: stage its deep-link route so KnitApp navigates to that thread.
+        handleRouteIntent(intent)
         // Debug builds honor a deep-link route extra so screenshots (demo builds) and automation agents
         // (any debug build, over the real mesh) can jump straight to a screen, e.g.
         // `adb shell am start -n app.getknit.knit/.MainActivity --es demo_route chat/nearby`. Gated to
@@ -45,6 +51,13 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleShareIntent(intent)
+        // A notification tap on an already-running instance: stage the deep-link route; KnitApp navigates.
+        handleRouteIntent(intent)
+    }
+
+    /** Stage a notification deep-link route ([EXTRA_ROUTE], e.g. "chat/<id>") into the [RouteInbox]. */
+    private fun handleRouteIntent(intent: Intent?) {
+        intent?.getStringExtra(EXTRA_ROUTE)?.let { routeInbox.offer(it) }
     }
 
     /** Parse an ACTION_SEND intent into the [ShareInbox]. Other intents (incl. the launcher) are ignored. */
@@ -60,7 +73,9 @@ class MainActivity : ComponentActivity() {
         shareInbox.offer(SharedContent(text = text, imageUri = imageUri))
     }
 
-    private companion object {
-        const val EXTRA_DEMO_ROUTE = "demo_route"
+    companion object {
+        /** Deep-link route extra set by [app.getknit.knit.notifications.MessageNotifier] on a notification tap. */
+        const val EXTRA_ROUTE = "app.getknit.knit.NOTIF_ROUTE"
+        private const val EXTRA_DEMO_ROUTE = "demo_route"
     }
 }

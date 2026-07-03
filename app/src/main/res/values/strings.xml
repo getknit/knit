@@ -33,6 +33,12 @@
     <string name="notif_title_mentions">Mentions</string>
     <string name="notif_self_name">You</string>
 
+    <!-- Notification quick actions + group summary (Signal-style) -->
+    <string name="notif_action_reply">Reply</string>
+    <string name="notif_reply_hint">Message</string>
+    <string name="notif_action_mark_read">Mark read</string>
+    <string name="notif_summary">%1$d messages in %2$d chats</string>
+
     <!-- Onboarding -->
     <string name="onboarding_title">Welcome to Knit</string>
     <string name="onboarding_blurb">Knit connects directly to nearby phones over Wi-Fi Aware to relay encrypted messages — no internet, no servers. It needs the nearby-devices permission to find peers, and works best when allowed to run in the background.</string>

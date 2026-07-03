@@ -87,8 +87,10 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
+        <!-- Message-notification quick actions (inline Reply, Mark read) + swipe-away dismiss. Not exported:
+             only the system delivers these PendingIntents (Reply rides a MUTABLE one carrying RemoteInput). -->
         <receiver
-            android:name=".notifications.NotificationDismissReceiver"
+            android:name=".notifications.NotificationActionReceiver"
             android:exported="false" />
 
         <!-- Hands our own APK to the system share sheet (Quick Share / Bluetooth) so a user can pass
