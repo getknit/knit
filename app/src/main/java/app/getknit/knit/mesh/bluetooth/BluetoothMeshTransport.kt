@@ -142,13 +142,27 @@ class BluetoothMeshTransport(
     @Volatile private var lastLinkOrStartAt = 0L
     private var availabilityRegistered = false
 
+    // Two conflated wake channels so the scan and connect loops never steal each other's wakes: connectLoop
+    // drains [healSignal] (poked on every event), scanLoop drains [scanWake] (poked only on events that change
+    // the scan's boost/floor decision — otherwise a settled clique's per-sighting heals keep it scanning forever).
     private val healSignal = Channel<Unit>(Channel.CONFLATED)
+    private val scanWake = Channel<Unit>(Channel.CONFLATED)
+
+    // Cross-plane early-warning: nodeIds another plane (Wi-Fi Aware) can see that we'd initiate to but haven't
+    // linked or BLE-sighted yet — pushed by [CompositeMeshTransport.onForeignReachable] — plus their per-peer
+    // chase deadlines. The scan boosts to try to catch them on BLE; the chase expires so a NAN-only / out-of-range
+    // peer can't pin Boost. [scanFloored] tracks the last-logged tier so a change logs exactly once.
+    @Volatile private var foreignReachable: Set<String> = emptySet()
+    @Volatile private var chase = ScanDemandPolicy.ChaseState()
+    @Volatile private var scanFloored: Boolean? = null
+
     private var acceptJob: Job? = null
     private var scanJob: Job? = null
     private var connectJob: Job? = null
     private var cueJob: Job? = null
     private var powerJob: Job? = null
     private var diagJob: Job? = null
+    private var audioJob: Job? = null
 
     // Forwards a live link's decoded records into our flows and its teardown into [teardownLink].
     private val linkCallbacks = object : LinkCallbacks {
@@ -160,7 +174,7 @@ class BluetoothMeshTransport(
             // A flapping link escalates on the same per-peer streak as a failed connect, so a peer that keeps
             // dropping isn't reconnected on a tight loop (which would black out scanning each attempt).
             val (streak, nextAt) = synchronized(lock) { bumpBackoffLocked(nodeId) }
-            healSignal.trySend(Unit)
+            wake() // link count changed → connectLoop retries and scanLoop re-evaluates demand
             Log.i(TAG, "bt link down $nodeId (eof) streak=$streak retryMs=${nextAt - elapsed()}")
         }
     }
@@ -181,13 +195,16 @@ class BluetoothMeshTransport(
             connectJob = scope.launch { connectLoop() }
             // Re-advertise our epoch when the carried set changes so a peer that now wants our data links to pull it.
             cueJob = scope.launch { storeDigest.version.drop(1).collect { readvertise() } }
-            powerJob = scope.launch { powerState.state.drop(1).collect { healSignal.trySend(Unit) } }
+            powerJob = scope.launch { powerState.state.drop(1).collect { wake() } }
             diagJob = scope.launch { diagLoop() }
+            // A2DP forces the scan to its floor (audio contends the radio); wake the scan loop on any change so
+            // the falling edge (audio stopped) resumes the normal cadence promptly instead of after the floor gap.
+            audioJob = scope.launch { audioMonitor.contended.drop(1).collect { wakeScan() } }
         }
     }
 
     override fun stop() {
-        scanJob?.cancel(); connectJob?.cancel(); cueJob?.cancel(); powerJob?.cancel(); diagJob?.cancel()
+        scanJob?.cancel(); connectJob?.cancel(); cueJob?.cancel(); powerJob?.cancel(); diagJob?.cancel(); audioJob?.cancel()
         unregisterAvailability()
         audioMonitor.stop()
         tearDownRadio()
@@ -200,7 +217,18 @@ class BluetoothMeshTransport(
     }
 
     override fun heal() {
-        if (hasHardware) healSignal.trySend(Unit)
+        if (hasHardware) wake()
+    }
+
+    override fun onForeignReachable(peers: Set<String>) {
+        // Only chase peers we'd initiate to (larger id initiates); a smaller-id foreign peer connects to us via
+        // our always-on advert, so scanning harder for it wouldn't help. Guard localNodeId until start() sets it.
+        val initiable = if (::localNodeId.isInitialized) peers.filterTo(HashSet()) { localNodeId > it } else emptySet()
+        if (initiable == foreignReachable) return
+        val rising = initiable.any { it !in foreignReachable }
+        foreignReachable = initiable
+        chase = ScanDemandPolicy.onForeign(chase, initiable, elapsed(), PROMOTE_CHASE_MS)
+        if (rising) wakeScan() // a new foreign peer appeared → re-evaluate demand now (don't wait out the floor)
     }
 
     override suspend fun send(wire: WireEnvelope, to: Peer?) {
@@ -269,7 +297,7 @@ class BluetoothMeshTransport(
                 // A connect is in flight (radio contention) or the adapter is off — wait, don't scan. Log the
                 // pause so a scanning gap (which starves presence for the whole mesh) is attributable.
                 if (adapter?.isEnabled == true) Log.d(TAG, "scan paused: connect in flight $inflight")
-                withTimeoutOrNull(CONNECT_QUIET_MS) { healSignal.receive() }
+                withTimeoutOrNull(CONNECT_QUIET_MS) { scanWake.receive() }
                 continue
             }
             val power = powerState.state.value
@@ -277,9 +305,48 @@ class BluetoothMeshTransport(
             scanner.start(if (power.interactive || power.charging) ScanSettings.SCAN_MODE_BALANCED else ScanSettings.SCAN_MODE_LOW_POWER)
             delay(duty.scanWindowMs)
             scanner.stop()
-            val idle = PowerPolicy.idleAfterScan(power, links.size, lonelyForMs())
-            withTimeoutOrNull(idle) { healSignal.receive() }
+            val idle = if (floorScan()) {
+                PowerPolicy.settledIdleAfterScan(power, links.size, lonelyForMs())
+            } else {
+                PowerPolicy.idleAfterScan(power, links.size, lonelyForMs())
+            }
+            withTimeoutOrNull(idle) { scanWake.receive() }
         }
+    }
+
+    /**
+     * Whether to idle at the settled *floor* (energy saver) rather than the boosted cadence: true when A2DP audio
+     * contends the radio, or when [ScanDemandPolicy] finds no promotion work — no BLE-sighted candidate we'd
+     * initiate to (above the RSSI floor, not linked, not backing off) and no foreign peer still inside its chase
+     * window, with at least one link held. Logs the tier on change so on-device behavior is greppable.
+     */
+    private fun floorScan(): Boolean {
+        val now = elapsed()
+        val sighted = presence.snapshots(now)
+        val backoff = activeBackoff(now)
+        val candidates = sighted.filter {
+            localNodeId > it.nodeId && it.nodeId !in links.keys &&
+                it.nodeId !in backoff && it.smoothedRssi >= PROMOTE_RSSI_FLOOR
+        }.mapTo(HashSet()) { it.nodeId }
+        val demand = ScanDemandPolicy.decide(
+            linkCount = links.size,
+            promotableCandidates = candidates,
+            chase = chase,
+            bleSighted = sighted.mapTo(HashSet()) { it.nodeId },
+            bleLinked = links.keys.toSet(),
+            now = now,
+        )
+        val floor = audioMonitor.contended.value || demand == ScanDemandPolicy.Demand.Floor
+        if (scanFloored != floor) {
+            scanFloored = floor
+            val reason = if (audioMonitor.contended.value) "a2dp" else "settled"
+            Log.i(
+                TAG,
+                if (floor) "bt scan → floor ($reason, links=${links.size})"
+                else "bt scan → boost (candidates=$candidates chase=${chase.deadlines.keys})",
+            )
+        }
+        return floor
     }
 
     private fun onScanResult(result: ScanResult) {
@@ -298,8 +365,19 @@ class BluetoothMeshTransport(
             ),
             elapsed(),
         )
-        _reachable.value = presence.reachable(elapsed())
-        healSignal.trySend(Unit)
+        publishReachable()
+        healSignal.trySend(Unit) // connectLoop: react to every sighting to drive promotion
+        // scanLoop: wake ONLY for a genuine boost trigger. Waking on every sighting (incl. already-linked peers)
+        // is what keeps a settled clique scanning continuously — gating here is what lets the floor engage.
+        if (isBoostTrigger(parsed.nodeId)) scanWake.trySend(Unit)
+    }
+
+    /** A just-sighted peer worth boosting the scan for: one we'd initiate to (larger id), not linked, above the
+     *  RSSI floor (so it can actually promote), and off connect backoff. Mirrors the [floorScan] candidate gate. */
+    private fun isBoostTrigger(nodeId: String): Boolean {
+        if (!::localNodeId.isInitialized || localNodeId <= nodeId || nodeId in links.keys) return false
+        val rssi = presence.smoothedRssiFor(nodeId) ?: return false
+        return rssi >= PROMOTE_RSSI_FLOOR && nodeId !in activeBackoff(elapsed())
     }
 
     // --- Connection engine (promotion → L2CAP links) ---
@@ -314,7 +392,7 @@ class BluetoothMeshTransport(
     private fun driveConnections() {
         val now = elapsed()
         val snaps = presence.snapshots(now)
-        _reachable.value = snaps.map { Peer(it.nodeId, it.protoVersion, it.capabilities) }.toSet()
+        publishReachable(now)
         val rssiByNode = snaps.associate { it.nodeId to it.smoothedRssi }
         // Candidates: peers we're the initiator for (tie-break: larger id initiates), not linked, not in flight.
         val candidates = snaps.filter { localNodeId > it.nodeId && it.nodeId !in links.keys && it.nodeId !in inFlightSnapshot() }
@@ -424,7 +502,8 @@ class BluetoothMeshTransport(
         metrics.onBtLinkEstablished()
         framed.start()
         refreshNeighbors()
-        healSignal.trySend(Unit) // inFlight cleared → let the scan loop resume
+        publishReachable() // a live link ⇒ reachable, even for an inbound peer we never scan-sighted
+        wake() // inFlight cleared + link count changed → resume connectLoop and re-evaluate scan demand
         Log.i(TAG, "bt link up: $nodeId (${links.size} live)")
     }
 
@@ -432,6 +511,7 @@ class BluetoothMeshTransport(
         val fl = links.remove(nodeId) ?: return
         fl.close()
         refreshNeighbors()
+        publishReachable() // drop the peer from reachable too, unless it's still being scan-sighted
         Log.i(TAG, "bt link down: $nodeId ($reason)")
     }
 
@@ -451,7 +531,7 @@ class BluetoothMeshTransport(
             bumpBackoffLocked(nodeId)
         }
         metrics.onBtConnectFailed(reason)
-        healSignal.trySend(Unit)
+        wake()
         // Log the real exception (previously swallowed) + A2DP state, so the intermittent failure is diagnosable.
         Log.w(
             TAG,
@@ -497,7 +577,7 @@ class BluetoothMeshTransport(
                     Log.i(TAG, "bluetooth adapter on")
                     scope.launch {
                         bringUp()
-                        healSignal.trySend(Unit)
+                        wake()
                     }
                 }
                 BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
@@ -535,6 +615,28 @@ class BluetoothMeshTransport(
     private fun lonelyForMs(): Long = if (links.isEmpty()) elapsed() - lastLinkOrStartAt else 0L
 
     private fun inFlightSnapshot(): Set<String> = synchronized(lock) { inFlight.toSet() }
+
+    /** Read-only view of peers currently in connect backoff (no [driveConnections] prune side effect). */
+    private fun activeBackoff(now: Long): Set<String> =
+        synchronized(lock) { backoffs.filterValues { now < it.nextAt }.keys.toSet() }
+
+    /** Wake both loops — a demand-relevant event (link up/down, connect fail, power change, adapter on, heal). */
+    private fun wake() { healSignal.trySend(Unit); scanWake.trySend(Unit) }
+
+    /** Wake only the scan loop — a scan-cadence event (a boost trigger sighted, a foreign peer, an audio change). */
+    private fun wakeScan() { scanWake.trySend(Unit) }
+
+    /**
+     * Publish [reachable] as presence ∪ live links, so a peer we hold a link to stays "nearby" even when the
+     * throttled scan hasn't re-sighted it within the presence linger (the reachable ⊇ neighbors invariant the
+     * floor depends on). Applies to [_reachable] only — never [_neighbors], which routes sends.
+     */
+    private fun publishReachable(now: Long = elapsed()) {
+        val byId = HashMap<String, Peer>()
+        presence.snapshots(now).forEach { byId[it.nodeId] = Peer(it.nodeId, it.protoVersion, it.capabilities) }
+        links.values.forEach { byId[it.nodeId] = it.peer } // a live link's Peer is authoritative on a dup nodeId
+        _reachable.value = byId.values.toSet()
+    }
 
     private fun localNodeIdOrEmpty(): String = if (::localNodeId.isInitialized) localNodeId else ""
 
@@ -603,5 +705,14 @@ class BluetoothMeshTransport(
 
         // RSSI stand-in for a link whose peer is no longer being sighted (so it sorts as the weakest to evict).
         private const val ABSENT_LINK_RSSI = -127.0
+
+        // How long to keep the scan boosted chasing a foreign (other-plane, e.g. Wi-Fi Aware) peer onto BLE before
+        // giving up — so a stationary NAN-only / out-of-BLE-range peer can't pin the scan at full power. Re-armed if
+        // the peer leaves and returns; ~60s covers a peer walking from NAN range into BLE range.
+        private const val PROMOTE_CHASE_MS = 60_000L
+
+        // The scan boosts only for peers the promotion policy could actually link — mirrors the default
+        // PromotionConfig.rssiFloorDbm (-80) so a fainter, un-promotable peer at the edge can't keep re-boosting it.
+        private const val PROMOTE_RSSI_FLOOR = -80.0
     }
 }

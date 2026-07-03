@@ -56,6 +56,17 @@ object PowerPolicy {
         return if (aggressive) LONELY_IDLE_MS else dutyCycle(state).baseIntervalMs
     }
 
+    /**
+     * Idle gap when the node is **settled** — it holds links to every peer it can currently see, so there is no
+     * promotion work — or its radio is contended by A2DP audio. At least [SETTLED_INTERVAL_MS], but never shorter
+     * than the activity-based [idleAfterScan] (which already grows with neighborCount / screen-off): a settled
+     * clique stops scanning back-to-back to save power, while a slow floor still discovers a brand-new peer (and
+     * a not-yet-linked peer flips this back to [idleAfterScan] via the transport's demand check). `maxOf` matters
+     * because the screen-off idle is already 240 000 ms+, so a flat floor alone would make "settled" scan *more*.
+     */
+    fun settledIdleAfterScan(state: PowerState, neighborCount: Int, lonelyForMs: Long): Long =
+        maxOf(idleAfterScan(state, neighborCount, lonelyForMs), SETTLED_INTERVAL_MS)
+
     // Screen on or charging: the original aggressive cadence.
     private const val ACTIVE_WINDOW_MS = 12_000L
     private const val ACTIVE_INTERVAL_MS = 30_000L
@@ -80,6 +91,11 @@ object PowerPolicy {
     // On battery with the screen off, only stay in the aggressive isolated cadence this long before
     // relaxing — bounds drain for a node that is simply alone (e.g. left in a drawer).
     private const val LONELY_AGGRESSIVE_WINDOW_MS = 3 * 60_000L
+
+    // Discovery floor once a node is settled (links to everyone it sees, nothing to promote) or audio-contended:
+    // scan no more often than this so a settled clique idles instead of scanning continuously. ~2 min balances
+    // the battery win against how long a BLE-only walk-up waits to be discovered by an already-settled node.
+    private const val SETTLED_INTERVAL_MS = 120_000L
 }
 
 /**

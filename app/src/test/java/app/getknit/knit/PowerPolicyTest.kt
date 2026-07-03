@@ -96,4 +96,24 @@ class PowerPolicyTest {
         assertEquals(12_000L, PowerPolicy.idleAfterScan(PowerState(interactive = true), neighborCount = 0, lonelyForMs = stale))
         assertEquals(12_000L, PowerPolicy.idleAfterScan(charging, neighborCount = 0, lonelyForMs = stale))
     }
+
+    // --- settledIdleAfterScan: the discovery floor when a node has nothing to promote ---
+
+    @Test
+    fun settledIdleRaisesTheGapToTheFloorWhenActivityIdleIsBelowIt() {
+        // Interactive with 1 link: activity idle = 60_000 < 120_000 floor → clamped up to the floor.
+        assertEquals(
+            120_000L,
+            PowerPolicy.settledIdleAfterScan(PowerState(interactive = true), neighborCount = 1, lonelyForMs = 0L),
+        )
+    }
+
+    @Test
+    fun settledIdleNeverGoesBelowTheAlreadyLongerActivityIdle() {
+        // Screen-off-on-battery with 1 link: activity idle = 240_000 > 120_000 floor → keep the larger value.
+        assertEquals(
+            240_000L,
+            PowerPolicy.settledIdleAfterScan(PowerState(interactive = false, charging = false), neighborCount = 1, lonelyForMs = 0L),
+        )
+    }
 }

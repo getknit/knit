@@ -148,6 +148,18 @@ class CompositeMeshTransport(
                     }
                 }
             }
+            // Reverse hint: tell each child which peers the *other* planes can currently see, so a duty-cycling
+            // radio (Bluetooth) can boost its scan to catch a peer another plane sighted first (the NAN→BT
+            // early-warning). Keyed off `reachable` (coordination-plane presence), not live links.
+            scope.launch {
+                combine(children.map { it.reachable }) { it }.collect { sets ->
+                    for (i in children.indices) {
+                        val foreign = HashSet<String>()
+                        for (j in children.indices) if (j != i) sets[j].forEach { foreign.add(it.nodeId) }
+                        children[i].onForeignReachable(foreign)
+                    }
+                }
+            }
         }
     }
 

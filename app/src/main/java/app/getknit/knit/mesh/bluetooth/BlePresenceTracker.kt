@@ -99,6 +99,10 @@ class BlePresenceTracker(private val config: PresenceConfig = PresenceConfig()) 
     @Synchronized
     fun psmFor(nodeId: String): Int? = entries[nodeId]?.psm
 
+    /** [nodeId]'s current smoothed RSSI, or null if unseen — a cheap lookup for the scan-demand boost gate. */
+    @Synchronized
+    fun smoothedRssiFor(nodeId: String): Double? = entries[nodeId]?.smoothedRssi
+
     @Synchronized
     fun forget(nodeId: String) {
         entries.remove(nodeId)

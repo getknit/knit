@@ -227,6 +227,22 @@ frames.
   carried count must be ≤ its quota. (Aside: the per-sender bucket lumps a node's profile in with its chat, so a
   node that sends >quota frames evicts its own profile *frame* from custody — harmless, since the pinned key +
   connect-time `pushProfileTo` / edit re-broadcast are the real profile paths, and every node evicts it alike.)
+- **The BLE scan is demand-gated, and a *settled* clique used to scan continuously.** `BluetoothMeshTransport.scanLoop`
+  duty-cycles the scan, but `onScanResult` pokes the loop's wake channel on **every** sighting — *including
+  already-linked peers* — and the loop consumes a buffered wake immediately, so whenever any peer is in range the
+  idle gap collapsed to ~0 and the node scanned back-to-back **forever** (the `PowerPolicy` idle intervals only ever
+  bit when *nothing* was nearby). The adaptive throttle (`ScanDemandPolicy`) fixes this by driving Boost/Floor from an
+  explicit **demand** check and splitting a dedicated `scanWake` channel (only `scanLoop` drains it; `connectLoop`
+  keeps `healSignal`) that `onScanResult` pokes **only for a genuine boost trigger** (a peer we'd initiate to, above
+  the RSSI floor, unlinked, off backoff). Floor (`settledIdleAfterScan`, ~2 min) engages only with ≥1 link and no
+  candidate/chase — an isolated node still scans aggressively — or while A2DP audio contends the radio. NAN acts as an
+  **early-warning**: `CompositeMeshTransport.onForeignReachable` (the reverse of `suppressDataPath`) tells BLE which
+  peers another plane can see, and BLE boosts to chase them onto a link, bounded by `PROMOTE_CHASE_MS` so a NAN-only /
+  out-of-range peer can't pin Boost. Advertising is untouched (always-on) so BLE-only devices still discover us.
+  **Load-bearing invariant: `reachable ⊇ neighbors`.** BLE `reachable` is fed only from scan presence (90 s linger), so
+  once the floor stops re-sighting a linked peer it would vanish from the "nearby" UI while still linked — `publishReachable`
+  unions live links back in (`_reachable` only, never `_neighbors`, which routes sends). Verify on-device via the
+  `bt scan → floor/boost` logcat lines and that a linked peer stays in `…debug.STATE` reachable while the scan is floored.
 
 ## Verifying changes
 
@@ -423,8 +439,9 @@ the node's *own* id, with `keyReq` stuck at 0 — the `KeyExchange.want` self-gu
 > it regardless of Wi-Fi Aware support. Several passages elsewhere in this file still say "pure Wi-Fi Aware /
 > no BLE" (e.g. the intro, the `mesh/wifiaware/` "ONLY place" note) and are stale pending a broader doc pass.
 
-Still deferred (by design): a **BLE promotion gate on A2DP audio** (the monitor observes but does not yet
-throttle connects while streaming — see the plan); **true DM routing** (DMs still
+Still deferred (by design): a **BLE promotion gate on A2DP audio** — the adaptive scan throttle now drops the
+**scan** to its floor while streaming (`ScanDemandPolicy` / the demand-gated `scanLoop`), but **connects** are still
+not gated on `contended` (it remains diagnostic-only for the connect path); **true DM routing** (DMs still
 flood — only the addressed recipient delivers/acks; store-and-forward now *carries* undelivered DMs, see
 above, but there is still no routing table); a **group key-gap retransmit** (the group analogue of the DM
 `flushPendingFor`: a group message already floods to the members whose keys are known, so reaching a

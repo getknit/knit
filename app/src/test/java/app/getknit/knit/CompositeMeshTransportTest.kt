@@ -53,6 +53,7 @@ class CompositeMeshTransportTest {
         val fastFanouts = mutableListOf<WireEnvelope>()
         val fastSends = mutableListOf<Peer>()
         val suppressCalls = mutableListOf<Set<String>>()
+        val foreignCalls = mutableListOf<Set<String>>()
         var starts = 0
         var stops = 0
         var heals = 0
@@ -61,6 +62,7 @@ class CompositeMeshTransportTest {
         override fun stop() { stops++ }
         override fun heal() { heals++ }
         override fun suppressDataPath(peers: Set<String>) { suppressCalls += peers }
+        override fun onForeignReachable(peers: Set<String>) { foreignCalls += peers }
         override suspend fun send(wire: WireEnvelope, to: Peer?) { sends += wire to to }
         override fun fastFanout(wire: WireEnvelope) { fastFanouts += wire }
         override fun fastSend(wire: WireEnvelope, to: Peer) { fastSends += to }
@@ -298,6 +300,21 @@ class CompositeMeshTransportTest {
         bt.setNeighbors(Peer("p")) // q drops off BLE
         advanceUntilIdle()
         assertEquals("q resumes on NAN once it leaves the preferred plane", setOf("p"), nan.suppressCalls.last())
+    }
+
+    @Test
+    fun pushesForeignReachableFromTheOtherChildren() = runTest(UnconfinedTestDispatcher()) {
+        val bt = FakeChild()
+        val nan = FakeChild()
+        CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+        // The early-warning is keyed off the *other* children's reachable sets, both directions.
+        nan.setReachable(Peer("x"))
+        advanceUntilIdle()
+        assertEquals("BT learns what NAN can see", setOf("x"), bt.foreignCalls.last())
+
+        bt.setReachable(Peer("y"))
+        advanceUntilIdle()
+        assertEquals("NAN learns what BT can see", setOf("y"), nan.foreignCalls.last())
     }
 
     @Test

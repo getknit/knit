@@ -168,6 +168,16 @@ interface MeshTransport {
      */
     fun suppressDataPath(peers: Set<String>) {}
 
+    /**
+     * Reverse of [suppressDataPath]: hints that [peers] (by nodeId) are currently reachable over some **other**
+     * plane's coordination layer but not necessarily linked here — cross-plane presence this transport can't see
+     * itself. A radio that duty-cycles its discovery (Bluetooth) uses it to briefly boost its scan to try to catch
+     * a peer another radio already sees, so a Wi-Fi Aware sighting can be promoted onto the cheaper persistent BLE
+     * plane before the peer is even in BLE range. Default no-op — only the Bluetooth plane overrides it; Wi-Fi
+     * Aware / fakes ignore it. Driven by [CompositeMeshTransport] from the *other* children's [reachable] sets.
+     */
+    fun onForeignReachable(peers: Set<String>) {}
+
     /** Sends [wire] to one neighbor, or to all neighbors when [to] is null. */
     suspend fun send(wire: WireEnvelope, to: Peer? = null)
 
