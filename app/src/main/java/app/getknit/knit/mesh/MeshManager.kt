@@ -227,6 +227,8 @@ class MeshManager(
         router.start()
         transport.start()
         watchNeighbors(session)
+        watchReachable(session)
+        seedOwnProfileCustody(session)
         watchProfileChanges(session)
         watchIncomingFiles(session)
         watchIncomingDigests(session)
@@ -595,6 +597,49 @@ class MeshManager(
                     keyExchange.onNeighborAdded(it) // re-ask the new neighbor for keys we're still missing
                     ackSync.onNeighborAdded(it) // re-send any broadcast/group delivery tick we owe it, over the link
                 }
+            }
+        }
+    }
+
+    /**
+     * Seed our own profile frame into custody at startup (idempotent: the persisted profileVersion keeps the
+     * frame id stable, so a later launch re-seeds the same frame and the store no-ops). Closes the NAN-only
+     * cold-start deadlock (`docs/NAN_CONCURRENCY_REAUDIT.md` §3.3): with every custody store empty all
+     * digests read 0 ⇒ equal ⇒ no sync is ever wanted, DMs park `pendingKey`, and profiles historically
+     * moved only on link-up — which never came. A seeded store gives each node a one-frame set whose id
+     * differs per node, so first contact diverges the digests, a link forms, profiles/keys exchange, and
+     * parked DMs flush.
+     */
+    private fun seedOwnProfileCustody(session: CoroutineScope) {
+        session.launch {
+            val env = currentProfileEnvelope()
+            forwardSync.onSeen(sign(env), env, ForwardStore.ORIGIN_SELF)
+        }
+    }
+
+    /**
+     * Flood our profile once per peer-epoch on **first coordination-plane contact** ([MeshTransport.reachable]
+     * newcomers) — not only on link-up ([watchNeighbors]) — so the key exchange bootstraps over NAN alone
+     * (`docs/NAN_CONCURRENCY_REAUDIT.md` §5.5): `reachable` needs no data path, a small profile rides the
+     * fast plane immediately, and a larger one is already in custody (seeded above) where its digest
+     * divergence pulls a link up. Coalesced to one origination per [PROFILE_REFLOOD_MIN_MS] no matter how
+     * many newcomers arrive (receivers dedupe by the stable frame id + SeenSet, and the custody path covers
+     * anyone the flood missed). A peer's departure from `reachable` and later return is the epoch boundary —
+     * it re-enters as a newcomer and gets one fresh flood. BLE-driven newcomers trigger it too, harmlessly.
+     */
+    private fun watchReachable(session: CoroutineScope) {
+        session.launch {
+            var known = emptySet<String>()
+            var lastFloodAt = 0L
+            transport.reachable.collect { current ->
+                val ids = current.mapTo(HashSet()) { it.nodeId }
+                val newcomers = ids - known
+                known = ids
+                if (newcomers.isEmpty()) return@collect
+                val now = System.currentTimeMillis()
+                if (now - lastFloodAt < PROFILE_REFLOOD_MIN_MS) return@collect
+                lastFloodAt = now
+                originateSigned(currentProfileEnvelope())
             }
         }
     }
@@ -1765,6 +1810,10 @@ class MeshManager(
         // ephemeral links get for free. Short enough to converge a missed message within ~a minute, long enough
         // to stay cheap on battery/bandwidth.
         const val NEIGHBOR_REOFFER_INTERVAL_MS = 60_000L
+
+        // Min spacing between first-contact profile floods (watchReachable): a burst of newcomers costs one
+        // origination; custody + the per-link pushProfileTo cover anyone the coalesced flood skipped.
+        const val PROFILE_REFLOOD_MIN_MS = 30_000L
 
         /**
          * Pull-time soft cap on bytes held *purely* to custody other peers' images (a carried frame references
