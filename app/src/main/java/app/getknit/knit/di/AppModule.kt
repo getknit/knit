@@ -24,6 +24,7 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.notifications.MessageNotifier
 import app.getknit.knit.notifications.Notifier
+import app.getknit.knit.review.ReviewPrompter
 import app.getknit.knit.ui.RouteInbox
 import app.getknit.knit.ui.share.ShareInbox
 import org.koin.android.ext.koin.androidContext
@@ -51,6 +52,8 @@ val appModule =
         single { ShareInbox() }
         // Single-shot handoff for a notification-tap deep-link route (drained by KnitApp).
         single { RouteInbox() }
+        // Play In-App Review gatekeeper (triggered from KnitApp's chat-list route; no-op off Play).
+        single { ReviewPrompter(androidContext(), get(), get(), get()) }
 
         single { DatabaseKey(androidContext()) }
         single { KnitDatabase.build(androidContext(), get<DatabaseKey>().getOrCreate()) }

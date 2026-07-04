@@ -1,5 +1,6 @@
 package app.getknit.knit.ui
 
+import androidx.activity.compose.LocalActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -23,6 +24,7 @@ import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshService
+import app.getknit.knit.review.ReviewPrompter
 import app.getknit.knit.ui.blocked.BlockedUsersScreen
 import app.getknit.knit.ui.chat.ChatScreen
 import app.getknit.knit.ui.chatlist.ChatListScreen
@@ -150,6 +152,15 @@ fun KnitApp(startRoute: String? = null) {
             )
         }
         composable(Routes.CHAT_LIST) {
+            // Play in-app review: evaluated on each landing on the chat list — including returning from
+            // a thread, right after the mesh visibly worked — and never mid-conversation. ReviewPrompter
+            // self-gates (Play installer, engagement policy, once per process) and swallows Play API
+            // failures, so this is a no-op on de-googled phones and sideloads; demo builds skip it.
+            if (!BuildConfig.SEED_DEMO) {
+                val activity = LocalActivity.current
+                val reviewPrompter = koinInject<ReviewPrompter>()
+                LaunchedEffect(Unit) { activity?.let { reviewPrompter.maybePrompt(it) } }
+            }
             ChatListScreen(
                 onOpenConversation = { id -> navController.navigate(Routes.chat(id)) },
                 onNewMessage = { navController.navigate(Routes.CONTACTS) },

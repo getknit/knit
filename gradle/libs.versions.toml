@@ -57,6 +57,13 @@ zxingCore = "3.5.3"
 # 16 KB-page-aligns uncompressed lib/*.so, matching the app's own 16 KB alignment requirement (see litert).
 arsclib = "1.4.0"
 apksig = "9.2.1"
+# Google Play In-App Review (rate-the-app dialog). Plain runtime AAR — no Gradle plugin, no annotation
+# processor — so it can't perturb the AGP-9.2.1/Kotlin-2.4 toolchain (same reasoning as Tink/SQLCipher).
+# First GMS artifacts in the graph (transitive play-services-basement + play-services-tasks; Java/old
+# Kotlin metadata, no manifest permissions). Optional at runtime by design: on a de-googled or sideloaded
+# device the request Task simply fails and ReviewPrompter swallows it — the pre-gate on the Play installer
+# means the API is normally never even touched there. See review/ReviewPrompter.kt.
+playReview = "2.0.2"
 # detekt runs as a standalone CLI off the build classpath (never applied as a Gradle plugin) —
 # keep this in lockstep with DETEKT_VERSION in .gitlab-ci.yml so local and CI use the same rules.
 detekt = "1.23.8"
@@ -116,6 +123,8 @@ zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxingCo
 # Maven Central) and re-sign it (apksig, google()). See the version notes above.
 reandroid-arsclib = { group = "io.github.reandroid", name = "ARSCLib", version.ref = "arsclib" }
 apksig = { group = "com.android.tools.build", name = "apksig", version.ref = "apksig" }
+
+play-review-ktx = { group = "com.google.android.play", name = "review-ktx", version.ref = "playReview" }
 
 # Put onto the root buildscript classpath so AGP 9's built-in Kotlin compiles with this KGP (2.4.0)
 # instead of AGP's bundled default (2.2.10). Kotlin 2.4 is supported on AGP 9.1+ per Google's

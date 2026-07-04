@@ -86,6 +86,20 @@ class SettingsStore(
     val contentFilteringEnabled: Flow<Boolean> =
         dataStore.data.map { it[KEY_CONTENT_FILTERING] ?: true }
 
+    /**
+     * Local-clock time the first peer message was observed (0 until then) — the start of the
+     * review-prompt engagement window (see [app.getknit.knit.review.ReviewPromptPolicy]). Deliberately a
+     * locally-stamped watermark rather than anything derived from a message's `sentAt`, which is the
+     * sender's skewable clock.
+     */
+    val reviewEngagementStartedAt: Flow<Long> = dataStore.data.map { it[KEY_REVIEW_ENGAGEMENT_STARTED_AT] ?: 0L }
+
+    /** Local-clock time of the last In-App Review API attempt (0 = never). See [recordReviewAttempt]. */
+    val reviewLastAttemptAt: Flow<Long> = dataStore.data.map { it[KEY_REVIEW_LAST_ATTEMPT_AT] ?: 0L }
+
+    /** Lifetime In-App Review API attempts — the API gives no feedback, so attempts are all we can count. */
+    val reviewAttemptCount: Flow<Long> = dataStore.data.map { it[KEY_REVIEW_ATTEMPT_COUNT] ?: 0L }
+
     suspend fun setDisplayName(value: String) = dataStore.edit { it[KEY_NAME] = value }
 
     suspend fun setStatus(value: String) = dataStore.edit { it[KEY_STATUS] = value }
@@ -137,6 +151,23 @@ class SettingsStore(
 
     suspend fun setContentFilteringEnabled(value: Boolean) = dataStore.edit { it[KEY_CONTENT_FILTERING] = value }
 
+    suspend fun setReviewEngagementStartedAt(value: Long) = dataStore.edit { it[KEY_REVIEW_ENGAGEMENT_STARTED_AT] = value }
+
+    /** Stamps the attempt time and bumps the lifetime count in one transaction (mirrors [setProfile]). */
+    suspend fun recordReviewAttempt(now: Long) =
+        dataStore.edit {
+            it[KEY_REVIEW_LAST_ATTEMPT_AT] = now
+            it[KEY_REVIEW_ATTEMPT_COUNT] = (it[KEY_REVIEW_ATTEMPT_COUNT] ?: 0L) + 1
+        }
+
+    /** Clears all review-prompt state (debug bridge reset). */
+    suspend fun clearReviewState() =
+        dataStore.edit {
+            it.remove(KEY_REVIEW_ENGAGEMENT_STARTED_AT)
+            it.remove(KEY_REVIEW_LAST_ATTEMPT_AT)
+            it.remove(KEY_REVIEW_ATTEMPT_COUNT)
+        }
+
     /** Dynamic per-conversation read-watermark key, e.g. "last_read_nearby" / "last_read_<nodeId>". */
     private fun lastReadKey(conversationId: String) = longPreferencesKey(LAST_READ_PREFIX + conversationId)
 
@@ -151,5 +182,8 @@ class SettingsStore(
         val KEY_BLOCKED = stringSetPreferencesKey("blocked_node_ids")
         val KEY_BLOCKED_TAGS = stringSetPreferencesKey("blocked_device_tags")
         val KEY_CONTENT_FILTERING = booleanPreferencesKey("content_filtering_enabled")
+        val KEY_REVIEW_ENGAGEMENT_STARTED_AT = longPreferencesKey("review_engagement_started_at")
+        val KEY_REVIEW_LAST_ATTEMPT_AT = longPreferencesKey("review_last_attempt_at")
+        val KEY_REVIEW_ATTEMPT_COUNT = longPreferencesKey("review_attempt_count")
     }
 }

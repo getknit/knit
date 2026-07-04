@@ -29,6 +29,8 @@ import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.GroupInfo
+import app.getknit.knit.review.ReviewPromptPolicy
+import app.getknit.knit.review.ReviewPrompter
 import app.getknit.knit.ui.invite.prepareKnitApk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
@@ -72,6 +74,11 @@ import java.nio.ByteBuffer
  * - [ACTION_WEBPPROBE] — `--es path <gifFile>` estimates an animated-WebP re-encode's size (sums each
  *   frame's built-in `WEBP_LOSSY` bytes); `--ei dim`/`--ei fps`/`--ei q <quality>` tune it. Feasibility
  *   probe only — reports `webpAnimEstBytes`/`pctSmaller`, writes nothing.
+ * - [ACTION_REVIEW] — dumps the Play in-app-review gate state (installer, message counts, engagement
+ *   watermark, attempts, `shouldPrompt`) via the same [ReviewPrompter] reads the real prompt uses.
+ *   `--ez reset true` clears the persisted review state; `--ez arm true` additionally backdates the
+ *   engagement watermark past the age gate and forgets prior attempts, so the next chat-list visit
+ *   prompts as soon as the (real) message-count gates hold.
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  *
  * Each action replies as a one-line JSON object: it is returned via the ordered-broadcast result
@@ -90,6 +97,7 @@ class DebugBridgeReceiver :
     private val settings: SettingsStore by inject()
     private val forwardDao: ForwardDao by inject()
     private val digest: StoreDigest by inject()
+    private val reviewPrompter: ReviewPrompter by inject()
     private val scope: CoroutineScope by inject()
 
     override fun onReceive(
@@ -134,6 +142,10 @@ class DebugBridgeReceiver :
 
                         ACTION_WEBPCHECK -> {
                             handleWebpCheck(intent)
+                        }
+
+                        ACTION_REVIEW -> {
+                            handleReview(context, intent)
                         }
 
                         ACTION_HEAL -> {
@@ -431,6 +443,40 @@ class DebugBridgeReceiver :
             .put("rows", rowsJson)
     }
 
+    /**
+     * Dumps the in-app-review gate as the real prompt would evaluate it right now — the inputs come from
+     * [ReviewPrompter.gateInputs] / [ReviewPrompter.installedFromPlay], so this can't drift from the
+     * production gate. `--ez reset true` clears the persisted state first; `--ez arm true` additionally
+     * backdates the engagement watermark past the age gate (the message-count gates still need real rows,
+     * e.g. via [ACTION_SEND] from a second device).
+     */
+    private suspend fun handleReview(
+        context: Context,
+        intent: Intent,
+    ): JSONObject {
+        val now = System.currentTimeMillis()
+        if (intent.getBooleanExtra(EXTRA_RESET, false)) settings.clearReviewState()
+        if (intent.getBooleanExtra(EXTRA_ARM, false)) {
+            settings.clearReviewState()
+            settings.setReviewEngagementStartedAt(now - ReviewPromptPolicy.MIN_ENGAGEMENT_AGE_MS - ARM_MARGIN_MS)
+        }
+        val installer =
+            runCatching {
+                context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
+            }.getOrNull()
+        val inputs = reviewPrompter.gateInputs(now)
+        return JSONObject()
+            .put("status", "ok")
+            .put("installer", installer ?: JSONObject.NULL)
+            .put("playInstall", reviewPrompter.installedFromPlay())
+            .put("peerMessages", inputs.peerMessageCount)
+            .put("sentMessages", inputs.sentMessageCount)
+            .put("engagementStartedAt", inputs.engagementStartedAt)
+            .put("lastAttemptAt", inputs.lastAttemptAt)
+            .put("attemptCount", inputs.attemptCount)
+            .put("shouldPrompt", ReviewPromptPolicy.shouldPrompt(inputs))
+    }
+
     private fun metricsJson(snap: MeshMetrics.Snapshot): JSONObject =
         JSONObject()
             .put("originated", snap.framesOriginated)
@@ -476,6 +522,7 @@ class DebugBridgeReceiver :
         const val ACTION_WEBPPROBE = "app.getknit.knit.debug.WEBPPROBE"
         const val ACTION_WEBPCONV = "app.getknit.knit.debug.WEBPCONV"
         const val ACTION_WEBPCHECK = "app.getknit.knit.debug.WEBPCHECK"
+        const val ACTION_REVIEW = "app.getknit.knit.debug.REVIEW"
         const val ACTION_HEAL = "app.getknit.knit.debug.HEAL"
 
         const val EXTRA_TEXT = "text"
@@ -486,6 +533,11 @@ class DebugBridgeReceiver :
         const val EXTRA_LIMIT = "limit"
         const val EXTRA_PATH = "path"
         const val EXTRA_OUT = "out"
+        const val EXTRA_RESET = "reset"
+        const val EXTRA_ARM = "arm"
+
+        /** How far past the age gate [ACTION_REVIEW]'s arm backdates the watermark (clock-skew slack). */
+        const val ARM_MARGIN_MS = 60_000L
 
         // Mirror AttachmentStore.GIF_MAX_DIMENSION / GIF_MAX_FPS (private there) so this diagnostic
         // shrinks a GIF with the same bounds the real ingest path uses.
