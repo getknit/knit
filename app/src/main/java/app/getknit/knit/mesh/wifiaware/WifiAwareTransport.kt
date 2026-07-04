@@ -636,7 +636,7 @@ class WifiAwareTransport(
                 .setServiceName(SERVICE_NAME)
                 .setServiceSpecificInfo(Protocol.advertise(localNodeId).encodeToByteArray())
         if (instantSupported) builder.setInstantCommunicationModeEnabled(true, INSTANT_BAND)
-        s.publish(builder.build(), cb, handler)
+        runCatching { s.publish(builder.build(), cb, handler) }.onFailure { onSessionDead("publish", it) }
     }
 
     private fun startSubscribe() {
@@ -647,7 +647,14 @@ class WifiAwareTransport(
         if (!subscribing.compareAndSet(false, true)) return
         val builder = SubscribeConfig.Builder().setServiceName(SERVICE_NAME)
         if (instantSupported) builder.setInstantCommunicationModeEnabled(true, INSTANT_BAND)
-        s.subscribe(builder.build(), subscribeCallback, handler)
+        // subscribe() is a binder call into the Aware service; if our client died framework-side (NAN
+        // cycled) before onAwareSessionTerminated reached us, it throws (SecurityException: "invalid
+        // uid+clientId mapping") — that must never escape into the caller's coroutine (a field crash:
+        // rearmSubscribe on a dead session killed the process). Treat it as the terminate we missed.
+        runCatching { s.subscribe(builder.build(), subscribeCallback, handler) }.onFailure {
+            subscribing.set(false)
+            onSessionDead("subscribe", it)
+        }
     }
 
     /**
@@ -656,12 +663,43 @@ class WifiAwareTransport(
      * disturbed). Called by [discoveryLoop] only while the NDI slot is free (no live link/handshake), so
      * there is no subscribe-anchored client NDP to drop.
      */
-    private fun rearmSubscribe() {
-        if (session == null || subscribing.get()) return // don't stack a rearm on a pending subscribe
-        synchronized(lock) { discovered.clear() }
+    private fun rearmSubscribe() =
+        onHandler {
+            // Handler-funneled like the rest of the session lifecycle: the discovery loop calls this from its
+            // worker thread, which raced onAwareSessionTerminated nulling [session] on the handler thread.
+            if (session == null || subscribing.get()) return@onHandler // don't stack a rearm on a pending subscribe
+            synchronized(lock) { discovered.clear() }
+            runCatching { subscribeSession?.close() }
+            subscribeSession = null
+            startSubscribe()
+        }
+
+    /**
+     * The framework-side Aware client died under us: a session binder call threw (e.g. `SecurityException:
+     * Attempting to use invalid uid+clientId mapping` when NAN cycled between our `session` null-check and
+     * the call, the terminate callback lost or still in flight). Mirror [AttachCallback.onAwareSessionTerminated]'s
+     * cleanup, then poke the loop so its `session == null -> attach()` branch recovers at the fast cadence.
+     */
+    private fun onSessionDead(
+        op: String,
+        cause: Throwable,
+    ) = onHandler {
+        Log.w(TAG, "$op threw on a dead Aware session — dropping session for re-attach", cause)
+        attaching.set(false)
+        subscribing.set(false)
+        reattaching.set(false)
+        ++attachGen // invalidate any in-flight discovery callbacks from the dead generation
+        runCatching { publishSession?.close() }
         runCatching { subscribeSession?.close() }
+        runCatching { session?.close() }
+        session = null
+        publishSession = null
         subscribeSession = null
-        startSubscribe()
+        stopResponder()
+        synchronized(lock) { accepting = false }
+        _health.value =
+            if (awareManager?.isAvailable == true) TransportHealth.Degraded else TransportHealth.Unavailable
+        healSignal.trySend(Unit)
     }
 
     /**
@@ -1191,11 +1229,15 @@ class WifiAwareTransport(
                 }
             }
         responderCallback = cb // tracked before requestNetwork so it is always unregisterable
-        runCatching { connectivity.requestNetwork(request, cb, handler) }.onFailure {
-            Log.w(TAG, "responder requestNetwork failed", it)
-            stopResponder()
-        }
-        Log.i(TAG, "responder listening on port ${ss.localPort}")
+        val filed =
+            runCatching { connectivity.requestNetwork(request, cb, handler) }
+                .onFailure {
+                    Log.w(TAG, "responder requestNetwork failed", it)
+                    stopResponder()
+                }.isSuccess
+        // Note "listening" ≠ "serving": the framework can still refuse/queue the request (e.g. behind a
+        // TERMINATING ghost of a previous responder — dumpsys shows requests=0 at the aware NetworkFactory).
+        if (filed) Log.i(TAG, "responder listening on port ${ss.localPort}")
     }
 
     @Suppress("LoopWithTooManyJumpStatements") // accept → admit-or-close is naturally break+continue
