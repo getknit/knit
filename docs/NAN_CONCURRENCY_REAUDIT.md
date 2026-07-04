@@ -251,11 +251,16 @@ changes is the NDI lifecycle, which stops being "one link at a time + a session 
    reachable peer) — no discovery churn, works on the pure responder, removes the deliberate use of the one
    API path we know wedges. If the E5 SSI probe passes, fold the digest version into the SSI on the same
    call (passive cue to every subscriber in range).
-5. **Cold-start bootstrap** (closes §3.3's deadlock): flood our own profile once per peer-epoch on **first
+5. **Cold-start bootstrap** (closes §3.3's deadlock) — **✅ implemented + fleet-validated 2026-07-04**
+   (full-wipe drill, NAN-only, zero manual traffic: keys pinned in ~10 s, custody = exactly the three profile
+   frames, an immediate DM sealed + delivered with a full receipt roundtrip — the E2 scenario needed a manual
+   broadcast): flood our own profile once per peer-epoch on **first
    cue contact** (not only on link-up), and/or re-seed custody with the self-profile whenever the store is
    empty at startup. Profiles ≤255 B ride the fast plane; larger ones create the digest divergence that
    pulls a link up — either way the key exchange bootstraps without BLE.
-6. **Hygiene batch** (independent): capability-driven `COORD_MSG_MAX`
+6. **Hygiene batch** (independent) — **✅ implemented 2026-07-04** (all but the PMK swap, deferred: changing
+   NDP security silently breaks setup against old builds while discovery still matches — parked for the next
+   `SERVICE_NAME` hard cut): capability-driven `COORD_MSG_MAX`
    (`characteristics.maxServiceSpecificInfoLength`), `onMessageSendSucceeded/Failed` counters in
    `MeshMetrics`, reject accepted sockets whose remote address isn't IPv6 link-local (the wildcard
    `ServerSocket` is reachable from any network), `driveSync` round-robin instead of HashMap-order
