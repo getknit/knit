@@ -78,4 +78,111 @@ class DigestTrackerTest {
         t.forget("p")
         assertFalse("a forgotten peer has no cue → nothing to pull", t.reconcileWanted("p", 100L))
     }
+
+    // --- No-progress throttle (docs/NAN_CONCURRENCY_REAUDIT.md §5.3; convergence-only reset) ---
+
+    /** A fixed-clock tracker plus a helper that completes one non-convergent sync round. */
+    private class ThrottleRig {
+        var now = 0L
+        val t = DigestTracker { now }
+
+        /** One completed-but-non-convergent sync: the peer cues [peerV], we reconcile at a different local version. */
+        fun nonConvergentRound(peerV: Long) {
+            t.onCue("p", peerV)
+            t.onReconciled("p", peerV + 1_000L) // local ≠ peer ⇒ no convergence
+        }
+    }
+
+    @Test
+    fun throttleEngagesAfterThreeNonConvergentSyncsInWindow() {
+        val r = ThrottleRig()
+        repeat(2) { i ->
+            r.nonConvergentRound(i.toLong())
+            assertTrue("still free before the third round", r.t.reconcileWanted("p", 500L))
+        }
+        r.nonConvergentRound(2L)
+        assertFalse("third non-convergent completion engages the cooldown", r.t.reconcileWanted("p", 500L))
+    }
+
+    @Test
+    fun windowExpiryDecaysThePreEngagementCount() {
+        val r = ThrottleRig()
+        r.nonConvergentRound(0L)
+        r.nonConvergentRound(1L)
+        r.now += DigestTracker.THROTTLE_WINDOW_MS + 1 // the two stale rounds age out
+        r.nonConvergentRound(2L)
+        assertTrue("a fresh window restarts the tally — no engagement", r.t.reconcileWanted("p", 500L))
+    }
+
+    @Test
+    fun cooldownExpiryAllowsOneAttemptThenReThrottlesDoubled() {
+        val r = ThrottleRig()
+        repeat(3) { i -> r.nonConvergentRound(i.toLong()) } // engage: cooldown = initial
+        r.now += DigestTracker.COOLDOWN_INITIAL_MS + 1
+        assertTrue("cooldown expired → one attempt allowed", r.t.reconcileWanted("p", 500L))
+        r.nonConvergentRound(9L) // engaged: re-arms immediately, doubled
+        assertFalse(r.t.reconcileWanted("p", 500L))
+        r.now += DigestTracker.COOLDOWN_INITIAL_MS + 1 // only the *initial* span — doubled cooldown still holds
+        assertFalse("re-armed cooldown is doubled", r.t.reconcileWanted("p", 500L))
+        r.now += DigestTracker.COOLDOWN_INITIAL_MS
+        assertTrue("doubled cooldown expires", r.t.reconcileWanted("p", 500L))
+    }
+
+    @Test
+    fun cooldownGrowthIsCapped() {
+        val r = ThrottleRig()
+        repeat(3) { i -> r.nonConvergentRound(i.toLong()) }
+        // Keep failing until the backoff must have hit the cap, then measure the next span.
+        repeat(10) { i ->
+            r.now += DigestTracker.COOLDOWN_MAX_MS + 1
+            r.nonConvergentRound(100L + i)
+        }
+        r.now += DigestTracker.COOLDOWN_MAX_MS - 1
+        assertFalse("still inside the capped cooldown", r.t.reconcileWanted("p", 500L))
+        r.now += 2
+        assertTrue("capped cooldown expires at COOLDOWN_MAX_MS", r.t.reconcileWanted("p", 500L))
+    }
+
+    @Test
+    fun convergenceViaOnReconciledFullyResets() {
+        val r = ThrottleRig()
+        repeat(3) { i -> r.nonConvergentRound(i.toLong()) } // engaged
+        r.t.onCue("p", 500L)
+        r.t.onReconciled("p", 500L) // converged sync → full reset
+        r.t.onCue("p", 501L)
+        assertTrue("post-reset divergence is wanted immediately", r.t.reconcileWanted("p", 400L))
+        // And the engagement is gone: three fresh non-convergent rounds are needed again.
+        r.nonConvergentRound(600L)
+        assertTrue("reset also cleared the engaged latch", r.t.reconcileWanted("p", 400L))
+    }
+
+    @Test
+    fun convergenceObservedByReconcileWantedResets() {
+        val r = ThrottleRig()
+        repeat(3) { i -> r.nonConvergentRound(i.toLong()) } // engaged; last cue = 2
+        assertFalse("equal digests read as convergence even mid-cooldown", r.t.reconcileWanted("p", 2L))
+        r.t.onCue("p", 77L)
+        assertTrue("the equality check itself cleared the throttle", r.t.reconcileWanted("p", 500L))
+    }
+
+    @Test
+    fun forgetResetsTheThrottle() {
+        val r = ThrottleRig()
+        repeat(3) { i -> r.nonConvergentRound(i.toLong()) } // engaged
+        r.t.forget("p")
+        r.t.onCue("p", 5L)
+        assertTrue("a forgotten peer restarts with no cooldown", r.t.reconcileWanted("p", 500L))
+    }
+
+    @Test
+    fun aWedgeNeverEngagesTheThrottle() {
+        // Syncs that never *complete* (no onReconciled) must never throttle — the wedge watchdog's owed
+        // signal rides reconcileWanted staying true.
+        val r = ThrottleRig()
+        r.t.onCue("p", 5L)
+        repeat(20) {
+            assertTrue("owed forever while no sync completes", r.t.reconcileWanted("p", 500L))
+            r.now += 30_000L
+        }
+    }
 }
