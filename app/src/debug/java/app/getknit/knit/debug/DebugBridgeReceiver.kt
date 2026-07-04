@@ -446,6 +446,8 @@ class DebugBridgeReceiver :
             .put("nanServesPeak", snap.nanServesPeak)
             .put("nanAcceptsRefused", snap.nanAcceptsRefused)
             .put("nanIcmKeepaliveFailed", snap.nanIcmKeepaliveFailed)
+            .put("nanMsgsAcked", snap.nanMsgsAcked)
+            .put("nanMsgSendsFailed", snap.nanMsgSendsFailed)
 
     private fun reply(
         status: String,

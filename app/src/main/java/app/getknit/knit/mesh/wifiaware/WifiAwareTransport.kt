@@ -157,6 +157,13 @@ class WifiAwareTransport(
     private lateinit var localNodeId: String
     private var instantSupported = false
 
+    // The radio's actual coordination-plane message cap (maxServiceSpecificInfoLen covers sendMessage too);
+    // COORD_MSG_MAX stays as the conservative fallback. Bigger caps let more frames ride the zero-NDP path.
+    private val coordMsgMax =
+        runCatching { awareManager?.characteristics?.maxServiceSpecificInfoLength }
+            .getOrNull()
+            ?.takeIf { it > 0 } ?: COORD_MSG_MAX
+
     @Volatile private var session: WifiAwareSession? = null
 
     @Volatile private var publishSession: PublishDiscoverySession? = null
@@ -228,6 +235,10 @@ class WifiAwareTransport(
     private val inFlight = HashSet<String>()
     private val discovered = HashMap<String, DiscoveredPeer>()
     private val retryAfter = HashMap<String, Long>()
+
+    // elapsedRealtime of the last initiate attempt per peer, so driveSync picks the least-recently-attempted
+    // eligible target instead of HashMap iteration order (which starves a peer under contention).
+    private val lastInitiateAttemptAt = HashMap<String, Long>()
 
     // Count of accepted sockets still reading their identity (HELLO) — reserved against [serveCap] but not
     // yet in [peers]. A count (not a flag) since P1: concurrent inbound serves are admitted up to the cap.
@@ -529,6 +540,7 @@ class WifiAwareTransport(
             inFlight.clear()
             discovered.clear()
             retryAfter.clear()
+            lastInitiateAttemptAt.clear()
             accepting = 0
         }
         cueTarget.clear()
@@ -697,6 +709,14 @@ class WifiAwareTransport(
                     message: ByteArray,
                 ) {
                     onCueReceived(peerHandle, message, publishSession)
+                }
+
+                override fun onMessageSendSucceeded(messageId: Int) {
+                    metrics.onNanMsgAcked()
+                }
+
+                override fun onMessageSendFailed(messageId: Int) {
+                    metrics.onNanMsgSendFailed()
                 }
             }
         runCatching { s.publish(buildPublishConfig(), cb, handler) }.onFailure { onSessionDead("publish", it) }
@@ -1154,6 +1174,14 @@ class WifiAwareTransport(
             ) {
                 onCueReceived(peerHandle, message, subscribeSession)
             }
+
+            override fun onMessageSendSucceeded(messageId: Int) {
+                metrics.onNanMsgAcked()
+            }
+
+            override fun onMessageSendFailed(messageId: Int) {
+                metrics.onNanMsgSendFailed()
+            }
         }
 
     /** Record a discovered peer, note it reachable, and cue it (announce our epoch); it cues back. */
@@ -1261,7 +1289,7 @@ class WifiAwareTransport(
     override fun fastFanout(wire: WireEnvelope) {
         if (!hasHardware) return
         val bytes = WireCodec.encodeWire(wire)
-        if (bytes.size + 1 > COORD_MSG_MAX) return
+        if (bytes.size + 1 > coordMsgMax) return
         val msg =
             ByteArray(bytes.size + 1).also {
                 it[0] = MSG_FRAME_TAG
@@ -1289,7 +1317,7 @@ class WifiAwareTransport(
         if (!hasHardware) return
         val target = cueTarget[to.nodeId] ?: return // not coordination-plane-reachable → best-effort skip
         val bytes = WireCodec.encodeWire(wire)
-        if (bytes.size + 1 > COORD_MSG_MAX) return
+        if (bytes.size + 1 > coordMsgMax) return
         val msg =
             ByteArray(bytes.size + 1).also {
                 it[0] = MSG_FRAME_TAG
@@ -1502,6 +1530,16 @@ class WifiAwareTransport(
     /** A client connected to our accept-any responder: read its identity (HELLO), then register the link. */
     private fun handleAcceptedSocket(socket: Socket) {
         try {
+            // The wildcard ServerSocket(0) is reachable from ANY network the device sits on (LAN, VPN), not
+            // just the aware NDI; NAN peers always arrive from an IPv6 link-local, so reject everything else
+            // before reading a byte (the app-layer signatures gate content, but a LAN connector shouldn't get
+            // to speak the framing at all).
+            val remote = socket.inetAddress
+            if (remote !is java.net.Inet6Address || !remote.isLinkLocalAddress) {
+                Log.w(TAG, "rejecting responder connection from non-link-local $remote")
+                runCatching { socket.close() }
+                return
+            }
             val link = NetSocketLink(socket)
             runCatching { socket.soTimeout = ACCEPT_HELLO_TIMEOUT_MS } // bound the identity read so a stall can't pin the slot
             // Reads the HELLO from the cached buffered stream that the FramedLink read loop then reuses.

@@ -94,6 +94,8 @@ class MeshMetrics {
     private val nanServesPeak = AtomicLong()
     private val nanAcceptsRefused = AtomicLong()
     private val nanIcmKeepaliveFailed = AtomicLong()
+    private val nanMsgsAcked = AtomicLong()
+    private val nanMsgSendsFailed = AtomicLong()
 
     /** A frame this device authored and injected into the mesh. */
     fun onOriginated() {
@@ -186,6 +188,16 @@ class MeshMetrics {
         nanIcmKeepaliveFailed.incrementAndGet()
     }
 
+    /** A coordination-plane message (cue/fast-frame) was MAC-acked by its peer. */
+    fun onNanMsgAcked() {
+        nanMsgsAcked.incrementAndGet()
+    }
+
+    /** A coordination-plane message got no ACK (peer dozing/out of range, or the tx queue overflowed). */
+    fun onNanMsgSendFailed() {
+        nanMsgSendsFailed.incrementAndGet()
+    }
+
     fun snapshot(): Snapshot {
         val byReason = drops.mapValues { it.value.get() }
         val connectByReason = connectFails.mapValues { it.value.get() }
@@ -210,6 +222,8 @@ class MeshMetrics {
             nanServesPeak = nanServesPeak.get(),
             nanAcceptsRefused = nanAcceptsRefused.get(),
             nanIcmKeepaliveFailed = nanIcmKeepaliveFailed.get(),
+            nanMsgsAcked = nanMsgsAcked.get(),
+            nanMsgSendsFailed = nanMsgSendsFailed.get(),
         )
     }
 
@@ -234,5 +248,7 @@ class MeshMetrics {
         val nanServesPeak: Long = 0,
         val nanAcceptsRefused: Long = 0,
         val nanIcmKeepaliveFailed: Long = 0,
+        val nanMsgsAcked: Long = 0,
+        val nanMsgSendsFailed: Long = 0,
     )
 }
