@@ -214,7 +214,10 @@ class WifiAwareTransport(
             }
 
             override fun onLinkDown(nodeId: String) {
-                teardownPeer(nodeId)
+                // A read/write-loop end means packets flowed moments ago (EOF needs the peer's FIN, an error
+                // needs a reset — a dead NDP just goes silent and ends via quiescence instead), so the NDP was
+                // alive recently: the E4b ghost-proof recycle window (see teardownPeer/recycleResponder).
+                teardownPeer(nodeId, eofDriven = true)
             }
         }
 
@@ -275,6 +278,13 @@ class WifiAwareTransport(
     // elapsedRealtime of the last subscribe re-arm (to re-discover a peer whose handle staled), rate-limited
     // by REARM_COOLDOWN_MS so we don't churn subscribe (its wedge trigger) hunting a peer that's really gone.
     @Volatile private var lastRearmAt = 0L
+
+    // elapsedRealtime of the last E5 ICM keepalive (updatePublish) — its own clock, deliberately NOT
+    // lastRearmAt: a keepalive is not a subscribe re-arm and must not delay genuine re-discovery.
+    @Volatile private var lastIcmKeepaliveAt = 0L
+
+    // E5 SSI probe sequence (handler-thread only — bumped inside icmKeepalive's onHandler block).
+    private var ssiProbeSeq = 0
 
     // Watchdog state for the leaked-request wedge (see [checkWedge]). [lastLinkOrAcceptAt] = elapsedRealtime of
     // the last successful data-path link/accept (either role) — the "progress" signal. [syncOwedSince] = start
@@ -620,7 +630,13 @@ class WifiAwareTransport(
                 }
 
                 override fun onSessionConfigFailed() {
-                    Log.w(TAG, "publish config failed")
+                    // With a live publish session this is an updatePublish (E5 keepalive) failing, not the
+                    // initial config — distinguish so the keepalive's health is visible in the field.
+                    Log.w(TAG, if (publishSession != null) "publish update failed" else "publish config failed")
+                }
+
+                override fun onSessionConfigUpdated() {
+                    Log.i(TAG, "publish config updated (E5 keepalive)")
                 }
 
                 override fun onMessageReceived(
@@ -630,14 +646,40 @@ class WifiAwareTransport(
                     onCueReceived(peerHandle, message, publishSession)
                 }
             }
+        runCatching { s.publish(buildPublishConfig(), cb, handler) }.onFailure { onSessionDead("publish", it) }
+    }
+
+    /**
+     * The publish config, built in one place so the E5 ICM keepalive ([icmKeepalive]'s `updatePublish`) can
+     * never drift from the original. [ssiSuffix] (the E5 SSI probe) appends an extra `|`-segment to the
+     * advert; [Protocol.parse] reads only the first three segments, so peers ignore it.
+     */
+    private fun buildPublishConfig(ssiSuffix: String? = null): PublishConfig {
         val builder =
             PublishConfig
                 .Builder()
                 .setServiceName(SERVICE_NAME)
-                .setServiceSpecificInfo(Protocol.advertise(localNodeId).encodeToByteArray())
+                .setServiceSpecificInfo((Protocol.advertise(localNodeId) + ssiSuffix.orEmpty()).encodeToByteArray())
         if (instantSupported) builder.setInstantCommunicationModeEnabled(true, INSTANT_BAND)
-        runCatching { s.publish(builder.build(), cb, handler) }.onFailure { onSessionDead("publish", it) }
+        return builder.build()
     }
+
+    /**
+     * E5: relight Instant Communication Mode by refreshing the publish session **in place** — the framework's
+     * 30 s ICM clock is the per-session `mUpdateTime`, which `updatePublish` refreshes — instead of the
+     * churn-prone subscribe re-arm (whose `onSessionConfigFailed` wedge the lifecycle dances around). With
+     * [NanExperiments.e5SsiProbe] each keepalive also bumps an extra SSI segment, probing whether peers'
+     * one-shot discovery re-fires on SSI change (the HAL's MATCH_ONCE suppresses repeats only "with no new
+     * data"). Success/failure surfaces via `onSessionConfigUpdated` / "publish update failed" above.
+     */
+    private fun icmKeepalive() =
+        onHandler {
+            val pub = publishSession ?: return@onHandler
+            val suffix = if (NanExperiments.e5SsiProbe) "$SSI_PROBE_PREFIX${++ssiProbeSeq}" else null
+            Log.i(TAG, "E5: icm keepalive — updatePublish(probe=${suffix ?: "-"})")
+            runCatching { pub.updatePublish(buildPublishConfig(suffix)) }
+                .onFailure { Log.w(TAG, "E5: updatePublish threw", it) }
+        }
 
     private fun startSubscribe() {
         val s = session ?: return
@@ -787,15 +829,38 @@ class WifiAwareTransport(
                 // relight ICM while a sync is genuinely owed to a reachable peer we can't initiate to — demand-
                 // gated (stops on convergence) and rate-limited by ICM_REARM_COOLDOWN_MS so it can't churn
                 // subscribe toward its wedge state.
-                instantSupported && needsIcmRelight() && now - lastRearmAt > ICM_REARM_COOLDOWN_MS -> {
-                    lastRearmAt = now
-                    rearmSubscribe()
+                instantSupported && icmRelightDue(now) -> {
+                    fireIcmRelight(now)
                 }
 
                 else -> {
                     Unit
                 }
             }
+        }
+    }
+
+    /**
+     * Whether the ICM relight should fire this tick. E5 keepalive mode ([NanExperiments.e5Keepalive]) is
+     * rate-limited on its own clock ([lastIcmKeepaliveAt] — a keepalive is not a subscribe re-arm and must
+     * not delay genuine re-discovery) and can be forced on cadence ([NanExperiments.e5Force]) so the
+     * experiment can measure a continuously-lit ICM window; the legacy path keeps the shipped behavior.
+     */
+    private fun icmRelightDue(now: Long): Boolean =
+        if (NanExperiments.e5Keepalive) {
+            (needsIcmRelight() || NanExperiments.e5Force) && now - lastIcmKeepaliveAt > ICM_REARM_COOLDOWN_MS
+        } else {
+            needsIcmRelight() && now - lastRearmAt > ICM_REARM_COOLDOWN_MS
+        }
+
+    /** Fire the ICM relight: E5 keepalive = in-place [icmKeepalive]; legacy = the subscribe re-arm. */
+    private fun fireIcmRelight(now: Long) {
+        if (NanExperiments.e5Keepalive) {
+            lastIcmKeepaliveAt = now
+            icmKeepalive()
+        } else {
+            lastRearmAt = now
+            rearmSubscribe()
         }
     }
 
@@ -900,7 +965,8 @@ class WifiAwareTransport(
 
                 // A sync owed to a peer we only respond to → tick around the ICM keepalive cadence so the loop can
                 // relight ICM (needsIcmRelight) before the ~30s auto-disable, instead of sleeping REDISCOVER_IDLE_MS.
-                instantSupported && needsIcmRelight() -> ICM_REARM_COOLDOWN_MS
+                instantSupported &&
+                    (needsIcmRelight() || (NanExperiments.e5Keepalive && NanExperiments.e5Force)) -> ICM_REARM_COOLDOWN_MS
 
                 else -> REDISCOVER_IDLE_MS
             }
@@ -960,6 +1026,9 @@ class WifiAwareTransport(
         val advert = Protocol.parse(ssi.decodeToString())
         val peerNodeId = advert.nodeId
         if (peerNodeId == localNodeId) return
+        // E5 SSI probe: each of these lines is one discovery indication — counting re-fires per SSI change
+        // is the whole probe (the HAL's MATCH_ONCE should re-indicate a changed SSI as "new data").
+        Log.i(TAG, "discovered $peerNodeId ssi=${ssi.decodeToString()}")
         synchronized(lock) { discovered[peerNodeId] = DiscoveredPeer(advert, peerHandle) }
         subscribeSession?.let { cueTarget[peerNodeId] = CueTarget(peerHandle, it) } // handle valid on subscribe
         noteReachable(Peer(peerNodeId, advert.protoVersion, advert.capabilities))
@@ -1227,6 +1296,24 @@ class WifiAwareTransport(
                     // orphan a responder requestNetwork. Log only.
                     Log.i(TAG, "responder network lost")
                 }
+
+                override fun onUnavailable() {
+                    // The framework declares an accept-any responder request unfulfillable — and silently
+                    // REMOVES it from its cache — when an inbound NDP request arrives while this node's own
+                    // initiator link holds the one NDI (onDataPathRequest → selectInterfaceForRequest → null →
+                    // cache remove + letAppKnowThatRequestsAreUnavailable; field-confirmed 2026-07-04, P0
+                    // session). Without this hook the app keeps believing its dead responder is listening and
+                    // the node can never serve again until the next full reattach. Re-file a fresh request —
+                    // the peer whose inbound was refused backs off and retries against it. Generation-guarded:
+                    // never re-file over a newer responder.
+                    val self: ConnectivityManager.NetworkCallback = this
+                    onHandler {
+                        if (responderCallback !== self) return@onHandler
+                        Log.w(TAG, "responder request declared unfulfillable (inbound NDP during our initiate) — re-filing")
+                        stopResponder()
+                        startResponder()
+                    }
+                }
             }
         responderCallback = cb // tracked before requestNetwork so it is always unregisterable
         val filed =
@@ -1402,12 +1489,27 @@ class WifiAwareTransport(
     private fun teardownPeer(
         peerNodeId: String,
         backoffMs: Long = REFUSED_BACKOFF_MS,
+        eofDriven: Boolean = false,
     ) {
         val conn = peers.remove(peerNodeId) ?: return
         conn.close()
         // Only client links own a per-peer network callback; server links share the responder — leave it.
         val wasServerLink = !conn.isInitiator
-        conn.callback?.let { runCatching { connectivity.unregisterNetworkCallback(it) } }
+        conn.callback?.let { cb ->
+            if (NanExperiments.e4bRecycle) {
+                // E4b release-grace: conn.close() just queued the FIN, which rides the still-alive NDP on an
+                // upcoming NDL window (~100s of ms) — unregistering now tears the NDP under it, which is why
+                // the responder historically never saw a FIN. Holding the request open briefly lets the FIN
+                // land so the responder can recycle-while-alive (see recycleResponder); SETTLE_MS (> the
+                // grace) still gates this node's own next requestNetwork.
+                handler.postDelayed(
+                    { runCatching { connectivity.unregisterNetworkCallback(cb) } },
+                    INITIATOR_RELEASE_GRACE_MS,
+                )
+            } else {
+                runCatching { connectivity.unregisterNetworkCallback(cb) }
+            }
+        }
         // Back off an *initiator* link that ended without a clean sync (a reset — usually the responder was
         // busy on its one NDI, or the NDP dropped), so we don't immediately re-hammer a peer we can't reach
         // yet. A clean quiescence teardown passes backoffMs = 0: it already recorded the sync, so the peer
@@ -1418,15 +1520,35 @@ class WifiAwareTransport(
         noteLinkEnded()
         refreshNeighbors()
         Log.i(TAG, "link down: $peerNodeId")
-        // A served client just left. On these chipsets a responder that has served one NDP is wedged — it
-        // won't accept a second client, and it blocks this node's own client role — and a bare responder
-        // re-arm (fresh requestNetwork) does NOT clear it; only a full re-attach does (Phase 0, on-device).
-        // So re-attach after every serve to restore serve-ability, once the NDI settles and the slot is free.
-        // A pure initiator never serves, so it never hits this path — it keeps initiating on one session
-        // (verified Phase 0: 7 initiates / 0 re-attach). Stamps lastReattachAt so the wedged-subscribe
-        // recovery doesn't pile a second re-attach on top.
-        if (wasServerLink) scheduleServeReattach(peerNodeId)
+        // A served client just left. The serve itself never wedges (re-audit E1: 30+ consecutive serves), but
+        // the responder request now holds the NDI at 0 NDPs, blocking this node's own initiator role until
+        // the request is recycled (docs/NAN_CONCURRENCY_REAUDIT.md §2). E4b: an EOF-driven end means the
+        // served NDP is still alive (the initiator's release-grace holds its endDataPath back), so
+        // unregistering NOW takes the framework's clean teardown — recycle in place, no session cycle. A
+        // quiescence-driven end (no EOF ⇒ the NDP may already be gone) must NOT unregister at 0 NDPs — that
+        // IS the state=104 ghost — so it keeps the after-serve reattach, whose session cycle clears the pin
+        // via NAN-down. Off-experiment, every serve takes the reattach (shipped behavior, verified Phase 0).
+        if (wasServerLink) {
+            if (NanExperiments.e4bRecycle && eofDriven) recycleResponder() else scheduleServeReattach(peerNodeId)
+        }
     }
+
+    /**
+     * E4b: ghost-proof responder recycle — unregister the accept-any request **while its just-EOF'd NDP is
+     * still alive** (the initiator's release-grace holds the far side's endDataPath back), so the framework's
+     * `agent.unwanted()` has an NDP to end and tears the request down cleanly: no 0-NDP TERMINATING ghost, no
+     * NDI pin, and — unlike the after-serve reattach — no session cycle (publish/subscribe/discovery/ICM all
+     * stay up). Then immediately re-file a fresh responder on the same publish session; if the framework
+     * briefly queues it behind the terminating one, `tickleConnectivityIfWaiting` re-admits it within ~ms of
+     * the old NDP's end. Frees the NDI for this node's own initiator role at ~zero cost.
+     */
+    private fun recycleResponder() =
+        onHandler {
+            if (responderCallback == null) return@onHandler // no live responder (mid-reattach) — nothing to recycle
+            Log.i(TAG, "E4b: recycling responder (unregister while the served NDP is still alive)")
+            stopResponder()
+            startResponder()
+        }
 
     /**
      * Re-attach after serving a client, once the NDI slot frees. A served responder is wedged (type 1) and only
@@ -1687,6 +1809,15 @@ class WifiAwareTransport(
         // Gap after a link/handshake ends before the next requestNetwork, so the framework releases the one
         // NDI first (else "no interfaces available").
         const val SETTLE_MS = 1_500L
+
+        // E4b: how long an initiator holds its requestNetwork open after closing the socket, so the FIN can
+        // ride the still-alive NDP (an NDL transmit window is ~100s of ms away) and the responder gets its
+        // recycle-while-alive window. Must stay < SETTLE_MS, which already spaces our next requestNetwork.
+        const val INITIATOR_RELEASE_GRACE_MS = 750L
+
+        // E5 SSI probe: the extra publish-SSI segment prefix ("|p<n>"); Protocol.parse ignores segments past
+        // the third, so old and new peers alike read the advert unchanged.
+        const val SSI_PROBE_PREFIX = "|p"
 
         // Wait this long after a peer's cue advances its digest before waking the sync loop, so a broadcast
         // fast-fanout racing the cue can deliver + carry the frame and converge the digest first — turning the

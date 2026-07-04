@@ -161,6 +161,34 @@ never forms. Clean corroboration of §2.
 
 ## 4. Remaining experiments (cheap, gate specific phases of §5)
 
+> **P0 RESULTS (2026-07-04, run as debug-toggled code on `feat/nan-concurrency` — `NanExperiments` +
+> `…debug.NANEXP`):** both experiments **passed**, plus a third failure mode was found and fixed.
+>
+> - **E4b PASS.** The EOF-discriminated recycle (an EOF/reset proves packets just flowed ⇒ the NDP is
+>   alive; a silent NDP ends via quiescence instead, which keeps the reattach fallback) + a 750 ms
+>   initiator release-grace (socket-close FIN first, `unregisterNetworkCallback` deferred so the FIN can
+>   ride an NDL window) delivered the FIN **8/8** times to the pure responder (P9: 8 serves → 8 in-place
+>   recycles) and unlocked the full middle-node cycle on P8: serve → **recycle in 7 ms** (vs ~3.3 s for
+>   the session-cycle reattach) → **successful initiate 1.5 s after serving** with zero
+>   "no interfaces available" pin refusals (E1's same pattern accrued 22). Fleet after ~15 mixed cycles:
+>   every cache exactly one `state=103`, **zero `state=104` ghosts**. Gates P2 ✓.
+> - **NEW third failure mode (latent in production), found + fixed in P0:** when an inbound NDP request
+>   arrives while the node's own *initiator* link holds the NDI, `onDataPathRequest → selectInterfaceFor
+>   Request → null` makes the framework **remove the standing accept-any responder request** and fire
+>   `onUnavailable` on it — which the app never overrode, leaving the node silently serve-dead until the
+>   next reattach (observed live: P8's request cache empty mid-drive). Fixed: the responder callback now
+>   handles `onUnavailable` (generation-guarded stop+re-file; observed self-heal in 9 ms).
+> - **E5 keepalive PASS.** `updatePublish(sameConfig)` at the 25 s cadence: 5/5 `onSessionConfigUpdated`,
+>   zero failures, zero subscribe re-arms, and framework ICM stayed `instantModeChannel=2437` across
+>   **five consecutive 30 s reconfigure windows** (the pure-responder sawtooth gone). Gates P4 ✓.
+> - **E5 SSI probe PASS.** Each keepalive's `|p<n>` SSI bump re-fired `onServiceDiscovered` on **both**
+>   subscribers, **5/5** — `MATCH_ONCE` re-indicates on changed SSI as the HAL contract implies, so the
+>   passive SSI-borne digest cue (P4's optional fold) is viable on this fleet's firmware.
+> - **Open item for P4:** the literal mid-serve `updatePublish` disturbance check couldn't run — the
+>   discovery loop's `slotBusy()` branch precedes the ICM branch, so keepalives never fire while a link
+>   is live (a structural detail P4's restructure must address and then test; indirect evidence — 7
+>   updates interleaved with live serve/recycle cycles on the same publish session, zero disruptions).
+
 - **E4b — ghost-proof recycle.** At a serve's quiescence, `unregisterNetworkCallback` the responder request
   **while the NDP is still alive** (before closing the socket), then re-file `startResponder()`. Expect:
   clean framework teardown (no 104), fresh request accepted (possibly after a brief
@@ -173,7 +201,7 @@ never forms. Clean corroboration of §2.
   SSI byte and watch a subscriber for a re-fired `onServiceDiscovered` (HAL `MATCH_ONCE` = suppress repeats
   *"with no new data"*) — if it re-fires, the digest cue can ride the publish SSI passively. Gates Phase 4.
 - **>2 spokes** (needs more Aware-capable devices) and **other-OEM sweep** (Samsung S.LSI `maxNdpSessions=1`
-  degradation; older 2-NDI Qualcomm).
+  degradation; older 2-NDI Qualcomm) — still open.
 
 ## 5. Production shape (proposal)
 

@@ -16,6 +16,7 @@
                 <action android:name="app.getknit.knit.debug.REACT" />
                 <action android:name="app.getknit.knit.debug.SHAREAPK" />
                 <action android:name="app.getknit.knit.debug.HEAL" />
+                <action android:name="app.getknit.knit.debug.NANEXP" />
                 <action android:name="app.getknit.knit.debug.WEBPPROBE" />
                 <action android:name="app.getknit.knit.debug.WEBPCONV" />
                 <action android:name="app.getknit.knit.debug.WEBPCHECK" />
