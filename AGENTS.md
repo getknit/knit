@@ -173,13 +173,19 @@ frames.
   client/initiator, smaller = server). The
   responder is anchored to the publish session, so **only *subscribe* is ever re-armed** (publish/responder
   stay up), respecting the "one data interface" rule below.
-- **One NAN data interface (`maxNdiInterfaces == 1`) → one data path at a time → cue-driven ephemeral
+- **One NAN data interface (`maxNdiInterfaces == 1`) → one aware *network* at a time → cue-driven ephemeral
   sync.** The single hardest constraint, confirmed on Pixel 7/8/9 (`dumpsys wifiaware` →
-  `maxNdiInterfaces=1`): a node can hold an NDP to exactly **one** peer at once — a second data path to a
-  *different* peer is refused with `WifiAwareDataPathStMgr: ... NdpInfos[] - no interfaces available!`. So
-  the old "everyone links to everyone they're larger than" model can't work for 3+ nodes: the largest node
-  tries two initiator NDPs and strands the third phone (verified: Pixel 7, largest, couldn't reach Pixel 9
-  while linked to Pixel 8). `WifiAwareTransport` therefore runs **two planes**:
+  `maxNdiInterfaces=1`) — but the limit is **per-role**, not "one NDP, period" (re-audited on-device
+  2026-07-04; evidence + corrected model in `docs/NAN_CONCURRENCY_REAUDIT.md`): every **initiator**
+  `requestNetwork` is its own aware Network and needs its own NDI, so a second concurrent *initiate* is
+  refused with `WifiAwareDataPathStMgr: ... NdpInfos[] - no interfaces available!` (verified: Pixel 7,
+  largest, couldn't reach Pixel 9 while linked to Pixel 8) — while the **accept-any responder is ONE
+  network that officially multiplexes many concurrent inbound NDPs** on the same NDI (E1: 30+ consecutive
+  serves on one request with zero re-attaches; E2: two *simultaneous* inbound NDPs; firmware budget
+  `maxNdpSessions=8`; the `dumpsys` `mMaxNdpInApp=1` once read as a per-app cap is a metrics high-water
+  mark, not a limit). Each node's *outbound* is still single, so "everyone links to everyone they're larger
+  than" still can't work, and the shipped design runs **two planes** (a concurrent-serve redesign is
+  proposed in `docs/NAN_CONCURRENCY_REAUDIT.md` §5):
   - **Coordination plane** — Wi-Fi Aware *messages* (`DiscoverySession.sendMessage` / `onMessageReceived`,
     ~255 B, best-effort, `maxQueuedTransmitMessages=8`) ride discovery follow-up frames and need **no data
     path**, so they reach every neighbor at once *and* keep working while the one NDP is busy. Each node

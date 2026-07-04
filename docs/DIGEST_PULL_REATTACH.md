@@ -1,5 +1,15 @@
 # Proposal: digest-pull anti-entropy + deliberate re-attach
 
+> **Re-audit note (2026-07-04):** the "★ load-bearing hardware facts" below were re-verified against the
+> framework source and on-device experiments and are **partially refuted** — a served accept-any responder
+> does NOT wedge (it serves indefinitely; the after-serve re-attach's only real job is releasing the NDI
+> for the node's own *initiator* role), the leaked `state=104` request is an AOSP cleanup bug reachable
+> with perfect callback hygiene (re-attach cures it only by racing NAN-down — a coin flip per serve), and
+> `mMaxNdpInApp=1` is a metrics high-water mark, not a cap. See **`docs/NAN_CONCURRENCY_REAUDIT.md`** for
+> the corrected model, the evidence, and the successor proposal. This doc stays as designed-as-shipped
+> history for the digest-pull machinery (Part A, still current) and the re-attach lifecycle (Part B,
+> proposed for replacement).
+
 **Status:** Parts A (digest-pull) and B (deliberate re-attach) are **implemented and on-device-validated**
 (Phases 1a/1b/2, commits after `b6293ae`). A subsequent field diagnosis found the reactive-re-attach model
 had a **second, more severe wedge** it could neither fix nor avoid causing; the transport lifecycle was then

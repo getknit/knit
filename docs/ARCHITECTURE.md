@@ -113,10 +113,14 @@ Implementations:
   identity on discovery with zero round-trips and rejects discovering itself. `SERVICE_NAME` is the
   transport marker: any breaking change to the cue or socket format bumps it — a **hard cut** (old and
   new builds simply don't discover each other), history `.v2`…`.v6` in `docs/DIGEST_PULL_REATTACH.md`.
-- **One data interface → two planes.** Real chipsets (Pixel 7/8/9) report `maxNdiInterfaces == 1`: a
-  node holds an NDP data path to exactly **one** peer at a time. So the transport does **not** try to
-  link everyone — it runs two planes (the single hardest constraint; the deep treatment, including the
-  two distinct NDI wedges, is in `AGENTS.md`):
+- **One data interface → two planes.** Real chipsets (Pixel 7/8/9) report `maxNdiInterfaces == 1`, and
+  each aware *network* needs its own NDI — so a node holds at most one **outbound** (initiator) NDP, and
+  cannot mix roles concurrently. (The **accept-any responder** is one network that can officially serve
+  **many concurrent inbound NDPs** on the same NDI — on-device-verified 2026-07-04; the shipped transport
+  still serializes serves by choice, and the concurrent-serve redesign is proposed in
+  `docs/NAN_CONCURRENCY_REAUDIT.md`.) So the transport does **not** try to link everyone — it runs two
+  planes (the deep treatment, including the NDI-wedge root cause, is in `AGENTS.md` and
+  `docs/NAN_CONCURRENCY_REAUDIT.md`):
   - **Coordination plane** — Wi-Fi Aware *messages* (`DiscoverySession.sendMessage`, ~255 B, best-effort)
     ride discovery follow-up frames and need **no data path**, so they reach every neighbor at once and
     keep working while the one NDP is busy. Each node cues `nodeId|version`, a `StoreDigest` content
@@ -143,7 +147,9 @@ Implementations:
 - **Lifecycle hardening.** A time-boxed client `requestNetwork` (`HANDSHAKE_TIMEOUT_MS`) + per-peer
   backoff, a single-flight / generation-guarded `reattach()`, an idempotent responder, and a
   process-restart `checkWedge` watchdog keep the single NDI off the "no interfaces available" wedge (the
-  full lifecycle is in `AGENTS.md` and `docs/DIGEST_PULL_REATTACH.md`).
+  full lifecycle is in `AGENTS.md` and `docs/DIGEST_PULL_REATTACH.md`; the framework root cause of both
+  wedges — a 0-NDP TERMINATING request the framework never reaps — plus the ghost-proof fix is in
+  `docs/NAN_CONCURRENCY_REAUDIT.md` §2).
   `ACTION_WIFI_AWARE_STATE_CHANGED` drives `health` (→ `Degraded` when Wi-Fi is off or another Wi-Fi mode
   seizes the radio) and re-attach on recovery. A device without `FEATURE_WIFI_AWARE` runs the Bluetooth
   plane instead (§3.2.1); only a device with **neither** radio is "unsupported".
