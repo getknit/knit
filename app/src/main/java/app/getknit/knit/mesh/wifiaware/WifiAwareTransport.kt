@@ -220,6 +220,18 @@ class WifiAwareTransport(
     @Volatile
     private var suppressed: Set<String> = emptySet()
 
+    // Peers another plane (Bluetooth) can currently see, pushed by CompositeMeshTransport.onForeignReachable.
+    // Used only to corroborate the wedge watchdog ([checkWedge]): a self-kill is only justified for an owed peer
+    // that is genuinely nearby (another plane sights it) yet our NAN data path can't serve it — the leak wedge a
+    // restart cures — not for one that has simply walked out of NDP range while still trickling us cues. [hasForeignPlane]
+    // records whether a corroborating plane exists at all (the composite only wires this up with >1 child), so a
+    // NAN-only device falls back to the un-corroborated behaviour. Volatile — written from the composite's collector.
+    @Volatile
+    private var foreignReachable: Set<String> = emptySet()
+
+    @Volatile
+    private var hasForeignPlane = false
+
     // nodeId -> where to send a cue (a PeerHandle valid on a specific discovery session). Populated from
     // discovery (subscribe handle) and from inbound cues (the session the message arrived on — which is how
     // a pure responder, whose own subscribe is down, still learns a handle to cue larger peers back).
@@ -349,9 +361,24 @@ class WifiAwareTransport(
         val now = SystemClock.elapsedRealtime()
         return cueTarget.keys.any { nodeId ->
             syncWanted(nodeId, v) &&
-                (peers.containsKey(nodeId) || lastSeenAt[nodeId]?.let { now - it <= REACHABLE_LINGER_MS } == true)
+                (peers.containsKey(nodeId) || lastSeenAt[nodeId]?.let { now - it <= REACHABLE_LINGER_MS } == true) &&
+                corroboratedPresent(nodeId)
         }
     }
+
+    /**
+     * Whether an owed [nodeId] is corroborated genuinely-present strongly enough to justify the wedge self-kill.
+     * The kill exists to clear the leaked-request wedge (a pinned NDI slot) — useless if the peer is simply out
+     * of NDP range while still cueing us over the (longer-reach) coordination plane, which a restart cannot fix.
+     * That false case bit the smallest-nodeId node hardest: as everyone's pure responder it can neither initiate
+     * to the peer nor complete the peer's NDP, so an out-of-range-but-still-cueing peer kept a sync owed forever
+     * and self-killed it (field-observed 2026-07-03, P7 walked off the triangle's far leg). When a corroborating
+     * plane exists ([hasForeignPlane], i.e. Bluetooth), require it to *also* sight the peer (evidence it's truly
+     * nearby and the fault is our NAN data path); a live NAN link is its own corroboration. A NAN-only device has
+     * no corroborator, so it falls back to the prior behaviour.
+     */
+    private fun corroboratedPresent(nodeId: String): Boolean =
+        !hasForeignPlane || peers.containsKey(nodeId) || nodeId in foreignReachable
 
     /**
      * Last-resort self-heal for the **leaked-request wedge** (a framework RESPONDER `requestNetwork` orphaned at
@@ -421,6 +448,16 @@ class WifiAwareTransport(
         suppressed = peers
         // A peer just became Bluetooth-covered (skip syncing it) or dropped off (resume) — re-evaluate now.
         healSignal.trySend(Unit)
+    }
+
+    /**
+     * The set of peers another plane (Bluetooth) can currently see, pushed by [CompositeMeshTransport]. We use it
+     * only to corroborate the wedge watchdog ([checkWedge] / [anySyncOwed]): being called at all means a
+     * corroborating plane exists, so a NAN-only device is left on the un-corroborated fallback.
+     */
+    override fun onForeignReachable(peers: Set<String>) {
+        hasForeignPlane = true
+        foreignReachable = peers
     }
 
     override suspend fun send(wire: WireEnvelope, to: Peer?) {
@@ -623,6 +660,18 @@ class WifiAwareTransport(
                     lastRearmAt = now
                     rearmSubscribe()
                 }
+                // Pure-responder ICM keepalive. A node that only ever *responds* — notably the smallest nodeId,
+                // everyone's responder — never satisfies needsRediscovery() above (it gates on being an
+                // initiator), so it never re-arms subscribe and its Instant Communication Mode lapses ~30s after
+                // attach and stays dark, leaving it discoverable/serviceable only in brief windows (the "message
+                // every minute or two" sawtooth once BLE drops and NAN is the sole plane). Re-arm subscribe to
+                // relight ICM while a sync is genuinely owed to a reachable peer we can't initiate to — demand-
+                // gated (stops on convergence) and rate-limited by ICM_REARM_COOLDOWN_MS so it can't churn
+                // subscribe toward its wedge state.
+                instantSupported && needsIcmRelight() && now - lastRearmAt > ICM_REARM_COOLDOWN_MS -> {
+                    lastRearmAt = now
+                    rearmSubscribe()
+                }
                 else -> Unit
             }
         }
@@ -690,6 +739,22 @@ class WifiAwareTransport(
         }
     }
 
+    /**
+     * True when we should re-arm subscribe purely to **re-light Instant Communication Mode** as a *responder*: a
+     * sync is owed to a cue-reachable peer we are NOT the initiator for (`localNodeId < nodeId`), so [driveSync]
+     * can never bring the NDP up from our side — only the peer can reach us, and only while our NAN radio stays
+     * dense (ICM lit). [needsRediscovery] handles the initiator side (and relights ICM as a side effect), but the
+     * smallest node has no initiator peers, so without this its ICM never relights and it receives only in the
+     * brief post-attach/post-serve windows. Demand-gated: goes false once the peer converges ([syncWanted] →
+     * [DigestTracker.reconcileWanted] drops it) or it becomes BLE-suppressed, so a settled mesh does no re-arm.
+     */
+    private fun needsIcmRelight(): Boolean {
+        val localVersion = storeDigest.version.value
+        return cueTarget.keys.any { nodeId ->
+            localNodeId < nodeId && nodeId !in peers.keys && syncWanted(nodeId, localVersion)
+        }
+    }
+
     private fun rediscoverDelayMs(): Long {
         // Detached (no Aware session): retry attach() promptly. A reattach's inline attach() often can't
         // re-enable NAN immediately after tearing the session down (the chipset needs a beat; isAvailable is
@@ -704,6 +769,9 @@ class WifiAwareTransport(
         val base = when {
             cueTarget.isEmpty() -> REDISCOVER_LONELY_MS // blind (no cue targets) → rediscover / recover fast
             cueTarget.keys.any { localNodeId > it && syncWanted(it, localVersion) } -> SYNC_RETRY_IDLE_MS
+            // A sync owed to a peer we only respond to → tick around the ICM keepalive cadence so the loop can
+            // relight ICM (needsIcmRelight) before the ~30s auto-disable, instead of sleeping REDISCOVER_IDLE_MS.
+            instantSupported && needsIcmRelight() -> ICM_REARM_COOLDOWN_MS
             else -> REDISCOVER_IDLE_MS
         }
         val power = powerState.state.value
@@ -1462,5 +1530,11 @@ class WifiAwareTransport(
         // departed peer's cue target is pruned (cue send fails) before we'd re-arm again, so we don't churn
         // subscribe toward its wedge state; short enough that a restarted peer is reconnected within ~1 tick.
         const val REARM_COOLDOWN_MS = 15_000L
+
+        // Min spacing between subscribe re-arms done purely to keep Instant Communication Mode lit on a
+        // pure-responder node (see [needsIcmRelight] / the discovery loop). Just under the framework's ~30s ICM
+        // auto-disable so a relit window is refreshed before it lapses, but no faster — subscribe re-arm churn
+        // risks the subscribe wedge, so this only fires while a sync is actually owed to a peer we can't initiate to.
+        const val ICM_REARM_COOLDOWN_MS = 25_000L
     }
 }
