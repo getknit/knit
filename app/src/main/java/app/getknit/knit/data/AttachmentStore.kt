@@ -3,7 +3,7 @@ package app.getknit.knit.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
-import app.getknit.knit.data.gif.GifTranscode
+import app.getknit.knit.data.webp.WebpTranscode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -15,9 +15,10 @@ import java.security.MessageDigest
  * in the wire frame, so any holder can serve the bytes and identical images dedupe.
  *
  * Photos are decoded, EXIF-rotated, downscaled, and re-encoded to JPEG. GIFs keep their animation but
- * are re-encoded smaller via [app.getknit.knit.data.gif.GifTranscode] (downscaled + frame-rate-capped)
- * so they transmit faster; a GIF that can't be shrunk falls back to its original bytes. The bytes never
- * touch disk — they go straight into the encrypted database.
+ * are re-encoded to a smaller **animated WebP** via [app.getknit.knit.data.webp.WebpTranscode] (VP8
+ * beats GIF's LZW even at the same size, and Coil plays animated WebP like a GIF) so they transmit
+ * faster; a GIF that somehow can't be shrunk falls back to its original bytes. The bytes never touch
+ * disk — they go straight into the encrypted database.
  *
  * Before staging, the image is screened for explicit content via [BlobRepository]. Sending an explicit
  * image is *allowed but discouraged*: a flagged image is still ingested, and [ingest] reports the flag
@@ -47,12 +48,13 @@ class AttachmentStore(private val context: Context, private val blobs: BlobRepos
     suspend fun ingest(uri: Uri): IngestResult = withContext(Dispatchers.IO) {
         val sourceMime = context.contentResolver.getType(uri)
         val (mime, bytes) = if (sourceMime == "image/gif") {
-            // Android's Bitmap APIs can't re-encode an animated GIF, so shrink it with a dedicated
-            // pure-JVM transcoder (downscale + cap frame rate + re-quantize) to speed up transmit.
-            // Keep the raw bytes if that fails or wouldn't be smaller, so a GIF is never regressed.
+            // Re-encode the GIF as a smaller animated WebP (its per-frame VP8 compression beats GIF's
+            // 256-colour LZW even at the same dimensions, and Coil's AnimatedImageDecoder plays it like
+            // a GIF). Keep the raw GIF only if that somehow isn't smaller, so a GIF is never regressed.
             val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: return@withContext IngestResult.Failed
-            "image/gif" to (GifTranscode.shrink(raw, GIF_MAX_DIMENSION, GIF_MAX_FPS) ?: raw)
+            val webp = WebpTranscode.shrink(raw, GIF_MAX_DIMENSION, GIF_MAX_FPS, GIF_WEBP_QUALITY)
+            if (webp != null) "image/webp" to webp else "image/gif" to raw
         } else {
             val bitmap = decodeOrientedBounded(context, uri, MAX_DIMENSION)
                 ?: return@withContext IngestResult.Failed
@@ -93,10 +95,12 @@ class AttachmentStore(private val context: Context, private val blobs: BlobRepos
         const val JPEG_QUALITY = 85
         const val WEBP_QUALITY = 85
 
-        // GIFs are re-encoded (not re-photographed) so a tighter dimension + frame-rate cap keeps them
-        // legibly animated while cutting the bytes that go over BLE. See [GifTranscode].
+        // GIFs are re-encoded to animated WebP (not re-photographed), so a tighter dimension + frame-rate
+        // cap keeps them legibly animated while cutting the bytes that go over BLE; WEBP quality trades
+        // size vs. fidelity (q70 shrinks even already-optimized GIFs). See [WebpTranscode].
         const val GIF_MAX_DIMENSION = 480
         const val GIF_MAX_FPS = 15
+        const val GIF_WEBP_QUALITY = 70
 
         const val MAX_BYTES = 8 * 1024 * 1024 // 8 MiB cap (a transcoded GIF should land well under this)
     }
