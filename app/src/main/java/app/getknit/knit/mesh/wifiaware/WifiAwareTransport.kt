@@ -216,7 +216,7 @@ class WifiAwareTransport(
             override fun onLinkDown(nodeId: String) {
                 // A read/write-loop end means packets flowed moments ago (EOF needs the peer's FIN, an error
                 // needs a reset — a dead NDP just goes silent and ends via quiescence instead), so the NDP was
-                // alive recently: the E4b ghost-proof recycle window (see teardownPeer/recycleResponder).
+                // alive recently: the ghost-proof recycle window (see teardownPeer/recycleResponder).
                 teardownPeer(nodeId, eofDriven = true)
             }
         }
@@ -292,6 +292,13 @@ class WifiAwareTransport(
     // elapsedRealtime of the last subscribe re-arm (to re-discover a peer whose handle staled), rate-limited
     // by REARM_COOLDOWN_MS so we don't churn subscribe (its wedge trigger) hunting a peer that's really gone.
     @Volatile private var lastRearmAt = 0L
+
+    // Non-zero (elapsedRealtime) while a deliberate session cycle sits in its post-teardown settle: the
+    // framework's last-client disable runs onAwareDownCleanupDataPaths (the cache wipe that clears a
+    // pinned/ghosted request) ~50 ms after session.close() — measured on-device — but the availability
+    // BROADCASTS lag by many seconds on a screen-off device, so the settle is a fixed short wait, not a
+    // broadcast handshake. The discovery loop re-attaches once it elapses; the receiver must not attach early.
+    @Volatile private var sessionCycleSettleStartedAt = 0L
 
     // elapsedRealtime of the last E5 ICM keepalive (updatePublish) — its own clock, deliberately NOT
     // lastRearmAt: a keepalive is not a subscribe re-arm and must not delay genuine re-discovery.
@@ -463,6 +470,12 @@ class WifiAwareTransport(
      * happens when the mesh genuinely cannot sync for the full window. `reattach()` cannot clear this wedge (the
      * orphaned callback ref is lost, so it is never unregistered), so the only proven cure is **process death**;
      * MeshService is `START_STICKY`, so the foreground service is recreated. Rate-limited so it can't restart-storm.
+     *
+     * P2 demotion: with the ghost-proof recycle + the flap-handshake session cycle in front of it, this should
+     * ~never fire — it remains the true last resort for a framework cache ghosted while another aware client
+     * holds NAN up (no flap possible). Under P1 concurrency an inbound accept also stamps [lastLinkOrAcceptAt],
+     * which is correct: a real ghost blocks accepts too, so genuine wedges still trip it, while an
+     * initiator-only pin is now a managed state ([responderPinsNdi]) with its own recovery, not a wedge.
      */
     private fun checkWedge() {
         val now = SystemClock.elapsedRealtime()
@@ -503,6 +516,7 @@ class WifiAwareTransport(
         attaching.set(false)
         subscribing.set(false)
         lastLinkEndedAt = 0L
+        sessionCycleSettleStartedAt = 0L
         synchronized(lock) {
             inFlight.clear()
             discovered.clear()
@@ -820,7 +834,7 @@ class WifiAwareTransport(
                 }
 
                 session == null -> {
-                    attach()
+                    attachAfterCycleSettle(now)
                 }
 
                 // radio came back / first attach failed
@@ -828,7 +842,15 @@ class WifiAwareTransport(
                     Unit
                 }
 
-                // one NDI: a link or handshake is up — wait for the supervisor to free it
+                // links/handshakes/accepts are live — wait for the supervisors to free the radio
+                // P2: a served-then-idle responder request pins the NDI (§2 of the re-audit) and an initiate
+                // is owed — the clean in-place recycle window (an NDP still alive) is gone, so cycle the
+                // session and wait for the availability flap: the old reattach's NAN-down race, as a handshake.
+                responderPinsNdi && initiateOwedToReachable() && now - lastReattachAt > REATTACH_COOLDOWN_MS -> {
+                    lastReattachAt = now
+                    sessionCycleWithSettle()
+                }
+
                 driveSync() -> {
                     Unit
                 }
@@ -862,6 +884,55 @@ class WifiAwareTransport(
             }
         }
     }
+
+    /**
+     * The discovery loop's detached branch: re-attach at the fast cadence — unless a deliberate session cycle
+     * is in its post-teardown settle ([sessionCycleWithSettle]), where an early attach() is exactly the race
+     * that used to let a state=104 ghost survive the cycle. Once [SESSION_CYCLE_SETTLE_MS] elapses the
+     * framework's ~50 ms disable + cache wipe has long since run, so attach.
+     */
+    private fun attachAfterCycleSettle(now: Long) {
+        val settleStart = sessionCycleSettleStartedAt
+        if (settleStart != 0L && now - settleStart < SESSION_CYCLE_SETTLE_MS) return
+        if (settleStart != 0L) {
+            sessionCycleSettleStartedAt = 0L
+            Log.i(TAG, "session cycle: settle elapsed — re-attaching over the wiped request cache")
+        }
+        attach()
+    }
+
+    /**
+     * P2 fallback for the pinned-at-0-NDPs corner (`docs/NAN_CONCURRENCY_REAUDIT.md` §5.2): a responder
+     * request that has served (so the framework keeps its NDI assigned) but whose clean recycle window was
+     * missed — its last serve ended by quiescence, not EOF, so its NDP may already be gone and unregistering
+     * at 0 NDPs IS the state=104 ghost. Tear the whole Aware session down like [reattach], but do NOT
+     * re-attach inline: as the last aware client, our detach makes the framework disable NAN and run
+     * `onAwareDownCleanupDataPaths` — the request-cache wipe that clears the pin (and the ghost this
+     * teardown's own unregister-at-0-NDPs just minted) — **~50 ms after `session.close()`, measured
+     * on-device**. The settle wait ([SESSION_CYCLE_SETTLE_MS], enforced by [attachAfterCycleSettle]) covers
+     * that with a wide margin before re-attaching, turning [reattach]'s old coin-flip race into a
+     * deterministic sequence. Deliberately NOT a broadcast handshake: ACTION_WIFI_AWARE_STATE_CHANGED
+     * delivery lags by many seconds on a screen-off device (field-measured), far behind the actual disable.
+     * Never runs with live links ([anyLinkActivity]); single-flight via [reattaching].
+     */
+    private fun sessionCycleWithSettle() =
+        onHandler {
+            if (anyLinkActivity()) return@onHandler // never drop live links; the loop re-evaluates
+            if (!reattaching.compareAndSet(false, true)) return@onHandler
+            Log.w(TAG, "session cycle: pinned responder + initiate owed — tearing down, settling")
+            stopResponder()
+            runCatching { publishSession?.close() }
+            runCatching { subscribeSession?.close() }
+            runCatching { session?.close() }
+            publishSession = null
+            subscribeSession = null
+            session = null
+            attaching.set(false)
+            subscribing.set(false)
+            sessionCycleSettleStartedAt = SystemClock.elapsedRealtime()
+            reattaching.set(false) // guard only collapses concurrent teardowns; the attach comes post-settle
+            healSignal.trySend(Unit)
+        }
 
     /**
      * Whether the ICM relight should fire this tick. E5 keepalive mode ([NanExperiments.e5Keepalive]) is
@@ -1473,7 +1544,7 @@ class WifiAwareTransport(
                     // message reaches the next neighbor without paying the full QUIESCENCE_MS idle hold — the
                     // main lever on multi-node propagation latency (one NDP at a time). Full linger only when no
                     // one else is sync-wanted, so an active 1:1 chat still re-uses the warm NDP.
-                    val quiescence = if (otherSyncWanted(conn.nodeId)) CONTENDED_QUIESCENCE_MS else QUIESCENCE_MS
+                    val quiescence = if (initiateOwed()) CONTENDED_QUIESCENCE_MS else QUIESCENCE_MS
                     idle >= quiescence || held >= SYNC_MAX_WINDOW_MS
                 } else {
                     idle >= RESPONDER_QUIESCENCE_MS || held >= RESPONDER_MAX_HOLD_MS
@@ -1491,15 +1562,34 @@ class WifiAwareTransport(
     }
 
     /**
-     * True if some peer *other than* [current] is sync-wanted and we're its initiator — i.e. another pair is
-     * waiting on our single NDI. Lets [superviseLink] cut the post-backfill linger short so the next neighbor
-     * gets the message without the full [QUIESCENCE_MS] hold. Reads the concurrent [cueTarget] (every peer we
-     * hear cues from — the signal [rediscoverDelayMs] also uses); [DigestTracker] is internally synchronized.
+     * True if an NDP **initiate is owed**: some peer we're the initiator for (`localNodeId > it`, the
+     * tie-break), not currently linked, is sync-wanted per [DigestTracker]. A linked peer is excluded by
+     * `!in peers.keys` (which also covers "the current link" for every caller — a served peer is larger, so
+     * the tie-break excludes it anyway). Drives [superviseLink]'s contended-linger cut (another pair is
+     * waiting on the radio), the teardown-time recycle decision (free the NDI only when someone actually
+     * needs our initiator role), and the pinned-responder session-cycle fallback. Reads the concurrent
+     * [cueTarget]; [DigestTracker] is internally synchronized.
      */
-    private fun otherSyncWanted(current: String): Boolean {
+    private fun initiateOwed(): Boolean {
         val localVersion = storeDigest.version.value
         return cueTarget.keys.any { nodeId ->
-            nodeId != current && localNodeId > nodeId && syncWanted(nodeId, localVersion)
+            localNodeId > nodeId && nodeId !in peers.keys && syncWanted(nodeId, localVersion)
+        }
+    }
+
+    /**
+     * [initiateOwed] restricted to peers heard on the coordination plane within [REACHABLE_LINGER_MS] — the
+     * gate for the **expensive** pinned-responder session cycle: a peer that walked away lingers in
+     * [cueTarget] with a stale divergent digest until [pruneAbsentPeers] reaps it (~150 s), and cycling the
+     * whole session for a peer nobody can reach would burn up to ~7 pointless cycles in that window. The
+     * cheap in-place recycle keeps plain [initiateOwed] (a 7 ms no-op if the peer turns out gone).
+     */
+    private fun initiateOwedToReachable(): Boolean {
+        val localVersion = storeDigest.version.value
+        val now = SystemClock.elapsedRealtime()
+        return cueTarget.keys.any { nodeId ->
+            localNodeId > nodeId && nodeId !in peers.keys && syncWanted(nodeId, localVersion) &&
+                lastSeenAt[nodeId]?.let { now - it <= REACHABLE_LINGER_MS } == true
         }
     }
 
@@ -1534,19 +1624,15 @@ class WifiAwareTransport(
         // Only client links own a per-peer network callback; server links share the responder — leave it.
         val wasServerLink = !conn.isInitiator
         conn.callback?.let { cb ->
-            if (NanExperiments.e4bRecycle) {
-                // E4b release-grace: conn.close() just queued the FIN, which rides the still-alive NDP on an
-                // upcoming NDL window (~100s of ms) — unregistering now tears the NDP under it, which is why
-                // the responder historically never saw a FIN. Holding the request open briefly lets the FIN
-                // land so the responder can recycle-while-alive (see recycleResponder); SETTLE_MS (> the
-                // grace) still gates this node's own next requestNetwork.
-                handler.postDelayed(
-                    { runCatching { connectivity.unregisterNetworkCallback(cb) } },
-                    INITIATOR_RELEASE_GRACE_MS,
-                )
-            } else {
-                runCatching { connectivity.unregisterNetworkCallback(cb) }
-            }
+            // Release-grace: conn.close() just queued the FIN, which rides the still-alive NDP on an upcoming
+            // NDL window (~100s of ms) — unregistering now tears the NDP under it, which is why the responder
+            // historically never saw a FIN. Holding the request open briefly lets the FIN land so the far
+            // side can recycle-while-alive (see recycleResponder); SETTLE_MS (> the grace) still gates this
+            // node's own next requestNetwork. P0-validated: FIN delivery 8/8.
+            handler.postDelayed(
+                { runCatching { connectivity.unregisterNetworkCallback(cb) } },
+                INITIATOR_RELEASE_GRACE_MS,
+            )
         }
         // Back off an *initiator* link that ended without a clean sync (a reset — usually the responder was
         // busy on its one NDI, or the NDP dropped), so we don't immediately re-hammer a peer we can't reach
@@ -1559,51 +1645,59 @@ class WifiAwareTransport(
         refreshNeighbors()
         Log.i(TAG, "link down: $peerNodeId")
         // A served client just left. The serve itself never wedges (re-audit E1: 30+ consecutive serves), but
-        // the responder request now holds the NDI at 0 NDPs, blocking this node's own initiator role until
-        // the request is recycled (docs/NAN_CONCURRENCY_REAUDIT.md §2). E4b: an EOF-driven end means the
-        // served NDP is still alive (the initiator's release-grace holds its endDataPath back), so
-        // unregistering NOW takes the framework's clean teardown — recycle in place, no session cycle. A
-        // quiescence-driven end (no EOF ⇒ the NDP may already be gone) must NOT unregister at 0 NDPs — that
-        // IS the state=104 ghost — so it keeps the after-serve reattach, whose session cycle clears the pin
-        // via NAN-down. Off-experiment, every serve takes the reattach (shipped behavior, verified Phase 0).
-        // P1 (concurrent serves): both actions terminate EVERY connection on the shared request (recycle
-        // unregisters it; reattach tears the whole session), so they run only when the departing link was the
-        // LAST live inbound and no accept is mid-HELLO — with siblings still serving there is nothing to do
-        // (the pin question only arises once the last inbound ends).
+        // from its first serve on the responder request keeps the NDI assigned even at 0 NDPs, blocking this
+        // node's own initiator role until the request is recycled (docs/NAN_CONCURRENCY_REAUDIT.md §2). The
+        // P2 policy, applied only when the departing link was the LAST live inbound with no accept mid-HELLO
+        // (recycling/reattaching terminates EVERY connection on the shared request — never under siblings):
+        // - EOF-driven end + an initiate owed: the served NDP is still alive (the initiator's release-grace
+        //   holds its endDataPath back), so unregister NOW — the framework's clean teardown — and re-file.
+        //   In-place, ~7 ms, no session cycle (P0-validated).
+        // - EOF but nothing owed (notably the smallest node, everyone's pure responder): leave the request
+        //   serving — E1 proved serve-ability never degrades, and the pin only blocks initiates we don't make.
+        // - Quiescence-driven end (no EOF ⇒ the NDP may already be gone): NEVER unregister at 0 NDPs — that
+        //   IS the state=104 ghost. If an initiate is owed now or later, the discovery loop's flap-handshake
+        //   session cycle (sessionCycleAwaitingFlap) clears the pin.
         if (wasServerLink) {
             val lastInbound =
                 synchronized(lock) { peers.values.none { !it.isInitiator } && accepting == 0 }
             when {
                 !lastInbound -> Unit
-                NanExperiments.e4bRecycle && eofDriven -> recycleResponder()
-                else -> scheduleServeReattach(peerNodeId)
+
+                // Rollback lever: the legacy after-serve session cycle.
+                !USE_GHOST_PROOF_RECYCLE -> scheduleServeReattach(peerNodeId)
+
+                eofDriven && initiateOwed() -> recycleResponder()
+
+                else -> Unit
             }
         }
     }
 
     /**
-     * E4b: ghost-proof responder recycle — unregister the accept-any request **while its just-EOF'd NDP is
-     * still alive** (the initiator's release-grace holds the far side's endDataPath back), so the framework's
-     * `agent.unwanted()` has an NDP to end and tears the request down cleanly: no 0-NDP TERMINATING ghost, no
-     * NDI pin, and — unlike the after-serve reattach — no session cycle (publish/subscribe/discovery/ICM all
-     * stay up). Then immediately re-file a fresh responder on the same publish session; if the framework
-     * briefly queues it behind the terminating one, `tickleConnectivityIfWaiting` re-admits it within ~ms of
-     * the old NDP's end. Frees the NDI for this node's own initiator role at ~zero cost.
+     * Ghost-proof responder recycle (`docs/NAN_CONCURRENCY_REAUDIT.md` §5.2, P0-validated): unregister the
+     * accept-any request **while its just-EOF'd NDP is still alive** (the initiator's release-grace holds the
+     * far side's endDataPath back), so the framework's `agent.unwanted()` has an NDP to end and tears the
+     * request down cleanly: no 0-NDP TERMINATING ghost, no NDI pin, and — unlike the legacy after-serve
+     * reattach — no session cycle (publish/subscribe/discovery/ICM all stay up). Then immediately re-file a
+     * fresh responder on the same publish session; if the framework briefly queues it behind the terminating
+     * one, `tickleConnectivityIfWaiting` re-admits it within ~ms of the old NDP's end. Frees the NDI for this
+     * node's own initiator role in ~7 ms (measured), vs ~3.3 s for the session cycle.
      */
     private fun recycleResponder() =
         onHandler {
             if (responderCallback == null) return@onHandler // no live responder (mid-reattach) — nothing to recycle
-            Log.i(TAG, "E4b: recycling responder (unregister while the served NDP is still alive)")
+            Log.i(TAG, "recycling responder (unregister while the served NDP is still alive)")
             stopResponder()
             startResponder()
         }
 
     /**
-     * Re-attach after serving a client, once the NDI slot frees. A served responder is wedged (type 1) and only
-     * a full re-attach restores serve-ability. If the slot is momentarily busy (this node started a client link
-     * or accept in the meantime), **reschedule** rather than drop it — a dropped re-attach used to strand the
-     * responder wedged until the watchdog restart. Stops when the session is gone (the discovery loop's
-     * `session == null -> attach()` fast-retry rebuilds it) or once the re-attach fires.
+     * P2 rollback path only ([USE_GHOST_PROOF_RECYCLE] = false; delete together once the recycle has soaked):
+     * the legacy after-serve session reattach. Its original premise — "a served responder is wedged; only a
+     * full re-attach restores serve-ability" — was refuted by the re-audit (E1: serve-ability never degrades);
+     * its real effect was releasing the pinned NDI for the initiator role, at the cost of a full session cycle
+     * per serve and the reattach-vs-deferred-disable ghost race (`docs/NAN_CONCURRENCY_REAUDIT.md` §2-3).
+     * If the slot is momentarily busy, **reschedule** rather than drop; stops when the session is gone.
      */
     private fun scheduleServeReattach(peerNodeId: String) {
         handler.postDelayed({
@@ -1735,9 +1829,14 @@ class WifiAwareTransport(
             ) {
                 val mgr = awareManager ?: return
                 if (mgr.isAvailable) {
+                    // While a deliberate session cycle settles, the loop owns the re-attach — an early attach
+                    // here is the exact race the settle exists to prevent. (Availability broadcasts also lag
+                    // many seconds behind the real state on a screen-off device, so this edge is stale anyway.)
+                    if (sessionCycleSettleStartedAt != 0L) return
                     attach() // onHandler-funneled; the attaching/session guards make a redundant call a no-op
                 } else {
                     onHandler {
+                        if (sessionCycleSettleStartedAt != 0L) Log.i(TAG, "session cycle: NAN down broadcast observed")
                         _health.value = TransportHealth.Unavailable // Wi-Fi Aware switched off (Wi-Fi off / airplane mode)
                         peers.keys.toList().forEach { teardownPeer(it) }
                         ++attachGen // invalidate in-flight discovery callbacks from the torn-down generation
@@ -1872,10 +1971,21 @@ class WifiAwareTransport(
         // NDI first (else "no interfaces available").
         const val SETTLE_MS = 1_500L
 
-        // E4b: how long an initiator holds its requestNetwork open after closing the socket, so the FIN can
-        // ride the still-alive NDP (an NDL transmit window is ~100s of ms away) and the responder gets its
+        // How long an initiator holds its requestNetwork open after closing the socket, so the FIN can ride
+        // the still-alive NDP (an NDL transmit window is ~100s of ms away) and the responder gets its
         // recycle-while-alive window. Must stay < SETTLE_MS, which already spaces our next requestNetwork.
         const val INITIATOR_RELEASE_GRACE_MS = 750L
+
+        // P2 rollback switch: false restores the legacy after-serve session reattach (scheduleServeReattach)
+        // in place of the ghost-proof recycle + flap-handshake policy. Delete (with scheduleServeReattach)
+        // once the recycle has soaked a release.
+        const val USE_GHOST_PROOF_RECYCLE = true
+
+        // Post-teardown settle of a deliberate session cycle before re-attaching. The framework's last-client
+        // disable + onAwareDownCleanupDataPaths (the request-cache wipe) ran ~50 ms after session.close() in
+        // on-device measurement; 2 s covers it with a wide margin. Broadcasts are NOT the signal — their
+        // delivery lags many seconds on a screen-off device.
+        const val SESSION_CYCLE_SETTLE_MS = 2_000L
 
         // E5 SSI probe: the extra publish-SSI segment prefix ("|p<n>"); Protocol.parse ignores segments past
         // the third, so old and new peers alike read the advert unchanged.

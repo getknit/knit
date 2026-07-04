@@ -7,13 +7,8 @@ package app.getknit.knit.mesh.wifiaware
  * In-memory only: a process restart resets them. P2/P4 promote the validated paths and delete this object.
  */
 object NanExperiments {
-    /**
-     * E4b: on an EOF-driven server-link end, recycle the accept-any responder request (unregister **while
-     * the served NDP is still alive** — the framework's clean teardown path — then re-file) instead of the
-     * after-serve session reattach; initiator teardowns hold their `requestNetwork` open for a short
-     * release-grace so the FIN lands and the responder's recycle window exists.
-     */
-    @Volatile var e4bRecycle = false
+    // E4b (ghost-proof responder recycle) was promoted to default behavior in P2 — the rollback lever is now
+    // WifiAwareTransport.USE_GHOST_PROOF_RECYCLE. The E5 flags below remain until P4 promotes the keepalive.
 
     /** E5: relight ICM via an in-place `updatePublish` keepalive instead of the churn-prone subscribe re-arm. */
     @Volatile var e5Keepalive = false

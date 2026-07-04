@@ -452,10 +452,10 @@ class DebugBridgeReceiver :
             .put("nanAcceptsRefused", snap.nanAcceptsRefused)
 
     /**
-     * Flip the P0 NAN experiment toggles (`docs/NAN_CONCURRENCY_REAUDIT.md` §4) and report their state.
-     * Extras (each optional, `on`/`off`; absent = unchanged): `e4b` (ghost-proof responder recycle),
-     * `e5` (updatePublish ICM keepalive), `force` (keepalive regardless of demand), `ssiprobe`
-     * (SSI-change re-discovery probe). In-memory: a process restart resets all to off.
+     * Flip the NAN experiment toggles (`docs/NAN_CONCURRENCY_REAUDIT.md` §4) and report their state.
+     * Extras (each optional, `on`/`off`; absent = unchanged): `e5` (updatePublish ICM keepalive), `force`
+     * (keepalive regardless of demand), `ssiprobe` (SSI-change re-discovery probe). In-memory: a process
+     * restart resets all to off. (The P0 `e4b` recycle toggle was promoted to default behavior in P2.)
      */
     private fun handleNanExp(intent: Intent): JSONObject {
         fun flag(
@@ -467,13 +467,11 @@ class DebugBridgeReceiver :
                 "off" -> false
                 else -> current
             }
-        NanExperiments.e4bRecycle = flag(EXTRA_E4B, NanExperiments.e4bRecycle)
         NanExperiments.e5Keepalive = flag(EXTRA_E5, NanExperiments.e5Keepalive)
         NanExperiments.e5Force = flag(EXTRA_FORCE, NanExperiments.e5Force)
         NanExperiments.e5SsiProbe = flag(EXTRA_SSIPROBE, NanExperiments.e5SsiProbe)
         return JSONObject()
             .put("status", "ok")
-            .put("e4bRecycle", NanExperiments.e4bRecycle)
             .put("e5Keepalive", NanExperiments.e5Keepalive)
             .put("e5Force", NanExperiments.e5Force)
             .put("e5SsiProbe", NanExperiments.e5SsiProbe)
@@ -517,7 +515,6 @@ class DebugBridgeReceiver :
         const val EXTRA_LIMIT = "limit"
         const val EXTRA_PATH = "path"
         const val EXTRA_OUT = "out"
-        const val EXTRA_E4B = "e4b"
         const val EXTRA_E5 = "e5"
         const val EXTRA_FORCE = "force"
         const val EXTRA_SSIPROBE = "ssiprobe"

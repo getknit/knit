@@ -217,7 +217,14 @@ changes is the NDI lifecycle, which stops being "one link at a time + a session 
    `min(getNumberOfSupportedDataPaths() − 1, SERVE_CAP)` (reserve one NDP session for our own outbound;
    `SERVE_CAP` ~4 for sanity). Upstream layers are already N-neighbor-ready (BLE-tested). On
    `getNumberOfSupportedDataPaths() == 1` hardware (Samsung S.LSI), fall back to today's single-slot gate.
-2. **Ghost-proof responder recycle replaces the after-serve reattach** (gated on E4b): when the *last* live
+2. **Ghost-proof responder recycle replaces the after-serve reattach** (gated on E4b) — **✅ implemented +
+   fleet-validated 2026-07-04** (owed-gated recycle default-on; pure responders never recycle and re-serve on
+   one request; the pinned-at-0-NDPs corner takes a **settle-based session cycle** — NOT the availability-flap
+   handshake as drafted below: the framework's disable + cache wipe ran **29–49 ms** after `session.close()`
+   in measurement, while the availability *broadcasts* lag many seconds on a screen-off device, so the cycle
+   waits a fixed `SESSION_CYCLE_SETTLE_MS = 2 s` instead of a broadcast; drill B: pinned → cycle → wipe@29 ms
+   → settle → fresh responder → initiate, zero ghosts. The expensive cycle is additionally gated on the owed
+   peer being coordination-plane-reachable, so a departed peer's stale digest can't burn cycles): when the *last* live
    inbound link hits quiescence **and** an initiate is owed (a sync-wanted smaller peer exists), unregister
    the responder request *before* closing the socket (NDP still alive ⇒ clean framework teardown), then
    immediately re-file. A pure responder with nothing to initiate skips recycle entirely — its
