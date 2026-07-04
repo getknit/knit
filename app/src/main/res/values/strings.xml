@@ -78,6 +78,9 @@
     <string name="chat_status_delivered">Delivered</string>
     <string name="chat_time_just_now">Just now</string>
     <string name="chat_action_copy">Copy text</string>
+    <string name="chat_action_reply">Reply</string>
+    <string name="chat_reply_photo">📷 Photo</string>
+    <string name="chat_reply_cancel">Cancel reply</string>
     <string name="chat_message_copied">Copied to clipboard</string>
     <string name="chat_action_delete">Delete message</string>
     <string name="chat_message_deleted">Message deleted</string>

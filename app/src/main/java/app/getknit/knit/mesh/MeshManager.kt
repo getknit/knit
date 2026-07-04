@@ -16,6 +16,8 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.groupTitle
+import app.getknit.knit.data.message.replyRef
+import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.SettingsStore
@@ -42,6 +44,7 @@ import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.isStorable
@@ -300,6 +303,7 @@ class MeshManager(
         mentions: List<Mention> = emptyList(),
         recipientId: String? = null,
         group: GroupInfo? = null,
+        replyTo: ReplyRef? = null,
     ): Boolean {
         if (isTextFlagged(text, "outgoing", isRoom = recipientId == null && group == null)) return false
         val me = identity.nodeId()
@@ -321,7 +325,7 @@ class MeshManager(
                     mentions = MentionStore.encode(mentions),
                     attachmentHash = attachment?.hash,
                     attachmentMime = attachment?.mime,
-                ),
+                ).withReply(replyTo),
             )
             val content =
                 ChatContent(
@@ -329,6 +333,7 @@ class MeshManager(
                     mentions = mentions,
                     attachmentHash = attachment?.hash,
                     attachmentMime = attachment?.mime,
+                    replyTo = replyTo,
                 )
             originateSigned(chatEnvelope(id, me, sentAt, recipientId = null, group = null, content))
             return true
@@ -344,6 +349,7 @@ class MeshManager(
                 attachmentHash = sealedAttachment?.hash,
                 attachmentMime = attachment?.mime,
                 attachmentKey = sealedAttachment?.key,
+                replyTo = replyTo,
             )
         val thread = group?.id ?: recipientId.orEmpty()
         val header = MessageCrypto.header(id, me, sentAt, thread)
@@ -365,7 +371,7 @@ class MeshManager(
                 attachmentMime = attachment?.mime,
                 attachmentKey = sealedAttachment?.key,
                 pendingKey = envelope == null && group == null,
-            ),
+            ).withReply(replyTo),
         )
         if (envelope == null) {
             // No recipient's key is known yet — nothing can decrypt this. Saved locally above; a DM is
@@ -1039,6 +1045,7 @@ class MeshManager(
                 attachmentHash = plain.attachmentHash,
                 attachmentMime = plain.attachmentMime,
                 enc = null,
+                replyTo = plain.replyTo,
             ),
             me,
             conversationId,
@@ -1343,7 +1350,7 @@ class MeshManager(
                     } else {
                         MessageEntity.MODERATION_NONE
                     },
-            ),
+            ).withReply(content.replyTo),
         )
         // Start pulling the referenced blob unless we already hold it (the UI observes the blobs table
         // and flips the attachment from "loading" to shown once the bytes land). If we already hold it
@@ -1666,6 +1673,7 @@ class MeshManager(
                     attachmentHash = row.attachmentHash,
                     attachmentMime = row.attachmentMime,
                     attachmentKey = row.attachmentKey,
+                    replyTo = row.replyRef(),
                 )
             val header = MessageCrypto.header(row.id, me, row.sentAt, recipientId)
             val envelope =

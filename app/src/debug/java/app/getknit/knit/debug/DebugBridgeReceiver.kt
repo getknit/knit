@@ -24,13 +24,16 @@ import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.webp.WebpTranscode
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.GroupInfo
+import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.review.ReviewPromptPolicy
 import app.getknit.knit.review.ReviewPrompter
+import app.getknit.knit.ui.chat.buildReplySnippet
 import app.getknit.knit.ui.invite.prepareKnitApk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
@@ -55,7 +58,8 @@ import java.nio.ByteBuffer
  * Actions (fire with `am broadcast`, target the package with `-p app.getknit.knit`):
  * - [ACTION_SEND] — `--es text <body>` plus a target: `--es conv <conversationId>` (the `nearby` room, a
  *   peer node id for a DM, or a `g-…` group id) or `--es to <peerNodeId>` (a DM shorthand). No target ⇒
- *   the broadcast room.
+ *   the broadcast room. Add `--es replyTo <messageId>` to quote a message already in that thread (the
+ *   ReplyRef is built exactly as the UI does; [ACTION_STATE] echoes the stored `replyTo*` fields back).
  * - [ACTION_STATE] — self id/name, transport health, the reachable peer set, and the mesh metrics; add
  *   `--es conv <id>` to also dump that thread's most recent messages (`--ei limit N`, default
  *   [DEFAULT_MESSAGE_LIMIT]) with each message's `received` delivery tick — how "verify receipt" works.
@@ -174,12 +178,41 @@ class DebugBridgeReceiver :
         if (text.isBlank()) return reply("error", "missing 'text' extra")
         // A DM shorthand (`to`) or an explicit conversation id (`conv`); default to the broadcast room.
         val conv = intent.getStringExtra(EXTRA_CONV) ?: intent.getStringExtra(EXTRA_TO) ?: Conversations.NEARBY
+        // Optional quoted reply: --es replyTo <messageId> of a message already in this thread. Build the
+        // ReplyRef exactly as ChatViewModel does (self-author resolved to our real name, snippet capped).
+        val replyTo =
+            intent.getStringExtra(EXTRA_REPLY_TO)?.let { replyId ->
+                val row =
+                    messages.observeMessages(conv).first().firstOrNull { it.id == replyId }
+                        ?: return reply("error", "reply target not in $conv: $replyId")
+                val authorName =
+                    if (row.senderId == identity.nodeId()) {
+                        displayNameFor(settings.displayName.first(), row.senderId)
+                    } else {
+                        displayNameFor(peers.find(row.senderId)?.name, row.senderId)
+                    }
+                ReplyRef(
+                    messageId = row.id,
+                    authorId = row.senderId,
+                    author = authorName,
+                    snippet = buildReplySnippet(row.body, row.moderation == MessageEntity.MODERATION_TEXT_FLAGGED),
+                    hasAttachment = row.attachmentHash != null,
+                )
+            }
         // Route exactly as ChatViewModel.send does, resolving the thread kind from its id.
         val sent =
             when (Conversations.kindFor(conv)) {
-                ConversationKind.NEARBY -> mesh.sendChat(text, recipientId = null, group = null)
-                ConversationKind.DM -> mesh.sendChat(text, recipientId = conv)
-                ConversationKind.GROUP -> groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo()) }
+                ConversationKind.NEARBY -> {
+                    mesh.sendChat(text, recipientId = null, group = null, replyTo = replyTo)
+                }
+
+                ConversationKind.DM -> {
+                    mesh.sendChat(text, recipientId = conv, replyTo = replyTo)
+                }
+
+                ConversationKind.GROUP -> {
+                    groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo(), replyTo = replyTo) }
+                }
             }
         return when (sent) {
             null -> reply("error", "unknown group (not joined on this device): $conv")
@@ -382,7 +415,10 @@ class DebugBridgeReceiver :
                     .put("mine", m.senderId == selfId)
                     .put("body", m.body)
                     .put("sentAt", m.sentAt)
-                    .put("received", m.received),
+                    .put("received", m.received)
+                    .put("replyToId", m.replyToId ?: JSONObject.NULL)
+                    .put("replyToAuthor", m.replyToAuthor ?: JSONObject.NULL)
+                    .put("replyToSnippet", m.replyToSnippet ?: JSONObject.NULL),
             )
         }
         return arr
@@ -528,6 +564,7 @@ class DebugBridgeReceiver :
         const val EXTRA_TEXT = "text"
         const val EXTRA_CONV = "conv"
         const val EXTRA_TO = "to"
+        const val EXTRA_REPLY_TO = "replyTo"
         const val EXTRA_ID = "id"
         const val EXTRA_EMOJI = "emoji"
         const val EXTRA_LIMIT = "limit"

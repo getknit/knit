@@ -19,6 +19,7 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.groupTitle
+import app.getknit.knit.data.message.replyRef
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
@@ -27,6 +28,7 @@ import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.notifications.Notifier
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,6 +39,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -68,6 +71,9 @@ data class ChatRow(
     val attachmentFlagged: Boolean = false,
     val mentions: List<Mention> = emptyList(),
     val reactions: List<ReactionSummary> = emptyList(),
+    // The message this row quotes (Signal-style reply), or null when it isn't a reply. Denormalized so the
+    // quote renders even if the quoted original isn't in this thread. See [MessageEntity.replyRef].
+    val replyTo: ReplyRef? = null,
 )
 
 /**
@@ -282,6 +288,7 @@ class ChatViewModel(
                         attachmentFlagged = hideSensitive && m.attachmentHash != null && m.attachmentHash in flaggedHashes,
                         mentions = MentionStore.decode(m.mentions),
                         reactions = tallies,
+                        replyTo = m.replyRef(),
                     )
                 }
             // Autocomplete candidates: everyone we've received a message from, plus a group's roster (so
@@ -350,6 +357,7 @@ class ChatViewModel(
     fun send(
         text: String,
         mentions: List<Mention> = emptyList(),
+        replyTo: ReplyRef? = null,
     ) {
         val trimmed = text.trim().take(TextLimits.MESSAGE)
         val attachment = _pendingAttachment.value
@@ -365,16 +373,25 @@ class ChatViewModel(
             // so the guard can never stick and freeze the input.
             var accepted = false
             try {
+                // Normalize a self-quote's snapshotted author before it goes on the wire (see the helper).
+                val outgoingReply = normalizeSelfAuthor(replyTo)
                 // Re-read the group at send time so it's never misrouted as a DM in a startup race, and so
                 // a pending rename rides this message (its GroupInfo.name converges last-writer-wins).
                 val group = if (isRoom) null else groups.find(conversationId)
                 val sent =
                     if (group != null) {
-                        meshManager.sendChat(trimmed, attachment, mentions, recipientId = null, group = group.toInfo())
+                        meshManager.sendChat(
+                            trimmed,
+                            attachment,
+                            mentions,
+                            recipientId = null,
+                            group = group.toInfo(),
+                            replyTo = outgoingReply,
+                        )
                     } else {
                         // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
                         val recipientId = if (isRoom) null else conversationId
-                        meshManager.sendChat(trimmed, attachment, mentions, recipientId)
+                        meshManager.sendChat(trimmed, attachment, mentions, recipientId, replyTo = outgoingReply)
                     }
                 // MeshManager applies block-on-send. Clear the input/attachment only once a message is
                 // accepted; a blocked message keeps the draft and surfaces a toast so the user can edit.
@@ -391,6 +408,20 @@ class ChatViewModel(
                 if (!accepted) sending = false
             }
         }
+    }
+
+    /**
+     * Normalizes a quoted-reply's author snapshot before it goes on the wire: a reply quoting *our own*
+     * message must carry the display name a peer resolves for us — never the local "You" self-label — so
+     * every recipient shows our real name and only swaps in "You" when they are themselves the quoted
+     * author. A reply to anyone else is returned unchanged (its snapshot is already a peer-resolved name).
+     */
+    private suspend fun normalizeSelfAuthor(replyTo: ReplyRef?): ReplyRef? {
+        val me = identity.nodeId()
+        return replyTo
+            ?.takeIf { it.authorId == me }
+            ?.copy(author = displayNameFor(settings.displayName.first(), me))
+            ?: replyTo
     }
 
     /**

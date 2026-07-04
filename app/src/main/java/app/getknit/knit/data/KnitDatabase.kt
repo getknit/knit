@@ -77,7 +77,11 @@ import java.io.File
     //      also carry the (ciphertext) hash in cleartext so carriers — blind to the sealed content — can see it;
     //      additive wire change, no SERVICE_NAME bump (the column is local, the digest still folds only `id`).
     //      Destructive DB migration as usual (app not yet public).
-    version = 19,
+    // v20: messages gained quoted-reply columns (replyToId/replyToAuthorId/replyToAuthor/replyToSnippet/
+    //      replyToHasAttachment) snapshotting the message a reply quotes, so the quote renders even if the
+    //      original never arrived. Additive wire change (a new nullable ReplyRef on ChatContent + the
+    //      encrypted MessageContent), so no SERVICE_NAME bump; destructive DB migration as usual.
+    version = 20,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.WireCodec
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
@@ -65,6 +66,27 @@ class MessageCryptoTest {
         val decodedEnc = WireCodec.decodePayload<ChatContent>(payload)?.enc
         assertNotNull(decodedEnc)
         assertEquals("over the wire", bob.crypto.open(decodedEnc!!, header, bob.nodeId)?.body)
+    }
+
+    @Test
+    fun dmReplyRefSurvivesSealAndWire() {
+        val alice = party("alice000")
+        val bob = party("bob00000")
+        val header = MessageCrypto.header("m8", alice.nodeId, 1L, bob.nodeId)
+
+        // A reply's quoted author + snippet must stay INSIDE the ciphertext (never on the cleartext
+        // ChatContent for a DM). Seal a MessageContent carrying a ReplyRef, carry the envelope through the
+        // wire codec as a real chat frame, then decrypt the decoded copy and assert the quote survived.
+        val reply = ReplyRef("m0", alice.nodeId, "Alice", "see you at 8", hasAttachment = true)
+        val sealed =
+            alice.crypto.seal(
+                MessageContent(body = "on my way", replyTo = reply).encode(),
+                header,
+                mapOf(bob.nodeId to bob.bundle),
+            )!!
+        val decodedEnc = WireCodec.decodePayload<ChatContent>(WireCodec.encodePayload(ChatContent(enc = sealed)))?.enc
+        assertNotNull(decodedEnc)
+        assertEquals(reply, bob.crypto.open(decodedEnc!!, header, bob.nodeId)?.replyTo)
     }
 
     @Test

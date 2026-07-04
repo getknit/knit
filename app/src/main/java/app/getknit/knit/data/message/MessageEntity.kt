@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.mesh.protocol.ReplyRef
 import kotlinx.serialization.json.Json
 
 /**
@@ -23,6 +24,14 @@ import kotlinx.serialization.json.Json
  * [attachmentKey] is the base64 AES key for an end-to-end-encrypted attachment: in a DM/group the blob
  * bytes are ciphertext (content-addressed by their ciphertext hash), so the UI must decrypt them with
  * this key before decoding. Null for plaintext (broadcast-room) attachments and text-only messages.
+ *
+ * The `replyTo*` columns snapshot the message this one is a quoted reply to (all null when it isn't a
+ * reply): [replyToId] the quoted message's id, [replyToAuthorId] its sender's node id (the UI swaps it to
+ * "You" when it's the viewer's own), [replyToAuthor] a display-name snapshot, [replyToSnippet] a capped
+ * copy of the quoted body (blank for an attachment-only original), and [replyToHasAttachment] whether the
+ * original carried an image (so the quote can show a "photo" placeholder). They are denormalized from
+ * [app.getknit.knit.mesh.protocol.ReplyRef] so the quote renders even when the original was never
+ * received, was deleted, or scrolled out of history.
  *
  * [moderation] records an on-device content-moderation verdict for the [body] ([MODERATION_NONE] or
  * [MODERATION_TEXT_FLAGGED]). A flagged inbound message is still stored, but the UI collapses it behind
@@ -50,6 +59,11 @@ data class MessageEntity(
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,
     val attachmentKey: String? = null,
+    val replyToId: String? = null,
+    val replyToAuthorId: String? = null,
+    val replyToAuthor: String? = null,
+    val replyToSnippet: String? = null,
+    val replyToHasAttachment: Boolean = false,
     val moderation: Int = MODERATION_NONE,
     val pendingKey: Boolean = false,
     val kind: Int = KIND_NORMAL,
@@ -80,3 +94,25 @@ object MentionStore {
 
     fun decode(stored: String): List<Mention> = runCatching { json.decodeFromString<List<Mention>>(stored) }.getOrDefault(emptyList())
 }
+
+/** The quoted-reply reference this row snapshots (see the `replyTo*` columns), or null when it isn't a reply. */
+fun MessageEntity.replyRef(): ReplyRef? =
+    replyToId?.let {
+        ReplyRef(
+            messageId = it,
+            authorId = replyToAuthorId.orEmpty(),
+            author = replyToAuthor.orEmpty(),
+            snippet = replyToSnippet.orEmpty(),
+            hasAttachment = replyToHasAttachment,
+        )
+    }
+
+/** A copy with the quoted-reply columns populated from [replyTo] (all cleared when it's null). */
+fun MessageEntity.withReply(replyTo: ReplyRef?): MessageEntity =
+    copy(
+        replyToId = replyTo?.messageId,
+        replyToAuthorId = replyTo?.authorId,
+        replyToAuthor = replyTo?.author,
+        replyToSnippet = replyTo?.snippet,
+        replyToHasAttachment = replyTo?.hasAttachment ?: false,
+    )

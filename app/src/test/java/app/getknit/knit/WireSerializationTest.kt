@@ -12,6 +12,7 @@ import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.WrappedKey
@@ -170,6 +171,24 @@ class WireSerializationTest {
                 attachmentMime = "image/gif",
             )
         assertEquals(content, WireCodec.decodePayload<ChatContent>(WireCodec.encodePayload(content)))
+    }
+
+    @Test
+    fun chatContentWithReplyRoundTrips() {
+        val content =
+            ChatContent(
+                body = "on my way",
+                replyTo = ReplyRef("m0", "ada00000", "Ada", "see you at 8", hasAttachment = true),
+            )
+        assertEquals(content, WireCodec.decodePayload<ChatContent>(WireCodec.encodePayload(content)))
+    }
+
+    @Test
+    fun chatContentWithoutReplyDecodesReplyAsNull() {
+        // Additive field: a non-reply message omits replyTo on the wire (encodeDefaults = false), and an
+        // old or non-reply frame decodes it as null — never a spurious quote.
+        val decoded = WireCodec.decodePayload<ChatContent>(WireCodec.encodePayload(ChatContent(body = "hi")))
+        assertNull(decoded?.replyTo)
     }
 
     @Test

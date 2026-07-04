@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.crypto
 
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.mesh.protocol.ReplyRef
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromByteArray
@@ -28,6 +29,11 @@ data class MessageContent(
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,
     val attachmentKey: String? = null,
+    // Quoted-reply reference for an encrypted DM/group, carried here (inside the ciphertext) so the
+    // quoted author + snippet stay private — never on the cleartext [ChatContent.replyTo] for these.
+    // Relies, like every field here, on cryptoCbor's `encodeDefaults = false` to stay off the wire when
+    // null; do not enable encodeDefaults or every DM frame inflates with an empty reply.
+    val replyTo: ReplyRef? = null,
 ) {
     @OptIn(ExperimentalSerializationApi::class)
     fun encode(): ByteArray = cryptoCbor.encodeToByteArray(this)

@@ -137,6 +137,10 @@ data class ChatContent(
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,
     val enc: EncEnvelope? = null,
+    // Quoted-reply reference, set directly here ONLY for the plaintext broadcast room. For an encrypted
+    // DM/group the quote rides inside [enc] ([MessageContent.replyTo]) so it stays private, and this is
+    // left null — mirroring how [body]/[mentions] are blank on an encrypted frame.
+    val replyTo: ReplyRef? = null,
 )
 
 /**
@@ -209,6 +213,27 @@ data class Mention(
 
 /** True when these mentions target [nodeId] (typically the receiver's own id). */
 fun List<Mention>.mention(nodeId: String): Boolean = any { it.nodeId == nodeId }
+
+/**
+ * A quoted-reply reference (the "▎author / snippet" block a reply renders above its own body). The
+ * quoted message is **denormalized** into the reply so the quote still renders when the original was
+ * never received (store-and-forward), was deleted, or scrolled out of the local store — the receiver
+ * never resolves [messageId] against its own history to draw the quote (it's used only for the optional
+ * tap-to-scroll). [authorId] is the quoted message's sender node id — each viewer swaps it to "You" when
+ * it's their own; [author] is a display-name snapshot (never the literal "You", so a peer that lacks the
+ * author's profile still shows a real name); [snippet] is a capped copy of the quoted body (blank for an
+ * attachment-only original); [hasAttachment] lets the UI show a "photo" placeholder when [snippet] is
+ * blank even if the original isn't present locally. Additive/optional on both [ChatContent] (broadcast)
+ * and [app.getknit.knit.mesh.crypto.MessageContent] (encrypted DM/group). A plain nested value.
+ */
+@Serializable
+data class ReplyRef(
+    val messageId: String,
+    val authorId: String,
+    val author: String,
+    val snippet: String,
+    val hasAttachment: Boolean = false,
+)
 
 /**
  * Group-chat metadata carried on every group chat/update frame so the message is self-describing: any

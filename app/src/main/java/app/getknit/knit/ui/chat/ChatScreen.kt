@@ -8,6 +8,8 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -30,6 +32,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -57,6 +60,7 @@ import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.input.setTextAndPlaceCursorAtEnd
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Block
@@ -80,6 +84,7 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -105,6 +110,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalClipboard
@@ -124,6 +130,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -145,6 +152,7 @@ import app.getknit.knit.TextLimits
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.components.GroupAvatar
@@ -155,6 +163,7 @@ import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
@@ -180,6 +189,12 @@ fun ChatScreen(
     // text on send so a mention whose "@name" was deleted doesn't ship.
     val pendingMentions = remember { mutableStateListOf<Mention>() }
     var fullscreenImage by remember { mutableStateOf<FullscreenImage?>(null) }
+    // The message being replied to (draft-local like inputState/pendingMentions, per the AGENTS.md
+    // gotcha), rendered as a quote above the input until the reply is sent or cancelled. Null otherwise.
+    var replyingTo by remember { mutableStateOf<ReplyRef?>(null) }
+    // The message a tapped quote scrolled to, briefly highlighted then cleared (see the LaunchedEffect
+    // below and MessageBubble). Null when nothing is highlighted.
+    var highlightedMessageId by remember { mutableStateOf<String?>(null) }
     var headerMenuOpen by remember { mutableStateOf(false) }
     var showEncryptionInfo by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -249,6 +264,7 @@ fun ChatScreen(
         viewModel.clearInput.collect {
             inputState.clearText()
             pendingMentions.clear()
+            replyingTo = null
             // Signal the field is now empty so the ViewModel releases its double-submit guard; releasing
             // only after the text is gone closes the last window where a rapid tap could re-send a draft.
             viewModel.onInputCleared()
@@ -267,6 +283,14 @@ fun ChatScreen(
     // Blocking the peer of a DM hides this whole thread, so leave the now-empty screen.
     LaunchedEffect(Unit) {
         viewModel.closeChat.collect { onBack() }
+    }
+    // A tapped quote scrolls to and briefly highlights its original (see MessageBubble); fade it after a
+    // beat so the flash is transient.
+    LaunchedEffect(highlightedMessageId) {
+        if (highlightedMessageId != null) {
+            delay(1200)
+            highlightedMessageId = null
+        }
     }
     val clipboard = LocalClipboard.current
     val copyScope = rememberCoroutineScope()
@@ -433,6 +457,9 @@ fun ChatScreen(
                 state = inputState,
                 pendingAttachment = pendingAttachment,
                 candidates = state.mentionCandidates,
+                replyingTo = replyingTo,
+                myNodeId = state.myNodeId,
+                onCancelReply = { replyingTo = null },
                 onMentionAdded = { m -> if (pendingMentions.none { it == m }) pendingMentions.add(m) },
                 onAttachClick = {
                     picker.launch(
@@ -477,10 +504,29 @@ fun ChatScreen(
                             // In a 1:1 DM the peer's name is in the top bar, so don't repeat it on every
                             // received bubble; show it only where multiple people can speak.
                             showSenderName = state.isRoom || state.isGroup,
+                            myNodeId = state.myNodeId,
                             imageRatios = imageRatios,
+                            highlighted = row.id == highlightedMessageId,
                             onImageClick = { fullscreenImage = it },
                             onOpenProfile = onOpenProfile,
                             onReact = viewModel::react,
+                            onReply = { msg ->
+                                replyingTo =
+                                    ReplyRef(
+                                        messageId = msg.id,
+                                        authorId = msg.senderNodeId,
+                                        author = msg.senderName,
+                                        snippet = buildReplySnippet(msg.body, msg.moderationFlagged),
+                                        hasAttachment = msg.attachmentHash != null,
+                                    )
+                            },
+                            onQuoteClick = { targetId ->
+                                val idx = state.rows.asReversed().indexOfFirst { it.id == targetId }
+                                if (idx >= 0) {
+                                    highlightedMessageId = targetId
+                                    copyScope.launch { listState.animateScrollToItem(idx) }
+                                }
+                            },
                             onDelete = viewModel::deleteMessage,
                             onBlock = viewModel::block,
                             onCopy = { text ->
@@ -575,12 +621,19 @@ private fun MessageBubble(
     row: ChatRow,
     now: Long,
     showSenderName: Boolean,
+    // myNodeId drives the quote's viewer-relative "You" swap; defaulted for the @Preview call sites.
+    myNodeId: String = "",
     // Hash-keyed aspect-ratio cache shared across the list so a re-entering image reserves its height
     // before decode (see [ChatScreen]). Defaulted so the @Preview call sites need no extra wiring.
     imageRatios: MutableMap<String, Float> = HashMap(),
+    // True to briefly highlight this bubble after a quote-tap scrolled to it; defaulted for previews.
+    highlighted: Boolean = false,
     onImageClick: (FullscreenImage) -> Unit,
     onOpenProfile: (nodeId: String) -> Unit,
     onReact: (messageId: String, emoji: String) -> Unit,
+    // Reply to this message / tap its quote to jump to the original; defaulted no-ops for previews.
+    onReply: (ChatRow) -> Unit = {},
+    onQuoteClick: (messageId: String) -> Unit = {},
     onDelete: (messageId: String) -> Unit,
     onBlock: (nodeId: String) -> Unit,
     onCopy: (text: String) -> Unit,
@@ -597,6 +650,12 @@ private fun MessageBubble(
     // A message flagged by the on-device text moderator is collapsed until the user taps to reveal it.
     var revealed by remember(row.id) { mutableStateOf(false) }
     val context = LocalContext.current
+    // Fast light-up then slow fade when a tapped quote scrolls to this bubble (see ChatScreen).
+    val highlight by animateFloatAsState(
+        targetValue = if (highlighted) 1f else 0f,
+        animationSpec = tween(durationMillis = if (highlighted) 120 else 600),
+        label = "quoteHighlight",
+    )
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (row.mine) Arrangement.End else Arrangement.Start,
@@ -618,11 +677,15 @@ private fun MessageBubble(
             Box {
                 Surface(
                     color =
-                        if (row.mine) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        },
+                        lerp(
+                            if (row.mine) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            MaterialTheme.colorScheme.primary,
+                            0.22f * highlight,
+                        ),
                     contentColor =
                         if (row.mine) {
                             MaterialTheme.colorScheme.onPrimaryContainer
@@ -649,6 +712,15 @@ private fun MessageBubble(
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.primary,
                             )
+                        }
+                        row.replyTo?.let { reply ->
+                            QuotedMessage(
+                                replyTo = reply,
+                                myNodeId = myNodeId,
+                                mine = row.mine,
+                                onClick = { onQuoteClick(reply.messageId) },
+                            )
+                            Spacer(Modifier.height(4.dp))
                         }
                         if (row.attachmentHash != null) {
                             AttachmentImage(
@@ -733,6 +805,10 @@ private fun MessageBubble(
                             onReact(row.id, emoji)
                             showPicker = false
                         },
+                        onReply = {
+                            onReply(row)
+                            showPicker = false
+                        },
                         // Image-only messages have no text to copy, so omit the action.
                         onCopy =
                             if (row.body.isNotBlank()) {
@@ -799,14 +875,68 @@ private fun MessageBubble(
 }
 
 /**
- * Floating menu shown just above a long-pressed bubble: a row of quick-reaction emoji, an optional
- * "Copy text" action ([onCopy] is null for messages with no copyable text), an optional "Block user"
- * action ([onBlock] is null for your own messages), and an always-present "Delete message" action that
- * removes the message from this device only.
+ * A quoted-reply block rendered inside a bubble above its body (Signal-style): an accent bar, the quoted
+ * author (with the viewer-relative "You" swap via [myNodeId]), and a snippet — or a "photo" placeholder
+ * when the quoted original was an attachment with no text. Tapping it jumps to the original ([onClick]).
+ */
+@Composable
+private fun QuotedMessage(
+    replyTo: ReplyRef,
+    myNodeId: String,
+    mine: Boolean,
+    onClick: () -> Unit,
+) {
+    val accent = if (mine) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary
+    val photoLabel = stringResource(R.string.chat_reply_photo)
+    Row(
+        modifier =
+            Modifier
+                .clip(RoundedCornerShape(6.dp))
+                .clickable(onClick = onClick)
+                .background(LocalContentColor.current.copy(alpha = 0.10f))
+                .height(IntrinsicSize.Min),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .width(3.dp)
+                    .fillMaxHeight()
+                    .background(accent),
+        )
+        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+            Text(
+                text = quoteAuthorLabel(replyTo, myNodeId, stringResource(R.string.chat_self_name)),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = accent,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val snippet = replyTo.snippet.ifBlank { if (replyTo.hasAttachment) photoLabel else "" }
+            if (snippet.isNotEmpty()) {
+                Text(
+                    text = snippet,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LocalContentColor.current.copy(alpha = 0.75f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Floating menu shown just above a long-pressed bubble: a "Reply" action, a row of quick-reaction emoji,
+ * an optional "Copy text" action ([onCopy] is null for messages with no copyable text), an optional
+ * "Block user" action ([onBlock] is null for your own messages), and an always-present "Delete message"
+ * action that removes the message from this device only.
  */
 @Composable
 private fun ReactionPicker(
     onPick: (String) -> Unit,
+    onReply: () -> Unit,
     onCopy: (() -> Unit)?,
     onDelete: () -> Unit,
     onBlock: (() -> Unit)?,
@@ -867,6 +997,26 @@ private fun ReactionPicker(
                 }
                 // Delete is always offered, so the divider below the emoji row always shows.
                 HorizontalDivider()
+                // Reply leads the action list (Signal-style: it's the primary action).
+                Row(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onReply() }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Reply,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Text(
+                        text = stringResource(R.string.chat_action_reply),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
                 if (onCopy != null) {
                     Row(
                         modifier =
@@ -1329,6 +1479,9 @@ private fun MessageInput(
     state: TextFieldState,
     pendingAttachment: AttachmentStore.Ingested?,
     candidates: List<MentionCandidate>,
+    replyingTo: ReplyRef? = null,
+    myNodeId: String = "",
+    onCancelReply: () -> Unit = {},
     onMentionAdded: (Mention) -> Unit,
     onAttachClick: () -> Unit,
     onClearAttachment: () -> Unit,
@@ -1429,6 +1582,10 @@ private fun MessageInput(
                 )
                 Spacer(Modifier.height(8.dp))
             }
+            if (replyingTo != null) {
+                ReplyPreview(replyTo = replyingTo, myNodeId = myNodeId, onCancel = onCancelReply)
+                Spacer(Modifier.height(8.dp))
+            }
             Row(verticalAlignment = Alignment.Bottom) {
                 Box(
                     modifier =
@@ -1487,6 +1644,71 @@ private fun MessageInput(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * The quoted-reply banner shown above the input while composing a reply (see [MessageInput]): an accent
+ * bar, the quoted author (with the viewer-relative "You" swap) and a snippet, plus an ✕ to cancel.
+ */
+@Composable
+private fun ReplyPreview(
+    replyTo: ReplyRef,
+    myNodeId: String,
+    onCancel: () -> Unit,
+) {
+    val photoLabel = stringResource(R.string.chat_reply_photo)
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .testTag("reply_preview")
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .height(IntrinsicSize.Min),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier =
+                Modifier
+                    .width(3.dp)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.primary),
+        )
+        Column(
+            modifier =
+                Modifier
+                    .weight(1f)
+                    .padding(start = 10.dp, top = 8.dp, bottom = 8.dp),
+        ) {
+            Text(
+                text = quoteAuthorLabel(replyTo, myNodeId, stringResource(R.string.chat_self_name)),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val snippet = replyTo.snippet.ifBlank { if (replyTo.hasAttachment) photoLabel else "" }
+            if (snippet.isNotEmpty()) {
+                Text(
+                    text = snippet,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        IconButton(
+            onClick = onCancel,
+            modifier = Modifier.testTag("reply_cancel"),
+        ) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = stringResource(R.string.chat_reply_cancel),
+            )
         }
     }
 }
@@ -1635,6 +1857,7 @@ fun ReactionPickerPreview() =
     KnitPreview {
         ReactionPicker(
             onPick = {},
+            onReply = {},
             onCopy = {},
             onDelete = {},
             onBlock = {},
