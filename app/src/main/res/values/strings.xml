@@ -220,6 +220,7 @@
     <string name="diagnostics_metric_keys_recovered">Keys recovered</string>
     <string name="diagnostics_metric_frames_held">Frames held for key</string>
     <string name="diagnostics_metric_frames_replayed">Frames replayed</string>
+    <string name="diagnostics_metric_receipts_resent">Receipts re-sent</string>
     <string name="diagnostics_metric_bt_connect_fails">BT connect failures</string>
     <string name="diagnostics_controls">Mesh controls</string>
     <string name="diagnostics_status_healthy">Mesh status: Healthy</string>

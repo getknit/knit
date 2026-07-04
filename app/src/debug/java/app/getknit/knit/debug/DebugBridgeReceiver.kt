@@ -266,6 +266,7 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
         .put("keysRecovered", snap.keysRecovered)
         .put("framesHeld", snap.framesHeld)
         .put("framesReplayed", snap.framesReplayed)
+        .put("receiptsResent", snap.receiptsResent)
 
     private fun reply(status: String, message: String): JSONObject =
         JSONObject().put("status", status).put("message", message)

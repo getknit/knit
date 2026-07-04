@@ -142,6 +142,17 @@ class MeshManager(
         metrics = metrics,
     )
 
+    // Delay-tolerant "delivered" tick for broadcast/group messages: their receipt is a unicast, non-custodied
+    // best-effort frame, so it's lost if the author isn't reachable at delivery time (the message converges via
+    // custody, but the tick doesn't). AckSync remembers the ticks we owe and re-sends them — still unicast, never
+    // flooded — until the author is reachable or the entry ages out. DM receipts stay on the flood+custody path.
+    private val ackSync = AckSync(
+        transport = transport,
+        selfId = { identity.nodeId() },
+        signRaw = messageCrypto::signRaw,
+        metrics = metrics,
+    )
+
     // Bounded in-memory buffer of frames dropped for a missing sender key: parked alongside the key
     // request in verifyInbound and replayed through the deliver path once handleProfile pins the key, so
     // a frame that raced ahead of its sender's profile still lands. The inbound complement of flushPendingFor.
@@ -245,6 +256,7 @@ class MeshManager(
             forwardSync.sweepExpired()
             pendingInbound.sweepExpired()
             keyExchange.retryMissing()
+            ackSync.retryPending() // re-send broadcast/group ticks we still owe absent authors (+ age out old ones)
         }
     }
 
@@ -504,6 +516,7 @@ class MeshManager(
                     forwardSync.onNeighborAdded(peer) // re-advertise our custody digest → pull anything we lack
                     blobExchange.onNeighborAdded(peer) // re-ask for blobs we still need
                     keyExchange.onNeighborAdded(peer) // re-ask for keys we still need
+                    ackSync.onNeighborAdded(peer) // re-send any broadcast/group delivery tick we owe it
                 }
             }
         }
@@ -531,6 +544,7 @@ class MeshManager(
                     blobExchange.onNeighborAdded(it) // re-ask the new neighbor for blobs we still need
                     forwardSync.onNeighborAdded(it) // re-offer carried DMs addressed to / routable via it
                     keyExchange.onNeighborAdded(it) // re-ask the new neighbor for keys we're still missing
+                    ackSync.onNeighborAdded(it) // re-send any broadcast/group delivery tick we owe it, over the link
                 }
             }
         }
@@ -1210,17 +1224,20 @@ class MeshManager(
      * empty and the ack was never sent.) No-ops if the author isn't currently reachable.
      */
     private suspend fun acknowledge(env: RelayEnvelope, me: String) {
-        val ack = RelayEnvelope(
-            type = FrameType.RECEIPT, id = FrameId.new(), senderId = me,
-            payload = WireCodec.encodePayload(ReceiptContent(env.id)),
-        )
         if (env.recipientId == me) {
-            originateSigned(ack) // DM: flood so it reaches the sender across hops
+            // DM: flood so the receipt reaches the sender across hops and is custodied like any flood frame.
+            val ack = RelayEnvelope(
+                type = FrameType.RECEIPT, id = FrameId.new(), senderId = me,
+                payload = WireCodec.encodePayload(ReceiptContent(env.id)),
+            )
+            originateSigned(ack)
         } else {
-            // Broadcast/group: point-to-point tick straight back to the author over the coordination plane (no
-            // NDP required, so a fast-fanned message gets its receipt too). relay = false so the author just
-            // consumes it — onDeliver won't re-fan or custody a point-to-point frame.
-            transport.fastSend(sign(ack, relay = false), Peer(env.senderId))
+            // Broadcast/group: a unicast, point-to-point (relay = false) tick straight to the author — no NDP
+            // required (a fast-fanned message gets its receipt too) and never flooded/custodied. Best-effort, so
+            // AckSync remembers it and re-sends until it lands (or ages out): the message itself converges via
+            // custody, but this tick otherwise had no delay-tolerance and was lost whenever the author was out of
+            // range at delivery time.
+            ackSync.owe(env.id, env.senderId)
         }
     }
 
@@ -1535,7 +1552,8 @@ class MeshManager(
                         "deduped=${s.framesDeduped} bytesSent=${s.bytesSent} " +
                         "dropped=${s.framesDropped} drops=${s.dropsByReason} " +
                         "keyReq=${s.keyRequestsSent} keyServed=${s.keysServed} keyRecovered=${s.keysRecovered} " +
-                        "framesHeld=${s.framesHeld} framesReplayed=${s.framesReplayed}",
+                        "framesHeld=${s.framesHeld} framesReplayed=${s.framesReplayed} " +
+                        "receiptsResent=${s.receiptsResent}",
                 )
             }
         }

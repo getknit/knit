@@ -257,7 +257,11 @@ per-type content:
   key** trust-on-first-use into `PeerEntity.pubKey` (a changed key resets `verified` — §14), merging so an
   unfetched avatar isn't clobbered; then **replay** any frames `PendingInbound` parked for that sender.
 - **`receipt`** → `markReceived(ackId)` (gated to the DM's `recipientId`) drives the ✓ tick and purges the
-  carried DM copy mesh-wide (`ForwardSync.onAck`).
+  carried DM copy mesh-wide (`ForwardSync.onAck`). A DM's receipt floods and is custodied; a
+  **broadcast/group** receipt is a unicast, non-flooded, non-custodied tick the deliverer owes the author
+  and re-sends until it lands (`AckSync`) — delay-tolerant, so the ✓✓ isn't lost when the author was out of
+  range at delivery time. One surviving receipt flips it ("≥1 received"); `onAck` no-ops for it (no single
+  recipient), so retries never evict custody.
 - **`reaction`** → `ReactionRepository.apply(...)` (last-writer-wins, §6).
 - **`blobreq`** → `BlobExchange.onRequest(...)` (serve the blob or recurse the pull, §7). **`keyreq`** →
   `KeyExchange` re-serves the requested peer's profile verbatim or records the asker and recurses (the

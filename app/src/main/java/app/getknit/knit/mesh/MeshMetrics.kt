@@ -84,6 +84,7 @@ class MeshMetrics {
     private val keysRecovered = AtomicLong()
     private val framesHeld = AtomicLong()
     private val framesReplayed = AtomicLong()
+    private val receiptsResent = AtomicLong()
 
     // Fixed key set → no allocation on the hot path, every reason always present.
     private val drops: Map<DropReason, AtomicLong> = DropReason.entries.associateWith { AtomicLong() }
@@ -127,6 +128,10 @@ class MeshMetrics {
     /** A parked frame we replayed through the deliver path after its sender's key was pinned. */
     fun onFrameReplayed() { framesReplayed.incrementAndGet() }
 
+    /** A broadcast/group delivery receipt we re-sent to its author because the first best-effort tick may not
+     *  have landed (delay-tolerant recovery, see [AckSync]) — a rising count means ticks are being recovered. */
+    fun onReceiptResent() { receiptsResent.incrementAndGet() }
+
     /** A Bluetooth L2CAP connect attempt to a peer failed for [reason] (see [ConnectFailReason]). */
     fun onBtConnectFailed(reason: ConnectFailReason) { connectFails.getValue(reason).incrementAndGet() }
 
@@ -150,6 +155,7 @@ class MeshMetrics {
             keysRecovered = keysRecovered.get(),
             framesHeld = framesHeld.get(),
             framesReplayed = framesReplayed.get(),
+            receiptsResent = receiptsResent.get(),
             btConnectFails = connectByReason.values.sum(),
             btConnectFailsByReason = connectByReason.filterValues { it > 0 },
             btLinksEstablished = btLinksEstablished.get(),
@@ -170,6 +176,7 @@ class MeshMetrics {
         val keysRecovered: Long = 0,
         val framesHeld: Long = 0,
         val framesReplayed: Long = 0,
+        val receiptsResent: Long = 0,
         val btConnectFails: Long = 0,
         val btConnectFailsByReason: Map<ConnectFailReason, Long> = emptyMap(),
         val btLinksEstablished: Long = 0,

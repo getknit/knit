@@ -70,7 +70,8 @@ mesh/          MeshTransport (interface) · CompositeMeshTransport (runs the rad
                · MeshRouter (dedup + jittered/suppressed flood) · MeshManager (orchestrator)
                · MeshService (foreground service) · MeshMetrics · BlobExchange/BlobStore
                (content-addressed pull) · ForwardSync/ForwardStore (store-and-forward DM + group +
-               broadcast custody) · KeyExchange (keyreq) + PendingInbound (park-until-key) · StoreDigest
+               broadcast custody) · KeyExchange (keyreq) + PendingInbound (park-until-key) · AckSync
+               (delay-tolerant broadcast/group delivery tick) · StoreDigest
                + DigestTracker (pure content-digest anti-entropy for the cue plane) · protocol/Wire.kt
                (layered CBOR WireEnvelope) · link/ (LinkFraming — transport-neutral socket record codec)
 mesh/crypto/   E2E (Tink): MessageCrypto (per-msg seal/open) · PublicKeyBundle · MessageContent
@@ -381,7 +382,22 @@ to any newcomer: the recipient delivers + acks, anyone else relays the frame onw
 from the addressed recipient** purges the carried copy mesh-wide and tombstones its id
 (`ForwardSync.onAck`); because the ack must come *from* the DM's cleartext `recipientId`, a forged receipt
 can't evict an undelivered message — the same recipient check also gates `MeshManager.handleReceipt` →
-`markReceived` (fixing a prior tick-spoof where any signed receipt flipped the ✓✓).
+`markReceived` (fixing a prior tick-spoof where any signed receipt flipped the ✓✓). A DM receipt **floods**
+(`originateSigned`, `relay = true`) so it reaches the sender across hops *and* is custodied like any flood
+frame — delay-tolerant for free.
+
+**Delivery ticks for broadcast/group** have no single recipient, so their receipt is *not* flooded/custodied
+(an ack storm + custody bloat): it's a **unicast, point-to-point (`relay = false`) tick** the deliverer sends
+straight to the author. That one-shot best-effort send was lost whenever the author was out of range at
+delivery time — the *message* converged via custody but the tick did not, leaving the author's ✓✓ missing
+"even after convergence". `AckSync` makes it delay-tolerant **without** flooding: the deliverer remembers the
+ticks it owes and re-sends them (over a live link when the author is a neighbor → reliable + dropped;
+best-effort over the coordination plane otherwise → kept) on every `onNeighborAdded`/`heal` until one lands
+or the entry ages out (24 h TTL, bounded, in-memory, self-repopulating on message re-serve like
+`KeyExchange`). One surviving receipt flips the ✓✓ ("**≥1 person received it**" — the intended broadcast
+semantic); `markReceived` and `ForwardSync.onAck` are idempotent/no-op for these, so duplicate retries are
+harmless and never evict custody. Surfaced in Diagnostics/`…debug.STATE` as `receiptsResent`; JVM-tested
+(`AckSyncTest`).
 
 **Group messages** carry a cleartext member roster (`RelayEnvelope.group.members`) on every frame, so custody
 exploits it: a node carries a group message whether or not it is itself a member (for other members who

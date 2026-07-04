@@ -240,6 +240,11 @@ private fun MetricsSection(metrics: MeshMetrics.Snapshot) {
             MetricRow(stringResource(R.string.diagnostics_metric_frames_held), metrics.framesHeld.toString())
             MetricRow(stringResource(R.string.diagnostics_metric_frames_replayed), metrics.framesReplayed.toString())
         }
+        // Delay-tolerant broadcast/group delivery ticks re-sent to authors that were out of range at delivery
+        // time (see AckSync); shown only once it's happened so a mesh that never needed it stays uncluttered.
+        if (metrics.receiptsResent > 0) {
+            MetricRow(stringResource(R.string.diagnostics_metric_receipts_resent), metrics.receiptsResent.toString())
+        }
         // Bluetooth connect failures: shown only once any occur, with a per-reason breakdown, so an
         // intermittent "can link one peer but not the second" is visible and attributable (RADIO vs other).
         if (metrics.btConnectFails > 0) {
