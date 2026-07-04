@@ -34,6 +34,17 @@ object GifTranscode {
     /** Cap on emitted frames so a very long GIF can't blow up encode time / output size. */
     private const val MAX_FRAMES = 200
 
+    /** A successful re-encode plus the before/after stats logged for it. */
+    private class Shrunk(
+        val bytes: ByteArray,
+        val srcW: Int,
+        val srcH: Int,
+        val outW: Int,
+        val outH: Int,
+        val frames: Int,
+        val durationMs: Int,
+    )
+
     /**
      * Re-encodes [bytes] into a smaller GIF bounded by [maxDim] (longest edge) and [maxFps]. Returns
      * the smaller GIF, or null if decode/encode fails, the timing is unknown, or the result isn't
@@ -48,15 +59,23 @@ object GifTranscode {
         }
         if (result == null) {
             Log.i(TAG, "gif kept verbatim (${bytes.size} B) — not smaller / undecodable")
-        } else {
-            val pct = 100 - (result.size * 100L / bytes.size)
-            Log.i(TAG, "gif shrunk ${bytes.size} B -> ${result.size} B ($pct% smaller)")
+            return null
         }
-        return result
+        // Record the full before/after picture — bytes, dimensions, and frame rate — so a shrink
+        // (or a surprising one) can be sized up from the log line alone.
+        val pct = 100 - (result.bytes.size * 100L / bytes.size)
+        val fps = result.frames * 1000 / result.durationMs
+        Log.i(
+            TAG,
+            "gif shrunk ${bytes.size} B -> ${result.bytes.size} B ($pct% smaller): " +
+                "${result.srcW}x${result.srcH} -> ${result.outW}x${result.outH}, " +
+                "${result.frames} frames @ ~$fps fps",
+        )
+        return result.bytes
     }
 
     @Suppress("DEPRECATION") // Movie is the only built-in GIF frame sampler; still functional.
-    private fun shrinkInternal(bytes: ByteArray, maxDim: Int, maxFps: Int): ByteArray? {
+    private fun shrinkInternal(bytes: ByteArray, maxDim: Int, maxFps: Int): Shrunk? {
         val movie = Movie.decodeByteArray(bytes, 0, bytes.size) ?: return null
         val srcW = movie.width()
         val srcH = movie.height()
@@ -77,8 +96,10 @@ object GifTranscode {
         val encoder = AnimatedGifEncoder()
         encoder.setRepeat(0) // loop forever, like a typical GIF
 
-        val encoded = if (encoder.start(out)) {
-            var frames = 0
+        var frames = 0
+        var outW = 0
+        var outH = 0
+        if (encoder.start(out)) {
             var t = 0
             while (t < duration) {
                 frameBuffer.eraseColor(Color.TRANSPARENT)
@@ -86,6 +107,8 @@ object GifTranscode {
                 movie.draw(canvas, 0f, 0f)
 
                 val scaled = downscale(frameBuffer, maxDim) // same src dims ⇒ uniform frame size
+                outW = scaled.width
+                outH = scaled.height
                 val next = t + interval
                 encoder.setDelay(minOf(next, duration) - t) // this frame's share of wall-time
                 encoder.addFrame(scaled)
@@ -94,13 +117,12 @@ object GifTranscode {
                 frames++
                 t = next
             }
-            if (frames > 0 && encoder.finish()) out.toByteArray() else null
-        } else {
-            null
         }
+        val encoded = if (frames > 0 && encoder.finish()) out.toByteArray() else null
         frameBuffer.recycle()
 
         // Never regress: only replace the original when the re-encode actually saved bytes.
-        return encoded?.takeIf { it.size < bytes.size }
+        val smaller = encoded?.takeIf { it.size < bytes.size }
+        return if (smaller == null) null else Shrunk(smaller, srcW, srcH, outW, outH, frames, duration)
     }
 }
