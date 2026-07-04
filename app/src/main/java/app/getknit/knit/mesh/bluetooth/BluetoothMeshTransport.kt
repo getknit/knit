@@ -88,8 +88,13 @@ class BluetoothMeshTransport(
     private val hasHardware =
         adapter != null && appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
 
-    private val advertiser = BleAdvertiser(adapter?.bluetoothLeAdvertiser) { Log.d(TAG, it) }
-    private val scanner = BleScanner(adapter?.bluetoothLeScanner, ::onScanResult) { Log.d(TAG, it) }
+    // Providers, not cached handles: the LE scanner/advertiser are re-fetched from the adapter on every
+    // (re)start, so the BLE plane survives an adapter off→on cycle (user toggle, airplane, or a BT-stack
+    // crash/auto-restart) without a process restart. Caching the handles once — as this used to — silently
+    // detached the plane from the stack after any such flap (zero scanner/advertiser registration, reach=[]
+    // forever) until the app was killed.
+    private val advertiser = BleAdvertiser({ adapter?.bluetoothLeAdvertiser }) { Log.d(TAG, it) }
+    private val scanner = BleScanner({ adapter?.bluetoothLeScanner }, ::onScanResult) { Log.d(TAG, it) }
 
     // Live L2CAP links, keyed by peer nodeId (many, unlike NAN's ≤1).
     private val links = ConcurrentHashMap<String, FramedLink>()
@@ -660,6 +665,11 @@ class BluetoothMeshTransport(
                     BluetoothAdapter.STATE_ON -> {
                         Log.i(TAG, "bluetooth adapter on")
                         scope.launch {
+                            // Clean slate before re-acquiring: resets the scanner/advertiser `active` flags and
+                            // closes any stale server, so bringUp() + the scan loop re-fetch fresh radio handles
+                            // even if a fast off→on bounce skipped the STATE_OFF teardown (a stuck `scanning`
+                            // flag would otherwise make BleScanner.start() short-circuit and never re-acquire).
+                            tearDownRadio()
                             bringUp()
                             wake()
                         }

@@ -15,7 +15,10 @@ import android.bluetooth.le.BluetoothLeAdvertiser
  */
 @SuppressLint("MissingPermission")
 internal class BleAdvertiser(
-    private val advertiser: BluetoothLeAdvertiser?,
+    // A **provider**, not a cached instance — same reason as [BleScanner]: `getBluetoothLeAdvertiser()` is null
+    // while the adapter is off and stale across an off→on cycle, so re-fetching on every [update] is what lets
+    // advertising survive an adapter toggle / BT-stack restart without a process restart.
+    private val advertiserProvider: () -> BluetoothLeAdvertiser?,
     private val log: (String) -> Unit,
 ) {
     private val callback =
@@ -33,10 +36,14 @@ internal class BleAdvertiser(
     @Volatile
     private var active = false
 
+    // The advertiser instance the live advert was started on, so [stop] and the pre-restart stop in [update]
+    // target the same one across a post-toggle re-acquire.
+    private var current: BluetoothLeAdvertiser? = null
+
     /** (Re)start advertising with fresh [serviceData]; a no-op if the device has no advertiser. */
     fun update(serviceData: ByteArray) {
-        val adv = advertiser ?: return
-        if (active) runCatching { adv.stopAdvertising(callback) }
+        val adv = advertiserProvider() ?: return // re-acquired fresh each update (survives an adapter off→on cycle)
+        if (active) runCatching { (current ?: adv).stopAdvertising(callback) }
         val settings =
             AdvertiseSettings
                 .Builder()
@@ -51,13 +58,16 @@ internal class BleAdvertiser(
                 .addServiceData(BleConstants.SERVICE_UUID, serviceData)
                 .build()
         runCatching { adv.startAdvertising(settings, data, callback) }
-            .onSuccess { active = true }
-            .onFailure { log("advertise start threw: ${it.message}") }
+            .onSuccess {
+                active = true
+                current = adv
+            }.onFailure { log("advertise start threw: ${it.message}") }
     }
 
     fun stop() {
-        val adv = advertiser ?: return
+        val adv = current ?: return
         if (active) runCatching { adv.stopAdvertising(callback) }
         active = false
+        current = null
     }
 }

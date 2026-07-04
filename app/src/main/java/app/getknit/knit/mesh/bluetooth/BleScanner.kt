@@ -17,7 +17,12 @@ import android.bluetooth.le.ScanSettings
  */
 @SuppressLint("MissingPermission")
 internal class BleScanner(
-    private val scanner: BluetoothLeScanner?,
+    // A **provider**, not a cached instance: `BluetoothAdapter.getBluetoothLeScanner()` returns null while the
+    // adapter is off and its handle goes stale across an off→on cycle, so re-fetching on every [start] is what
+    // lets the scan survive an adapter toggle / BT-stack restart (and the app-started-while-off case) without a
+    // process restart. Caching it once silently detaches the scanner from the stack forever — see
+    // BluetoothMeshTransport's construction site.
+    private val scannerProvider: () -> BluetoothLeScanner?,
     private val onResult: (ScanResult) -> Unit,
     private val log: (String) -> Unit,
 ) {
@@ -43,9 +48,13 @@ internal class BleScanner(
     @Volatile
     private var scanning = false
 
+    // The scanner instance the live scan was started on, so [stop] targets the same one even if the provider
+    // would now hand back a different (post-toggle) instance.
+    private var active: BluetoothLeScanner? = null
+
     fun start(scanMode: Int) {
-        val s = scanner ?: return
         if (scanning) return
+        val s = scannerProvider() ?: return // re-acquired fresh each start (survives an adapter off→on cycle)
         val settings =
             ScanSettings
                 .Builder()
@@ -54,13 +63,16 @@ internal class BleScanner(
                 .build()
         val filters = listOf(ScanFilter.Builder().setServiceUuid(BleConstants.SERVICE_UUID).build())
         runCatching { s.startScan(filters, settings, callback) }
-            .onSuccess { scanning = true }
-            .onFailure { log("startScan threw: ${it.message}") }
+            .onSuccess {
+                scanning = true
+                active = s
+            }.onFailure { log("startScan threw: ${it.message}") }
     }
 
     fun stop() {
-        val s = scanner ?: return
+        val s = active ?: return
         if (scanning) runCatching { s.stopScan(callback) }
         scanning = false
+        active = null
     }
 }
