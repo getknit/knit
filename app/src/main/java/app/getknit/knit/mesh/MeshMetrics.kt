@@ -93,6 +93,7 @@ class MeshMetrics {
     private val btLinksEstablished = AtomicLong()
     private val nanServesPeak = AtomicLong()
     private val nanAcceptsRefused = AtomicLong()
+    private val nanIcmKeepaliveFailed = AtomicLong()
 
     /** A frame this device authored and injected into the mesh. */
     fun onOriginated() {
@@ -180,6 +181,11 @@ class MeshMetrics {
         nanAcceptsRefused.incrementAndGet()
     }
 
+    /** A live publish session's updatePublish failed — the ICM relight fell back to the subscribe re-arm. */
+    fun onNanIcmKeepaliveFailed() {
+        nanIcmKeepaliveFailed.incrementAndGet()
+    }
+
     fun snapshot(): Snapshot {
         val byReason = drops.mapValues { it.value.get() }
         val connectByReason = connectFails.mapValues { it.value.get() }
@@ -203,6 +209,7 @@ class MeshMetrics {
             btLinksEstablished = btLinksEstablished.get(),
             nanServesPeak = nanServesPeak.get(),
             nanAcceptsRefused = nanAcceptsRefused.get(),
+            nanIcmKeepaliveFailed = nanIcmKeepaliveFailed.get(),
         )
     }
 
@@ -226,5 +233,6 @@ class MeshMetrics {
         val btLinksEstablished: Long = 0,
         val nanServesPeak: Long = 0,
         val nanAcceptsRefused: Long = 0,
+        val nanIcmKeepaliveFailed: Long = 0,
     )
 }

@@ -241,7 +241,12 @@ changes is the NDI lifecycle, which stops being "one link at a time + a session 
    why multi-day stores' digests keep *moving* every round is a separate investigation (likely
    quota-eviction or uncarryable-frame asymmetry — anything the digest folds over must be bounded by a rule
    identical on every node, which per-node `canCarry` gates violate by design).
-4. **ICM keepalive via `updatePublish`** (gated on E5): replace `needsIcmRelight()`'s `rearmSubscribe()`
+4. **ICM keepalive via `updatePublish`** (gated on E5) — **✅ implemented + fleet-validated 2026-07-04**
+   (keepalive is the default relight with a broken-latch fallback to the legacy re-arm; the SSI fold shipped
+   with it: the advert carries a trailing `|d<digest>` segment, republished trailing-edge-coalesced at ≥5 s on
+   digest change — each republish doubles as a keepalive and re-fires every subscriber's discovery as a
+   passive cue. The formerly-open mid-serve question is closed: **three `updatePublish` calls fired during a
+   live 13 s serve and the link survived all of them**, messages delivered): replace `needsIcmRelight()`'s `rearmSubscribe()`
    with a demand-gated same-config `updatePublish` heartbeat (<30 s cadence while a sync is owed to a
    reachable peer) — no discovery churn, works on the pure responder, removes the deliberate use of the one
    API path we know wedges. If the E5 SSI probe passes, fold the digest version into the SSI on the same

@@ -29,7 +29,6 @@ import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.GroupInfo
-import app.getknit.knit.mesh.wifiaware.NanExperiments
 import app.getknit.knit.ui.invite.prepareKnitApk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
@@ -140,10 +139,6 @@ class DebugBridgeReceiver :
                         ACTION_HEAL -> {
                             mesh.heal()
                             reply("ok", "healed")
-                        }
-
-                        ACTION_NANEXP -> {
-                            handleNanExp(intent)
                         }
 
                         else -> {
@@ -450,32 +445,7 @@ class DebugBridgeReceiver :
             .put("receiptsResent", snap.receiptsResent)
             .put("nanServesPeak", snap.nanServesPeak)
             .put("nanAcceptsRefused", snap.nanAcceptsRefused)
-
-    /**
-     * Flip the NAN experiment toggles (`docs/NAN_CONCURRENCY_REAUDIT.md` §4) and report their state.
-     * Extras (each optional, `on`/`off`; absent = unchanged): `e5` (updatePublish ICM keepalive), `force`
-     * (keepalive regardless of demand), `ssiprobe` (SSI-change re-discovery probe). In-memory: a process
-     * restart resets all to off. (The P0 `e4b` recycle toggle was promoted to default behavior in P2.)
-     */
-    private fun handleNanExp(intent: Intent): JSONObject {
-        fun flag(
-            name: String,
-            current: Boolean,
-        ): Boolean =
-            when (intent.getStringExtra(name)) {
-                "on" -> true
-                "off" -> false
-                else -> current
-            }
-        NanExperiments.e5Keepalive = flag(EXTRA_E5, NanExperiments.e5Keepalive)
-        NanExperiments.e5Force = flag(EXTRA_FORCE, NanExperiments.e5Force)
-        NanExperiments.e5SsiProbe = flag(EXTRA_SSIPROBE, NanExperiments.e5SsiProbe)
-        return JSONObject()
-            .put("status", "ok")
-            .put("e5Keepalive", NanExperiments.e5Keepalive)
-            .put("e5Force", NanExperiments.e5Force)
-            .put("e5SsiProbe", NanExperiments.e5SsiProbe)
-    }
+            .put("nanIcmKeepaliveFailed", snap.nanIcmKeepaliveFailed)
 
     private fun reply(
         status: String,
@@ -505,7 +475,6 @@ class DebugBridgeReceiver :
         const val ACTION_WEBPCONV = "app.getknit.knit.debug.WEBPCONV"
         const val ACTION_WEBPCHECK = "app.getknit.knit.debug.WEBPCHECK"
         const val ACTION_HEAL = "app.getknit.knit.debug.HEAL"
-        const val ACTION_NANEXP = "app.getknit.knit.debug.NANEXP"
 
         const val EXTRA_TEXT = "text"
         const val EXTRA_CONV = "conv"
@@ -515,9 +484,6 @@ class DebugBridgeReceiver :
         const val EXTRA_LIMIT = "limit"
         const val EXTRA_PATH = "path"
         const val EXTRA_OUT = "out"
-        const val EXTRA_E5 = "e5"
-        const val EXTRA_FORCE = "force"
-        const val EXTRA_SSIPROBE = "ssiprobe"
 
         // Mirror AttachmentStore.GIF_MAX_DIMENSION / GIF_MAX_FPS (private there) so this diagnostic
         // shrinks a GIF with the same bounds the real ingest path uses.

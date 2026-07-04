@@ -304,8 +304,15 @@ class WifiAwareTransport(
     // lastRearmAt: a keepalive is not a subscribe re-arm and must not delay genuine re-discovery.
     @Volatile private var lastIcmKeepaliveAt = 0L
 
-    // E5 SSI probe sequence (handler-thread only — bumped inside icmKeepalive's onHandler block).
-    private var ssiProbeSeq = 0
+    // SSI republish coalescing (handler-thread only): last updatePublish time and whether a trailing
+    // republish is already scheduled, so a burst of digest moves becomes at most one update per
+    // SSI_UPDATE_MIN_MS (each update re-fires every subscriber's onServiceDiscovered — P0-verified 5/5).
+    private var lastSsiRepublishAt = 0L
+    private var ssiRepublishPending = false
+
+    // Latched when a live publish session's updatePublish fails ("publish update failed"): the ICM relight
+    // falls back to the legacy subscribe re-arm until the next (re)attach resets it.
+    @Volatile private var icmKeepaliveBroken = false
 
     // Watchdog state for the leaked-request wedge (see [checkWedge]). [lastLinkOrAcceptAt] = elapsedRealtime of
     // the last successful data-path link/accept (either role) — the "progress" signal. [syncOwedSince] = start
@@ -367,6 +374,7 @@ class WifiAwareTransport(
                 scope.launch {
                     storeDigest.version.drop(1).collect {
                         cueAll()
+                        republishSsi() // the digest also rides the publish SSI (P4 passive cue channel)
                         healSignal.trySend(Unit)
                     }
                 }
@@ -663,17 +671,25 @@ class WifiAwareTransport(
                         return
                     }
                     publishSession = publish
+                    icmKeepaliveBroken = false // a fresh session gets a fresh chance at in-place updates
                     startResponder() // one accept-any responder for the life of this publish session
                 }
 
                 override fun onSessionConfigFailed() {
-                    // With a live publish session this is an updatePublish (E5 keepalive) failing, not the
-                    // initial config — distinguish so the keepalive's health is visible in the field.
-                    Log.w(TAG, if (publishSession != null) "publish update failed" else "publish config failed")
+                    // With a live publish session this is an updatePublish (keepalive/SSI republish) failing,
+                    // not the initial config. Latch the fallback: the ICM relight reverts to the legacy
+                    // subscribe re-arm until the next attach — never loop updatePublish against a failing session.
+                    if (publishSession != null) {
+                        icmKeepaliveBroken = true
+                        metrics.onNanIcmKeepaliveFailed()
+                        Log.w(TAG, "publish update failed — ICM relight falling back to subscribe re-arm")
+                    } else {
+                        Log.w(TAG, "publish config failed")
+                    }
                 }
 
                 override fun onSessionConfigUpdated() {
-                    Log.i(TAG, "publish config updated (E5 keepalive)")
+                    Log.i(TAG, "publish config updated (keepalive/ssi)")
                 }
 
                 override fun onMessageReceived(
@@ -687,35 +703,61 @@ class WifiAwareTransport(
     }
 
     /**
-     * The publish config, built in one place so the E5 ICM keepalive ([icmKeepalive]'s `updatePublish`) can
-     * never drift from the original. [ssiSuffix] (the E5 SSI probe) appends an extra `|`-segment to the
-     * advert; [Protocol.parse] reads only the first three segments, so peers ignore it.
+     * The publish config, built in one place so every `updatePublish` (ICM keepalive, SSI republish) can
+     * never drift from the original. The advert carries a trailing `|d<version>` segment — the store digest
+     * as a **passive cue**: a changed SSI re-fires every subscriber's `onServiceDiscovered` (HAL MATCH_ONCE
+     * suppresses repeats only "with no new data"; P0-verified 5/5 on this fleet), so peers learn our digest
+     * with zero unicast messages. [Protocol.parse] reads only the first three segments, so the advert stays
+     * backward-parseable; the unicast cue plane stays as the redundant active channel.
      */
-    private fun buildPublishConfig(ssiSuffix: String? = null): PublishConfig {
+    private fun buildPublishConfig(): PublishConfig {
+        val ssi = Protocol.advertise(localNodeId) + "$SSI_DIGEST_PREFIX${storeDigest.version.value}"
         val builder =
             PublishConfig
                 .Builder()
                 .setServiceName(SERVICE_NAME)
-                .setServiceSpecificInfo((Protocol.advertise(localNodeId) + ssiSuffix.orEmpty()).encodeToByteArray())
+                .setServiceSpecificInfo(ssi.encodeToByteArray())
         if (instantSupported) builder.setInstantCommunicationModeEnabled(true, INSTANT_BAND)
         return builder.build()
     }
 
     /**
-     * E5: relight Instant Communication Mode by refreshing the publish session **in place** — the framework's
-     * 30 s ICM clock is the per-session `mUpdateTime`, which `updatePublish` refreshes — instead of the
-     * churn-prone subscribe re-arm (whose `onSessionConfigFailed` wedge the lifecycle dances around). With
-     * [NanExperiments.e5SsiProbe] each keepalive also bumps an extra SSI segment, probing whether peers'
-     * one-shot discovery re-fires on SSI change (the HAL's MATCH_ONCE suppresses repeats only "with no new
-     * data"). Success/failure surfaces via `onSessionConfigUpdated` / "publish update failed" above.
+     * Refresh the publish SSI so the digest segment (see [buildPublishConfig]) reflects the current store —
+     * coalesced to one `updatePublish` per [SSI_UPDATE_MIN_MS] with a trailing edge, so a backfill burst
+     * (every ingested frame moves the digest) becomes a single update carrying the final version. Each update
+     * also refreshes the framework's per-session `mUpdateTime`, i.e. it doubles as an ICM keepalive.
+     */
+    private fun republishSsi() =
+        onHandler {
+            if (ssiRepublishPending) return@onHandler
+            val now = SystemClock.elapsedRealtime()
+            val wait = (lastSsiRepublishAt + SSI_UPDATE_MIN_MS - now).coerceAtLeast(0)
+            if (wait == 0L) {
+                lastSsiRepublishAt = now
+                icmKeepalive()
+            } else {
+                ssiRepublishPending = true
+                handler.postDelayed({
+                    ssiRepublishPending = false
+                    lastSsiRepublishAt = SystemClock.elapsedRealtime()
+                    icmKeepalive()
+                }, wait)
+            }
+        }
+
+    /**
+     * Refresh the publish session **in place**: `updatePublish` re-announces the SSI (with the current digest
+     * segment) and refreshes the framework's per-session `mUpdateTime` — the whole 30 s ICM clock — replacing
+     * the churn-prone subscribe re-arm as the relight (P4; E5-validated: ICM stayed lit across 5 consecutive
+     * 30 s reconfigure windows, zero session churn). Failure surfaces via "publish update failed", which
+     * latches [icmKeepaliveBroken] so the relight falls back to the legacy re-arm until the next attach.
      */
     private fun icmKeepalive() =
         onHandler {
             val pub = publishSession ?: return@onHandler
-            val suffix = if (NanExperiments.e5SsiProbe) "$SSI_PROBE_PREFIX${++ssiProbeSeq}" else null
-            Log.i(TAG, "E5: icm keepalive — updatePublish(probe=${suffix ?: "-"})")
-            runCatching { pub.updatePublish(buildPublishConfig(suffix)) }
-                .onFailure { Log.w(TAG, "E5: updatePublish threw", it) }
+            Log.i(TAG, "icm keepalive — updatePublish (ssi digest ${storeDigest.version.value})")
+            runCatching { pub.updatePublish(buildPublishConfig()) }
+                .onFailure { Log.w(TAG, "updatePublish threw", it) }
         }
 
     private fun startSubscribe() {
@@ -935,21 +977,20 @@ class WifiAwareTransport(
         }
 
     /**
-     * Whether the ICM relight should fire this tick. E5 keepalive mode ([NanExperiments.e5Keepalive]) is
-     * rate-limited on its own clock ([lastIcmKeepaliveAt] — a keepalive is not a subscribe re-arm and must
-     * not delay genuine re-discovery) and can be forced on cadence ([NanExperiments.e5Force]) so the
-     * experiment can measure a continuously-lit ICM window; the legacy path keeps the shipped behavior.
+     * Whether the ICM relight should fire this tick, rate-limited per path: the in-place keepalive on its own
+     * clock ([lastIcmKeepaliveAt] — a keepalive is not a subscribe re-arm and must not delay genuine
+     * re-discovery), the legacy re-arm fallback ([icmKeepaliveBroken]) on the re-arm clock.
      */
     private fun icmRelightDue(now: Long): Boolean =
-        if (NanExperiments.e5Keepalive) {
-            (needsIcmRelight() || NanExperiments.e5Force) && now - lastIcmKeepaliveAt > ICM_REARM_COOLDOWN_MS
+        if (!icmKeepaliveBroken) {
+            needsIcmRelight() && now - lastIcmKeepaliveAt > ICM_REARM_COOLDOWN_MS
         } else {
             needsIcmRelight() && now - lastRearmAt > ICM_REARM_COOLDOWN_MS
         }
 
-    /** Fire the ICM relight: E5 keepalive = in-place [icmKeepalive]; legacy = the subscribe re-arm. */
+    /** Fire the ICM relight: the in-place [icmKeepalive] (P4 default); the subscribe re-arm when latched broken. */
     private fun fireIcmRelight(now: Long) {
-        if (NanExperiments.e5Keepalive) {
+        if (!icmKeepaliveBroken) {
             lastIcmKeepaliveAt = now
             icmKeepalive()
         } else {
@@ -1064,8 +1105,7 @@ class WifiAwareTransport(
 
                 // A sync owed to a peer we only respond to → tick around the ICM keepalive cadence so the loop can
                 // relight ICM (needsIcmRelight) before the ~30s auto-disable, instead of sleeping REDISCOVER_IDLE_MS.
-                instantSupported &&
-                    (needsIcmRelight() || (NanExperiments.e5Keepalive && NanExperiments.e5Force)) -> ICM_REARM_COOLDOWN_MS
+                instantSupported && needsIcmRelight() -> ICM_REARM_COOLDOWN_MS
 
                 else -> REDISCOVER_IDLE_MS
             }
@@ -1125,10 +1165,20 @@ class WifiAwareTransport(
         val advert = Protocol.parse(ssi.decodeToString())
         val peerNodeId = advert.nodeId
         if (peerNodeId == localNodeId) return
-        // E5 SSI probe: each of these lines is one discovery indication — counting re-fires per SSI change
-        // is the whole probe (the HAL's MATCH_ONCE should re-indicate a changed SSI as "new data").
-        Log.i(TAG, "discovered $peerNodeId ssi=${ssi.decodeToString()}")
+        val ssiText = ssi.decodeToString()
+        Log.i(TAG, "discovered $peerNodeId ssi=$ssiText") // TEMP diag: one line per discovery indication
         synchronized(lock) { discovered[peerNodeId] = DiscoveredPeer(advert, peerHandle) }
+        // Passive cue (P4): the publisher's SSI carries its digest as a trailing |d<version> segment, and a
+        // changed SSI re-fires this callback — so a re-discovery IS a cue, with zero unicast messages. Same
+        // deferred wake as onCueReceived (let a racing fast-fanout converge the digest before an NDP fires).
+        parseSsiDigest(ssiText)?.let { v ->
+            if (digestTracker.onCue(peerNodeId, v)) {
+                scope.launch {
+                    delay(CUE_SETTLE_MS)
+                    healSignal.trySend(Unit)
+                }
+            }
+        }
         subscribeSession?.let { cueTarget[peerNodeId] = CueTarget(peerHandle, it) } // handle valid on subscribe
         noteReachable(Peer(peerNodeId, advert.protoVersion, advert.capabilities))
         sendCue(peerNodeId)
@@ -1184,6 +1234,13 @@ class WifiAwareTransport(
         val nodeId: String,
         val version: Long,
     )
+
+    /** The trailing `|d<version>` digest segment of a peer's publish SSI, or null (no segment / older build). */
+    private fun parseSsiDigest(ssi: String): Long? {
+        val i = ssi.lastIndexOf(SSI_DIGEST_PREFIX)
+        if (i < 0) return null
+        return ssi.substring(i + SSI_DIGEST_PREFIX.length).toLongOrNull()
+    }
 
     private fun parseCue(bytes: ByteArray): Cue? {
         val s = runCatching { bytes.decodeToString() }.getOrNull() ?: return null
@@ -1987,9 +2044,14 @@ class WifiAwareTransport(
         // delivery lags many seconds on a screen-off device.
         const val SESSION_CYCLE_SETTLE_MS = 2_000L
 
-        // E5 SSI probe: the extra publish-SSI segment prefix ("|p<n>"); Protocol.parse ignores segments past
-        // the third, so old and new peers alike read the advert unchanged.
-        const val SSI_PROBE_PREFIX = "|p"
+        // The publish-SSI digest segment prefix ("|d<version>", always the fourth |-segment). Protocol.parse
+        // ignores segments past the third, so old and new peers alike read the advert unchanged.
+        const val SSI_DIGEST_PREFIX = "|d"
+
+        // Min gap between SSI republishes (updatePublish) on digest change, trailing-edge coalesced: a
+        // backfill burst becomes one update carrying the final version. Each republish re-fires every
+        // subscriber's onServiceDiscovered, so this also bounds that fan-out.
+        const val SSI_UPDATE_MIN_MS = 5_000L
 
         // Wait this long after a peer's cue advances its digest before waking the sync loop, so a broadcast
         // fast-fanout racing the cue can deliver + carry the frame and converge the digest first — turning the
