@@ -14,7 +14,6 @@ enum class ConversationKind { NEARBY, GROUP, DM }
  * unit-testable on the JVM).
  */
 object Conversations {
-
     /** Stable id of the public broadcast room, surfaced in the chat list as "Nearby". */
     const val NEARBY: String = "nearby"
 
@@ -24,7 +23,12 @@ object Conversations {
      * ([recipientId] null) belong to [NEARBY]; a DM belongs to a thread keyed by the other party —
      * the [recipientId] for a message we sent, the [senderId] for one we received.
      */
-    fun idFor(senderId: String, recipientId: String?, selfId: String, groupId: String? = null): String =
+    fun idFor(
+        senderId: String,
+        recipientId: String?,
+        selfId: String,
+        groupId: String? = null,
+    ): String =
         when {
             groupId != null -> groupId
             recipientId == null -> NEARBY
@@ -40,22 +44,28 @@ object Conversations {
      * Group membership is decided separately by [isGroupMember] (a group's recipientId is null, so this
      * helper would wrongly call every group message "for me").
      */
-    fun isForMe(recipientId: String?, selfId: String): Boolean =
-        recipientId == null || recipientId == selfId
+    fun isForMe(
+        recipientId: String?,
+        selfId: String,
+    ): Boolean = recipientId == null || recipientId == selfId
 
     /** Whether [selfId] is in a group's [members] roster — the group analogue of [isForMe]. */
-    fun isGroupMember(members: List<String>, selfId: String): Boolean = selfId in members
+    fun isGroupMember(
+        members: List<String>,
+        selfId: String,
+    ): Boolean = selfId in members
 
     /**
      * The [ConversationKind] of a thread, derived from its [conversationId]: the [NEARBY] room, a
      * group (id prefixed [GROUP_ID_PREFIX]), or otherwise a 1:1 DM (a peer node id). Pure, so the
      * notification layer can route by context without re-deriving from frame fields.
      */
-    fun kindFor(conversationId: String): ConversationKind = when {
-        conversationId == NEARBY -> ConversationKind.NEARBY
-        conversationId.startsWith(GROUP_ID_PREFIX) -> ConversationKind.GROUP
-        else -> ConversationKind.DM
-    }
+    fun kindFor(conversationId: String): ConversationKind =
+        when {
+            conversationId == NEARBY -> ConversationKind.NEARBY
+            conversationId.startsWith(GROUP_ID_PREFIX) -> ConversationKind.GROUP
+            else -> ConversationKind.DM
+        }
 
     /**
      * Stable, order-agnostic id for a group defined by [members] (node ids). Derived from the sorted,
@@ -68,12 +78,15 @@ object Conversations {
     @Suppress("MagicNumber") // nibble math (4-bit shifts, 0xF masks) for hex encoding
     fun groupIdFor(members: List<String>): String {
         val canonical = members.toSortedSet().joinToString(separator = ",")
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest((GROUP_ID_SALT + canonical).encodeToByteArray())
-        val hex = digest.take(GROUP_ID_BYTES).joinToString("") { byte ->
-            val v = byte.toInt()
-            "${HEX[(v shr 4) and 0xF]}${HEX[v and 0xF]}"
-        }
+        val digest =
+            MessageDigest
+                .getInstance("SHA-256")
+                .digest((GROUP_ID_SALT + canonical).encodeToByteArray())
+        val hex =
+            digest.take(GROUP_ID_BYTES).joinToString("") { byte ->
+                val v = byte.toInt()
+                "${HEX[(v shr 4) and 0xF]}${HEX[v and 0xF]}"
+            }
         return GROUP_ID_PREFIX + hex
     }
 

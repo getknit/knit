@@ -84,7 +84,6 @@ data class NotifConversation(
  * ("N messages in M chats"), Signal-style.
  */
 interface Notifier {
-
     /** Registers the notification channels + groups. Safe to call repeatedly; called once at startup. */
     fun createChannel()
 
@@ -111,7 +110,13 @@ interface Notifier {
      * notification identified by [notificationTag], so it shows as sent — Signal-style. Passed the self
      * identity explicitly so it works even after a process restart (no reliance on cached state).
      */
-    fun onReplied(notificationTag: String, text: String, selfId: String, selfName: String, selfAvatarBytes: ByteArray?)
+    fun onReplied(
+        notificationTag: String,
+        text: String,
+        selfId: String,
+        selfName: String,
+        selfAvatarBytes: ByteArray?,
+    )
 
     /**
      * Records which conversation is on screen (null = none). Messages for the visible conversation are
@@ -178,5 +183,4 @@ fun mentionNotification(
     peerName: String?,
     peerAvatarBytes: ByteArray?,
     conversationId: String,
-): NotifMessage? =
-    incomingNotification(senderId, body, sentAt, selfId, peerName, peerAvatarBytes, conversationId)
+): NotifMessage? = incomingNotification(senderId, body, sentAt, selfId, peerName, peerAvatarBytes, conversationId)

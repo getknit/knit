@@ -9,9 +9,15 @@ package app.getknit.knit.mesh.crypto
 object VerifyPayload {
     private const val PREFIX = "knit-id:v1:"
 
-    fun encode(nodeId: String, bundle: String): String = "$PREFIX$nodeId:$bundle"
+    fun encode(
+        nodeId: String,
+        bundle: String,
+    ): String = "$PREFIX$nodeId:$bundle"
 
-    data class Parsed(val nodeId: String, val bundle: String)
+    data class Parsed(
+        val nodeId: String,
+        val bundle: String,
+    )
 
     fun parse(payload: String): Parsed? {
         if (!payload.startsWith(PREFIX)) return null

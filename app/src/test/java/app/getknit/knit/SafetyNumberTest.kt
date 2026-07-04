@@ -9,7 +9,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SafetyNumberTest {
-
     @Test
     fun symmetricAcrossEndpoints() {
         // Each side feeds in (self, peer); both must derive the identical number.

@@ -13,8 +13,9 @@ import java.io.File
  * of connected neighbors so the "connected" header ([MeshManager.neighborCount]) and the contact
  * "online" dots light up against the seeded data, with no real mesh. Every other operation is inert.
  */
-class DemoTransport(onlineNodeIds: Set<String>) : MeshTransport {
-
+class DemoTransport(
+    onlineNodeIds: Set<String>,
+) : MeshTransport {
     override val neighbors: StateFlow<Set<Peer>> =
         MutableStateFlow(onlineNodeIds.map { Peer(it) }.toSet())
 
@@ -24,8 +25,19 @@ class DemoTransport(onlineNodeIds: Set<String>) : MeshTransport {
     override val incomingFiles: Flow<ReceivedFile> = emptyFlow()
 
     override fun start() = Unit
+
     override fun stop() = Unit
+
     override fun heal() = Unit
-    override suspend fun send(wire: WireEnvelope, to: Peer?) = Unit
-    override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) = Unit
+
+    override suspend fun send(
+        wire: WireEnvelope,
+        to: Peer?,
+    ) = Unit
+
+    override suspend fun sendFile(
+        file: File,
+        to: Peer,
+        meta: FileMeta,
+    ) = Unit
 }

@@ -24,7 +24,8 @@ fun interface DeviceIdSource {
  * to this app. It does reset on factory reset and changes if the signing key changes (e.g. debug vs
  * release) or across user/work profiles — acceptable for a *soft* anti-abuse block-continuity signal.
  */
-class AndroidDeviceIdSource(private val context: Context) : DeviceIdSource {
-    override fun rawDeviceId(): String? =
-        Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+class AndroidDeviceIdSource(
+    private val context: Context,
+) : DeviceIdSource {
+    override fun rawDeviceId(): String? = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
 }

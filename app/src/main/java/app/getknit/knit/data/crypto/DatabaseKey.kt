@@ -28,8 +28,9 @@ import javax.crypto.spec.GCMParameterSpec
  * and a fresh encrypted one is provisioned. The same wipe runs on first encryption to drop any
  * pre-existing plaintext `knit.db` (which SQLCipher cannot open).
  */
-class DatabaseKey(private val context: Context) {
-
+class DatabaseKey(
+    private val context: Context,
+) {
     private val keyFile: File get() = File(context.filesDir, KEY_FILE)
 
     /** Returns the 32-byte SQLCipher passphrase, generating and persisting it on first use. */
@@ -60,9 +61,10 @@ class DatabaseKey(private val context: Context) {
         val iv = blob.copyOfRange(0, IV_LENGTH)
         val ciphertext = blob.copyOfRange(IV_LENGTH, blob.size)
         val key = existingKeystoreKey() ?: throw GeneralSecurityException("Keystore key missing")
-        val cipher = Cipher.getInstance(TRANSFORMATION).apply {
-            init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
-        }
+        val cipher =
+            Cipher.getInstance(TRANSFORMATION).apply {
+                init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
+            }
         return cipher.doFinal(ciphertext).also {
             require(it.size == PASSPHRASE_BYTES) { "unexpected passphrase length ${it.size}" }
         }
@@ -88,16 +90,18 @@ class DatabaseKey(private val context: Context) {
             }
 
     private fun generateKeystoreKey(strongBox: Boolean): SecretKey {
-        val spec = KeyGenParameterSpec.Builder(
-            KEY_ALIAS,
-            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-        )
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .setKeySize(KEY_SIZE_BITS)
-            .setIsStrongBoxBacked(strongBox)
-            .build()
-        return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+        val spec =
+            KeyGenParameterSpec
+                .Builder(
+                    KEY_ALIAS,
+                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+                ).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(KEY_SIZE_BITS)
+                .setIsStrongBoxBacked(strongBox)
+                .build()
+        return KeyGenerator
+            .getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
             .apply { init(spec) }
             .generateKey()
     }

@@ -21,14 +21,18 @@ import java.io.OutputStream
 interface LinkSocket {
     val input: InputStream
     val output: OutputStream
+
     fun close()
 }
 
 /** Adapts a plain [java.net.Socket] (the Wi-Fi Aware NDP TCP socket) to [LinkSocket]. */
-class NetSocketLink(private val socket: java.net.Socket) : LinkSocket {
+class NetSocketLink(
+    private val socket: java.net.Socket,
+) : LinkSocket {
     // Cached so the HELLO read and FramedLink's read loop share one buffer (see the interface contract).
     override val input: InputStream by lazy { BufferedInputStream(socket.getInputStream()) }
     override val output: OutputStream get() = socket.getOutputStream()
+
     override fun close() {
         runCatching { socket.close() }
     }

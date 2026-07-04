@@ -13,42 +13,47 @@ import java.io.File
  * detoxify-mobile/src/verify_tokenizer.py (4k strings, 100% match).
  */
 class SentencePieceTokenizerTest {
-
-    private class Golden(val text: String, val ids: IntArray)
+    private class Golden(
+        val text: String,
+        val ids: IntArray,
+    )
 
     private val tokenizer by lazy {
         // Gradle runs unit tests with the module dir as the working dir.
-        val candidates = listOf(
-            "src/main/assets/moderation/tokenizer.json",
-            "app/src/main/assets/moderation/tokenizer.json",
-        )
-        val file = candidates.map(::File).firstOrNull { it.exists() }
-            ?: error("tokenizer.json not found (cwd=${File(".").absolutePath})")
+        val candidates =
+            listOf(
+                "src/main/assets/moderation/tokenizer.json",
+                "app/src/main/assets/moderation/tokenizer.json",
+            )
+        val file =
+            candidates.map(::File).firstOrNull { it.exists() }
+                ?: error("tokenizer.json not found (cwd=${File(".").absolutePath})")
         SentencePieceTokenizer.fromJson(file.readText())
     }
 
-    private val goldens = listOf(
-        Golden("shut up moron", intArrayOf(2, 2218, 71, 24932, 3)),
-        Golden("Have a great day!", intArrayOf(2, 57, 21, 374, 208, 187, 3)),
-        Golden("You're an IDIOT!!!", intArrayOf(2, 42, 22, 99, 40, 8563, 28116, 3)),
-        Golden("café CAFÉ naïve", intArrayOf(2, 6241, 6241, 16288, 3)),
-        Golden("  weird    spacing here ", intArrayOf(2, 5455, 29177, 235, 3)),
-        Golden("thanks so much for the help", intArrayOf(2, 3669, 86, 212, 26, 14, 448, 3)),
-        Golden("kys", intArrayOf(2, 5766, 18, 3)),
-        Golden("people of that religion are subhuman", intArrayOf(2, 148, 16, 30, 3065, 50, 972, 7057, 3)),
-        Golden("I will find you and hurt you", intArrayOf(2, 31, 129, 477, 42, 17, 1500, 42, 3)),
-        Golden("you are a complete idiot and everyone hates you", intArrayOf(2, 42, 50, 21, 1279, 8563, 17, 1266, 3223, 18, 42, 3)),
-        Golden("g0 t0 h3ll", intArrayOf(2, 489, 387, 13, 38, 387, 746, 240, 211, 3)),
-        Golden("MixEd CaSe WoRdS", intArrayOf(2, 2198, 610, 715, 3)),
-        Golden("emoji test 🔥😡", intArrayOf(2, 3579, 18451, 1289, 13, 1, 3)),
-        Golden("ﬁle ligature ＦＵＬＬ", intArrayOf(2, 3893, 7422, 6418, 503, 3)),
-        Golden("résumé", intArrayOf(2, 13113, 3)),
-        Golden("normal sentence with numbers 1234 and symbols", intArrayOf(2, 1826, 5123, 29, 2116, 390, 3965, 17, 9794, 3)),
-        Golden("@user said #stuff", intArrayOf(2, 13, 1, 16704, 87, 6926, 384, 5386, 3)),
-        Golden("die in a fire loser", intArrayOf(2, 1327, 19, 21, 535, 9891, 3)),
-        Golden("have a wonderful evening everyone", intArrayOf(2, 57, 21, 5934, 2089, 1266, 3)),
-        Golden("", intArrayOf(2, 3)),
-    )
+    private val goldens =
+        listOf(
+            Golden("shut up moron", intArrayOf(2, 2218, 71, 24932, 3)),
+            Golden("Have a great day!", intArrayOf(2, 57, 21, 374, 208, 187, 3)),
+            Golden("You're an IDIOT!!!", intArrayOf(2, 42, 22, 99, 40, 8563, 28116, 3)),
+            Golden("café CAFÉ naïve", intArrayOf(2, 6241, 6241, 16288, 3)),
+            Golden("  weird    spacing here ", intArrayOf(2, 5455, 29177, 235, 3)),
+            Golden("thanks so much for the help", intArrayOf(2, 3669, 86, 212, 26, 14, 448, 3)),
+            Golden("kys", intArrayOf(2, 5766, 18, 3)),
+            Golden("people of that religion are subhuman", intArrayOf(2, 148, 16, 30, 3065, 50, 972, 7057, 3)),
+            Golden("I will find you and hurt you", intArrayOf(2, 31, 129, 477, 42, 17, 1500, 42, 3)),
+            Golden("you are a complete idiot and everyone hates you", intArrayOf(2, 42, 50, 21, 1279, 8563, 17, 1266, 3223, 18, 42, 3)),
+            Golden("g0 t0 h3ll", intArrayOf(2, 489, 387, 13, 38, 387, 746, 240, 211, 3)),
+            Golden("MixEd CaSe WoRdS", intArrayOf(2, 2198, 610, 715, 3)),
+            Golden("emoji test 🔥😡", intArrayOf(2, 3579, 18451, 1289, 13, 1, 3)),
+            Golden("ﬁle ligature ＦＵＬＬ", intArrayOf(2, 3893, 7422, 6418, 503, 3)),
+            Golden("résumé", intArrayOf(2, 13113, 3)),
+            Golden("normal sentence with numbers 1234 and symbols", intArrayOf(2, 1826, 5123, 29, 2116, 390, 3965, 17, 9794, 3)),
+            Golden("@user said #stuff", intArrayOf(2, 13, 1, 16704, 87, 6926, 384, 5386, 3)),
+            Golden("die in a fire loser", intArrayOf(2, 1327, 19, 21, 535, 9891, 3)),
+            Golden("have a wonderful evening everyone", intArrayOf(2, 57, 21, 5934, 2089, 1266, 3)),
+            Golden("", intArrayOf(2, 3)),
+        )
 
     @Test
     fun matchesHuggingFaceIds() {

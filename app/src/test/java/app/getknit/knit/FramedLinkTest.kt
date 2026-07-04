@@ -43,7 +43,6 @@ import java.util.concurrent.TimeUnit
  * remote peer, writing records the link decodes and reading records the link emits.
  */
 class FramedLinkTest {
-
     @get:Rule
     val tmp = TemporaryFolder()
 
@@ -60,10 +59,22 @@ class FramedLinkTest {
         val digests = LinkedBlockingQueue<ReceivedDigest>()
         val files = LinkedBlockingQueue<ReceivedFile>()
         val downs = LinkedBlockingQueue<String>()
-        override fun onInbound(frame: InboundFrame) { inbound.add(frame) }
-        override fun onDigest(digest: ReceivedDigest) { digests.add(digest) }
-        override fun onFile(file: ReceivedFile) { files.add(file) }
-        override fun onLinkDown(nodeId: String) { downs.add(nodeId) }
+
+        override fun onInbound(frame: InboundFrame) {
+            inbound.add(frame)
+        }
+
+        override fun onDigest(digest: ReceivedDigest) {
+            digests.add(digest)
+        }
+
+        override fun onFile(file: ReceivedFile) {
+            files.add(file)
+        }
+
+        override fun onLinkDown(nodeId: String) {
+            downs.add(nodeId)
+        }
     }
 
     /** The link end of a duplex pipe pair plus the peer's write/read ends the test drives. */
@@ -79,35 +90,45 @@ class FramedLinkTest {
         val linkInput = PipedInputStream(toLink, 1 shl 18)
         val fromLink = PipedInputStream(1 shl 18)
         val linkOutput = PipedOutputStream(fromLink)
-        val socket = object : LinkSocket {
-            override val input = linkInput
-            override val output: OutputStream = linkOutput
-            override fun close() {
-                runCatching { linkInput.close() }
-                runCatching { linkOutput.close() }
+        val socket =
+            object : LinkSocket {
+                override val input = linkInput
+                override val output: OutputStream = linkOutput
+
+                override fun close() {
+                    runCatching { linkInput.close() }
+                    runCatching { linkOutput.close() }
+                }
             }
-        }
         val callbacks = Recording()
-        val link = FramedLink(
-            nodeId = nodeId,
-            peer = Peer(nodeId),
-            socket = socket,
-            scope = scope,
-            cacheDir = tmp.root,
-            metrics = MeshMetrics(),
-            callbacks = callbacks,
-            now = { 0L },
-        )
+        val link =
+            FramedLink(
+                nodeId = nodeId,
+                peer = Peer(nodeId),
+                socket = socket,
+                scope = scope,
+                cacheDir = tmp.root,
+                metrics = MeshMetrics(),
+                callbacks = callbacks,
+                now = { 0L },
+            )
         link.start()
         return Harness(link, toLink, fromLink, callbacks)
     }
 
-    private fun writeRecord(out: OutputStream, type: LinkFraming.Type, payload: ByteArray = ByteArray(0)) {
+    private fun writeRecord(
+        out: OutputStream,
+        type: LinkFraming.Type,
+        payload: ByteArray = ByteArray(0),
+    ) {
         LinkFraming.write(out, type, payload)
         out.flush()
     }
 
-    private fun frameBytes(id: String, senderId: String): ByteArray {
+    private fun frameBytes(
+        id: String,
+        senderId: String,
+    ): ByteArray {
         val env = RelayEnvelope(type = FrameType.CHAT, id = id, senderId = senderId, payload = ByteArray(0))
         val wire = WireEnvelope(sig = byteArrayOf(1), signed = WireCodec.encodeEnvelope(env))
         return WireCodec.encodeWire(wire)
@@ -207,7 +228,10 @@ class FramedLinkTest {
         h.toLink.write(
             byteArrayOf(
                 LinkFraming.Type.FRAME.tag,
-                (tooBig ushr 24).toByte(), (tooBig ushr 16).toByte(), (tooBig ushr 8).toByte(), tooBig.toByte(),
+                (tooBig ushr 24).toByte(),
+                (tooBig ushr 16).toByte(),
+                (tooBig ushr 8).toByte(),
+                tooBig.toByte(),
             ),
         )
         h.toLink.flush()
@@ -215,6 +239,9 @@ class FramedLinkTest {
         assertFalse("a hostile length prefix must not surface a frame", h.callbacks.inbound.isNotEmpty())
     }
 
-    private fun hdr(kind: String, key: String) =
-        app.getknit.knit.mesh.link.FileHeaderWire(kind = kind, key = key, mime = "image/jpeg")
+    private fun hdr(
+        kind: String,
+        key: String,
+    ) = app.getknit.knit.mesh.link
+        .FileHeaderWire(kind = kind, key = key, mime = "image/jpeg")
 }

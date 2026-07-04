@@ -35,29 +35,30 @@ class NsfwImageModerator(
     private val unsafeClasses: Set<Int> = DEFAULT_UNSAFE_CLASSES,
     private val threshold: Float = DEFAULT_THRESHOLD,
 ) : ImageModerator {
-
     private val mutex = Mutex()
     private var loaded = false
     private var interpreter: Interpreter? = null
 
-    override suspend fun classify(bitmap: Bitmap): ImageVerdict = withContext(Dispatchers.Default) {
-        mutex.withLock {
-            if (!loaded) {
-                loaded = true
-                interpreter = loadInterpreter()
+    override suspend fun classify(bitmap: Bitmap): ImageVerdict =
+        withContext(Dispatchers.Default) {
+            mutex.withLock {
+                if (!loaded) {
+                    loaded = true
+                    interpreter = loadInterpreter()
+                }
+                val tflite = interpreter ?: return@withContext ImageVerdict.ALLOWED
+                runCatching { infer(tflite, bitmap) }.getOrDefault(ImageVerdict.ALLOWED)
             }
-            val tflite = interpreter ?: return@withContext ImageVerdict.ALLOWED
-            runCatching { infer(tflite, bitmap) }.getOrDefault(ImageVerdict.ALLOWED)
         }
-    }
 
     private fun loadInterpreter(): Interpreter? =
         try {
             val bytes = context.assets.open(modelAsset).use { it.readBytes() }
-            val model = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).apply {
-                put(bytes)
-                rewind()
-            }
+            val model =
+                ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).apply {
+                    put(bytes)
+                    rewind()
+                }
             Interpreter(model)
         } catch (_: IOException) {
             null // no model bundled -> degrade to allow-all
@@ -65,7 +66,10 @@ class NsfwImageModerator(
             null // malformed/incompatible model -> degrade to allow-all
         }
 
-    private fun infer(tflite: Interpreter, bitmap: Bitmap): ImageVerdict {
+    private fun infer(
+        tflite: Interpreter,
+        bitmap: Bitmap,
+    ): ImageVerdict {
         val inputTensor = tflite.getInputTensor(0)
         val shape = inputTensor.shape() // [1, H, W, 3]
         val height = shape[INPUT_H]
@@ -82,11 +86,17 @@ class NsfwImageModerator(
         return ImageVerdict(allowed = nsfw < threshold, score = nsfw)
     }
 
-    private fun toInputBuffer(bitmap: Bitmap, width: Int, height: Int, quantized: Boolean): ByteBuffer {
+    private fun toInputBuffer(
+        bitmap: Bitmap,
+        width: Int,
+        height: Int,
+        quantized: Boolean,
+    ): ByteBuffer {
         val bytesPerChannel = if (quantized) 1 else FLOAT_BYTES
-        val buffer = ByteBuffer
-            .allocateDirect(width * height * CHANNELS * bytesPerChannel)
-            .order(ByteOrder.nativeOrder())
+        val buffer =
+            ByteBuffer
+                .allocateDirect(width * height * CHANNELS * bytesPerChannel)
+                .order(ByteOrder.nativeOrder())
         val pixels = IntArray(width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
         for (pixel in pixels) {
@@ -94,9 +104,13 @@ class NsfwImageModerator(
             val g = Color.green(pixel)
             val b = Color.blue(pixel)
             if (quantized) {
-                buffer.put(r.toByte()); buffer.put(g.toByte()); buffer.put(b.toByte())
+                buffer.put(r.toByte())
+                buffer.put(g.toByte())
+                buffer.put(b.toByte())
             } else {
-                buffer.putFloat(r / MAX_CHANNEL); buffer.putFloat(g / MAX_CHANNEL); buffer.putFloat(b / MAX_CHANNEL)
+                buffer.putFloat(r / MAX_CHANNEL)
+                buffer.putFloat(g / MAX_CHANNEL)
+                buffer.putFloat(b / MAX_CHANNEL)
             }
         }
         buffer.rewind()

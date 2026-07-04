@@ -7,7 +7,6 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface GroupDao {
-
     @Query("SELECT * FROM groups ORDER BY createdAt DESC")
     fun observeAll(): Flow<List<GroupEntity>>
 

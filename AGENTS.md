@@ -24,6 +24,7 @@ moderation.
 ./gradlew :app:testDebugUnitTest    # JVM unit tests — run these after touching mesh/protocol/data
 ./gradlew installDebug              # install on a connected device
 ./gradlew detekt                    # static analysis via the standalone detekt CLI (reports in build/reports/detekt/)
+./gradlew ktlint                    # Kotlin style/format lint via the standalone ktlint CLI (reports in build/reports/ktlint/)
 ```
 
 `detekt` runs the standalone CLI (NOT the Gradle plugin) from an isolated `detektCli` configuration
@@ -31,6 +32,19 @@ in the root build, mirroring CI's `verify:detekt` job — same jar version (`det
 catalog ↔ `DETEKT_VERSION` in `.gitlab-ci.yml`), same `config/detekt/detekt.yml`, same flags. It
 never touches `:app`'s classpath, so it can't perturb the app build. The task exits non-zero when
 detekt finds issues; HTML/XML/SARIF reports land in `build/reports/detekt/`.
+
+`ktlint` runs the same way — the standalone ktlint CLI (NOT the Gradle plugin, same toolchain reason
+as detekt) from an isolated `ktlintCli` configuration in the root build, pinned to the `shadowed`
+(fat-jar) variant so it pulls no rulesets onto `:app`. Rules are the ktlint standard ruleset, configured
+via the repo-root **`.editorconfig`** (which the CLI auto-discovers) — including the `@Composable`
+function-naming opt-out (`ktlint_function_naming_ignore_when_annotated_with = Composable`). The task
+lints `app/src/**/*.kt` + the `*.gradle.kts` scripts and exits non-zero on any violation; report at
+`build/reports/ktlint/`. **It does NOT autocorrect** — fix mechanical issues locally with the
+`ktlint --format` CLI, then re-run the task. `detekt` and `ktlint` both run as `Stop` hooks
+(`.claude/hooks/gradle-{detekt,ktlint}-stop.sh`) alongside `./gradlew lint`. Note the two tools can
+disagree: ktlint's one-arg-per-line wrapping can push a function past detekt's `LongMethod=60` — suppress
+`LongMethod` on that function (with a one-line reason) rather than fighting the formatter (see
+`MeshManager.sendChat`, `NotificationChannels.ensure`).
 
 - **JDK 21** is required (the Gradle daemon toolchain is pinned to 21).
 - After changing the `MeshTransport` interface, run `testDebugUnitTest` — a test double

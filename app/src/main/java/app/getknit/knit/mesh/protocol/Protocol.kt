@@ -34,11 +34,14 @@ object Protocol {
     private const val SEP = '|'
 
     /** The endpoint-info string a peer advertises: its [nodeId] plus this build's version + capabilities. */
-    fun advertise(nodeId: String): String =
-        "$nodeId$SEP$VERSION$SEP${LOCAL_CAPABILITIES.toString(RADIX)}"
+    fun advertise(nodeId: String): String = "$nodeId$SEP$VERSION$SEP${LOCAL_CAPABILITIES.toString(RADIX)}"
 
     /** A neighbor's advertised identity parsed from its endpoint name. */
-    data class PeerWire(val nodeId: String, val protoVersion: Int, val capabilities: Long)
+    data class PeerWire(
+        val nodeId: String,
+        val protoVersion: Int,
+        val capabilities: Long,
+    )
 
     /**
      * Parses an endpoint name. The first segment is always the nodeId (robust to any future suffix); a

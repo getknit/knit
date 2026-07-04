@@ -97,9 +97,10 @@ fun ProfileDetailsScreen(
         if (scanResult != null) viewModel.consumeScanResult()
     }
 
-    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
-        result.contents?.let { viewModel.onScanned(it) }
-    }
+    val scanLauncher =
+        rememberLauncherForActivityResult(ScanContract()) { result ->
+            result.contents?.let { viewModel.onScanned(it) }
+        }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -127,8 +128,11 @@ fun ProfileDetailsScreen(
                                 text = {
                                     Text(
                                         stringResource(
-                                            if (state.isBlocked) R.string.chat_action_unblock
-                                            else R.string.chat_action_block,
+                                            if (state.isBlocked) {
+                                                R.string.chat_action_unblock
+                                            } else {
+                                                R.string.chat_action_block
+                                            },
                                         ),
                                     )
                                 },
@@ -145,11 +149,12 @@ fun ProfileDetailsScreen(
         },
     ) { padding ->
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -175,20 +180,28 @@ fun ProfileDetailsScreen(
             // Live presence: a filled dot + label, matching the contact-list online indicator.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    modifier = Modifier
-                        .size(10.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (state.online) MaterialTheme.colorScheme.tertiary
-                            else MaterialTheme.colorScheme.outline,
-                        ),
+                    modifier =
+                        Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (state.online) {
+                                    MaterialTheme.colorScheme.tertiary
+                                } else {
+                                    MaterialTheme.colorScheme.outline
+                                },
+                            ),
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = stringResource(
-                        if (state.online) R.string.profile_details_online
-                        else R.string.profile_details_offline,
-                    ),
+                    text =
+                        stringResource(
+                            if (state.online) {
+                                R.string.profile_details_online
+                            } else {
+                                R.string.profile_details_offline
+                            },
+                        ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -280,14 +293,19 @@ private fun VerificationSection(
             Icon(
                 imageVector = if (state.verified) Icons.Filled.CheckCircle else Icons.Filled.Lock,
                 contentDescription = null,
-                tint = if (state.verified) MaterialTheme.colorScheme.tertiary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
+                tint =
+                    if (state.verified) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
             )
             Spacer(Modifier.width(6.dp))
             Text(
-                text = stringResource(
-                    if (state.verified) R.string.verify_verified else R.string.verify_not_verified,
-                ),
+                text =
+                    stringResource(
+                        if (state.verified) R.string.verify_verified else R.string.verify_not_verified,
+                    ),
                 style = MaterialTheme.typography.bodyLarge,
             )
         }
@@ -299,9 +317,10 @@ private fun VerificationSection(
                     style = MaterialTheme.typography.bodyLarge,
                     fontFamily = FontFamily.Monospace,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
                 )
             }
         }
@@ -351,44 +370,48 @@ private const val QR_SIZE_PX = 480
 
 @Preview(showBackground = true)
 @Composable
-fun VerificationSectionVerifiedPreview() = KnitPreview {
-    VerificationSection(
-        state = ProfileDetailsUiState(
-            nodeId = "8f3a2b1c9d4e",
-            displayName = "Ada Lovelace",
-            status = "Hiking this weekend",
-            avatarHash = null,
-            online = true,
-            isBlocked = false,
-            hasKey = true,
-            verified = true,
-            safetyNumber = "12345 67890 12345 67890 12345 67890",
-            myQrPayload = "knit:verify:ada",
-        ),
-        onScan = {},
-        onMarkVerified = {},
-        onClearVerification = {},
-    )
-}
+fun VerificationSectionVerifiedPreview() =
+    KnitPreview {
+        VerificationSection(
+            state =
+                ProfileDetailsUiState(
+                    nodeId = "8f3a2b1c9d4e",
+                    displayName = "Ada Lovelace",
+                    status = "Hiking this weekend",
+                    avatarHash = null,
+                    online = true,
+                    isBlocked = false,
+                    hasKey = true,
+                    verified = true,
+                    safetyNumber = "12345 67890 12345 67890 12345 67890",
+                    myQrPayload = "knit:verify:ada",
+                ),
+            onScan = {},
+            onMarkVerified = {},
+            onClearVerification = {},
+        )
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun VerificationSectionUnverifiedPreview() = KnitPreview {
-    VerificationSection(
-        state = ProfileDetailsUiState(
-            nodeId = "a1b2c3d4e5f6",
-            displayName = "Grace Hopper",
-            status = "",
-            avatarHash = null,
-            online = false,
-            isBlocked = false,
-            hasKey = true,
-            verified = false,
-            safetyNumber = "98765 43210 98765 43210 98765 43210",
-            myQrPayload = "knit:verify:grace",
-        ),
-        onScan = {},
-        onMarkVerified = {},
-        onClearVerification = {},
-    )
-}
+fun VerificationSectionUnverifiedPreview() =
+    KnitPreview {
+        VerificationSection(
+            state =
+                ProfileDetailsUiState(
+                    nodeId = "a1b2c3d4e5f6",
+                    displayName = "Grace Hopper",
+                    status = "",
+                    avatarHash = null,
+                    online = false,
+                    isBlocked = false,
+                    hasKey = true,
+                    verified = false,
+                    safetyNumber = "98765 43210 98765 43210 98765 43210",
+                    myQrPayload = "knit:verify:grace",
+                ),
+            onScan = {},
+            onMarkVerified = {},
+            onClearVerification = {},
+        )
+    }

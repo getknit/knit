@@ -13,8 +13,9 @@ import java.io.File
  * wired into an arbitrary topology with [connect]; a [send] is delivered to the linked peers'
  * [inbound] streams, so a multi-node mesh (including multi-hop relay) can be exercised on the JVM.
  */
-class FakeLoopTransport(val nodeId: String) : MeshTransport {
-
+class FakeLoopTransport(
+    val nodeId: String,
+) : MeshTransport {
     private val _neighbors = MutableStateFlow<Set<Peer>>(emptySet())
     override val neighbors = _neighbors.asStateFlow()
 
@@ -50,27 +51,42 @@ class FakeLoopTransport(val nodeId: String) : MeshTransport {
     }
 
     override fun start() = Unit
+
     override fun stop() = Unit
+
     override fun heal() = Unit
 
-    override suspend fun send(wire: WireEnvelope, to: Peer?) {
+    override suspend fun send(
+        wire: WireEnvelope,
+        to: Peer?,
+    ) {
         val targets = if (to == null) links.values.toList() else listOfNotNull(links[to.nodeId])
         targets.forEach { it.deliver(wire, nodeId) }
     }
 
-    override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) {
+    override suspend fun sendFile(
+        file: File,
+        to: Peer,
+        meta: FileMeta,
+    ) {
         // In-process: hand the file straight to the linked peer's incomingFiles (same filesystem).
         links[to.nodeId]?._incomingFiles?.emit(
             ReceivedFile(nodeId, file.absolutePath, meta.kind, meta.key, meta.mime),
         )
     }
 
-    override suspend fun sendDigest(to: Peer, ids: List<String>) {
+    override suspend fun sendDigest(
+        to: Peer,
+        ids: List<String>,
+    ) {
         // In-process round-trip: deliver our advertised ids to the linked peer's incomingDigests.
         links[to.nodeId]?._incomingDigests?.emit(ReceivedDigest(nodeId, ids))
     }
 
-    private suspend fun deliver(wire: WireEnvelope, fromNodeId: String) {
+    private suspend fun deliver(
+        wire: WireEnvelope,
+        fromNodeId: String,
+    ) {
         // Mirror the real transport: decode the routing envelope on receipt (drop undecodable bytes).
         val envelope = WireCodec.decodeEnvelope(wire.signed) ?: return
         _inbound.emit(InboundFrame(wire, envelope, fromNodeId))

@@ -48,7 +48,11 @@ class ForwardSync(
      * is stamped on re-serve, so the frame re-floods with a full hop budget (the signature covers neither
      * ttl nor hops).
      */
-    suspend fun onSeen(wire: WireEnvelope, envelope: RelayEnvelope, origin: Int) {
+    suspend fun onSeen(
+        wire: WireEnvelope,
+        envelope: RelayEnvelope,
+        origin: Int,
+    ) {
         if (!envelope.isStorable()) return
         if (acked.contains(envelope.id) || store.has(envelope.id)) return
         if (origin == ForwardStore.ORIGIN_RELAY && !authenticate(wire, envelope)) return
@@ -82,7 +86,10 @@ class ForwardSync(
      * signed blob; a duplicate that races in is still dropped by the receiver's SeenSet, so a stale digest only
      * ever costs bytes, never correctness.
      */
-    suspend fun onDigest(fromNodeId: String, theirIds: List<String>) {
+    suspend fun onDigest(
+        fromNodeId: String,
+        theirIds: List<String>,
+    ) {
         val peer = transport.neighbors.value.find { it.nodeId == fromNodeId } ?: Peer(fromNodeId)
         val have = theirIds.toHashSet()
         store.liveFrames(clock()).forEach { carried ->
@@ -102,7 +109,10 @@ class ForwardSync(
      * undelivered message. The id is tombstoned so a copy still circulating from an unvaccinated peer
      * isn't re-accepted by [onSeen].
      */
-    suspend fun onAck(ackId: String, senderId: String) {
+    suspend fun onAck(
+        ackId: String,
+        senderId: String,
+    ) {
         if (store.recipientOf(ackId) != senderId) return
         store.remove(ackId)
         acked.add(ackId)

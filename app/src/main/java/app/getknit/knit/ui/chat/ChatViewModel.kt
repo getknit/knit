@@ -124,7 +124,6 @@ class ChatViewModel(
     private val gallerySaver: GallerySaver,
     private val context: Context,
 ) : ViewModel() {
-
     /** This thread is the broadcast room (vs a 1:1 DM keyed by the peer's node id). */
     private val isRoom = conversationId == Conversations.NEARBY
 
@@ -191,126 +190,153 @@ class ChatViewModel(
     // the main bundle stays at the typed 5-flow combine overload. The setting only gates receive-side
     // *hiding* (the chat blur + toxic-text collapse below), so toggling it reactively reveals/hides
     // already-received content without re-screening; what you can send is enforced elsewhere regardless.
-    private val blobState = combine(
-        blobs.observeHashes(),
-        blobs.observeFlaggedHashes(),
-        settings.contentFilteringEnabled,
-    ) { present, flagged, hideSensitive ->
-        Triple(present.toSet(), flagged.toSet(), hideSensitive)
-    }
+    private val blobState =
+        combine(
+            blobs.observeHashes(),
+            blobs.observeFlaggedHashes(),
+            settings.contentFilteringEnabled,
+        ) { present, flagged, hideSensitive ->
+            Triple(present.toSet(), flagged.toSet(), hideSensitive)
+        }
 
-    private val messagesWithReactions = combine(
-        messages.observeMessages(conversationId),
-        reactions.observeReactions(),
-        settings.blockedNodeIds,
-        blobState,
-        groups.observeGroup(conversationId),
-    ) { msgs, reacts, blocked, (present, flagged, hideSensitive), group ->
-        MessagesBundle(
-            msgs.filter { it.senderId !in blocked }, reacts, blocked, present, flagged, hideSensitive, group,
-        )
-    }
+    private val messagesWithReactions =
+        combine(
+            messages.observeMessages(conversationId),
+            reactions.observeReactions(),
+            settings.blockedNodeIds,
+            blobState,
+            groups.observeGroup(conversationId),
+        ) { msgs, reacts, blocked, (present, flagged, hideSensitive), group ->
+            MessagesBundle(
+                msgs.filter { it.senderId !in blocked },
+                reacts,
+                blocked,
+                present,
+                flagged,
+                hideSensitive,
+                group,
+            )
+        }
 
     // Neighbor count + radio health folded into one source so the main state combine stays within its
     // five-flow arity.
     private val meshStatus =
         combine(meshManager.neighborCount, meshManager.transportHealth) { count, health -> count to health }
 
-    val state: StateFlow<ChatUiState> = combine(
-        messagesWithReactions,
-        peers.observePeers(),
-        meshStatus,
-        myNodeId,
-        settings.displayName,
-    ) { bundle, peerList, (count, health), me, myName ->
-        val msgs = bundle.messages
-        val reacts = bundle.reactions
-        val blocked = bundle.blocked
-        val presentHashes = bundle.presentHashes
-        val flaggedHashes = bundle.flaggedHashes
-        val hideSensitive = bundle.hideSensitiveContent
-        val group = bundle.group
-        val isGroup = group != null
-        val members = group?.let { GroupMembersStore.decode(it.members) }.orEmpty()
-        val peersByNode = peerList.associateBy { it.nodeId }
-        // Group once, then tally per emoji within each message's bucket. Orphan reactions (no matching
-        // message yet) simply never produce a row until their message arrives.
-        val reactionsByMessage = reacts.groupBy { it.messageId }
-        val rows = msgs.map { m ->
-            val mine = m.senderId == me
-            val name = when {
-                mine -> myName.ifBlank { context.getString(R.string.chat_self_name) }
-                else -> displayNameFor(peersByNode[m.senderId]?.name, m.senderId)
-            }
-            val tallies = reactionsByMessage[m.id].orEmpty()
-                .groupBy { it.emoji }
-                .mapNotNull { (emoji, group) ->
-                    // emoji is non-null in the stream (tombstones are filtered in the DAO); guard anyway.
-                    if (emoji == null) null
-                    else ReactionSummary(emoji, group.size, group.any { it.reactorNodeId == me })
+    val state: StateFlow<ChatUiState> =
+        combine(
+            messagesWithReactions,
+            peers.observePeers(),
+            meshStatus,
+            myNodeId,
+            settings.displayName,
+        ) { bundle, peerList, (count, health), me, myName ->
+            val msgs = bundle.messages
+            val reacts = bundle.reactions
+            val blocked = bundle.blocked
+            val presentHashes = bundle.presentHashes
+            val flaggedHashes = bundle.flaggedHashes
+            val hideSensitive = bundle.hideSensitiveContent
+            val group = bundle.group
+            val isGroup = group != null
+            val members = group?.let { GroupMembersStore.decode(it.members) }.orEmpty()
+            val peersByNode = peerList.associateBy { it.nodeId }
+            // Group once, then tally per emoji within each message's bucket. Orphan reactions (no matching
+            // message yet) simply never produce a row until their message arrives.
+            val reactionsByMessage = reacts.groupBy { it.messageId }
+            val rows =
+                msgs.map { m ->
+                    val mine = m.senderId == me
+                    val name =
+                        when {
+                            mine -> myName.ifBlank { context.getString(R.string.chat_self_name) }
+                            else -> displayNameFor(peersByNode[m.senderId]?.name, m.senderId)
+                        }
+                    val tallies =
+                        reactionsByMessage[m.id]
+                            .orEmpty()
+                            .groupBy { it.emoji }
+                            .mapNotNull { (emoji, group) ->
+                                // emoji is non-null in the stream (tombstones are filtered in the DAO); guard anyway.
+                                if (emoji == null) {
+                                    null
+                                } else {
+                                    ReactionSummary(emoji, group.size, group.any { it.reactorNodeId == me })
+                                }
+                            }
+                    ChatRow(
+                        id = m.id,
+                        body = m.body,
+                        mine = mine,
+                        senderName = name,
+                        senderNodeId = m.senderId,
+                        kind = m.kind,
+                        avatarHash = peersByNode[m.senderId]?.avatarHash,
+                        sentAt = m.sentAt,
+                        received = m.received,
+                        moderationFlagged = hideSensitive && m.moderation == MessageEntity.MODERATION_TEXT_FLAGGED,
+                        attachmentHash = m.attachmentHash,
+                        attachmentMime = m.attachmentMime,
+                        attachmentKey = m.attachmentKey,
+                        attachmentReady = m.attachmentHash != null && m.attachmentHash in presentHashes,
+                        attachmentFlagged = hideSensitive && m.attachmentHash != null && m.attachmentHash in flaggedHashes,
+                        mentions = MentionStore.decode(m.mentions),
+                        reactions = tallies,
+                    )
                 }
-            ChatRow(
-                id = m.id,
-                body = m.body,
-                mine = mine,
-                senderName = name,
-                senderNodeId = m.senderId,
-                kind = m.kind,
-                avatarHash = peersByNode[m.senderId]?.avatarHash,
-                sentAt = m.sentAt,
-                received = m.received,
-                moderationFlagged = hideSensitive && m.moderation == MessageEntity.MODERATION_TEXT_FLAGGED,
-                attachmentHash = m.attachmentHash,
-                attachmentMime = m.attachmentMime,
-                attachmentKey = m.attachmentKey,
-                attachmentReady = m.attachmentHash != null && m.attachmentHash in presentHashes,
-                attachmentFlagged = hideSensitive && m.attachmentHash != null && m.attachmentHash in flaggedHashes,
-                mentions = MentionStore.decode(m.mentions),
-                reactions = tallies,
+            // Autocomplete candidates: everyone we've received a message from, plus a group's roster (so
+            // @-mentions work in a fresh group before anyone has spoken), resolved to a display name.
+            val candidates =
+                (msgs.map { it.senderId } + members)
+                    .asSequence()
+                    .filter { it != me }
+                    .distinct()
+                    .map { id ->
+                        MentionCandidate(
+                            nodeId = id,
+                            displayName = displayNameFor(peersByNode[id]?.name, id),
+                            avatarHash = peersByNode[id]?.avatarHash,
+                        )
+                    }.sortedBy { it.displayName.lowercase() }
+                    .toList()
+            ChatUiState(
+                rows = rows,
+                neighborCount = count,
+                transportHealth = health,
+                myNodeId = me.orEmpty(),
+                mentionCandidates = candidates,
+                isRoom = isRoom,
+                title =
+                    when {
+                        group != null -> {
+                            groupTitle(
+                                storedName = group.name,
+                                memberIds = members,
+                                selfId = me,
+                                fallback = context.getString(R.string.group_unnamed),
+                            ) { id -> displayNameFor(peersByNode[id]?.name, id) }
+                        }
+
+                        isRoom -> {
+                            context.getString(R.string.nearby_title)
+                        }
+
+                        else -> {
+                            displayNameFor(peersByNode[conversationId]?.name, conversationId)
+                        }
+                    },
+                // The room uses a glyph; a group shows its photo (or the glyph when unset); a DM the peer avatar.
+                avatarHash =
+                    when {
+                        isRoom -> null
+                        else -> group?.photoHash ?: peersByNode[conversationId]?.avatarHash
+                    },
+                isBlocked = !isRoom && !isGroup && conversationId in blocked,
+                verified = !isRoom && !isGroup && peersByNode[conversationId]?.verified == true,
+                isGroup = isGroup,
+                memberCount = members.size,
             )
-        }
-        // Autocomplete candidates: everyone we've received a message from, plus a group's roster (so
-        // @-mentions work in a fresh group before anyone has spoken), resolved to a display name.
-        val candidates = (msgs.map { it.senderId } + members).asSequence()
-            .filter { it != me }
-            .distinct()
-            .map { id ->
-                MentionCandidate(
-                    nodeId = id,
-                    displayName = displayNameFor(peersByNode[id]?.name, id),
-                    avatarHash = peersByNode[id]?.avatarHash,
-                )
-            }
-            .sortedBy { it.displayName.lowercase() }
-            .toList()
-        ChatUiState(
-            rows = rows,
-            neighborCount = count,
-            transportHealth = health,
-            myNodeId = me.orEmpty(),
-            mentionCandidates = candidates,
-            isRoom = isRoom,
-            title = when {
-                group != null -> groupTitle(
-                    storedName = group.name,
-                    memberIds = members,
-                    selfId = me,
-                    fallback = context.getString(R.string.group_unnamed),
-                ) { id -> displayNameFor(peersByNode[id]?.name, id) }
-                isRoom -> context.getString(R.string.nearby_title)
-                else -> displayNameFor(peersByNode[conversationId]?.name, conversationId)
-            },
-            // The room uses a glyph; a group shows its photo (or the glyph when unset); a DM the peer avatar.
-            avatarHash = when {
-                isRoom -> null
-                else -> group?.photoHash ?: peersByNode[conversationId]?.avatarHash
-            },
-            isBlocked = !isRoom && !isGroup && conversationId in blocked,
-            verified = !isRoom && !isGroup && peersByNode[conversationId]?.verified == true,
-            isGroup = isGroup,
-            memberCount = members.size,
-        )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom))
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom))
 
     /**
      * Double-submit guard: true from the moment a send is accepted until its input is cleared (success)
@@ -321,7 +347,10 @@ class ChatViewModel(
      */
     private var sending = false
 
-    fun send(text: String, mentions: List<Mention> = emptyList()) {
+    fun send(
+        text: String,
+        mentions: List<Mention> = emptyList(),
+    ) {
         val trimmed = text.trim().take(TextLimits.MESSAGE)
         val attachment = _pendingAttachment.value
         if (trimmed.isEmpty() && attachment == null) return
@@ -339,13 +368,14 @@ class ChatViewModel(
                 // Re-read the group at send time so it's never misrouted as a DM in a startup race, and so
                 // a pending rename rides this message (its GroupInfo.name converges last-writer-wins).
                 val group = if (isRoom) null else groups.find(conversationId)
-                val sent = if (group != null) {
-                    meshManager.sendChat(trimmed, attachment, mentions, recipientId = null, group = group.toInfo())
-                } else {
-                    // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
-                    val recipientId = if (isRoom) null else conversationId
-                    meshManager.sendChat(trimmed, attachment, mentions, recipientId)
-                }
+                val sent =
+                    if (group != null) {
+                        meshManager.sendChat(trimmed, attachment, mentions, recipientId = null, group = group.toInfo())
+                    } else {
+                        // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
+                        val recipientId = if (isRoom) null else conversationId
+                        meshManager.sendChat(trimmed, attachment, mentions, recipientId)
+                    }
                 // MeshManager applies block-on-send. Clear the input/attachment only once a message is
                 // accepted; a blocked message keeps the draft and surfaces a toast so the user can edit.
                 if (sent) {
@@ -377,18 +407,22 @@ class ChatViewModel(
      * message/update re-asserts the current name **and** photo (both converge last-writer-wins, by their
      * own clocks). Centralized so the chat-send, rename, and set-photo paths can't drift.
      */
-    private fun GroupEntity.toInfo() = GroupInfo(
-        id = groupId,
-        // Only a renamed group carries a shared name; unnamed groups stay locally-titled.
-        name = name.takeIf { it.isNotBlank() },
-        members = GroupMembersStore.decode(members),
-        createdBy = createdBy,
-        photoHash = photoHash,
-        photoUpdatedAt = photoUpdatedAt.takeIf { it > 0L },
-    )
+    private fun GroupEntity.toInfo() =
+        GroupInfo(
+            id = groupId,
+            // Only a renamed group carries a shared name; unnamed groups stay locally-titled.
+            name = name.takeIf { it.isNotBlank() },
+            members = GroupMembersStore.decode(members),
+            createdBy = createdBy,
+            photoHash = photoHash,
+            photoUpdatedAt = photoUpdatedAt.takeIf { it > 0L },
+        )
 
     /** Toggles the local user's [emoji] reaction on [messageId] (add / replace / remove) and floods it. */
-    fun react(messageId: String, emoji: String) {
+    fun react(
+        messageId: String,
+        emoji: String,
+    ) {
         viewModelScope.launch { meshManager.sendReaction(messageId, emoji) }
     }
 
@@ -397,7 +431,10 @@ class ChatViewModel(
      * still references it) its content-addressed attachment blob. Sends nothing over the mesh.
      */
     fun deleteMessage(messageId: String) {
-        val hash = state.value.rows.firstOrNull { it.id == messageId }?.attachmentHash
+        val hash =
+            state.value.rows
+                .firstOrNull { it.id == messageId }
+                ?.attachmentHash
         viewModelScope.launch {
             messages.delete(messageId)
             reactions.deleteForMessage(messageId)
@@ -435,16 +472,27 @@ class ChatViewModel(
     fun attach(uri: Uri) {
         viewModelScope.launch {
             when (val result = attachments.ingest(uri)) {
-                is AttachmentStore.IngestResult.Success -> when {
-                    !result.flagged -> _pendingAttachment.value = result.ingested
-                    isRoom -> {
-                        // Hard block in the broadcast room; drop the ingested-but-unsent blob.
-                        blobs.deleteIfUnreferenced(result.ingested.hash)
-                        _events.tryEmit(R.string.moderation_image_blocked)
+                is AttachmentStore.IngestResult.Success -> {
+                    when {
+                        !result.flagged -> {
+                            _pendingAttachment.value = result.ingested
+                        }
+
+                        isRoom -> {
+                            // Hard block in the broadcast room; drop the ingested-but-unsent blob.
+                            blobs.deleteIfUnreferenced(result.ingested.hash)
+                            _events.tryEmit(R.string.moderation_image_blocked)
+                        }
+
+                        else -> {
+                            _confirmAttachment.value = result.ingested
+                        }
                     }
-                    else -> _confirmAttachment.value = result.ingested
                 }
-                AttachmentStore.IngestResult.Failed -> Unit
+
+                AttachmentStore.IngestResult.Failed -> {
+                    Unit
+                }
             }
         }
     }

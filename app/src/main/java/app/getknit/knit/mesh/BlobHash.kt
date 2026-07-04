@@ -17,5 +17,4 @@ private val BLOB_HASH_REGEX = Regex("^[0-9a-f]{64}$")
 fun isValidBlobHash(s: String): Boolean = BLOB_HASH_REGEX.matches(s)
 
 /** Lowercase-hex SHA-256 of [bytes] — the canonical content address used across the mesh blob layer. */
-fun sha256Hex(bytes: ByteArray): String =
-    MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+fun sha256Hex(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

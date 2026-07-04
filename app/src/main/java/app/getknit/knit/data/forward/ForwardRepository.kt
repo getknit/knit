@@ -33,8 +33,11 @@ class ForwardRepository(
     private val maxPerGroup: Int = DEFAULT_MAX_PER_GROUP,
     private val maxBroadcast: Int = DEFAULT_MAX_BROADCAST,
 ) : ForwardStore {
-
-    override suspend fun store(frame: CarriedFrame, origin: Int, now: Long) {
+    override suspend fun store(
+        frame: CarriedFrame,
+        origin: Int,
+        now: Long,
+    ) {
         val env = frame.envelope
         val groupId = env.group?.id
         // Only broadcast-room *chat* is the ambient, higher-volume, shorter-lived class. Reactions, receipts,
@@ -45,11 +48,12 @@ class ForwardRepository(
         // decode is best-effort metadata ONLY — it must never gate the insert: a null (non-chat, no attachment,
         // or an unreadable payload) still stores the frame, so `forward_store` ids stay byte-identical mesh-wide
         // and the content digest converges (the digest folds only `id`, never this column).
-        val attachmentHash = if (env.type == FrameType.CHAT) {
-            WireCodec.decodePayload<ChatContent>(env.payload)?.attachmentHash
-        } else {
-            null
-        }
+        val attachmentHash =
+            if (env.type == FrameType.CHAT) {
+                WireCodec.decodePayload<ChatContent>(env.payload)?.attachmentHash
+            } else {
+                null
+            }
         dao.insert(
             ForwardEntity(
                 id = env.id,
@@ -92,7 +96,10 @@ class ForwardRepository(
     }
 
     /** Evicts [over] rows via [evict] when a bucket exceeds its quota; returns whether anything was removed. */
-    private suspend fun trim(over: Int, evict: suspend (Int) -> Unit): Boolean {
+    private suspend fun trim(
+        over: Int,
+        evict: suspend (Int) -> Unit,
+    ): Boolean {
         if (over <= 0) return false
         evict(over)
         return true

@@ -24,7 +24,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WireSerializationTest {
-
     private fun envelope(
         type: String = FrameType.CHAT,
         id: String = "m1",
@@ -35,17 +34,25 @@ class WireSerializationTest {
         payload: ByteArray = ByteArray(0),
     ) = RelayEnvelope(type, id, senderId, sentAt, recipientId, group, payload)
 
-    private fun wrap(env: RelayEnvelope, ttl: Int = DEFAULT_TTL, hops: Int = 0, sig: ByteArray = ByteArray(0)) =
-        WireEnvelope(ttl = ttl, hops = hops, sig = sig, signed = WireCodec.encodeEnvelope(env))
+    private fun wrap(
+        env: RelayEnvelope,
+        ttl: Int = DEFAULT_TTL,
+        hops: Int = 0,
+        sig: ByteArray = ByteArray(0),
+    ) = WireEnvelope(ttl = ttl, hops = hops, sig = sig, signed = WireCodec.encodeEnvelope(env))
 
     // --- the keystone: relaying mutates only the wrapper; signed + sig pass through verbatim ---
 
     @Test
     fun relayMutatesOnlyWrapperAndForwardsSignedBytesVerbatim() {
-        val env = envelope(
-            id = "m1", senderId = "a", sentAt = 5L, recipientId = "b",
-            payload = WireCodec.encodePayload(ChatContent(body = "hi")),
-        )
+        val env =
+            envelope(
+                id = "m1",
+                senderId = "a",
+                sentAt = 5L,
+                recipientId = "b",
+                payload = WireCodec.encodePayload(ChatContent(body = "hi")),
+            )
         val signed = WireCodec.encodeEnvelope(env)
         val sig = byteArrayOf(7, 8, 9)
         val wire = WireEnvelope(ttl = DEFAULT_TTL, hops = 0, sig = sig, signed = signed)
@@ -103,10 +110,13 @@ class WireSerializationTest {
 
     @Test
     fun relayEnvelopeWithGroupRosterRoundTrips() {
-        val env = envelope(
-            id = "g1", senderId = "alice", sentAt = 55L,
-            group = GroupInfo("g-id", "Weekend crew", listOf("alice000", "bob00000", "carol000"), "alice000"),
-        )
+        val env =
+            envelope(
+                id = "g1",
+                senderId = "alice",
+                sentAt = 55L,
+                group = GroupInfo("g-id", "Weekend crew", listOf("alice000", "bob00000", "carol000"), "alice000"),
+            )
         val decoded = WireCodec.decodeEnvelope(WireCodec.encodeEnvelope(env))!!
         assertEquals("g-id", decoded.group?.id)
         assertEquals("Weekend crew", decoded.group?.name)
@@ -122,12 +132,17 @@ class WireSerializationTest {
 
     @Test
     fun groupPhotoFieldsRoundTrip() {
-        val env = envelope(
-            group = GroupInfo(
-                "g", members = listOf("a", "b"), createdBy = "a",
-                photoHash = "a".repeat(64), photoUpdatedAt = 1234L,
-            ),
-        )
+        val env =
+            envelope(
+                group =
+                    GroupInfo(
+                        "g",
+                        members = listOf("a", "b"),
+                        createdBy = "a",
+                        photoHash = "a".repeat(64),
+                        photoUpdatedAt = 1234L,
+                    ),
+            )
         val decoded = WireCodec.decodeEnvelope(WireCodec.encodeEnvelope(env))!!.group!!
         assertEquals("a".repeat(64), decoded.photoHash)
         assertEquals(1234L, decoded.photoUpdatedAt)
@@ -147,10 +162,13 @@ class WireSerializationTest {
 
     @Test
     fun chatContentRoundTrips() {
-        val content = ChatContent(
-            body = "hey @Bob Jones", mentions = listOf(Mention("bob00000", "Bob Jones")),
-            attachmentHash = "abc123", attachmentMime = "image/gif",
-        )
+        val content =
+            ChatContent(
+                body = "hey @Bob Jones",
+                mentions = listOf(Mention("bob00000", "Bob Jones")),
+                attachmentHash = "abc123",
+                attachmentMime = "image/gif",
+            )
         assertEquals(content, WireCodec.decodePayload<ChatContent>(WireCodec.encodePayload(content)))
     }
 
@@ -159,9 +177,10 @@ class WireSerializationTest {
         val nonce = byteArrayOf(10, 20, 30)
         val ct = byteArrayOf(40, 50, 60, 70)
         val wk = byteArrayOf(80, 90)
-        val content = ChatContent(
-            enc = EncEnvelope(nonce = nonce, ct = ct, keys = listOf(WrappedKey("bob00000", wk))),
-        )
+        val content =
+            ChatContent(
+                enc = EncEnvelope(nonce = nonce, ct = ct, keys = listOf(WrappedKey("bob00000", wk))),
+            )
         val decoded = WireCodec.decodePayload<ChatContent>(WireCodec.encodePayload(content))
         assertEquals("", decoded?.body)
         val key = decoded?.enc?.keys?.firstOrNull()
@@ -174,10 +193,16 @@ class WireSerializationTest {
 
     @Test
     fun profileContentRoundTrips() {
-        val content = ProfileContent(
-            name = "Bob", status = "around", avatarHash = "abc", pubKey = null,
-            deviceTag = "abcdef0123456789", protoVersion = 1, capabilities = 7L,
-        )
+        val content =
+            ProfileContent(
+                name = "Bob",
+                status = "around",
+                avatarHash = "abc",
+                pubKey = null,
+                deviceTag = "abcdef0123456789",
+                protoVersion = 1,
+                capabilities = 7L,
+            )
         assertEquals(content, WireCodec.decodePayload<ProfileContent>(WireCodec.encodePayload(content)))
     }
 

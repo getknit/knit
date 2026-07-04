@@ -12,8 +12,8 @@ import app.getknit.knit.mesh.protocol.Mention
 
 /** The "@token" the cursor currently sits inside (see [activeMentionQuery]). */
 data class MentionQuery(
-    val start: Int,   // index of the '@'
-    val end: Int,     // exclusive end == cursor position
+    val start: Int, // index of the '@'
+    val end: Int, // exclusive end == cursor position
     val query: String, // text between '@' and the cursor, e.g. "Joy" for "@Joy|"
 )
 
@@ -24,7 +24,10 @@ data class MentionQuery(
  * (no token), multiple '@'s (the nearest before the cursor wins), and '@' mid-word (e.g. an email),
  * which never triggers because the preceding char isn't whitespace.
  */
-fun activeMentionQuery(text: CharSequence, cursor: Int): MentionQuery? {
+fun activeMentionQuery(
+    text: CharSequence,
+    cursor: Int,
+): MentionQuery? {
     if (cursor < 0 || cursor > text.length) return null
     var i = cursor - 1
     while (i >= 0) {
@@ -44,10 +47,18 @@ fun activeMentionQuery(text: CharSequence, cursor: Int): MentionQuery? {
  * Filters mention [candidates] by [query] (the text after '@'). Matching is case-insensitive and
  * whitespace-stripped on both sides, so "@Joy" matches "Joyful Ferret"; a blank query returns all.
  */
-fun filterCandidates(candidates: List<MentionCandidate>, query: String): List<MentionCandidate> {
+fun filterCandidates(
+    candidates: List<MentionCandidate>,
+    query: String,
+): List<MentionCandidate> {
     val q = query.trim().lowercase()
     if (q.isEmpty()) return candidates
-    return candidates.filter { it.displayName.replace(" ", "").lowercase().contains(q) }
+    return candidates.filter {
+        it.displayName
+            .replace(" ", "")
+            .lowercase()
+            .contains(q)
+    }
 }
 
 /**
@@ -60,30 +71,36 @@ fun highlightMentions(
     body: String,
     mentions: List<Mention>,
     spanStyle: SpanStyle,
-): AnnotatedString = buildAnnotatedString {
-    append(body)
-    if (mentions.isEmpty()) return@buildAnnotatedString
-    val styled = BooleanArray(body.length)
-    val tokens = mentions
-        .map { "@${it.name}" }
-        .distinct()
-        .sortedByDescending { it.length }
-    for (token in tokens) {
-        if (token.length == 1) continue // an empty name would match every position
-        var from = body.indexOf(token)
-        while (from >= 0) {
-            val to = from + token.length
-            if ((from until to).none { styled[it] }) {
-                addStyle(spanStyle, from, to)
-                for (k in from until to) styled[k] = true
+): AnnotatedString =
+    buildAnnotatedString {
+        append(body)
+        if (mentions.isEmpty()) return@buildAnnotatedString
+        val styled = BooleanArray(body.length)
+        val tokens =
+            mentions
+                .map { "@${it.name}" }
+                .distinct()
+                .sortedByDescending { it.length }
+        for (token in tokens) {
+            if (token.length == 1) continue // an empty name would match every position
+            var from = body.indexOf(token)
+            while (from >= 0) {
+                val to = from + token.length
+                if ((from until to).none { styled[it] }) {
+                    addStyle(spanStyle, from, to)
+                    for (k in from until to) styled[k] = true
+                }
+                from = body.indexOf(token, from + 1)
             }
-            from = body.indexOf(token, from + 1)
         }
     }
-}
 
 /** A URL found in a message body: its display [start]/[end] in the text and the resolved [url] to open. */
-data class UrlSpan(val start: Int, val end: Int, val url: String)
+data class UrlSpan(
+    val start: Int,
+    val end: Int,
+    val url: String,
+)
 
 // http(s):// or a bare www. link, running to the next whitespace or angle bracket. Case-insensitive.
 private val URL_PATTERN = Regex("""(?i)(?:https?://|www\.)[^\s<>]+""")
@@ -103,11 +120,12 @@ fun findUrls(text: String): List<UrlSpan> {
         val start = match.range.first
         val end = trimTrailing(text, start, match.range.last + 1)
         val raw = text.substring(start, end)
-        val schemeLen = when {
-            raw.startsWith("https://", ignoreCase = true) -> "https://".length
-            raw.startsWith("http://", ignoreCase = true) -> "http://".length
-            else -> "www.".length
-        }
+        val schemeLen =
+            when {
+                raw.startsWith("https://", ignoreCase = true) -> "https://".length
+                raw.startsWith("http://", ignoreCase = true) -> "http://".length
+                else -> "www.".length
+            }
         if (raw.length <= schemeLen) continue // only the scheme/prefix survived trimming
         val url = if (raw.startsWith("www.", ignoreCase = true)) "https://$raw" else raw
         spans += UrlSpan(start, end, url)
@@ -116,19 +134,35 @@ fun findUrls(text: String): List<UrlSpan> {
 }
 
 /** Shrinks [end] past trailing punctuation and unbalanced closing brackets, never below [start]. */
-private fun trimTrailing(text: String, start: Int, end: Int): Int {
+private fun trimTrailing(
+    text: String,
+    start: Int,
+    end: Int,
+): Int {
     var e = end
     while (e > start) {
         val c = text[e - 1]
-        val shrink = when (c) {
-            in TRAILING_PUNCT -> true
-            ')', ']', '}' -> {
-                val open = when (c) { ')' -> '('; ']' -> '['; else -> '{' }
-                val sub = text.substring(start, e)
-                sub.count { it == open } < sub.count { it == c }
+        val shrink =
+            when (c) {
+                in TRAILING_PUNCT -> {
+                    true
+                }
+
+                ')', ']', '}' -> {
+                    val open =
+                        when (c) {
+                            ')' -> '('
+                            ']' -> '['
+                            else -> '{'
+                        }
+                    val sub = text.substring(start, e)
+                    sub.count { it == open } < sub.count { it == c }
+                }
+
+                else -> {
+                    false
+                }
             }
-            else -> false
-        }
         if (!shrink) break
         e--
     }
@@ -146,11 +180,12 @@ fun annotateMessageBody(
     mentionStyle: SpanStyle,
     linkStyle: SpanStyle,
     onLinkClick: ((String) -> Unit)? = null,
-): AnnotatedString = buildAnnotatedString {
-    append(highlightMentions(body, mentions, mentionStyle))
-    val styles = TextLinkStyles(style = linkStyle)
-    for (span in findUrls(body)) {
-        val listener = onLinkClick?.let { cb -> LinkInteractionListener { cb(span.url) } }
-        addLink(LinkAnnotation.Url(span.url, styles, listener), span.start, span.end)
+): AnnotatedString =
+    buildAnnotatedString {
+        append(highlightMentions(body, mentions, mentionStyle))
+        val styles = TextLinkStyles(style = linkStyle)
+        for (span in findUrls(body)) {
+            val listener = onLinkClick?.let { cb -> LinkInteractionListener { cb(span.url) } }
+            addLink(LinkAnnotation.Url(span.url, styles, listener), span.start, span.end)
+        }
     }
-}

@@ -35,9 +35,9 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
@@ -146,15 +146,20 @@ fun ContactsScreen(
 }
 
 @Composable
-private fun ContactRow(contact: Contact, selected: Boolean, onClick: () -> Unit) {
+private fun ContactRow(
+    contact: Contact,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("contact_${contact.nodeId}")
-            // A selection control: expose the whole row as one checkbox so a screen reader announces
-            // "<name>, checkbox, checked/not checked" and the selection-state icon is decorative.
-            .toggleable(value = selected, onValueChange = { onClick() }, role = Role.Checkbox)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .testTag("contact_${contact.nodeId}")
+                // A selection control: expose the whole row as one checkbox so a screen reader announces
+                // "<name>, checkbox, checked/not checked" and the selection-state icon is decorative.
+                .toggleable(value = selected, onValueChange = { onClick() }, role = Role.Checkbox)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Avatar(avatarHash = contact.avatarHash, name = contact.displayName, size = 48.dp)
@@ -169,10 +174,11 @@ private fun ContactRow(contact: Contact, selected: Boolean, onClick: () -> Unit)
         // A filled dot marks a contact currently connected to the mesh.
         if (contact.online) {
             Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.tertiary),
+                modifier =
+                    Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.tertiary),
             )
             Spacer(Modifier.width(12.dp))
         }
@@ -187,20 +193,22 @@ private fun ContactRow(contact: Contact, selected: Boolean, onClick: () -> Unit)
 
 @Preview(showBackground = true)
 @Composable
-fun ContactRowSelectedOnlinePreview() = KnitPreview {
-    ContactRow(
-        contact = Contact(nodeId = "node-ada", displayName = "Ada Lovelace", avatarHash = null, online = true),
-        selected = true,
-        onClick = {},
-    )
-}
+fun ContactRowSelectedOnlinePreview() =
+    KnitPreview {
+        ContactRow(
+            contact = Contact(nodeId = "node-ada", displayName = "Ada Lovelace", avatarHash = null, online = true),
+            selected = true,
+            onClick = {},
+        )
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun ContactRowUnselectedOfflinePreview() = KnitPreview {
-    ContactRow(
-        contact = Contact(nodeId = "node-grace", displayName = "Grace Hopper", avatarHash = null, online = false),
-        selected = false,
-        onClick = {},
-    )
-}
+fun ContactRowUnselectedOfflinePreview() =
+    KnitPreview {
+        ContactRow(
+            contact = Contact(nodeId = "node-grace", displayName = "Grace Hopper", avatarHash = null, online = false),
+            selected = false,
+            onClick = {},
+        )
+    }

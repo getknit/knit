@@ -8,7 +8,6 @@ import org.junit.Test
 
 /** Unit tests for [ConnectBackoffPolicy] — the pure escalating per-peer connect backoff curve. */
 class ConnectBackoffPolicyTest {
-
     private val cfg = BackoffConfig(baseMs = 10_000, maxMs = 180_000, jitterFraction = 0.2)
 
     // rand()=0.5 → the offset is zero, so the delay is exactly the un-jittered value (easy to assert).

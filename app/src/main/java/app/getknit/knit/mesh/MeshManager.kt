@@ -1,5 +1,7 @@
 package app.getknit.knit.mesh
 
+import android.util.Log
+import app.getknit.knit.TextLimits
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GroupRepository
@@ -12,8 +14,8 @@ import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MentionStore
-import app.getknit.knit.data.message.groupTitle
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.groupTitle
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.SettingsStore
@@ -27,13 +29,13 @@ import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.protocol.BlobReqContent
-import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.GroupLeaveContent
+import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.Protocol
@@ -44,8 +46,6 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.isStorable
 import app.getknit.knit.mesh.protocol.mention
-import android.util.Log
-import app.getknit.knit.TextLimits
 import app.getknit.knit.moderation.ScopedTextModerator
 import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.notifications.NotifConversation
@@ -75,8 +75,9 @@ import java.util.concurrent.ConcurrentHashMap
  * (persist chat, ack delivery, cache profiles/avatars, mark receipts), broadcasts this device's
  * profile, and exposes the send/start API used by the foreground service and UI. A process singleton
  * (provided by Koin) so the bound service and the UI share one instance.
+ *
+ * The central mesh orchestrator: many small frame handlers, and many collaborators injected by design.
  */
-// The central mesh orchestrator: many small frame handlers, and many collaborators injected by design.
 @Suppress("TooManyFunctions", "LongParameterList", "LargeClass")
 class MeshManager(
     private val transport: MeshTransport,
@@ -104,54 +105,58 @@ class MeshManager(
     private var sessionScope: CoroutineScope? = null
 
     // Content-addressed image fetch over the mesh, backed by the encrypted blob store.
-    private val blobExchange = BlobExchange(
-        transport = transport,
-        store = blobStore,
-        selfId = { identity.nodeId() },
-        // The chat list observes the blobs table for presence, so no per-message path write is needed
-        // when an attachment arrives. A pulled blob may also be a (multi-hop) peer's avatar or a group
-        // photo, so attribute it back to whoever advertised it, and — for an E2E attachment — screen its
-        // decrypted bytes now that both the ciphertext and (from the delivered message) its key are on hand.
-        onObtained = { hash, _ ->
-            adoptAdvertisedAvatar(hash)
-            adoptAdvertisedGroupPhoto(hash)
-            screenObtainedAttachment(hash)
-        },
-    )
+    private val blobExchange =
+        BlobExchange(
+            transport = transport,
+            store = blobStore,
+            selfId = { identity.nodeId() },
+            // The chat list observes the blobs table for presence, so no per-message path write is needed
+            // when an attachment arrives. A pulled blob may also be a (multi-hop) peer's avatar or a group
+            // photo, so attribute it back to whoever advertised it, and — for an E2E attachment — screen its
+            // decrypted bytes now that both the ciphertext and (from the delivered message) its key are on hand.
+            onObtained = { hash, _ ->
+                adoptAdvertisedAvatar(hash)
+                adoptAdvertisedGroupPhoto(hash)
+                screenObtainedAttachment(hash)
+            },
+        )
 
     // Store-and-forward DM custody: carries DMs we originate/relay and re-offers them to neighbors that
     // join later, so a message reaches a recipient that wasn't connected when it was first flooded.
-    private val forwardSync = ForwardSync(
-        transport = transport,
-        store = forwardStore,
-        authenticate = ::canCarry,
-        // Fired once when a chat frame is actually carried: eager-pull its image blob so a custodied image
-        // survives to a late joiner (the carrier holds ciphertext it can't read, like the frame itself).
-        onCarried = ::onCarriedFrame,
-        // (The carry store grew → the store impl folds the id into StoreDigest, whose version change re-cues.)
-    )
+    private val forwardSync =
+        ForwardSync(
+            transport = transport,
+            store = forwardStore,
+            authenticate = ::canCarry,
+            // Fired once when a chat frame is actually carried: eager-pull its image blob so a custodied image
+            // survives to a late joiner (the carrier holds ciphertext it can't read, like the frame itself).
+            onCarried = ::onCarriedFrame,
+            // (The carry store grew → the store impl folds the id into StoreDigest, whose version change re-cues.)
+        )
 
     // Demand-driven recovery of a peer's key/profile: a frame dropped for a missing sender key (the
     // NO_SENDER_KEY case in verifyInbound) triggers a signed, point-to-point request that walks hop-by-hop
     // to a holder, which re-serves the peer's cached signed profile so future frames from it verify.
-    private val keyExchange = KeyExchange(
-        transport = transport,
-        selfId = { identity.nodeId() },
-        signRaw = messageCrypto::signRaw,
-        isBlocked = { it in settings.blockedNodeIds.first() },
-        metrics = metrics,
-    )
+    private val keyExchange =
+        KeyExchange(
+            transport = transport,
+            selfId = { identity.nodeId() },
+            signRaw = messageCrypto::signRaw,
+            isBlocked = { it in settings.blockedNodeIds.first() },
+            metrics = metrics,
+        )
 
     // Delay-tolerant "delivered" tick for broadcast/group messages: their receipt is a unicast, non-custodied
     // best-effort frame, so it's lost if the author isn't reachable at delivery time (the message converges via
     // custody, but the tick doesn't). AckSync remembers the ticks we owe and re-sends them — still unicast, never
     // flooded — until the author is reachable or the entry ages out. DM receipts stay on the flood+custody path.
-    private val ackSync = AckSync(
-        transport = transport,
-        selfId = { identity.nodeId() },
-        signRaw = messageCrypto::signRaw,
-        metrics = metrics,
-    )
+    private val ackSync =
+        AckSync(
+            transport = transport,
+            selfId = { identity.nodeId() },
+            signRaw = messageCrypto::signRaw,
+            metrics = metrics,
+        )
 
     // Bounded in-memory buffer of frames dropped for a missing sender key: parked alongside the key
     // request in verifyInbound and replayed through the deliver path once handleProfile pins the key, so
@@ -206,7 +211,8 @@ class MeshManager(
     /** nodeId → the radios each node is reachable over, so Diagnostics can tag a connected node BLE / NAN. */
     val peerTransports: StateFlow<Map<String, Set<TransportKind>>> =
         (transport as? CompositeMeshTransport)?.peerTransports
-            ?: transport.reachable.map { set -> set.associate { it.nodeId to setOf(transport.kind) } }
+            ?: transport.reachable
+                .map { set -> set.associate { it.nodeId to setOf(transport.kind) } }
                 .stateIn(scope, SharingStarted.Eagerly, emptyMap())
 
     fun start() {
@@ -280,7 +286,12 @@ class MeshManager(
      * Returns false without sending or storing anything if on-device content filtering flags [text] as
      * abusive (block-on-send); true once the message is stored locally and flooded. The [attachment] is
      * screened separately at ingest time, so by here it is already clean.
+     *
+     * `@Suppress("LongMethod")`: ktlint's one-arg-per-line wrapping of the two parallel MessageEntity /
+     * content builds inflates the raw line count past detekt's LongMethod=60; the logic is two
+     * straight-line branches, not complex.
      */
+    @Suppress("LongMethod")
     suspend fun sendChat(
         text: String,
         attachment: AttachmentStore.Ingested? = null,
@@ -298,16 +309,25 @@ class MeshManager(
         if (recipientId == null && group == null) {
             messages.save(
                 MessageEntity(
-                    id = id, senderId = me, recipientId = null, conversationId = conversationId,
-                    body = text, sentAt = sentAt, received = false,
+                    id = id,
+                    senderId = me,
+                    recipientId = null,
+                    conversationId = conversationId,
+                    body = text,
+                    sentAt = sentAt,
+                    received = false,
                     mentions = MentionStore.encode(mentions),
-                    attachmentHash = attachment?.hash, attachmentMime = attachment?.mime,
+                    attachmentHash = attachment?.hash,
+                    attachmentMime = attachment?.mime,
                 ),
             )
-            val content = ChatContent(
-                body = text, mentions = mentions,
-                attachmentHash = attachment?.hash, attachmentMime = attachment?.mime,
-            )
+            val content =
+                ChatContent(
+                    body = text,
+                    mentions = mentions,
+                    attachmentHash = attachment?.hash,
+                    attachmentMime = attachment?.mime,
+                )
             originateSigned(chatEnvelope(id, me, sentAt, recipientId = null, group = null, content))
             return true
         }
@@ -315,13 +335,14 @@ class MeshManager(
         // DM or group: end-to-end encrypt. The attachment (if any) is encrypted to its own key and
         // re-addressed by its ciphertext hash; body/mentions/attachment refs go into the sealed content.
         val sealedAttachment = attachment?.let { sealAttachment(it) }
-        val content = MessageContent(
-            body = text,
-            mentions = mentions,
-            attachmentHash = sealedAttachment?.hash,
-            attachmentMime = attachment?.mime,
-            attachmentKey = sealedAttachment?.key,
-        )
+        val content =
+            MessageContent(
+                body = text,
+                mentions = mentions,
+                attachmentHash = sealedAttachment?.hash,
+                attachmentMime = attachment?.mime,
+                attachmentKey = sealedAttachment?.key,
+            )
         val thread = group?.id ?: recipientId.orEmpty()
         val header = MessageCrypto.header(id, me, sentAt, thread)
         val envelope = messageCrypto.seal(content.encode(), header, recipientBundles(recipientId, group, me))
@@ -330,10 +351,16 @@ class MeshManager(
         // recipient's profile (carrying the key) finally arrives (groups stay unsent, as before).
         messages.save(
             MessageEntity(
-                id = id, senderId = me, recipientId = recipientId, conversationId = conversationId,
-                body = text, sentAt = sentAt, received = false,
+                id = id,
+                senderId = me,
+                recipientId = recipientId,
+                conversationId = conversationId,
+                body = text,
+                sentAt = sentAt,
+                received = false,
                 mentions = MentionStore.encode(mentions),
-                attachmentHash = sealedAttachment?.hash, attachmentMime = attachment?.mime,
+                attachmentHash = sealedAttachment?.hash,
+                attachmentMime = attachment?.mime,
                 attachmentKey = sealedAttachment?.key,
                 pendingKey = envelope == null && group == null,
             ),
@@ -350,7 +377,11 @@ class MeshManager(
         // images across sends, so this leaks only "this message carries an image (~size)".
         originateSigned(
             chatEnvelope(
-                id, me, sentAt, recipientId, group,
+                id,
+                me,
+                sentAt,
+                recipientId,
+                group,
                 ChatContent(
                     enc = envelope,
                     attachmentHash = sealedAttachment?.hash,
@@ -369,10 +400,16 @@ class MeshManager(
         recipientId: String?,
         group: GroupInfo?,
         content: ChatContent,
-    ): RelayEnvelope = RelayEnvelope(
-        type = FrameType.CHAT, id = id, senderId = senderId, sentAt = sentAt,
-        recipientId = recipientId, group = group, payload = WireCodec.encodePayload(content),
-    )
+    ): RelayEnvelope =
+        RelayEnvelope(
+            type = FrameType.CHAT,
+            id = id,
+            senderId = senderId,
+            sentAt = sentAt,
+            recipientId = recipientId,
+            group = group,
+            payload = WireCodec.encodePayload(content),
+        )
 
     /** Resolves the published key bundles for a DM recipient or a group's members (excluding us). */
     private suspend fun recipientBundles(
@@ -380,18 +417,27 @@ class MeshManager(
         group: GroupInfo?,
         me: String,
     ): Map<String, PublicKeyBundle> {
-        val targets = when {
-            group != null -> group.members.filter { it != me }
-            recipientId != null -> listOf(recipientId)
-            else -> emptyList()
-        }
-        return targets.mapNotNull { nodeId ->
-            peers.find(nodeId)?.pubKey?.let { PublicKeyBundle.decode(it) }?.let { nodeId to it }
-        }.toMap()
+        val targets =
+            when {
+                group != null -> group.members.filter { it != me }
+                recipientId != null -> listOf(recipientId)
+                else -> emptyList()
+            }
+        return targets
+            .mapNotNull { nodeId ->
+                peers
+                    .find(nodeId)
+                    ?.pubKey
+                    ?.let { PublicKeyBundle.decode(it) }
+                    ?.let { nodeId to it }
+            }.toMap()
     }
 
     /** Encrypted, content-addressed copy of a just-ingested attachment, plus its base64 key. */
-    private data class SealedAttachment(val hash: String, val key: String)
+    private data class SealedAttachment(
+        val hash: String,
+        val key: String,
+    )
 
     /**
      * Encrypts the ingested (plaintext) attachment to a fresh key, stores the ciphertext blob under its
@@ -450,7 +496,10 @@ class MeshManager(
      * change is stored optimistically and propagates as a `reaction` frame; `sentAt` is the wall clock
      * used for last-writer-wins so concurrent reactors across the mesh converge.
      */
-    suspend fun sendReaction(messageId: String, emoji: String) {
+    suspend fun sendReaction(
+        messageId: String,
+        emoji: String,
+    ) {
         val me = identity.nodeId()
         val next = if (reactions.currentEmoji(messageId, me) == emoji) null else emoji
         val now = System.currentTimeMillis()
@@ -554,8 +603,7 @@ class MeshManager(
         session.launch {
             combine(settings.displayName, settings.status, settings.avatarUpdatedAt) { name, status, avatarAt ->
                 Triple(name, status, avatarAt)
-            }
-                .drop(1) // skip the initial stored value; only react to real edits
+            }.drop(1) // skip the initial stored value; only react to real edits
                 // A Save writes name+status in one transaction; without this the duplicate flow
                 // re-emits would broadcast more than once. Also drops no-op saves.
                 .distinctUntilChanged()
@@ -572,9 +620,13 @@ class MeshManager(
         session.launch {
             transport.incomingFiles.collect { file ->
                 when (file.kind) {
-                    FileKind.AVATAR -> onAvatarReceived(file.fromNodeId, file.key, file.mime, file.path)
-                    FileKind.ATTACHMENT ->
+                    FileKind.AVATAR -> {
+                        onAvatarReceived(file.fromNodeId, file.key, file.mime, file.path)
+                    }
+
+                    FileKind.ATTACHMENT -> {
                         blobExchange.onReceived(file.key, file.mime, file.path, file.fromNodeId)
+                    }
                 }
             }
         }
@@ -617,25 +669,25 @@ class MeshManager(
         sentAvatarHashes[peer.nodeId] = hash
     }
 
-    private fun avatarMeta(hash: String): FileMeta =
-        FileMeta(FileKind.AVATAR, key = hash, mime = "image/jpeg")
+    private fun avatarMeta(hash: String): FileMeta = FileMeta(FileKind.AVATAR, key = hash, mime = "image/jpeg")
 
     private suspend fun currentProfileEnvelope(): RelayEnvelope {
         val me = identity.nodeId()
         // Persisted, so the profile frame's id + sentAt are stable across restarts — an unchanged profile
         // re-broadcasts as the *same* custodied frame instead of a new one, letting the digests converge.
         val version = settings.profileVersion.first()
-        val content = ProfileContent(
-            // Normalize/cap defensively: covers legacy values stored before the field gained a cap and
-            // the rare process-death-before-the-blur-commit case, so peers never receive an oversized name.
-            name = normalizeSingleLine(settings.displayName.first()).take(TextLimits.DISPLAY_NAME),
-            status = normalizeSingleLine(settings.status.first()).take(TextLimits.STATUS),
-            avatarHash = settings.ownAvatarHash.first(),
-            pubKey = identity.publicKeyBundle(),
-            deviceTag = identity.deviceTag(),
-            protoVersion = Protocol.VERSION,
-            capabilities = Protocol.LOCAL_CAPABILITIES,
-        )
+        val content =
+            ProfileContent(
+                // Normalize/cap defensively: covers legacy values stored before the field gained a cap and
+                // the rare process-death-before-the-blur-commit case, so peers never receive an oversized name.
+                name = normalizeSingleLine(settings.displayName.first()).take(TextLimits.DISPLAY_NAME),
+                status = normalizeSingleLine(settings.status.first()).take(TextLimits.STATUS),
+                avatarHash = settings.ownAvatarHash.first(),
+                pubKey = identity.publicKeyBundle(),
+                deviceTag = identity.deviceTag(),
+                protoVersion = Protocol.VERSION,
+                capabilities = Protocol.LOCAL_CAPABILITIES,
+            )
         return RelayEnvelope(
             type = FrameType.PROFILE,
             id = "profile-$me-$version",
@@ -672,23 +724,33 @@ class MeshManager(
      * channel, so they ride the NDP flood + custody. The transport still size-gates (no-op if a frame won't
      * fit), and the receiver's SeenSet dedups any copy that also arrives over the flood/custody backstop.
      */
-    private fun shouldFastFanout(env: RelayEnvelope): Boolean = when (env.type) {
-        FrameType.CHAT -> env.recipientId == null && env.group == null // broadcast room only (DM/group are E2E)
-        else -> FrameType.isCustodial(env.type) // reaction/receipt/group-*/profile; blobreq/keyreq excluded
-    }
+    private fun shouldFastFanout(env: RelayEnvelope): Boolean =
+        when (env.type) {
+            FrameType.CHAT -> env.recipientId == null && env.group == null
+
+            // broadcast room only (DM/group are E2E)
+            else -> FrameType.isCustodial(env.type) // reaction/receipt/group-*/profile; blobreq/keyreq excluded
+        }
 
     /**
      * Wraps [env] in a signed [WireEnvelope]: the canonical envelope bytes plus our raw Ed25519 signature
      * over exactly those bytes (so every relay reproduces them verbatim and the signature holds mesh-wide).
      */
-    private fun sign(env: RelayEnvelope, relay: Boolean = true): WireEnvelope {
+    private fun sign(
+        env: RelayEnvelope,
+        relay: Boolean = true,
+    ): WireEnvelope {
         val signed = WireCodec.encodeEnvelope(env)
         return WireEnvelope(relay = relay, sig = messageCrypto.signRaw(signed), signed = signed)
     }
 
     // --- Delivery of inbound frames ---
 
-    private suspend fun onDeliver(wire: WireEnvelope, env: RelayEnvelope, fromNodeId: String) {
+    private suspend fun onDeliver(
+        wire: WireEnvelope,
+        env: RelayEnvelope,
+        fromNodeId: String,
+    ) {
         // Strict authentication gate: a flooded frame that isn't signed by the key its senderId binds
         // to is dropped (not delivered locally). We still return normally so MeshRouter relays it
         // onward — other peers verify independently, and we don't become a propagation black hole.
@@ -723,19 +785,47 @@ class MeshManager(
      * delivered locally, but the router still relays it verbatim, so an old build is never a black hole for
      * a frame type it doesn't understand.
      */
-    private suspend fun dispatchByType(env: RelayEnvelope, wire: WireEnvelope, fromNodeId: String) {
+    private suspend fun dispatchByType(
+        env: RelayEnvelope,
+        wire: WireEnvelope,
+        fromNodeId: String,
+    ) {
         when (env.type) {
-            FrameType.CHAT -> handleChat(env)
-            FrameType.GROUP_UPDATE -> handleGroupUpdate(env)
-            FrameType.GROUP_LEAVE -> handleGroupLeave(env)
-            FrameType.PROFILE -> handleProfile(env, wire)
-            FrameType.RECEIPT -> handleReceipt(env)
-            FrameType.REACTION -> handleReaction(env)
-            FrameType.BLOB_REQ ->
+            FrameType.CHAT -> {
+                handleChat(env)
+            }
+
+            FrameType.GROUP_UPDATE -> {
+                handleGroupUpdate(env)
+            }
+
+            FrameType.GROUP_LEAVE -> {
+                handleGroupLeave(env)
+            }
+
+            FrameType.PROFILE -> {
+                handleProfile(env, wire)
+            }
+
+            FrameType.RECEIPT -> {
+                handleReceipt(env)
+            }
+
+            FrameType.REACTION -> {
+                handleReaction(env)
+            }
+
+            FrameType.BLOB_REQ -> {
                 WireCodec.decodePayload<BlobReqContent>(env.payload)?.let { blobExchange.onRequest(it.hash, fromNodeId) }
-            FrameType.KEY_REQ ->
+            }
+
+            FrameType.KEY_REQ -> {
                 WireCodec.decodePayload<KeyReqContent>(env.payload)?.let { keyExchange.onRequest(it.nodeIds, fromNodeId) }
-            else -> Unit
+            }
+
+            else -> {
+                Unit
+            }
         }
     }
 
@@ -762,11 +852,16 @@ class MeshManager(
      * authenticate a profile the same way — via its own key — instead of a pin it may not have yet. Null when
      * there is no key to verify with (an unpinned non-profile sender, or a malformed in-band key).
      */
-    private suspend fun verifierBundle(env: RelayEnvelope): PublicKeyBundle? = when (env.type) {
-        FrameType.PROFILE ->
-            WireCodec.decodePayload<ProfileContent>(env.payload)?.pubKey?.let { PublicKeyBundle.decode(it) }
-        else -> peers.find(env.senderId)?.pubKey?.let { PublicKeyBundle.decode(it) }
-    }
+    private suspend fun verifierBundle(env: RelayEnvelope): PublicKeyBundle? =
+        when (env.type) {
+            FrameType.PROFILE -> {
+                WireCodec.decodePayload<ProfileContent>(env.payload)?.pubKey?.let { PublicKeyBundle.decode(it) }
+            }
+
+            else -> {
+                peers.find(env.senderId)?.pubKey?.let { PublicKeyBundle.decode(it) }
+            }
+        }
 
     /**
      * Authenticates a flooded frame: the frame [WireEnvelope.sig] must verify (byte-exact, over the
@@ -780,50 +875,55 @@ class MeshManager(
      * Wrapped in [runCatching] so it NEVER throws out of [onDeliver]: any failure returns false =
      * "drop locally", and the router still schedules the relay (it runs after onDeliver returns).
      */
-    private suspend fun verifyInbound(env: RelayEnvelope, wire: WireEnvelope, fromNodeId: String): Boolean = runCatching {
-        if (env.type == FrameType.BLOB_REQ) return true
-        // One of our own originated frames looping back to us: a neighbor carried it (store-and-forward) and,
-        // once our SeenSet dedup window lapsed, its re-serve re-flooded it back through a third node. We never
-        // pin our own key in `peers`, so this would otherwise fall through to the NO_SENDER_KEY path below —
-        // spuriously counting a drop, parking it in PendingInbound (which never releases, since a profile for
-        // ourselves never arrives), and asking neighbors for our own key (a KeyExchange.want no-op). We already
-        // delivered it locally when we originated it, so drop it as a silent local no-op; the router still
-        // relays it (that runs after onDeliver returns) and neighbors dedup it, so it dies at the next hop.
-        if (env.senderId == identity.nodeId()) return false
-        val bundle = verifierBundle(env)
-        if (bundle == null) {
-            metrics.onDropped(DropReason.NO_SENDER_KEY)
-            // Try to recover the sender's key so future frames from it verify (the inbound key-request
-            // path). Excludes a key request itself (don't request keys for key-requesters — no recursion)
-            // and a profile (its key rides in-band, so a null bundle there means a malformed key, not an
-            // absent pin that a request could fill). Safe inside verifyInbound's runCatching — never throws.
-            if (env.type != FrameType.KEY_REQ && env.type != FrameType.PROFILE) {
-                keyExchange.want(env.senderId)
-                // Park a deliverable frame so it's replayed once the key arrives (handleProfile), instead of
-                // being lost — the inbound complement of the outbound pendingKey/flushPendingFor retransmit.
-                if (FrameType.isReplayable(env.type)) pendingInbound.hold(wire, env, fromNodeId)
+    private suspend fun verifyInbound(
+        env: RelayEnvelope,
+        wire: WireEnvelope,
+        fromNodeId: String,
+    ): Boolean =
+        runCatching {
+            if (env.type == FrameType.BLOB_REQ) return true
+            // One of our own originated frames looping back to us: a neighbor carried it (store-and-forward) and,
+            // once our SeenSet dedup window lapsed, its re-serve re-flooded it back through a third node. We never
+            // pin our own key in `peers`, so this would otherwise fall through to the NO_SENDER_KEY path below —
+            // spuriously counting a drop, parking it in PendingInbound (which never releases, since a profile for
+            // ourselves never arrives), and asking neighbors for our own key (a KeyExchange.want no-op). We already
+            // delivered it locally when we originated it, so drop it as a silent local no-op; the router still
+            // relays it (that runs after onDeliver returns) and neighbors dedup it, so it dies at the next hop.
+            if (env.senderId == identity.nodeId()) return false
+            val bundle = verifierBundle(env)
+            if (bundle == null) {
+                metrics.onDropped(DropReason.NO_SENDER_KEY)
+                // Try to recover the sender's key so future frames from it verify (the inbound key-request
+                // path). Excludes a key request itself (don't request keys for key-requesters — no recursion)
+                // and a profile (its key rides in-band, so a null bundle there means a malformed key, not an
+                // absent pin that a request could fill). Safe inside verifyInbound's runCatching — never throws.
+                if (env.type != FrameType.KEY_REQ && env.type != FrameType.PROFILE) {
+                    keyExchange.want(env.senderId)
+                    // Park a deliverable frame so it's replayed once the key arrives (handleProfile), instead of
+                    // being lost — the inbound complement of the outbound pendingKey/flushPendingFor retransmit.
+                    if (FrameType.isReplayable(env.type)) pendingInbound.hold(wire, env, fromNodeId)
+                }
+                Log.w(TAG, "drop ${env.type} ${env.id} from ${env.senderId}: no key to verify it")
+                return false
             }
-            Log.w(TAG, "drop ${env.type} ${env.id} from ${env.senderId}: no key to verify it")
-            return false
+            // The verifying key must provably belong to the claimed senderId (a nodeId IS the hash of the
+            // bundle). Mirrors the pin check in handleProfile; also rejects stale device-derived pins.
+            if (NodeId.fromPublicKeyBundle(bundle.encoded) != env.senderId) {
+                metrics.onDropped(DropReason.KEY_NODEID_MISMATCH)
+                Log.w(TAG, "drop ${env.type} ${env.id} from ${env.senderId}: key does not match nodeId")
+                return false
+            }
+            if (!MessageCrypto.verify(bundle, wire.sig, wire.signed)) {
+                metrics.onDropped(DropReason.SIG_INVALID)
+                Log.w(TAG, "drop ${env.type} ${env.id} from ${env.senderId}: bad/missing signature")
+                return false
+            }
+            true
+        }.getOrElse {
+            metrics.onDropped(DropReason.VERIFY_ERROR)
+            Log.w(TAG, "drop frame ${env.id} from ${env.senderId}: verification error ${it.message}")
+            false
         }
-        // The verifying key must provably belong to the claimed senderId (a nodeId IS the hash of the
-        // bundle). Mirrors the pin check in handleProfile; also rejects stale device-derived pins.
-        if (NodeId.fromPublicKeyBundle(bundle.encoded) != env.senderId) {
-            metrics.onDropped(DropReason.KEY_NODEID_MISMATCH)
-            Log.w(TAG, "drop ${env.type} ${env.id} from ${env.senderId}: key does not match nodeId")
-            return false
-        }
-        if (!MessageCrypto.verify(bundle, wire.sig, wire.signed)) {
-            metrics.onDropped(DropReason.SIG_INVALID)
-            Log.w(TAG, "drop ${env.type} ${env.id} from ${env.senderId}: bad/missing signature")
-            return false
-        }
-        true
-    }.getOrElse {
-        metrics.onDropped(DropReason.VERIFY_ERROR)
-        Log.w(TAG, "drop frame ${env.id} from ${env.senderId}: verification error ${it.message}")
-        false
-    }
 
     /**
      * Applies an inbound reaction. [ReactionRepository.apply] is last-writer-wins, so duplicates and
@@ -870,21 +970,30 @@ class MeshManager(
      * out of the inbound handler — the router schedules the relay *after* onDeliver returns, so an
      * exception here would silently stop us forwarding the frame to other peers.
      */
-    private suspend fun decryptAndDeliver(env: RelayEnvelope, content: ChatContent, me: String, conversationId: String) {
+    private suspend fun decryptAndDeliver(
+        env: RelayEnvelope,
+        content: ChatContent,
+        me: String,
+        conversationId: String,
+    ) {
         val enc = content.enc
         if (enc == null) {
             deliverChat(env, content, me, conversationId)
             return
         }
-        val plain = runCatching { decrypt(env, enc, me) }.getOrElse {
-            Log.w(TAG, "drop encrypted chat ${env.id}: ${it.message}")
-            null
-        } ?: return
+        val plain =
+            runCatching { decrypt(env, enc, me) }.getOrElse {
+                Log.w(TAG, "drop encrypted chat ${env.id}: ${it.message}")
+                null
+            } ?: return
         deliverChat(
             env,
             content.copy(
-                body = plain.body, mentions = plain.mentions,
-                attachmentHash = plain.attachmentHash, attachmentMime = plain.attachmentMime, enc = null,
+                body = plain.body,
+                mentions = plain.mentions,
+                attachmentHash = plain.attachmentHash,
+                attachmentMime = plain.attachmentMime,
+                enc = null,
             ),
             me,
             conversationId,
@@ -898,7 +1007,11 @@ class MeshManager(
      * happened in [verifyInbound] (the frame signature covers the whole envelope), so this only needs
      * our own hybrid private key.
      */
-    private suspend fun decrypt(env: RelayEnvelope, enc: EncEnvelope, me: String): MessageContent? {
+    private suspend fun decrypt(
+        env: RelayEnvelope,
+        enc: EncEnvelope,
+        me: String,
+    ): MessageContent? {
         if (enc.v > EncEnvelope.MAX_SUPPORTED_VERSION) {
             metrics.onDropped(DropReason.UNKNOWN_ENVELOPE_VERSION)
             Log.w(TAG, "drop encrypted chat ${env.id}: unsupported envelope v=${enc.v}")
@@ -931,7 +1044,10 @@ class MeshManager(
      * ORIGIN_SELF), so custody / cue-plane anti-entropy would never converge between peers. Our own sends
      * bypass this check.
      */
-    private suspend fun canCarry(wire: WireEnvelope, env: RelayEnvelope): Boolean {
+    private suspend fun canCarry(
+        wire: WireEnvelope,
+        env: RelayEnvelope,
+    ): Boolean {
         if (env.senderId in settings.blockedNodeIds.first()) return false
         if (env.type == FrameType.CHAT) {
             val content = WireCodec.decodePayload<ChatContent>(env.payload) ?: return false
@@ -1001,7 +1117,12 @@ class MeshManager(
      * frame carrying a blocked createdBy). The name is last-writer-wins on [sentAt] so concurrent renames
      * across the mesh converge.
      */
-    private suspend fun reconcileGroup(group: GroupInfo, senderId: String, sentAt: Long, me: String): Boolean {
+    private suspend fun reconcileGroup(
+        group: GroupInfo,
+        senderId: String,
+        sentAt: Long,
+        me: String,
+    ): Boolean {
         val existing = groups.find(group.id)
         if (groupFrameRefused(group, senderId, existing, me)) return false
 
@@ -1064,7 +1185,10 @@ class MeshManager(
      * peer-avatar-style invariant — a stored photoHash always renders); otherwise [PhotoDecision.pull] names
      * the hash to fetch and the old photo is kept until it arrives.
      */
-    private suspend fun groupPhotoDecision(existing: GroupEntity?, group: GroupInfo): PhotoDecision {
+    private suspend fun groupPhotoDecision(
+        existing: GroupEntity?,
+        group: GroupInfo,
+    ): PhotoDecision {
         val incomingPhoto = group.photoHash
         val incomingPhotoClock = group.photoUpdatedAt ?: 0L
         val keepPhoto = existing?.photoHash
@@ -1081,7 +1205,11 @@ class MeshManager(
     }
 
     /** A reconciled group photo: the hash to store, its clock, and (if its bytes aren't local) the hash to pull. */
-    private data class PhotoDecision(val hash: String?, val clock: Long, val pull: String?)
+    private data class PhotoDecision(
+        val hash: String?,
+        val clock: Long,
+        val pull: String?,
+    )
 
     /**
      * Records a group's advertised-but-not-yet-local photo and pulls its bytes over the same
@@ -1089,7 +1217,11 @@ class MeshManager(
      * [adoptAdvertisedGroupPhoto] on arrival. Group photos are pull-only (no direct push like avatars), so
      * this runs for direct neighbors too — the holder serves the blob when [BlobExchange.want] reaches it.
      */
-    private suspend fun pullGroupPhoto(groupId: String, hash: String, clock: Long) {
+    private suspend fun pullGroupPhoto(
+        groupId: String,
+        hash: String,
+        clock: Long,
+    ) {
         advertisedGroupPhotos[groupId] = AdvertisedPhoto(hash, clock)
         blobExchange.want(hash)
     }
@@ -1124,7 +1256,10 @@ class MeshManager(
     }
 
     /** A group's advertised photo (content hash + its last-writer-wins clock) whose bytes are being pulled. */
-    private data class AdvertisedPhoto(val hash: String, val clock: Long)
+    private data class AdvertisedPhoto(
+        val hash: String,
+        val clock: Long,
+    )
 
     /**
      * Persists an inbound chat into [conversationId], starts pulling any attachment blob we don't hold,
@@ -1155,13 +1290,14 @@ class MeshManager(
                 attachmentHash = hash,
                 attachmentMime = content.attachmentMime,
                 attachmentKey = attachmentKey,
-                moderation = if (
-                    isTextFlagged(content.body, "incoming", isRoom = conversationId == Conversations.NEARBY)
-                ) {
-                    MessageEntity.MODERATION_TEXT_FLAGGED
-                } else {
-                    MessageEntity.MODERATION_NONE
-                },
+                moderation =
+                    if (
+                        isTextFlagged(content.body, "incoming", isRoom = conversationId == Conversations.NEARBY)
+                    ) {
+                        MessageEntity.MODERATION_TEXT_FLAGGED
+                    } else {
+                        MessageEntity.MODERATION_NONE
+                    },
             ),
         )
         // Start pulling the referenced blob unless we already hold it (the UI observes the blobs table
@@ -1202,7 +1338,11 @@ class MeshManager(
      * verdict score/category/decision is logged under [TEXT_MODERATION_TAG], mirroring the image
      * screen's `ImageModeration` logging — the body itself is never logged (only its length).
      */
-    private suspend fun isTextFlagged(text: String, direction: String, isRoom: Boolean): Boolean {
+    private suspend fun isTextFlagged(
+        text: String,
+        direction: String,
+        isRoom: Boolean,
+    ): Boolean {
         if (text.isBlank()) return false
         val verdict = textModeration.classify(text, isRoom)
         Log.d(
@@ -1223,13 +1363,19 @@ class MeshManager(
      * direct-neighbor NDP send silently dropped the fast-fanned case: with no live NDP link, `neighbors` is
      * empty and the ack was never sent.) No-ops if the author isn't currently reachable.
      */
-    private suspend fun acknowledge(env: RelayEnvelope, me: String) {
+    private suspend fun acknowledge(
+        env: RelayEnvelope,
+        me: String,
+    ) {
         if (env.recipientId == me) {
             // DM: flood so the receipt reaches the sender across hops and is custodied like any flood frame.
-            val ack = RelayEnvelope(
-                type = FrameType.RECEIPT, id = FrameId.new(), senderId = me,
-                payload = WireCodec.encodePayload(ReceiptContent(env.id)),
-            )
+            val ack =
+                RelayEnvelope(
+                    type = FrameType.RECEIPT,
+                    id = FrameId.new(),
+                    senderId = me,
+                    payload = WireCodec.encodePayload(ReceiptContent(env.id)),
+                )
             originateSigned(ack)
         } else {
             // Broadcast/group: a unicast, point-to-point (relay = false) tick straight to the author — no NDP
@@ -1242,41 +1388,51 @@ class MeshManager(
     }
 
     /** Fires a "new message" notification for an inbound chat in [conversationId] (skips our own and empty messages). */
-    private suspend fun notifyIncoming(env: RelayEnvelope, content: ChatContent, conversationId: String) {
+    private suspend fun notifyIncoming(
+        env: RelayEnvelope,
+        content: ChatContent,
+        conversationId: String,
+    ) {
         val me = identity.nodeId()
         val peer = peers.find(env.senderId)
         val peerAvatar = peer?.avatarHash?.let { blobs.bytes(it) }
         // Image-only messages have a blank body; show a placeholder so they still notify.
         val body = content.body.ifBlank { if (content.attachmentHash != null) "📷 Photo" else content.body }
-        val incoming = incomingNotification(
-            senderId = env.senderId,
-            body = body,
-            sentAt = env.sentAt,
-            selfId = me,
-            peerName = peer?.name,
-            peerAvatarBytes = peerAvatar,
-            conversationId = conversationId,
-        ) ?: return
+        val incoming =
+            incomingNotification(
+                senderId = env.senderId,
+                body = body,
+                sentAt = env.sentAt,
+                selfId = me,
+                peerName = peer?.name,
+                peerAvatarBytes = peerAvatar,
+                conversationId = conversationId,
+            ) ?: return
         val conversation = resolveConversation(conversationId, env.senderId, peer?.name, peerAvatar, me)
         val selfAvatar = settings.ownAvatarHash.first()?.let { blobs.bytes(it) }
         notifier.notify(incoming, conversation, me, settings.displayName.first(), selfAvatar)
     }
 
     /** Fires a "you were mentioned" notification on the Mentions channel for an inbound chat in [conversationId]. */
-    private suspend fun notifyMention(env: RelayEnvelope, content: ChatContent, conversationId: String) {
+    private suspend fun notifyMention(
+        env: RelayEnvelope,
+        content: ChatContent,
+        conversationId: String,
+    ) {
         val me = identity.nodeId()
         val peer = peers.find(env.senderId)
         val peerAvatar = peer?.avatarHash?.let { blobs.bytes(it) }
         val body = content.body.ifBlank { if (content.attachmentHash != null) "📷 Photo" else content.body }
-        val incoming = mentionNotification(
-            senderId = env.senderId,
-            body = body,
-            sentAt = env.sentAt,
-            selfId = me,
-            peerName = peer?.name,
-            peerAvatarBytes = peerAvatar,
-            conversationId = conversationId,
-        ) ?: return
+        val incoming =
+            mentionNotification(
+                senderId = env.senderId,
+                body = body,
+                sentAt = env.sentAt,
+                selfId = me,
+                peerName = peer?.name,
+                peerAvatarBytes = peerAvatar,
+                conversationId = conversationId,
+            ) ?: return
         val conversation = resolveConversation(conversationId, env.senderId, peer?.name, peerAvatar, me)
         val selfAvatar = settings.ownAvatarHash.first()?.let { blobs.bytes(it) }
         notifier.notifyMention(incoming, conversation, me, settings.displayName.first(), selfAvatar)
@@ -1294,24 +1450,34 @@ class MeshManager(
         dmName: String?,
         dmAvatar: ByteArray?,
         me: String,
-    ): NotifConversation = when (Conversations.kindFor(conversationId)) {
-        ConversationKind.NEARBY -> NotifConversation(conversationId, null, null, ConversationKind.NEARBY)
-        ConversationKind.DM ->
-            NotifConversation(conversationId, displayNameFor(dmName, senderId), dmAvatar, ConversationKind.DM)
-        ConversationKind.GROUP -> {
-            val group = groups.find(conversationId)
-            val memberIds = group?.let { GroupMembersStore.decode(it.members) }.orEmpty()
-            // Pre-resolve member names off the suspend peer lookups, since groupTitle's nameOf is non-suspend.
-            val namesByNode = LinkedHashMap<String, String>()
-            for (id in memberIds) namesByNode[id] = displayNameFor(peers.find(id)?.name, id)
-            val title = group?.let {
-                groupTitle(it.name, memberIds, me, fallback = "") { id -> namesByNode[id] ?: id }.ifBlank { null }
+    ): NotifConversation =
+        when (Conversations.kindFor(conversationId)) {
+            ConversationKind.NEARBY -> {
+                NotifConversation(conversationId, null, null, ConversationKind.NEARBY)
             }
-            NotifConversation(conversationId, title, group?.photoHash?.let { blobs.bytes(it) }, ConversationKind.GROUP)
-        }
-    }
 
-    private suspend fun handleProfile(env: RelayEnvelope, wire: WireEnvelope) {
+            ConversationKind.DM -> {
+                NotifConversation(conversationId, displayNameFor(dmName, senderId), dmAvatar, ConversationKind.DM)
+            }
+
+            ConversationKind.GROUP -> {
+                val group = groups.find(conversationId)
+                val memberIds = group?.let { GroupMembersStore.decode(it.members) }.orEmpty()
+                // Pre-resolve member names off the suspend peer lookups, since groupTitle's nameOf is non-suspend.
+                val namesByNode = LinkedHashMap<String, String>()
+                for (id in memberIds) namesByNode[id] = displayNameFor(peers.find(id)?.name, id)
+                val title =
+                    group?.let {
+                        groupTitle(it.name, memberIds, me, fallback = "") { id -> namesByNode[id] ?: id }.ifBlank { null }
+                    }
+                NotifConversation(conversationId, title, group?.photoHash?.let { blobs.bytes(it) }, ConversationKind.GROUP)
+            }
+        }
+
+    private suspend fun handleProfile(
+        env: RelayEnvelope,
+        wire: WireEnvelope,
+    ) {
         val content = WireCodec.decodePayload<ProfileContent>(env.payload) ?: return
         // Self-certifying identity: a peer's nodeId IS the hash of its public-key bundle, so a profile
         // is only trustworthy if the advertised key actually derives back to the claimed senderId.
@@ -1374,7 +1540,10 @@ class MeshManager(
      * key returns under a new nodeId. If this peer's (key-independent) [deviceTag] is already blocked,
      * block this new [senderId] too — every other block check stays plain nodeId-based.
      */
-    private suspend fun applyDeviceTagBlockContinuity(senderId: String, deviceTag: String?) {
+    private suspend fun applyDeviceTagBlockContinuity(
+        senderId: String,
+        deviceTag: String?,
+    ) {
         if (deviceTag != null &&
             senderId !in settings.blockedNodeIds.first() &&
             deviceTag in settings.blockedDeviceTags.first()
@@ -1388,7 +1557,11 @@ class MeshManager(
      * relay won't, so pull its [advertised] avatar hop-by-hop over the same content-addressed exchange
      * that carries attachments. Attributed back to this peer in [adoptAdvertisedAvatar] on arrival.
      */
-    private suspend fun pullRelayAvatarIfNeeded(senderId: String, advertised: String?, haveAvatar: Boolean) {
+    private suspend fun pullRelayAvatarIfNeeded(
+        senderId: String,
+        advertised: String?,
+        haveAvatar: Boolean,
+    ) {
         if (advertised != null && !haveAvatar &&
             transport.neighbors.value.none { it.nodeId == senderId }
         ) {
@@ -1406,7 +1579,11 @@ class MeshManager(
      *    state, so the clear propagates instead of clinging to the old photo;
      *  - otherwise keep [current] until the advertised (but not-yet-fetched) blob arrives.
      */
-    private fun resolveAvatarHash(advertised: String?, haveAvatar: Boolean, current: String?): String? =
+    private fun resolveAvatarHash(
+        advertised: String?,
+        haveAvatar: Boolean,
+        current: String?,
+    ): String? =
         when {
             haveAvatar -> advertised
             advertised == null -> null
@@ -1418,7 +1595,11 @@ class MeshManager(
      * cancel any in-flight pull and reclaim the now-orphaned blob. Must run *after* the peer row is upserted
      * to null, so [BlobRepository.deleteIfUnreferenced] no longer sees the peer pointing at it.
      */
-    private suspend fun reclaimRemovedAvatarIfCleared(senderId: String, advertised: String?, previous: String?) {
+    private suspend fun reclaimRemovedAvatarIfCleared(
+        senderId: String,
+        advertised: String?,
+        previous: String?,
+    ) {
         if (advertised != null || previous == null) return
         advertisedAvatars.remove(senderId) // cancel any pending pull of the now-removed avatar
         blobs.deleteIfUnreferenced(previous)
@@ -1433,19 +1614,25 @@ class MeshManager(
         if (recipientId in settings.blockedNodeIds.first()) return
         val me = identity.nodeId()
         messages.pendingForRecipient(recipientId).forEach { row ->
-            val content = MessageContent(
-                body = row.body,
-                mentions = MentionStore.decode(row.mentions),
-                attachmentHash = row.attachmentHash,
-                attachmentMime = row.attachmentMime,
-                attachmentKey = row.attachmentKey,
-            )
+            val content =
+                MessageContent(
+                    body = row.body,
+                    mentions = MentionStore.decode(row.mentions),
+                    attachmentHash = row.attachmentHash,
+                    attachmentMime = row.attachmentMime,
+                    attachmentKey = row.attachmentKey,
+                )
             val header = MessageCrypto.header(row.id, me, row.sentAt, recipientId)
-            val envelope = messageCrypto.seal(content.encode(), header, recipientBundles(recipientId, null, me))
-                ?: return@forEach
+            val envelope =
+                messageCrypto.seal(content.encode(), header, recipientBundles(recipientId, null, me))
+                    ?: return@forEach
             originateSigned(
                 chatEnvelope(
-                    row.id, me, row.sentAt, recipientId, group = null,
+                    row.id,
+                    me,
+                    row.sentAt,
+                    recipientId,
+                    group = null,
                     // Same cleartext-hash exposure as sendChat, so a re-sealed pending DM's image is custodied too.
                     ChatContent(
                         enc = envelope,
@@ -1487,7 +1674,12 @@ class MeshManager(
      * Ingests a direct neighbor's pushed avatar into the encrypted blob store, points the peer row at
      * it by [hash], deletes the decrypted staging copy, and garbage-collects the peer's previous blob.
      */
-    private suspend fun onAvatarReceived(nodeId: String, hash: String, mime: String, srcPath: String) {
+    private suspend fun onAvatarReceived(
+        nodeId: String,
+        hash: String,
+        mime: String,
+        srcPath: String,
+    ) {
         val bytes = runCatching { File(srcPath).readBytes() }.getOrNull() ?: return
         // [hash] is the peer's claimed content address. Verify the bytes hash to it before storing, so a
         // neighbor can't push arbitrary bytes under another avatar's address (content-address spoofing).
@@ -1532,7 +1724,10 @@ class MeshManager(
      * a repeat call (or a prior ciphertext screen) is harmless; it always caches a verdict (the
      * content-filtering setting gates only the receive-side blur at display time, not the scan).
      */
-    private suspend fun screenEncryptedAttachment(hash: String?, key: String?) {
+    private suspend fun screenEncryptedAttachment(
+        hash: String?,
+        key: String?,
+    ) {
         if (hash == null || key == null) return
         val cipher = blobs.bytes(hash) ?: return
         val plain = AttachmentCrypto.open(cipher, b64d(key)) ?: return

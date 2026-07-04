@@ -12,9 +12,12 @@ import java.io.OutputStream
  * `inputStream`/`outputStream`/`close()`), which is exactly why the shared machinery depends on the narrow
  * [LinkSocket] seam. [input] is cached/buffered so the responder's HELLO read and the read loop share it.
  */
-internal class BluetoothSocketLink(private val socket: BluetoothSocket) : LinkSocket {
+internal class BluetoothSocketLink(
+    private val socket: BluetoothSocket,
+) : LinkSocket {
     override val input: InputStream by lazy { BufferedInputStream(socket.inputStream) }
     override val output: OutputStream get() = socket.outputStream
+
     override fun close() {
         runCatching { socket.close() }
     }

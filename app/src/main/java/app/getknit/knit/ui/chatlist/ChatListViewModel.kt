@@ -68,7 +68,6 @@ class ChatListViewModel(
     private val groups: GroupRepository,
     private val context: Context,
 ) : ViewModel() {
-
     private val myNodeId = MutableStateFlow<String?>(null)
 
     init {
@@ -90,25 +89,28 @@ class ChatListViewModel(
         val warning: RadioWarning?,
     )
 
-    private val messagesAndBlocks = combine(
-        messages.observeMessages(), // ORDER BY sentAt ASC -> newest is last()
-        settings.blockedNodeIds,
-        groups.observeGroups(),
-    ) { msgs, blocked, groupList ->
-        ListBundle(msgs.filter { it.senderId !in blocked }, blocked, groupList)
-    }
+    private val messagesAndBlocks =
+        combine(
+            messages.observeMessages(), // ORDER BY sentAt ASC -> newest is last()
+            settings.blockedNodeIds,
+            groups.observeGroups(),
+        ) { msgs, blocked, groupList ->
+            ListBundle(msgs.filter { it.senderId !in blocked }, blocked, groupList)
+        }
 
     // Radio-off banner: which warning the per-radio statuses imply, and whether the user has dismissed it.
     // The critical AllRadiosOff warning is never stored in [dismissed], so it always shows (not dismissible).
     private val dismissed = MutableStateFlow<RadioWarning?>(null)
 
-    private val rawWarning = meshManager.transportStatuses
-        .map { radioWarningFor(it) }
-        .distinctUntilChanged()
+    private val rawWarning =
+        meshManager.transportStatuses
+            .map { radioWarningFor(it) }
+            .distinctUntilChanged()
 
-    private val visibleWarning = combine(rawWarning, dismissed) { warning, hidden ->
-        if (warning != null && warning != hidden) warning else null
-    }
+    private val visibleWarning =
+        combine(rawWarning, dismissed) { warning, hidden ->
+            if (warning != null && warning != hidden) warning else null
+        }
 
     init {
         // Re-arm: when radios recover (warning clears), forget any prior dismissal so a later off-episode
@@ -118,95 +120,113 @@ class ChatListViewModel(
 
     // Neighbor count + radio health + the banner folded into one source so the main state combine stays
     // within its five-flow arity.
-    private val meshStatus = combine(
-        meshManager.neighborCount,
-        meshManager.transportHealth,
-        visibleWarning,
-    ) { count, health, warning -> MeshStatus(count, health, warning) }
+    private val meshStatus =
+        combine(
+            meshManager.neighborCount,
+            meshManager.transportHealth,
+            visibleWarning,
+        ) { count, health, warning -> MeshStatus(count, health, warning) }
 
-    val state: StateFlow<ChatListUiState> = combine(
-        messagesAndBlocks,
-        peers.observePeers(),
-        settings.lastReadAll,
-        myNodeId,
-        meshStatus,
-    ) { bundle, peerList, lastReadAll, me, (neighborCount, health, warning) ->
-        val msgs = bundle.messages
-        val blocked = bundle.blocked
-        val activeGroups = bundle.groups.filter { !it.left }
-        val groupIds = bundle.groups.map { it.groupId }.toSet() // left groups too, to hide stray rows
-        val peersByNode = peerList.associateBy { it.nodeId }
-        val byConversation = msgs.groupBy { it.conversationId }
+    val state: StateFlow<ChatListUiState> =
+        combine(
+            messagesAndBlocks,
+            peers.observePeers(),
+            settings.lastReadAll,
+            myNodeId,
+            meshStatus,
+        ) { bundle, peerList, lastReadAll, me, (neighborCount, health, warning) ->
+            val msgs = bundle.messages
+            val blocked = bundle.blocked
+            val activeGroups = bundle.groups.filter { !it.left }
+            val groupIds = bundle.groups.map { it.groupId }.toSet() // left groups too, to hide stray rows
+            val peersByNode = peerList.associateBy { it.nodeId }
+            val byConversation = msgs.groupBy { it.conversationId }
 
-        fun rowFor(
-            conversationId: String,
-            threadMsgs: List<MessageEntity>,
-            title: String,
-            isRoom: Boolean,
-            isGroup: Boolean,
-            avatarHash: String?,
-        ): ConversationRow {
-            val last = threadMsgs.lastOrNull()
-            val lastReadAt = lastReadAll[conversationId] ?: 0L
-            // Until our own id resolves, count nothing as unread so our own messages aren't miscounted.
-            // Status notices (e.g. "X left the chat") are quiet — they never raise an unread badge.
-            val unread = if (me == null) {
-                0
-            } else {
-                threadMsgs.count {
-                    it.sentAt > lastReadAt && it.senderId != me && it.kind == MessageEntity.KIND_NORMAL
-                }
-            }
-            return ConversationRow(
-                id = conversationId,
-                title = title,
-                avatarHash = avatarHash,
-                isRoom = isRoom,
-                isGroup = isGroup,
-                lastPreview = last?.let { previewFor(it, peersByNode, me, isDm = !isRoom && !isGroup) },
-                lastMessageAt = last?.sentAt,
-                unreadCount = unread,
-            )
-        }
-
-        // The Nearby room is always present (even with no messages yet). Groups appear from the groups
-        // table (so a freshly created group shows even before its first message); DM threads appear once
-        // they have a message — excluding any conversation that is actually a group. Most-recent first.
-        val nearby = rowFor(
-            Conversations.NEARBY, byConversation[Conversations.NEARBY].orEmpty(),
-            title = context.getString(R.string.nearby_title), isRoom = true, isGroup = false, avatarHash = null,
-        )
-        val groupRows = activeGroups.map { g ->
-            val title = groupTitle(
-                storedName = g.name,
-                memberIds = GroupMembersStore.decode(g.members),
-                selfId = me,
-                fallback = context.getString(R.string.group_unnamed),
-            ) { id -> displayNameFor(peersByNode[id]?.name, id) }
-            val row = rowFor(
-                g.groupId, byConversation[g.groupId].orEmpty(),
-                title = title, isRoom = false, isGroup = true, avatarHash = g.photoHash,
-            )
-            // An empty group sorts/labels by its creation time so it isn't stranded at the bottom.
-            if (row.lastMessageAt == null) row.copy(lastMessageAt = g.createdAt) else row
-        }
-        val dms = byConversation
-            .filterKeys { it != Conversations.NEARBY && it !in blocked && it !in groupIds }
-            .map { (conversationId, threadMsgs) ->
-                rowFor(
-                    conversationId, threadMsgs,
-                    title = displayNameFor(peersByNode[conversationId]?.name, conversationId),
-                    isRoom = false, isGroup = false,
-                    avatarHash = peersByNode[conversationId]?.avatarHash,
+            fun rowFor(
+                conversationId: String,
+                threadMsgs: List<MessageEntity>,
+                title: String,
+                isRoom: Boolean,
+                isGroup: Boolean,
+                avatarHash: String?,
+            ): ConversationRow {
+                val last = threadMsgs.lastOrNull()
+                val lastReadAt = lastReadAll[conversationId] ?: 0L
+                // Until our own id resolves, count nothing as unread so our own messages aren't miscounted.
+                // Status notices (e.g. "X left the chat") are quiet — they never raise an unread badge.
+                val unread =
+                    if (me == null) {
+                        0
+                    } else {
+                        threadMsgs.count {
+                            it.sentAt > lastReadAt && it.senderId != me && it.kind == MessageEntity.KIND_NORMAL
+                        }
+                    }
+                return ConversationRow(
+                    id = conversationId,
+                    title = title,
+                    avatarHash = avatarHash,
+                    isRoom = isRoom,
+                    isGroup = isGroup,
+                    lastPreview = last?.let { previewFor(it, peersByNode, me, isDm = !isRoom && !isGroup) },
+                    lastMessageAt = last?.sentAt,
+                    unreadCount = unread,
                 )
             }
-        ChatListUiState(
-            conversations = (listOf(nearby) + groupRows + dms).sortedByDescending { it.lastMessageAt ?: 0L },
-            neighborCount = neighborCount,
-            transportHealth = health,
-            radioWarning = warning,
-        )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatListUiState())
+
+            // The Nearby room is always present (even with no messages yet). Groups appear from the groups
+            // table (so a freshly created group shows even before its first message); DM threads appear once
+            // they have a message — excluding any conversation that is actually a group. Most-recent first.
+            val nearby =
+                rowFor(
+                    Conversations.NEARBY,
+                    byConversation[Conversations.NEARBY].orEmpty(),
+                    title = context.getString(R.string.nearby_title),
+                    isRoom = true,
+                    isGroup = false,
+                    avatarHash = null,
+                )
+            val groupRows =
+                activeGroups.map { g ->
+                    val title =
+                        groupTitle(
+                            storedName = g.name,
+                            memberIds = GroupMembersStore.decode(g.members),
+                            selfId = me,
+                            fallback = context.getString(R.string.group_unnamed),
+                        ) { id -> displayNameFor(peersByNode[id]?.name, id) }
+                    val row =
+                        rowFor(
+                            g.groupId,
+                            byConversation[g.groupId].orEmpty(),
+                            title = title,
+                            isRoom = false,
+                            isGroup = true,
+                            avatarHash = g.photoHash,
+                        )
+                    // An empty group sorts/labels by its creation time so it isn't stranded at the bottom.
+                    if (row.lastMessageAt == null) row.copy(lastMessageAt = g.createdAt) else row
+                }
+            val dms =
+                byConversation
+                    .filterKeys { it != Conversations.NEARBY && it !in blocked && it !in groupIds }
+                    .map { (conversationId, threadMsgs) ->
+                        rowFor(
+                            conversationId,
+                            threadMsgs,
+                            title = displayNameFor(peersByNode[conversationId]?.name, conversationId),
+                            isRoom = false,
+                            isGroup = false,
+                            avatarHash = peersByNode[conversationId]?.avatarHash,
+                        )
+                    }
+            ChatListUiState(
+                conversations = (listOf(nearby) + groupRows + dms).sortedByDescending { it.lastMessageAt ?: 0L },
+                neighborCount = neighborCount,
+                transportHealth = health,
+                radioWarning = warning,
+            )
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatListUiState())
 
     /**
      * Hides the currently-shown radio-off banner. Only the dismissible warnings (Bluetooth/Wi-Fi off) are
@@ -215,7 +235,9 @@ class ChatListViewModel(
      * collector), so a later off-episode shows the banner again.
      */
     fun dismissRadioWarning() {
-        state.value.radioWarning?.takeIf { it != RadioWarning.AllRadiosOff }?.let { dismissed.value = it }
+        state.value.radioWarning
+            ?.takeIf { it != RadioWarning.AllRadiosOff }
+            ?.let { dismissed.value = it }
     }
 
     /**
@@ -237,18 +259,20 @@ class ChatListViewModel(
                 displayNameFor(peersByNode[message.senderId]?.name, message.senderId),
             )
         }
-        val body = when {
-            message.body.isNotBlank() -> message.body
-            message.attachmentHash != null -> context.getString(R.string.chat_list_preview_photo)
-            else -> ""
-        }
+        val body =
+            when {
+                message.body.isNotBlank() -> message.body
+                message.attachmentHash != null -> context.getString(R.string.chat_list_preview_photo)
+                else -> ""
+            }
         val isOwn = message.senderId == me
         if (isDm && !isOwn) return body
-        val sender = if (isOwn) {
-            context.getString(R.string.chat_self_name)
-        } else {
-            displayNameFor(peersByNode[message.senderId]?.name, message.senderId)
-        }
+        val sender =
+            if (isOwn) {
+                context.getString(R.string.chat_self_name)
+            } else {
+                displayNameFor(peersByNode[message.senderId]?.name, message.senderId)
+            }
         return context.getString(R.string.chat_list_preview_with_sender, sender, body)
     }
 
@@ -260,8 +284,11 @@ class ChatListViewModel(
     fun deleteConversation(conversationId: String) {
         viewModelScope.launch {
             when (Conversations.kindFor(conversationId)) {
-                ConversationKind.NEARBY -> Unit // the broadcast room can't be deleted
+                ConversationKind.NEARBY -> Unit
+
+                // the broadcast room can't be deleted
                 ConversationKind.GROUP -> groups.delete(conversationId)
+
                 ConversationKind.DM -> messages.deleteByConversation(conversationId)
             }
         }

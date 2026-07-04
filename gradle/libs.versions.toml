@@ -60,6 +60,10 @@ apksig = "9.2.1"
 # detekt runs as a standalone CLI off the build classpath (never applied as a Gradle plugin) —
 # keep this in lockstep with DETEKT_VERSION in .gitlab-ci.yml so local and CI use the same rules.
 detekt = "1.23.8"
+# ktlint (Kotlin style/format lint) also runs as a standalone CLI off the build classpath, never as a
+# Gradle plugin — the same AGP-9.2.1/Kotlin-2.4 toolchain that broke Hilt's plugin. Keep in lockstep
+# with the `ktlint` CLI contributors run locally (the repo's Stop hook invokes `./gradlew ktlint`).
+ktlint = "1.8.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -121,6 +125,10 @@ kotlin-gradle-plugin = { group = "org.jetbrains.kotlin", name = "kotlin-gradle-p
 # Resolved only into the isolated `detektCli` configuration in the root build (the runnable
 # classpath for the standalone analyzer) — never onto :app's compile/runtime classpath.
 detekt-cli = { group = "io.gitlab.arturbosch.detekt", name = "detekt-cli", version.ref = "detekt" }
+
+# Resolved only into the isolated `ktlintCli` configuration in the root build (the runnable classpath
+# for the standalone linter) — never onto :app's compile/runtime classpath, exactly like detekt-cli.
+ktlint-cli = { group = "com.pinterest.ktlint", name = "ktlint-cli", version.ref = "ktlint" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

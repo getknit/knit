@@ -7,7 +7,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AvatarCropTest {
-
     // A representative crop-window diameter; the value is irrelevant to the result since the window
     // and image are both centered (it cancels out), but it must match the scale convention.
     private val d = 800f

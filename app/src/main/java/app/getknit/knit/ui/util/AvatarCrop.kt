@@ -1,3 +1,8 @@
+// ktlint's filename rule wants a single-type file named after the type (CropRect.kt); this file is
+// deliberately named for its primary export, computeAvatarCrop (matching AvatarCropTest.kt), so the
+// rule is suppressed here rather than misnaming the file after its return type.
+@file:Suppress("ktlint:standard:filename")
+
 package app.getknit.knit.ui.util
 
 import kotlin.math.min
@@ -36,5 +41,11 @@ fun computeAvatarCrop(
 
 // Declared after computeAvatarCrop so the file's only type isn't its first declaration — that keeps
 // the meaningful file name AvatarCrop.kt instead of detekt's MatchingDeclarationName forcing CropRect.kt.
+
 /** Square pixel rectangle in source-bitmap coordinates. [width] always equals [height]. */
-data class CropRect(val left: Int, val top: Int, val width: Int, val height: Int)
+data class CropRect(
+    val left: Int,
+    val top: Int,
+    val width: Int,
+    val height: Int,
+)

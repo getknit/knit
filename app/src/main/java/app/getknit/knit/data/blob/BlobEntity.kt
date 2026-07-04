@@ -19,8 +19,7 @@ data class BlobEntity(
     // Identity is the content hash. The default data-class equals/hashCode would compare the ByteArray
     // by reference (and Room/detekt flag a ByteArray in a data class); content-addressing makes hash
     // the only field that matters for equality.
-    override fun equals(other: Any?): Boolean =
-        this === other || (other is BlobEntity && hash == other.hash)
+    override fun equals(other: Any?): Boolean = this === other || (other is BlobEntity && hash == other.hash)
 
     override fun hashCode(): Int = hash.hashCode()
 }

@@ -22,7 +22,10 @@ import kotlinx.coroutines.launch
 enum class VerifyScanResult { MATCH, MISMATCH }
 
 /** This device's identity, loaded once for safety-number/QR rendering. */
-private data class MyIdentity(val nodeId: String, val bundle: String)
+private data class MyIdentity(
+    val nodeId: String,
+    val bundle: String,
+)
 
 /** A remote peer's profile as shown on the read-only details screen. */
 data class ProfileDetailsUiState(
@@ -53,7 +56,6 @@ class ProfileDetailsViewModel(
     private val settings: SettingsStore,
     identity: Identity,
 ) : ViewModel() {
-
     private val me = MutableStateFlow<MyIdentity?>(null)
 
     private val _scanResult = MutableStateFlow<VerifyScanResult?>(null)
@@ -74,44 +76,46 @@ class ProfileDetailsViewModel(
         }
     }
 
-    val state: StateFlow<ProfileDetailsUiState> = combine(
-        peers.observePeers(),
-        meshManager.neighbors,
-        settings.blockedNodeIds,
-        me,
-    ) { peerList, neighbors, blocked, myId ->
-        val peer = peerList.firstOrNull { it.nodeId == nodeId }
-        peerBundle = peer?.pubKey
-        peerDeviceTag = peer?.deviceTag
-        val safety = if (peer?.pubKey != null && myId != null) {
-            SafetyNumber.compute(myId.nodeId, myId.bundle, nodeId, peer.pubKey)
-        } else {
-            null
-        }
-        ProfileDetailsUiState(
-            nodeId = nodeId,
-            displayName = displayNameFor(peer?.name, nodeId),
-            status = peer?.status.orEmpty(),
-            avatarHash = peer?.avatarHash,
-            online = neighbors.any { it.nodeId == nodeId },
-            isBlocked = nodeId in blocked,
-            hasKey = peer?.pubKey != null,
-            verified = peer?.verified == true,
-            safetyNumber = safety,
-            myQrPayload = myId?.let { VerifyPayload.encode(it.nodeId, it.bundle) },
+    val state: StateFlow<ProfileDetailsUiState> =
+        combine(
+            peers.observePeers(),
+            meshManager.neighbors,
+            settings.blockedNodeIds,
+            me,
+        ) { peerList, neighbors, blocked, myId ->
+            val peer = peerList.firstOrNull { it.nodeId == nodeId }
+            peerBundle = peer?.pubKey
+            peerDeviceTag = peer?.deviceTag
+            val safety =
+                if (peer?.pubKey != null && myId != null) {
+                    SafetyNumber.compute(myId.nodeId, myId.bundle, nodeId, peer.pubKey)
+                } else {
+                    null
+                }
+            ProfileDetailsUiState(
+                nodeId = nodeId,
+                displayName = displayNameFor(peer?.name, nodeId),
+                status = peer?.status.orEmpty(),
+                avatarHash = peer?.avatarHash,
+                online = neighbors.any { it.nodeId == nodeId },
+                isBlocked = nodeId in blocked,
+                hasKey = peer?.pubKey != null,
+                verified = peer?.verified == true,
+                safetyNumber = safety,
+                myQrPayload = myId?.let { VerifyPayload.encode(it.nodeId, it.bundle) },
+            )
+        }.stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            ProfileDetailsUiState(
+                nodeId = nodeId,
+                displayName = displayNameFor(null, nodeId),
+                status = "",
+                avatarHash = null,
+                online = false,
+                isBlocked = false,
+            ),
         )
-    }.stateIn(
-        viewModelScope,
-        SharingStarted.WhileSubscribed(5_000),
-        ProfileDetailsUiState(
-            nodeId = nodeId,
-            displayName = displayNameFor(null, nodeId),
-            status = "",
-            avatarHash = null,
-            online = false,
-            isBlocked = false,
-        ),
-    )
 
     /** Blocks this peer locally: their messages/reactions stop being stored, shown, and notified. */
     fun block() {

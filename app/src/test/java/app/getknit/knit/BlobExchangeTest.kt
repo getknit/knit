@@ -8,8 +8,8 @@ import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.WireCodec
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -22,20 +22,32 @@ import java.util.concurrent.ConcurrentHashMap
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BlobExchangeTest {
-
     /** In-memory, content-addressed [BlobStore] backed by a temp directory. */
-    private class FakeBlobStore(private val dir: File) : BlobStore {
+    private class FakeBlobStore(
+        private val dir: File,
+    ) : BlobStore {
         private val mimes = ConcurrentHashMap<String, String>()
 
-        fun seed(hash: String, mime: String, bytes: ByteArray) {
+        fun seed(
+            hash: String,
+            mime: String,
+            bytes: ByteArray,
+        ) {
             File(dir, hash).writeBytes(bytes)
             mimes[hash] = mime
         }
 
         override suspend fun has(hash: String): Boolean = File(dir, hash).exists()
+
         override suspend fun fileFor(hash: String): File? = File(dir, hash).takeIf { it.exists() }
+
         override suspend fun mimeFor(hash: String): String? = mimes[hash]
-        override suspend fun saveIncoming(hash: String, mime: String, srcPath: String): File {
+
+        override suspend fun saveIncoming(
+            hash: String,
+            mime: String,
+            srcPath: String,
+        ): File {
             val dest = File(dir, hash)
             File(srcPath).copyTo(dest, overwrite = true)
             mimes[hash] = mime
@@ -44,20 +56,25 @@ class BlobExchangeTest {
     }
 
     /** A node: its transport, its store, and a [BlobExchange] wired to route requests + incoming files. */
-    private class Node(val id: String, scope: CoroutineScope) {
+    private class Node(
+        val id: String,
+        scope: CoroutineScope,
+    ) {
         val transport = FakeLoopTransport(id)
         val store = FakeBlobStore(Files.createTempDirectory("blob-$id").toFile())
-        val exchange = BlobExchange(
-            transport = transport,
-            store = store,
-            selfId = { id },
-            onObtained = { _, _ -> },
-        )
-        private val router = MeshRouter(transport, scope) { _, env, fromNodeId ->
-            if (env.type == FrameType.BLOB_REQ) {
-                WireCodec.decodePayload<BlobReqContent>(env.payload)?.let { exchange.onRequest(it.hash, fromNodeId) }
+        val exchange =
+            BlobExchange(
+                transport = transport,
+                store = store,
+                selfId = { id },
+                onObtained = { _, _ -> },
+            )
+        private val router =
+            MeshRouter(transport, scope) { _, env, fromNodeId ->
+                if (env.type == FrameType.BLOB_REQ) {
+                    WireCodec.decodePayload<BlobReqContent>(env.payload)?.let { exchange.onRequest(it.hash, fromNodeId) }
+                }
             }
-        }
 
         fun start(scope: CoroutineScope) {
             router.start()
@@ -70,23 +87,26 @@ class BlobExchangeTest {
     }
 
     @Test
-    fun blobPropagatesHopByHopToOutOfRangeRequester() = runTest(UnconfinedTestDispatcher()) {
-        // Topology: a — b — c. Only a holds the blob; c (out of a's direct range) requests it.
-        val a = Node("a", backgroundScope)
-        val b = Node("b", backgroundScope)
-        val c = Node("c", backgroundScope)
-        a.transport.connect(b.transport)
-        b.transport.connect(c.transport)
-        a.start(backgroundScope); b.start(backgroundScope); c.start(backgroundScope)
+    fun blobPropagatesHopByHopToOutOfRangeRequester() =
+        runTest(UnconfinedTestDispatcher()) {
+            // Topology: a — b — c. Only a holds the blob; c (out of a's direct range) requests it.
+            val a = Node("a", backgroundScope)
+            val b = Node("b", backgroundScope)
+            val c = Node("c", backgroundScope)
+            a.transport.connect(b.transport)
+            b.transport.connect(c.transport)
+            a.start(backgroundScope)
+            b.start(backgroundScope)
+            c.start(backgroundScope)
 
-        val bytes = "an-image-blob".toByteArray()
-        a.store.seed("H", "image/jpeg", bytes)
+            val bytes = "an-image-blob".toByteArray()
+            a.store.seed("H", "image/jpeg", bytes)
 
-        c.exchange.want("H")
+            c.exchange.want("H")
 
-        // c pulled it from b, which pulled it from a — all over direct-neighbor file transfer.
-        assertTrue("b should have cached the blob in transit", b.store.has("H"))
-        assertTrue("c should have obtained the blob", c.store.has("H"))
-        assertArrayEquals(bytes, c.store.fileFor("H")!!.readBytes())
-    }
+            // c pulled it from b, which pulled it from a — all over direct-neighbor file transfer.
+            assertTrue("b should have cached the blob in transit", b.store.has("H"))
+            assertTrue("c should have obtained the blob", c.store.has("H"))
+            assertArrayEquals(bytes, c.store.fileFor("H")!!.readBytes())
+        }
 }

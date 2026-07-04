@@ -2,18 +2,16 @@ package app.getknit.knit
 
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.displayNameFor
-import kotlin.random.Random
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.random.Random
 
 class AliasTest {
-
     private val format = Regex("^[A-Z][a-z]+[A-Z][a-z]+$")
 
-    private fun randomNodeId(rng: Random): String =
-        (1..8).map { ALPHABET[rng.nextInt(ALPHABET.length)] }.joinToString("")
+    private fun randomNodeId(rng: Random): String = (1..8).map { ALPHABET[rng.nextInt(ALPHABET.length)] }.joinToString("")
 
     @Test
     fun aliasIsDeterministic() {

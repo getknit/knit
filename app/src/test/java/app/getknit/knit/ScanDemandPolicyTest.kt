@@ -7,7 +7,6 @@ import org.junit.Test
 
 /** Unit tests for [ScanDemandPolicy] — the pure Boost/Floor scan-cadence decision + chase fold, virtual clock. */
 class ScanDemandPolicyTest {
-
     private fun decide(
         linkCount: Int,
         candidates: Set<String> = emptySet(),

@@ -30,7 +30,6 @@ class ProfileViewModel(
     private val avatars: AvatarStore,
     private val blobs: BlobRepository,
 ) : ViewModel() {
-
     val nodeId = MutableStateFlow("")
 
     /**
@@ -51,12 +50,12 @@ class ProfileViewModel(
     val status: StateFlow<String> = _status.asStateFlow()
 
     // The last persisted (normalized) values, used to detect unsaved edits. Updated on load and on Save.
-    private val _savedName = MutableStateFlow("")
-    private val _savedStatus = MutableStateFlow("")
+    private val lastSavedName = MutableStateFlow("")
+    private val lastSavedStatus = MutableStateFlow("")
 
     /** True when the editable fields differ from what's stored — drives the Save button's enabled state. */
     val isDirty: StateFlow<Boolean> =
-        combine(_displayName, _status, _savedName, _savedStatus) { name, status, savedName, savedStatus ->
+        combine(_displayName, _status, lastSavedName, lastSavedStatus) { name, status, savedName, savedStatus ->
             normalizeSingleLine(name) != savedName || normalizeSingleLine(status) != savedStatus
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
@@ -87,8 +86,8 @@ class ProfileViewModel(
             val status = normalizeSingleLine(settings.status.first()).take(TextLimits.STATUS)
             _displayName.value = name
             _status.value = status
-            _savedName.value = name
-            _savedStatus.value = status
+            lastSavedName.value = name
+            lastSavedStatus.value = status
         }
     }
 
@@ -112,8 +111,8 @@ class ProfileViewModel(
         val status = normalizeSingleLine(_status.value)
         _displayName.value = name
         _status.value = status
-        _savedName.value = name
-        _savedStatus.value = status
+        lastSavedName.value = name
+        lastSavedStatus.value = status
         viewModelScope.launch {
             settings.setProfile(name, status)
             _saved.emit(Unit)
@@ -153,7 +152,11 @@ class ProfileViewModel(
     }
 
     /** Persists the cropped avatar. [scale]/[offset]/[diameter] come from the crop dialog's transform. */
-    fun confirmCrop(scale: Float, offset: Offset, diameter: Float) {
+    fun confirmCrop(
+        scale: Float,
+        offset: Offset,
+        diameter: Float,
+    ) {
         val source = _cropTarget.value ?: return
         _cropTarget.value = null
         viewModelScope.launch {

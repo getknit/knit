@@ -41,7 +41,10 @@ private val SPLIT_META_PREFIXES = listOf("com.android.vending.", "com.android.st
  * Absolute paths of the APKs that make up this install — the base ([sourceDir]) first, then every config
  * split ([splitSourceDirs]). Pure (no Android types) so it is JVM-unit-testable; blanks/dupes are dropped.
  */
-internal fun collectSplitPaths(sourceDir: String?, splitSourceDirs: Array<String>?): List<File> =
+internal fun collectSplitPaths(
+    sourceDir: String?,
+    splitSourceDirs: Array<String>?,
+): List<File> =
     buildList {
         sourceDir?.let(::add)
         splitSourceDirs?.let(::addAll)
@@ -51,8 +54,10 @@ internal fun collectSplitPaths(sourceDir: String?, splitSourceDirs: Array<String
  * Cache file name for the merged+signed APK, keyed on the app version (so a rebuild reuses it) and on
  * [MERGE_FORMAT_REV] (so a logic change invalidates it). Pure → JVM-unit-testable.
  */
-internal fun mergedApkFileName(versionName: String, versionCode: Long): String =
-    "Knit-$versionName-$versionCode-merged-r$MERGE_FORMAT_REV.apk"
+internal fun mergedApkFileName(
+    versionName: String,
+    versionCode: Long,
+): String = "Knit-$versionName-$versionCode-merged-r$MERGE_FORMAT_REV.apk"
 
 /**
  * Merges the [splitPaths] of a Play App Bundle install into one standalone-installable, re-signed APK and
@@ -71,7 +76,8 @@ fun buildSharableSplitApk(
     if (dest.exists() && dest.length() > 0L) return dest
 
     // Bound cache growth: an app update changes the file name, so drop any older shareable APK.
-    dir.listFiles { f -> f.isFile && f.name.startsWith("Knit-") && f.name != dest.name }
+    dir
+        .listFiles { f -> f.isFile && f.name.startsWith("Knit-") && f.name != dest.name }
         ?.forEach { it.delete() }
 
     val inputBytes = splitPaths.sumOf { it.length() }
@@ -99,13 +105,18 @@ fun buildSharableSplitApk(
  * Runs the ARSCLib merge: stages [splitPaths] into a scratch dir, merges them into one [ApkModule],
  * sanitizes its manifest for a standalone install, and writes an (unsigned) universal APK to [out].
  */
-private fun buildUniversalApk(context: Context, splitPaths: List<File>, out: File) {
+private fun buildUniversalApk(
+    context: Context,
+    splitPaths: List<File>,
+    out: File,
+) {
     // ApkBundle.loadApkDirectory reads every *.apk in a directory; stage exactly our splits so we merge
     // the intended set (not whatever else lives in the install dir) and read from a path we control.
-    val stage = File(context.cacheDir, "$APK_CACHE_DIR/merge-src").apply {
-        deleteRecursively()
-        mkdirs()
-    }
+    val stage =
+        File(context.cacheDir, "$APK_CACHE_DIR/merge-src").apply {
+            deleteRecursively()
+            mkdirs()
+        }
     try {
         splitPaths.forEachIndexed { index, src ->
             src.copyTo(File(stage, "${index}_${src.name}"), overwrite = true)
@@ -171,14 +182,23 @@ private fun splitMetaDataPredicate(): Predicate<ResXmlElement> =
  * the receiver is always >= minSdk 33). apksig re-aligns as it writes, 16 KB-page-aligning the uncompressed
  * native libs. [input] and [output] must be different files.
  */
-private fun signApk(context: Context, input: File, output: File) {
-    val privateKey = context.resources.openRawResource(R.raw.knit_share_key).use { it.readBytes() }
-        .let { KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(it)) }
-    val cert = context.resources.openRawResource(R.raw.knit_share_cert).use { stream ->
-        CertificateFactory.getInstance("X.509").generateCertificate(stream) as X509Certificate
-    }
+private fun signApk(
+    context: Context,
+    input: File,
+    output: File,
+) {
+    val privateKey =
+        context.resources
+            .openRawResource(R.raw.knit_share_key)
+            .use { it.readBytes() }
+            .let { KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(it)) }
+    val cert =
+        context.resources.openRawResource(R.raw.knit_share_cert).use { stream ->
+            CertificateFactory.getInstance("X.509").generateCertificate(stream) as X509Certificate
+        }
     val signerConfig = ApkSigner.SignerConfig.Builder("knit", privateKey, listOf(cert)).build()
-    ApkSigner.Builder(listOf(signerConfig))
+    ApkSigner
+        .Builder(listOf(signerConfig))
         .setInputApk(input)
         .setOutputApk(output)
         .setMinSdkVersion(SIGN_MIN_SDK)

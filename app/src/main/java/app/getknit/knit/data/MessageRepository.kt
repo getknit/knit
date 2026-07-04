@@ -5,13 +5,13 @@ import app.getknit.knit.data.message.MessageEntity
 import kotlinx.coroutines.flow.Flow
 
 /** Single source of truth for chat messages. */
-class MessageRepository(private val dao: MessageDao) {
-
+class MessageRepository(
+    private val dao: MessageDao,
+) {
     fun observeMessages(): Flow<List<MessageEntity>> = dao.observeAll()
 
     /** Messages in a single thread (the broadcast room or a 1:1 DM), oldest first. */
-    fun observeMessages(conversationId: String): Flow<List<MessageEntity>> =
-        dao.observeForConversation(conversationId)
+    fun observeMessages(conversationId: String): Flow<List<MessageEntity>> = dao.observeForConversation(conversationId)
 
     suspend fun save(message: MessageEntity) = dao.upsert(message)
 
@@ -23,8 +23,7 @@ class MessageRepository(private val dao: MessageDao) {
     suspend fun markReceived(id: String) = dao.markReceived(id)
 
     /** Outgoing DMs to [recipientId] that are still awaiting the recipient's key before they can be sent. */
-    suspend fun pendingForRecipient(recipientId: String): List<MessageEntity> =
-        dao.pendingForRecipient(recipientId)
+    suspend fun pendingForRecipient(recipientId: String): List<MessageEntity> = dao.pendingForRecipient(recipientId)
 
     /** Clears the pending-key flag once a stuck DM has finally been sealed and flooded. */
     suspend fun clearPending(id: String) = dao.clearPending(id)

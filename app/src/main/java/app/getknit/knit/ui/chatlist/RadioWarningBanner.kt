@@ -46,36 +46,41 @@ fun RadioWarningBanner(
 ) {
     val critical = warning == RadioWarning.AllRadiosOff
     // Convention (see ConnectionStatus.kt): a fault is `error`; an actionable radio-off is a calmer container.
-    val container = if (critical) {
-        MaterialTheme.colorScheme.errorContainer
-    } else {
-        MaterialTheme.colorScheme.secondaryContainer
-    }
-    val onContainer = if (critical) {
-        MaterialTheme.colorScheme.onErrorContainer
-    } else {
-        MaterialTheme.colorScheme.onSecondaryContainer
-    }
-    val icon: ImageVector = when (warning) {
-        RadioWarning.BluetoothOff -> Icons.Filled.BluetoothDisabled
-        RadioWarning.WifiOff -> Icons.Filled.WifiOff
-        RadioWarning.AllRadiosOff -> Icons.Filled.Warning
-    }
+    val container =
+        if (critical) {
+            MaterialTheme.colorScheme.errorContainer
+        } else {
+            MaterialTheme.colorScheme.secondaryContainer
+        }
+    val onContainer =
+        if (critical) {
+            MaterialTheme.colorScheme.onErrorContainer
+        } else {
+            MaterialTheme.colorScheme.onSecondaryContainer
+        }
+    val icon: ImageVector =
+        when (warning) {
+            RadioWarning.BluetoothOff -> Icons.Filled.BluetoothDisabled
+            RadioWarning.WifiOff -> Icons.Filled.WifiOff
+            RadioWarning.AllRadiosOff -> Icons.Filled.Warning
+        }
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = container,
         contentColor = onContainer,
         tonalElevation = 3.dp,
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Row(
             // The clickable lives inside the Surface so the ripple is clipped to the rounded shape.
-            modifier = Modifier
-                .clickable(onClick = onOpenSettings)
-                .semantics { testTag = "chatlist_radio_banner" }
-                .padding(start = 16.dp, top = 10.dp, bottom = 10.dp, end = if (onDismiss != null) 4.dp else 16.dp),
+            modifier =
+                Modifier
+                    .clickable(onClick = onOpenSettings)
+                    .semantics { testTag = "chatlist_radio_banner" }
+                    .padding(start = 16.dp, top = 10.dp, bottom = 10.dp, end = if (onDismiss != null) 4.dp else 16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
@@ -102,16 +107,24 @@ fun RadioWarningBanner(
 }
 
 @Composable
-private fun bannerMessage(warning: RadioWarning): String = when (warning) {
-    RadioWarning.BluetoothOff -> stringResource(R.string.chatlist_radio_banner_bluetooth_off)
-    RadioWarning.WifiOff -> stringResource(R.string.chatlist_radio_banner_wifi_off)
-    RadioWarning.AllRadiosOff ->
-        if (isAirplaneModeOn()) {
-            stringResource(R.string.chatlist_radio_banner_all_off_airplane)
-        } else {
-            stringResource(R.string.chatlist_radio_banner_all_off)
+private fun bannerMessage(warning: RadioWarning): String =
+    when (warning) {
+        RadioWarning.BluetoothOff -> {
+            stringResource(R.string.chatlist_radio_banner_bluetooth_off)
         }
-}
+
+        RadioWarning.WifiOff -> {
+            stringResource(R.string.chatlist_radio_banner_wifi_off)
+        }
+
+        RadioWarning.AllRadiosOff -> {
+            if (isAirplaneModeOn()) {
+                stringResource(R.string.chatlist_radio_banner_all_off_airplane)
+            } else {
+                stringResource(R.string.chatlist_radio_banner_all_off)
+            }
+        }
+    }
 
 /** Airplane-mode read from [Settings.Global] (no permission), mirroring ConnectionStatus.kt. */
 @Composable
@@ -122,18 +135,21 @@ private fun isAirplaneModeOn(): Boolean {
 
 @Preview(showBackground = true)
 @Composable
-fun RadioWarningBannerBluetoothPreview() = KnitPreview {
-    RadioWarningBanner(RadioWarning.BluetoothOff, onOpenSettings = {}, onDismiss = {})
-}
+fun RadioWarningBannerBluetoothPreview() =
+    KnitPreview {
+        RadioWarningBanner(RadioWarning.BluetoothOff, onOpenSettings = {}, onDismiss = {})
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun RadioWarningBannerWifiPreview() = KnitPreview {
-    RadioWarningBanner(RadioWarning.WifiOff, onOpenSettings = {}, onDismiss = {})
-}
+fun RadioWarningBannerWifiPreview() =
+    KnitPreview {
+        RadioWarningBanner(RadioWarning.WifiOff, onOpenSettings = {}, onDismiss = {})
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun RadioWarningBannerAllOffPreview() = KnitPreview {
-    RadioWarningBanner(RadioWarning.AllRadiosOff, onOpenSettings = {}, onDismiss = null)
-}
+fun RadioWarningBannerAllOffPreview() =
+    KnitPreview {
+        RadioWarningBanner(RadioWarning.AllRadiosOff, onOpenSettings = {}, onDismiss = null)
+    }

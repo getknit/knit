@@ -5,7 +5,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ProtocolTest {
-
     @Test
     fun advertiseParseRoundTrips() {
         val parsed = Protocol.parse(Protocol.advertise("abcd1234"))

@@ -23,7 +23,6 @@ import java.nio.ByteBuffer
  * it is JVM-unit-testable ([app.getknit.knit.BleAdvertPayloadTest]).
  */
 internal object BleAdvertPayload {
-
     /** This build's advert schema version (the first byte). Append-only at fixed offsets, so newer is tolerated. */
     const val FORMAT_VERSION = 1
 
@@ -34,11 +33,22 @@ internal object BleAdvertPayload {
     private const val PSM_MASK = 0xFFFF
 
     /** The decoded advert fields actually carried in the bytes (protoVersion is implied by the UUID). */
-    data class Parsed(val nodeId: String, val capabilities: Long, val digestCue: Int, val psm: Int)
+    data class Parsed(
+        val nodeId: String,
+        val capabilities: Long,
+        val digestCue: Int,
+        val psm: Int,
+    )
 
-    fun encode(nodeId: String, capabilities: Long, digestVersion: Long, psm: Int): ByteArray {
+    fun encode(
+        nodeId: String,
+        capabilities: Long,
+        digestVersion: Long,
+        psm: Int,
+    ): ByteArray {
         require(nodeId.length == NodeId.LENGTH) { "nodeId must be ${NodeId.LENGTH} chars, was ${nodeId.length}" }
-        return ByteBuffer.allocate(SIZE)
+        return ByteBuffer
+            .allocate(SIZE)
             .put(FORMAT_VERSION.toByte())
             .put((capabilities and CAP_MASK).toByte())
             .put(nodeId.encodeToByteArray()) // 8 ASCII bytes ([a-z0-9])

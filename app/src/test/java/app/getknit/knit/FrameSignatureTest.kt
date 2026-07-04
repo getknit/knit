@@ -23,9 +23,11 @@ import org.junit.Test
  * `signed`/`sig` verbatim (it only mutates the outer ttl/hops), the signature holds at every hop.
  */
 class FrameSignatureTest {
-
     /** A device identity: its cipher (private keys), its public bundle, and the nodeId it derives to. */
-    private class Party(val crypto: MessageCrypto, val bundle: PublicKeyBundle) {
+    private class Party(
+        val crypto: MessageCrypto,
+        val bundle: PublicKeyBundle,
+    ) {
         val nodeId: String = NodeId.fromPublicKeyBundle(bundle.encoded)
     }
 
@@ -36,8 +38,10 @@ class FrameSignatureTest {
         return Party(MessageCrypto(hybrid, sig), PublicKeyBundle.fromPrivate(hybrid, sig))
     }
 
-    private fun reaction(senderId: String, id: String = "x1") =
-        RelayEnvelope(type = FrameType.REACTION, id = id, senderId = senderId, sentAt = 1L, payload = ByteArray(0))
+    private fun reaction(
+        senderId: String,
+        id: String = "x1",
+    ) = RelayEnvelope(type = FrameType.REACTION, id = id, senderId = senderId, sentAt = 1L, payload = ByteArray(0))
 
     /** Wraps + signs [env] with this party's key (mirrors MeshManager.sign). */
     private fun Party.sign(env: RelayEnvelope): WireEnvelope {
@@ -46,8 +50,10 @@ class FrameSignatureTest {
     }
 
     /** Verifies [wire]'s signature against [bundle] (the core of MeshManager.verifyInbound). */
-    private fun verify(bundle: PublicKeyBundle, wire: WireEnvelope): Boolean =
-        MessageCrypto.verify(bundle, wire.sig, wire.signed)
+    private fun verify(
+        bundle: PublicKeyBundle,
+        wire: WireEnvelope,
+    ): Boolean = MessageCrypto.verify(bundle, wire.sig, wire.signed)
 
     @Test
     fun signedFrameVerifiesAgainstSenderBundle() {

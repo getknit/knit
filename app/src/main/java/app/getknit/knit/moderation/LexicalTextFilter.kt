@@ -24,7 +24,6 @@ class LexicalTextFilter(
     blockedWords: Collection<String>,
     allowedTerms: Collection<String> = emptySet(),
 ) : TextModerator {
-
     private val blocked: Set<String> =
         blockedWords.map(::normalize).filter { it.isNotEmpty() }.toSet()
     private val blockedCollapsed: Set<String> = blocked.map(::collapseRuns).toSet()
@@ -58,8 +57,10 @@ class LexicalTextFilter(
     }
 
     private fun normalize(raw: String): String {
-        val folded = Normalizer.normalize(raw.lowercase(), Normalizer.Form.NFKD)
-            .replace(COMBINING_MARKS, "")
+        val folded =
+            Normalizer
+                .normalize(raw.lowercase(), Normalizer.Form.NFKD)
+                .replace(COMBINING_MARKS, "")
         val mapped = StringBuilder(folded.length)
         for (ch in folded) mapped.append(LEET[ch] ?: ch)
         return mapped.toString()
@@ -89,9 +90,19 @@ class LexicalTextFilter(
         const val MIN_RUN = 3
         val FLAGGED =
             TextVerdict(allowed = false, category = TextVerdict.Category.PROFANITY, score = 1f)
-        val LEET = mapOf(
-            '0' to 'o', '1' to 'i', '3' to 'e', '4' to 'a', '5' to 's',
-            '7' to 't', '8' to 'b', '@' to 'a', '$' to 's', '!' to 'i', '|' to 'i',
-        )
+        val LEET =
+            mapOf(
+                '0' to 'o',
+                '1' to 'i',
+                '3' to 'e',
+                '4' to 'a',
+                '5' to 's',
+                '7' to 't',
+                '8' to 'b',
+                '@' to 'a',
+                '$' to 's',
+                '!' to 'i',
+                '|' to 'i',
+            )
     }
 }

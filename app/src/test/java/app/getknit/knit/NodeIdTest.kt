@@ -7,7 +7,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NodeIdTest {
-
     private val format = Regex("^[a-z0-9]{8}$")
 
     @Test

@@ -82,7 +82,6 @@ class BluetoothMeshTransport(
     private val powerState: PowerStateSource,
     private val storeDigest: StoreDigest,
 ) : MeshTransport {
-
     private val appContext = context.applicationContext
     private val bluetoothManager = appContext.getSystemService(BluetoothManager::class.java)
     private val adapter: BluetoothAdapter? = bluetoothManager?.adapter
@@ -138,7 +137,9 @@ class BluetoothMeshTransport(
     private lateinit var localNodeId: String
 
     @Volatile private var serverSocket: BluetoothServerSocket? = null
+
     @Volatile private var currentPsm = 0
+
     @Volatile private var lastLinkOrStartAt = 0L
     private var availabilityRegistered = false
 
@@ -153,7 +154,9 @@ class BluetoothMeshTransport(
     // chase deadlines. The scan boosts to try to catch them on BLE; the chase expires so a NAN-only / out-of-range
     // peer can't pin Boost. [scanFloored] tracks the last-logged tier so a change logs exactly once.
     @Volatile private var foreignReachable: Set<String> = emptySet()
+
     @Volatile private var chase = ScanDemandPolicy.ChaseState()
+
     @Volatile private var scanFloored: Boolean? = null
 
     private var acceptJob: Job? = null
@@ -165,19 +168,29 @@ class BluetoothMeshTransport(
     private var audioJob: Job? = null
 
     // Forwards a live link's decoded records into our flows and its teardown into [teardownLink].
-    private val linkCallbacks = object : LinkCallbacks {
-        override fun onInbound(frame: InboundFrame) { _inbound.tryEmit(frame) }
-        override fun onDigest(digest: ReceivedDigest) { _incomingDigests.tryEmit(digest) }
-        override fun onFile(file: ReceivedFile) { _incomingFiles.tryEmit(file) }
-        override fun onLinkDown(nodeId: String) {
-            teardownLink(nodeId, "eof")
-            // A flapping link escalates on the same per-peer streak as a failed connect, so a peer that keeps
-            // dropping isn't reconnected on a tight loop (which would black out scanning each attempt).
-            val (streak, nextAt) = synchronized(lock) { bumpBackoffLocked(nodeId) }
-            wake() // link count changed → connectLoop retries and scanLoop re-evaluates demand
-            Log.i(TAG, "bt link down $nodeId (eof) streak=$streak retryMs=${nextAt - elapsed()}")
+    private val linkCallbacks =
+        object : LinkCallbacks {
+            override fun onInbound(frame: InboundFrame) {
+                _inbound.tryEmit(frame)
+            }
+
+            override fun onDigest(digest: ReceivedDigest) {
+                _incomingDigests.tryEmit(digest)
+            }
+
+            override fun onFile(file: ReceivedFile) {
+                _incomingFiles.tryEmit(file)
+            }
+
+            override fun onLinkDown(nodeId: String) {
+                teardownLink(nodeId, "eof")
+                // A flapping link escalates on the same per-peer streak as a failed connect, so a peer that keeps
+                // dropping isn't reconnected on a tight loop (which would black out scanning each attempt).
+                val (streak, nextAt) = synchronized(lock) { bumpBackoffLocked(nodeId) }
+                wake() // link count changed → connectLoop retries and scanLoop re-evaluates demand
+                Log.i(TAG, "bt link down $nodeId (eof) streak=$streak retryMs=${nextAt - elapsed()}")
+            }
         }
-    }
 
     override fun start() {
         if (!hasHardware) {
@@ -204,14 +217,22 @@ class BluetoothMeshTransport(
     }
 
     override fun stop() {
-        scanJob?.cancel(); connectJob?.cancel(); cueJob?.cancel(); powerJob?.cancel(); diagJob?.cancel(); audioJob?.cancel()
+        scanJob?.cancel()
+        connectJob?.cancel()
+        cueJob?.cancel()
+        powerJob?.cancel()
+        diagJob?.cancel()
+        audioJob?.cancel()
         unregisterAvailability()
         audioMonitor.stop()
         tearDownRadio()
         links.keys.toList().forEach { teardownLink(it, "stop") }
         presence.clear()
         deviceFor.clear()
-        synchronized(lock) { inFlight.clear(); backoffs.clear() }
+        synchronized(lock) {
+            inFlight.clear()
+            backoffs.clear()
+        }
         _neighbors.value = emptySet()
         _reachable.value = emptySet()
     }
@@ -231,17 +252,27 @@ class BluetoothMeshTransport(
         if (rising) wakeScan() // a new foreign peer appeared → re-evaluate demand now (don't wait out the floor)
     }
 
-    override suspend fun send(wire: WireEnvelope, to: Peer?) {
+    override suspend fun send(
+        wire: WireEnvelope,
+        to: Peer?,
+    ) {
         val bytes = WireCodec.encodeWire(wire)
         val targets = if (to == null) links.values.toList() else listOfNotNull(links[to.nodeId])
         targets.forEach { it.send(bytes) } // FramedLink.send accounts the bytes
     }
 
-    override suspend fun sendFile(file: java.io.File, to: Peer, meta: FileMeta) {
+    override suspend fun sendFile(
+        file: java.io.File,
+        to: Peer,
+        meta: FileMeta,
+    ) {
         links[to.nodeId]?.sendFile(file, meta)
     }
 
-    override suspend fun sendDigest(to: Peer, ids: List<String>) {
+    override suspend fun sendDigest(
+        to: Peer,
+        ids: List<String>,
+    ) {
         links[to.nodeId]?.sendDigest(ids)
     }
 
@@ -256,10 +287,11 @@ class BluetoothMeshTransport(
     private fun openServer() {
         val a = adapter ?: return
         closeServer()
-        val ss = runCatching { a.listenUsingInsecureL2capChannel() }.getOrElse {
-            Log.w(TAG, "L2CAP listen failed", it)
-            return
-        }
+        val ss =
+            runCatching { a.listenUsingInsecureL2capChannel() }.getOrElse {
+                Log.w(TAG, "L2CAP listen failed", it)
+                return
+            }
         serverSocket = ss
         currentPsm = ss.psm
         acceptJob = scope.launch(Dispatchers.IO) { acceptLoop(ss) }
@@ -305,11 +337,12 @@ class BluetoothMeshTransport(
             scanner.start(if (power.interactive || power.charging) ScanSettings.SCAN_MODE_BALANCED else ScanSettings.SCAN_MODE_LOW_POWER)
             delay(duty.scanWindowMs)
             scanner.stop()
-            val idle = if (floorScan()) {
-                PowerPolicy.settledIdleAfterScan(power, links.size, lonelyForMs())
-            } else {
-                PowerPolicy.idleAfterScan(power, links.size, lonelyForMs())
-            }
+            val idle =
+                if (floorScan()) {
+                    PowerPolicy.settledIdleAfterScan(power, links.size, lonelyForMs())
+                } else {
+                    PowerPolicy.idleAfterScan(power, links.size, lonelyForMs())
+                }
             withTimeoutOrNull(idle) { scanWake.receive() }
         }
     }
@@ -324,26 +357,32 @@ class BluetoothMeshTransport(
         val now = elapsed()
         val sighted = presence.snapshots(now)
         val backoff = activeBackoff(now)
-        val candidates = sighted.filter {
-            localNodeId > it.nodeId && it.nodeId !in links.keys &&
-                it.nodeId !in backoff && it.smoothedRssi >= PROMOTE_RSSI_FLOOR
-        }.mapTo(HashSet()) { it.nodeId }
-        val demand = ScanDemandPolicy.decide(
-            linkCount = links.size,
-            promotableCandidates = candidates,
-            chase = chase,
-            bleSighted = sighted.mapTo(HashSet()) { it.nodeId },
-            bleLinked = links.keys.toSet(),
-            now = now,
-        )
+        val candidates =
+            sighted
+                .filter {
+                    localNodeId > it.nodeId && it.nodeId !in links.keys &&
+                        it.nodeId !in backoff && it.smoothedRssi >= PROMOTE_RSSI_FLOOR
+                }.mapTo(HashSet()) { it.nodeId }
+        val demand =
+            ScanDemandPolicy.decide(
+                linkCount = links.size,
+                promotableCandidates = candidates,
+                chase = chase,
+                bleSighted = sighted.mapTo(HashSet()) { it.nodeId },
+                bleLinked = links.keys.toSet(),
+                now = now,
+            )
         val floor = audioMonitor.contended.value || demand == ScanDemandPolicy.Demand.Floor
         if (scanFloored != floor) {
             scanFloored = floor
             val reason = if (audioMonitor.contended.value) "a2dp" else "settled"
             Log.i(
                 TAG,
-                if (floor) "bt scan → floor ($reason, links=${links.size})"
-                else "bt scan → boost (candidates=$candidates chase=${chase.deadlines.keys})",
+                if (floor) {
+                    "bt scan → floor ($reason, links=${links.size})"
+                } else {
+                    "bt scan → boost (candidates=$candidates chase=${chase.deadlines.keys})"
+                },
             )
         }
         return floor
@@ -396,23 +435,25 @@ class BluetoothMeshTransport(
         val rssiByNode = snaps.associate { it.nodeId to it.smoothedRssi }
         // Candidates: peers we're the initiator for (tie-break: larger id initiates), not linked, not in flight.
         val candidates = snaps.filter { localNodeId > it.nodeId && it.nodeId !in links.keys && it.nodeId !in inFlightSnapshot() }
-        val linkSnaps = links.values.map { fl ->
-            PromotionPolicy.LinkSnapshot(
-                nodeId = fl.nodeId,
-                smoothedRssi = rssiByNode[fl.nodeId] ?: ABSENT_LINK_RSSI,
-                ageMs = now - fl.linkStartedAt,
-                idleMs = now - fl.lastActivityAt,
-            )
-        }
-        val presentIds = snaps.mapTo(HashSet()) { it.nodeId }
-        val backoff = synchronized(lock) {
-            // Drop backoff state for a peer that has left and whose window has passed, so a returning peer
-            // starts fresh instead of inheriting a maxed-out streak.
-            backoffs.entries.removeAll { (id, b) ->
-                now >= b.nextAt && id !in presentIds && id !in links.keys && id !in inFlight
+        val linkSnaps =
+            links.values.map { fl ->
+                PromotionPolicy.LinkSnapshot(
+                    nodeId = fl.nodeId,
+                    smoothedRssi = rssiByNode[fl.nodeId] ?: ABSENT_LINK_RSSI,
+                    ageMs = now - fl.linkStartedAt,
+                    idleMs = now - fl.lastActivityAt,
+                )
             }
-            backoffs.filterValues { now < it.nextAt }.keys.toSet()
-        }
+        val presentIds = snaps.mapTo(HashSet()) { it.nodeId }
+        val backoff =
+            synchronized(lock) {
+                // Drop backoff state for a peer that has left and whose window has passed, so a returning peer
+                // starts fresh instead of inheriting a maxed-out streak.
+                backoffs.entries.removeAll { (id, b) ->
+                    now >= b.nextAt && id !in presentIds && id !in links.keys && id !in inFlight
+                }
+                backoffs.filterValues { now < it.nextAt }.keys.toSet()
+            }
         val decision = PromotionPolicy.decide(candidates, linkSnaps, backoff)
         if (decision.promote.isNotEmpty() || decision.evict.isNotEmpty()) {
             Log.i(TAG, "promote=${decision.promote} evict=${decision.evict} backoff=$backoff a2dp=${audioMonitor.state.value}")
@@ -426,17 +467,28 @@ class BluetoothMeshTransport(
         val psm = presence.psmFor(nodeId) ?: return
         val advert = presenceAdvert(nodeId) ?: return
         if (!beginConnect(nodeId)) return
-        val rssi = presence.snapshots(elapsed()).firstOrNull { it.nodeId == nodeId }?.smoothedRssi?.toInt()
+        val rssi =
+            presence
+                .snapshots(elapsed())
+                .firstOrNull { it.nodeId == nodeId }
+                ?.smoothedRssi
+                ?.toInt()
         Log.i(TAG, "bt initiating to $nodeId (psm $psm rssi=$rssi a2dp=${audioMonitor.state.value} links=${links.size})")
         scope.launch(Dispatchers.IO) {
             val startedAt = elapsed()
-            val socket = runCatching { device.createInsecureL2capChannel(psm) }
-                .getOrElse { t -> return@launch failConnect(nodeId, classify(t, timedOut = false), startedAt, t) }
+            val socket =
+                runCatching { device.createInsecureL2capChannel(psm) }
+                    .getOrElse { t -> return@launch failConnect(nodeId, classify(t, timedOut = false), startedAt, t) }
             // Time-box the blocking connect() by closing the socket if it stalls, so a wedged handshake can't
             // pin this peer in inFlight and stall scanning (the "always time-box a connect" discipline). The
             // flag separates a watchdog-forced close (TIMEOUT) from an immediate stack throw.
             val timedOut = AtomicBoolean(false)
-            val watchdog = scope.launch { delay(CONNECT_TIMEOUT_MS); timedOut.set(true); runCatching { socket.close() } }
+            val watchdog =
+                scope.launch {
+                    delay(CONNECT_TIMEOUT_MS)
+                    timedOut.set(true)
+                    runCatching { socket.close() }
+                }
             val connectErr = runCatching { socket.connect() }.exceptionOrNull()
             watchdog.cancel()
             if (connectErr != null) {
@@ -466,7 +518,11 @@ class BluetoothMeshTransport(
     private suspend fun superviseAccepted(socket: BluetoothSocket) {
         val link = BluetoothSocketLink(socket)
         // BluetoothSocket has no soTimeout, so bound the HELLO read by closing the socket if it stalls.
-        val watchdog = scope.launch { delay(ACCEPT_HELLO_TIMEOUT_MS); runCatching { socket.close() } }
+        val watchdog =
+            scope.launch {
+                delay(ACCEPT_HELLO_TIMEOUT_MS)
+                runCatching { socket.close() }
+            }
         val advert = runCatching { LinkHandshake.readHello(link.input) }.getOrNull()
         watchdog.cancel()
         val clientNodeId = advert?.nodeId
@@ -483,22 +539,30 @@ class BluetoothMeshTransport(
         registerLink(clientNodeId, advert, link)
     }
 
-    private fun registerLink(nodeId: String, advert: Protocol.PeerWire, link: app.getknit.knit.mesh.link.LinkSocket) {
-        val framed = FramedLink(
-            nodeId = nodeId,
-            peer = Peer(nodeId, advert.protoVersion, advert.capabilities),
-            socket = link,
-            scope = scope,
-            cacheDir = appContext.cacheDir,
-            metrics = metrics,
-            callbacks = linkCallbacks,
-            now = SystemClock::elapsedRealtime,
-            log = { msg -> Log.d(TAG, msg) },
-        )
+    private fun registerLink(
+        nodeId: String,
+        advert: Protocol.PeerWire,
+        link: app.getknit.knit.mesh.link.LinkSocket,
+    ) {
+        val framed =
+            FramedLink(
+                nodeId = nodeId,
+                peer = Peer(nodeId, advert.protoVersion, advert.capabilities),
+                socket = link,
+                scope = scope,
+                cacheDir = appContext.cacheDir,
+                metrics = metrics,
+                callbacks = linkCallbacks,
+                now = SystemClock::elapsedRealtime,
+                log = { msg -> Log.d(TAG, msg) },
+            )
         val prev = links.put(nodeId, framed)
         prev?.close() // a stale link to the same peer — never leak it
         lastLinkOrStartAt = elapsed()
-        synchronized(lock) { inFlight.remove(nodeId); backoffs.remove(nodeId) } // success resets the peer's streak
+        synchronized(lock) {
+            inFlight.remove(nodeId)
+            backoffs.remove(nodeId)
+        } // success resets the peer's streak
         metrics.onBtLinkEstablished()
         framed.start()
         refreshNeighbors()
@@ -507,7 +571,10 @@ class BluetoothMeshTransport(
         Log.i(TAG, "bt link up: $nodeId (${links.size} live)")
     }
 
-    private fun teardownLink(nodeId: String, reason: String) {
+    private fun teardownLink(
+        nodeId: String,
+        reason: String,
+    ) {
         val fl = links.remove(nodeId) ?: return
         fl.close()
         refreshNeighbors()
@@ -516,20 +583,30 @@ class BluetoothMeshTransport(
     }
 
     /** Per-peer connect backoff: consecutive-failure streak + the elapsed-time deadline before the next attempt. */
-    private class ConnectBackoffEntry(var streak: Int = 0, var nextAt: Long = 0L)
+    private class ConnectBackoffEntry(
+        var streak: Int = 0,
+        var nextAt: Long = 0L,
+    )
 
-    private fun beginConnect(nodeId: String): Boolean = synchronized(lock) {
-        if (nodeId in links.keys || nodeId in inFlight) return false
-        backoffs[nodeId]?.let { if (elapsed() < it.nextAt) return false }
-        inFlight.add(nodeId)
-        true
-    }
-
-    private fun failConnect(nodeId: String, reason: ConnectFailReason, startedAt: Long, cause: Throwable) {
-        val (streak, nextAt) = synchronized(lock) {
-            inFlight.remove(nodeId)
-            bumpBackoffLocked(nodeId)
+    private fun beginConnect(nodeId: String): Boolean =
+        synchronized(lock) {
+            if (nodeId in links.keys || nodeId in inFlight) return false
+            backoffs[nodeId]?.let { if (elapsed() < it.nextAt) return false }
+            inFlight.add(nodeId)
+            true
         }
+
+    private fun failConnect(
+        nodeId: String,
+        reason: ConnectFailReason,
+        startedAt: Long,
+        cause: Throwable,
+    ) {
+        val (streak, nextAt) =
+            synchronized(lock) {
+                inFlight.remove(nodeId)
+                bumpBackoffLocked(nodeId)
+            }
         metrics.onBtConnectFailed(reason)
         wake()
         // Log the real exception (previously swallowed) + A2DP state, so the intermittent failure is diagnosable.
@@ -550,7 +627,10 @@ class BluetoothMeshTransport(
     }
 
     /** Best-effort bucket for the (otherwise-discarded) connect exception; the raw [cause] is logged regardless. */
-    private fun classify(cause: Throwable?, timedOut: Boolean): ConnectFailReason {
+    private fun classify(
+        cause: Throwable?,
+        timedOut: Boolean,
+    ): ConnectFailReason {
         if (timedOut) return ConnectFailReason.TIMEOUT
         val msg = (cause?.message ?: "").lowercase()
         return when {
@@ -567,34 +647,42 @@ class BluetoothMeshTransport(
 
     // --- Availability (adapter on/off) ---
 
-    private val availabilityReceiver = object : BroadcastReceiver() {
-        // onReceive runs on the main thread; the health flip is cheap so it's set inline for an instant UI
-        // update, but bring-up/teardown do blocking radio I/O (opening/closing the L2CAP server socket), so
-        // they run on [scope] — off the main thread — mirroring WifiAwareTransport's handler-thread funnel.
-        override fun onReceive(context: Context, intent: Intent) {
-            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
-                BluetoothAdapter.STATE_ON -> {
-                    Log.i(TAG, "bluetooth adapter on")
-                    scope.launch {
-                        bringUp()
-                        wake()
+    private val availabilityReceiver =
+        object : BroadcastReceiver() {
+            // onReceive runs on the main thread; the health flip is cheap so it's set inline for an instant UI
+            // update, but bring-up/teardown do blocking radio I/O (opening/closing the L2CAP server socket), so
+            // they run on [scope] — off the main thread — mirroring WifiAwareTransport's handler-thread funnel.
+            override fun onReceive(
+                context: Context,
+                intent: Intent,
+            ) {
+                when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                    BluetoothAdapter.STATE_ON -> {
+                        Log.i(TAG, "bluetooth adapter on")
+                        scope.launch {
+                            bringUp()
+                            wake()
+                        }
                     }
-                }
-                BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
-                    Log.i(TAG, "bluetooth adapter off")
-                    _health.value = TransportHealth.Unavailable // Bluetooth switched off (or airplane mode)
-                    scope.launch {
-                        links.keys.toList().forEach { teardownLink(it, "adapter off") }
-                        tearDownRadio()
-                        presence.clear()
-                        deviceFor.clear()
-                        synchronized(lock) { inFlight.clear(); backoffs.clear() }
-                        _reachable.value = emptySet()
+
+                    BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
+                        Log.i(TAG, "bluetooth adapter off")
+                        _health.value = TransportHealth.Unavailable // Bluetooth switched off (or airplane mode)
+                        scope.launch {
+                            links.keys.toList().forEach { teardownLink(it, "adapter off") }
+                            tearDownRadio()
+                            presence.clear()
+                            deviceFor.clear()
+                            synchronized(lock) {
+                                inFlight.clear()
+                                backoffs.clear()
+                            }
+                            _reachable.value = emptySet()
+                        }
                     }
                 }
             }
         }
-    }
 
     private fun registerAvailability() {
         if (availabilityRegistered) return
@@ -617,14 +705,18 @@ class BluetoothMeshTransport(
     private fun inFlightSnapshot(): Set<String> = synchronized(lock) { inFlight.toSet() }
 
     /** Read-only view of peers currently in connect backoff (no [driveConnections] prune side effect). */
-    private fun activeBackoff(now: Long): Set<String> =
-        synchronized(lock) { backoffs.filterValues { now < it.nextAt }.keys.toSet() }
+    private fun activeBackoff(now: Long): Set<String> = synchronized(lock) { backoffs.filterValues { now < it.nextAt }.keys.toSet() }
 
     /** Wake both loops — a demand-relevant event (link up/down, connect fail, power change, adapter on, heal). */
-    private fun wake() { healSignal.trySend(Unit); scanWake.trySend(Unit) }
+    private fun wake() {
+        healSignal.trySend(Unit)
+        scanWake.trySend(Unit)
+    }
 
     /** Wake only the scan loop — a scan-cadence event (a boost trigger sighted, a foreign peer, an audio change). */
-    private fun wakeScan() { scanWake.trySend(Unit) }
+    private fun wakeScan() {
+        scanWake.trySend(Unit)
+    }
 
     /**
      * Publish [reachable] as presence ∪ live links, so a peer we hold a link to stays "nearby" even when the
@@ -642,7 +734,9 @@ class BluetoothMeshTransport(
 
     /** The peer's advert (protoVersion/capabilities) from the latest presence snapshot, for a link we initiate. */
     private fun presenceAdvert(nodeId: String): Protocol.PeerWire? =
-        presence.snapshots(elapsed()).firstOrNull { it.nodeId == nodeId }
+        presence
+            .snapshots(elapsed())
+            .firstOrNull { it.nodeId == nodeId }
             ?.let { Protocol.PeerWire(it.nodeId, it.protoVersion, it.capabilities) }
 
     // --- Diagnostics ---
@@ -658,11 +752,12 @@ class BluetoothMeshTransport(
     /** Periodic one-line state dump (mirrors WifiAwareTransport's), so a device session is greppable end-to-end. */
     private fun logState() {
         val now = elapsed()
-        val backoffStr = synchronized(lock) {
-            backoffs.entries.joinToString(",") { (id, b) ->
-                "$id:${((b.nextAt - now) / MS_PER_S).coerceAtLeast(0)}s/${b.streak}"
+        val backoffStr =
+            synchronized(lock) {
+                backoffs.entries.joinToString(",") { (id, b) ->
+                    "$id:${((b.nextAt - now) / MS_PER_S).coerceAtLeast(0)}s/${b.streak}"
+                }
             }
-        }
         Log.i(
             TAG,
             "bt state links=${links.keys} reach=${_reachable.value.map { it.nodeId }} " +

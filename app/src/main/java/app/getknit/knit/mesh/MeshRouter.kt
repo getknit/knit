@@ -34,7 +34,6 @@ class MeshRouter(
     private val jitter: () -> Long = { Random.nextLong(jitterWindowMs) },
     private val onDeliver: suspend (wire: WireEnvelope, envelope: RelayEnvelope, fromNodeId: String) -> Unit,
 ) {
-
     /**
      * A relay scheduled but not yet fired. [relayed] is the hop-incremented wrapper (its signed blob +
      * signature are forwarded verbatim); [heardFrom] is every neighbor we've heard this frame id from
@@ -64,7 +63,11 @@ class MeshRouter(
     }
 
     /** Processes one inbound frame: deliver+schedule if new, else count it toward overhear suppression. */
-    suspend fun handleInbound(wire: WireEnvelope, envelope: RelayEnvelope, fromNodeId: String) {
+    suspend fun handleInbound(
+        wire: WireEnvelope,
+        envelope: RelayEnvelope,
+        fromNodeId: String,
+    ) {
         if (!seen.add(envelope.id)) {
             // Duplicate: never re-deliver or start a second relay, but it IS evidence the frame is
             // already propagating — count it against any relay we still have pending.
@@ -78,13 +81,20 @@ class MeshRouter(
     }
 
     /** Sends a locally-originated frame ([id] = its dedup key) to the whole mesh, immediately. */
-    suspend fun originate(wire: WireEnvelope, id: String) = sendOwn(wire, id, to = null)
+    suspend fun originate(
+        wire: WireEnvelope,
+        id: String,
+    ) = sendOwn(wire, id, to = null)
 
     /**
      * Sends a locally-originated frame to [to] (or the whole mesh when null), marking [id] seen so an
      * echo arriving back from the mesh isn't re-delivered or re-relayed.
      */
-    suspend fun sendOwn(wire: WireEnvelope, id: String, to: Peer? = null) {
+    suspend fun sendOwn(
+        wire: WireEnvelope,
+        id: String,
+        to: Peer? = null,
+    ) {
         seen.add(id)
         metrics.onOriginated()
         transport.send(wire, to)
@@ -92,11 +102,12 @@ class MeshRouter(
 
     /** Cancels all pending relays and clears bookkeeping. Call from [MeshManager.stop]. */
     suspend fun stop() {
-        val jobs = pendingLock.withLock {
-            val snapshot = pending.values.mapNotNull { it.job }
-            pending.clear()
-            snapshot
-        }
+        val jobs =
+            pendingLock.withLock {
+                val snapshot = pending.values.mapNotNull { it.job }
+                pending.clear()
+                snapshot
+            }
         jobs.forEach { it.cancel() }
     }
 
@@ -105,47 +116,57 @@ class MeshRouter(
      * TTL-exhausted frames are dropped synchronously, exactly as before (so blob requests and dead
      * frames behave identically to immediate flooding).
      */
-    private suspend fun scheduleRelay(wire: WireEnvelope, id: String, fromNodeId: String) {
+    private suspend fun scheduleRelay(
+        wire: WireEnvelope,
+        id: String,
+        fromNodeId: String,
+    ) {
         if (!wire.relay) return // point-to-point control frames propagate hop-by-hop, not flooded
         // [ttl] is attacker-controlled; cap it to the local default so a forged oversized value can't
         // keep a frame alive past the dedup window and flood the mesh. Every relayer caps independently,
         // so the hop count alone bounds propagation regardless of what ttl a peer claims.
         val effectiveTtl = minOf(wire.ttl, DEFAULT_TTL)
         if (wire.hops >= effectiveTtl) return
-        val entry = PendingRelay(
-            relayed = wire.relayed(), // only ttl/hops mutate; signed + sig pass through verbatim
-            heardFrom = mutableSetOf(fromNodeId),
-            count = 1,
-        )
+        val entry =
+            PendingRelay(
+                relayed = wire.relayed(), // only ttl/hops mutate; signed + sig pass through verbatim
+                heardFrom = mutableSetOf(fromNodeId),
+                count = 1,
+            )
         pendingLock.withLock { pending[id] = entry }
-        entry.job = scope.launch {
-            delay(jitter())
-            // Re-check under lock: an overhear may have removed us during the delay.
-            val live = pendingLock.withLock { pending.remove(id) } ?: return@launch
-            val excluded = live.heardFrom.toSet()
-            transport.neighbors.value
-                .filter { it.nodeId !in excluded }
-                .forEach { neighbor -> transport.send(live.relayed, neighbor) }
-            metrics.onRelayed()
-        }
+        entry.job =
+            scope.launch {
+                delay(jitter())
+                // Re-check under lock: an overhear may have removed us during the delay.
+                val live = pendingLock.withLock { pending.remove(id) } ?: return@launch
+                val excluded = live.heardFrom.toSet()
+                transport.neighbors.value
+                    .filter { it.nodeId !in excluded }
+                    .forEach { neighbor -> transport.send(live.relayed, neighbor) }
+                metrics.onRelayed()
+            }
     }
 
     /**
      * A duplicate of [frameId] arrived from [fromNodeId]. Record the source (so we never relay back to
      * it) and bump the overhear count; once it reaches [suppressThreshold], cancel the pending relay.
      */
-    private suspend fun countOverheard(frameId: String, fromNodeId: String) {
-        val jobToCancel = pendingLock.withLock {
-            val entry = pending[frameId] ?: return // already fired, or never relayable
-            entry.heardFrom += fromNodeId
-            entry.count += 1
-            if (entry.count >= suppressThreshold) {
-                pending.remove(frameId)
-                entry.job
-            } else {
-                null
+    private suspend fun countOverheard(
+        frameId: String,
+        fromNodeId: String,
+    ) {
+        val jobToCancel =
+            pendingLock.withLock {
+                val entry = pending[frameId] ?: return // already fired, or never relayable
+                entry.heardFrom += fromNodeId
+                entry.count += 1
+                if (entry.count >= suppressThreshold) {
+                    pending.remove(frameId)
+                    entry.job
+                } else {
+                    null
+                }
             }
-        }
         if (jobToCancel != null) {
             jobToCancel.cancel() // cancel OUTSIDE the lock to avoid blocking other inbound frames
             metrics.onSuppressed()

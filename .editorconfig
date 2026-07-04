@@ -1,0 +1,8 @@
+root = true
+
+[*.{kt,kts}]
+ktlint_code_style = ktlint_official
+# Jetpack Compose @Composable functions are PascalCase by convention (they model UI elements, not
+# actions), which the standard function-naming rule would otherwise reject. This is the ktlint-endorsed
+# opt-out — matched by the annotation's simple name — and mirrors detekt's FunctionNaming exemption.
+ktlint_function_naming_ignore_when_annotated_with = Composable

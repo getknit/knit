@@ -6,7 +6,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GroupMembersStoreTest {
-
     @Test
     fun roundTripsMemberList() {
         val members = listOf("alice000", "bob00000", "carol000")

@@ -11,7 +11,10 @@ import kotlinx.coroutines.flow.getAndUpdate
  * `Uri.parse` preserves the temporary read grant (the grant is keyed to the (uid, uri) pair, not a
  * particular `Uri` instance), and keeping it a plain string makes [ShareInbox] JVM-unit-testable.
  */
-data class SharedContent(val text: String?, val imageUri: String?)
+data class SharedContent(
+    val text: String?,
+    val imageUri: String?,
+)
 
 /**
  * A process-scoped, single-shot handoff for a payload arriving via the system share sheet. The

@@ -1,13 +1,12 @@
 package app.getknit.knit
 
 import app.getknit.knit.ui.util.compactTimeAgo
-import java.time.ZoneId
-import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.time.ZoneId
+import java.util.Locale
 
 class RelativeTimeTest {
-
     // Fixed reference point so the relative output is deterministic: 2023-11-14T22:13:20Z (a Tuesday).
     private val now = 1_700_000_000_000L
     private val utc = ZoneId.of("UTC")

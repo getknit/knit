@@ -37,8 +37,9 @@ import java.security.MessageDigest
  * suppressed for the whole class.
  */
 @Suppress("MagicNumber")
-class DemoSeeder(private val koin: Koin) {
-
+class DemoSeeder(
+    private val koin: Koin,
+) {
     private val peers = koin.get<PeerRepository>()
     private val messages = koin.get<MessageRepository>()
     private val reactions = koin.get<ReactionRepository>()
@@ -125,7 +126,12 @@ class DemoSeeder(private val koin: Koin) {
      * recipient is set per direction; for the room/group it's null. [received] doubles as the delivery
      * tick and is only meaningful for our own outbound messages, so it tracks "is this mine".
      */
-    private suspend fun save(m: DemoMsg, conversationId: String, dmPeer: String?, now: Long) {
+    private suspend fun save(
+        m: DemoMsg,
+        conversationId: String,
+        dmPeer: String?,
+        now: Long,
+    ) {
         val fromMe = m.from == Slot.ME
         messages.save(
             MessageEntity(
@@ -136,9 +142,10 @@ class DemoSeeder(private val koin: Koin) {
                 body = m.body,
                 sentAt = now - m.minsAgo * 60_000L,
                 received = fromMe,
-                mentions = MentionStore.encode(
-                    if (m.mentionsMe) listOf(Mention(me, scenario.meName)) else emptyList(),
-                ),
+                mentions =
+                    MentionStore.encode(
+                        if (m.mentionsMe) listOf(Mention(me, scenario.meName)) else emptyList(),
+                    ),
             ),
         )
         m.reactions.forEach { r ->
@@ -147,15 +154,16 @@ class DemoSeeder(private val koin: Koin) {
     }
 
     /** Resolves a [Slot] to its node id ([Slot.ME] is this device's runtime id). */
-    private fun nodeId(slot: Slot): String = when (slot) {
-        Slot.ME -> me
-        Slot.SAM -> SAM
-        Slot.DANI -> DANI
-        Slot.THEO -> THEO
-        Slot.PRIYA -> PRIYA
-        Slot.JONAS -> JONAS
-        Slot.LENA -> LENA
-    }
+    private fun nodeId(slot: Slot): String =
+        when (slot) {
+            Slot.ME -> me
+            Slot.SAM -> SAM
+            Slot.DANI -> DANI
+            Slot.THEO -> THEO
+            Slot.PRIYA -> PRIYA
+            Slot.JONAS -> JONAS
+            Slot.LENA -> LENA
+        }
 
     /**
      * Loads the bundled demo avatar for [key] (a node id, or "me") from the active theme's asset folder,
@@ -163,14 +171,15 @@ class DemoSeeder(private val koin: Koin) {
      * asset is missing, so the avatar falls back to a letter circle. Assets live in the debug-only source
      * set, so they never ship.
      */
-    private suspend fun avatar(key: String): String? = runCatching {
-        val bytes = context.assets.open("demo/avatars/${scenario.theme}/$key.jpg").use { it.readBytes() }
-        // Content-address the blob (like the real avatar pipeline) so swapping the image swaps the hash
-        // too — a fixed key would collide with the prior run's blob (insert is conflict-IGNORE).
-        val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-        blobs.insert(hash, "image/jpeg", bytes)
-        hash
-    }.getOrNull()
+    private suspend fun avatar(key: String): String? =
+        runCatching {
+            val bytes = context.assets.open("demo/avatars/${scenario.theme}/$key.jpg").use { it.readBytes() }
+            // Content-address the blob (like the real avatar pipeline) so swapping the image swaps the hash
+            // too — a fixed key would collide with the prior run's blob (insert is conflict-IGNORE).
+            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            blobs.insert(hash, "image/jpeg", bytes)
+            hash
+        }.getOrNull()
 
     companion object {
         // Stable demo node ids ([a-z0-9], length 8 — see NodeId). Names/avatars/messages vary by theme,

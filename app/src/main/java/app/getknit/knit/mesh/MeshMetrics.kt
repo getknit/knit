@@ -93,50 +93,80 @@ class MeshMetrics {
     private val btLinksEstablished = AtomicLong()
 
     /** A frame this device authored and injected into the mesh. */
-    fun onOriginated() { framesOriginated.incrementAndGet() }
+    fun onOriginated() {
+        framesOriginated.incrementAndGet()
+    }
 
     /** A newly-seen frame delivered to the app layer. */
-    fun onDelivered() { framesDelivered.incrementAndGet() }
+    fun onDelivered() {
+        framesDelivered.incrementAndGet()
+    }
 
     /** A pending relay that fired (we forwarded the frame onward). */
-    fun onRelayed() { framesRelayed.incrementAndGet() }
+    fun onRelayed() {
+        framesRelayed.incrementAndGet()
+    }
 
     /** A pending relay we cancelled because a neighbor was overheard relaying the same frame. */
-    fun onSuppressed() { framesSuppressed.incrementAndGet() }
+    fun onSuppressed() {
+        framesSuppressed.incrementAndGet()
+    }
 
     /** A duplicate of an already-seen frame, dropped without re-delivery. */
-    fun onDeduped() { framesDeduped.incrementAndGet() }
+    fun onDeduped() {
+        framesDeduped.incrementAndGet()
+    }
 
     /** [bytes] put on the wire (counted once per target endpoint a payload is sent to). */
-    fun onBytesSent(bytes: Long) { bytesSent.addAndGet(bytes) }
+    fun onBytesSent(bytes: Long) {
+        bytesSent.addAndGet(bytes)
+    }
 
     /** An inbound frame we wanted was dropped for [reason] (not a policy drop — see [DropReason]). */
-    fun onDropped(reason: DropReason) { drops.getValue(reason).incrementAndGet() }
+    fun onDropped(reason: DropReason) {
+        drops.getValue(reason).incrementAndGet()
+    }
 
     /** A key-request frame we sent to recover a peer's missing profile/key (see [KeyExchange]). */
-    fun onKeyRequested() { keyRequestsSent.incrementAndGet() }
+    fun onKeyRequested() {
+        keyRequestsSent.incrementAndGet()
+    }
 
     /** A cached peer profile we re-served in answer to another node's key request. */
-    fun onKeyServed() { keysServed.incrementAndGet() }
+    fun onKeyServed() {
+        keysServed.incrementAndGet()
+    }
 
     /** A previously-missing peer key we recovered (a frame that was dropping NO_SENDER_KEY can now verify). */
-    fun onKeyRecovered() { keysRecovered.incrementAndGet() }
+    fun onKeyRecovered() {
+        keysRecovered.incrementAndGet()
+    }
 
     /** A frame dropped for a missing sender key that we parked to replay once the key arrives (see [PendingInbound]). */
-    fun onFrameHeld() { framesHeld.incrementAndGet() }
+    fun onFrameHeld() {
+        framesHeld.incrementAndGet()
+    }
 
     /** A parked frame we replayed through the deliver path after its sender's key was pinned. */
-    fun onFrameReplayed() { framesReplayed.incrementAndGet() }
+    fun onFrameReplayed() {
+        framesReplayed.incrementAndGet()
+    }
 
     /** A broadcast/group delivery receipt we re-sent to its author because the first best-effort tick may not
      *  have landed (delay-tolerant recovery, see [AckSync]) — a rising count means ticks are being recovered. */
-    fun onReceiptResent() { receiptsResent.incrementAndGet() }
+    fun onReceiptResent() {
+        receiptsResent.incrementAndGet()
+    }
 
     /** A Bluetooth L2CAP connect attempt to a peer failed for [reason] (see [ConnectFailReason]). */
-    fun onBtConnectFailed(reason: ConnectFailReason) { connectFails.getValue(reason).incrementAndGet() }
+    fun onBtConnectFailed(reason: ConnectFailReason) {
+        connectFails.getValue(reason).incrementAndGet()
+    }
 
     /** A Bluetooth L2CAP link came up — context for the connect-failure counts (success vs failure rate). */
-    fun onBtLinkEstablished() { btLinksEstablished.incrementAndGet() }
+    fun onBtLinkEstablished() {
+        btLinksEstablished.incrementAndGet()
+    }
 
     fun snapshot(): Snapshot {
         val byReason = drops.mapValues { it.value.get() }

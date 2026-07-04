@@ -13,7 +13,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.content.MediaType
 import androidx.compose.foundation.content.ReceiveContentListener
 import androidx.compose.foundation.content.TransferableContent
@@ -22,6 +21,7 @@ import androidx.compose.foundation.content.contentReceiver
 import androidx.compose.foundation.content.hasMediaType
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -82,11 +82,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -111,13 +111,13 @@ import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.toClipEntry
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -142,8 +142,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.TextLimits
-import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.AttachmentStore
+import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
@@ -194,22 +194,30 @@ fun ChatScreen(
     val now by rememberCurrentTimeMillis()
 
     // Modern Android Photo Picker — needs no runtime permission. ImageOnly still includes GIFs.
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        uri?.let(viewModel::attach)
-    }
+    val picker =
+        rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+            uri?.let(viewModel::attach)
+        }
 
     // Suppress message notifications while the chat is on screen, and clear any active one. The NavHost
     // back-stack entry is this composable's LifecycleOwner, so navigating away pauses (and popping
     // disposes) the screen — both paths re-enable notifications so messages arriving elsewhere notify.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_RESUME -> viewModel.onChatForeground()
-                Lifecycle.Event.ON_PAUSE -> viewModel.onChatBackground()
-                else -> {}
+        val observer =
+            LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_RESUME -> {
+                        viewModel.onChatForeground()
+                    }
+
+                    Lifecycle.Event.ON_PAUSE -> {
+                        viewModel.onChatBackground()
+                    }
+
+                    else -> {}
+                }
             }
-        }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             viewModel.onChatBackground()
@@ -287,6 +295,7 @@ fun ChatScreen(
                                 ConnectionStatusRow(state.neighborCount, state.transportHealth)
                             }
                         }
+
                         state.isGroup -> {
                             // Group: its photo (or a people glyph when unset) + name + member count.
                             // Tapping the avatar opens the group details / settings screen.
@@ -312,11 +321,12 @@ fun ChatScreen(
                                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                     )
                                     Text(
-                                        text = pluralStringResource(
-                                            R.plurals.chat_group_member_count,
-                                            state.memberCount,
-                                            state.memberCount,
-                                        ),
+                                        text =
+                                            pluralStringResource(
+                                                R.plurals.chat_group_member_count,
+                                                state.memberCount,
+                                                state.memberCount,
+                                            ),
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -324,6 +334,7 @@ fun ChatScreen(
                                 EncryptionBadge { showEncryptionInfo = true }
                             }
                         }
+
                         else -> {
                             // 1:1 DM: peer avatar + name, Signal-style.
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -392,16 +403,22 @@ fun ChatScreen(
                                         text = {
                                             Text(
                                                 stringResource(
-                                                    if (state.isBlocked) R.string.chat_action_unblock
-                                                    else R.string.chat_action_block,
+                                                    if (state.isBlocked) {
+                                                        R.string.chat_action_unblock
+                                                    } else {
+                                                        R.string.chat_action_block
+                                                    },
                                                 ),
                                             )
                                         },
                                         leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
                                         onClick = {
                                             headerMenuOpen = false
-                                            if (state.isBlocked) viewModel.unblock(conversationId)
-                                            else viewModel.block(conversationId)
+                                            if (state.isBlocked) {
+                                                viewModel.unblock(conversationId)
+                                            } else {
+                                                viewModel.block(conversationId)
+                                            }
                                         },
                                     )
                                 }
@@ -440,7 +457,9 @@ fun ChatScreen(
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize().padding(padding),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+                contentPadding =
+                    androidx.compose.foundation.layout
+                        .PaddingValues(12.dp),
                 // Bottom-anchored so the thread opens on the newest message with no scroll; the data is
                 // reversed to match, making index 0 the newest row, drawn at the bottom. Arrangement.Bottom
                 // keeps a short thread (fewer rows than fit on screen) resting just above the input rather
@@ -538,11 +557,12 @@ private fun EncryptionBadge(onClick: () -> Unit) {
         imageVector = Icons.Filled.Lock,
         contentDescription = stringResource(R.string.chat_encrypted_desc),
         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier
-            .clip(CircleShape)
-            .clickable(onClick = onClick)
-            .padding(3.dp)
-            .size(18.dp),
+        modifier =
+            Modifier
+                .clip(CircleShape)
+                .clickable(onClick = onClick)
+                .padding(3.dp)
+                .size(18.dp),
     )
 }
 
@@ -566,11 +586,12 @@ private fun MessageBubble(
     onCopy: (text: String) -> Unit,
 ) {
     val maxBubbleWidth = (LocalConfiguration.current.screenWidthDp * 0.8f).dp
-    val bubbleShape = if (row.mine) {
-        RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 4.dp, bottomStart = 16.dp)
-    } else {
-        RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 4.dp)
-    }
+    val bubbleShape =
+        if (row.mine) {
+            RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 4.dp, bottomStart = 16.dp)
+        } else {
+            RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 4.dp)
+        }
     var showPicker by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     // A message flagged by the on-device text moderator is collapsed until the user taps to reveal it.
@@ -596,21 +617,30 @@ private fun MessageBubble(
         Column(horizontalAlignment = if (row.mine) Alignment.End else Alignment.Start) {
             Box {
                 Surface(
-                    color = if (row.mine) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = if (row.mine) MaterialTheme.colorScheme.onPrimaryContainer
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color =
+                        if (row.mine) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        },
+                    contentColor =
+                        if (row.mine) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                     shape = bubbleShape,
-                    modifier = Modifier
-                        .widthIn(max = maxBubbleWidth)
-                        .combinedClickable(
-                            // Tap only reveals a moderation-collapsed message; otherwise no tap action
-                            // (and no ripple). Long-press opens the reaction picker.
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = { if (row.moderationFlagged && !revealed) revealed = true },
-                            onLongClick = { showPicker = true },
-                        ),
+                    modifier =
+                        Modifier
+                            .widthIn(max = maxBubbleWidth)
+                            .combinedClickable(
+                                // Tap only reveals a moderation-collapsed message; otherwise no tap action
+                                // (and no ripple). Long-press opens the reaction picker.
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = { if (row.moderationFlagged && !revealed) revealed = true },
+                                onLongClick = { showPicker = true },
+                            ),
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                         if (!row.mine && showSenderName) {
@@ -645,22 +675,25 @@ private fun MessageBubble(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             } else {
-                                val mentionStyle = SpanStyle(
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                val linkStyle = SpanStyle(
-                                    color = MaterialTheme.colorScheme.primary,
-                                    textDecoration = TextDecoration.Underline,
-                                )
+                                val mentionStyle =
+                                    SpanStyle(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                val linkStyle =
+                                    SpanStyle(
+                                        color = MaterialTheme.colorScheme.primary,
+                                        textDecoration = TextDecoration.Underline,
+                                    )
                                 Text(
-                                    text = annotateMessageBody(
-                                        row.body,
-                                        row.mentions,
-                                        mentionStyle,
-                                        linkStyle,
-                                        onLinkClick = { url -> openUrl(context, url) },
-                                    ),
+                                    text =
+                                        annotateMessageBody(
+                                            row.body,
+                                            row.mentions,
+                                            mentionStyle,
+                                            linkStyle,
+                                            onLinkClick = { url -> openUrl(context, url) },
+                                        ),
                                     style = MaterialTheme.typography.bodyLarge,
                                 )
                             }
@@ -679,10 +712,14 @@ private fun MessageBubble(
                             if (row.mine) {
                                 Icon(
                                     imageVector = if (row.received) Icons.Filled.DoneAll else Icons.Filled.Done,
-                                    contentDescription = stringResource(
-                                        if (row.received) R.string.chat_status_delivered
-                                        else R.string.chat_status_sent,
-                                    ),
+                                    contentDescription =
+                                        stringResource(
+                                            if (row.received) {
+                                                R.string.chat_status_delivered
+                                            } else {
+                                                R.string.chat_status_sent
+                                            },
+                                        ),
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(14.dp),
                                 )
@@ -697,27 +734,29 @@ private fun MessageBubble(
                             showPicker = false
                         },
                         // Image-only messages have no text to copy, so omit the action.
-                        onCopy = if (row.body.isNotBlank()) {
-                            {
-                                onCopy(row.body)
-                                showPicker = false
-                            }
-                        } else {
-                            null
-                        },
+                        onCopy =
+                            if (row.body.isNotBlank()) {
+                                {
+                                    onCopy(row.body)
+                                    showPicker = false
+                                }
+                            } else {
+                                null
+                            },
                         onDelete = {
                             showPicker = false
                             showDeleteConfirm = true
                         },
                         // You can only block other people, not yourself.
-                        onBlock = if (!row.mine) {
-                            {
-                                onBlock(row.senderNodeId)
-                                showPicker = false
-                            }
-                        } else {
-                            null
-                        },
+                        onBlock =
+                            if (!row.mine) {
+                                {
+                                    onBlock(row.senderNodeId)
+                                    showPicker = false
+                                }
+                            } else {
+                                null
+                            },
                         onDismiss = { showPicker = false },
                     )
                 }
@@ -776,22 +815,23 @@ private fun ReactionPicker(
     val spacingPx = with(LocalDensity.current) { 8.dp.roundToPx() }
     // Center the bar horizontally over the bubble and place it above; drop below only if it would clip
     // the top of the window.
-    val positionProvider = remember(spacingPx) {
-        object : PopupPositionProvider {
-            override fun calculatePosition(
-                anchorBounds: IntRect,
-                windowSize: IntSize,
-                layoutDirection: LayoutDirection,
-                popupContentSize: IntSize,
-            ): IntOffset {
-                val x = anchorBounds.left + (anchorBounds.width - popupContentSize.width) / 2
-                val clampedX = x.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
-                val above = anchorBounds.top - popupContentSize.height - spacingPx
-                val y = if (above >= 0) above else anchorBounds.bottom + spacingPx
-                return IntOffset(clampedX, y)
+    val positionProvider =
+        remember(spacingPx) {
+            object : PopupPositionProvider {
+                override fun calculatePosition(
+                    anchorBounds: IntRect,
+                    windowSize: IntSize,
+                    layoutDirection: LayoutDirection,
+                    popupContentSize: IntSize,
+                ): IntOffset {
+                    val x = anchorBounds.left + (anchorBounds.width - popupContentSize.width) / 2
+                    val clampedX = x.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+                    val above = anchorBounds.top - popupContentSize.height - spacingPx
+                    val y = if (above >= 0) above else anchorBounds.bottom + spacingPx
+                    return IntOffset(clampedX, y)
+                }
             }
         }
-    }
     Popup(
         popupPositionProvider = positionProvider,
         onDismissRequest = onDismiss,
@@ -815,12 +855,13 @@ private fun ReactionPicker(
                         Text(
                             text = emoji,
                             style = MaterialTheme.typography.headlineSmall,
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .clickable(role = Role.Button, onClick = { onPick(emoji) })
-                                .minimumInteractiveComponentSize()
-                                .semantics { contentDescription = reactWith }
-                                .padding(8.dp),
+                            modifier =
+                                Modifier
+                                    .clip(CircleShape)
+                                    .clickable(role = Role.Button, onClick = { onPick(emoji) })
+                                    .minimumInteractiveComponentSize()
+                                    .semantics { contentDescription = reactWith }
+                                    .padding(8.dp),
                         )
                     }
                 }
@@ -828,10 +869,11 @@ private fun ReactionPicker(
                 HorizontalDivider()
                 if (onCopy != null) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onCopy() }
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onCopy() }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -848,10 +890,11 @@ private fun ReactionPicker(
                 }
                 if (onBlock != null) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onBlock() }
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onBlock() }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -867,10 +910,11 @@ private fun ReactionPicker(
                     }
                 }
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onDelete() }
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onDelete() }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -904,13 +948,14 @@ private val REACTION_OVERLAP = 6.dp
  * so it overlaps whatever sits above it while letting following content move up to meet it (a plain
  * `offset` would leave a dead gap below). Used to tuck reaction chips under the message bubble.
  */
-private fun Modifier.overlapTop(amount: Dp) = this.layout { measurable, constraints ->
-    val placeable = measurable.measure(constraints)
-    val dy = amount.roundToPx()
-    layout(placeable.width, (placeable.height - dy).coerceAtLeast(0)) {
-        placeable.place(0, -dy)
+private fun Modifier.overlapTop(amount: Dp) =
+    this.layout { measurable, constraints ->
+        val placeable = measurable.measure(constraints)
+        val dy = amount.roundToPx()
+        layout(placeable.width, (placeable.height - dy).coerceAtLeast(0)) {
+            placeable.place(0, -dy)
+        }
     }
-}
 
 /** Aggregated reaction chips shown below a bubble; tapping a chip toggles the local user's reaction. */
 @OptIn(ExperimentalLayoutApi::class)
@@ -932,26 +977,42 @@ private fun ReactionRow(
 }
 
 @Composable
-private fun ReactionChip(reaction: ReactionSummary, onClick: () -> Unit) {
+private fun ReactionChip(
+    reaction: ReactionSummary,
+    onClick: () -> Unit,
+) {
     val shape = RoundedCornerShape(12.dp)
-    val chipDescription = pluralStringResource(
-        R.plurals.chat_reaction_count, reaction.count, reaction.count, reaction.emoji,
-    )
+    val chipDescription =
+        pluralStringResource(
+            R.plurals.chat_reaction_count,
+            reaction.count,
+            reaction.count,
+            reaction.emoji,
+        )
     Surface(
         shape = shape,
-        color = if (reaction.mine) MaterialTheme.colorScheme.primaryContainer
-        else MaterialTheme.colorScheme.surfaceVariant,
-        contentColor = if (reaction.mine) MaterialTheme.colorScheme.onPrimaryContainer
-        else MaterialTheme.colorScheme.onSurfaceVariant,
+        color =
+            if (reaction.mine) {
+                MaterialTheme.colorScheme.primaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            },
+        contentColor =
+            if (reaction.mine) {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
         border = if (reaction.mine) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
-        modifier = Modifier
-            .clip(shape)
-            .clickable(role = Role.Button, onClick = onClick)
-            // Deliberately no minimumInteractiveComponentSize(): the 48.dp min-touch box padded each
-            // pill out with invisible margin, spreading the chips far apart. Sizing to the visible pill
-            // packs them tightly like Signal. Toggling an existing reaction is a secondary action (the
-            // long-press picker is the primary path), so the smaller target is an acceptable trade.
-            .semantics { contentDescription = chipDescription },
+        modifier =
+            Modifier
+                .clip(shape)
+                .clickable(role = Role.Button, onClick = onClick)
+                // Deliberately no minimumInteractiveComponentSize(): the 48.dp min-touch box padded each
+                // pill out with invisible margin, spreading the chips far apart. Sizing to the visible pill
+                // packs them tightly like Signal. Toggling an existing reaction is a secondary action (the
+                // long-press picker is the primary path), so the smaller target is an acceptable trade.
+                .semantics { contentDescription = chipDescription },
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
@@ -995,49 +1056,62 @@ private fun AttachmentImage(
     val hidden = flagged && !revealed
     val image = if (ready && hash != null) BlobImage(hash, mime, key) else null
     Box(
-        modifier = Modifier
-            .padding(vertical = 2.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .then(
-                // The image consumes taps itself (reveal / open fullscreen), so a long-press would never
-                // reach the bubble's combinedClickable — wire it here too so it opens the reaction picker.
-                when {
-                    hidden -> Modifier.combinedClickable(
-                        onClick = { revealed = true },
-                        onLongClick = onLongClick,
-                    )
-                    image != null -> Modifier.combinedClickable(
-                        onClickLabel = stringResource(R.string.chat_view_photo),
-                        onClick = { onImageClick(image) },
-                        onLongClick = onLongClick,
-                    )
-                    else -> Modifier
-                },
-            ),
+        modifier =
+            Modifier
+                .padding(vertical = 2.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .then(
+                    // The image consumes taps itself (reveal / open fullscreen), so a long-press would never
+                    // reach the bubble's combinedClickable — wire it here too so it opens the reaction picker.
+                    when {
+                        hidden -> {
+                            Modifier.combinedClickable(
+                                onClick = { revealed = true },
+                                onLongClick = onLongClick,
+                            )
+                        }
+
+                        image != null -> {
+                            Modifier.combinedClickable(
+                                onClickLabel = stringResource(R.string.chat_view_photo),
+                                onClick = { onImageClick(image) },
+                                onLongClick = onLongClick,
+                            )
+                        }
+
+                        else -> {
+                            Modifier
+                        }
+                    },
+                ),
         contentAlignment = Alignment.Center,
     ) {
         when {
-            hidden -> Column(
-                modifier = Modifier
-                    .size(160.dp)
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Icon(
-                    Icons.Filled.VisibilityOff,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = stringResource(R.string.moderation_image_hidden),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                )
+            hidden -> {
+                Column(
+                    modifier =
+                        Modifier
+                            .size(160.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.VisibilityOff,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = stringResource(R.string.moderation_image_hidden),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                    )
+                }
             }
+
             image != null -> {
                 // Reserve the bubble at the image's true aspect ratio once we've measured it (cached by
                 // hash above the list). Coil doesn't memory-cache animated GIFs, so each re-decodes as it
@@ -1045,12 +1119,13 @@ private fun AttachmentImage(
                 // and snaps back, making the list "skip" when flinging past several GIFs. First view (ratio
                 // unknown) falls back to the width-anchored slot and records the ratio on load for next time.
                 val ratio = hash?.let { imageRatios[it] }
-                val sizeModifier = if (ratio != null && ratio > 0f) {
-                    val h = (ATTACHMENT_WIDTH / ratio).coerceAtMost(ATTACHMENT_MAX_HEIGHT)
-                    Modifier.size(width = h * ratio, height = h)
-                } else {
-                    Modifier.width(ATTACHMENT_WIDTH).heightIn(max = ATTACHMENT_MAX_HEIGHT)
-                }
+                val sizeModifier =
+                    if (ratio != null && ratio > 0f) {
+                        val h = (ATTACHMENT_WIDTH / ratio).coerceAtMost(ATTACHMENT_MAX_HEIGHT)
+                        Modifier.size(width = h * ratio, height = h)
+                    } else {
+                        Modifier.width(ATTACHMENT_WIDTH).heightIn(max = ATTACHMENT_MAX_HEIGHT)
+                    }
                 AsyncImage(
                     model = image,
                     contentDescription = stringResource(R.string.chat_attachment_image_desc),
@@ -1065,21 +1140,25 @@ private fun AttachmentImage(
                     modifier = sizeModifier,
                 )
             }
-            else -> Column(
-                modifier = Modifier
-                    .size(160.dp)
-                    .background(MaterialTheme.colorScheme.surface),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    stringResource(R.string.chat_loading_photo),
-                    style = MaterialTheme.typography.labelSmall,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                )
+
+            else -> {
+                Column(
+                    modifier =
+                        Modifier
+                            .size(160.dp)
+                            .background(MaterialTheme.colorScheme.surface),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        stringResource(R.string.chat_loading_photo),
+                        style = MaterialTheme.typography.labelSmall,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                    )
+                }
             }
         }
     }
@@ -1110,10 +1189,11 @@ private fun FullscreenImageViewer(
         var scale by remember { mutableFloatStateOf(1f) }
         var offset by remember { mutableStateOf(Offset.Zero) }
         var menuOpen by remember { mutableStateOf(false) }
-        val transformState = rememberTransformableState { zoomChange, panChange, _ ->
-            scale = (scale * zoomChange).coerceIn(1f, 5f)
-            offset += panChange
-        }
+        val transformState =
+            rememberTransformableState { zoomChange, panChange, _ ->
+                scale = (scale * zoomChange).coerceIn(1f, 5f)
+                offset += panChange
+            }
         Box(
             modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.96f)),
             contentAlignment = Alignment.Center,
@@ -1122,22 +1202,24 @@ private fun FullscreenImageViewer(
                 model = image,
                 contentDescription = stringResource(R.string.chat_image_viewer_desc),
                 contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .transformable(transformState)
-                    .graphicsLayer(
-                        scaleX = scale,
-                        scaleY = scale,
-                        translationX = offset.x,
-                        translationY = offset.y,
-                    ),
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .transformable(transformState)
+                        .graphicsLayer(
+                            scaleX = scale,
+                            scaleY = scale,
+                            translationX = offset.x,
+                            translationY = offset.y,
+                        ),
             )
             Row(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                modifier =
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onDismiss, modifier = Modifier.size(48.dp)) {
@@ -1149,17 +1231,24 @@ private fun FullscreenImageViewer(
                 }
                 Column(modifier = Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     Text(
-                        text = if (fullscreen.mine) stringResource(R.string.chat_self_name)
-                        else fullscreen.senderName,
+                        text =
+                            if (fullscreen.mine) {
+                                stringResource(R.string.chat_self_name)
+                            } else {
+                                fullscreen.senderName
+                            },
                         style = MaterialTheme.typography.titleSmall,
                         color = Color.White,
                         maxLines = 1,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = relativeTime(
-                            fullscreen.sentAt, now, stringResource(R.string.chat_time_just_now),
-                        ),
+                        text =
+                            relativeTime(
+                                fullscreen.sentAt,
+                                now,
+                                stringResource(R.string.chat_time_just_now),
+                            ),
                         style = MaterialTheme.typography.labelMedium,
                         color = Color.White.copy(alpha = 0.7f),
                         maxLines = 1,
@@ -1189,16 +1278,26 @@ private fun FullscreenImageViewer(
     }
 }
 
-private fun timeLabel(row: ChatRow, now: Long, justNow: String): String =
-    relativeTime(row.sentAt, now, justNow)
+private fun timeLabel(
+    row: ChatRow,
+    now: Long,
+    justNow: String,
+): String = relativeTime(row.sentAt, now, justNow)
 
-private fun relativeTime(sentAt: Long, now: Long, justNow: String): String {
+private fun relativeTime(
+    sentAt: Long,
+    now: Long,
+    justNow: String,
+): String {
     // DateUtils renders anything under a minute (and any slight clock skew into the future) as
     // "0 minutes ago"; show a friendlier "Just now" instead.
     if (now - sentAt < DateUtils.MINUTE_IN_MILLIS) return justNow
-    return DateUtils.getRelativeTimeSpanString(
-        sentAt, now, DateUtils.MINUTE_IN_MILLIS,
-    ).toString()
+    return DateUtils
+        .getRelativeTimeSpanString(
+            sentAt,
+            now,
+            DateUtils.MINUTE_IN_MILLIS,
+        ).toString()
 }
 
 @Composable
@@ -1239,22 +1338,23 @@ private fun MessageInput(
     // Capture images committed by the keyboard (Gboard GIFs), drag-and-drop, or paste. The state-based
     // BasicTextField is required here: it advertises the accepted content MIME types to the IME, so the
     // keyboard offers GIFs instead of "images not supported here".
-    val receiveContentListener = remember(onReceiveImage) {
-        object : ReceiveContentListener {
-            override fun onReceive(transferableContent: TransferableContent): TransferableContent? {
-                if (!transferableContent.hasMediaType(MediaType.Image)) return transferableContent
-                return transferableContent.consume { item ->
-                    val uri = item.uri
-                    if (uri != null) {
-                        onReceiveImage(uri)
-                        true
-                    } else {
-                        false
+    val receiveContentListener =
+        remember(onReceiveImage) {
+            object : ReceiveContentListener {
+                override fun onReceive(transferableContent: TransferableContent): TransferableContent? {
+                    if (!transferableContent.hasMediaType(MediaType.Image)) return transferableContent
+                    return transferableContent.consume { item ->
+                        val uri = item.uri
+                        if (uri != null) {
+                            onReceiveImage(uri)
+                            true
+                        } else {
+                            false
+                        }
                     }
                 }
             }
         }
-    }
     // The trailing button doubles as Attach when there's nothing to send, and Send once there is.
     val canSend = state.text.isNotBlank() || pendingAttachment != null
 
@@ -1267,12 +1367,16 @@ private fun MessageInput(
                 activeQuery = if (sel.collapsed) activeMentionQuery(text, sel.end) else null
             }
     }
-    val filtered = remember(activeQuery, candidates) {
-        activeQuery?.let { filterCandidates(candidates, it.query) }.orEmpty()
-    }
+    val filtered =
+        remember(activeQuery, candidates) {
+            activeQuery?.let { filterCandidates(candidates, it.query) }.orEmpty()
+        }
     val showSuggestions = activeQuery != null && filtered.isNotEmpty()
 
-    fun insertMention(query: MentionQuery, candidate: MentionCandidate) {
+    fun insertMention(
+        query: MentionQuery,
+        candidate: MentionCandidate,
+    ) {
         val replacement = "@${candidate.displayName} "
         state.edit {
             replace(query.start, query.end, replacement)
@@ -1299,10 +1403,11 @@ private fun MessageInput(
                     Column {
                         filtered.take(5).forEach { candidate ->
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { activeQuery?.let { insertMention(it, candidate) } }
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable { activeQuery?.let { insertMention(it, candidate) } }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Avatar(avatarHash = candidate.avatarHash, name = candidate.displayName, size = 32.dp)
@@ -1326,11 +1431,12 @@ private fun MessageInput(
             }
             Row(verticalAlignment = Alignment.Bottom) {
                 Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    modifier =
+                        Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
                     contentAlignment = Alignment.CenterStart,
                 ) {
                     // The hint is a sibling overlay, so wire it onto the field as its accessibility
@@ -1346,15 +1452,17 @@ private fun MessageInput(
                     }
                     BasicTextField(
                         state = state,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .contentReceiver(receiveContentListener)
-                            .testTag("chat_input")
-                            .semantics { contentDescription = messageHint },
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .contentReceiver(receiveContentListener)
+                                .testTag("chat_input")
+                                .semantics { contentDescription = messageHint },
                         inputTransformation = InputTransformation.maxLength(TextLimits.MESSAGE),
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(
-                            color = MaterialTheme.colorScheme.onSurface,
-                        ),
+                        textStyle =
+                            MaterialTheme.typography.bodyLarge.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                            ),
                         lineLimits = TextFieldLineLimits.MultiLine(maxHeightInLines = 4),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         onKeyboardAction = { onSend() },
@@ -1369,11 +1477,12 @@ private fun MessageInput(
                 ) {
                     Icon(
                         imageVector = if (canSend) Icons.AutoMirrored.Filled.Send else Icons.Filled.AddPhotoAlternate,
-                        contentDescription = if (canSend) {
-                            stringResource(R.string.action_send)
-                        } else {
-                            stringResource(R.string.action_attach_photo)
-                        },
+                        contentDescription =
+                            if (canSend) {
+                                stringResource(R.string.action_send)
+                            } else {
+                                stringResource(R.string.action_attach_photo)
+                            },
                         modifier = Modifier.size(24.dp),
                     )
                 }
@@ -1384,7 +1493,10 @@ private fun MessageInput(
 
 /** Thumbnail of the staged attachment with a button to remove it before sending. */
 @Composable
-private fun AttachmentPreview(image: BlobImage, onClear: () -> Unit) {
+private fun AttachmentPreview(
+    image: BlobImage,
+    onClear: () -> Unit,
+) {
     Box {
         AsyncImage(
             model = image,
@@ -1394,11 +1506,12 @@ private fun AttachmentPreview(image: BlobImage, onClear: () -> Unit) {
         )
         // 48dp touch target (a11y) with the small visible badge kept flush in the corner.
         Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .size(48.dp)
-                .clip(CircleShape)
-                .clickable(onClick = onClear, role = Role.Button),
+            modifier =
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onClear, role = Role.Button),
             contentAlignment = Alignment.TopEnd,
         ) {
             Surface(
@@ -1420,129 +1533,141 @@ private fun AttachmentPreview(image: BlobImage, onClear: () -> Unit) {
 // placeholder in a preview (Coil/BlobImage has no DB-backed bytes), so sample rows leave attachments null.
 @Preview(showBackground = true)
 @Composable
-fun MessageBubbleTheirsPreview() = KnitPreview {
-    MessageBubble(
-        row = ChatRow(
-            id = "m1",
-            body = "Hey! Are you coming to the trailhead at 8?",
-            mine = false,
-            senderName = "Ada Lovelace",
-            senderNodeId = "node-ada",
-            avatarHash = null,
-            sentAt = PREVIEW_NOW - 5 * 60_000L,
-            received = false,
-            reactions = listOf(ReactionSummary("👍", 2, false), ReactionSummary("❤️", 1, true)),
-        ),
-        now = PREVIEW_NOW,
-        showSenderName = true,
-        onImageClick = {},
-        onOpenProfile = {},
-        onReact = { _, _ -> },
-        onDelete = {},
-        onBlock = {},
-        onCopy = {},
-    )
-}
+fun MessageBubbleTheirsPreview() =
+    KnitPreview {
+        MessageBubble(
+            row =
+                ChatRow(
+                    id = "m1",
+                    body = "Hey! Are you coming to the trailhead at 8?",
+                    mine = false,
+                    senderName = "Ada Lovelace",
+                    senderNodeId = "node-ada",
+                    avatarHash = null,
+                    sentAt = PREVIEW_NOW - 5 * 60_000L,
+                    received = false,
+                    reactions = listOf(ReactionSummary("👍", 2, false), ReactionSummary("❤️", 1, true)),
+                ),
+            now = PREVIEW_NOW,
+            showSenderName = true,
+            onImageClick = {},
+            onOpenProfile = {},
+            onReact = { _, _ -> },
+            onDelete = {},
+            onBlock = {},
+            onCopy = {},
+        )
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun MessageBubbleMinePreview() = KnitPreview {
-    MessageBubble(
-        row = ChatRow(
-            id = "m2",
-            body = "On my way — see you in 10 minutes.",
-            mine = true,
-            senderName = "You",
-            senderNodeId = "node-self",
-            avatarHash = null,
-            sentAt = PREVIEW_NOW - 2 * 60_000L,
-            received = true,
-        ),
-        now = PREVIEW_NOW,
-        showSenderName = false,
-        onImageClick = {},
-        onOpenProfile = {},
-        onReact = { _, _ -> },
-        onDelete = {},
-        onBlock = {},
-        onCopy = {},
-    )
-}
+fun MessageBubbleMinePreview() =
+    KnitPreview {
+        MessageBubble(
+            row =
+                ChatRow(
+                    id = "m2",
+                    body = "On my way — see you in 10 minutes.",
+                    mine = true,
+                    senderName = "You",
+                    senderNodeId = "node-self",
+                    avatarHash = null,
+                    sentAt = PREVIEW_NOW - 2 * 60_000L,
+                    received = true,
+                ),
+            now = PREVIEW_NOW,
+            showSenderName = false,
+            onImageClick = {},
+            onOpenProfile = {},
+            onReact = { _, _ -> },
+            onDelete = {},
+            onBlock = {},
+            onCopy = {},
+        )
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun MessageBubbleWithMentionPreview() = KnitPreview {
-    MessageBubble(
-        row = ChatRow(
-            id = "m3",
-            body = "Thanks @Grace! See you both there.",
-            mine = false,
-            senderName = "Ada Lovelace",
-            senderNodeId = "node-ada",
-            avatarHash = null,
-            sentAt = PREVIEW_NOW - 60 * 60_000L,
-            received = false,
-            mentions = listOf(Mention(nodeId = "node-grace", name = "Grace")),
-        ),
-        now = PREVIEW_NOW,
-        showSenderName = true,
-        onImageClick = {},
-        onOpenProfile = {},
-        onReact = { _, _ -> },
-        onDelete = {},
-        onBlock = {},
-        onCopy = {},
-    )
-}
+fun MessageBubbleWithMentionPreview() =
+    KnitPreview {
+        MessageBubble(
+            row =
+                ChatRow(
+                    id = "m3",
+                    body = "Thanks @Grace! See you both there.",
+                    mine = false,
+                    senderName = "Ada Lovelace",
+                    senderNodeId = "node-ada",
+                    avatarHash = null,
+                    sentAt = PREVIEW_NOW - 60 * 60_000L,
+                    received = false,
+                    mentions = listOf(Mention(nodeId = "node-grace", name = "Grace")),
+                ),
+            now = PREVIEW_NOW,
+            showSenderName = true,
+            onImageClick = {},
+            onOpenProfile = {},
+            onReact = { _, _ -> },
+            onDelete = {},
+            onBlock = {},
+            onCopy = {},
+        )
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun ReactionRowPreview() = KnitPreview {
-    ReactionRow(
-        reactions = listOf(
-            ReactionSummary("👍", 3, true),
-            ReactionSummary("❤️", 1, false),
-            ReactionSummary("😂", 5, false),
-        ),
-        onToggle = {},
-    )
-}
+fun ReactionRowPreview() =
+    KnitPreview {
+        ReactionRow(
+            reactions =
+                listOf(
+                    ReactionSummary("👍", 3, true),
+                    ReactionSummary("❤️", 1, false),
+                    ReactionSummary("😂", 5, false),
+                ),
+            onToggle = {},
+        )
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun ReactionPickerPreview() = KnitPreview {
-    ReactionPicker(
-        onPick = {},
-        onCopy = {},
-        onDelete = {},
-        onBlock = {},
-        onDismiss = {},
-    )
-}
+fun ReactionPickerPreview() =
+    KnitPreview {
+        ReactionPicker(
+            onPick = {},
+            onCopy = {},
+            onDelete = {},
+            onBlock = {},
+            onDismiss = {},
+        )
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun MessageInputPreview() = KnitPreview {
-    MessageInput(
-        state = rememberTextFieldState("See you at 8"),
-        pendingAttachment = null,
-        candidates = emptyList(),
-        onMentionAdded = {},
-        onAttachClick = {},
-        onClearAttachment = {},
-        onReceiveImage = {},
-        onSend = {},
-    )
-}
+fun MessageInputPreview() =
+    KnitPreview {
+        MessageInput(
+            state = rememberTextFieldState("See you at 8"),
+            pendingAttachment = null,
+            candidates = emptyList(),
+            onMentionAdded = {},
+            onAttachClick = {},
+            onClearAttachment = {},
+            onReceiveImage = {},
+            onSend = {},
+        )
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun EmptyStatePreview() = KnitPreview {
-    EmptyState()
-}
+fun EmptyStatePreview() =
+    KnitPreview {
+        EmptyState()
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun SystemNoticePreview() = KnitPreview {
-    SystemNotice(text = "Ada left the chat")
-}
+fun SystemNoticePreview() =
+    KnitPreview {
+        SystemNotice(text = "Ada left the chat")
+    }

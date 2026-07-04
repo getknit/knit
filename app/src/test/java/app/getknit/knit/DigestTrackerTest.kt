@@ -7,7 +7,6 @@ import org.junit.Test
 
 /** Unit tests for [DigestTracker] — the pure "is a data-path sync with this peer worth it?" decision. */
 class DigestTrackerTest {
-
     @Test
     fun noCueHeardIsNotWanted() {
         val t = DigestTracker()

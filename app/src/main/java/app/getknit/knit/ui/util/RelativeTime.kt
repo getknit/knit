@@ -28,9 +28,18 @@ fun compactTimeAgo(
 ): String {
     val diff = now - epochMillis
     return when {
-        diff < MINUTE_MS -> "now"
-        diff < HOUR_MS -> "${diff / MINUTE_MS}m"
-        diff < DAY_MS -> "${diff / HOUR_MS}h"
+        diff < MINUTE_MS -> {
+            "now"
+        }
+
+        diff < HOUR_MS -> {
+            "${diff / MINUTE_MS}m"
+        }
+
+        diff < DAY_MS -> {
+            "${diff / HOUR_MS}h"
+        }
+
         else -> {
             val date = Instant.ofEpochMilli(epochMillis).atZone(zone).toLocalDate()
             val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()

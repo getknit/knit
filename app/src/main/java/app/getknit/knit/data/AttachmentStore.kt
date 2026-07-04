@@ -24,17 +24,26 @@ import java.security.MessageDigest
  * image is *allowed but discouraged*: a flagged image is still ingested, and [ingest] reports the flag
  * so the caller can ask the user to confirm before staging/sending it (the receive side blurs it).
  */
-class AttachmentStore(private val context: Context, private val blobs: BlobRepository) {
-
+class AttachmentStore(
+    private val context: Context,
+    private val blobs: BlobRepository,
+) {
     /** The result of ingesting a picked/keyboard image: its content [hash] and [mime]. */
-    data class Ingested(val hash: String, val mime: String)
+    data class Ingested(
+        val hash: String,
+        val mime: String,
+    )
 
     /**
      * Outcome of [ingest]: stored ([Success], with [Success.flagged] true when screening judged the
      * image explicit so the caller can prompt for confirmation), or [Failed] to decode / too large.
      */
     sealed interface IngestResult {
-        data class Success(val ingested: Ingested, val flagged: Boolean) : IngestResult
+        data class Success(
+            val ingested: Ingested,
+            val flagged: Boolean,
+        ) : IngestResult
+
         data object Failed : IngestResult
     }
 
@@ -45,50 +54,55 @@ class AttachmentStore(private val context: Context, private val blobs: BlobRepos
      * the processed image exceeds [MAX_BYTES], else [IngestResult.Success] with [Success.flagged] set
      * when on-device screening judged the image explicit.
      */
-    suspend fun ingest(uri: Uri): IngestResult = withContext(Dispatchers.IO) {
-        val sourceMime = context.contentResolver.getType(uri)
-        val (mime, bytes) = if (sourceMime == "image/gif") {
-            // Re-encode the GIF as a smaller animated WebP (its per-frame VP8 compression beats GIF's
-            // 256-colour LZW even at the same dimensions, and Coil's AnimatedImageDecoder plays it like
-            // a GIF). Keep the raw GIF only if that somehow isn't smaller, so a GIF is never regressed.
-            val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                ?: return@withContext IngestResult.Failed
-            val webp = WebpTranscode.shrink(raw, GIF_MAX_DIMENSION, GIF_MAX_FPS, GIF_WEBP_QUALITY)
-            if (webp != null) "image/webp" to webp else "image/gif" to raw
-        } else {
-            val bitmap = decodeOrientedBounded(context, uri, MAX_DIMENSION)
-                ?: return@withContext IngestResult.Failed
-            val scaled = downscale(bitmap, MAX_DIMENSION)
-            // JPEG has no alpha channel, so a transparent PNG would flatten its transparent regions to
-            // black. When the source carries transparency, re-encode as lossy WebP instead — it keeps
-            // the alpha channel and still compresses well; opaque photos stay JPEG (smallest).
-            if (scaled.hasAlpha()) {
-                val webp = ByteArrayOutputStream().use { out ->
-                    scaled.compress(Bitmap.CompressFormat.WEBP_LOSSY, WEBP_QUALITY, out)
-                    out.toByteArray()
+    suspend fun ingest(uri: Uri): IngestResult =
+        withContext(Dispatchers.IO) {
+            val sourceMime = context.contentResolver.getType(uri)
+            val (mime, bytes) =
+                if (sourceMime == "image/gif") {
+                    // Re-encode the GIF as a smaller animated WebP (its per-frame VP8 compression beats GIF's
+                    // 256-colour LZW even at the same dimensions, and Coil's AnimatedImageDecoder plays it like
+                    // a GIF). Keep the raw GIF only if that somehow isn't smaller, so a GIF is never regressed.
+                    val raw =
+                        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                            ?: return@withContext IngestResult.Failed
+                    val webp = WebpTranscode.shrink(raw, GIF_MAX_DIMENSION, GIF_MAX_FPS, GIF_WEBP_QUALITY)
+                    if (webp != null) "image/webp" to webp else "image/gif" to raw
+                } else {
+                    val bitmap =
+                        decodeOrientedBounded(context, uri, MAX_DIMENSION)
+                            ?: return@withContext IngestResult.Failed
+                    val scaled = downscale(bitmap, MAX_DIMENSION)
+                    // JPEG has no alpha channel, so a transparent PNG would flatten its transparent regions to
+                    // black. When the source carries transparency, re-encode as lossy WebP instead — it keeps
+                    // the alpha channel and still compresses well; opaque photos stay JPEG (smallest).
+                    if (scaled.hasAlpha()) {
+                        val webp =
+                            ByteArrayOutputStream().use { out ->
+                                scaled.compress(Bitmap.CompressFormat.WEBP_LOSSY, WEBP_QUALITY, out)
+                                out.toByteArray()
+                            }
+                        "image/webp" to webp
+                    } else {
+                        val jpeg =
+                            ByteArrayOutputStream().use { out ->
+                                scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+                                out.toByteArray()
+                            }
+                        "image/jpeg" to jpeg
+                    }
                 }
-                "image/webp" to webp
-            } else {
-                val jpeg = ByteArrayOutputStream().use { out ->
-                    scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
-                    out.toByteArray()
-                }
-                "image/jpeg" to jpeg
-            }
+            if (bytes.isEmpty() || bytes.size > MAX_BYTES) return@withContext IngestResult.Failed
+            // Screen the exact bytes we store and transmit (decoded at the receiver's bound), so the
+            // send-side verdict matches what the recipient computes rather than scoring the sharper,
+            // pre-JPEG source. Stored regardless — an explicit image is allowed but the caller confirms
+            // before sending; fail-open when the bytes can't be decoded.
+            val flagged = blobs.isImageExplicit(bytes)
+            val hash = sha256(bytes)
+            blobs.insert(hash, mime, bytes)
+            IngestResult.Success(Ingested(hash, mime), flagged)
         }
-        if (bytes.isEmpty() || bytes.size > MAX_BYTES) return@withContext IngestResult.Failed
-        // Screen the exact bytes we store and transmit (decoded at the receiver's bound), so the
-        // send-side verdict matches what the recipient computes rather than scoring the sharper,
-        // pre-JPEG source. Stored regardless — an explicit image is allowed but the caller confirms
-        // before sending; fail-open when the bytes can't be decoded.
-        val flagged = blobs.isImageExplicit(bytes)
-        val hash = sha256(bytes)
-        blobs.insert(hash, mime, bytes)
-        IngestResult.Success(Ingested(hash, mime), flagged)
-    }
 
-    private fun sha256(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     private companion object {
         const val MAX_DIMENSION = 1280

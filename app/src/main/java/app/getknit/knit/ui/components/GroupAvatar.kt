@@ -50,25 +50,25 @@ fun GroupAvatar(
     onClickLabel: String? = null,
 ) {
     Box(
-        modifier = modifier
-            .then(if (onClick != null) Modifier.minimumInteractiveComponentSize() else Modifier)
-            .size(size)
-            .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.secondaryContainer)
-            .then(
-                if (onClick != null) {
-                    Modifier.clickable(onClickLabel = onClickLabel, role = Role.Button, onClick = onClick)
-                } else {
-                    Modifier
-                },
-            )
-            .then(
-                if (contentDescription != null) {
-                    Modifier.semantics { this.contentDescription = contentDescription }
-                } else {
-                    Modifier
-                },
-            ),
+        modifier =
+            modifier
+                .then(if (onClick != null) Modifier.minimumInteractiveComponentSize() else Modifier)
+                .size(size)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.secondaryContainer)
+                .then(
+                    if (onClick != null) {
+                        Modifier.clickable(onClickLabel = onClickLabel, role = Role.Button, onClick = onClick)
+                    } else {
+                        Modifier
+                    },
+                ).then(
+                    if (contentDescription != null) {
+                        Modifier.semantics { this.contentDescription = contentDescription }
+                    } else {
+                        Modifier
+                    },
+                ),
         contentAlignment = Alignment.Center,
     ) {
         // Show the group's photo when its blob is present; fall back to the people glyph otherwise.
@@ -96,6 +96,7 @@ fun GroupAvatar(
 
 @Preview(showBackground = true)
 @Composable
-fun GroupAvatarPreview() = KnitPreview {
-    GroupAvatar(photoHash = null, size = 96.dp)
-}
+fun GroupAvatarPreview() =
+    KnitPreview {
+        GroupAvatar(photoHash = null, size = 96.dp)
+    }

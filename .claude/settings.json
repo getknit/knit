@@ -18,9 +18,15 @@
           },
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/gradle-detekt-edit.sh\"",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/gradle-detekt-stop.sh\"",
             "timeout": 300,
             "statusMessage": "Running ./gradlew detekt"
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/gradle-ktlint-stop.sh\"",
+            "timeout": 300,
+            "statusMessage": "Running ./gradlew ktlint"
           }
         ]
       }

@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "kotlin-patterns": {
+      "source": "affaan-m/ECC",
+      "sourceType": "github",
+      "skillPath": "skills/kotlin-patterns/SKILL.md",
+      "computedHash": "581e5e74aec1c33ba37209f24f6bca68ba6949d7549ab58c5bc6a75d0fca9d0d"
+    },
     "material-3": {
       "source": "hamen/material-3-skill",
       "sourceType": "github",

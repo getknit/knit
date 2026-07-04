@@ -12,7 +12,6 @@ import org.junit.Test
  * regenerates its keypair (new nodeId) is still recognised by the same device tag.
  */
 class DeviceTagTest {
-
     private val format = Regex("^[0-9a-f]{16}$")
 
     @Test

@@ -70,67 +70,72 @@ class GroupDetailsViewModel(
     identity: Identity,
     private val context: Context,
 ) : ViewModel() {
-
     private val me = MutableStateFlow<String?>(null)
 
     init {
         viewModelScope.launch { me.value = identity.nodeId() }
     }
 
-    val state: StateFlow<GroupDetailsUiState> = combine(
-        groups.observeGroup(groupId),
-        peers.observePeers(),
-        meshManager.neighbors,
-        me,
-    ) { group, peerList, neighbors, myId ->
-        val members = group?.let { GroupMembersStore.decode(it.members) }.orEmpty()
-        val peersByNode = peerList.associateBy { it.nodeId }
-        val onlineIds = neighbors.map { it.nodeId }.toSet()
-        val rows = members.map { id ->
-            GroupMemberRow(
-                nodeId = id,
-                displayName = displayNameFor(peersByNode[id]?.name, id),
-                avatarHash = peersByNode[id]?.avatarHash,
-                online = id in onlineIds,
-                isSelf = id == myId,
+    val state: StateFlow<GroupDetailsUiState> =
+        combine(
+            groups.observeGroup(groupId),
+            peers.observePeers(),
+            meshManager.neighbors,
+            me,
+        ) { group, peerList, neighbors, myId ->
+            val members = group?.let { GroupMembersStore.decode(it.members) }.orEmpty()
+            val peersByNode = peerList.associateBy { it.nodeId }
+            val onlineIds = neighbors.map { it.nodeId }.toSet()
+            val rows =
+                members.map { id ->
+                    GroupMemberRow(
+                        nodeId = id,
+                        displayName = displayNameFor(peersByNode[id]?.name, id),
+                        avatarHash = peersByNode[id]?.avatarHash,
+                        online = id in onlineIds,
+                        isSelf = id == myId,
+                    )
+                }
+            // Self first (rendered as "You"), then the others connected-first, then alphabetical — mirroring
+            // the contact picker's ordering.
+            val self = rows.firstOrNull { it.isSelf }
+            val others =
+                rows
+                    .filter { !it.isSelf }
+                    .sortedWith(compareByDescending<GroupMemberRow> { it.online }.thenBy { it.displayName.lowercase() })
+            GroupDetailsUiState(
+                groupId = groupId,
+                title =
+                    groupTitle(
+                        storedName = group?.name.orEmpty(),
+                        memberIds = members,
+                        selfId = myId,
+                        fallback = context.getString(R.string.group_unnamed),
+                    ) { id -> displayNameFor(peersByNode[id]?.name, id) },
+                photoHash = group?.photoHash,
+                members = listOfNotNull(self) + others,
+                exists = group != null,
             )
-        }
-        // Self first (rendered as "You"), then the others connected-first, then alphabetical — mirroring
-        // the contact picker's ordering.
-        val self = rows.firstOrNull { it.isSelf }
-        val others = rows.filter { !it.isSelf }
-            .sortedWith(compareByDescending<GroupMemberRow> { it.online }.thenBy { it.displayName.lowercase() })
-        GroupDetailsUiState(
-            groupId = groupId,
-            title = groupTitle(
-                storedName = group?.name.orEmpty(),
-                memberIds = members,
-                selfId = myId,
-                fallback = context.getString(R.string.group_unnamed),
-            ) { id -> displayNameFor(peersByNode[id]?.name, id) },
-            photoHash = group?.photoHash,
-            members = listOfNotNull(self) + others,
-            exists = group != null,
+        }.stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            GroupDetailsUiState(groupId = groupId, title = "", photoHash = null, members = emptyList()),
         )
-    }.stateIn(
-        viewModelScope,
-        SharingStarted.WhileSubscribed(5_000),
-        GroupDetailsUiState(groupId = groupId, title = "", photoHash = null, members = emptyList()),
-    )
 
     /**
      * The self-describing [GroupInfo] flooded on every group frame, built from the local row so each
      * update re-asserts the current name **and** photo (both converge last-writer-wins, by their own
      * clocks). Kept in sync with [app.getknit.knit.ui.chat.ChatViewModel]'s copy on the send path.
      */
-    private fun GroupEntity.toInfo() = GroupInfo(
-        id = groupId,
-        name = name.takeIf { it.isNotBlank() },
-        members = GroupMembersStore.decode(members),
-        createdBy = createdBy,
-        photoHash = photoHash,
-        photoUpdatedAt = photoUpdatedAt.takeIf { it > 0L },
-    )
+    private fun GroupEntity.toInfo() =
+        GroupInfo(
+            id = groupId,
+            name = name.takeIf { it.isNotBlank() },
+            members = GroupMembersStore.decode(members),
+            createdBy = createdBy,
+            photoHash = photoHash,
+            photoUpdatedAt = photoUpdatedAt.takeIf { it > 0L },
+        )
 
     /**
      * Renames this group: updates the local store immediately and floods a group-update frame so members
@@ -163,7 +168,11 @@ class GroupDetailsViewModel(
      * is updated immediately (the bytes are local), so it shows right away. [scale]/[offset]/[diameter]
      * come from the crop dialog's transform — the same flow as the profile avatar.
      */
-    fun confirmGroupPhoto(scale: Float, offset: Offset, diameter: Float) {
+    fun confirmGroupPhoto(
+        scale: Float,
+        offset: Offset,
+        diameter: Float,
+    ) {
         val source = _groupPhotoCropTarget.value ?: return
         _groupPhotoCropTarget.value = null
         viewModelScope.launch {

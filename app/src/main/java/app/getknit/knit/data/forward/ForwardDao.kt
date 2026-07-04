@@ -8,7 +8,6 @@ import androidx.room.Query
 @Dao
 @Suppress("TooManyFunctions") // a handful of small carry-store queries; splitting them would obscure, not clarify
 interface ForwardDao {
-
     /** Stores [row]; keyed by frame id, so a frame we already carry is silently ignored (dedup). */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(row: ForwardEntity)
@@ -97,14 +96,20 @@ interface ForwardDao {
         "DELETE FROM forward_store WHERE id IN " +
             "(SELECT id FROM forward_store WHERE senderId = :senderId ORDER BY sentAt ASC, id ASC LIMIT :n)",
     )
-    suspend fun evictOldestBySender(senderId: String, n: Int)
+    suspend fun evictOldestBySender(
+        senderId: String,
+        n: Int,
+    )
 
     /** Evicts the [n] oldest-by-sentAt frames from [groupId]'s bucket (keeps its newest per the per-group quota). */
     @Query(
         "DELETE FROM forward_store WHERE id IN " +
             "(SELECT id FROM forward_store WHERE groupId = :groupId ORDER BY sentAt ASC, id ASC LIMIT :n)",
     )
-    suspend fun evictOldestByGroup(groupId: String, n: Int)
+    suspend fun evictOldestByGroup(
+        groupId: String,
+        n: Int,
+    )
 
     /** Evicts the [n] oldest-by-sentAt broadcast-room chat frames (keeps the newest per the broadcast quota). */
     @Query(

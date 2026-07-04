@@ -5,8 +5,9 @@ import app.getknit.knit.data.peer.PeerEntity
 import kotlinx.coroutines.flow.Flow
 
 /** Single source of truth for cached peer profiles. */
-class PeerRepository(private val dao: PeerDao) {
-
+class PeerRepository(
+    private val dao: PeerDao,
+) {
     fun observePeers(): Flow<List<PeerEntity>> = dao.observeAll()
 
     fun observe(nodeId: String): Flow<PeerEntity?> = dao.observeByNodeId(nodeId)
@@ -16,5 +17,8 @@ class PeerRepository(private val dao: PeerDao) {
     suspend fun upsert(peer: PeerEntity) = dao.upsert(peer)
 
     /** Marks (or clears) the user's out-of-band verification of this peer's pinned key. */
-    suspend fun setVerified(nodeId: String, verified: Boolean) = dao.setVerified(nodeId, verified)
+    suspend fun setVerified(
+        nodeId: String,
+        verified: Boolean,
+    ) = dao.setVerified(nodeId, verified)
 }

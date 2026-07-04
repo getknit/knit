@@ -21,7 +21,6 @@ import java.io.ByteArrayOutputStream
  */
 @Suppress("MagicNumber") // RIFF/WebP byte offsets, chunk sizes, and flag bit masks are format constants.
 object AnimatedWebpMuxer {
-
     /** VP8X feature flag: the file is an animation (an `ANIM`/`ANMF` sequence follows). */
     private const val VP8X_ANIMATION = 0x02
 
@@ -55,13 +54,13 @@ object AnimatedWebpMuxer {
             val image = extractImageChunks(frames[i]) ?: return null
             hasAlpha = hasAlpha || image.hasAlpha
             val payload = ByteArrayOutputStream()
-            writeU24(payload, 0)               // frame X (÷2) — full-canvas, so 0
-            writeU24(payload, 0)               // frame Y (÷2)
-            writeU24(payload, canvasW - 1)     // frame width minus one
-            writeU24(payload, canvasH - 1)     // frame height minus one
+            writeU24(payload, 0) // frame X (÷2) — full-canvas, so 0
+            writeU24(payload, 0) // frame Y (÷2)
+            writeU24(payload, canvasW - 1) // frame width minus one
+            writeU24(payload, canvasH - 1) // frame height minus one
             writeU24(payload, durationsMs[i].coerceAtLeast(0))
             payload.write(ANMF_OVERWRITE)
-            payload.write(image.chunks)        // ALPH?/VP8 sub-chunks, verbatim (already even-padded)
+            payload.write(image.chunks) // ALPH?/VP8 sub-chunks, verbatim (already even-padded)
             writeChunk(anmf, "ANMF", payload.toByteArray())
         }
 
@@ -80,10 +79,16 @@ object AnimatedWebpMuxer {
     }
 
     /** The 10-byte `VP8X` payload: feature flags + 3 reserved bytes + canvas W-1/H-1. */
-    private fun vp8x(canvasW: Int, canvasH: Int, hasAlpha: Boolean): ByteArray {
+    private fun vp8x(
+        canvasW: Int,
+        canvasH: Int,
+        hasAlpha: Boolean,
+    ): ByteArray {
         val out = ByteArrayOutputStream()
         out.write(VP8X_ANIMATION or if (hasAlpha) VP8X_ALPHA else 0)
-        out.write(0); out.write(0); out.write(0) // reserved
+        out.write(0)
+        out.write(0)
+        out.write(0) // reserved
         writeU24(out, canvasW - 1)
         writeU24(out, canvasH - 1)
         return out.toByteArray()
@@ -97,7 +102,10 @@ object AnimatedWebpMuxer {
         return out.toByteArray()
     }
 
-    private class ImageChunks(val chunks: ByteArray, val hasAlpha: Boolean)
+    private class ImageChunks(
+        val chunks: ByteArray,
+        val hasAlpha: Boolean,
+    )
 
     /**
      * Returns the `ALPH`?/`VP8 `/`VP8L` sub-chunks (verbatim, with their padding) from a single-frame
@@ -129,41 +137,60 @@ object AnimatedWebpMuxer {
         return if (bytes.isEmpty()) null else ImageChunks(bytes, hasAlpha)
     }
 
-    private fun writeChunk(out: ByteArrayOutputStream, tag: String, payload: ByteArray) {
+    private fun writeChunk(
+        out: ByteArrayOutputStream,
+        tag: String,
+        payload: ByteArray,
+    ) {
         out.write(tag.toByteArray(Charsets.US_ASCII))
         writeU32(out, payload.size.toLong())
         out.write(payload)
         if (payload.size and 1 == 1) out.write(0) // pad to an even length
     }
 
-    private fun writeU16(out: ByteArrayOutputStream, v: Int) {
+    private fun writeU16(
+        out: ByteArrayOutputStream,
+        v: Int,
+    ) {
         out.write(v and 0xFF)
         out.write((v ushr 8) and 0xFF)
     }
 
-    private fun writeU24(out: ByteArrayOutputStream, v: Int) {
+    private fun writeU24(
+        out: ByteArrayOutputStream,
+        v: Int,
+    ) {
         out.write(v and 0xFF)
         out.write((v ushr 8) and 0xFF)
         out.write((v ushr 16) and 0xFF)
     }
 
-    private fun writeU32(out: ByteArrayOutputStream, v: Long) {
+    private fun writeU32(
+        out: ByteArrayOutputStream,
+        v: Long,
+    ) {
         out.write((v and 0xFF).toInt())
         out.write(((v ushr 8) and 0xFF).toInt())
         out.write(((v ushr 16) and 0xFF).toInt())
         out.write(((v ushr 24) and 0xFF).toInt())
     }
 
-    private fun readU32(b: ByteArray, off: Int): Int =
+    private fun readU32(
+        b: ByteArray,
+        off: Int,
+    ): Int =
         (b[off].toInt() and 0xFF) or
             ((b[off + 1].toInt() and 0xFF) shl 8) or
             ((b[off + 2].toInt() and 0xFF) shl 16) or
             ((b[off + 3].toInt() and 0xFF) shl 24)
 
-    private fun fourCC(b: ByteArray, off: Int): String = String(b, off, 4, Charsets.US_ASCII)
+    private fun fourCC(
+        b: ByteArray,
+        off: Int,
+    ): String = String(b, off, 4, Charsets.US_ASCII)
 
-    private const val HEADER_LEN = 12       // "RIFF" + size + "WEBP"
-    private const val CHUNK_HEADER_LEN = 8   // fourCC + size
+    private const val HEADER_LEN = 12 // "RIFF" + size + "WEBP"
+    private const val CHUNK_HEADER_LEN = 8 // fourCC + size
 
     private val ASCII_RIFF = "RIFF".toByteArray(Charsets.US_ASCII)
     private val ASCII_WEBP = "WEBP".toByteArray(Charsets.US_ASCII)

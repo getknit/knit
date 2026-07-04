@@ -42,7 +42,6 @@ class ContactsViewModel(
     settings: SettingsStore,
     private val groups: GroupRepository,
 ) : ViewModel() {
-
     private val myNodeId = MutableStateFlow<String?>(null)
 
     /** Emits the new group's conversation id once it's persisted, so the screen can open its chat. */
@@ -94,24 +93,24 @@ class ContactsViewModel(
     }
 
     /** Known peers ∪ live neighbors, minus ourselves and blocked ids; connected first, then alphabetical. */
-    val contacts: StateFlow<List<Contact>> = combine(
-        peers.observePeers(),
-        meshManager.neighbors,
-        myNodeId,
-        settings.blockedNodeIds,
-    ) { peerList, neighbors, me, blocked ->
-        val online = neighbors.map { it.nodeId }.toSet()
-        val byNode = peerList.associateBy { it.nodeId }
-        val nodeIds = (peerList.map { it.nodeId } + online).toSet() - setOfNotNull(me) - blocked
-        nodeIds
-            .map { id ->
-                Contact(
-                    nodeId = id,
-                    displayName = displayNameFor(byNode[id]?.name, id),
-                    avatarHash = byNode[id]?.avatarHash,
-                    online = id in online,
-                )
-            }
-            .sortedWith(compareByDescending<Contact> { it.online }.thenBy { it.displayName.lowercase() })
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val contacts: StateFlow<List<Contact>> =
+        combine(
+            peers.observePeers(),
+            meshManager.neighbors,
+            myNodeId,
+            settings.blockedNodeIds,
+        ) { peerList, neighbors, me, blocked ->
+            val online = neighbors.map { it.nodeId }.toSet()
+            val byNode = peerList.associateBy { it.nodeId }
+            val nodeIds = (peerList.map { it.nodeId } + online).toSet() - setOfNotNull(me) - blocked
+            nodeIds
+                .map { id ->
+                    Contact(
+                        nodeId = id,
+                        displayName = displayNameFor(byNode[id]?.name, id),
+                        avatarHash = byNode[id]?.avatarHash,
+                        online = id in online,
+                    )
+                }.sortedWith(compareByDescending<Contact> { it.online }.thenBy { it.displayName.lowercase() })
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 }

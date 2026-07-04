@@ -1,10 +1,10 @@
 package app.getknit.knit
 
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.ui.chat.MentionCandidate
-import androidx.compose.ui.text.LinkAnnotation
 import app.getknit.knit.ui.chat.activeMentionQuery
 import app.getknit.knit.ui.chat.annotateMessageBody
 import app.getknit.knit.ui.chat.filterCandidates
@@ -16,7 +16,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MentionTextTest {
-
     // --- activeMentionQuery ---
 
     @Test
@@ -60,10 +59,11 @@ class MentionTextTest {
 
     // --- filterCandidates ---
 
-    private val candidates = listOf(
-        MentionCandidate("n1", "Joyful Ferret", null),
-        MentionCandidate("n2", "Coral", null),
-    )
+    private val candidates =
+        listOf(
+            MentionCandidate("n1", "Joyful Ferret", null),
+            MentionCandidate("n2", "Coral", null),
+        )
 
     @Test
     fun filterMatchesAcrossSpacesCaseInsensitively() {
@@ -97,11 +97,12 @@ class MentionTextTest {
     fun longestNameWinsOverPrefix() {
         // "@Jay" must not steal the prefix of "@Jaylene".
         val body = "hi @Jaylene"
-        val out = highlightMentions(
-            body,
-            listOf(Mention("a", "Jay"), Mention("b", "Jaylene")),
-            style,
-        )
+        val out =
+            highlightMentions(
+                body,
+                listOf(Mention("a", "Jay"), Mention("b", "Jaylene")),
+                style,
+            )
         assertEquals(1, out.spanStyles.size)
         assertEquals(3, out.spanStyles[0].start)
         assertEquals(11, out.spanStyles[0].end) // "@Jaylene"
@@ -173,12 +174,13 @@ class MentionTextTest {
 
     @Test
     fun annotatesBothMentionsAndLinks() {
-        val out = annotateMessageBody(
-            body = "hey @Coral see https://a.com",
-            mentions = listOf(Mention("n2", "Coral")),
-            mentionStyle = style,
-            linkStyle = style,
-        )
+        val out =
+            annotateMessageBody(
+                body = "hey @Coral see https://a.com",
+                mentions = listOf(Mention("n2", "Coral")),
+                mentionStyle = style,
+                linkStyle = style,
+            )
         // Mention is still highlighted...
         assertEquals(1, out.spanStyles.size)
         assertEquals("@Coral", out.text.substring(out.spanStyles[0].start, out.spanStyles[0].end))

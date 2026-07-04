@@ -23,18 +23,20 @@ import org.koin.android.ext.koin.androidContext
 import org.koin.android.ext.koin.androidLogger
 import org.koin.core.context.startKoin
 
-class KnitApplication : Application(), SingletonImageLoader.Factory {
-
+class KnitApplication :
+    Application(),
+    SingletonImageLoader.Factory {
     // Resolved lazily — first touched in newImageLoader(), which Coil calls well after startKoin().
     private val blobDao: BlobDao by inject()
 
     override fun onCreate() {
         super.onCreate()
-        val koinApp = startKoin {
-            androidLogger()
-            androidContext(this@KnitApplication)
-            modules(appModule, meshModule, moderationModule, uiModule)
-        }
+        val koinApp =
+            startKoin {
+                androidLogger()
+                androidContext(this@KnitApplication)
+                modules(appModule, meshModule, moderationModule, uiModule)
+            }
         // Register the message notification channel up front so it appears in system settings.
         koinApp.koin.get<Notifier>().createChannel()
 
@@ -53,12 +55,12 @@ class KnitApplication : Application(), SingletonImageLoader.Factory {
      * disk (only the in-memory bitmap cache is used). The animated decoder keeps GIFs/WebP animating.
      */
     override fun newImageLoader(context: PlatformContext): ImageLoader =
-        ImageLoader.Builder(context)
+        ImageLoader
+            .Builder(context)
             .diskCache(null)
             .components {
                 add(BlobKeyer())
                 add(BlobFetcher.Factory(blobDao))
                 add(AnimatedImageDecoder.Factory())
-            }
-            .build()
+            }.build()
 }

@@ -32,12 +32,12 @@ data class DutyCycle(
  * overrides battery concerns); a screen-off device on battery backs off, more so when battery is low.
  */
 object PowerPolicy {
-
-    fun dutyCycle(state: PowerState): DutyCycle = when {
-        state.interactive || state.charging -> DutyCycle(ACTIVE_WINDOW_MS, ACTIVE_INTERVAL_MS)
-        state.batteryLow -> DutyCycle(IDLE_WINDOW_MS, LOW_BATTERY_INTERVAL_MS)
-        else -> DutyCycle(IDLE_WINDOW_MS, IDLE_INTERVAL_MS)
-    }
+    fun dutyCycle(state: PowerState): DutyCycle =
+        when {
+            state.interactive || state.charging -> DutyCycle(ACTIVE_WINDOW_MS, ACTIVE_INTERVAL_MS)
+            state.batteryLow -> DutyCycle(IDLE_WINDOW_MS, LOW_BATTERY_INTERVAL_MS)
+            else -> DutyCycle(IDLE_WINDOW_MS, IDLE_INTERVAL_MS)
+        }
 
     /**
      * How long to idle after a scan window before the next discovery burst, given the current
@@ -50,7 +50,11 @@ object PowerPolicy {
      * [LONELY_AGGRESSIVE_WINDOW_MS] and then relaxes to the power-policy idle to bound drain when no
      * peers are around at all.
      */
-    fun idleAfterScan(state: PowerState, neighborCount: Int, lonelyForMs: Long): Long {
+    fun idleAfterScan(
+        state: PowerState,
+        neighborCount: Int,
+        lonelyForMs: Long,
+    ): Long {
         if (neighborCount > 0) return dutyCycle(state).baseIntervalMs * (1 + neighborCount)
         val aggressive = state.interactive || state.charging || lonelyForMs < LONELY_AGGRESSIVE_WINDOW_MS
         return if (aggressive) LONELY_IDLE_MS else dutyCycle(state).baseIntervalMs
@@ -64,8 +68,11 @@ object PowerPolicy {
      * a not-yet-linked peer flips this back to [idleAfterScan] via the transport's demand check). `maxOf` matters
      * because the screen-off idle is already 240 000 ms+, so a flat floor alone would make "settled" scan *more*.
      */
-    fun settledIdleAfterScan(state: PowerState, neighborCount: Int, lonelyForMs: Long): Long =
-        maxOf(idleAfterScan(state, neighborCount, lonelyForMs), SETTLED_INTERVAL_MS)
+    fun settledIdleAfterScan(
+        state: PowerState,
+        neighborCount: Int,
+        lonelyForMs: Long,
+    ): Long = maxOf(idleAfterScan(state, neighborCount, lonelyForMs), SETTLED_INTERVAL_MS)
 
     // Screen on or charging: the original aggressive cadence.
     private const val ACTIVE_WINDOW_MS = 12_000L

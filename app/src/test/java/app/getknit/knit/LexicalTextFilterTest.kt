@@ -6,7 +6,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LexicalTextFilterTest {
-
     private val filter = LexicalTextFilter(blockedWords = listOf("shit", "fuck", "ass", "bullshit"))
 
     private fun flagged(text: String) = filter.check(text).flagged
@@ -27,10 +26,10 @@ class LexicalTextFilterTest {
 
     @Test
     fun leetspeakIsFlagged() {
-        assertTrue(flagged("sh1t"))   // 1 -> i
-        assertTrue(flagged("\$h!t"))  // $ -> s, ! -> i
-        assertTrue(flagged("a\$\$"))  // $ -> s
-        assertTrue(flagged("5h1t"))   // 5 -> s, 1 -> i
+        assertTrue(flagged("sh1t")) // 1 -> i
+        assertTrue(flagged("\$h!t")) // $ -> s, ! -> i
+        assertTrue(flagged("a\$\$")) // $ -> s
+        assertTrue(flagged("5h1t")) // 5 -> s, 1 -> i
     }
 
     @Test

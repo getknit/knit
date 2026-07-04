@@ -8,15 +8,15 @@ import org.junit.Test
 
 /** Unit tests for [BleAdvertPayload] — the pure fixed-size BLE advert service-data codec. */
 class BleAdvertPayloadTest {
-
     @Test
     fun encodeDecodeRoundTrips() {
-        val bytes = BleAdvertPayload.encode(
-            nodeId = "abcd1234",
-            capabilities = 0xFL,
-            digestVersion = 0x123456789ABCDEF0L,
-            psm = 0x0081,
-        )
+        val bytes =
+            BleAdvertPayload.encode(
+                nodeId = "abcd1234",
+                capabilities = 0xFL,
+                digestVersion = 0x123456789ABCDEF0L,
+                psm = 0x0081,
+            )
         assertEquals(BleAdvertPayload.SIZE, bytes.size)
         val p = BleAdvertPayload.parse(bytes)!!
         assertEquals("abcd1234", p.nodeId)

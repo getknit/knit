@@ -8,5 +8,8 @@ import coil3.request.Options
  * key, which is what makes an updated avatar/attachment re-render past Coil's memory cache.
  */
 class BlobKeyer : Keyer<BlobImage> {
-    override fun key(data: BlobImage, options: Options): String = data.hash
+    override fun key(
+        data: BlobImage,
+        options: Options,
+    ): String = data.hash
 }

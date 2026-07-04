@@ -12,12 +12,19 @@ package app.getknit.knit.mesh.bluetooth
  * (the nodeId tie-break `local > peer`, and not already linked).
  */
 object PromotionPolicy {
-
     /** A currently-held link's state, for the eviction decision. */
-    data class LinkSnapshot(val nodeId: String, val smoothedRssi: Double, val ageMs: Long, val idleMs: Long)
+    data class LinkSnapshot(
+        val nodeId: String,
+        val smoothedRssi: Double,
+        val ageMs: Long,
+        val idleMs: Long,
+    )
 
     /** Node ids to open a link to, and node ids to tear a link down for, this tick. */
-    data class Decision(val promote: List<String>, val evict: List<String>)
+    data class Decision(
+        val promote: List<String>,
+        val evict: List<String>,
+    )
 
     fun decide(
         candidates: List<BlePresenceTracker.Snapshot>,
@@ -26,9 +33,10 @@ object PromotionPolicy {
         config: PromotionConfig = PromotionConfig(),
     ): Decision {
         // Promotable = close enough (RSSI floor), stuck around (dwell), and not backing off — strongest first.
-        val promotable = candidates
-            .filter { it.smoothedRssi >= config.rssiFloorDbm && it.dwellMs >= config.dwellThresholdMs && it.nodeId !in backoff }
-            .sortedByDescending { it.smoothedRssi }
+        val promotable =
+            candidates
+                .filter { it.smoothedRssi >= config.rssiFloorDbm && it.dwellMs >= config.dwellThresholdMs && it.nodeId !in backoff }
+                .sortedByDescending { it.smoothedRssi }
 
         // Links we're allowed to drop (held at least linkMinHoldMs — time hysteresis against thrash), weakest first.
         val evictable = links.filter { it.ageMs >= config.linkMinHoldMs }.sortedBy { it.smoothedRssi }

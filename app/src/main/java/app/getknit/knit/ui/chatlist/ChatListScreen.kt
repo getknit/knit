@@ -233,11 +233,12 @@ fun ChatListScreen(
                         runCatching {
                             launchApkShareChooser(context, prepareKnitApk(context))
                         }.onFailure { e ->
-                            val msg = if (e is ShareStorageException) {
-                                R.string.share_app_error_storage
-                            } else {
-                                R.string.share_app_error
-                            }
+                            val msg =
+                                if (e is ShareStorageException) {
+                                    R.string.share_app_error_storage
+                                } else {
+                                    R.string.share_app_error
+                                }
                             Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
                         }
                     } finally {
@@ -271,17 +272,28 @@ fun ChatListScreen(
  * settings for Wi-Fi-off, and (for all-radios-off) the airplane-mode panel when airplane mode is on else the
  * top-level wireless panel. Wrapped in [runCatching] since a device may lack the settings activity.
  */
-private fun openRadioSettings(context: Context, warning: RadioWarning) {
-    val action = when (warning) {
-        RadioWarning.BluetoothOff -> Settings.ACTION_BLUETOOTH_SETTINGS
-        RadioWarning.WifiOff -> Settings.ACTION_WIFI_SETTINGS
-        RadioWarning.AllRadiosOff ->
-            if (isAirplaneModeOn(context)) {
-                Settings.ACTION_AIRPLANE_MODE_SETTINGS
-            } else {
-                Settings.ACTION_WIRELESS_SETTINGS
+private fun openRadioSettings(
+    context: Context,
+    warning: RadioWarning,
+) {
+    val action =
+        when (warning) {
+            RadioWarning.BluetoothOff -> {
+                Settings.ACTION_BLUETOOTH_SETTINGS
             }
-    }
+
+            RadioWarning.WifiOff -> {
+                Settings.ACTION_WIFI_SETTINGS
+            }
+
+            RadioWarning.AllRadiosOff -> {
+                if (isAirplaneModeOn(context)) {
+                    Settings.ACTION_AIRPLANE_MODE_SETTINGS
+                } else {
+                    Settings.ACTION_WIRELESS_SETTINGS
+                }
+            }
+        }
     runCatching { context.startActivity(Intent(action)) }
 }
 
@@ -300,49 +312,57 @@ internal fun ConversationListItem(
     val deletable = !row.isRoom
     var menuOpen by remember { mutableStateOf(false) }
     var showConfirm by remember { mutableStateOf(false) }
-    val clickModifier = if (deletable) {
-        Modifier.combinedClickable(onClick = onClick, onLongClick = { menuOpen = true })
-    } else {
-        Modifier.clickable(onClick = onClick)
-    }
+    val clickModifier =
+        if (deletable) {
+            Modifier.combinedClickable(onClick = onClick, onLongClick = { menuOpen = true })
+        } else {
+            Modifier.clickable(onClick = onClick)
+        }
 
     // The row is a single accessible target: collapse its children (avatar, title, preview, time,
     // unread badge) into one labelled Button node so a screen reader reads the whole conversation as
     // one summary with a spoken timestamp, and surface the long-press delete as a custom action.
     val preview = row.lastPreview ?: stringResource(R.string.chat_list_empty_preview)
-    val spokenTime = row.lastMessageAt?.let {
-        DateUtils.getRelativeTimeSpanString(it, now, DateUtils.MINUTE_IN_MILLIS).toString()
-    }
-    val spokenUnread = if (row.unreadCount > 0) {
-        pluralStringResource(R.plurals.chat_list_unread_count, row.unreadCount, row.unreadCount)
-    } else {
-        null
-    }
+    val spokenTime =
+        row.lastMessageAt?.let {
+            DateUtils.getRelativeTimeSpanString(it, now, DateUtils.MINUTE_IN_MILLIS).toString()
+        }
+    val spokenUnread =
+        if (row.unreadCount > 0) {
+            pluralStringResource(R.plurals.chat_list_unread_count, row.unreadCount, row.unreadCount)
+        } else {
+            null
+        }
     val rowDescription = listOfNotNull(row.title, preview, spokenTime, spokenUnread).joinToString(", ")
     val deleteLabel = stringResource(R.string.chat_list_delete_action)
 
     Box {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(clickModifier)
-                .padding(horizontal = 16.dp, vertical = 10.dp)
-                .clearAndSetSemantics {
-                    // Stable id for automation (surfaces as a uiautomator resource-id); "nearby" for the
-                    // broadcast room, a peer node id for a DM, or a "g-…" group id.
-                    testTag = "chat_row_${row.id}"
-                    contentDescription = rowDescription
-                    role = Role.Button
-                    onClick { onClick(); true }
-                    if (deletable) {
-                        customActions = listOf(
-                            CustomAccessibilityAction(deleteLabel) {
-                                showConfirm = true
-                                true
-                            },
-                        )
-                    }
-                },
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .then(clickModifier)
+                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .clearAndSetSemantics {
+                        // Stable id for automation (surfaces as a uiautomator resource-id); "nearby" for the
+                        // broadcast room, a peer node id for a DM, or a "g-…" group id.
+                        testTag = "chat_row_${row.id}"
+                        contentDescription = rowDescription
+                        role = Role.Button
+                        onClick {
+                            onClick()
+                            true
+                        }
+                        if (deletable) {
+                            customActions =
+                                listOf(
+                                    CustomAccessibilityAction(deleteLabel) {
+                                        showConfirm = true
+                                        true
+                                    },
+                                )
+                        }
+                    },
             verticalAlignment = Alignment.CenterVertically,
         ) {
             LeadingVisual(row)
@@ -442,38 +462,53 @@ private fun LeadingVisual(row: ConversationRow) {
     val size = 52.dp
     val groupPhoto = row.avatarHash
     when {
-        row.isRoom -> CircleGlyph(size) {
-            Icon(
-                painter = painterResource(R.drawable.ic_stat_mesh),
+        row.isRoom -> {
+            CircleGlyph(size) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_stat_mesh),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+        }
+
+        row.isGroup && groupPhoto != null -> {
+            AsyncImage(
+                model = BlobImage(groupPhoto),
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.size(size).clip(CircleShape),
             )
         }
-        row.isGroup && groupPhoto != null -> AsyncImage(
-            model = BlobImage(groupPhoto),
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.size(size).clip(CircleShape),
-        )
-        row.isGroup -> CircleGlyph(size) {
-            Icon(
-                Icons.Filled.Group,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-            )
+
+        row.isGroup -> {
+            CircleGlyph(size) {
+                Icon(
+                    Icons.Filled.Group,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
         }
-        else -> Avatar(avatarHash = row.avatarHash, name = row.title, size = size)
+
+        else -> {
+            Avatar(avatarHash = row.avatarHash, name = row.title, size = size)
+        }
     }
 }
 
 /** A circular tinted container for a leading glyph (room logo / group icon). */
 @Composable
-private fun CircleGlyph(size: androidx.compose.ui.unit.Dp, content: @Composable () -> Unit) {
+private fun CircleGlyph(
+    size: androidx.compose.ui.unit.Dp,
+    content: @Composable () -> Unit,
+) {
     Box(
-        modifier = Modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.secondaryContainer),
+        modifier =
+            Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.secondaryContainer),
         contentAlignment = Alignment.Center,
     ) {
         content()
@@ -482,57 +517,63 @@ private fun CircleGlyph(size: androidx.compose.ui.unit.Dp, content: @Composable 
 
 @Preview(showBackground = true)
 @Composable
-fun ConversationListItemDmPreview() = KnitPreview {
-    ConversationListItem(
-        row = ConversationRow(
-            id = "dm-1",
-            title = "Ada Lovelace",
-            avatarHash = null,
-            isRoom = false,
-            isGroup = false,
-            lastPreview = "See you at the meetup tonight!",
-            lastMessageAt = PREVIEW_NOW - 5 * 60_000L,
-            unreadCount = 2,
-        ),
-        now = PREVIEW_NOW,
-        onClick = {},
-    )
-}
+fun ConversationListItemDmPreview() =
+    KnitPreview {
+        ConversationListItem(
+            row =
+                ConversationRow(
+                    id = "dm-1",
+                    title = "Ada Lovelace",
+                    avatarHash = null,
+                    isRoom = false,
+                    isGroup = false,
+                    lastPreview = "See you at the meetup tonight!",
+                    lastMessageAt = PREVIEW_NOW - 5 * 60_000L,
+                    unreadCount = 2,
+                ),
+            now = PREVIEW_NOW,
+            onClick = {},
+        )
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun ConversationListItemGroupPreview() = KnitPreview {
-    ConversationListItem(
-        row = ConversationRow(
-            id = "group-1",
-            title = "Hiking Crew",
-            avatarHash = null,
-            isRoom = false,
-            isGroup = true,
-            lastPreview = "Lena: bringing the trail map",
-            lastMessageAt = PREVIEW_NOW - 60 * 60_000L,
-            unreadCount = 0,
-        ),
-        now = PREVIEW_NOW,
-        onClick = {},
-    )
-}
+fun ConversationListItemGroupPreview() =
+    KnitPreview {
+        ConversationListItem(
+            row =
+                ConversationRow(
+                    id = "group-1",
+                    title = "Hiking Crew",
+                    avatarHash = null,
+                    isRoom = false,
+                    isGroup = true,
+                    lastPreview = "Lena: bringing the trail map",
+                    lastMessageAt = PREVIEW_NOW - 60 * 60_000L,
+                    unreadCount = 0,
+                ),
+            now = PREVIEW_NOW,
+            onClick = {},
+        )
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun ConversationListItemRoomPreview() = KnitPreview {
-    ConversationListItem(
-        row = ConversationRow(
-            id = "room",
-            title = "Nearby",
-            avatarHash = null,
-            isRoom = true,
-            isGroup = false,
-            lastPreview = null,
-            lastMessageAt = null,
-            unreadCount = 0,
-        ),
-        now = PREVIEW_NOW,
-        onClick = {},
-    )
-}
+fun ConversationListItemRoomPreview() =
+    KnitPreview {
+        ConversationListItem(
+            row =
+                ConversationRow(
+                    id = "room",
+                    title = "Nearby",
+                    avatarHash = null,
+                    isRoom = true,
+                    isGroup = false,
+                    lastPreview = null,
+                    lastMessageAt = null,
+                    unreadCount = 0,
+                ),
+            now = PREVIEW_NOW,
+            onClick = {},
+        )
+    }

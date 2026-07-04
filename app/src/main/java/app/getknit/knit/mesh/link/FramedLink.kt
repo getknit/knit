@@ -29,8 +29,11 @@ import java.io.OutputStream
  */
 interface LinkCallbacks {
     fun onInbound(frame: InboundFrame)
+
     fun onDigest(digest: ReceivedDigest)
+
     fun onFile(file: ReceivedFile)
+
     fun onLinkDown(nodeId: String)
 }
 
@@ -113,7 +116,10 @@ class FramedLink(
     }
 
     /** Enqueue a file (avatar or attachment) for streaming to this peer. */
-    fun sendFile(file: File, meta: FileMeta) {
+    fun sendFile(
+        file: File,
+        meta: FileMeta,
+    ) {
         outbound.trySend(Outbound.FileSend(file, meta))
     }
 
@@ -137,13 +143,39 @@ class FramedLink(
             while (scope.isActive) {
                 val msg = LinkFraming.read(input) ?: break
                 when (msg.type) {
-                    LinkFraming.Type.FRAME -> { touch(); handleFrame(msg.payload) }
-                    LinkFraming.Type.FILE_HEADER -> { touch(); beginRxFile(msg.payload) }
-                    LinkFraming.Type.FILE_CHUNK -> { touch(); appendRxFile(msg.payload) }
-                    LinkFraming.Type.FILE_END -> { touch(); endRxFile() }
-                    LinkFraming.Type.DIGEST -> { touch(); handleDigest(msg.payload) }
-                    LinkFraming.Type.KEEPALIVE -> Unit // legacy record from an older peer; ignore
-                    LinkFraming.Type.HELLO -> Unit // identity already consumed at accept; ignore any stray
+                    LinkFraming.Type.FRAME -> {
+                        touch()
+                        handleFrame(msg.payload)
+                    }
+
+                    LinkFraming.Type.FILE_HEADER -> {
+                        touch()
+                        beginRxFile(msg.payload)
+                    }
+
+                    LinkFraming.Type.FILE_CHUNK -> {
+                        touch()
+                        appendRxFile(msg.payload)
+                    }
+
+                    LinkFraming.Type.FILE_END -> {
+                        touch()
+                        endRxFile()
+                    }
+
+                    LinkFraming.Type.DIGEST -> {
+                        touch()
+                        handleDigest(msg.payload)
+                    }
+
+                    LinkFraming.Type.KEEPALIVE -> {
+                        Unit
+                    }
+
+                    // legacy record from an older peer; ignore
+                    LinkFraming.Type.HELLO -> {
+                        Unit
+                    } // identity already consumed at accept; ignore any stray
                 }
             }
         } catch (e: IOException) {
@@ -190,12 +222,16 @@ class FramedLink(
                         out.flush()
                         touch()
                     }
+
                     is Outbound.Digest -> {
                         LinkFraming.write(out, LinkFraming.Type.DIGEST, LinkFraming.encodeDigest(DigestWire(item.ids)))
                         out.flush()
                         touch()
                     }
-                    is Outbound.FileSend -> streamFile(out, item)
+
+                    is Outbound.FileSend -> {
+                        streamFile(out, item)
+                    }
                 }
             }
         } catch (e: IOException) {
@@ -229,18 +265,24 @@ class FramedLink(
     }
 
     /** Next outbound item: a file stashed during a prior transfer, else the channel head. */
-    private suspend fun nextOutbound(): Outbound? =
-        stash.removeFirstOrNull() ?: outbound.receiveCatching().getOrNull()
+    private suspend fun nextOutbound(): Outbound? = stash.removeFirstOrNull() ?: outbound.receiveCatching().getOrNull()
 
     /** Write any queued frames now (called between file chunks); stash any files for later. */
     private fun drainFramesInto(out: OutputStream) {
         while (true) {
             val item = outbound.tryReceive().getOrNull() ?: break
             when (item) {
-                is Outbound.Frame -> LinkFraming.write(out, LinkFraming.Type.FRAME, item.bytes)
-                is Outbound.Digest ->
+                is Outbound.Frame -> {
+                    LinkFraming.write(out, LinkFraming.Type.FRAME, item.bytes)
+                }
+
+                is Outbound.Digest -> {
                     LinkFraming.write(out, LinkFraming.Type.DIGEST, LinkFraming.encodeDigest(DigestWire(item.ids)))
-                is Outbound.FileSend -> stash.addLast(item)
+                }
+
+                is Outbound.FileSend -> {
+                    stash.addLast(item)
+                }
             }
         }
     }
@@ -249,15 +291,20 @@ class FramedLink(
 
     private fun beginRxFile(headerPayload: ByteArray) {
         closeRx()
-        val header = LinkFraming.decodeFileHeader(headerPayload) ?: run { rxAborted = true; return }
+        val header =
+            LinkFraming.decodeFileHeader(headerPayload) ?: run {
+                rxAborted = true
+                return
+            }
         val temp = File.createTempFile("link-rx-", ".tmp", cacheDir)
         rxTemp = temp
         rxOut = BufferedOutputStream(temp.outputStream())
-        rxMeta = FileMeta(
-            kind = runCatching { FileKind.valueOf(header.kind) }.getOrDefault(FileKind.ATTACHMENT),
-            key = header.key,
-            mime = header.mime,
-        )
+        rxMeta =
+            FileMeta(
+                kind = runCatching { FileKind.valueOf(header.kind) }.getOrDefault(FileKind.ATTACHMENT),
+                key = header.key,
+                mime = header.mime,
+            )
         rxBytes = 0L
         rxAborted = false
         rxInProgress = true
@@ -285,7 +332,9 @@ class FramedLink(
         val out = rxOut
         val temp = rxTemp
         val meta = rxMeta
-        rxOut = null; rxTemp = null; rxMeta = null
+        rxOut = null
+        rxTemp = null
+        rxMeta = null
         rxInProgress = false
         runCatching { out?.close() }
         if (rxAborted || temp == null || meta == null) {
@@ -314,7 +363,10 @@ class FramedLink(
     }
 
     /** Moves a fully-received file into the cache under a safe name and announces it (avatar by node, attachment by hash). */
-    private fun finalizeIncomingFile(temp: File, meta: FileMeta) {
+    private fun finalizeIncomingFile(
+        temp: File,
+        meta: FileMeta,
+    ) {
         // [meta.key] is peer-supplied and interpolated into the filename: reject anything but a 64-hex
         // content hash so a "../" can't escape the cache dir (path traversal → arbitrary in-sandbox write).
         if (!isValidBlobHash(meta.key)) {
@@ -322,13 +374,17 @@ class FramedLink(
             log("Rejecting ${meta.kind} from $nodeId: malformed blob key")
             return
         }
-        val dest = when (meta.kind) {
-            FileKind.AVATAR -> {
-                cacheDir.listFiles { f -> f.name.startsWith("avatar-$nodeId-") }?.forEach { it.delete() }
-                File(cacheDir, "avatar-$nodeId-${meta.key}.jpg")
+        val dest =
+            when (meta.kind) {
+                FileKind.AVATAR -> {
+                    cacheDir.listFiles { f -> f.name.startsWith("avatar-$nodeId-") }?.forEach { it.delete() }
+                    File(cacheDir, "avatar-$nodeId-${meta.key}.jpg")
+                }
+
+                FileKind.ATTACHMENT -> {
+                    File(cacheDir, "attach-${meta.key}.${extForMime(meta.mime)}")
+                }
             }
-            FileKind.ATTACHMENT -> File(cacheDir, "attach-${meta.key}.${extForMime(meta.mime)}")
-        }
         val cacheRoot = cacheDir.canonicalPath + File.separator
         if (!dest.canonicalPath.startsWith(cacheRoot)) {
             temp.delete()
@@ -347,17 +403,27 @@ class FramedLink(
         }
     }
 
-    private fun extForMime(mime: String): String = when (mime.lowercase()) {
-        "image/gif" -> "gif"
-        "image/png" -> "png"
-        "image/webp" -> "webp"
-        else -> "jpg"
-    }
+    private fun extForMime(mime: String): String =
+        when (mime.lowercase()) {
+            "image/gif" -> "gif"
+            "image/png" -> "png"
+            "image/webp" -> "webp"
+            else -> "jpg"
+        }
 
     private sealed interface Outbound {
-        class Frame(val bytes: ByteArray) : Outbound
-        class Digest(val ids: List<String>) : Outbound
-        class FileSend(val file: File, val meta: FileMeta) : Outbound
+        class Frame(
+            val bytes: ByteArray,
+        ) : Outbound
+
+        class Digest(
+            val ids: List<String>,
+        ) : Outbound
+
+        class FileSend(
+            val file: File,
+            val meta: FileMeta,
+        ) : Outbound
     }
 
     private companion object {

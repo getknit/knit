@@ -46,11 +46,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -92,9 +92,10 @@ fun ProfileScreen(
         viewModel.saved.collect { onBack() }
     }
 
-    val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia(),
-    ) { uri -> uri?.let(viewModel::pickAvatar) }
+    val picker =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.PickVisualMedia(),
+        ) { uri -> uri?.let(viewModel::pickAvatar) }
 
     cropTarget?.let { bmp ->
         val image = remember(bmp) { bmp.asImageBitmap() }
@@ -118,11 +119,12 @@ fun ProfileScreen(
         },
     ) { padding ->
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -152,10 +154,11 @@ fun ProfileScreen(
             OutlinedTextField(
                 value = name,
                 onValueChange = viewModel::setDisplayName,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("profile_name")
-                    .onFocusChanged { if (!it.isFocused) viewModel.commitDisplayName() },
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .testTag("profile_name")
+                        .onFocusChanged { if (!it.isFocused) viewModel.commitDisplayName() },
                 label = { Text(stringResource(R.string.profile_display_name_label)) },
                 placeholder = { if (alias.isNotEmpty()) Text(alias) },
                 singleLine = true,
@@ -164,10 +167,11 @@ fun ProfileScreen(
             OutlinedTextField(
                 value = status,
                 onValueChange = viewModel::setStatus,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("profile_status")
-                    .onFocusChanged { if (!it.isFocused) viewModel.commitStatus() },
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .testTag("profile_status")
+                        .onFocusChanged { if (!it.isFocused) viewModel.commitStatus() },
                 label = { Text(stringResource(R.string.profile_status_label)) },
                 singleLine = true,
                 supportingText = { CharCounter(status.length, TextLimits.STATUS) },
@@ -210,16 +214,17 @@ fun ProfileScreen(
 private fun BoxScope.RemovePhotoButton(onClick: () -> Unit) {
     val description = stringResource(R.string.profile_remove_photo_desc)
     Box(
-        modifier = Modifier
-            .align(Alignment.TopEnd)
-            .offset(x = 10.dp, y = (-10).dp)
-            .minimumInteractiveComponentSize()
-            .size(28.dp)
-            .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
-            .clickable(role = Role.Button, onClick = onClick)
-            .semantics { contentDescription = description },
+        modifier =
+            Modifier
+                .align(Alignment.TopEnd)
+                .offset(x = 10.dp, y = (-10).dp)
+                .minimumInteractiveComponentSize()
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surface)
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                .clickable(role = Role.Button, onClick = onClick)
+                .semantics { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
         Icon(
@@ -234,7 +239,10 @@ private fun BoxScope.RemovePhotoButton(onClick: () -> Unit) {
 
 /** Right-aligned "used / limit" counter shown beneath a capped single-line field. */
 @Composable
-private fun CharCounter(length: Int, limit: Int) {
+private fun CharCounter(
+    length: Int,
+    limit: Int,
+) {
     Text(
         text = "$length / $limit",
         style = MaterialTheme.typography.labelSmall,
@@ -246,14 +254,18 @@ private fun CharCounter(length: Int, limit: Int) {
 
 /** Toggle for on-device content moderation (abusive-text + explicit-image filtering). */
 @Composable
-private fun ContentFilteringRow(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+private fun ContentFilteringRow(
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            // One toggle target: the row owns the switch so a screen reader announces the title +
-            // subtitle as the label with an on/off state, instead of an unlabelled switch node.
-            .toggleable(value = enabled, onValueChange = onToggle, role = Role.Switch)
-            .padding(top = 8.dp),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                // One toggle target: the row owns the switch so a screen reader announces the title +
+                // subtitle as the label with an on/off state, instead of an unlabelled switch node.
+                .toggleable(value = enabled, onValueChange = onToggle, role = Role.Switch)
+                .padding(top = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -281,11 +293,12 @@ private fun BatteryOptimizationRow() {
     var exempt by remember { mutableStateOf(isIgnoringBatteryOptimizations(context)) }
 
     DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                exempt = isIgnoringBatteryOptimizations(context)
+        val observer =
+            LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    exempt = isIgnoringBatteryOptimizations(context)
+                }
             }
-        }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
@@ -295,11 +308,12 @@ private fun BatteryOptimizationRow() {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            text = if (exempt) {
-                stringResource(R.string.battery_allowed)
-            } else {
-                stringResource(R.string.battery_restricted)
-            },
+            text =
+                if (exempt) {
+                    stringResource(R.string.battery_allowed)
+                } else {
+                    stringResource(R.string.battery_restricted)
+                },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -314,18 +328,20 @@ private fun BatteryOptimizationRow() {
 
 @Preview(showBackground = true)
 @Composable
-fun CharCounterPreview() = KnitPreview {
-    Column {
-        CharCounter(length = 12, limit = 40)
-        CharCounter(length = 40, limit = 40)
+fun CharCounterPreview() =
+    KnitPreview {
+        Column {
+            CharCounter(length = 12, limit = 40)
+            CharCounter(length = 40, limit = 40)
+        }
     }
-}
 
 @Preview(showBackground = true)
 @Composable
-fun ContentFilteringRowPreview() = KnitPreview {
-    Column {
-        ContentFilteringRow(enabled = true, onToggle = {})
-        ContentFilteringRow(enabled = false, onToggle = {})
+fun ContentFilteringRowPreview() =
+    KnitPreview {
+        Column {
+            ContentFilteringRow(enabled = true, onToggle = {})
+            ContentFilteringRow(enabled = false, onToggle = {})
+        }
     }
-}

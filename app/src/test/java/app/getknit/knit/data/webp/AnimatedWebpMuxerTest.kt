@@ -1,12 +1,12 @@
 package app.getknit.knit.data.webp
 
-import java.io.ByteArrayOutputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayOutputStream
 
 /**
  * Structural tests for [AnimatedWebpMuxer]: feed it synthetic single-frame WebP byte arrays (the shape
@@ -14,7 +14,6 @@ import org.junit.Test
  * `RIFF…WEBP` file with a `VP8X`, an `ANIM`, and one `ANMF` per frame. No Android — pure bytes.
  */
 class AnimatedWebpMuxerTest {
-
     @Test
     fun `muxes opaque frames into a valid animated webp`() {
         val frames = listOf(opaqueFrame(byteArrayOf(1, 2, 3, 4)), opaqueFrame(byteArrayOf(5, 6, 7, 8)))
@@ -35,7 +34,7 @@ class AnimatedWebpMuxerTest {
         val anmf = chunks.drop(2)
         assertEquals(2, anmf.size)
         assertTrue(anmf.all { it.tag == "ANMF" })
-        assertEquals(66, u24(anmf[0].payload, 12))  // frame 0 duration
+        assertEquals(66, u24(anmf[0].payload, 12)) // frame 0 duration
         assertEquals(100, u24(anmf[1].payload, 12)) // frame 1 duration
     }
 
@@ -54,10 +53,11 @@ class AnimatedWebpMuxerTest {
 
     @Test
     fun `sets the top-level alpha flag when a frame carries ALPH`() {
-        val frames = listOf(
-            opaqueFrame(byteArrayOf(1, 1)),
-            alphaFrame(alph = byteArrayOf(7, 7, 7), vp8 = byteArrayOf(2, 2)),
-        )
+        val frames =
+            listOf(
+                opaqueFrame(byteArrayOf(1, 1)),
+                alphaFrame(alph = byteArrayOf(7, 7, 7), vp8 = byteArrayOf(2, 2)),
+            )
         val chunks = parse(AnimatedWebpMuxer.mux(frames, intArrayOf(40, 40), 16, 16)!!)
         assertTrue("alpha flag set", chunks[0].payload[0].toInt() and 0x10 == 0x10)
         val alphaAnmf = chunks.last()
@@ -97,8 +97,10 @@ class AnimatedWebpMuxerTest {
 
     private fun opaqueFrame(vp8: ByteArray): ByteArray = webpFile(chunk("VP8 ", vp8))
 
-    private fun alphaFrame(alph: ByteArray, vp8: ByteArray): ByteArray =
-        webpFile(chunk("VP8X", ByteArray(10)), chunk("ALPH", alph), chunk("VP8 ", vp8))
+    private fun alphaFrame(
+        alph: ByteArray,
+        vp8: ByteArray,
+    ): ByteArray = webpFile(chunk("VP8X", ByteArray(10)), chunk("ALPH", alph), chunk("VP8 ", vp8))
 
     private fun webpFile(vararg chunks: ByteArray): ByteArray {
         val body = ByteArrayOutputStream()
@@ -112,7 +114,10 @@ class AnimatedWebpMuxerTest {
         return out.toByteArray()
     }
 
-    private fun chunk(tag: String, payload: ByteArray): ByteArray {
+    private fun chunk(
+        tag: String,
+        payload: ByteArray,
+    ): ByteArray {
         val out = ByteArrayOutputStream()
         out.write(tag.toByteArray(Charsets.US_ASCII))
         out.write(leU32(payload.size))
@@ -121,10 +126,16 @@ class AnimatedWebpMuxerTest {
         return out.toByteArray()
     }
 
-    private class Chunk(val tag: String, val payload: ByteArray)
+    private class Chunk(
+        val tag: String,
+        val payload: ByteArray,
+    )
 
     /** Walks a RIFF chunk list; [fromRiff] true skips the 12-byte RIFF/WEBP header first. */
-    private fun parse(bytes: ByteArray, fromRiff: Boolean = true): List<Chunk> {
+    private fun parse(
+        bytes: ByteArray,
+        fromRiff: Boolean = true,
+    ): List<Chunk> {
         var pos = 0
         if (fromRiff) {
             assertEquals("RIFF", String(bytes, 0, 4, Charsets.US_ASCII))
@@ -143,24 +154,35 @@ class AnimatedWebpMuxerTest {
         return chunks
     }
 
-    private fun assertArrayEqualsMsg(expected: ByteArray, actual: ByteArray) =
-        assertTrue("bitstream preserved", expected.contentEquals(actual))
+    private fun assertArrayEqualsMsg(
+        expected: ByteArray,
+        actual: ByteArray,
+    ) = assertTrue("bitstream preserved", expected.contentEquals(actual))
 
-    private fun leU32(v: Int) = byteArrayOf(
-        (v and 0xFF).toByte(),
-        ((v ushr 8) and 0xFF).toByte(),
-        ((v ushr 16) and 0xFF).toByte(),
-        ((v ushr 24) and 0xFF).toByte(),
-    )
+    private fun leU32(v: Int) =
+        byteArrayOf(
+            (v and 0xFF).toByte(),
+            ((v ushr 8) and 0xFF).toByte(),
+            ((v ushr 16) and 0xFF).toByte(),
+            ((v ushr 24) and 0xFF).toByte(),
+        )
 
-    private fun leU32read(b: ByteArray, off: Int): Int =
+    private fun leU32read(
+        b: ByteArray,
+        off: Int,
+    ): Int =
         (b[off].toInt() and 0xFF) or ((b[off + 1].toInt() and 0xFF) shl 8) or
             ((b[off + 2].toInt() and 0xFF) shl 16) or ((b[off + 3].toInt() and 0xFF) shl 24)
 
-    private fun u16(b: ByteArray, off: Int): Int = (b[off].toInt() and 0xFF) or ((b[off + 1].toInt() and 0xFF) shl 8)
+    private fun u16(
+        b: ByteArray,
+        off: Int,
+    ): Int = (b[off].toInt() and 0xFF) or ((b[off + 1].toInt() and 0xFF) shl 8)
 
-    private fun u24(b: ByteArray, off: Int): Int =
-        (b[off].toInt() and 0xFF) or ((b[off + 1].toInt() and 0xFF) shl 8) or ((b[off + 2].toInt() and 0xFF) shl 16)
+    private fun u24(
+        b: ByteArray,
+        off: Int,
+    ): Int = (b[off].toInt() and 0xFF) or ((b[off + 1].toInt() and 0xFF) shl 8) or ((b[off + 2].toInt() and 0xFF) shl 16)
 
     private companion object {
         const val ANMF_HEADER = 16 // frame X/Y/W/H/duration (5×u24) + 1 flags byte

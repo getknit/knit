@@ -61,25 +61,25 @@ fun Avatar(
     onClickLabel: String? = null,
 ) {
     Box(
-        modifier = modifier
-            .then(if (onClick != null) Modifier.minimumInteractiveComponentSize() else Modifier)
-            .size(size)
-            .clip(CircleShape)
-            .background(background)
-            .then(
-                if (onClick != null) {
-                    Modifier.clickable(onClickLabel = onClickLabel, role = Role.Button, onClick = onClick)
-                } else {
-                    Modifier
-                },
-            )
-            .then(
-                if (contentDescription != null) {
-                    Modifier.semantics { this.contentDescription = contentDescription }
-                } else {
-                    Modifier
-                },
-            ),
+        modifier =
+            modifier
+                .then(if (onClick != null) Modifier.minimumInteractiveComponentSize() else Modifier)
+                .size(size)
+                .clip(CircleShape)
+                .background(background)
+                .then(
+                    if (onClick != null) {
+                        Modifier.clickable(onClickLabel = onClickLabel, role = Role.Button, onClick = onClick)
+                    } else {
+                        Modifier
+                    },
+                ).then(
+                    if (contentDescription != null) {
+                        Modifier.semantics { this.contentDescription = contentDescription }
+                    } else {
+                        Modifier
+                    },
+                ),
         contentAlignment = Alignment.Center,
     ) {
         // Show the avatar image when its blob is present; fall back to the initial letter otherwise.
@@ -112,7 +112,12 @@ fun Avatar(
  * style's box.
  */
 @Composable
-private fun AvatarInitial(name: String, size: Dp, textStyle: TextStyle, contentColor: Color) {
+private fun AvatarInitial(
+    name: String,
+    size: Dp,
+    textStyle: TextStyle,
+    contentColor: Color,
+) {
     val initialSize = with(LocalDensity.current) { (size * 0.5f).toSp() }
     Text(
         text = avatarInitial(name),
@@ -147,12 +152,14 @@ private fun avatarInitial(name: String): String {
 // which has no DB-backed blob bytes in a preview and so would only show a placeholder.
 @Preview(showBackground = true)
 @Composable
-fun AvatarInitialPreview() = KnitPreview {
-    Avatar(avatarHash = null, name = "Ada Lovelace", size = 40.dp)
-}
+fun AvatarInitialPreview() =
+    KnitPreview {
+        Avatar(avatarHash = null, name = "Ada Lovelace", size = 40.dp)
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun AvatarLargeEmojiPreview() = KnitPreview {
-    Avatar(avatarHash = null, name = "🦊 Fox", size = 96.dp)
-}
+fun AvatarLargeEmojiPreview() =
+    KnitPreview {
+        Avatar(avatarHash = null, name = "🦊 Fox", size = 96.dp)
+    }

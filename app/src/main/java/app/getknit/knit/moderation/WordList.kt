@@ -13,10 +13,14 @@ object WordList {
 
     fun loadProfanity(context: Context): List<String> = load(context, PROFANITY_ASSET)
 
-    private fun load(context: Context, asset: String): List<String> =
+    private fun load(
+        context: Context,
+        asset: String,
+    ): List<String> =
         try {
             context.assets.open(asset).bufferedReader().useLines { lines ->
-                lines.map(String::trim)
+                lines
+                    .map(String::trim)
                     .filter { it.isNotEmpty() && !it.startsWith("#") }
                     .toList()
             }

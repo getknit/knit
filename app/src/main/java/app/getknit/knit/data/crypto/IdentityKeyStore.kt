@@ -32,8 +32,9 @@ data class IdentityKeys(
  *
  * Mirrors [DatabaseKey]'s "generate once, transparently load thereafter" lifecycle.
  */
-class IdentityKeyStore(private val secret: KeystoreSecret) {
-
+class IdentityKeyStore(
+    private val secret: KeystoreSecret,
+) {
     @Volatile
     private var cached: IdentityKeys? = null
 
@@ -45,10 +46,13 @@ class IdentityKeyStore(private val secret: KeystoreSecret) {
     @Synchronized
     fun keys(): IdentityKeys {
         cached?.let { return it }
-        val loaded = secret.load()?.let { runCatching { parse(it) }.getOrElse { error ->
-            Log.w(TAG, "Identity keys unrecoverable; regenerating", error)
-            null
-        } }
+        val loaded =
+            secret.load()?.let {
+                runCatching { parse(it) }.getOrElse { error ->
+                    Log.w(TAG, "Identity keys unrecoverable; regenerating", error)
+                    null
+                }
+            }
         val keys = loaded ?: generateAndStore()
         cached = keys
         return keys
@@ -66,19 +70,24 @@ class IdentityKeyStore(private val secret: KeystoreSecret) {
     private fun generateAndStore(): IdentityKeys {
         val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE))
         val sig = KeysetHandle.generateNew(KeyTemplates.get(SIG_TEMPLATE))
-        val stored = Stored(
-            hybridPriv = TinkProtoKeysetFormat.serializeKeyset(hybrid, InsecureSecretKeyAccess.get()),
-            sigPriv = TinkProtoKeysetFormat.serializeKeyset(sig, InsecureSecretKeyAccess.get()),
-        )
+        val stored =
+            Stored(
+                hybridPriv = TinkProtoKeysetFormat.serializeKeyset(hybrid, InsecureSecretKeyAccess.get()),
+                sigPriv = TinkProtoKeysetFormat.serializeKeyset(sig, InsecureSecretKeyAccess.get()),
+            )
         secret.store(cryptoCbor.encodeToByteArray(stored))
         return IdentityKeys(hybrid, sig, PublicKeyBundle.fromPrivate(hybrid, sig))
     }
 
     @Serializable
-    private class Stored(val hybridPriv: ByteArray, val sigPriv: ByteArray)
+    private class Stored(
+        val hybridPriv: ByteArray,
+        val sigPriv: ByteArray,
+    )
 
     private companion object {
         const val TAG = "IdentityKeyStore"
+
         // HPKE with X25519 + HKDF-SHA256 + AES-256-GCM (Tink's own impl; works on minSdk 29).
         const val HYBRID_TEMPLATE = "DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM"
         const val SIG_TEMPLATE = "ED25519"

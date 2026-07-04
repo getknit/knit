@@ -42,21 +42,32 @@ object AesGcm {
     fun randomKey(): ByteArray = ByteArray(KEY_BYTES).also { SecureRandom().nextBytes(it) }
 
     /** Encrypts [plain] under [key], returning the random (iv, ciphertext) pair. */
-    fun encrypt(key: ByteArray, plain: ByteArray, aad: ByteArray): Pair<ByteArray, ByteArray> {
+    fun encrypt(
+        key: ByteArray,
+        plain: ByteArray,
+        aad: ByteArray,
+    ): Pair<ByteArray, ByteArray> {
         val iv = ByteArray(IV_BYTES).also { SecureRandom().nextBytes(it) }
-        val cipher = Cipher.getInstance(TRANSFORMATION).apply {
-            init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BITS, iv))
-            updateAAD(aad)
-        }
+        val cipher =
+            Cipher.getInstance(TRANSFORMATION).apply {
+                init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BITS, iv))
+                updateAAD(aad)
+            }
         return iv to cipher.doFinal(plain)
     }
 
     /** Decrypts [ct] under [key]/[iv]; throws on a bad key, tag, or aad. */
-    fun decrypt(key: ByteArray, iv: ByteArray, ct: ByteArray, aad: ByteArray): ByteArray {
-        val cipher = Cipher.getInstance(TRANSFORMATION).apply {
-            init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BITS, iv))
-            updateAAD(aad)
-        }
+    fun decrypt(
+        key: ByteArray,
+        iv: ByteArray,
+        ct: ByteArray,
+        aad: ByteArray,
+    ): ByteArray {
+        val cipher =
+            Cipher.getInstance(TRANSFORMATION).apply {
+                init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BITS, iv))
+                updateAAD(aad)
+            }
         return cipher.doFinal(ct)
     }
 }

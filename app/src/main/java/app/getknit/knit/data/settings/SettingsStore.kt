@@ -19,7 +19,6 @@ import kotlinx.coroutines.flow.map
 class SettingsStore(
     private val dataStore: DataStore<Preferences>,
 ) {
-
     val displayName: Flow<String> = dataStore.data.map { it[KEY_NAME] ?: "" }
     val status: Flow<String> = dataStore.data.map { it[KEY_STATUS] ?: "" }
 
@@ -47,16 +46,17 @@ class SettingsStore(
      * watermark (from other senders) as that conversation's unread badge. Stored under one dynamic
      * key per conversation (see [lastReadKey]); [lastReadAll] reads them back as a map for the list.
      */
-    val lastReadAll: Flow<Map<String, Long>> = dataStore.data.map { prefs ->
-        prefs.asMap()
-            .filterKeys { it.name.startsWith(LAST_READ_PREFIX) }
-            .entries
-            .associate { (key, value) -> key.name.removePrefix(LAST_READ_PREFIX) to (value as? Long ?: 0L) }
-    }
+    val lastReadAll: Flow<Map<String, Long>> =
+        dataStore.data.map { prefs ->
+            prefs
+                .asMap()
+                .filterKeys { it.name.startsWith(LAST_READ_PREFIX) }
+                .entries
+                .associate { (key, value) -> key.name.removePrefix(LAST_READ_PREFIX) to (value as? Long ?: 0L) }
+        }
 
     /** Read watermark for a single conversation (0 until the user has read anything there). */
-    fun lastReadAt(conversationId: String): Flow<Long> =
-        dataStore.data.map { it[lastReadKey(conversationId)] ?: 0L }
+    fun lastReadAt(conversationId: String): Flow<Long> = dataStore.data.map { it[lastReadKey(conversationId)] ?: 0L }
 
     /**
      * Node ids the local user has blocked. Their messages/reactions are never stored, shown, or
@@ -87,49 +87,58 @@ class SettingsStore(
         dataStore.data.map { it[KEY_CONTENT_FILTERING] ?: true }
 
     suspend fun setDisplayName(value: String) = dataStore.edit { it[KEY_NAME] = value }
+
     suspend fun setStatus(value: String) = dataStore.edit { it[KEY_STATUS] = value }
 
     /** Persists display name + status in a single transaction so the profile watcher broadcasts once. */
-    suspend fun setProfile(name: String, status: String) =
-        dataStore.edit {
-            it[KEY_NAME] = name
-            it[KEY_STATUS] = status
-        }
+    suspend fun setProfile(
+        name: String,
+        status: String,
+    ) = dataStore.edit {
+        it[KEY_NAME] = name
+        it[KEY_STATUS] = status
+    }
+
     suspend fun setAvatarUpdatedAt(value: Long) = dataStore.edit { it[KEY_AVATAR_UPDATED_AT] = value }
 
     suspend fun setProfileVersion(value: Long) = dataStore.edit { it[KEY_PROFILE_VERSION] = value }
+
     suspend fun setOwnAvatarHash(value: String) = dataStore.edit { it[KEY_OWN_AVATAR_HASH] = value }
 
     /** Removes the stored own-avatar hash so [ownAvatarHash] emits null again (the user cleared their photo). */
     suspend fun clearOwnAvatarHash() = dataStore.edit { it.remove(KEY_OWN_AVATAR_HASH) }
 
-    suspend fun setLastReadAt(conversationId: String, value: Long) =
-        dataStore.edit { it[lastReadKey(conversationId)] = value }
+    suspend fun setLastReadAt(
+        conversationId: String,
+        value: Long,
+    ) = dataStore.edit { it[lastReadKey(conversationId)] = value }
 
     /** Blocks [nodeId]; also records the peer's [deviceTag] (when known) so the block survives a key reset. */
-    suspend fun block(nodeId: String, deviceTag: String? = null) =
-        dataStore.edit { prefs ->
-            prefs[KEY_BLOCKED] = (prefs[KEY_BLOCKED] ?: emptySet()) + nodeId
-            if (deviceTag != null) {
-                prefs[KEY_BLOCKED_TAGS] = (prefs[KEY_BLOCKED_TAGS] ?: emptySet()) + deviceTag
-            }
+    suspend fun block(
+        nodeId: String,
+        deviceTag: String? = null,
+    ) = dataStore.edit { prefs ->
+        prefs[KEY_BLOCKED] = (prefs[KEY_BLOCKED] ?: emptySet()) + nodeId
+        if (deviceTag != null) {
+            prefs[KEY_BLOCKED_TAGS] = (prefs[KEY_BLOCKED_TAGS] ?: emptySet()) + deviceTag
         }
+    }
 
     /** Unblocks [nodeId]; also clears its [deviceTag] (when known) so the device is no longer re-blocked. */
-    suspend fun unblock(nodeId: String, deviceTag: String? = null) =
-        dataStore.edit { prefs ->
-            prefs[KEY_BLOCKED] = (prefs[KEY_BLOCKED] ?: emptySet()) - nodeId
-            if (deviceTag != null) {
-                prefs[KEY_BLOCKED_TAGS] = (prefs[KEY_BLOCKED_TAGS] ?: emptySet()) - deviceTag
-            }
+    suspend fun unblock(
+        nodeId: String,
+        deviceTag: String? = null,
+    ) = dataStore.edit { prefs ->
+        prefs[KEY_BLOCKED] = (prefs[KEY_BLOCKED] ?: emptySet()) - nodeId
+        if (deviceTag != null) {
+            prefs[KEY_BLOCKED_TAGS] = (prefs[KEY_BLOCKED_TAGS] ?: emptySet()) - deviceTag
         }
+    }
 
-    suspend fun setContentFilteringEnabled(value: Boolean) =
-        dataStore.edit { it[KEY_CONTENT_FILTERING] = value }
+    suspend fun setContentFilteringEnabled(value: Boolean) = dataStore.edit { it[KEY_CONTENT_FILTERING] = value }
 
     /** Dynamic per-conversation read-watermark key, e.g. "last_read_nearby" / "last_read_<nodeId>". */
-    private fun lastReadKey(conversationId: String) =
-        longPreferencesKey(LAST_READ_PREFIX + conversationId)
+    private fun lastReadKey(conversationId: String) = longPreferencesKey(LAST_READ_PREFIX + conversationId)
 
     private companion object {
         const val LAST_READ_PREFIX = "last_read_"

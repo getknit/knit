@@ -10,4 +10,8 @@ package app.getknit.knit.ui.image
  * are ciphertext and [BlobFetcher] decrypts them before decoding. Null for plaintext blobs (avatars,
  * broadcast-room attachments). The [hash] is unique per ciphertext, so it remains a sufficient cache key.
  */
-data class BlobImage(val hash: String, val mime: String? = null, val key: String? = null)
+data class BlobImage(
+    val hash: String,
+    val mime: String? = null,
+    val key: String? = null,
+)

@@ -6,7 +6,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SeenSetTest {
-
     @Test
     fun firstSightIsNewDuplicateIsNot() {
         val seen = SeenSet(clock = { 0L })

@@ -48,13 +48,18 @@ class MessageCrypto(
      * recipients with known keys (caller must not send a frame nobody can read). The returned envelope
      * is authenticated by the frame signature, not separately signed here.
      */
-    fun seal(content: ByteArray, header: ByteArray, recipients: Map<String, PublicKeyBundle>): EncEnvelope? {
+    fun seal(
+        content: ByteArray,
+        header: ByteArray,
+        recipients: Map<String, PublicKeyBundle>,
+    ): EncEnvelope? {
         if (recipients.isEmpty()) return null
         val key = AesGcm.randomKey()
         val (iv, ct) = AesGcm.encrypt(key, content, header)
-        val wrapped = recipients.entries.sortedBy { it.key }.map { (to, bundle) ->
-            WrappedKey(to, bundle.hybridEncrypt().encrypt(key, header))
-        }
+        val wrapped =
+            recipients.entries.sortedBy { it.key }.map { (to, bundle) ->
+                WrappedKey(to, bundle.hybridEncrypt().encrypt(key, header))
+            }
         return EncEnvelope(nonce = iv, ct = ct, keys = wrapped)
     }
 
@@ -68,23 +73,32 @@ class MessageCrypto(
         envelope: EncEnvelope,
         header: ByteArray,
         myNodeId: String,
-    ): MessageContent? = runCatching {
-        val wrapped = envelope.keys.firstOrNull { it.to == myNodeId } ?: return null
-        val key = hybridDecrypt.decrypt(wrapped.wk, header)
-        MessageContent.decode(AesGcm.decrypt(key, envelope.nonce, envelope.ct, header))
-    }.getOrNull()
+    ): MessageContent? =
+        runCatching {
+            val wrapped = envelope.keys.firstOrNull { it.to == myNodeId } ?: return null
+            val key = hybridDecrypt.decrypt(wrapped.wk, header)
+            MessageContent.decode(AesGcm.decrypt(key, envelope.nonce, envelope.ct, header))
+        }.getOrNull()
 
     companion object {
         /** The encrypted-AEAD header binding a message to its identity and thread. */
-        fun header(id: String, senderId: String, sentAt: Long, thread: String): ByteArray =
-            "$id|$senderId|$sentAt|$thread".toByteArray()
+        fun header(
+            id: String,
+            senderId: String,
+            sentAt: Long,
+            thread: String,
+        ): ByteArray = "$id|$senderId|$sentAt|$thread".toByteArray()
 
         /**
          * Verifies a raw Ed25519 [sig] over [bytes] against a peer's published [senderBundle]. Returns
          * false on ANY failure (missing or malformed signature, key mismatch) and never throws, so
          * inbound callers can drop-and-continue without aborting the relay.
          */
-        fun verify(senderBundle: PublicKeyBundle, sig: ByteArray?, bytes: ByteArray): Boolean =
+        fun verify(
+            senderBundle: PublicKeyBundle,
+            sig: ByteArray?,
+            bytes: ByteArray,
+        ): Boolean =
             runCatching {
                 senderBundle.verifier().verify(requireNotNull(sig), bytes)
                 true

@@ -15,7 +15,6 @@ import app.getknit.knit.ui.theme.KnitTheme
 import org.koin.android.ext.android.inject
 
 class MainActivity : ComponentActivity() {
-
     // Single-shot holder for content arriving via the system share sheet; KnitApp/ChatScreen drain it.
     private val shareInbox: ShareInbox by inject()
 
@@ -33,11 +32,12 @@ class MainActivity : ComponentActivity() {
         // (any debug build, over the real mesh) can jump straight to a screen, e.g.
         // `adb shell am start -n app.getknit.knit/.MainActivity --es demo_route chat/nearby`. Gated to
         // debug so release never reads it. (Demo builds still swap in DemoTransport via SEED_DEMO.)
-        val startRoute = if (BuildConfig.SEED_DEMO || BuildConfig.DEBUG) {
-            intent?.getStringExtra(EXTRA_DEMO_ROUTE)
-        } else {
-            null
-        }
+        val startRoute =
+            if (BuildConfig.SEED_DEMO || BuildConfig.DEBUG) {
+                intent?.getStringExtra(EXTRA_DEMO_ROUTE)
+            } else {
+                null
+            }
         setContent {
             KnitTheme {
                 KnitApp(startRoute = startRoute)
@@ -65,11 +65,12 @@ class MainActivity : ComponentActivity() {
         if (intent?.action != Intent.ACTION_SEND) return
         val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
         // EXTRA_STREAM is only meaningful (and read-granted) for the image/* filter we declare.
-        val imageUri = if (intent.type?.startsWith("image/") == true) {
-            IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.toString()
-        } else {
-            null
-        }
+        val imageUri =
+            if (intent.type?.startsWith("image/") == true) {
+                IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.toString()
+            } else {
+                null
+            }
         shareInbox.offer(SharedContent(text = text, imageUri = imageUri))
     }
 

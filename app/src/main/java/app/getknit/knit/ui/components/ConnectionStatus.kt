@@ -1,5 +1,6 @@
 package app.getknit.knit.ui.components
 
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -17,7 +18,6 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import android.provider.Settings
 import app.getknit.knit.R
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.ui.preview.KnitPreview
@@ -35,18 +35,27 @@ fun ConnectionStatusRow(
     health: TransportHealth,
     modifier: Modifier = Modifier,
 ) {
-    val dotColor = when (health) {
-        // Radios off is user-actionable, not a fault — a muted dot, not an alarming red one.
-        TransportHealth.Unavailable -> MaterialTheme.colorScheme.outline
-        TransportHealth.Degraded -> MaterialTheme.colorScheme.error
-        TransportHealth.Healthy ->
-            if (neighborCount > 0) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outline
-    }
+    val dotColor =
+        when (health) {
+            // Radios off is user-actionable, not a fault — a muted dot, not an alarming red one.
+            TransportHealth.Unavailable -> {
+                MaterialTheme.colorScheme.outline
+            }
+
+            TransportHealth.Degraded -> {
+                MaterialTheme.colorScheme.error
+            }
+
+            TransportHealth.Healthy -> {
+                if (neighborCount > 0) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.outline
+            }
+        }
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         Box(
-            modifier = Modifier
-                .size(8.dp)
-                .background(color = dotColor, shape = CircleShape),
+            modifier =
+                Modifier
+                    .size(8.dp)
+                    .background(color = dotColor, shape = CircleShape),
         )
         Spacer(Modifier.width(6.dp))
         Text(
@@ -58,21 +67,31 @@ fun ConnectionStatusRow(
 }
 
 @Composable
-private fun connectionLabel(count: Int, health: TransportHealth): String = when (health) {
-    TransportHealth.Unavailable ->
-        if (isAirplaneModeOn()) {
-            stringResource(R.string.chat_connection_airplane)
-        } else {
-            stringResource(R.string.chat_connection_radio_off)
+private fun connectionLabel(
+    count: Int,
+    health: TransportHealth,
+): String =
+    when (health) {
+        TransportHealth.Unavailable -> {
+            if (isAirplaneModeOn()) {
+                stringResource(R.string.chat_connection_airplane)
+            } else {
+                stringResource(R.string.chat_connection_radio_off)
+            }
         }
-    TransportHealth.Degraded -> stringResource(R.string.chat_connection_degraded)
-    TransportHealth.Healthy ->
-        if (count == 0) {
-            stringResource(R.string.chat_connection_none)
-        } else {
-            pluralStringResource(R.plurals.chat_connection_count, count, count)
+
+        TransportHealth.Degraded -> {
+            stringResource(R.string.chat_connection_degraded)
         }
-}
+
+        TransportHealth.Healthy -> {
+            if (count == 0) {
+                stringResource(R.string.chat_connection_none)
+            } else {
+                pluralStringResource(R.plurals.chat_connection_count, count, count)
+            }
+        }
+    }
 
 /**
  * Whether airplane mode is currently on, read from [Settings.Global] (no permission needed). Read at
@@ -87,30 +106,35 @@ private fun isAirplaneModeOn(): Boolean {
 
 @Preview(showBackground = true)
 @Composable
-fun ConnectionStatusRowConnectedPreview() = KnitPreview {
-    ConnectionStatusRow(neighborCount = 5, health = TransportHealth.Healthy)
-}
+fun ConnectionStatusRowConnectedPreview() =
+    KnitPreview {
+        ConnectionStatusRow(neighborCount = 5, health = TransportHealth.Healthy)
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun ConnectionStatusRowSinglePreview() = KnitPreview {
-    ConnectionStatusRow(neighborCount = 1, health = TransportHealth.Healthy)
-}
+fun ConnectionStatusRowSinglePreview() =
+    KnitPreview {
+        ConnectionStatusRow(neighborCount = 1, health = TransportHealth.Healthy)
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun ConnectionStatusRowDisconnectedPreview() = KnitPreview {
-    ConnectionStatusRow(neighborCount = 0, health = TransportHealth.Healthy)
-}
+fun ConnectionStatusRowDisconnectedPreview() =
+    KnitPreview {
+        ConnectionStatusRow(neighborCount = 0, health = TransportHealth.Healthy)
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun ConnectionStatusRowRadioOffPreview() = KnitPreview {
-    ConnectionStatusRow(neighborCount = 0, health = TransportHealth.Unavailable)
-}
+fun ConnectionStatusRowRadioOffPreview() =
+    KnitPreview {
+        ConnectionStatusRow(neighborCount = 0, health = TransportHealth.Unavailable)
+    }
 
 @Preview(showBackground = true)
 @Composable
-fun ConnectionStatusRowDegradedPreview() = KnitPreview {
-    ConnectionStatusRow(neighborCount = 0, health = TransportHealth.Degraded)
-}
+fun ConnectionStatusRowDegradedPreview() =
+    KnitPreview {
+        ConnectionStatusRow(neighborCount = 0, health = TransportHealth.Degraded)
+    }

@@ -15,7 +15,11 @@ import java.io.File
  * [app.getknit.knit.mesh.protocol.Protocol]); they default to 0 (unknown) for a bare/legacy peer and in
  * the non-radio fakes. They are an unauthenticated routing hint, never a trust input.
  */
-data class Peer(val nodeId: String, val protoVersion: Int = 0, val capabilities: Long = 0L)
+data class Peer(
+    val nodeId: String,
+    val protoVersion: Int = 0,
+    val capabilities: Long = 0L,
+)
 
 /**
  * Coarse health of the radio layer, surfaced to the UI so "no neighbors because the radio can't run"
@@ -60,7 +64,11 @@ internal val NOT_CONTENDED: StateFlow<Boolean> = MutableStateFlow(false)
  * are forwarded byte-for-byte on relay) plus the already-decoded [envelope] (so the router and delivery
  * paths don't each re-decode it), tagged with the neighbor it arrived from.
  */
-data class InboundFrame(val wire: WireEnvelope, val envelope: RelayEnvelope, val fromNodeId: String)
+data class InboundFrame(
+    val wire: WireEnvelope,
+    val envelope: RelayEnvelope,
+    val fromNodeId: String,
+)
 
 /** What a transferred file is, so the receiver can route an avatar apart from a chat attachment. */
 enum class FileKind { AVATAR, ATTACHMENT }
@@ -69,7 +77,11 @@ enum class FileKind { AVATAR, ATTACHMENT }
  * Metadata sent alongside a file so the receiver can identify it: [kind] (avatar vs attachment),
  * [key] (the avatar's node id, or an attachment's content hash), and the file's [mime] type.
  */
-data class FileMeta(val kind: FileKind, val key: String, val mime: String)
+data class FileMeta(
+    val kind: FileKind,
+    val key: String,
+    val mime: String,
+)
 
 /** A file received from a neighbor, already saved at [path], tagged with its [FileMeta] fields. */
 data class ReceivedFile(
@@ -84,7 +96,10 @@ data class ReceivedFile(
  * A store-and-forward digest received from a neighbor: the message [ids] it currently holds in custody, so we
  * push back only the frames it lacks (see [MeshTransport.sendDigest] / `ForwardSync.onDigest`).
  */
-data class ReceivedDigest(val fromNodeId: String, val ids: List<String>)
+data class ReceivedDigest(
+    val fromNodeId: String,
+    val ids: List<String>,
+)
 
 /**
  * Abstraction over the radio layer that discovers neighbors and exchanges [WireEnvelope] frames with
@@ -94,7 +109,6 @@ data class ReceivedDigest(val fromNodeId: String, val ids: List<String>)
  * compose — and another sibling transport drop in — without touching orchestration.
  */
 interface MeshTransport {
-
     /**
      * Currently-connected neighbors — the peers we hold a live data-path link to *right now*. Under the
      * Wi-Fi Aware cue-driven transport this is at most one and flaps as ephemeral syncs come and go, so it
@@ -182,7 +196,10 @@ interface MeshTransport {
     fun onForeignReachable(peers: Set<String>) {}
 
     /** Sends [wire] to one neighbor, or to all neighbors when [to] is null. */
-    suspend fun send(wire: WireEnvelope, to: Peer? = null)
+    suspend fun send(
+        wire: WireEnvelope,
+        to: Peer? = null,
+    )
 
     /**
      * Best-effort **coordination-plane** fan-out of [wire] to every neighbor at once, with **no data path** —
@@ -203,15 +220,25 @@ interface MeshTransport {
      * coordination plane or [wire] won't fit the ~255 B message channel. Default no-op — only a transport with
      * a message channel (Wi-Fi Aware) overrides it; the fakes ignore it.
      */
-    fun fastSend(wire: WireEnvelope, to: Peer) {}
+    fun fastSend(
+        wire: WireEnvelope,
+        to: Peer,
+    ) {}
 
     /** Sends a file (avatar or attachment) tagged with [meta] to a single neighbor. */
-    suspend fun sendFile(file: File, to: Peer, meta: FileMeta)
+    suspend fun sendFile(
+        file: File,
+        to: Peer,
+        meta: FileMeta,
+    )
 
     /**
      * Advertises the custody message [ids] we hold to a single neighbor [to] over the data-path socket (an
      * [app.getknit.knit.mesh.link.LinkFraming.Type.DIGEST] record), so it replies with only the frames we
      * lack. Default no-op — only a transport with a data path overrides it; the fakes/demo ignore it.
      */
-    suspend fun sendDigest(to: Peer, ids: List<String>) {}
+    suspend fun sendDigest(
+        to: Peer,
+        ids: List<String>,
+    ) {}
 }

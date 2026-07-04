@@ -4,7 +4,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class ConversationsKindTest {
-
     @Test
     fun nearbyRoomIsNearbyKind() {
         assertEquals(ConversationKind.NEARBY, Conversations.kindFor(Conversations.NEARBY))

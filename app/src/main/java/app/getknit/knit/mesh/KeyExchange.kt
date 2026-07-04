@@ -90,7 +90,10 @@ class KeyExchange(
      * the profile walks back hop-by-hop once a holder is found. Our own id is skipped (a neighbor asking for
      * us would already hold our profile from the connect-time push).
      */
-    suspend fun onRequest(nodeIds: List<String>, fromNodeId: String) {
+    suspend fun onRequest(
+        nodeIds: List<String>,
+        fromNodeId: String,
+    ) {
         val me = selfId()
         val peer = Peer(fromNodeId)
         nodeIds.forEach { nodeId ->
@@ -110,7 +113,10 @@ class KeyExchange(
      * future requests, clear it from the missing/cooldown bookkeeping (counting a recovery if we were
      * waiting on it), and re-serve it to any neighbors that asked us for it while we couldn't answer.
      */
-    suspend fun onProfilePinned(nodeId: String, wire: WireEnvelope) {
+    suspend fun onProfilePinned(
+        nodeId: String,
+        wire: WireEnvelope,
+    ) {
         cache[nodeId] = wire
         val wasMissing = missing.remove(nodeId)
         lastAskedAt.remove(nodeId)
@@ -129,7 +135,10 @@ class KeyExchange(
     }
 
     /** Replays a cached profile to [peer] in a fresh `relay = false` wrapper (signed bytes pass verbatim). */
-    private suspend fun serve(profile: WireEnvelope, peer: Peer) {
+    private suspend fun serve(
+        profile: WireEnvelope,
+        peer: Peer,
+    ) {
         transport.send(WireEnvelope(relay = false, sig = profile.sig, signed = profile.signed), peer)
         metrics.onKeyServed()
     }
@@ -139,11 +148,17 @@ class KeyExchange(
      * (it propagates hop-by-hop via [onRequest]), signed over the canonical envelope so a responder can
      * verify it against our pinned key — exactly the path every other signed frame takes.
      */
-    private fun keyRequest(me: String, nodeIds: List<String>): WireEnvelope {
-        val env = RelayEnvelope(
-            type = FrameType.KEY_REQ, id = newRequestId(), senderId = me,
-            payload = WireCodec.encodePayload(KeyReqContent(nodeIds)),
-        )
+    private fun keyRequest(
+        me: String,
+        nodeIds: List<String>,
+    ): WireEnvelope {
+        val env =
+            RelayEnvelope(
+                type = FrameType.KEY_REQ,
+                id = newRequestId(),
+                senderId = me,
+                payload = WireCodec.encodePayload(KeyReqContent(nodeIds)),
+            )
         val signed = WireCodec.encodeEnvelope(env)
         return WireEnvelope(relay = false, sig = signRaw(signed), signed = signed)
     }

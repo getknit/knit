@@ -8,7 +8,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConversationsTest {
-
     @Test
     fun broadcastMessageBelongsToTheNearbyRoom() {
         // No recipient => the public room, regardless of who sent it or who's looking.

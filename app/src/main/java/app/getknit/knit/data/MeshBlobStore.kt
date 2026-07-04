@@ -22,30 +22,34 @@ class MeshBlobStore(
     private val blobs: BlobRepository,
     private val transferDir: File,
 ) : BlobStore {
-
     override suspend fun has(hash: String): Boolean = blobs.exists(hash)
 
     override suspend fun mimeFor(hash: String): String? = blobs.mimeFor(hash)
 
     /** Materializes a temp file from the stored bytes so the transport can send it; null if not held. */
-    override suspend fun fileFor(hash: String): File? = withContext(Dispatchers.IO) {
-        // [hash] is interpolated into the temp filename below; reject anything that isn't a content
-        // address so a peer-supplied "../" can't escape [transferDir].
-        if (!isValidBlobHash(hash)) return@withContext null
-        val bytes = blobs.bytes(hash) ?: return@withContext null
-        val mime = blobs.mimeFor(hash) ?: "image/jpeg"
-        val dest = File(ensureDir(), "$hash.${extForMime(mime)}")
-        if (!dest.exists()) {
-            runCatching { dest.writeBytes(bytes) }.getOrElse { return@withContext null }
+    override suspend fun fileFor(hash: String): File? =
+        withContext(Dispatchers.IO) {
+            // [hash] is interpolated into the temp filename below; reject anything that isn't a content
+            // address so a peer-supplied "../" can't escape [transferDir].
+            if (!isValidBlobHash(hash)) return@withContext null
+            val bytes = blobs.bytes(hash) ?: return@withContext null
+            val mime = blobs.mimeFor(hash) ?: "image/jpeg"
+            val dest = File(ensureDir(), "$hash.${extForMime(mime)}")
+            if (!dest.exists()) {
+                runCatching { dest.writeBytes(bytes) }.getOrElse { return@withContext null }
+            }
+            dest
         }
-        dest
-    }
 
     /**
      * Ingests a received file into the encrypted store, deletes the decrypted staging copy, and returns
      * a temp file (re-materialized from the DB) the transport can forward on to any other wanters.
      */
-    override suspend fun saveIncoming(hash: String, mime: String, srcPath: String): File? =
+    override suspend fun saveIncoming(
+        hash: String,
+        mime: String,
+        srcPath: String,
+    ): File? =
         withContext(Dispatchers.IO) {
             val src = File(srcPath)
             // [hash] is an untrusted, peer-supplied content address. Reject a malformed one before it
@@ -77,12 +81,13 @@ class MeshBlobStore(
 
     private fun ensureDir(): File = transferDir.apply { if (!exists()) mkdirs() }
 
-    private fun extForMime(mime: String): String = when (mime.lowercase()) {
-        "image/gif" -> "gif"
-        "image/png" -> "png"
-        "image/webp" -> "webp"
-        else -> "jpg"
-    }
+    private fun extForMime(mime: String): String =
+        when (mime.lowercase()) {
+            "image/gif" -> "gif"
+            "image/png" -> "png"
+            "image/webp" -> "webp"
+            else -> "jpg"
+        }
 
     private companion object {
         const val TAG = "MeshBlobStore"

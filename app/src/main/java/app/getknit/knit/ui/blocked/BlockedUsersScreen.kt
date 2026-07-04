@@ -88,7 +88,10 @@ fun BlockedUsersScreen(
 }
 
 @Composable
-private fun BlockedUserRow(user: BlockedUser, onUnblock: () -> Unit) {
+private fun BlockedUserRow(
+    user: BlockedUser,
+    onUnblock: () -> Unit,
+) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -116,9 +119,10 @@ private fun BlockedUserRow(user: BlockedUser, onUnblock: () -> Unit) {
 
 @Preview(showBackground = true)
 @Composable
-fun BlockedUserRowPreview() = KnitPreview {
-    BlockedUserRow(
-        user = BlockedUser(nodeId = "8f3a2b1c9d4e", displayName = "Spammer", avatarHash = null),
-        onUnblock = {},
-    )
-}
+fun BlockedUserRowPreview() =
+    KnitPreview {
+        BlockedUserRow(
+            user = BlockedUser(nodeId = "8f3a2b1c9d4e", displayName = "Spammer", avatarHash = null),
+            onUnblock = {},
+        )
+    }

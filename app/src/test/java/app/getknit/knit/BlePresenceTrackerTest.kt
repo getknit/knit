@@ -9,9 +9,12 @@ import org.junit.Test
 
 /** Unit tests for [BlePresenceTracker] — the pure per-peer RSSI/dwell/linger model, driven by a virtual clock. */
 class BlePresenceTrackerTest {
-
-    private fun sighting(nodeId: String, rssi: Int, psm: Int = 100, cue: Int = 0) =
-        BlePresenceTracker.Sighting(nodeId, rssi, protoVersion = 1, capabilities = 0xFL, psm = psm, digestCue = cue)
+    private fun sighting(
+        nodeId: String,
+        rssi: Int,
+        psm: Int = 100,
+        cue: Int = 0,
+    ) = BlePresenceTracker.Sighting(nodeId, rssi, protoVersion = 1, capabilities = 0xFL, psm = psm, digestCue = cue)
 
     @Test
     fun firstSightingSeedsRssiAndZeroDwell() {

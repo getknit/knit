@@ -23,12 +23,15 @@ class CarriedFrame(
  * cleartext recipient to deliver toward, a group its roster, and a broadcast neither (offered to all).
  */
 interface ForwardStore {
-
     /**
      * Persists [frame] seen at [now], tagged [origin] ([ORIGIN_SELF]/[ORIGIN_RELAY]). The implementation
      * stamps a TTL and enforces the storage caps; a frame whose id is already held is ignored.
      */
-    suspend fun store(frame: CarriedFrame, origin: Int, now: Long)
+    suspend fun store(
+        frame: CarriedFrame,
+        origin: Int,
+        now: Long,
+    )
 
     /** Non-expired carried frames (at [now]), newest first, for re-offering to a freshly-joined neighbor. */
     suspend fun liveFrames(now: Long): List<CarriedFrame>

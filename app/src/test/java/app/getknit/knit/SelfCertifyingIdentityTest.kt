@@ -18,7 +18,6 @@ import org.junit.Test
  * for a nodeId it doesn't hold the keypair for.
  */
 class SelfCertifyingIdentityTest {
-
     private fun freshBundle(): PublicKeyBundle {
         TinkInit.ensure()
         val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE))

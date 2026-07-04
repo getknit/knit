@@ -12,10 +12,10 @@ class SeenSet(
     private val ttlMillis: Long = DEFAULT_TTL_MS,
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
-    private val seen = object : LinkedHashMap<String, Long>(64, 0.75f, false) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean =
-            size > maxSize
-    }
+    private val seen =
+        object : LinkedHashMap<String, Long>(64, 0.75f, false) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean = size > maxSize
+        }
 
     /** Records [id] and returns true if it was not seen within the TTL window (i.e. it is new). */
     @Synchronized

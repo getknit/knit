@@ -23,10 +23,15 @@ fun radioWarningFor(statuses: List<TransportStatus>): RadioWarning? {
     if (statuses.isEmpty()) return null // no radio hardware at all — nothing the user can fix here
     val off = statuses.filter { it.health == TransportHealth.Unavailable }.map { it.kind }
     return when {
-        off.isEmpty() -> null // every present radio is up (or only Degraded)
+        off.isEmpty() -> null
+
+        // every present radio is up (or only Degraded)
         off.size == statuses.size -> RadioWarning.AllRadiosOff
+
         TransportKind.Bluetooth in off -> RadioWarning.BluetoothOff
+
         TransportKind.WifiAware in off -> RadioWarning.WifiOff
+
         else -> null // only an unnamed ("Other") radio is off while a named one is up — nothing actionable
     }
 }

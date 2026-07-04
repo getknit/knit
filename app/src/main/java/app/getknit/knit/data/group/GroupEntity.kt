@@ -60,6 +60,5 @@ object GroupMembersStore {
 
     fun encode(members: List<String>): String = json.encodeToString(members)
 
-    fun decode(stored: String): List<String> =
-        runCatching { json.decodeFromString<List<String>>(stored) }.getOrDefault(emptyList())
+    fun decode(stored: String): List<String> = runCatching { json.decodeFromString<List<String>>(stored) }.getOrDefault(emptyList())
 }

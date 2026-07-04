@@ -43,7 +43,6 @@ data class MessageContent(
         const val MAX_SUPPORTED = 1
 
         @OptIn(ExperimentalSerializationApi::class)
-        fun decode(bytes: ByteArray): MessageContent? =
-            runCatching { cryptoCbor.decodeFromByteArray<MessageContent>(bytes) }.getOrNull()
+        fun decode(bytes: ByteArray): MessageContent? = runCatching { cryptoCbor.decodeFromByteArray<MessageContent>(bytes) }.getOrNull()
     }
 }

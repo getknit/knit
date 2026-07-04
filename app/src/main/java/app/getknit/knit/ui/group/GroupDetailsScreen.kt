@@ -93,9 +93,10 @@ fun GroupDetailsScreen(
 
     // Group-photo pick → crop → save, mirroring the profile-avatar flow (and the old chat header path).
     val groupPhotoCropTarget by viewModel.groupPhotoCropTarget.collectAsStateWithLifecycle()
-    val groupPhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        uri?.let(viewModel::pickGroupPhoto)
-    }
+    val groupPhotoPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+            uri?.let(viewModel::pickGroupPhoto)
+        }
     groupPhotoCropTarget?.let { bmp ->
         val image = remember(bmp) { bmp.asImageBitmap() }
         AvatarCropDialog(
@@ -162,11 +163,12 @@ fun GroupDetailsScreen(
         },
     ) { padding ->
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
@@ -186,11 +188,12 @@ fun GroupDetailsScreen(
                 textAlign = TextAlign.Center,
             )
             Text(
-                text = pluralStringResource(
-                    R.plurals.chat_group_member_count,
-                    state.members.size,
-                    state.members.size,
-                ),
+                text =
+                    pluralStringResource(
+                        R.plurals.chat_group_member_count,
+                        state.members.size,
+                        state.members.size,
+                    ),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -264,15 +267,18 @@ fun GroupDetailsScreen(
  * online dot when reachable (matching the contact list / profile-details presence indicator).
  */
 @Composable
-private fun MemberRow(member: GroupMemberRow, onOpen: (nodeId: String) -> Unit) {
+private fun MemberRow(
+    member: GroupMemberRow,
+    onOpen: (nodeId: String) -> Unit,
+) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(
-                if (!member.isSelf) Modifier.clickable { onOpen(member.nodeId) } else Modifier,
-            )
-            .testTag("group_member_${member.nodeId}")
-            .padding(horizontal = 4.dp, vertical = 10.dp),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .then(
+                    if (!member.isSelf) Modifier.clickable { onOpen(member.nodeId) } else Modifier,
+                ).testTag("group_member_${member.nodeId}")
+                .padding(horizontal = 4.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Avatar(avatarHash = member.avatarHash, name = member.displayName, size = 48.dp)
@@ -293,10 +299,11 @@ private fun MemberRow(member: GroupMemberRow, onOpen: (nodeId: String) -> Unit) 
         } else if (member.online) {
             Spacer(Modifier.width(8.dp))
             Box(
-                modifier = Modifier
-                    .size(10.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.tertiary),
+                modifier =
+                    Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.tertiary),
             )
         }
     }

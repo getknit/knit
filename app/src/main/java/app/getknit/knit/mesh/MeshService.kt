@@ -29,19 +29,19 @@ import org.koin.android.ext.android.inject
  * The UI controls the mesh by starting/stopping it.
  */
 class MeshService : LifecycleService() {
-
     private val meshManager: MeshManager by inject()
     private val powerMonitor: PowerMonitor by inject()
 
     private val sensorManager by lazy { getSystemService(SensorManager::class.java) }
     private var significantMotion: Sensor? = null
 
-    private val motionListener = object : TriggerEventListener() {
-        override fun onTrigger(event: TriggerEvent?) {
-            meshManager.heal()
-            armSignificantMotion() // one-shot sensor; re-arm for the next move
+    private val motionListener =
+        object : TriggerEventListener() {
+            override fun onTrigger(event: TriggerEvent?) {
+                meshManager.heal()
+                armSignificantMotion() // one-shot sensor; re-arm for the next move
+            }
         }
-    }
 
     override fun onCreate() {
         super.onCreate()
@@ -55,14 +55,21 @@ class MeshService : LifecycleService() {
         armSignificantMotion()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int,
+    ): Int {
         super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
             ACTION_STOP -> {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_HEAL -> meshManager.heal()
+
+            ACTION_HEAL -> {
+                meshManager.heal()
+            }
         }
         return START_STICKY
     }
@@ -80,10 +87,13 @@ class MeshService : LifecycleService() {
         significantMotion?.let { sensorManager.requestTriggerSensor(motionListener, it) }
     }
 
-    private fun heartbeatIntent(): PendingIntent = PendingIntent.getService(
-        this, 2, Intent(this, MeshService::class.java).setAction(ACTION_HEAL),
-        PendingIntent.FLAG_IMMUTABLE,
-    )
+    private fun heartbeatIntent(): PendingIntent =
+        PendingIntent.getService(
+            this,
+            2,
+            Intent(this, MeshService::class.java).setAction(ACTION_HEAL),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
 
     private fun scheduleHeartbeat() {
         getSystemService(AlarmManager::class.java).setInexactRepeating(
@@ -99,22 +109,30 @@ class MeshService : LifecycleService() {
     }
 
     private fun startForeground() {
-        val openApp = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE,
-        )
-        val stop = PendingIntent.getService(
-            this, 1, Intent(this, MeshService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_IMMUTABLE,
-        )
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.mesh_notification_title))
-            .setContentText(getString(R.string.mesh_notification_text))
-            .setSmallIcon(R.drawable.ic_stat_mesh)
-            .setOngoing(true)
-            .setContentIntent(openApp)
-            .addAction(0, getString(R.string.mesh_notification_stop), stop)
-            .build()
+        val openApp =
+            PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+        val stop =
+            PendingIntent.getService(
+                this,
+                1,
+                Intent(this, MeshService::class.java).setAction(ACTION_STOP),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+        val notification =
+            NotificationCompat
+                .Builder(this, CHANNEL_ID)
+                .setContentTitle(getString(R.string.mesh_notification_title))
+                .setContentText(getString(R.string.mesh_notification_text))
+                .setSmallIcon(R.drawable.ic_stat_mesh)
+                .setOngoing(true)
+                .setContentIntent(openApp)
+                .addAction(0, getString(R.string.mesh_notification_stop), stop)
+                .build()
 
         ServiceCompat.startForeground(
             this,

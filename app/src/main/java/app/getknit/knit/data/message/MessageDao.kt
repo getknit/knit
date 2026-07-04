@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.Flow
 @Suppress("TooManyFunctions")
 @Dao
 interface MessageDao {
-
     @Query("SELECT * FROM messages ORDER BY sentAt ASC")
     fun observeAll(): Flow<List<MessageEntity>>
 

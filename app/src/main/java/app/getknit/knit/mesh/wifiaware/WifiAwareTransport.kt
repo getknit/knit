@@ -113,7 +113,6 @@ class WifiAwareTransport(
     private val powerState: PowerStateSource,
     private val storeDigest: StoreDigest,
 ) : MeshTransport {
-
     private val appContext = context.applicationContext
     private val awareManager = appContext.getSystemService(Context.WIFI_AWARE_SERVICE) as WifiAwareManager?
     private val connectivity =
@@ -159,7 +158,9 @@ class WifiAwareTransport(
     private var instantSupported = false
 
     @Volatile private var session: WifiAwareSession? = null
+
     @Volatile private var publishSession: PublishDiscoverySession? = null
+
     @Volatile private var subscribeSession: SubscribeDiscoverySession? = null
 
     // attach() and subscribe() complete asynchronously (via callbacks), so a `session/subscribeSession
@@ -180,13 +181,16 @@ class WifiAwareTransport(
     // after-serve) can't overlap into a double attach.
     @Volatile private var attachGen = 0
     private val reattaching = AtomicBoolean(false)
+
     // elapsedRealtime the current attach() called mgr.attach(); lets a later attach() self-heal a stuck
     // [attaching] guard if the framework silently drops an attach (mgr.attach with no onAttached/onAttachFailed).
     @Volatile private var attachStartedAt = 0L
 
     // The one accept-any responder: its ServerSocket, network callback, and the accept loop.
     @Volatile private var responderSocket: ServerSocket? = null
+
     @Volatile private var responderCallback: ConnectivityManager.NetworkCallback? = null
+
     @Volatile private var acceptJob: Job? = null
 
     // The single live data-path link, keyed by peer nodeId (at most one entry — one NDI). [NanLink] wraps the
@@ -195,12 +199,24 @@ class WifiAwareTransport(
 
     // Forwards a live [FramedLink]'s decoded records into our flows and its teardown into [teardownPeer].
     // onLinkDown can fire twice (read + write loop end) but teardownPeer is idempotent.
-    private val linkCallbacks = object : LinkCallbacks {
-        override fun onInbound(frame: InboundFrame) { _inbound.tryEmit(frame) }
-        override fun onDigest(digest: ReceivedDigest) { _incomingDigests.tryEmit(digest) }
-        override fun onFile(file: ReceivedFile) { _incomingFiles.tryEmit(file) }
-        override fun onLinkDown(nodeId: String) { teardownPeer(nodeId) }
-    }
+    private val linkCallbacks =
+        object : LinkCallbacks {
+            override fun onInbound(frame: InboundFrame) {
+                _inbound.tryEmit(frame)
+            }
+
+            override fun onDigest(digest: ReceivedDigest) {
+                _incomingDigests.tryEmit(digest)
+            }
+
+            override fun onFile(file: ReceivedFile) {
+                _incomingFiles.tryEmit(file)
+            }
+
+            override fun onLinkDown(nodeId: String) {
+                teardownPeer(nodeId)
+            }
+        }
 
     // Connection bookkeeping guarded by [lock]: peers discovered via subscribe (with a subscribe-session
     // PeerHandle for NDP initiation), the single in-flight handshake, an in-flight accept, and per-peer
@@ -267,7 +283,9 @@ class WifiAwareTransport(
     // converged mesh does zero data-path work for long stretches, so time-since-last-link is meaningless until
     // something is actually owed). [lastRestartAt] rate-limits the self-restart.
     @Volatile private var lastLinkOrAcceptAt = 0L
+
     @Volatile private var syncOwedSince = 0L
+
     @Volatile private var lastRestartAt = 0L
 
     private var powerJob: Job? = null
@@ -278,10 +296,16 @@ class WifiAwareTransport(
     private var watchdogJob: Job? = null
     private var availabilityRegistered = false
 
-    private data class DiscoveredPeer(val advert: Protocol.PeerWire, val peerHandle: PeerHandle)
+    private data class DiscoveredPeer(
+        val advert: Protocol.PeerWire,
+        val peerHandle: PeerHandle,
+    )
 
     /** A cue destination: a [PeerHandle] and the discovery session it is valid on (sendMessage target). */
-    private data class CueTarget(val handle: PeerHandle, val session: DiscoverySession)
+    private data class CueTarget(
+        val handle: PeerHandle,
+        val session: DiscoverySession,
+    )
 
     override fun start() {
         if (!hasHardware) {
@@ -292,39 +316,50 @@ class WifiAwareTransport(
         scope.launch {
             localNodeId = identity.nodeId()
             lastLinkOrAcceptAt = SystemClock.elapsedRealtime() // grace window before the wedge watchdog can fire
-            instantSupported = runCatching {
-                awareManager?.characteristics?.isInstantCommunicationModeSupported() == true
-            }.getOrDefault(false)
+            instantSupported =
+                runCatching {
+                    awareManager?.characteristics?.isInstantCommunicationModeSupported() == true
+                }.getOrDefault(false)
             registerAvailability()
             attach()
             loopJob = scope.launch { discoveryLoop() }
             powerJob = scope.launch { powerState.state.drop(1).collect { healSignal.trySend(Unit) } }
             // Re-cue neighbors and wake the loop the moment our carried set changes, so a peer that now wants
             // our new data can pull it.
-            cueJob = scope.launch {
-                storeDigest.version.drop(1).collect { cueAll(); healSignal.trySend(Unit) }
-            }
+            cueJob =
+                scope.launch {
+                    storeDigest.version.drop(1).collect {
+                        cueAll()
+                        healSignal.trySend(Unit)
+                    }
+                }
             // Heartbeat cue covers best-effort message loss + a peer that hasn't discovered us yet. It also
             // reaps peers that have gone silent (see [pruneAbsentPeers]) first, on the handler thread so the
             // prune serializes with the onDiscovered/onCueReceived add sites and never races a fresh cue.
-            cueHeartbeatJob = scope.launch {
-                while (scope.isActive) {
-                    delay(CUE_HEARTBEAT_MS)
-                    onHandler { pruneAbsentPeers(); cueAll() }
+            cueHeartbeatJob =
+                scope.launch {
+                    while (scope.isActive) {
+                        delay(CUE_HEARTBEAT_MS)
+                        onHandler {
+                            pruneAbsentPeers()
+                            cueAll()
+                        }
+                    }
                 }
-            }
-            diagJob = scope.launch {
-                while (scope.isActive) {
-                    delay(DIAG_INTERVAL_MS)
-                    logState()
+            diagJob =
+                scope.launch {
+                    while (scope.isActive) {
+                        delay(DIAG_INTERVAL_MS)
+                        logState()
+                    }
                 }
-            }
-            watchdogJob = scope.launch {
-                while (scope.isActive) {
-                    delay(WEDGE_CHECK_MS)
-                    checkWedge()
+            watchdogJob =
+                scope.launch {
+                    while (scope.isActive) {
+                        delay(WEDGE_CHECK_MS)
+                        checkWedge()
+                    }
                 }
-            }
         }
     }
 
@@ -334,7 +369,10 @@ class WifiAwareTransport(
         val now = SystemClock.elapsedRealtime()
         val disc: Set<String>
         val backoff: Map<String, Long>
-        synchronized(lock) { disc = discovered.keys.toSet(); backoff = retryAfter.toMap() }
+        synchronized(lock) {
+            disc = discovered.keys.toSet()
+            backoff = retryAfter.toMap()
+        }
         val cues = cueTarget.keys.toSet()
         val wanted = cues.filter { localNodeId > it && syncWanted(it, v) }
         val initiable = wanted.filter { it in disc && (backoff[it]?.let { t -> now >= t } ?: true) }
@@ -377,8 +415,7 @@ class WifiAwareTransport(
      * nearby and the fault is our NAN data path); a live NAN link is its own corroboration. A NAN-only device has
      * no corroborator, so it falls back to the prior behaviour.
      */
-    private fun corroboratedPresent(nodeId: String): Boolean =
-        !hasForeignPlane || peers.containsKey(nodeId) || nodeId in foreignReachable
+    private fun corroboratedPresent(nodeId: String): Boolean = !hasForeignPlane || peers.containsKey(nodeId) || nodeId in foreignReachable
 
     /**
      * Last-resort self-heal for the **leaked-request wedge** (a framework RESPONDER `requestNetwork` orphaned at
@@ -397,9 +434,15 @@ class WifiAwareTransport(
     private fun checkWedge() {
         val now = SystemClock.elapsedRealtime()
         val owed = hasHardware && _health.value == TransportHealth.Healthy && session != null && anySyncOwed()
-        if (!owed) { syncOwedSince = 0L; return } // nothing owed (or can't sync) → not wedged; clear the episode
+        if (!owed) {
+            syncOwedSince = 0L
+            return
+        } // nothing owed (or can't sync) → not wedged; clear the episode
         // Episode not yet started, or a data-path link formed since it began → making progress → (re)start it.
-        if (syncOwedSince == 0L || lastLinkOrAcceptAt >= syncOwedSince) { syncOwedSince = now; return }
+        if (syncOwedSince == 0L || lastLinkOrAcceptAt >= syncOwedSince) {
+            syncOwedSince = now
+            return
+        }
         if (now - syncOwedSince < WEDGE_RESTART_MS) return // owed, but not long enough with zero links yet
         if (now - lastRestartAt < WEDGE_RESTART_MS) return // never restart-storm
         lastRestartAt = now
@@ -428,7 +471,10 @@ class WifiAwareTransport(
         subscribing.set(false)
         lastLinkEndedAt = 0L
         synchronized(lock) {
-            inFlight.clear(); discovered.clear(); retryAfter.clear(); accepting = false
+            inFlight.clear()
+            discovered.clear()
+            retryAfter.clear()
+            accepting = false
         }
         cueTarget.clear()
         lastSeenAt.clear()
@@ -460,17 +506,27 @@ class WifiAwareTransport(
         foreignReachable = peers
     }
 
-    override suspend fun send(wire: WireEnvelope, to: Peer?) {
+    override suspend fun send(
+        wire: WireEnvelope,
+        to: Peer?,
+    ) {
         val bytes = WireCodec.encodeWire(wire)
         val targets = if (to == null) peers.values.toList() else listOfNotNull(peers[to.nodeId])
         targets.forEach { it.link.send(bytes) } // FramedLink.send accounts the bytes
     }
 
-    override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) {
+    override suspend fun sendFile(
+        file: File,
+        to: Peer,
+        meta: FileMeta,
+    ) {
         peers[to.nodeId]?.link?.sendFile(file, meta)
     }
 
-    override suspend fun sendDigest(to: Peer, ids: List<String>) {
+    override suspend fun sendDigest(
+        to: Peer,
+        ids: List<String>,
+    ) {
         peers[to.nodeId]?.link?.sendDigest(ids)
     }
 
@@ -486,91 +542,99 @@ class WifiAwareTransport(
         if (Looper.myLooper() == handler.looper) block() else handler.post(block)
     }
 
-    private fun attach() = onHandler {
-        val mgr = awareManager ?: return@onHandler
-        if (!mgr.isAvailable) {
-            _health.value = TransportHealth.Unavailable // Wi-Fi Aware off (Wi-Fi off / airplane mode)
-            return@onHandler
-        }
-        if (session != null) return@onHandler
-        // Self-heal a stuck guard: if a prior mgr.attach never called back within the watchdog, clear it so we
-        // can retry (the chipset occasionally drops an attach silently after a session teardown).
-        if (attaching.get() && SystemClock.elapsedRealtime() - attachStartedAt > ATTACH_WATCHDOG_MS) {
-            attaching.set(false)
-        }
-        if (!attaching.compareAndSet(false, true)) return@onHandler // an attach is already in flight
-        attachStartedAt = SystemClock.elapsedRealtime()
-        val gen = ++attachGen // this attach owns this generation; older in-flight callbacks are now stale
-        val cb = object : AttachCallback() {
-            override fun onAttached(newSession: WifiAwareSession) {
-                attaching.set(false)
-                if (gen != attachGen || session != null) { // superseded by a newer attach — never orphan it
-                    runCatching { newSession.close() }
-                    return
-                }
-                session = newSession
-                reattaching.set(false) // the reattach that kicked off this (current-gen) attach has settled
-                _health.value = TransportHealth.Healthy
-                startPublish(gen)
-                startSubscribe()
+    private fun attach() =
+        onHandler {
+            val mgr = awareManager ?: return@onHandler
+            if (!mgr.isAvailable) {
+                _health.value = TransportHealth.Unavailable // Wi-Fi Aware off (Wi-Fi off / airplane mode)
+                return@onHandler
             }
+            if (session != null) return@onHandler
+            // Self-heal a stuck guard: if a prior mgr.attach never called back within the watchdog, clear it so we
+            // can retry (the chipset occasionally drops an attach silently after a session teardown).
+            if (attaching.get() && SystemClock.elapsedRealtime() - attachStartedAt > ATTACH_WATCHDOG_MS) {
+                attaching.set(false)
+            }
+            if (!attaching.compareAndSet(false, true)) return@onHandler // an attach is already in flight
+            attachStartedAt = SystemClock.elapsedRealtime()
+            val gen = ++attachGen // this attach owns this generation; older in-flight callbacks are now stale
+            val cb =
+                object : AttachCallback() {
+                    override fun onAttached(newSession: WifiAwareSession) {
+                        attaching.set(false)
+                        if (gen != attachGen || session != null) { // superseded by a newer attach — never orphan it
+                            runCatching { newSession.close() }
+                            return
+                        }
+                        session = newSession
+                        reattaching.set(false) // the reattach that kicked off this (current-gen) attach has settled
+                        _health.value = TransportHealth.Healthy
+                        startPublish(gen)
+                        startSubscribe()
+                    }
 
-            override fun onAttachFailed() {
+                    override fun onAttachFailed() {
+                        attaching.set(false)
+                        reattaching.set(false)
+                        _health.value = TransportHealth.Degraded
+                        Log.w(TAG, "Wi-Fi Aware attach failed")
+                    }
+
+                    override fun onAwareSessionTerminated() {
+                        attaching.set(false)
+                        subscribing.set(false)
+                        reattaching.set(false)
+                        ++attachGen // invalidate any in-flight callbacks from the terminated generation
+                        session = null
+                        publishSession = null
+                        subscribeSession = null
+                        stopResponder()
+                        synchronized(lock) { accepting = false }
+                        // A session terminates both when the radio is switched off and when it's seized; distinguish so
+                        // the UI can say "radios off" vs "radio busy". The availability receiver corrects this if it flips.
+                        _health.value =
+                            if (mgr.isAvailable) TransportHealth.Degraded else TransportHealth.Unavailable
+                    }
+                }
+            runCatching { mgr.attach(cb, handler) }.onFailure {
                 attaching.set(false)
                 reattaching.set(false)
                 _health.value = TransportHealth.Degraded
-                Log.w(TAG, "Wi-Fi Aware attach failed")
-            }
-
-            override fun onAwareSessionTerminated() {
-                attaching.set(false)
-                subscribing.set(false)
-                reattaching.set(false)
-                ++attachGen // invalidate any in-flight callbacks from the terminated generation
-                session = null
-                publishSession = null
-                subscribeSession = null
-                stopResponder()
-                synchronized(lock) { accepting = false }
-                // A session terminates both when the radio is switched off and when it's seized; distinguish so
-                // the UI can say "radios off" vs "radio busy". The availability receiver corrects this if it flips.
-                _health.value =
-                    if (mgr.isAvailable) TransportHealth.Degraded else TransportHealth.Unavailable
+                Log.w(TAG, "Wi-Fi Aware attach threw", it)
             }
         }
-        runCatching { mgr.attach(cb, handler) }.onFailure {
-            attaching.set(false)
-            reattaching.set(false)
-            _health.value = TransportHealth.Degraded
-            Log.w(TAG, "Wi-Fi Aware attach threw", it)
-        }
-    }
 
     private fun startPublish(gen: Int) {
         val s = session ?: return
         // Per-generation publish callback: a stale onPublishStarted (from an attach a reattach superseded)
         // closes its session and never arms a responder, so the responder stays single-owner.
-        val cb = object : DiscoverySessionCallback() {
-            override fun onPublishStarted(publish: PublishDiscoverySession) {
-                if (gen != attachGen) {
-                    runCatching { publish.close() }
-                    return
+        val cb =
+            object : DiscoverySessionCallback() {
+                override fun onPublishStarted(publish: PublishDiscoverySession) {
+                    if (gen != attachGen) {
+                        runCatching { publish.close() }
+                        return
+                    }
+                    publishSession = publish
+                    startResponder() // one accept-any responder for the life of this publish session
                 }
-                publishSession = publish
-                startResponder() // one accept-any responder for the life of this publish session
-            }
 
-            override fun onSessionConfigFailed() {
-                Log.w(TAG, "publish config failed")
-            }
+                override fun onSessionConfigFailed() {
+                    Log.w(TAG, "publish config failed")
+                }
 
-            override fun onMessageReceived(peerHandle: PeerHandle, message: ByteArray) {
-                onCueReceived(peerHandle, message, publishSession)
+                override fun onMessageReceived(
+                    peerHandle: PeerHandle,
+                    message: ByteArray,
+                ) {
+                    onCueReceived(peerHandle, message, publishSession)
+                }
             }
-        }
-        val builder = PublishConfig.Builder()
-            .setServiceName(SERVICE_NAME)
-            .setServiceSpecificInfo(Protocol.advertise(localNodeId).encodeToByteArray())
+        val builder =
+            PublishConfig
+                .Builder()
+                .setServiceName(SERVICE_NAME)
+                .setServiceSpecificInfo(Protocol.advertise(localNodeId).encodeToByteArray())
         if (instantSupported) builder.setInstantCommunicationModeEnabled(true, INSTANT_BAND)
         s.publish(builder.build(), cb, handler)
     }
@@ -609,30 +673,31 @@ class WifiAwareTransport(
      * `requestNetwork` (the role=1 state=104 ghost that pins the single NDI until process death). Runs on the
      * [handler] thread and guarded on a free NDI slot so it never drops a live sync.
      */
-    private fun reattach() = onHandler {
-        if (slotBusy()) return@onHandler
-        if (!reattaching.compareAndSet(false, true)) return@onHandler // collapse concurrent re-attach triggers
-        Log.w(TAG, "re-attaching to recover wedged discovery/responder")
-        stopResponder()
-        runCatching { publishSession?.close() }
-        runCatching { subscribeSession?.close() }
-        runCatching { session?.close() }
-        publishSession = null
-        subscribeSession = null
-        session = null
-        attaching.set(false)
-        subscribing.set(false)
-        attach() // bumps attachGen, stamping fresh callbacks and invalidating any prior-gen stragglers
-        // Wake the discovery loop NOW that session is null. Its wait was computed while session was non-null
-        // (a long idle cadence), so nulling session mid-wait doesn't shorten it — without this poke it would
-        // sleep out the full REDISCOVER_IDLE_MS before retrying attach(), leaving the node with no responder for
-        // ~2 minutes if the inline attach() above couldn't re-enable NAN right after the teardown. Woken, the
-        // loop re-evaluates at the session==null fast cadence (ATTACH_RETRY_MS) until attach() takes.
-        healSignal.trySend(Unit)
-        // attach() clears [reattaching] via its callbacks; if the fresh attach never calls back at all, release
-        // the single-flight guard after a bounded delay so a later recovery is never permanently blocked.
-        handler.postDelayed({ reattaching.set(false) }, ATTACH_WATCHDOG_MS)
-    }
+    private fun reattach() =
+        onHandler {
+            if (slotBusy()) return@onHandler
+            if (!reattaching.compareAndSet(false, true)) return@onHandler // collapse concurrent re-attach triggers
+            Log.w(TAG, "re-attaching to recover wedged discovery/responder")
+            stopResponder()
+            runCatching { publishSession?.close() }
+            runCatching { subscribeSession?.close() }
+            runCatching { session?.close() }
+            publishSession = null
+            subscribeSession = null
+            session = null
+            attaching.set(false)
+            subscribing.set(false)
+            attach() // bumps attachGen, stamping fresh callbacks and invalidating any prior-gen stragglers
+            // Wake the discovery loop NOW that session is null. Its wait was computed while session was non-null
+            // (a long idle cadence), so nulling session mid-wait doesn't shorten it — without this poke it would
+            // sleep out the full REDISCOVER_IDLE_MS before retrying attach(), leaving the node with no responder for
+            // ~2 minutes if the inline attach() above couldn't re-enable NAN right after the teardown. Woken, the
+            // loop re-evaluates at the session==null fast cadence (ATTACH_RETRY_MS) until attach() takes.
+            healSignal.trySend(Unit)
+            // attach() clears [reattaching] via its callbacks; if the fresh attach never calls back at all, release
+            // the single-flight guard after a bounded delay so a later recovery is never permanently blocked.
+            handler.postDelayed({ reattaching.set(false) }, ATTACH_WATCHDOG_MS)
+        }
 
     /**
      * The connection engine. Each tick: if the single NDI slot is free and a discovered peer we're the
@@ -647,10 +712,25 @@ class WifiAwareTransport(
             recomputeReachable() // age out the nearby set even on an idle tick
             val now = SystemClock.elapsedRealtime()
             when {
-                !hasHardware -> Unit
-                session == null -> attach() // radio came back / first attach failed
-                slotBusy() -> Unit // one NDI: a link or handshake is up — wait for the supervisor to free it
-                driveSync() -> Unit // a sync-wanted peer we can initiate to → NDP up
+                !hasHardware -> {
+                    Unit
+                }
+
+                session == null -> {
+                    attach()
+                }
+
+                // radio came back / first attach failed
+                slotBusy() -> {
+                    Unit
+                }
+
+                // one NDI: a link or handshake is up — wait for the supervisor to free it
+                driveSync() -> {
+                    Unit
+                }
+
+                // a sync-wanted peer we can initiate to → NDP up
                 // Re-fire discovery only when a sync is actually blocked on a missing/stale subscribe handle
                 // (or we're blind), and no more than once per REARM_COOLDOWN_MS: repeatedly closing/reopening
                 // subscribe is what wedges it on these chipsets (persistent onSessionConfigFailed), so we keep
@@ -660,6 +740,7 @@ class WifiAwareTransport(
                     lastRearmAt = now
                     rearmSubscribe()
                 }
+
                 // Pure-responder ICM keepalive. A node that only ever *responds* — notably the smallest nodeId,
                 // everyone's responder — never satisfies needsRediscovery() above (it gates on being an
                 // initiator), so it never re-arms subscribe and its Instant Communication Mode lapses ~30s after
@@ -672,14 +753,16 @@ class WifiAwareTransport(
                     lastRearmAt = now
                     rearmSubscribe()
                 }
-                else -> Unit
+
+                else -> {
+                    Unit
+                }
             }
         }
     }
 
     /** True while the single NDI slot is occupied by a live link, an in-flight handshake, or an accept. */
-    private fun slotBusy(): Boolean =
-        synchronized(lock) { peers.isNotEmpty() || inFlight.isNotEmpty() || accepting }
+    private fun slotBusy(): Boolean = synchronized(lock) { peers.isNotEmpty() || inFlight.isNotEmpty() || accepting }
 
     /**
      * Whether an on-demand NDP sync to [nodeId] is worth bringing up: its advertised digest differs from ours
@@ -690,8 +773,10 @@ class WifiAwareTransport(
      * BLE-covered peer never counts as a sync we owe — which also stops the wedge watchdog from ever firing on a
      * "sync" the other plane is quietly handling.
      */
-    private fun syncWanted(nodeId: String, localVersion: Long): Boolean =
-        nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion)
+    private fun syncWanted(
+        nodeId: String,
+        localVersion: Long,
+    ): Boolean = nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion)
 
     /**
      * Brings up an NDP to the next peer we're the initiator for (`localNodeId > nodeId`, the tie-break), not
@@ -705,13 +790,15 @@ class WifiAwareTransport(
     private fun driveSync(): Boolean {
         val localVersion = storeDigest.version.value
         val now = SystemClock.elapsedRealtime()
-        val target = synchronized(lock) {
-            discovered.entries.firstOrNull { (nodeId, _) ->
-                localNodeId > nodeId && nodeId !in peers.keys &&
-                    (retryAfter[nodeId]?.let { now >= it } ?: true) &&
-                    syncWanted(nodeId, localVersion)
-            }?.let { it.key to it.value }
-        } ?: return false
+        val target =
+            synchronized(lock) {
+                discovered.entries
+                    .firstOrNull { (nodeId, _) ->
+                        localNodeId > nodeId && nodeId !in peers.keys &&
+                            (retryAfter[nodeId]?.let { now >= it } ?: true) &&
+                            syncWanted(nodeId, localVersion)
+                    }?.let { it.key to it.value }
+            } ?: return false
         initiateTo(target.first, target.second.advert, target.second.peerHandle)
         return true
     }
@@ -766,56 +853,71 @@ class WifiAwareTransport(
         // so we retry promptly; hunt aggressively when we know of nobody; otherwise relax (a cue with a new
         // epoch wakes us via healSignal). Doubled when screen-off on battery.
         val localVersion = storeDigest.version.value
-        val base = when {
-            cueTarget.isEmpty() -> REDISCOVER_LONELY_MS // blind (no cue targets) → rediscover / recover fast
-            cueTarget.keys.any { localNodeId > it && syncWanted(it, localVersion) } -> SYNC_RETRY_IDLE_MS
-            // A sync owed to a peer we only respond to → tick around the ICM keepalive cadence so the loop can
-            // relight ICM (needsIcmRelight) before the ~30s auto-disable, instead of sleeping REDISCOVER_IDLE_MS.
-            instantSupported && needsIcmRelight() -> ICM_REARM_COOLDOWN_MS
-            else -> REDISCOVER_IDLE_MS
-        }
+        val base =
+            when {
+                cueTarget.isEmpty() -> REDISCOVER_LONELY_MS
+
+                // blind (no cue targets) → rediscover / recover fast
+                cueTarget.keys.any { localNodeId > it && syncWanted(it, localVersion) } -> SYNC_RETRY_IDLE_MS
+
+                // A sync owed to a peer we only respond to → tick around the ICM keepalive cadence so the loop can
+                // relight ICM (needsIcmRelight) before the ~30s auto-disable, instead of sleeping REDISCOVER_IDLE_MS.
+                instantSupported && needsIcmRelight() -> ICM_REARM_COOLDOWN_MS
+
+                else -> REDISCOVER_IDLE_MS
+            }
         val power = powerState.state.value
         return if (power.interactive || power.charging) base else base * 2
     }
 
-    private val subscribeCallback = object : DiscoverySessionCallback() {
-        override fun onSubscribeStarted(s: SubscribeDiscoverySession) {
-            subscribing.set(false)
-            subscribeSession = s
-        }
+    private val subscribeCallback =
+        object : DiscoverySessionCallback() {
+            override fun onSubscribeStarted(s: SubscribeDiscoverySession) {
+                subscribing.set(false)
+                subscribeSession = s
+            }
 
-        override fun onServiceDiscovered(
-            peerHandle: PeerHandle,
-            serviceSpecificInfo: ByteArray,
-            matchFilter: List<ByteArray>,
-        ) {
-            onDiscovered(peerHandle, serviceSpecificInfo)
-        }
+            override fun onServiceDiscovered(
+                peerHandle: PeerHandle,
+                serviceSpecificInfo: ByteArray,
+                matchFilter: List<ByteArray>,
+            ) {
+                onDiscovered(peerHandle, serviceSpecificInfo)
+            }
 
-        override fun onServiceLost(peerHandle: PeerHandle, reason: Int) {
-            synchronized(lock) { discovered.entries.removeAll { it.value.peerHandle == peerHandle } }
-        }
+            override fun onServiceLost(
+                peerHandle: PeerHandle,
+                reason: Int,
+            ) {
+                synchronized(lock) { discovered.entries.removeAll { it.value.peerHandle == peerHandle } }
+            }
 
-        override fun onSessionConfigFailed() {
-            subscribing.set(false)
-            subscribeSession = null
-            Log.w(TAG, "subscribe config failed")
-            // A subscribe stuck in onSessionConfigFailed is wedged — re-subscribing won't clear it, but a
-            // full re-attach usually does. Escalate, rate-limited, and only when no live NDP would be lost.
-            val now = SystemClock.elapsedRealtime()
-            if (!slotBusy() && now - lastReattachAt > REATTACH_COOLDOWN_MS) {
-                lastReattachAt = now
-                handler.postDelayed({ reattach() }, REATTACH_DELAY_MS)
+            override fun onSessionConfigFailed() {
+                subscribing.set(false)
+                subscribeSession = null
+                Log.w(TAG, "subscribe config failed")
+                // A subscribe stuck in onSessionConfigFailed is wedged — re-subscribing won't clear it, but a
+                // full re-attach usually does. Escalate, rate-limited, and only when no live NDP would be lost.
+                val now = SystemClock.elapsedRealtime()
+                if (!slotBusy() && now - lastReattachAt > REATTACH_COOLDOWN_MS) {
+                    lastReattachAt = now
+                    handler.postDelayed({ reattach() }, REATTACH_DELAY_MS)
+                }
+            }
+
+            override fun onMessageReceived(
+                peerHandle: PeerHandle,
+                message: ByteArray,
+            ) {
+                onCueReceived(peerHandle, message, subscribeSession)
             }
         }
 
-        override fun onMessageReceived(peerHandle: PeerHandle, message: ByteArray) {
-            onCueReceived(peerHandle, message, subscribeSession)
-        }
-    }
-
     /** Record a discovered peer, note it reachable, and cue it (announce our epoch); it cues back. */
-    private fun onDiscovered(peerHandle: PeerHandle, ssi: ByteArray) {
+    private fun onDiscovered(
+        peerHandle: PeerHandle,
+        ssi: ByteArray,
+    ) {
         if (ssi.isEmpty()) return
         val advert = Protocol.parse(ssi.decodeToString())
         val peerNodeId = advert.nodeId
@@ -830,9 +932,16 @@ class WifiAwareTransport(
     // --- Coordination plane (cues over Wi-Fi Aware messages; no data path) ---
 
     /** A cue arrived from a peer: learn its handle+epoch, note it reachable, and wake the loop if diverged. */
-    private fun onCueReceived(handle: PeerHandle, message: ByteArray, session: DiscoverySession?) {
+    private fun onCueReceived(
+        handle: PeerHandle,
+        message: ByteArray,
+        session: DiscoverySession?,
+    ) {
         val sess = session ?: return
-        if (message.isNotEmpty() && message[0] == MSG_FRAME_TAG) { onFastFrame(message); return }
+        if (message.isNotEmpty() && message[0] == MSG_FRAME_TAG) {
+            onFastFrame(message)
+            return
+        }
         val cue = parseCue(message) ?: return
         if (cue.nodeId == localNodeId) return
         val firstContact = cueTarget.put(cue.nodeId, CueTarget(handle, sess)) == null
@@ -844,7 +953,10 @@ class WifiAwareTransport(
         // identical-digest skip → no sync). Deferring lets the fast path win the race; the NDP still fires after
         // the settle for data the fast-fanout genuinely missed, or a message too big to fan out.
         if (digestTracker.onCue(cue.nodeId, cue.version)) {
-            scope.launch { delay(CUE_SETTLE_MS); healSignal.trySend(Unit) }
+            scope.launch {
+                delay(CUE_SETTLE_MS)
+                healSignal.trySend(Unit)
+            }
         }
         // Cue back exactly once on first contact so the peer learns our epoch (a pure responder whose own
         // subscribe is down bootstraps its reverse-direction handle here). Not a reply to every cue → no
@@ -862,7 +974,10 @@ class WifiAwareTransport(
 
     private fun encodeCue(): ByteArray = "$localNodeId$CUE_SEP${storeDigest.version.value}".encodeToByteArray()
 
-    private data class Cue(val nodeId: String, val version: Long)
+    private data class Cue(
+        val nodeId: String,
+        val version: Long,
+    )
 
     private fun parseCue(bytes: ByteArray): Cue? {
         val s = runCatching { bytes.decodeToString() }.getOrNull() ?: return null
@@ -884,7 +999,11 @@ class WifiAwareTransport(
         if (!hasHardware) return
         val bytes = WireCodec.encodeWire(wire)
         if (bytes.size + 1 > COORD_MSG_MAX) return
-        val msg = ByteArray(bytes.size + 1).also { it[0] = MSG_FRAME_TAG; bytes.copyInto(it, 1) }
+        val msg =
+            ByteArray(bytes.size + 1).also {
+                it[0] = MSG_FRAME_TAG
+                bytes.copyInto(it, 1)
+            }
         val targets = cueTarget.keys.toList()
         Log.i(TAG, "fast-fanout ${bytes.size}B → ${targets.size} peers") // TEMP diag
         targets.forEach { nodeId ->
@@ -900,12 +1019,19 @@ class WifiAwareTransport(
      * to the message's author, so the tick works even when the message was delivered by a fast-fanout with no
      * live NDP. Best-effort: no-op if [to] isn't a current cue target or the frame won't fit ([COORD_MSG_MAX]).
      */
-    override fun fastSend(wire: WireEnvelope, to: Peer) {
+    override fun fastSend(
+        wire: WireEnvelope,
+        to: Peer,
+    ) {
         if (!hasHardware) return
         val target = cueTarget[to.nodeId] ?: return // not coordination-plane-reachable → best-effort skip
         val bytes = WireCodec.encodeWire(wire)
         if (bytes.size + 1 > COORD_MSG_MAX) return
-        val msg = ByteArray(bytes.size + 1).also { it[0] = MSG_FRAME_TAG; bytes.copyInto(it, 1) }
+        val msg =
+            ByteArray(bytes.size + 1).also {
+                it[0] = MSG_FRAME_TAG
+                bytes.copyInto(it, 1)
+            }
         Log.i(TAG, "fast-send ${bytes.size}B → ${to.nodeId}") // TEMP diag
         runCatching { target.session.sendMessage(target.handle, msgSeq.getAndIncrement(), msg) }
             .onFailure { cueTarget.remove(to.nodeId) } // stale handle/session; refreshed on next discover/receive
@@ -928,47 +1054,58 @@ class WifiAwareTransport(
 
     // --- Client side (initiator) ---
 
-    private fun initiateTo(peerNodeId: String, advert: Protocol.PeerWire, peerHandle: PeerHandle) {
+    private fun initiateTo(
+        peerNodeId: String,
+        advert: Protocol.PeerWire,
+        peerHandle: PeerHandle,
+    ) {
         val sub = subscribeSession ?: return
         if (!beginConnect(peerNodeId)) return
         Log.i(TAG, "initiating to $peerNodeId")
         // The handle is a subscribe-session handle (from discovery); only that can initiate an NDP here.
         val specifier = WifiAwareNetworkSpecifier.Builder(sub, peerHandle).setPskPassphrase(PSK).build()
-        val request = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
-            .setNetworkSpecifier(specifier)
-            .build()
+        val request =
+            NetworkRequest
+                .Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
+                .setNetworkSpecifier(specifier)
+                .build()
         val startedAt = SystemClock.elapsedRealtime()
         val done = AtomicBoolean(false)
         lateinit var cb: ConnectivityManager.NetworkCallback
-        cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                val info = caps.transportInfo as? WifiAwareNetworkInfo ?: return
-                val ip = info.peerIpv6Addr ?: return
-                if (!done.compareAndSet(false, true)) return
-                val port = info.port
-                scope.launch(Dispatchers.IO) { connectAndRegister(peerNodeId, advert, network, ip, port, cb) }
-            }
+        cb =
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(
+                    network: Network,
+                    caps: NetworkCapabilities,
+                ) {
+                    val info = caps.transportInfo as? WifiAwareNetworkInfo ?: return
+                    val ip = info.peerIpv6Addr ?: return
+                    if (!done.compareAndSet(false, true)) return
+                    val port = info.port
+                    scope.launch(Dispatchers.IO) { connectAndRegister(peerNodeId, advert, network, ip, port, cb) }
+                }
 
-            override fun onUnavailable() {
-                // Timeout overload fired: the NDP never came up. Release so the interface + inFlight slot
-                // are freed (without this the request leaks and eventually exhausts NAN interfaces). A *fast*
-                // onUnavailable (well under the handshake timeout) is the stale-handle signature — the peer
-                // restarted, so this subscribe handle is dead — which flags a re-discovery; a slow one is just
-                // the peer being busy on its one NDI (contention), which must NOT churn subscribe.
-                if (done.compareAndSet(false, true)) {
-                    val staleHandle = SystemClock.elapsedRealtime() - startedAt < FAST_FAIL_MS
-                    failConnect(peerNodeId, cb, staleHandle)
+                override fun onUnavailable() {
+                    // Timeout overload fired: the NDP never came up. Release so the interface + inFlight slot
+                    // are freed (without this the request leaks and eventually exhausts NAN interfaces). A *fast*
+                    // onUnavailable (well under the handshake timeout) is the stale-handle signature — the peer
+                    // restarted, so this subscribe handle is dead — which flags a re-discovery; a slow one is just
+                    // the peer being busy on its one NDI (contention), which must NOT churn subscribe.
+                    if (done.compareAndSet(false, true)) {
+                        val staleHandle = SystemClock.elapsedRealtime() - startedAt < FAST_FAIL_MS
+                        failConnect(peerNodeId, cb, staleHandle)
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    teardownPeer(peerNodeId)
                 }
             }
-
-            override fun onLost(network: Network) {
-                teardownPeer(peerNodeId)
-            }
-        }
-        val requested = runCatching {
-            connectivity.requestNetwork(request, cb, handler, HANDSHAKE_TIMEOUT_MS)
-        }.isSuccess
+        val requested =
+            runCatching {
+                connectivity.requestNetwork(request, cb, handler, HANDSHAKE_TIMEOUT_MS)
+            }.isSuccess
         if (!requested) {
             failConnect(peerNodeId, cb, staleHandle = true) // synchronous reject → bad handle/session
             Log.w(TAG, "client requestNetwork failed for $peerNodeId")
@@ -997,8 +1134,9 @@ class WifiAwareTransport(
         port: Int,
         cb: ConnectivityManager.NetworkCallback,
     ) {
-        val socket = runCatching { network.socketFactory.createSocket(ip, port) }.getOrNull()
-            ?: return failConnect(peerNodeId, cb, staleHandle = false) // NDP came up; socket issue, not a handle problem
+        val socket =
+            runCatching { network.socketFactory.createSocket(ip, port) }.getOrNull()
+                ?: return failConnect(peerNodeId, cb, staleHandle = false) // NDP came up; socket issue, not a handle problem
         val link = NetSocketLink(socket)
         // Send our identity first so the accept-any responder on the other side knows who connected.
         val sent = runCatching { LinkHandshake.writeHello(link.output, localNodeId) }.isSuccess
@@ -1019,30 +1157,39 @@ class WifiAwareTransport(
         // A fresh responder is created only after reattach()/stopResponder() has unregistered + nulled it.
         if (responderCallback != null) return
         stopResponder() // clear any orphaned socket/job (responderCallback is null here)
-        val ss = runCatching { ServerSocket(0) }.getOrElse {
-            Log.w(TAG, "responder ServerSocket bind failed", it)
-            return
-        }
+        val ss =
+            runCatching { ServerSocket(0) }.getOrElse {
+                Log.w(TAG, "responder ServerSocket bind failed", it)
+                return
+            }
         responderSocket = ss
-        val specifier = WifiAwareNetworkSpecifier.Builder(pub).setPskPassphrase(PSK).setPort(ss.localPort).build()
-        val request = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
-            .setNetworkSpecifier(specifier)
-            .build()
-        val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                if (acceptJob?.isActive != true) acceptJob = scope.launch(Dispatchers.IO) { acceptLoop(ss) }
-            }
+        val specifier =
+            WifiAwareNetworkSpecifier
+                .Builder(pub)
+                .setPskPassphrase(PSK)
+                .setPort(ss.localPort)
+                .build()
+        val request =
+            NetworkRequest
+                .Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
+                .setNetworkSpecifier(specifier)
+                .build()
+        val cb =
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    if (acceptJob?.isActive != true) acceptJob = scope.launch(Dispatchers.IO) { acceptLoop(ss) }
+                }
 
-            override fun onLost(network: Network) {
-                // The shared responder network dropped — a served client left. Its server link ends via the
-                // read/write loop → teardownPeer → the after-serve reattach() rebuilds a fresh responder; a
-                // radio flap is handled by onAwareSessionTerminated / the availability receiver. Do NOT re-arm
-                // startResponder() here: a re-arm racing the fresh onPublishStarted is exactly what used to
-                // orphan a responder requestNetwork. Log only.
-                Log.i(TAG, "responder network lost")
+                override fun onLost(network: Network) {
+                    // The shared responder network dropped — a served client left. Its server link ends via the
+                    // read/write loop → teardownPeer → the after-serve reattach() rebuilds a fresh responder; a
+                    // radio flap is handled by onAwareSessionTerminated / the availability receiver. Do NOT re-arm
+                    // startResponder() here: a re-arm racing the fresh onPublishStarted is exactly what used to
+                    // orphan a responder requestNetwork. Log only.
+                    Log.i(TAG, "responder network lost")
+                }
             }
-        }
         responderCallback = cb // tracked before requestNetwork so it is always unregisterable
         runCatching { connectivity.requestNetwork(request, cb, handler) }.onFailure {
             Log.w(TAG, "responder requestNetwork failed", it)
@@ -1106,22 +1253,26 @@ class WifiAwareTransport(
         link: LinkSocket,
         callback: ConnectivityManager.NetworkCallback?,
     ) {
-        val framed = FramedLink(
-            nodeId = peerNodeId,
-            peer = Peer(peerNodeId, advert.protoVersion, advert.capabilities),
-            socket = link,
-            scope = scope,
-            cacheDir = appContext.cacheDir,
-            metrics = metrics,
-            callbacks = linkCallbacks,
-            now = SystemClock::elapsedRealtime, // share the supervisor's clock for quiescence
-            log = { msg -> Log.d(TAG, msg) },
-        )
+        val framed =
+            FramedLink(
+                nodeId = peerNodeId,
+                peer = Peer(peerNodeId, advert.protoVersion, advert.capabilities),
+                socket = link,
+                scope = scope,
+                cacheDir = appContext.cacheDir,
+                metrics = metrics,
+                callbacks = linkCallbacks,
+                now = SystemClock::elapsedRealtime, // share the supervisor's clock for quiescence
+                log = { msg -> Log.d(TAG, msg) },
+            )
         val conn = NanLink(framed, callback)
         lastLinkOrAcceptAt = SystemClock.elapsedRealtime() // the data plane produced a link (either role) — clears the wedge watchdog
         val prev = peers.put(peerNodeId, conn)
         prev?.close() // a stale link to the same peer (shouldn't happen, but never leak it)
-        synchronized(lock) { inFlight.remove(peerNodeId); retryAfter.remove(peerNodeId) }
+        synchronized(lock) {
+            inFlight.remove(peerNodeId)
+            retryAfter.remove(peerNodeId)
+        }
         framed.start() // launches read + write loops; stamps linkStartedAt/lastActivityAt at link-up
         conn.reaperJob = scope.launch { superviseLink(conn) }
         noteReachable(Peer(peerNodeId, advert.protoVersion, advert.capabilities))
@@ -1149,16 +1300,17 @@ class WifiAwareTransport(
             val now = SystemClock.elapsedRealtime()
             val idle = now - conn.link.lastActivityAt
             val held = now - conn.link.linkStartedAt
-            val done = if (isInitiator) {
-                // Cut the post-backfill linger short when another pair is waiting on our single NDI, so a
-                // message reaches the next neighbor without paying the full QUIESCENCE_MS idle hold — the
-                // main lever on multi-node propagation latency (one NDP at a time). Full linger only when no
-                // one else is sync-wanted, so an active 1:1 chat still re-uses the warm NDP.
-                val quiescence = if (otherSyncWanted(conn.nodeId)) CONTENDED_QUIESCENCE_MS else QUIESCENCE_MS
-                idle >= quiescence || held >= SYNC_MAX_WINDOW_MS
-            } else {
-                idle >= RESPONDER_QUIESCENCE_MS || held >= RESPONDER_MAX_HOLD_MS
-            }
+            val done =
+                if (isInitiator) {
+                    // Cut the post-backfill linger short when another pair is waiting on our single NDI, so a
+                    // message reaches the next neighbor without paying the full QUIESCENCE_MS idle hold — the
+                    // main lever on multi-node propagation latency (one NDP at a time). Full linger only when no
+                    // one else is sync-wanted, so an active 1:1 chat still re-uses the warm NDP.
+                    val quiescence = if (otherSyncWanted(conn.nodeId)) CONTENDED_QUIESCENCE_MS else QUIESCENCE_MS
+                    idle >= quiescence || held >= SYNC_MAX_WINDOW_MS
+                } else {
+                    idle >= RESPONDER_QUIESCENCE_MS || held >= RESPONDER_MAX_HOLD_MS
+                }
             if (done) {
                 // Record the sync at our *post-backfill* digest: if we gained nothing new after ingesting the
                 // peer's data, our version now equals theirs and the pair stays quiet (the identical-digest
@@ -1205,7 +1357,10 @@ class WifiAwareTransport(
         Log.i(TAG, "handshake with $peerNodeId ended without a link (stale=$staleHandle)")
     }
 
-    private fun teardownPeer(peerNodeId: String, backoffMs: Long = REFUSED_BACKOFF_MS) {
+    private fun teardownPeer(
+        peerNodeId: String,
+        backoffMs: Long = REFUSED_BACKOFF_MS,
+    ) {
         val conn = peers.remove(peerNodeId) ?: return
         conn.close()
         // Only client links own a per-peer network callback; server links share the responder — leave it.
@@ -1241,8 +1396,16 @@ class WifiAwareTransport(
     private fun scheduleServeReattach(peerNodeId: String) {
         handler.postDelayed({
             when {
-                session == null || publishSession == null -> Unit // detached; the loop re-attaches
-                slotBusy() -> scheduleServeReattach(peerNodeId) // a link/handshake is up — retry once it frees
+                session == null || publishSession == null -> {
+                    Unit
+                }
+
+                // detached; the loop re-attaches
+                slotBusy() -> {
+                    scheduleServeReattach(peerNodeId)
+                }
+
+                // a link/handshake is up — retry once it frees
                 else -> {
                     lastReattachAt = SystemClock.elapsedRealtime()
                     Log.i(TAG, "re-attach after serving $peerNodeId")
@@ -1255,29 +1418,34 @@ class WifiAwareTransport(
     /** Open the SETTLE gate after a link/handshake ends and wake the loop once the NDI has been released. */
     private fun noteLinkEnded() {
         lastLinkEndedAt = SystemClock.elapsedRealtime()
-        scope.launch { delay(SETTLE_MS); healSignal.trySend(Unit) }
+        scope.launch {
+            delay(SETTLE_MS)
+            healSignal.trySend(Unit)
+        }
     }
 
     // --- Connection admission (single NDI slot) ---
 
-    private fun beginConnect(peerNodeId: String): Boolean = synchronized(lock) {
-        if (peerNodeId in peers.keys || peerNodeId in inFlight) return false
-        // One NDI: at most one link/handshake/accept in flight, and only after the previous link's NDI has
-        // been released (SETTLE) — else requestNetwork fails with "no interfaces available".
-        if (peers.isNotEmpty() || inFlight.isNotEmpty() || accepting) return false
-        if (SystemClock.elapsedRealtime() < lastLinkEndedAt + SETTLE_MS) return false
-        retryAfter[peerNodeId]?.let { if (SystemClock.elapsedRealtime() < it) return false } // backing off
-        inFlight.add(peerNodeId)
-        true
-    }
+    private fun beginConnect(peerNodeId: String): Boolean =
+        synchronized(lock) {
+            if (peerNodeId in peers.keys || peerNodeId in inFlight) return false
+            // One NDI: at most one link/handshake/accept in flight, and only after the previous link's NDI has
+            // been released (SETTLE) — else requestNetwork fails with "no interfaces available".
+            if (peers.isNotEmpty() || inFlight.isNotEmpty() || accepting) return false
+            if (SystemClock.elapsedRealtime() < lastLinkEndedAt + SETTLE_MS) return false
+            retryAfter[peerNodeId]?.let { if (SystemClock.elapsedRealtime() < it) return false } // backing off
+            inFlight.add(peerNodeId)
+            true
+        }
 
     /** Reserve the single NDI slot for an inbound accept (mirrors [beginConnect]); paired with [endAccept]. */
-    private fun beginAccept(): Boolean = synchronized(lock) {
-        if (peers.isNotEmpty() || inFlight.isNotEmpty() || accepting) return false
-        if (SystemClock.elapsedRealtime() < lastLinkEndedAt + SETTLE_MS) return false
-        accepting = true
-        true
-    }
+    private fun beginAccept(): Boolean =
+        synchronized(lock) {
+            if (peers.isNotEmpty() || inFlight.isNotEmpty() || accepting) return false
+            if (SystemClock.elapsedRealtime() < lastLinkEndedAt + SETTLE_MS) return false
+            accepting = true
+            true
+        }
 
     private fun endAccept() {
         synchronized(lock) { accepting = false }
@@ -1321,45 +1489,52 @@ class WifiAwareTransport(
      */
     private fun pruneAbsentPeers() {
         val now = SystemClock.elapsedRealtime()
-        cueTarget.keys.filter { nodeId ->
-            !peers.containsKey(nodeId) && (lastSeenAt[nodeId]?.let { now - it > REACHABLE_LINGER_MS } ?: true)
-        }.forEach { nodeId ->
-            cueTarget.remove(nodeId)
-            reachablePeers.remove(nodeId)
-            digestTracker.forget(nodeId)
-        }
+        cueTarget.keys
+            .filter { nodeId ->
+                !peers.containsKey(nodeId) && (lastSeenAt[nodeId]?.let { now - it > REACHABLE_LINGER_MS } ?: true)
+            }.forEach { nodeId ->
+                cueTarget.remove(nodeId)
+                reachablePeers.remove(nodeId)
+                digestTracker.forget(nodeId)
+            }
     }
 
     // --- Availability ---
 
-    private val availabilityReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            val mgr = awareManager ?: return
-            if (mgr.isAvailable) {
-                attach() // onHandler-funneled; the attaching/session guards make a redundant call a no-op
-            } else onHandler {
-                _health.value = TransportHealth.Unavailable // Wi-Fi Aware switched off (Wi-Fi off / airplane mode)
-                peers.keys.toList().forEach { teardownPeer(it) }
-                ++attachGen // invalidate in-flight discovery callbacks from the torn-down generation
-                stopResponder()
-                runCatching { publishSession?.close() }
-                runCatching { subscribeSession?.close() }
-                runCatching { session?.close() }
-                session = null
-                publishSession = null
-                subscribeSession = null
-                attaching.set(false)
-                subscribing.set(false)
-                reattaching.set(false)
-                synchronized(lock) { accepting = false }
-                cueTarget.clear()
-                lastSeenAt.clear()
-                reachablePeers.clear()
-                _neighbors.value = emptySet() // symmetric with stop(); teardownPeer already recomputes it empty
-                _reachable.value = emptySet()
+    private val availabilityReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(
+                context: Context,
+                intent: Intent,
+            ) {
+                val mgr = awareManager ?: return
+                if (mgr.isAvailable) {
+                    attach() // onHandler-funneled; the attaching/session guards make a redundant call a no-op
+                } else {
+                    onHandler {
+                        _health.value = TransportHealth.Unavailable // Wi-Fi Aware switched off (Wi-Fi off / airplane mode)
+                        peers.keys.toList().forEach { teardownPeer(it) }
+                        ++attachGen // invalidate in-flight discovery callbacks from the torn-down generation
+                        stopResponder()
+                        runCatching { publishSession?.close() }
+                        runCatching { subscribeSession?.close() }
+                        runCatching { session?.close() }
+                        session = null
+                        publishSession = null
+                        subscribeSession = null
+                        attaching.set(false)
+                        subscribing.set(false)
+                        reattaching.set(false)
+                        synchronized(lock) { accepting = false }
+                        cueTarget.clear()
+                        lastSeenAt.clear()
+                        reachablePeers.clear()
+                        _neighbors.value = emptySet() // symmetric with stop(); teardownPeer already recomputes it empty
+                        _reachable.value = emptySet()
+                    }
+                }
             }
         }
-    }
 
     private fun registerAvailability() {
         if (availabilityRegistered) return

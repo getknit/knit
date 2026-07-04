@@ -59,8 +59,7 @@ object FrameType {
      * [BLOB_REQ]/[KEY_REQ] requests (relayed hop-by-hop, not flooded, and transient — nothing to custody)
      * and any unknown future type (a carrier can't authenticate what it can't place).
      */
-    fun isCustodial(type: String): Boolean =
-        isReplayable(type) || type == PROFILE
+    fun isCustodial(type: String): Boolean = isReplayable(type) || type == PROFILE
 }
 
 /**
@@ -86,8 +85,7 @@ class WireEnvelope(
      * reused by reference (never re-encoded). [ttl] is attacker-controlled, so capping it bounds
      * propagation by hop count regardless of what a peer claims.
      */
-    fun relayed(): WireEnvelope =
-        WireEnvelope(ttl = minOf(ttl, DEFAULT_TTL), hops = hops + 1, relay = relay, sig = sig, signed = signed)
+    fun relayed(): WireEnvelope = WireEnvelope(ttl = minOf(ttl, DEFAULT_TTL), hops = hops + 1, relay = relay, sig = sig, signed = signed)
 }
 
 /**
@@ -162,19 +160,28 @@ data class ProfileContent(
 
 /** Content of a [FrameType.GROUP_LEAVE] frame: the group the (self-asserted) sender is leaving. */
 @Serializable
-data class GroupLeaveContent(val groupId: String)
+data class GroupLeaveContent(
+    val groupId: String,
+)
 
 /** Content of a [FrameType.RECEIPT] frame: the id of the message being acknowledged. */
 @Serializable
-data class ReceiptContent(val ackId: String)
+data class ReceiptContent(
+    val ackId: String,
+)
 
 /** Content of a [FrameType.REACTION] frame: the target message and the chosen emoji (null = retract). */
 @Serializable
-data class ReactionContent(val messageId: String, val emoji: String? = null)
+data class ReactionContent(
+    val messageId: String,
+    val emoji: String? = null,
+)
 
 /** Content of a [FrameType.BLOB_REQ] frame: the content hash of the requested image blob. */
 @Serializable
-data class BlobReqContent(val hash: String)
+data class BlobReqContent(
+    val hash: String,
+)
 
 /**
  * Content of a [FrameType.KEY_REQ] frame: the node ids whose public-key bundle (i.e. profile) the sender
@@ -185,7 +192,9 @@ data class BlobReqContent(val hash: String)
  * single-element list. The request itself is signed and point-to-point (`relay = false`), never flooded.
  */
 @Serializable
-data class KeyReqContent(val nodeIds: List<String>)
+data class KeyReqContent(
+    val nodeIds: List<String>,
+)
 
 /**
  * A structured "@" mention inside a chat body. [nodeId] is the canonical 8-char id used for reliable
@@ -277,26 +286,24 @@ class EncEnvelope(
  */
 object WireCodec {
     @PublishedApi
-    internal val cbor: Cbor = Cbor {
-        ignoreUnknownKeys = true
-        encodeDefaults = false
-    }
+    internal val cbor: Cbor =
+        Cbor {
+            ignoreUnknownKeys = true
+            encodeDefaults = false
+        }
 
     fun encodeWire(wire: WireEnvelope): ByteArray = cbor.encodeToByteArray(wire)
 
     /** Decodes the outer wrapper, or null if the bytes are malformed/unrecognized. */
-    fun decodeWire(bytes: ByteArray): WireEnvelope? =
-        runCatching { cbor.decodeFromByteArray<WireEnvelope>(bytes) }.getOrNull()
+    fun decodeWire(bytes: ByteArray): WireEnvelope? = runCatching { cbor.decodeFromByteArray<WireEnvelope>(bytes) }.getOrNull()
 
     fun encodeEnvelope(env: RelayEnvelope): ByteArray = cbor.encodeToByteArray(env)
 
     /** Decodes the signed routing envelope from [signed], or null if malformed. */
-    fun decodeEnvelope(signed: ByteArray): RelayEnvelope? =
-        runCatching { cbor.decodeFromByteArray<RelayEnvelope>(signed) }.getOrNull()
+    fun decodeEnvelope(signed: ByteArray): RelayEnvelope? = runCatching { cbor.decodeFromByteArray<RelayEnvelope>(signed) }.getOrNull()
 
     inline fun <reified T> encodePayload(content: T): ByteArray = cbor.encodeToByteArray(content)
 
     /** Decodes the opaque per-type [payload] into [T], or null if absent/malformed. */
-    inline fun <reified T> decodePayload(payload: ByteArray): T? =
-        runCatching { cbor.decodeFromByteArray<T>(payload) }.getOrNull()
+    inline fun <reified T> decodePayload(payload: ByteArray): T? = runCatching { cbor.decodeFromByteArray<T>(payload) }.getOrNull()
 }

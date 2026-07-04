@@ -16,7 +16,6 @@ import kotlin.random.Random
  * [BlePresenceTracker], so the curve is asserted with the same unit-test style.
  */
 object ConnectBackoffPolicy {
-
     /**
      * Backoff delay after the [streak]-th consecutive failure (1 = the first failure). Doubles each streak
      * from [config].baseMs, saturating at [config].maxMs, then spread by ±[config].jitterFraction using

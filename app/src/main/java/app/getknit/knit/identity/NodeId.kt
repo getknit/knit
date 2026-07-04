@@ -31,8 +31,10 @@ object NodeId {
     /** Deterministic 8-char `[a-z0-9]` id: the salted SHA-256 of [seed] mapped into the alphabet. */
     @Suppress("MagicNumber") // 0xFF masks a signed byte to its unsigned 0–255 value before indexing
     fun derive(seed: String): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-            .digest((SALT + seed).encodeToByteArray())
+        val digest =
+            MessageDigest
+                .getInstance("SHA-256")
+                .digest((SALT + seed).encodeToByteArray())
         return (0 until LENGTH)
             .map { ALPHABET[(digest[it].toInt() and 0xFF) % ALPHABET.length] }
             .joinToString("")

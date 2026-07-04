@@ -5,8 +5,9 @@ package app.getknit.knit.notifications
  * notification. Keeping the last few messages lets a busy room update one notification that still
  * shows recent context from several senders. Pure (no Android deps) so it is unit-tested directly.
  */
-class NotificationHistory(private val capacity: Int = DEFAULT_CAPACITY) {
-
+class NotificationHistory(
+    private val capacity: Int = DEFAULT_CAPACITY,
+) {
     private val items = ArrayDeque<NotifMessage>()
 
     /** Appends [message], evicting the oldest beyond [capacity], and returns the current snapshot. */

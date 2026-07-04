@@ -13,7 +13,6 @@ class GroupRepository(
     private val messages: MessageRepository,
     private val db: KnitDatabase,
 ) {
-
     fun observeGroups(): Flow<List<GroupEntity>> = dao.observeAll()
 
     fun observeGroup(groupId: String): Flow<GroupEntity?> = dao.observeById(groupId)
@@ -33,7 +32,11 @@ class GroupRepository(
      * and tells the caller not to surface anything. The status row's id is deterministic so a replay
      * upserts the same row rather than duplicating it.
      */
-    suspend fun recordDeparture(groupId: String, leaverId: String, leftAt: Long): Boolean =
+    suspend fun recordDeparture(
+        groupId: String,
+        leaverId: String,
+        leftAt: Long,
+    ): Boolean =
         db.withTransaction {
             val group = dao.findById(groupId) ?: return@withTransaction false
             if (group.left) return@withTransaction false

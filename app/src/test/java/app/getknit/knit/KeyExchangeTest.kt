@@ -32,7 +32,6 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class KeyExchangeTest {
-
     /** A node: its transport, the keys it has pinned, every frame it received, and a wired [KeyExchange]. */
     private class Node(
         val id: String,
@@ -43,23 +42,27 @@ class KeyExchangeTest {
         val transport = FakeLoopTransport(id)
         val pinned = ConcurrentHashMap<String, WireEnvelope>()
         val received = CopyOnWriteArrayList<InboundFrame>()
-        val exchange = KeyExchange(
-            transport = transport,
-            selfId = { id },
-            signRaw = { byteArrayOf(SIG_MARKER) },
-            isBlocked = { it in blocked },
-            now = clock,
-        )
-        private val router = MeshRouter(transport, scope) { wire, env, fromNodeId ->
-            when (env.type) {
-                FrameType.KEY_REQ ->
-                    WireCodec.decodePayload<KeyReqContent>(env.payload)?.let { exchange.onRequest(it.nodeIds, fromNodeId) }
-                FrameType.PROFILE -> {
-                    pinned[env.senderId] = wire
-                    exchange.onProfilePinned(env.senderId, wire)
+        val exchange =
+            KeyExchange(
+                transport = transport,
+                selfId = { id },
+                signRaw = { byteArrayOf(SIG_MARKER) },
+                isBlocked = { it in blocked },
+                now = clock,
+            )
+        private val router =
+            MeshRouter(transport, scope) { wire, env, fromNodeId ->
+                when (env.type) {
+                    FrameType.KEY_REQ -> {
+                        WireCodec.decodePayload<KeyReqContent>(env.payload)?.let { exchange.onRequest(it.nodeIds, fromNodeId) }
+                    }
+
+                    FrameType.PROFILE -> {
+                        pinned[env.senderId] = wire
+                        exchange.onProfilePinned(env.senderId, wire)
+                    }
                 }
             }
-        }
 
         fun start(scope: CoroutineScope) {
             router.start()
@@ -70,126 +73,150 @@ class KeyExchangeTest {
     }
 
     @Test
-    fun wantEmitsSignedPointToPointRequestForMissingKey() = runTest(UnconfinedTestDispatcher()) {
-        var clock = 0L
-        val r = Node("r", backgroundScope) { clock }
-        val n = Node("n", backgroundScope) { clock }
-        r.transport.connect(n.transport)
-        r.start(backgroundScope); n.start(backgroundScope)
+    fun wantEmitsSignedPointToPointRequestForMissingKey() =
+        runTest(UnconfinedTestDispatcher()) {
+            var clock = 0L
+            val r = Node("r", backgroundScope) { clock }
+            val n = Node("n", backgroundScope) { clock }
+            r.transport.connect(n.transport)
+            r.start(backgroundScope)
+            n.start(backgroundScope)
 
-        r.exchange.want("x")
+            r.exchange.want("x")
 
-        val reqs = n.keyRequestsReceived()
-        assertEquals(1, reqs.size)
-        assertFalse("a key request must never be flooded", reqs.first().wire.relay)
-        assertArrayEquals("a key request must be signed", byteArrayOf(SIG_MARKER), reqs.first().wire.sig)
-        assertEquals(listOf("x"), WireCodec.decodePayload<KeyReqContent>(reqs.first().envelope.payload)!!.nodeIds)
-    }
-
-    @Test
-    fun repeatedWantsAreCooldownThrottledThenAllowedAfterElapsed() = runTest(UnconfinedTestDispatcher()) {
-        var clock = 0L
-        val r = Node("r", backgroundScope) { clock }
-        val n = Node("n", backgroundScope) { clock }
-        r.transport.connect(n.transport)
-        r.start(backgroundScope); n.start(backgroundScope)
-
-        r.exchange.want("x")
-        r.exchange.want("x") // within the cooldown — suppressed
-        assertEquals(1, n.keyRequestsReceived().size)
-
-        clock += 60_000L // past the 30s cooldown
-        r.exchange.want("x")
-        assertEquals(2, n.keyRequestsReceived().size)
-    }
+            val reqs = n.keyRequestsReceived()
+            assertEquals(1, reqs.size)
+            assertFalse("a key request must never be flooded", reqs.first().wire.relay)
+            assertArrayEquals("a key request must be signed", byteArrayOf(SIG_MARKER), reqs.first().wire.sig)
+            assertEquals(listOf("x"), WireCodec.decodePayload<KeyReqContent>(reqs.first().envelope.payload)!!.nodeIds)
+        }
 
     @Test
-    fun selfBlockedAndAlreadyHeldKeysAreNotRequested() = runTest(UnconfinedTestDispatcher()) {
-        var clock = 0L
-        val r = Node("r", backgroundScope, blocked = setOf("blocked")) { clock }
-        val n = Node("n", backgroundScope) { clock }
-        r.transport.connect(n.transport)
-        r.start(backgroundScope); n.start(backgroundScope)
+    fun repeatedWantsAreCooldownThrottledThenAllowedAfterElapsed() =
+        runTest(UnconfinedTestDispatcher()) {
+            var clock = 0L
+            val r = Node("r", backgroundScope) { clock }
+            val n = Node("n", backgroundScope) { clock }
+            r.transport.connect(n.transport)
+            r.start(backgroundScope)
+            n.start(backgroundScope)
 
-        r.exchange.want("r")        // our own id
-        r.exchange.want("blocked")  // a blocked peer — we drop its frames anyway
-        r.exchange.onProfilePinned("cached", profileWire("cached", "K")) // now held
-        r.exchange.want("cached")   // already cached
+            r.exchange.want("x")
+            r.exchange.want("x") // within the cooldown — suppressed
+            assertEquals(1, n.keyRequestsReceived().size)
 
-        assertEquals(0, n.keyRequestsReceived().size)
-    }
-
-    @Test
-    fun missingKeyIsServedByAHoldingNeighbor() = runTest(UnconfinedTestDispatcher()) {
-        // Topology: a — b — c. b holds a's profile (it's a's direct neighbor); c, two hops from a, is
-        // missing a's key — the exact field gap this recovers.
-        var clock = 0L
-        val a = Node("a", backgroundScope) { clock }
-        val b = Node("b", backgroundScope) { clock }
-        val c = Node("c", backgroundScope) { clock }
-        a.transport.connect(b.transport)
-        b.transport.connect(c.transport)
-        a.start(backgroundScope); b.start(backgroundScope); c.start(backgroundScope)
-
-        b.exchange.onProfilePinned("a", profileWire("a", "KEY_A"))
-
-        c.exchange.want("a")
-
-        assertEquals("KEY_A", pinnedKeyOf(c, "a"))
-    }
+            clock += 60_000L // past the 30s cooldown
+            r.exchange.want("x")
+            assertEquals(2, n.keyRequestsReceived().size)
+        }
 
     @Test
-    fun missingKeyWalksHopByHopThroughANonHolder() = runTest(UnconfinedTestDispatcher()) {
-        // Topology: a — b — c — d. Only b holds a's profile; d (three hops away, via c which also lacks it)
-        // recovers it through the same hop-by-hop recursion as a blob pull.
-        var clock = 0L
-        val a = Node("a", backgroundScope) { clock }
-        val b = Node("b", backgroundScope) { clock }
-        val c = Node("c", backgroundScope) { clock }
-        val d = Node("d", backgroundScope) { clock }
-        a.transport.connect(b.transport)
-        b.transport.connect(c.transport)
-        c.transport.connect(d.transport)
-        a.start(backgroundScope); b.start(backgroundScope); c.start(backgroundScope); d.start(backgroundScope)
+    fun selfBlockedAndAlreadyHeldKeysAreNotRequested() =
+        runTest(UnconfinedTestDispatcher()) {
+            var clock = 0L
+            val r = Node("r", backgroundScope, blocked = setOf("blocked")) { clock }
+            val n = Node("n", backgroundScope) { clock }
+            r.transport.connect(n.transport)
+            r.start(backgroundScope)
+            n.start(backgroundScope)
 
-        b.exchange.onProfilePinned("a", profileWire("a", "KEY_A"))
+            r.exchange.want("r") // our own id
+            r.exchange.want("blocked") // a blocked peer — we drop its frames anyway
+            r.exchange.onProfilePinned("cached", profileWire("cached", "K")) // now held
+            r.exchange.want("cached") // already cached
 
-        d.exchange.want("a")
-
-        assertEquals("d recovers a's key via c→b", "KEY_A", pinnedKeyOf(d, "a"))
-        assertEquals("c caches a's key in transit", "KEY_A", pinnedKeyOf(c, "a"))
-    }
+            assertEquals(0, n.keyRequestsReceived().size)
+        }
 
     @Test
-    fun newNeighborIsAskedForEveryOutstandingMissingKey() = runTest(UnconfinedTestDispatcher()) {
-        var clock = 0L
-        val r = Node("r", backgroundScope) { clock }
-        val n = Node("n", backgroundScope) { clock }
-        r.start(backgroundScope); n.start(backgroundScope)
+    fun missingKeyIsServedByAHoldingNeighbor() =
+        runTest(UnconfinedTestDispatcher()) {
+            // Topology: a — b — c. b holds a's profile (it's a's direct neighbor); c, two hops from a, is
+            // missing a's key — the exact field gap this recovers.
+            var clock = 0L
+            val a = Node("a", backgroundScope) { clock }
+            val b = Node("b", backgroundScope) { clock }
+            val c = Node("c", backgroundScope) { clock }
+            a.transport.connect(b.transport)
+            b.transport.connect(c.transport)
+            a.start(backgroundScope)
+            b.start(backgroundScope)
+            c.start(backgroundScope)
 
-        r.exchange.want("x") // no neighbors yet: remembered as missing, nothing sent
-        assertEquals(0, n.keyRequestsReceived().size)
+            b.exchange.onProfilePinned("a", profileWire("a", "KEY_A"))
 
-        r.transport.connect(n.transport)
-        r.exchange.onNeighborAdded(Peer("n"))
+            c.exchange.want("a")
 
-        val reqs = n.keyRequestsReceived()
-        assertEquals(1, reqs.size)
-        assertEquals(listOf("x"), WireCodec.decodePayload<KeyReqContent>(reqs.first().envelope.payload)!!.nodeIds)
-    }
+            assertEquals("KEY_A", pinnedKeyOf(c, "a"))
+        }
 
-    private fun pinnedKeyOf(node: Node, nodeId: String): String? {
+    @Test
+    fun missingKeyWalksHopByHopThroughANonHolder() =
+        runTest(UnconfinedTestDispatcher()) {
+            // Topology: a — b — c — d. Only b holds a's profile; d (three hops away, via c which also lacks it)
+            // recovers it through the same hop-by-hop recursion as a blob pull.
+            var clock = 0L
+            val a = Node("a", backgroundScope) { clock }
+            val b = Node("b", backgroundScope) { clock }
+            val c = Node("c", backgroundScope) { clock }
+            val d = Node("d", backgroundScope) { clock }
+            a.transport.connect(b.transport)
+            b.transport.connect(c.transport)
+            c.transport.connect(d.transport)
+            a.start(backgroundScope)
+            b.start(backgroundScope)
+            c.start(backgroundScope)
+            d.start(backgroundScope)
+
+            b.exchange.onProfilePinned("a", profileWire("a", "KEY_A"))
+
+            d.exchange.want("a")
+
+            assertEquals("d recovers a's key via c→b", "KEY_A", pinnedKeyOf(d, "a"))
+            assertEquals("c caches a's key in transit", "KEY_A", pinnedKeyOf(c, "a"))
+        }
+
+    @Test
+    fun newNeighborIsAskedForEveryOutstandingMissingKey() =
+        runTest(UnconfinedTestDispatcher()) {
+            var clock = 0L
+            val r = Node("r", backgroundScope) { clock }
+            val n = Node("n", backgroundScope) { clock }
+            r.start(backgroundScope)
+            n.start(backgroundScope)
+
+            r.exchange.want("x") // no neighbors yet: remembered as missing, nothing sent
+            assertEquals(0, n.keyRequestsReceived().size)
+
+            r.transport.connect(n.transport)
+            r.exchange.onNeighborAdded(Peer("n"))
+
+            val reqs = n.keyRequestsReceived()
+            assertEquals(1, reqs.size)
+            assertEquals(listOf("x"), WireCodec.decodePayload<KeyReqContent>(reqs.first().envelope.payload)!!.nodeIds)
+        }
+
+    private fun pinnedKeyOf(
+        node: Node,
+        nodeId: String,
+    ): String? {
         val wire = node.pinned[nodeId] ?: return null
         val env = WireCodec.decodeEnvelope(wire.signed) ?: return null
         return WireCodec.decodePayload<ProfileContent>(env.payload)?.pubKey
     }
 
     /** A minimal signed profile frame for [nodeId] advertising [pubKey], as a holder would have cached it. */
-    private fun profileWire(nodeId: String, pubKey: String): WireEnvelope {
-        val env = RelayEnvelope(
-            type = FrameType.PROFILE, id = "profile-$nodeId", senderId = nodeId,
-            payload = WireCodec.encodePayload(ProfileContent(name = nodeId, status = "", pubKey = pubKey)),
-        )
+    private fun profileWire(
+        nodeId: String,
+        pubKey: String,
+    ): WireEnvelope {
+        val env =
+            RelayEnvelope(
+                type = FrameType.PROFILE,
+                id = "profile-$nodeId",
+                senderId = nodeId,
+                payload = WireCodec.encodePayload(ProfileContent(name = nodeId, status = "", pubKey = pubKey)),
+            )
         return WireEnvelope(relay = false, sig = byteArrayOf(9), signed = WireCodec.encodeEnvelope(env))
     }
 

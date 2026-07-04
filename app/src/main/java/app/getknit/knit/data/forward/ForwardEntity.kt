@@ -57,8 +57,7 @@ data class ForwardEntity(
     // Identity is the frame id. The default data-class equals/hashCode would compare the ByteArrays by
     // reference (and Room/detekt flag a ByteArray in a data class); the id is the only field that
     // matters for equality (mirrors BlobEntity).
-    override fun equals(other: Any?): Boolean =
-        this === other || (other is ForwardEntity && id == other.id)
+    override fun equals(other: Any?): Boolean = this === other || (other is ForwardEntity && id == other.id)
 
     override fun hashCode(): Int = id.hashCode()
 }

@@ -46,7 +46,6 @@ class CompositeMeshTransport(
     private val children: List<MeshTransport>,
     private val scope: CoroutineScope,
 ) : MeshTransport {
-
     override val hasFastPlane: Boolean = children.any { it.hasFastPlane }
 
     override val neighbors: StateFlow<Set<Peer>> =
@@ -73,9 +72,11 @@ class CompositeMeshTransport(
                 when {
                     // The node can still mesh if any radio is up.
                     hs.any { it == TransportHealth.Healthy } -> TransportHealth.Healthy
+
                     // At least one radio is on but failing (seized) — a fault, not a user-off state, so it
                     // outranks Unavailable: "radio busy" is the more informative message.
                     hs.any { it == TransportHealth.Degraded } -> TransportHealth.Degraded
+
                     // Every radio is switched off / absent — actionable "turn on Wi-Fi or Bluetooth".
                     else -> TransportHealth.Unavailable
                 }
@@ -175,7 +176,10 @@ class CompositeMeshTransport(
         children.forEach { it.heal() }
     }
 
-    override suspend fun send(wire: WireEnvelope, to: Peer?) {
+    override suspend fun send(
+        wire: WireEnvelope,
+        to: Peer?,
+    ) {
         if (to != null) {
             childHoldingLinkTo(to.nodeId)?.send(wire, to) // prefer BT; no-op if no child holds the link
             return
@@ -188,11 +192,18 @@ class CompositeMeshTransport(
         }
     }
 
-    override suspend fun sendFile(file: File, to: Peer, meta: FileMeta) {
+    override suspend fun sendFile(
+        file: File,
+        to: Peer,
+        meta: FileMeta,
+    ) {
         childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta)
     }
 
-    override suspend fun sendDigest(to: Peer, ids: List<String>) {
+    override suspend fun sendDigest(
+        to: Peer,
+        ids: List<String>,
+    ) {
         childHoldingLinkTo(to.nodeId)?.sendDigest(to, ids)
     }
 
@@ -206,7 +217,10 @@ class CompositeMeshTransport(
         }
     }
 
-    override fun fastSend(wire: WireEnvelope, to: Peer) {
+    override fun fastSend(
+        wire: WireEnvelope,
+        to: Peer,
+    ) {
         for (child in children) {
             if (child.hasFastPlane) {
                 child.fastSend(wire, to)
@@ -228,8 +242,12 @@ class CompositeMeshTransport(
 
     // A peer seen over two planes keeps the richer advertised hint (unauthenticated, routing-only): higher
     // protoVersion wins, tie-break on higher capabilities.
-    private fun richer(a: Peer, b: Peer): Peer = when {
-        a.protoVersion != b.protoVersion -> if (a.protoVersion > b.protoVersion) a else b
-        else -> if (a.capabilities >= b.capabilities) a else b
-    }
+    private fun richer(
+        a: Peer,
+        b: Peer,
+    ): Peer =
+        when {
+            a.protoVersion != b.protoVersion -> if (a.protoVersion > b.protoVersion) a else b
+            else -> if (a.capabilities >= b.capabilities) a else b
+        }
 }

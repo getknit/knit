@@ -8,9 +8,10 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class RadioWarningTest {
-
-    private fun status(kind: TransportKind, health: TransportHealth) =
-        TransportStatus(kind = kind, health = health, linked = 0, nearby = 0)
+    private fun status(
+        kind: TransportKind,
+        health: TransportHealth,
+    ) = TransportStatus(kind = kind, health = health, linked = 0, nearby = 0)
 
     @Test
     fun noRadioHardware_noWarning() {

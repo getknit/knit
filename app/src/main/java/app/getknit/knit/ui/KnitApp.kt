@@ -47,10 +47,15 @@ private object Routes {
     const val DONATE = "donate"
     const val SHARE = "share"
     const val CHAT = "chat/{conversationId}"
+
     fun chat(conversationId: String) = "chat/$conversationId"
+
     const val PROFILE_DETAILS = "profileDetails/{nodeId}"
+
     fun profileDetails(nodeId: String) = "profileDetails/$nodeId"
+
     const val GROUP_DETAILS = "groupDetails/{groupId}"
+
     fun groupDetails(groupId: String) = "groupDetails/$groupId"
 }
 
@@ -72,8 +77,9 @@ fun KnitApp(startRoute: String? = null) {
     val onboarded = BuildConfig.SEED_DEMO || hasAllMeshPermissions(context)
     // Demo-screenshot mode skips the permission gate (and an optional [startRoute] jumps straight to a
     // screen for deterministic capture); otherwise gate on permissions as usual.
-    val start = startRoute
-        ?: if (onboarded) Routes.CHAT_LIST else Routes.ONBOARDING
+    val start =
+        startRoute
+            ?: if (onboarded) Routes.CHAT_LIST else Routes.ONBOARDING
 
     // Start the mesh service whenever the user is past onboarding (guard kept broad on purpose). Demo
     // builds never start it — there is no real mesh and the seeded data needs no transport.
@@ -90,9 +96,10 @@ fun KnitApp(startRoute: String? = null) {
         val meshManager = koinInject<MeshManager>()
         val lifecycleOwner = LocalLifecycleOwner.current
         DisposableEffect(lifecycleOwner) {
-            val observer = LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_RESUME) meshManager.heal()
-            }
+            val observer =
+                LifecycleEventObserver { _, event ->
+                    if (event == Lifecycle.Event.ON_RESUME) meshManager.heal()
+                }
             lifecycleOwner.lifecycle.addObserver(observer)
             onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
         }

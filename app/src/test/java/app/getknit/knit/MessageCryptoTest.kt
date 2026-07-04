@@ -20,9 +20,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MessageCryptoTest {
-
     /** A device identity: its cipher (private keys) plus the public bundle it would advertise. */
-    private class Party(val crypto: MessageCrypto, val bundle: PublicKeyBundle, val nodeId: String)
+    private class Party(
+        val crypto: MessageCrypto,
+        val bundle: PublicKeyBundle,
+        val nodeId: String,
+    )
 
     private fun party(nodeId: String): Party {
         TinkInit.ensure()
@@ -31,8 +34,7 @@ class MessageCryptoTest {
         return Party(MessageCrypto(hybrid, sig), PublicKeyBundle.fromPrivate(hybrid, sig), nodeId)
     }
 
-    private fun content(body: String) =
-        MessageContent(body = body, mentions = listOf(Mention("bob00000", "Bob"))).encode()
+    private fun content(body: String) = MessageContent(body = body, mentions = listOf(Mention("bob00000", "Bob"))).encode()
 
     // --- seal / open (encrypt-only; authentication is the separate frame signature) ---
 
@@ -72,10 +74,12 @@ class MessageCryptoTest {
         val carol = party("carol000")
         val header = MessageCrypto.header("g1", alice.nodeId, 5L, "g-team")
 
-        val envelope = alice.crypto.seal(
-            content("hi team"), header,
-            mapOf(bob.nodeId to bob.bundle, carol.nodeId to carol.bundle),
-        )!!
+        val envelope =
+            alice.crypto.seal(
+                content("hi team"),
+                header,
+                mapOf(bob.nodeId to bob.bundle, carol.nodeId to carol.bundle),
+            )!!
 
         assertEquals("hi team", bob.crypto.open(envelope, header, bob.nodeId)?.body)
         assertEquals("hi team", carol.crypto.open(envelope, header, carol.nodeId)?.body)
@@ -138,10 +142,15 @@ class MessageCryptoTest {
         val header = MessageCrypto.header("m1", alice.nodeId, 100L, bob.nodeId)
         val envelope = alice.crypto.seal(content("hi bob"), header, mapOf(bob.nodeId to bob.bundle))!!
 
-        val env = RelayEnvelope(
-            type = FrameType.CHAT, id = "m1", senderId = alice.nodeId, sentAt = 100L, recipientId = bob.nodeId,
-            payload = WireCodec.encodePayload(ChatContent(enc = envelope)),
-        )
+        val env =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = "m1",
+                senderId = alice.nodeId,
+                sentAt = 100L,
+                recipientId = bob.nodeId,
+                payload = WireCodec.encodePayload(ChatContent(enc = envelope)),
+            )
         val signed = WireCodec.encodeEnvelope(env)
         val sig = alice.crypto.signRaw(signed)
 

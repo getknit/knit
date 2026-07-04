@@ -82,11 +82,17 @@ import java.io.File
 )
 abstract class KnitDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
+
     abstract fun peerDao(): PeerDao
+
     abstract fun reactionDao(): ReactionDao
+
     abstract fun blobDao(): BlobDao
+
     abstract fun groupDao(): GroupDao
+
     abstract fun blobVerdictDao(): BlobVerdictDao
+
     abstract fun forwardDao(): ForwardDao
 
     companion object {
@@ -95,32 +101,39 @@ abstract class KnitDatabase : RoomDatabase() {
          * [app.getknit.knit.data.crypto.DatabaseKey]); SQLCipher zeroes it once the DB is opened.
          * The native `libsqlcipher.so` must be loaded explicitly before the factory is created.
          */
-        fun build(context: Context, passphrase: ByteArray): KnitDatabase {
+        fun build(
+            context: Context,
+            passphrase: ByteArray,
+        ): KnitDatabase {
             System.loadLibrary("sqlcipher")
-            return Room.databaseBuilder(context, KnitDatabase::class.java, "knit.db")
+            return Room
+                .databaseBuilder(context, KnitDatabase::class.java, "knit.db")
                 .openHelperFactory(SupportOpenHelperFactory(passphrase))
                 .fallbackToDestructiveMigration(dropAllTables = true)
-                .addCallback(object : Callback() {
-                    override fun onDestructiveMigration(db: SupportSQLiteDatabase) {
-                        // The v6 destructive migration drops the rows that referenced on-disk images,
-                        // so those plaintext files are now orphaned. Delete them — leaving decrypted
-                        // images on disk would defeat the point of moving them into the encrypted DB.
-                        purgeLegacyImageFiles(context)
-                    }
-                })
-                .build()
+                .addCallback(
+                    object : Callback() {
+                        override fun onDestructiveMigration(db: SupportSQLiteDatabase) {
+                            // The v6 destructive migration drops the rows that referenced on-disk images,
+                            // so those plaintext files are now orphaned. Delete them — leaving decrypted
+                            // images on disk would defeat the point of moving them into the encrypted DB.
+                            purgeLegacyImageFiles(context)
+                        }
+                    },
+                ).build()
         }
 
         /** Removes the pre-v6 plaintext avatar/attachment files (own + peer avatars, attachments, staging). */
         private fun purgeLegacyImageFiles(context: Context) {
             val files = context.filesDir
-            files.listFiles { f -> f.name.startsWith("avatar-") && f.name.endsWith(".jpg") }
+            files
+                .listFiles { f -> f.name.startsWith("avatar-") && f.name.endsWith(".jpg") }
                 ?.forEach { it.delete() }
             File(files, "avatar.jpg").delete() // legacy pre-content-addressing own avatar
             File(files, "attachments").deleteRecursively()
-            context.cacheDir.listFiles { f ->
-                (f.name.startsWith("avatar-") && f.name.endsWith(".jpg")) || f.name.startsWith("attach-")
-            }?.forEach { it.delete() }
+            context.cacheDir
+                .listFiles { f ->
+                    (f.name.startsWith("avatar-") && f.name.endsWith(".jpg")) || f.name.startsWith("attach-")
+                }?.forEach { it.delete() }
         }
     }
 }

@@ -18,16 +18,17 @@ internal class BleAdvertiser(
     private val advertiser: BluetoothLeAdvertiser?,
     private val log: (String) -> Unit,
 ) {
-    private val callback = object : AdvertiseCallback() {
-        override fun onStartFailure(errorCode: Int) {
-            active = false
-            log("advertise start failed: $errorCode")
-        }
+    private val callback =
+        object : AdvertiseCallback() {
+            override fun onStartFailure(errorCode: Int) {
+                active = false
+                log("advertise start failed: $errorCode")
+            }
 
-        override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
-            log("advertising")
+            override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+                log("advertising")
+            }
         }
-    }
 
     @Volatile
     private var active = false
@@ -36,15 +37,19 @@ internal class BleAdvertiser(
     fun update(serviceData: ByteArray) {
         val adv = advertiser ?: return
         if (active) runCatching { adv.stopAdvertising(callback) }
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
-            .setConnectable(true)
-            .setTimeout(0)
-            .build()
-        val data = AdvertiseData.Builder()
-            .addServiceUuid(BleConstants.SERVICE_UUID)
-            .addServiceData(BleConstants.SERVICE_UUID, serviceData)
-            .build()
+        val settings =
+            AdvertiseSettings
+                .Builder()
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)
+                .setConnectable(true)
+                .setTimeout(0)
+                .build()
+        val data =
+            AdvertiseData
+                .Builder()
+                .addServiceUuid(BleConstants.SERVICE_UUID)
+                .addServiceData(BleConstants.SERVICE_UUID, serviceData)
+                .build()
         runCatching { adv.startAdvertising(settings, data, callback) }
             .onSuccess { active = true }
             .onFailure { log("advertise start threw: ${it.message}") }

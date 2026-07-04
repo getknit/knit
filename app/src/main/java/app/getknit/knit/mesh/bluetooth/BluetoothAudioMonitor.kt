@@ -54,55 +54,68 @@ class BluetoothAudioMonitor(
 
     // Latched from the A2DP proxy + broadcasts (written on the main thread, read in recompute).
     @Volatile private var a2dpProxy: BluetoothProfile? = null
+
     @Volatile private var connected = false
+
     @Volatile private var playing = false
     private var registered = false
 
-    private val profileListener = object : BluetoothProfile.ServiceListener {
-        override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
-            if (profile != BluetoothProfile.A2DP) return
-            a2dpProxy = proxy
-            connected = runCatching { proxy.connectedDevices.isNotEmpty() }.getOrDefault(false)
-            recompute("proxyConnected")
+    private val profileListener =
+        object : BluetoothProfile.ServiceListener {
+            override fun onServiceConnected(
+                profile: Int,
+                proxy: BluetoothProfile,
+            ) {
+                if (profile != BluetoothProfile.A2DP) return
+                a2dpProxy = proxy
+                connected = runCatching { proxy.connectedDevices.isNotEmpty() }.getOrDefault(false)
+                recompute("proxyConnected")
+            }
+
+            override fun onServiceDisconnected(profile: Int) {
+                if (profile != BluetoothProfile.A2DP) return
+                a2dpProxy = null
+                connected = false
+                playing = false
+                recompute("proxyDisconnected")
+            }
         }
 
-        override fun onServiceDisconnected(profile: Int) {
-            if (profile != BluetoothProfile.A2DP) return
-            a2dpProxy = null
-            connected = false
-            playing = false
-            recompute("proxyDisconnected")
-        }
-    }
+    private val receiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(
+                ctx: Context,
+                intent: Intent,
+            ) {
+                when (intent.action) {
+                    BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED -> {
+                        val st = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)
+                        connected = st == BluetoothProfile.STATE_CONNECTED
+                        if (!connected) playing = false
+                        recompute("conn=$st")
+                    }
 
-    private val receiver = object : BroadcastReceiver() {
-        override fun onReceive(ctx: Context, intent: Intent) {
-            when (intent.action) {
-                BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED -> {
-                    val st = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED)
-                    connected = st == BluetoothProfile.STATE_CONNECTED
-                    if (!connected) playing = false
-                    recompute("conn=$st")
-                }
-                BluetoothA2dp.ACTION_PLAYING_STATE_CHANGED -> {
-                    val st = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothA2dp.STATE_NOT_PLAYING)
-                    playing = st == BluetoothA2dp.STATE_PLAYING
-                    recompute("play=$st")
+                    BluetoothA2dp.ACTION_PLAYING_STATE_CHANGED -> {
+                        val st = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothA2dp.STATE_NOT_PLAYING)
+                        playing = st == BluetoothA2dp.STATE_PLAYING
+                        recompute("play=$st")
+                    }
                 }
             }
         }
-    }
 
     fun start() {
         if (registered) return
         registered = true
-        val proxyRequested = runCatching {
-            adapter?.getProfileProxy(appContext, profileListener, BluetoothProfile.A2DP) == true
-        }.getOrDefault(false)
-        val filter = IntentFilter().apply {
-            addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
-            addAction(BluetoothA2dp.ACTION_PLAYING_STATE_CHANGED)
-        }
+        val proxyRequested =
+            runCatching {
+                adapter?.getProfileProxy(appContext, profileListener, BluetoothProfile.A2DP) == true
+            }.getOrDefault(false)
+        val filter =
+            IntentFilter().apply {
+                addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED)
+                addAction(BluetoothA2dp.ACTION_PLAYING_STATE_CHANGED)
+            }
         runCatching { appContext.registerReceiver(receiver, filter) }
         recompute("start(proxy=$proxyRequested)")
     }
@@ -123,11 +136,12 @@ class BluetoothAudioMonitor(
     private fun recompute(why: String) {
         val btOut = btAudioOutputPresent()
         val streaming = playing || (btOut && musicActive())
-        val next = when {
-            streaming -> BtAudioState.Streaming
-            connected || btOut -> BtAudioState.Connected
-            else -> BtAudioState.Idle
-        }
+        val next =
+            when {
+                streaming -> BtAudioState.Streaming
+                connected || btOut -> BtAudioState.Connected
+                else -> BtAudioState.Idle
+            }
         if (_state.value != next) {
             _state.value = next
             _contended.value = next == BtAudioState.Streaming
@@ -144,10 +158,11 @@ class BluetoothAudioMonitor(
     }
 
     private companion object {
-        val BT_OUTPUT_TYPES = setOf(
-            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
-            AudioDeviceInfo.TYPE_BLE_HEADSET,
-            AudioDeviceInfo.TYPE_BLE_SPEAKER,
-        )
+        val BT_OUTPUT_TYPES =
+            setOf(
+                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                AudioDeviceInfo.TYPE_BLE_HEADSET,
+                AudioDeviceInfo.TYPE_BLE_SPEAKER,
+            )
     }
 }

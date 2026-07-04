@@ -25,7 +25,6 @@ object TextLimits {
  * per-keystroke — trimming the trailing space on every keystroke would stop the user from typing a
  * space between words (the field would reset before the next character).
  */
-fun normalizeSingleLine(value: String): String =
-    value.trim().replace(WHITESPACE_RUN, " ")
+fun normalizeSingleLine(value: String): String = value.trim().replace(WHITESPACE_RUN, " ")
 
 private val WHITESPACE_RUN = Regex("\\s+")

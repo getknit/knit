@@ -21,20 +21,24 @@ internal class BleScanner(
     private val onResult: (ScanResult) -> Unit,
     private val log: (String) -> Unit,
 ) {
-    private val callback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            onResult(result)
-        }
+    private val callback =
+        object : ScanCallback() {
+            override fun onScanResult(
+                callbackType: Int,
+                result: ScanResult,
+            ) {
+                onResult(result)
+            }
 
-        override fun onBatchScanResults(results: MutableList<ScanResult>) {
-            results.forEach(onResult)
-        }
+            override fun onBatchScanResults(results: MutableList<ScanResult>) {
+                results.forEach(onResult)
+            }
 
-        override fun onScanFailed(errorCode: Int) {
-            scanning = false
-            log("scan failed: $errorCode")
+            override fun onScanFailed(errorCode: Int) {
+                scanning = false
+                log("scan failed: $errorCode")
+            }
         }
-    }
 
     @Volatile
     private var scanning = false
@@ -42,10 +46,12 @@ internal class BleScanner(
     fun start(scanMode: Int) {
         val s = scanner ?: return
         if (scanning) return
-        val settings = ScanSettings.Builder()
-            .setScanMode(scanMode)
-            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-            .build()
+        val settings =
+            ScanSettings
+                .Builder()
+                .setScanMode(scanMode)
+                .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                .build()
         val filters = listOf(ScanFilter.Builder().setServiceUuid(BleConstants.SERVICE_UUID).build())
         runCatching { s.startScan(filters, settings, callback) }
             .onSuccess { scanning = true }

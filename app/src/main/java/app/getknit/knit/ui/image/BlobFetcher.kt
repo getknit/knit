@@ -23,27 +23,33 @@ class BlobFetcher(
     private val data: BlobImage,
     private val options: Options,
 ) : Fetcher {
-
     override suspend fun fetch(): FetchResult? {
         val raw = blobs.bytes(data.hash) ?: return null
         // Encrypted attachment: the stored bytes are ciphertext; decrypt in memory before decoding.
-        val bytes = if (data.key != null) {
-            AttachmentCrypto.open(raw, b64d(data.key)) ?: return null
-        } else {
-            raw
-        }
+        val bytes =
+            if (data.key != null) {
+                AttachmentCrypto.open(raw, b64d(data.key)) ?: return null
+            } else {
+                raw
+            }
         return SourceFetchResult(
-            source = ImageSource(
-                source = Buffer().apply { write(bytes) },
-                fileSystem = options.fileSystem,
-            ),
+            source =
+                ImageSource(
+                    source = Buffer().apply { write(bytes) },
+                    fileSystem = options.fileSystem,
+                ),
             mimeType = data.mime,
             dataSource = DataSource.MEMORY,
         )
     }
 
-    class Factory(private val blobs: BlobDao) : Fetcher.Factory<BlobImage> {
-        override fun create(data: BlobImage, options: Options, imageLoader: ImageLoader): Fetcher =
-            BlobFetcher(blobs, data, options)
+    class Factory(
+        private val blobs: BlobDao,
+    ) : Fetcher.Factory<BlobImage> {
+        override fun create(
+            data: BlobImage,
+            options: Options,
+            imageLoader: ImageLoader,
+        ): Fetcher = BlobFetcher(blobs, data, options)
     }
 }

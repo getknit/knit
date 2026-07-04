@@ -31,12 +31,14 @@ class PublicKeyBundle private constructor(
 
     /** A primitive that encrypts (wraps) bytes to this peer's hybrid public key. */
     fun hybridEncrypt(): HybridEncrypt =
-        TinkProtoKeysetFormat.parseKeysetWithoutSecret(hybridPubBytes)
+        TinkProtoKeysetFormat
+            .parseKeysetWithoutSecret(hybridPubBytes)
             .getPrimitive(RegistryConfiguration.get(), HybridEncrypt::class.java)
 
     /** A primitive that verifies signatures made by this peer's signing key. */
     fun verifier(): PublicKeyVerify =
-        TinkProtoKeysetFormat.parseKeysetWithoutSecret(sigPubBytes)
+        TinkProtoKeysetFormat
+            .parseKeysetWithoutSecret(sigPubBytes)
             .getPrimitive(RegistryConfiguration.get(), PublicKeyVerify::class.java)
 
     override fun equals(other: Any?): Boolean = other is PublicKeyBundle && other.encoded == encoded
@@ -44,11 +46,17 @@ class PublicKeyBundle private constructor(
     override fun hashCode(): Int = encoded.hashCode()
 
     @Serializable
-    private class Proto(val hybridPub: ByteArray, val sigPub: ByteArray)
+    private class Proto(
+        val hybridPub: ByteArray,
+        val sigPub: ByteArray,
+    )
 
     companion object {
         /** Derives the public bundle from this device's private keyset handles. */
-        fun fromPrivate(hybridPrivate: KeysetHandle, sigPrivate: KeysetHandle): PublicKeyBundle {
+        fun fromPrivate(
+            hybridPrivate: KeysetHandle,
+            sigPrivate: KeysetHandle,
+        ): PublicKeyBundle {
             TinkInit.ensure()
             val hp = TinkProtoKeysetFormat.serializeKeysetWithoutSecret(hybridPrivate.publicKeysetHandle)
             val sp = TinkProtoKeysetFormat.serializeKeysetWithoutSecret(sigPrivate.publicKeysetHandle)
@@ -57,13 +65,17 @@ class PublicKeyBundle private constructor(
 
         /** Parses a wire/stored [encoded] bundle; null if it is malformed. */
         @OptIn(ExperimentalSerializationApi::class)
-        fun decode(encoded: String): PublicKeyBundle? = runCatching {
-            val proto = cryptoCbor.decodeFromByteArray<Proto>(b64d(encoded))
-            PublicKeyBundle(encoded, proto.hybridPub, proto.sigPub)
-        }.getOrNull()
+        fun decode(encoded: String): PublicKeyBundle? =
+            runCatching {
+                val proto = cryptoCbor.decodeFromByteArray<Proto>(b64d(encoded))
+                PublicKeyBundle(encoded, proto.hybridPub, proto.sigPub)
+            }.getOrNull()
 
         @OptIn(ExperimentalSerializationApi::class)
-        private fun build(hybridPub: ByteArray, sigPub: ByteArray): PublicKeyBundle {
+        private fun build(
+            hybridPub: ByteArray,
+            sigPub: ByteArray,
+        ): PublicKeyBundle {
             val encoded = b64(cryptoCbor.encodeToByteArray(Proto(hybridPub, sigPub)))
             return PublicKeyBundle(encoded, hybridPub, sigPub)
         }

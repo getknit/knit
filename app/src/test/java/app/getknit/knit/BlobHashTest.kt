@@ -12,7 +12,6 @@ import org.junit.Test
  * defences (`MeshBlobStore`, `WifiAwareTransport.finalizeIncomingFile`, `MeshManager.onAvatarReceived`).
  */
 class BlobHashTest {
-
     private val validHash = "a".repeat(64)
 
     @Test

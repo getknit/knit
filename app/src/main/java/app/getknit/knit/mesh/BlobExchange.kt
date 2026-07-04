@@ -27,6 +27,7 @@ class BlobExchange(
 ) {
     // hash -> neighbors awaiting the blob from us (forwarded to once we obtain it).
     private val wanters = ConcurrentHashMap<String, MutableSet<Peer>>()
+
     // Hashes we've requested and not yet obtained — dedups outbound requests.
     private val fetching = ConcurrentHashMap.newKeySet<String>()
 
@@ -50,16 +51,25 @@ class BlobExchange(
      * never floods it (it propagates hop-by-hop via [onRequest]), and an empty signature (blob requests
      * are unsigned by design — see `MeshManager.verifyInbound`).
      */
-    private fun blobRequest(me: String, hash: String): WireEnvelope {
-        val env = RelayEnvelope(
-            type = FrameType.BLOB_REQ, id = newRequestId(), senderId = me,
-            payload = WireCodec.encodePayload(BlobReqContent(hash)),
-        )
+    private fun blobRequest(
+        me: String,
+        hash: String,
+    ): WireEnvelope {
+        val env =
+            RelayEnvelope(
+                type = FrameType.BLOB_REQ,
+                id = newRequestId(),
+                senderId = me,
+                payload = WireCodec.encodePayload(BlobReqContent(hash)),
+            )
         return WireEnvelope(relay = false, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
     }
 
     /** A neighbor asked us for [hash]: serve it if held, else record the wanter and pull it ourselves. */
-    suspend fun onRequest(hash: String, fromNodeId: String) {
+    suspend fun onRequest(
+        hash: String,
+        fromNodeId: String,
+    ) {
         val peer = Peer(fromNodeId)
         val file = store.fileFor(hash)
         val mime = store.mimeFor(hash)
@@ -72,13 +82,19 @@ class BlobExchange(
     }
 
     /** A blob we wanted arrived from [fromNodeId]: persist it, notify, and forward to any other wanters. */
-    suspend fun onReceived(hash: String, mime: String, srcPath: String, fromNodeId: String) {
+    suspend fun onReceived(
+        hash: String,
+        mime: String,
+        srcPath: String,
+        fromNodeId: String,
+    ) {
         val stored = store.saveIncoming(hash, mime, srcPath) ?: return
         fetching.remove(hash)
         onObtained(hash, stored.absolutePath)
         val targets = wanters.remove(hash) ?: return
         // Don't bounce the blob back to whoever just gave it to us.
-        targets.filter { it.nodeId != fromNodeId }
+        targets
+            .filter { it.nodeId != fromNodeId }
             .forEach { transport.sendFile(stored, it, FileMeta(FileKind.ATTACHMENT, hash, mime)) }
     }
 }

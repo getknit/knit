@@ -147,7 +147,10 @@ fun DiagnosticsScreen(
 }
 
 @Composable
-private fun SelfSection(name: String, nodeId: String) {
+private fun SelfSection(
+    name: String,
+    nodeId: String,
+) {
     SectionHeader(stringResource(R.string.diagnostics_self))
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Text(text = name, style = MaterialTheme.typography.titleMedium)
@@ -166,25 +169,28 @@ private fun MeshControlsSection(
     onScan: () -> Unit,
 ) {
     // Status line: distinguish Healthy, Degraded (on but seized), and Unavailable (radios switched off).
-    val statusRes = when (health) {
-        TransportHealth.Healthy -> R.string.diagnostics_status_healthy
-        TransportHealth.Degraded -> R.string.diagnostics_status_degraded
-        TransportHealth.Unavailable -> R.string.diagnostics_status_unavailable
-    }
-    val hintRes = when (health) {
-        TransportHealth.Healthy -> null
-        TransportHealth.Degraded -> R.string.diagnostics_status_degraded_hint
-        TransportHealth.Unavailable -> R.string.diagnostics_status_unavailable_hint
-    }
+    val statusRes =
+        when (health) {
+            TransportHealth.Healthy -> R.string.diagnostics_status_healthy
+            TransportHealth.Degraded -> R.string.diagnostics_status_degraded
+            TransportHealth.Unavailable -> R.string.diagnostics_status_unavailable
+        }
+    val hintRes =
+        when (health) {
+            TransportHealth.Healthy -> null
+            TransportHealth.Degraded -> R.string.diagnostics_status_degraded_hint
+            TransportHealth.Unavailable -> R.string.diagnostics_status_unavailable_hint
+        }
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Text(
             text = stringResource(statusRes),
             style = MaterialTheme.typography.bodyMedium,
-            color = if (health == TransportHealth.Healthy) {
-                MaterialTheme.colorScheme.onSurface
-            } else {
-                MaterialTheme.colorScheme.error
-            },
+            color =
+                if (health == TransportHealth.Healthy) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
         )
         if (hintRes != null) {
             Text(
@@ -257,7 +263,10 @@ private fun MetricsSection(metrics: MeshMetrics.Snapshot) {
 }
 
 @Composable
-private fun MetricRow(label: String, value: String) {
+private fun MetricRow(
+    label: String,
+    value: String,
+) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -291,11 +300,12 @@ private fun TransportRow(status: TransportStatus) {
     ) {
         // Health dot: tertiary when Healthy, error when Degraded (seized), muted outline when Unavailable
         // (radio off) — off isn't a fault, so it shouldn't read as alarmingly as a seized radio.
-        val dotColor = when (status.health) {
-            TransportHealth.Healthy -> MaterialTheme.colorScheme.tertiary
-            TransportHealth.Degraded -> MaterialTheme.colorScheme.error
-            TransportHealth.Unavailable -> MaterialTheme.colorScheme.outline
-        }
+        val dotColor =
+            when (status.health) {
+                TransportHealth.Healthy -> MaterialTheme.colorScheme.tertiary
+                TransportHealth.Degraded -> MaterialTheme.colorScheme.error
+                TransportHealth.Unavailable -> MaterialTheme.colorScheme.outline
+            }
         Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(dotColor))
         Spacer(Modifier.width(12.dp))
         Text(
@@ -318,23 +328,25 @@ private fun TransportRow(status: TransportStatus) {
 }
 
 @Composable
-private fun transportName(kind: TransportKind): String = stringResource(
-    when (kind) {
-        TransportKind.Bluetooth -> R.string.diagnostics_transport_bluetooth
-        TransportKind.WifiAware -> R.string.diagnostics_transport_wifi_aware
-        TransportKind.Other -> R.string.diagnostics_transport_other
-    },
-)
+private fun transportName(kind: TransportKind): String =
+    stringResource(
+        when (kind) {
+            TransportKind.Bluetooth -> R.string.diagnostics_transport_bluetooth
+            TransportKind.WifiAware -> R.string.diagnostics_transport_wifi_aware
+            TransportKind.Other -> R.string.diagnostics_transport_other
+        },
+    )
 
 /** BLE / NAN / BLE·NAN for a connected node, or null when it isn't reachable over a tagged radio. */
 @Composable
 private fun transportTag(transports: Set<TransportKind>): String? {
     val ble = stringResource(R.string.diagnostics_tag_ble)
     val nan = stringResource(R.string.diagnostics_tag_nan)
-    val parts = buildList {
-        if (TransportKind.Bluetooth in transports) add(ble)
-        if (TransportKind.WifiAware in transports) add(nan)
-    }
+    val parts =
+        buildList {
+            if (TransportKind.Bluetooth in transports) add(ble)
+            if (TransportKind.WifiAware in transports) add(nan)
+        }
     return parts.joinToString("·").ifEmpty { null }
 }
 
@@ -345,15 +357,19 @@ private fun TransportTag(label: String) {
         style = MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.Medium,
         color = MaterialTheme.colorScheme.onSecondaryContainer,
-        modifier = Modifier
-            .clip(RoundedCornerShape(4.dp))
-            .background(MaterialTheme.colorScheme.secondaryContainer)
-            .padding(horizontal = 6.dp, vertical = 2.dp),
+        modifier =
+            Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(MaterialTheme.colorScheme.secondaryContainer)
+                .padding(horizontal = 6.dp, vertical = 2.dp),
     )
 }
 
 @Composable
-private fun NodeRow(node: NodeInfo, now: Long) {
+private fun NodeRow(
+    node: NodeInfo,
+    now: Long,
+) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -413,107 +429,122 @@ private fun EmptyLine(text: String) {
 
 @Preview(showBackground = true)
 @Composable
-fun SelfSectionPreview() = KnitPreview {
-    // SelfSection emits a header + a Column as siblings; wrap so the preview lays them out vertically
-    // (the real screen places it in a LazyColumn item).
-    Column { SelfSection(name = "Ada Lovelace", nodeId = "8f3a2b1c9d4e5f60") }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun MeshControlsSectionHealthyPreview() = KnitPreview {
-    MeshControlsSection(health = TransportHealth.Healthy, onRestart = {}, onScan = {})
-}
-
-@Preview(showBackground = true)
-@Composable
-fun MeshControlsSectionDegradedPreview() = KnitPreview {
-    MeshControlsSection(health = TransportHealth.Degraded, onRestart = {}, onScan = {})
-}
-
-@Preview(showBackground = true)
-@Composable
-fun MeshControlsSectionUnavailablePreview() = KnitPreview {
-    MeshControlsSection(health = TransportHealth.Unavailable, onRestart = {}, onScan = {})
-}
-
-@Preview(showBackground = true)
-@Composable
-fun MetricsSectionPopulatedPreview() = KnitPreview {
-    MetricsSection(
-        metrics = MeshMetrics.Snapshot(
-            framesOriginated = 128,
-            framesDelivered = 96,
-            framesRelayed = 1_024,
-            framesSuppressed = 12,
-            framesDeduped = 340,
-            bytesSent = 2_500_000,
-        ),
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun MetricsSectionEmptyPreview() = KnitPreview {
-    MetricsSection(
-        metrics = MeshMetrics.Snapshot(
-            framesOriginated = 0,
-            framesDelivered = 0,
-            framesRelayed = 0,
-            framesSuppressed = 0,
-            framesDeduped = 0,
-            bytesSent = 0,
-        ),
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun TransportsSectionPreview() = KnitPreview {
-    TransportsSection(
-        statuses = listOf(
-            TransportStatus(TransportKind.Bluetooth, TransportHealth.Healthy, linked = 3, nearby = 5, contended = true),
-            TransportStatus(TransportKind.WifiAware, TransportHealth.Healthy, linked = 1, nearby = 4),
-        ),
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun NodeRowDirectPreview() = KnitPreview {
-    NodeRow(
-        node = NodeInfo(
-            nodeId = "8f3a2b1c9d4e",
-            displayName = "Ada Lovelace",
-            direct = true,
-            profileUpdatedAt = PREVIEW_NOW - 3 * 60_000L,
-            transports = setOf(TransportKind.Bluetooth, TransportKind.WifiAware),
-        ),
-        now = PREVIEW_NOW,
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun NodeRowRelayPreview() = KnitPreview {
-    NodeRow(
-        node = NodeInfo(
-            nodeId = "a1b2c3d4e5f6",
-            displayName = "Grace Hopper",
-            direct = false,
-            profileUpdatedAt = null,
-        ),
-        now = PREVIEW_NOW,
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun DiagnosticsRowsPreview() = KnitPreview {
-    Column {
-        SectionHeader(text = "Metrics")
-        MetricRow(label = "Frames originated", value = "128")
-        MetricRow(label = "Frames relayed", value = "1,024")
-        EmptyLine(text = "No nodes connected directly.")
+fun SelfSectionPreview() =
+    KnitPreview {
+        // SelfSection emits a header + a Column as siblings; wrap so the preview lays them out vertically
+        // (the real screen places it in a LazyColumn item).
+        Column { SelfSection(name = "Ada Lovelace", nodeId = "8f3a2b1c9d4e5f60") }
     }
-}
+
+@Preview(showBackground = true)
+@Composable
+fun MeshControlsSectionHealthyPreview() =
+    KnitPreview {
+        MeshControlsSection(health = TransportHealth.Healthy, onRestart = {}, onScan = {})
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun MeshControlsSectionDegradedPreview() =
+    KnitPreview {
+        MeshControlsSection(health = TransportHealth.Degraded, onRestart = {}, onScan = {})
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun MeshControlsSectionUnavailablePreview() =
+    KnitPreview {
+        MeshControlsSection(health = TransportHealth.Unavailable, onRestart = {}, onScan = {})
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun MetricsSectionPopulatedPreview() =
+    KnitPreview {
+        MetricsSection(
+            metrics =
+                MeshMetrics.Snapshot(
+                    framesOriginated = 128,
+                    framesDelivered = 96,
+                    framesRelayed = 1_024,
+                    framesSuppressed = 12,
+                    framesDeduped = 340,
+                    bytesSent = 2_500_000,
+                ),
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun MetricsSectionEmptyPreview() =
+    KnitPreview {
+        MetricsSection(
+            metrics =
+                MeshMetrics.Snapshot(
+                    framesOriginated = 0,
+                    framesDelivered = 0,
+                    framesRelayed = 0,
+                    framesSuppressed = 0,
+                    framesDeduped = 0,
+                    bytesSent = 0,
+                ),
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun TransportsSectionPreview() =
+    KnitPreview {
+        TransportsSection(
+            statuses =
+                listOf(
+                    TransportStatus(TransportKind.Bluetooth, TransportHealth.Healthy, linked = 3, nearby = 5, contended = true),
+                    TransportStatus(TransportKind.WifiAware, TransportHealth.Healthy, linked = 1, nearby = 4),
+                ),
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun NodeRowDirectPreview() =
+    KnitPreview {
+        NodeRow(
+            node =
+                NodeInfo(
+                    nodeId = "8f3a2b1c9d4e",
+                    displayName = "Ada Lovelace",
+                    direct = true,
+                    profileUpdatedAt = PREVIEW_NOW - 3 * 60_000L,
+                    transports = setOf(TransportKind.Bluetooth, TransportKind.WifiAware),
+                ),
+            now = PREVIEW_NOW,
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun NodeRowRelayPreview() =
+    KnitPreview {
+        NodeRow(
+            node =
+                NodeInfo(
+                    nodeId = "a1b2c3d4e5f6",
+                    displayName = "Grace Hopper",
+                    direct = false,
+                    profileUpdatedAt = null,
+                ),
+            now = PREVIEW_NOW,
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun DiagnosticsRowsPreview() =
+    KnitPreview {
+        Column {
+            SectionHeader(text = "Metrics")
+            MetricRow(label = "Frames originated", value = "128")
+            MetricRow(label = "Frames relayed", value = "1,024")
+            EmptyLine(text = "No nodes connected directly.")
+        }
+    }

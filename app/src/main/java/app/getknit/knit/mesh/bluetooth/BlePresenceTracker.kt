@@ -11,8 +11,9 @@ import app.getknit.knit.mesh.Peer
  * Pure of Android and driven by an injected clock (all methods take `now`), so it is JVM-unit-testable with a
  * virtual clock ([app.getknit.knit.BlePresenceTrackerTest]) exactly like the other pure mesh components.
  */
-class BlePresenceTracker(private val config: PresenceConfig = PresenceConfig()) {
-
+class BlePresenceTracker(
+    private val config: PresenceConfig = PresenceConfig(),
+) {
     /** One scan hit for a peer: RSSI plus the fields decoded from its [BleAdvertPayload]. */
     data class Sighting(
         val nodeId: String,
@@ -48,20 +49,24 @@ class BlePresenceTracker(private val config: PresenceConfig = PresenceConfig()) 
     private val entries = HashMap<String, Entry>()
 
     @Synchronized
-    fun onSighting(s: Sighting, now: Long) {
+    fun onSighting(
+        s: Sighting,
+        now: Long,
+    ) {
         val existing = entries[s.nodeId]
         // A new peer, or one back after a gap longer than presenceGapResetMs, restarts the dwell clock and
         // reseeds the RSSI (it walked away and back — don't average across the gap).
         if (existing == null || now - existing.lastSeenAt > config.presenceGapResetMs) {
-            entries[s.nodeId] = Entry(
-                protoVersion = s.protoVersion,
-                capabilities = s.capabilities,
-                psm = s.psm,
-                digestCue = s.digestCue,
-                smoothedRssi = s.rssiDbm.toDouble(),
-                firstSeenAt = now,
-                lastSeenAt = now,
-            )
+            entries[s.nodeId] =
+                Entry(
+                    protoVersion = s.protoVersion,
+                    capabilities = s.capabilities,
+                    psm = s.psm,
+                    digestCue = s.digestCue,
+                    smoothedRssi = s.rssiDbm.toDouble(),
+                    firstSeenAt = now,
+                    lastSeenAt = now,
+                )
             return
         }
         existing.smoothedRssi = config.rssiEwmaAlpha * s.rssiDbm + (1 - config.rssiEwmaAlpha) * existing.smoothedRssi
@@ -92,8 +97,7 @@ class BlePresenceTracker(private val config: PresenceConfig = PresenceConfig()) 
 
     /** The smoothed "who's nearby" set for the UI (peers seen within the linger window). */
     @Synchronized
-    fun reachable(now: Long): Set<Peer> =
-        snapshots(now).map { Peer(it.nodeId, it.protoVersion, it.capabilities) }.toSet()
+    fun reachable(now: Long): Set<Peer> = snapshots(now).map { Peer(it.nodeId, it.protoVersion, it.capabilities) }.toSet()
 
     /** The L2CAP PSM last advertised by [nodeId], for an initiator opening a channel — or null if unknown. */
     @Synchronized

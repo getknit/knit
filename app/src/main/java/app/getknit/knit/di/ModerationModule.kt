@@ -18,19 +18,21 @@ import org.koin.dsl.module
  * toxicity classifier only (profanity is limited to the public room). Each moderator degrades to
  * allow-all if its model/tokenizer assets are missing.
  */
-val moderationModule = module {
-    // Shared so the heavy toxicity model is loaded at most once across both moderation scopes.
-    single { MlTextModerator(androidContext()) }
-    single {
-        ScopedTextModerator(
-            // Nearby broadcast room: profanity word-list, then ML toxicity on what it clears.
-            room = HybridTextModerator(
-                lexical = LexicalTextFilter(WordList.loadProfanity(androidContext())),
-                ml = get<MlTextModerator>(),
-            ),
-            // DMs and groups: toxicity only.
-            direct = get<MlTextModerator>(),
-        )
+val moderationModule =
+    module {
+        // Shared so the heavy toxicity model is loaded at most once across both moderation scopes.
+        single { MlTextModerator(androidContext()) }
+        single {
+            ScopedTextModerator(
+                // Nearby broadcast room: profanity word-list, then ML toxicity on what it clears.
+                room =
+                    HybridTextModerator(
+                        lexical = LexicalTextFilter(WordList.loadProfanity(androidContext())),
+                        ml = get<MlTextModerator>(),
+                    ),
+                // DMs and groups: toxicity only.
+                direct = get<MlTextModerator>(),
+            )
+        }
+        single<ImageModerator> { NsfwImageModerator(androidContext()) }
     }
-    single<ImageModerator> { NsfwImageModerator(androidContext()) }
-}

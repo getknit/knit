@@ -18,7 +18,6 @@ import java.io.IOException
  * framing is transport-neutral and pure, so it belongs under test.
  */
 class LinkFramingTest {
-
     private fun roundTrip(vararg records: Pair<LinkFraming.Type, ByteArray>): List<LinkFraming.Message> {
         val out = ByteArrayOutputStream()
         records.forEach { (type, payload) -> out.write(LinkFraming.encode(type, payload)) }
@@ -38,12 +37,13 @@ class LinkFramingTest {
     @Test
     fun readsBackToBackRecordsInOrderIncludingAnEmptyFileEnd() {
         val chunk = ByteArray(1000) { it.toByte() }
-        val records = roundTrip(
-            LinkFraming.Type.FILE_HEADER to "hdr".encodeToByteArray(),
-            LinkFraming.Type.FRAME to byteArrayOf(9), // a frame interleaved between file chunks
-            LinkFraming.Type.FILE_CHUNK to chunk,
-            LinkFraming.Type.FILE_END to ByteArray(0),
-        )
+        val records =
+            roundTrip(
+                LinkFraming.Type.FILE_HEADER to "hdr".encodeToByteArray(),
+                LinkFraming.Type.FRAME to byteArrayOf(9), // a frame interleaved between file chunks
+                LinkFraming.Type.FILE_CHUNK to chunk,
+                LinkFraming.Type.FILE_END to ByteArray(0),
+            )
         assertEquals(
             listOf(
                 LinkFraming.Type.FILE_HEADER,
@@ -80,10 +80,14 @@ class LinkFramingTest {
     @Test
     fun anOutOfRangeLengthPrefixThrows() {
         val tooBig = LinkFraming.MAX_PAYLOAD_BYTES + 1
-        val header = byteArrayOf(
-            LinkFraming.Type.FRAME.tag,
-            (tooBig ushr 24).toByte(), (tooBig ushr 16).toByte(), (tooBig ushr 8).toByte(), tooBig.toByte(),
-        )
+        val header =
+            byteArrayOf(
+                LinkFraming.Type.FRAME.tag,
+                (tooBig ushr 24).toByte(),
+                (tooBig ushr 16).toByte(),
+                (tooBig ushr 8).toByte(),
+                tooBig.toByte(),
+            )
         assertThrows(IOException::class.java) { LinkFraming.read(ByteArrayInputStream(header)) }
     }
 

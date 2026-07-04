@@ -14,9 +14,11 @@ import java.io.OutputStream
  * has no `soTimeout`).
  */
 object LinkHandshake {
-
     /** Initiator: write our identity ([Protocol.advertise] bytes) as the first record, then flush. */
-    fun writeHello(output: OutputStream, localNodeId: String) {
+    fun writeHello(
+        output: OutputStream,
+        localNodeId: String,
+    ) {
         LinkFraming.write(output, LinkFraming.Type.HELLO, Protocol.advertise(localNodeId).encodeToByteArray())
         output.flush()
     }

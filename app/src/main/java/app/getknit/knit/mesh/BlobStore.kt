@@ -20,5 +20,9 @@ interface BlobStore {
     suspend fun mimeFor(hash: String): String?
 
     /** Persists a received blob (read from [srcPath]) and returns a file the transport can forward, or null. */
-    suspend fun saveIncoming(hash: String, mime: String, srcPath: String): File?
+    suspend fun saveIncoming(
+        hash: String,
+        mime: String,
+        srcPath: String,
+    ): File?
 }

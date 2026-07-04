@@ -17,11 +17,11 @@ import java.security.MessageDigest
  * (which would wrongly block a bystander) are negligible. Pure/Android-free so it is unit-testable.
  */
 object DeviceTag {
-
     /** The 16-hex (64-bit) tag for [rawDeviceId], or null when the platform reports no stable id. */
     fun derive(rawDeviceId: String?): String? =
         rawDeviceId?.takeIf { it.isNotBlank() }?.let { id ->
-            MessageDigest.getInstance("SHA-256")
+            MessageDigest
+                .getInstance("SHA-256")
                 .digest((SALT + id).encodeToByteArray())
                 .take(TAG_BYTES)
                 .joinToString("") { "%02x".format(it) }

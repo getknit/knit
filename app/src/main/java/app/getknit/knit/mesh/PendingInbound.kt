@@ -41,10 +41,10 @@ class PendingInbound(
 ) {
     // frame id -> parked frame, insertion-ordered so the eldest entry is the oldest parked; the global
     // cap evicts that eldest on overflow. Guarded by `this` (every method is @Synchronized), like SeenSet.
-    private val held = object : LinkedHashMap<String, HeldFrame>(64, 0.75f, false) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, HeldFrame>): Boolean =
-            size > maxFrames
-    }
+    private val held =
+        object : LinkedHashMap<String, HeldFrame>(64, 0.75f, false) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, HeldFrame>): Boolean = size > maxFrames
+        }
 
     /**
      * Park [wire]/[env] received from [fromNodeId]. No-op if its id is already held (dedup) or this sender
@@ -52,7 +52,11 @@ class PendingInbound(
      * The global cap evicts the oldest frame on overflow.
      */
     @Synchronized
-    fun hold(wire: WireEnvelope, env: RelayEnvelope, fromNodeId: String) {
+    fun hold(
+        wire: WireEnvelope,
+        env: RelayEnvelope,
+        fromNodeId: String,
+    ) {
         if (held.containsKey(env.id)) return
         if (held.values.count { it.env.senderId == env.senderId } >= maxPerSender) return
         held[env.id] = HeldFrame(wire, env, fromNodeId, now())

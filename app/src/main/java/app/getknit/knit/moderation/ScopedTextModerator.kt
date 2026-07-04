@@ -13,6 +13,8 @@ class ScopedTextModerator(
     private val direct: TextModerator,
 ) {
     /** Classifies [text]; [isRoom] is true for the Nearby broadcast room, false for DMs and groups. */
-    suspend fun classify(text: String, isRoom: Boolean): TextVerdict =
-        if (isRoom) room.classify(text) else direct.classify(text)
+    suspend fun classify(
+        text: String,
+        isRoom: Boolean,
+    ): TextVerdict = if (isRoom) room.classify(text) else direct.classify(text)
 }

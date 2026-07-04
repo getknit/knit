@@ -38,8 +38,12 @@ class MlTextModerator(
     private val blockThresholds: Map<String, Float> = DEFAULT_BLOCK_THRESHOLDS,
     private val maxLen: Int = DEFAULT_MAX_LEN,
 ) : TextModerator {
+    private class BlockRule(
+        val index: Int,
+        val label: String,
+        val threshold: Float,
+    )
 
-    private class BlockRule(val index: Int, val label: String, val threshold: Float)
     private class Engine(
         val tokenizer: SentencePieceTokenizer,
         val interpreter: Interpreter,
@@ -50,33 +54,44 @@ class MlTextModerator(
     private var loaded = false
     private var engine: Engine? = null
 
-    override suspend fun classify(text: String): TextVerdict = withContext(Dispatchers.Default) {
-        mutex.withLock {
-            if (!loaded) {
-                loaded = true
-                engine = loadEngine()
+    override suspend fun classify(text: String): TextVerdict =
+        withContext(Dispatchers.Default) {
+            mutex.withLock {
+                if (!loaded) {
+                    loaded = true
+                    engine = loadEngine()
+                }
+                val e = engine ?: return@withContext TextVerdict.ALLOWED
+                runCatching { infer(e, text) }.getOrDefault(TextVerdict.ALLOWED)
             }
-            val e = engine ?: return@withContext TextVerdict.ALLOWED
-            runCatching { infer(e, text) }.getOrDefault(TextVerdict.ALLOWED)
         }
-    }
 
     private fun loadEngine(): Engine? =
         try {
-            val tokenizer = context.assets.open(tokenizerAsset).use {
-                SentencePieceTokenizer.fromJson(it.readBytes().decodeToString())
-            }
-            val labels = context.assets.open(labelsAsset).use {
-                it.readBytes().decodeToString().lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
-            }
-            val rules = blockThresholds.mapNotNull { (label, threshold) ->
-                labels.indexOf(label).takeIf { it >= 0 }?.let { BlockRule(it, label, threshold) }
-            }
+            val tokenizer =
+                context.assets.open(tokenizerAsset).use {
+                    SentencePieceTokenizer.fromJson(it.readBytes().decodeToString())
+                }
+            val labels =
+                context.assets.open(labelsAsset).use {
+                    it
+                        .readBytes()
+                        .decodeToString()
+                        .lineSequence()
+                        .map(String::trim)
+                        .filter(String::isNotEmpty)
+                        .toList()
+                }
+            val rules =
+                blockThresholds.mapNotNull { (label, threshold) ->
+                    labels.indexOf(label).takeIf { it >= 0 }?.let { BlockRule(it, label, threshold) }
+                }
             val bytes = context.assets.open(modelAsset).use { it.readBytes() }
-            val model = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).apply {
-                put(bytes)
-                rewind()
-            }
+            val model =
+                ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).apply {
+                    put(bytes)
+                    rewind()
+                }
             Engine(tokenizer, Interpreter(model), rules)
         } catch (_: IOException) {
             null // an asset is missing -> degrade to allow-all
@@ -84,7 +99,10 @@ class MlTextModerator(
             null // malformed/incompatible model -> degrade to allow-all
         }
 
-    private fun infer(engine: Engine, text: String): TextVerdict {
+    private fun infer(
+        engine: Engine,
+        text: String,
+    ): TextVerdict {
         val encoding = engine.tokenizer.encode(text, maxLen)
         val tflite = engine.interpreter
 
@@ -92,9 +110,12 @@ class MlTextModerator(
         for (i in 0 until tflite.inputTensorCount) {
             val tensor = tflite.getInputTensor(i)
             // Export order is (input_ids, attention_mask); names are generic, so fall back to index.
-            val isMask = tensor.name().contains("mask", ignoreCase = true) ||
-                (i == ATTENTION_MASK_INPUT && tflite.inputTensorCount == INPUT_COUNT &&
-                    !tflite.getInputTensor(INPUT_IDS_INPUT).name().contains("mask", ignoreCase = true))
+            val isMask =
+                tensor.name().contains("mask", ignoreCase = true) ||
+                    (
+                        i == ATTENTION_MASK_INPUT && tflite.inputTensorCount == INPUT_COUNT &&
+                            !tflite.getInputTensor(INPUT_IDS_INPUT).name().contains("mask", ignoreCase = true)
+                    )
             val source = if (isMask) encoding.attentionMask else encoding.inputIds
             inputs[i] = source.toBuffer(tensor.dataType())
         }
@@ -152,12 +173,13 @@ class MlTextModerator(
 
         // Block serious abuse only; ignore general rudeness (toxicity/insult/obscene) and the
         // identity-mention columns. Starting thresholds — tune on-device.
-        val DEFAULT_BLOCK_THRESHOLDS = mapOf(
-            "severe_toxicity" to 0.85f,
-            "identity_attack" to 0.85f,
-            "sexual_explicit" to 0.8f,
-            "threat" to 0.9f,
-        )
+        val DEFAULT_BLOCK_THRESHOLDS =
+            mapOf(
+                "severe_toxicity" to 0.85f,
+                "identity_attack" to 0.85f,
+                "sexual_explicit" to 0.8f,
+                "threat" to 0.9f,
+            )
 
         const val INPUT_IDS_INPUT = 0
         const val ATTENTION_MASK_INPUT = 1

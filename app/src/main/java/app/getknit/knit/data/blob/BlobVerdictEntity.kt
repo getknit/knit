@@ -25,7 +25,6 @@ data class BlobVerdictEntity(
 
 @Dao
 interface BlobVerdictDao {
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(verdict: BlobVerdictEntity)
 

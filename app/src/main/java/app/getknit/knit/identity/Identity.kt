@@ -18,7 +18,6 @@ class Identity(
     private val keyStore: IdentityKeyStore,
     private val deviceIdSource: DeviceIdSource,
 ) {
-
     @Volatile
     private var cachedNodeId: String? = null
 
@@ -26,13 +25,11 @@ class Identity(
     private var cachedDeviceTag: String? = null
 
     /** This device's node id — the self-certifying hash of its [publicKeyBundle]. */
-    suspend fun nodeId(): String =
-        cachedNodeId ?: NodeId.fromPublicKeyBundle(publicKeyBundle()).also { cachedNodeId = it }
+    suspend fun nodeId(): String = cachedNodeId ?: NodeId.fromPublicKeyBundle(publicKeyBundle()).also { cachedNodeId = it }
 
     /** The base64 public-key bundle this device advertises in its profile (`ProfileContent.pubKey`). */
     fun publicKeyBundle(): String = keyStore.keys().publicBundle.encoded
 
     /** This device's soft block-continuity tag (null when the platform reports no stable device id). */
-    fun deviceTag(): String? =
-        cachedDeviceTag ?: DeviceTag.derive(deviceIdSource.rawDeviceId()).also { cachedDeviceTag = it }
+    fun deviceTag(): String? = cachedDeviceTag ?: DeviceTag.derive(deviceIdSource.rawDeviceId()).also { cachedDeviceTag = it }
 }

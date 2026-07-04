@@ -27,22 +27,21 @@ class BlockedUsersViewModel(
     private val settings: SettingsStore,
     private val peers: PeerRepository,
 ) : ViewModel() {
-
-    val blocked: StateFlow<List<BlockedUser>> = combine(
-        settings.blockedNodeIds,
-        peers.observePeers(),
-    ) { blockedIds, peerList ->
-        val byNode = peerList.associateBy { it.nodeId }
-        blockedIds
-            .map { id ->
-                BlockedUser(
-                    nodeId = id,
-                    displayName = displayNameFor(byNode[id]?.name, id),
-                    avatarHash = byNode[id]?.avatarHash,
-                )
-            }
-            .sortedBy { it.displayName.lowercase() }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val blocked: StateFlow<List<BlockedUser>> =
+        combine(
+            settings.blockedNodeIds,
+            peers.observePeers(),
+        ) { blockedIds, peerList ->
+            val byNode = peerList.associateBy { it.nodeId }
+            blockedIds
+                .map { id ->
+                    BlockedUser(
+                        nodeId = id,
+                        displayName = displayNameFor(byNode[id]?.name, id),
+                        avatarHash = byNode[id]?.avatarHash,
+                    )
+                }.sortedBy { it.displayName.lowercase() }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun unblock(nodeId: String) {
         viewModelScope.launch { settings.unblock(nodeId, peers.find(nodeId)?.deviceTag) }

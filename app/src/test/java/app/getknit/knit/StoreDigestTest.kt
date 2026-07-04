@@ -7,7 +7,6 @@ import org.junit.Test
 
 /** Unit tests for [StoreDigest] — the order-independent, restart-stable content fingerprint of the carry store. */
 class StoreDigestTest {
-
     @Test
     fun emptyDigestIsZero() {
         assertEquals(0L, StoreDigest().version.value)
@@ -32,8 +31,18 @@ class StoreDigestTest {
 
     @Test
     fun orderIndependent() {
-        val a = StoreDigest().apply { add("x"); add("y"); add("z") }
-        val b = StoreDigest().apply { add("z"); add("x"); add("y") }
+        val a =
+            StoreDigest().apply {
+                add("x")
+                add("y")
+                add("z")
+            }
+        val b =
+            StoreDigest().apply {
+                add("z")
+                add("x")
+                add("y")
+            }
         assertEquals(a.version.value, b.version.value)
     }
 
@@ -50,7 +59,12 @@ class StoreDigestTest {
 
     @Test
     fun setMessagesMatchesIncrementalAdds() {
-        val incremental = StoreDigest().apply { add("a"); add("b"); add("c") }
+        val incremental =
+            StoreDigest().apply {
+                add("a")
+                add("b")
+                add("c")
+            }
         val bulk = StoreDigest().apply { setMessages(listOf("c", "a", "b")) }
         assertEquals(incremental.version.value, bulk.version.value)
     }

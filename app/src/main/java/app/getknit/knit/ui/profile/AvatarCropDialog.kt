@@ -67,23 +67,26 @@ fun AvatarCropDialog(
         val diameter = if (measured) CIRCLE_FRACTION * min(viewport.width, viewport.height) else 0f
         val baseScale = if (diameter == 0f) 0f else diameter / min(srcW, srcH)
 
-        val transformState = rememberTransformableState { zoomChange, panChange, _ ->
-            scale = (scale * zoomChange).coerceIn(1f, MAX_SCALE)
-            // Clamp the pan so the image edges can never pull inside the crop circle.
-            val s = baseScale * scale
-            val maxX = max(0f, (s * srcW - diameter) / 2f)
-            val maxY = max(0f, (s * srcH - diameter) / 2f)
-            offset = Offset(
-                (offset.x + panChange.x).coerceIn(-maxX, maxX),
-                (offset.y + panChange.y).coerceIn(-maxY, maxY),
-            )
-        }
+        val transformState =
+            rememberTransformableState { zoomChange, panChange, _ ->
+                scale = (scale * zoomChange).coerceIn(1f, MAX_SCALE)
+                // Clamp the pan so the image edges can never pull inside the crop circle.
+                val s = baseScale * scale
+                val maxX = max(0f, (s * srcW - diameter) / 2f)
+                val maxY = max(0f, (s * srcH - diameter) / 2f)
+                offset =
+                    Offset(
+                        (offset.x + panChange.x).coerceIn(-maxX, maxX),
+                        (offset.y + panChange.y).coerceIn(-maxY, maxY),
+                    )
+            }
 
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.96f))
-                .onSizeChanged { viewport = it },
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.96f))
+                    .onSizeChanged { viewport = it },
             contentAlignment = Alignment.Center,
         ) {
             if (measured) {
@@ -95,15 +98,16 @@ fun AvatarCropDialog(
                     bitmap = bitmap,
                     contentDescription = stringResource(R.string.profile_avatar_crop_desc),
                     contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .transformable(transformState)
-                        .graphicsLayer(
-                            scaleX = g,
-                            scaleY = g,
-                            translationX = offset.x,
-                            translationY = offset.y,
-                        ),
+                    modifier =
+                        Modifier
+                            .fillMaxSize()
+                            .transformable(transformState)
+                            .graphicsLayer(
+                                scaleX = g,
+                                scaleY = g,
+                                translationX = offset.x,
+                                translationY = offset.y,
+                            ),
                 )
             }
 
@@ -113,17 +117,19 @@ fun AvatarCropDialog(
                 text = stringResource(R.string.profile_avatar_crop_hint),
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color.White,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(24.dp),
+                modifier =
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(24.dp),
             )
 
             Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(24.dp),
+                modifier =
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(24.dp),
                 horizontalArrangement = Arrangement.spacedBy(24.dp),
             ) {
                 TextButton(onClick = onCancel) {
@@ -142,7 +148,10 @@ fun AvatarCropDialog(
 
 /** Dims everything outside a centered circle of [diameter] px and draws a thin guide ring. */
 @Composable
-private fun CircleMaskOverlay(diameter: Float, modifier: Modifier = Modifier) {
+private fun CircleMaskOverlay(
+    diameter: Float,
+    modifier: Modifier = Modifier,
+) {
     val scrim = Color.Black.copy(alpha = 0.5f)
     Canvas(modifier = modifier.graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)) {
         val radius = diameter / 2f

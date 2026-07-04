@@ -37,8 +37,11 @@ class BlobRepository(
     private val groups: GroupDao,
     private val forward: ForwardDao,
 ) {
-    suspend fun insert(hash: String, mime: String, bytes: ByteArray) =
-        blobs.insert(BlobEntity(hash, mime, bytes))
+    suspend fun insert(
+        hash: String,
+        mime: String,
+        bytes: ByteArray,
+    ) = blobs.insert(BlobEntity(hash, mime, bytes))
 
     suspend fun bytes(hash: String): ByteArray? = blobs.bytes(hash)
 
@@ -85,7 +88,10 @@ class BlobRepository(
      * the caller decrypts the ciphertext blob first and passes the plaintext while still keying by the
      * ciphertext [hash] (see `MeshManager.screenEncryptedAttachment`).
      */
-    suspend fun screenImage(hash: String, bytes: ByteArray) {
+    suspend fun screenImage(
+        hash: String,
+        bytes: ByteArray,
+    ) {
         if (verdicts.find(hash) != null) return
         val bitmap = decodeBoundedFromBytes(bytes, SCREEN_MAX_DIM) ?: return
         val verdict = imageModerator.classify(bitmap)

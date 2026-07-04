@@ -9,7 +9,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MentionTest {
-
     @Test
     fun detectsSelfMentionByNodeId() {
         val mentions = listOf(Mention("aa11bb22", "Al"), Mention("cc33dd44", "Cee"))

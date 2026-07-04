@@ -15,11 +15,12 @@ package app.getknit.knit.mesh.bluetooth
  * the set and re-armed only when it leaves and returns.
  */
 object ScanDemandPolicy {
-
     enum class Demand { Boost, Floor }
 
     /** Opaque per-peer chase deadlines (nodeId → elapsed-clock deadline). Held by the transport, folded here. */
-    data class ChaseState(val deadlines: Map<String, Long> = emptyMap())
+    data class ChaseState(
+        val deadlines: Map<String, Long> = emptyMap(),
+    )
 
     /**
      * Fold the latest [foreign] set into [state]: a peer *new* to the set (rising edge — first appearance, or a
@@ -27,7 +28,12 @@ object ScanDemandPolicy {
      * deadline (so it expires and can't pin Boost forever); a *departed* peer is dropped (so a later return
      * re-arms). Pure — departure is implicit in copying only [foreign]'s keys, so no previous-set is needed.
      */
-    fun onForeign(state: ChaseState, foreign: Set<String>, now: Long, chaseMs: Long): ChaseState {
+    fun onForeign(
+        state: ChaseState,
+        foreign: Set<String>,
+        now: Long,
+        chaseMs: Long,
+    ): ChaseState {
         val next = HashMap<String, Long>(foreign.size)
         for (id in foreign) next[id] = state.deadlines[id] ?: (now + chaseMs)
         return ChaseState(next)
@@ -49,11 +55,12 @@ object ScanDemandPolicy {
         bleLinked: Set<String>,
         now: Long,
     ): Demand {
-        if (linkCount == 0) return Demand.Boost                    // isolated → never Floor (lonely rejoin)
+        if (linkCount == 0) return Demand.Boost // isolated → never Floor (lonely rejoin)
         if (promotableCandidates.isNotEmpty()) return Demand.Boost // promotion work right in front of us
-        val chasing = chase.deadlines.any { (id, until) ->
-            now < until && id !in bleSighted && id !in bleLinked
-        }
+        val chasing =
+            chase.deadlines.any { (id, until) ->
+                now < until && id !in bleSighted && id !in bleLinked
+            }
         return if (chasing) Demand.Boost else Demand.Floor
     }
 }

@@ -6,7 +6,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class GroupNamingTest {
-
     @Test
     fun joinsNamesWithCommasAndAmpersand() {
         assertEquals("", joinNames(emptyList()))

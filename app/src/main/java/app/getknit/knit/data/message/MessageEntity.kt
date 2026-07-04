@@ -78,6 +78,5 @@ object MentionStore {
 
     fun encode(mentions: List<Mention>): String = json.encodeToString(mentions)
 
-    fun decode(stored: String): List<Mention> =
-        runCatching { json.decodeFromString<List<Mention>>(stored) }.getOrDefault(emptyList())
+    fun decode(stored: String): List<Mention> = runCatching { json.decodeFromString<List<Mention>>(stored) }.getOrDefault(emptyList())
 }

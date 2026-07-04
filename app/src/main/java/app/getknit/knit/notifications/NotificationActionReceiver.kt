@@ -5,9 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import androidx.core.app.RemoteInput
+import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MessageRepository
-import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.ConversationKind
@@ -33,8 +33,9 @@ import org.koin.core.component.inject
  * broadcast is kept alive with [goAsync] and run on the app-lifetime mesh [scope]. `exported="false"` —
  * only the system delivers these (the RemoteInput result rides a MUTABLE PendingIntent).
  */
-class NotificationActionReceiver : BroadcastReceiver(), KoinComponent {
-
+class NotificationActionReceiver :
+    BroadcastReceiver(),
+    KoinComponent {
     private val mesh: MeshManager by inject()
     private val messages: MessageRepository by inject()
     private val groups: GroupRepository by inject()
@@ -44,17 +45,30 @@ class NotificationActionReceiver : BroadcastReceiver(), KoinComponent {
     private val notifier: Notifier by inject()
     private val scope: CoroutineScope by inject()
 
-    override fun onReceive(context: Context, intent: Intent) {
+    override fun onReceive(
+        context: Context,
+        intent: Intent,
+    ) {
         val action = intent.action ?: return
         val pending = goAsync()
         scope.launch {
             runCatching {
                 when (action) {
-                    MessageNotifier.ACTION_REPLY -> handleReply(intent)
-                    MessageNotifier.ACTION_MARK_READ -> handleMarkRead(intent)
-                    MessageNotifier.ACTION_DISMISS ->
+                    MessageNotifier.ACTION_REPLY -> {
+                        handleReply(intent)
+                    }
+
+                    MessageNotifier.ACTION_MARK_READ -> {
+                        handleMarkRead(intent)
+                    }
+
+                    MessageNotifier.ACTION_DISMISS -> {
                         intent.getStringExtra(MessageNotifier.EXTRA_TAG)?.let { notifier.onDismissed(it) }
-                    else -> Unit
+                    }
+
+                    else -> {
+                        Unit
+                    }
                 }
             }.onFailure { Log.w(TAG, "notification action $action failed", it) }
             pending.finish()
@@ -62,8 +76,13 @@ class NotificationActionReceiver : BroadcastReceiver(), KoinComponent {
     }
 
     private suspend fun handleReply(intent: Intent) {
-        val text = RemoteInput.getResultsFromIntent(intent)
-            ?.getCharSequence(MessageNotifier.KEY_TEXT_REPLY)?.toString()?.trim().orEmpty()
+        val text =
+            RemoteInput
+                .getResultsFromIntent(intent)
+                ?.getCharSequence(MessageNotifier.KEY_TEXT_REPLY)
+                ?.toString()
+                ?.trim()
+                .orEmpty()
         val conv = intent.getStringExtra(MessageNotifier.EXTRA_CONV) ?: return
         val tag = intent.getStringExtra(MessageNotifier.EXTRA_TAG) ?: conv
         // An empty reply still re-posts the notification (with a blank echo) to clear its "sending" spinner.
@@ -90,14 +109,15 @@ class NotificationActionReceiver : BroadcastReceiver(), KoinComponent {
     }
 
     /** Rebuilds the self-describing [GroupInfo] from the local row (mirrors ChatViewModel's private helper). */
-    private fun GroupEntity.toGroupInfo(): GroupInfo = GroupInfo(
-        id = groupId,
-        name = name.takeIf { it.isNotBlank() },
-        members = GroupMembersStore.decode(members),
-        createdBy = createdBy,
-        photoHash = photoHash,
-        photoUpdatedAt = photoUpdatedAt.takeIf { it > 0L },
-    )
+    private fun GroupEntity.toGroupInfo(): GroupInfo =
+        GroupInfo(
+            id = groupId,
+            name = name.takeIf { it.isNotBlank() },
+            members = GroupMembersStore.decode(members),
+            createdBy = createdBy,
+            photoHash = photoHash,
+            photoUpdatedAt = photoUpdatedAt.takeIf { it > 0L },
+        )
 
     private companion object {
         const val TAG = "KnitNotifAction"

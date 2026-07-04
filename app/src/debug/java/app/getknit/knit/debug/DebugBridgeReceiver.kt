@@ -30,9 +30,6 @@ import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.ui.invite.prepareKnitApk
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.nio.ByteBuffer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -40,6 +37,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.nio.ByteBuffer
 
 /**
  * Debug-only ADB "bridge" that lets an automation agent drive the app headlessly — originating a chat
@@ -78,8 +78,9 @@ import org.koin.core.component.inject
  * (`am broadcast` prints `Broadcast completed: result=0, data="…"`) and also logged under the [TAG] tag
  * as a size-safe fallback (`adb logcat -d -s KnitBridge:I`).
  */
-class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
-
+class DebugBridgeReceiver :
+    BroadcastReceiver(),
+    KoinComponent {
     private val mesh: MeshManager by inject()
     private val messages: MessageRepository by inject()
     private val peers: PeerRepository by inject()
@@ -91,29 +92,63 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
     private val digest: StoreDigest by inject()
     private val scope: CoroutineScope by inject()
 
-    override fun onReceive(context: Context, intent: Intent) {
+    override fun onReceive(
+        context: Context,
+        intent: Intent,
+    ) {
         val action = intent.action ?: return
         // The work is suspending (send + repo reads), so keep the broadcast alive past onReceive and
         // report the JSON result once it completes.
         val pending = goAsync()
         scope.launch {
-            val result = runCatching {
-                when (action) {
-                    ACTION_SEND -> handleSend(intent)
-                    ACTION_STATE -> handleState(intent)
-                    ACTION_STORE -> handleStore(intent)
-                    ACTION_REACT -> handleReact(intent)
-                    ACTION_SHARE_APK -> handleShareApk(context)
-                    ACTION_WEBPPROBE -> handleWebpProbe(intent)
-                    ACTION_WEBPCONV -> handleWebpConv(intent)
-                    ACTION_WEBPCHECK -> handleWebpCheck(intent)
-                    ACTION_HEAL -> { mesh.heal(); reply("ok", "healed") }
-                    else -> reply("error", "unknown action: $action")
+            val result =
+                runCatching {
+                    when (action) {
+                        ACTION_SEND -> {
+                            handleSend(intent)
+                        }
+
+                        ACTION_STATE -> {
+                            handleState(intent)
+                        }
+
+                        ACTION_STORE -> {
+                            handleStore(intent)
+                        }
+
+                        ACTION_REACT -> {
+                            handleReact(intent)
+                        }
+
+                        ACTION_SHARE_APK -> {
+                            handleShareApk(context)
+                        }
+
+                        ACTION_WEBPPROBE -> {
+                            handleWebpProbe(intent)
+                        }
+
+                        ACTION_WEBPCONV -> {
+                            handleWebpConv(intent)
+                        }
+
+                        ACTION_WEBPCHECK -> {
+                            handleWebpCheck(intent)
+                        }
+
+                        ACTION_HEAL -> {
+                            mesh.heal()
+                            reply("ok", "healed")
+                        }
+
+                        else -> {
+                            reply("error", "unknown action: $action")
+                        }
+                    }
+                }.getOrElse { t ->
+                    Log.e(TAG, "bridge action $action failed", t)
+                    reply("error", t.message ?: t.javaClass.simpleName)
                 }
-            }.getOrElse { t ->
-                Log.e(TAG, "bridge action $action failed", t)
-                reply("error", t.message ?: t.javaClass.simpleName)
-            }
             val json = result.toString()
             Log.i(TAG, json)
             pending.setResultCode(0)
@@ -128,11 +163,12 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
         // A DM shorthand (`to`) or an explicit conversation id (`conv`); default to the broadcast room.
         val conv = intent.getStringExtra(EXTRA_CONV) ?: intent.getStringExtra(EXTRA_TO) ?: Conversations.NEARBY
         // Route exactly as ChatViewModel.send does, resolving the thread kind from its id.
-        val sent = when (Conversations.kindFor(conv)) {
-            ConversationKind.NEARBY -> mesh.sendChat(text, recipientId = null, group = null)
-            ConversationKind.DM -> mesh.sendChat(text, recipientId = conv)
-            ConversationKind.GROUP -> groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo()) }
-        }
+        val sent =
+            when (Conversations.kindFor(conv)) {
+                ConversationKind.NEARBY -> mesh.sendChat(text, recipientId = null, group = null)
+                ConversationKind.DM -> mesh.sendChat(text, recipientId = conv)
+                ConversationKind.GROUP -> groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo()) }
+            }
         return when (sent) {
             null -> reply("error", "unknown group (not joined on this device): $conv")
             true -> reply("ok", "sent to $conv")
@@ -265,10 +301,14 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
      * `adb shell run-as app.getknit.knit cat cache/apk/<name>`. `splitInstall` says which path ran.
      */
     private suspend fun handleShareApk(context: Context): JSONObject {
-        val splitDirs = context.applicationInfo.splitSourceDirs?.toList().orEmpty()
+        val splitDirs =
+            context.applicationInfo.splitSourceDirs
+                ?.toList()
+                .orEmpty()
         val uri = prepareKnitApk(context)
         val files = JSONArray()
-        File(context.cacheDir, "apk").listFiles()
+        File(context.cacheDir, "apk")
+            .listFiles()
             ?.sortedByDescending { it.lastModified() }
             ?.forEach { files.put(JSONObject().put("name", it.name).put("bytes", it.length())) }
         return JSONObject()
@@ -296,13 +336,14 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
             reachable.put(JSONObject().put("nodeId", peer.nodeId).put("name", nameByNode[peer.nodeId] ?: ""))
         }
 
-        val out = JSONObject()
-            .put("status", "ok")
-            .put("self", JSONObject().put("nodeId", selfId).put("name", selfName))
-            .put("health", mesh.transportHealth.value.name)
-            .put("neighborCount", mesh.neighborCount.value)
-            .put("reachable", reachable)
-            .put("metrics", metricsJson(metrics.snapshot()))
+        val out =
+            JSONObject()
+                .put("status", "ok")
+                .put("self", JSONObject().put("nodeId", selfId).put("name", selfName))
+                .put("health", mesh.transportHealth.value.name)
+                .put("neighborCount", mesh.neighborCount.value)
+                .put("reachable", reachable)
+                .put("metrics", metricsJson(metrics.snapshot()))
 
         intent.getStringExtra(EXTRA_CONV)?.let { conv ->
             val limit = intent.getIntExtra(EXTRA_LIMIT, DEFAULT_MESSAGE_LIMIT)
@@ -385,36 +426,39 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
             .put(
                 "counts",
                 JSONObject().put("total", rows.size).put("live", liveRows.size).put("expired", expiredRows.size),
-            )
-            .put("expiredIds", JSONArray(expiredRows.map { it.id }))
+            ).put("expiredIds", JSONArray(expiredRows.map { it.id }))
             .put("allIds", JSONArray(rows.map { it.id }))
             .put("rows", rowsJson)
     }
 
-    private fun metricsJson(snap: MeshMetrics.Snapshot): JSONObject = JSONObject()
-        .put("originated", snap.framesOriginated)
-        .put("delivered", snap.framesDelivered)
-        .put("relayed", snap.framesRelayed)
-        .put("dropped", snap.framesDropped)
-        .put("keyRequestsSent", snap.keyRequestsSent)
-        .put("keysServed", snap.keysServed)
-        .put("keysRecovered", snap.keysRecovered)
-        .put("framesHeld", snap.framesHeld)
-        .put("framesReplayed", snap.framesReplayed)
-        .put("receiptsResent", snap.receiptsResent)
+    private fun metricsJson(snap: MeshMetrics.Snapshot): JSONObject =
+        JSONObject()
+            .put("originated", snap.framesOriginated)
+            .put("delivered", snap.framesDelivered)
+            .put("relayed", snap.framesRelayed)
+            .put("dropped", snap.framesDropped)
+            .put("keyRequestsSent", snap.keyRequestsSent)
+            .put("keysServed", snap.keysServed)
+            .put("keysRecovered", snap.keysRecovered)
+            .put("framesHeld", snap.framesHeld)
+            .put("framesReplayed", snap.framesReplayed)
+            .put("receiptsResent", snap.receiptsResent)
 
-    private fun reply(status: String, message: String): JSONObject =
-        JSONObject().put("status", status).put("message", message)
+    private fun reply(
+        status: String,
+        message: String,
+    ): JSONObject = JSONObject().put("status", status).put("message", message)
 
     /** Rebuilds the self-describing [GroupInfo] from the local row (mirrors ChatViewModel's private helper). */
-    private fun GroupEntity.toGroupInfo(): GroupInfo = GroupInfo(
-        id = groupId,
-        name = name.takeIf { it.isNotBlank() },
-        members = GroupMembersStore.decode(members),
-        createdBy = createdBy,
-        photoHash = photoHash,
-        photoUpdatedAt = photoUpdatedAt.takeIf { it > 0L },
-    )
+    private fun GroupEntity.toGroupInfo(): GroupInfo =
+        GroupInfo(
+            id = groupId,
+            name = name.takeIf { it.isNotBlank() },
+            members = GroupMembersStore.decode(members),
+            createdBy = createdBy,
+            photoHash = photoHash,
+            photoUpdatedAt = photoUpdatedAt.takeIf { it > 0L },
+        )
 
     private companion object {
         const val TAG = "KnitBridge"

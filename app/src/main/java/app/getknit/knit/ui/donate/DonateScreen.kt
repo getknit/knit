@@ -69,11 +69,12 @@ fun DonateScreen(onBack: () -> Unit) {
         },
     ) { padding ->
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
         ) {
             Icon(
                 Icons.Filled.Favorite,
@@ -103,26 +104,32 @@ private data class DonationPlatform(
     val url: String,
 )
 
-private val DONATION_PLATFORMS = listOf(
-    DonationPlatform(R.string.donate_kofi, Icons.Filled.Coffee, "https://ko-fi.com/zaventh"),
-    // Add Buy Me a Coffee etc. here later — nothing else changes.
-)
+private val DONATION_PLATFORMS =
+    listOf(
+        DonationPlatform(R.string.donate_kofi, Icons.Filled.Coffee, "https://ko-fi.com/zaventh"),
+        // Add Buy Me a Coffee etc. here later — nothing else changes.
+    )
 
 @Composable
-private fun PlatformRow(platform: DonationPlatform, onClick: () -> Unit) {
+private fun PlatformRow(
+    platform: DonationPlatform,
+    onClick: () -> Unit,
+) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .clip(MaterialTheme.shapes.medium)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.secondaryContainer),
+            modifier =
+                Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.secondaryContainer),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
@@ -148,14 +155,16 @@ private fun PlatformRow(platform: DonationPlatform, onClick: () -> Unit) {
 
 @Preview(showBackground = true)
 @Composable
-fun PlatformRowPreview() = KnitPreview {
-    PlatformRow(platform = DONATION_PLATFORMS.first(), onClick = {})
-}
+fun PlatformRowPreview() =
+    KnitPreview {
+        PlatformRow(platform = DONATION_PLATFORMS.first(), onClick = {})
+    }
 
 // DonateScreen takes no ViewModel (LocalContext is only touched inside a click lambda), so the whole
 // screen previews directly without extracting a stateless content composable.
 @Preview(showBackground = true)
 @Composable
-fun DonateScreenPreview() = KnitPreview {
-    DonateScreen(onBack = {})
-}
+fun DonateScreenPreview() =
+    KnitPreview {
+        DonateScreen(onBack = {})
+    }

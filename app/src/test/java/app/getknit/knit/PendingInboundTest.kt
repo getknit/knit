@@ -16,7 +16,6 @@ import org.junit.Test
  * replay step (`MeshManager.onDeliver`) needs the Android inbound pipeline.
  */
 class PendingInboundTest {
-
     @Test
     fun heldFrameIsReleasedForItsSender() {
         var clock = 0L
@@ -36,8 +35,10 @@ class PendingInboundTest {
     fun releaseReturnsOnlyTheMatchingSenderOldestFirst() {
         var clock = 0L
         val buffer = PendingInbound(now = { clock })
-        buffer.hold(wireFor("a1", "alice"), envFor("a1", "alice"), "n"); clock += 1
-        buffer.hold(wireFor("b1", "bob"), envFor("b1", "bob"), "n"); clock += 1
+        buffer.hold(wireFor("a1", "alice"), envFor("a1", "alice"), "n")
+        clock += 1
+        buffer.hold(wireFor("b1", "bob"), envFor("b1", "bob"), "n")
+        clock += 1
         buffer.hold(wireFor("a2", "alice"), envFor("a2", "alice"), "n")
 
         assertEquals(listOf("a1", "a2"), buffer.release("alice").map { it.env.id })
@@ -72,8 +73,10 @@ class PendingInboundTest {
         var clock = 0L
         // Distinct senders so the per-sender cap doesn't fire; the global cap of 2 is the bound.
         val buffer = PendingInbound(now = { clock }, maxFrames = 2)
-        buffer.hold(wireFor("m0", "s0"), envFor("m0", "s0"), "n"); clock += 1
-        buffer.hold(wireFor("m1", "s1"), envFor("m1", "s1"), "n"); clock += 1
+        buffer.hold(wireFor("m0", "s0"), envFor("m0", "s0"), "n")
+        clock += 1
+        buffer.hold(wireFor("m1", "s1"), envFor("m1", "s1"), "n")
+        clock += 1
         buffer.hold(wireFor("m2", "s2"), envFor("m2", "s2"), "n") // evicts the oldest, m0
 
         assertTrue("oldest frame evicted under the global cap", buffer.release("s0").isEmpty())
@@ -94,9 +97,13 @@ class PendingInboundTest {
         assertEquals(listOf("new"), buffer.release("alice").map { it.env.id })
     }
 
-    private fun envFor(id: String, senderId: String): RelayEnvelope =
-        RelayEnvelope(type = FrameType.CHAT, id = id, senderId = senderId, payload = ByteArray(0))
+    private fun envFor(
+        id: String,
+        senderId: String,
+    ): RelayEnvelope = RelayEnvelope(type = FrameType.CHAT, id = id, senderId = senderId, payload = ByteArray(0))
 
-    private fun wireFor(id: String, senderId: String): WireEnvelope =
-        WireEnvelope(sig = byteArrayOf(1), signed = WireCodec.encodeEnvelope(envFor(id, senderId)))
+    private fun wireFor(
+        id: String,
+        senderId: String,
+    ): WireEnvelope = WireEnvelope(sig = byteArrayOf(1), signed = WireCodec.encodeEnvelope(envFor(id, senderId)))
 }

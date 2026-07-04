@@ -6,7 +6,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class PowerPolicyTest {
-
     @Test
     fun interactiveScansAggressively() {
         val duty = PowerPolicy.dutyCycle(PowerState(interactive = true))
@@ -30,9 +29,10 @@ class PowerPolicyTest {
 
     @Test
     fun screenOffAndBatteryLowBacksOffFurthest() {
-        val duty = PowerPolicy.dutyCycle(
-            PowerState(interactive = false, charging = false, batteryLow = true),
-        )
+        val duty =
+            PowerPolicy.dutyCycle(
+                PowerState(interactive = false, charging = false, batteryLow = true),
+            )
         assertEquals(8_000L, duty.scanWindowMs)
         assertEquals(300_000L, duty.baseIntervalMs)
     }
@@ -45,9 +45,10 @@ class PowerPolicyTest {
 
     @Test
     fun chargingOverridesBatteryLow() {
-        val duty = PowerPolicy.dutyCycle(
-            PowerState(interactive = false, charging = true, batteryLow = true),
-        )
+        val duty =
+            PowerPolicy.dutyCycle(
+                PowerState(interactive = false, charging = true, batteryLow = true),
+            )
         assertEquals(30_000L, duty.baseIntervalMs)
     }
 
@@ -68,12 +69,13 @@ class PowerPolicyTest {
     @Test
     fun isolatedNodeScansAggressivelyRegardlessOfPower() {
         // Just became isolated (lonelyForMs = 0) → inside the aggressive window for every power state.
-        val everyState = listOf(
-            PowerState(interactive = true),
-            PowerState(interactive = false, charging = true),
-            PowerState(interactive = false, charging = false),
-            PowerState(interactive = false, charging = false, batteryLow = true),
-        )
+        val everyState =
+            listOf(
+                PowerState(interactive = true),
+                PowerState(interactive = false, charging = true),
+                PowerState(interactive = false, charging = false),
+                PowerState(interactive = false, charging = false, batteryLow = true),
+            )
         everyState.forEach { state ->
             assertEquals(12_000L, PowerPolicy.idleAfterScan(state, neighborCount = 0, lonelyForMs = 0L))
         }

@@ -8,13 +8,13 @@ import java.io.File
 
 /** Pure-logic tests for the split-path collection + cache-key helpers in ApkMerger.kt. */
 class ApkMergerTest {
-
     @Test
     fun `collectSplitPaths puts base first then splits`() {
-        val result = collectSplitPaths(
-            "/data/app/x/base.apk",
-            arrayOf("/data/app/x/split_config.arm64_v8a.apk", "/data/app/x/split_config.en.apk"),
-        )
+        val result =
+            collectSplitPaths(
+                "/data/app/x/base.apk",
+                arrayOf("/data/app/x/split_config.arm64_v8a.apk", "/data/app/x/split_config.en.apk"),
+            )
         assertEquals(
             listOf(
                 File("/data/app/x/base.apk"),
@@ -38,10 +38,11 @@ class ApkMergerTest {
 
     @Test
     fun `collectSplitPaths drops blanks and duplicates`() {
-        val result = collectSplitPaths(
-            "/data/app/x/base.apk",
-            arrayOf("", "/data/app/x/base.apk", "/data/app/x/split_config.en.apk"),
-        )
+        val result =
+            collectSplitPaths(
+                "/data/app/x/base.apk",
+                arrayOf("", "/data/app/x/base.apk", "/data/app/x/split_config.en.apk"),
+            )
         assertEquals(
             listOf(File("/data/app/x/base.apk"), File("/data/app/x/split_config.en.apk")),
             result,

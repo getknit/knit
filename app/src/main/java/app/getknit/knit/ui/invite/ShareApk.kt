@@ -27,7 +27,9 @@ import java.io.File
 private const val APK_MIME = "application/vnd.android.package-archive"
 
 /** No room in the cache dir to stage + merge a Play App Bundle install into one shareable APK. */
-class ShareStorageException(message: String) : Exception(message)
+class ShareStorageException(
+    message: String,
+) : Exception(message)
 
 /**
  * Prepares this app's own install as a single shareable APK and returns a FileProvider `content://`
@@ -36,23 +38,28 @@ class ShareStorageException(message: String) : Exception(message)
  *
  * May throw [ShareStorageException] (no space to merge) or a merge/sign failure; the caller toasts.
  */
-suspend fun prepareKnitApk(context: Context): Uri = withContext(Dispatchers.IO) {
-    val appInfo = context.applicationInfo
-    val dest = if (appInfo.splitSourceDirs.isNullOrEmpty()) {
-        copyBaseApk(context, File(appInfo.sourceDir))
-    } else {
-        buildSharableSplitApk(
-            context,
-            collectSplitPaths(appInfo.sourceDir, appInfo.splitSourceDirs),
-            BuildConfig.VERSION_NAME,
-            BuildConfig.VERSION_CODE.toLong(),
-        )
+suspend fun prepareKnitApk(context: Context): Uri =
+    withContext(Dispatchers.IO) {
+        val appInfo = context.applicationInfo
+        val dest =
+            if (appInfo.splitSourceDirs.isNullOrEmpty()) {
+                copyBaseApk(context, File(appInfo.sourceDir))
+            } else {
+                buildSharableSplitApk(
+                    context,
+                    collectSplitPaths(appInfo.sourceDir, appInfo.splitSourceDirs),
+                    BuildConfig.VERSION_NAME,
+                    BuildConfig.VERSION_CODE.toLong(),
+                )
+            }
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", dest)
     }
-    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", dest)
-}
 
 /** Copies the app's own base APK into a shareable cache file, refreshing when missing or stale. */
-private fun copyBaseApk(context: Context, source: File): File {
+private fun copyBaseApk(
+    context: Context,
+    source: File,
+): File {
     val dir = File(context.cacheDir, "apk").apply { mkdirs() }
     val dest = File(dir, "Knit-${BuildConfig.VERSION_NAME}.apk")
     // Refresh when missing or stale (an app update changes the base APK's length).
@@ -63,20 +70,29 @@ private fun copyBaseApk(context: Context, source: File): File {
 }
 
 /** Fires the system share sheet to send the prepared Knit APK [uri] to another app (Quick Share, Bluetooth, …). */
-fun launchApkShareChooser(context: Context, uri: Uri) {
-    val send = Intent(Intent.ACTION_SEND).apply {
-        type = APK_MIME
-        putExtra(Intent.EXTRA_STREAM, uri)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    val chooser = Intent.createChooser(send, context.getString(R.string.share_app_chooser_title))
-        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+fun launchApkShareChooser(
+    context: Context,
+    uri: Uri,
+) {
+    val send =
+        Intent(Intent.ACTION_SEND).apply {
+            type = APK_MIME
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    val chooser =
+        Intent
+            .createChooser(send, context.getString(R.string.share_app_chooser_title))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     context.startActivity(chooser)
 }
 
 /** Explainer shown before the share sheet so the sender knows what to pick and the receiver knows to allow installing. */
 @Composable
-fun ShareKnitDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+fun ShareKnitDialog(
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.share_app_dialog_title)) },

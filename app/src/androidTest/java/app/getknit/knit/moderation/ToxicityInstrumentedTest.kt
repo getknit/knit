@@ -14,21 +14,21 @@ import org.junit.Test
  *     ./gradlew :app:connectedDebugAndroidTest
  */
 class ToxicityInstrumentedTest {
-
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
 
     @Test
-    fun blocksSeriousAbuseButAllowsRudeAndClean() = runBlocking {
-        val moderator = MlTextModerator(context)
+    fun blocksSeriousAbuseButAllowsRudeAndClean() =
+        runBlocking {
+            val moderator = MlTextModerator(context)
 
-        // Clean text -> allowed.
-        assertFalse(moderator.classify("thanks so much, have a great day").flagged)
+            // Clean text -> allowed.
+            assertFalse(moderator.classify("thanks so much, have a great day").flagged)
 
-        // Rude/insulting but not "serious" -> allowed. We deliberately do NOT block general
-        // toxicity/insults (the default block set is severe_toxicity/identity_attack/sexual_explicit/threat).
-        assertFalse(moderator.classify("you are such an idiot").flagged)
+            // Rude/insulting but not "serious" -> allowed. We deliberately do NOT block general
+            // toxicity/insults (the default block set is severe_toxicity/identity_attack/sexual_explicit/threat).
+            assertFalse(moderator.classify("you are such an idiot").flagged)
 
-        // Identity attack -> blocked.
-        assertTrue(moderator.classify("those people are subhuman and should be wiped out").flagged)
-    }
+            // Identity attack -> blocked.
+            assertTrue(moderator.classify("those people are subhuman and should be wiped out").flagged)
+        }
 }

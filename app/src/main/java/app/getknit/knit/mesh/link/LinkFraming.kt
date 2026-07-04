@@ -24,10 +24,11 @@ import java.nio.ByteBuffer
  * Pure (no Android), so the codec is JVM-unit-testable ([app.getknit.knit.LinkFramingTest]).
  */
 internal object LinkFraming {
-
     /** Record discriminator (the leading byte of every record); the byte values are the on-wire tags. */
     @Suppress("MagicNumber")
-    enum class Type(val tag: Byte) {
+    enum class Type(
+        val tag: Byte,
+    ) {
         FRAME(1),
         FILE_HEADER(2),
         FILE_CHUNK(3),
@@ -58,7 +59,10 @@ internal object LinkFraming {
     }
 
     /** A decoded record: its [type] and raw [payload] bytes (empty for [Type.FILE_END]). */
-    data class Message(val type: Type, val payload: ByteArray) {
+    data class Message(
+        val type: Type,
+        val payload: ByteArray,
+    ) {
         override fun equals(other: Any?): Boolean =
             this === other || (other is Message && type == other.type && payload.contentEquals(other.payload))
 
@@ -76,9 +80,13 @@ internal object LinkFraming {
     const val FILE_CHUNK_BYTES = 64 * 1024
 
     /** Encodes one record: `[type][big-endian length][payload]`. */
-    fun encode(type: Type, payload: ByteArray = EMPTY): ByteArray {
+    fun encode(
+        type: Type,
+        payload: ByteArray = EMPTY,
+    ): ByteArray {
         require(payload.size <= MAX_PAYLOAD_BYTES) { "record payload ${payload.size} exceeds $MAX_PAYLOAD_BYTES" }
-        return ByteBuffer.allocate(HEADER_BYTES + payload.size)
+        return ByteBuffer
+            .allocate(HEADER_BYTES + payload.size)
             .put(type.tag)
             .putInt(payload.size)
             .put(payload)
@@ -86,7 +94,11 @@ internal object LinkFraming {
     }
 
     /** Writes one record to [output] (does not flush). */
-    fun write(output: OutputStream, type: Type, payload: ByteArray = EMPTY) {
+    fun write(
+        output: OutputStream,
+        type: Type,
+        payload: ByteArray = EMPTY,
+    ) {
         output.write(encode(type, payload))
     }
 
@@ -106,7 +118,10 @@ internal object LinkFraming {
     }
 
     /** Reads exactly [n] bytes, or throws [EOFException] if the stream ends mid-record. */
-    private fun readFully(input: InputStream, n: Int): ByteArray {
+    private fun readFully(
+        input: InputStream,
+        n: Int,
+    ): ByteArray {
         val buf = ByteArray(n)
         var off = 0
         while (off < n) {
@@ -121,7 +136,11 @@ internal object LinkFraming {
     private const val HEADER_BYTES = 1 + LENGTH_BYTES
     private val EMPTY = ByteArray(0)
 
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val json =
+        Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+        }
 
     fun encodeFileHeader(header: FileHeaderWire): ByteArray = json.encodeToString(header).encodeToByteArray()
 

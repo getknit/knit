@@ -28,7 +28,6 @@ import java.io.ByteArrayOutputStream
  * chat use; a partial-frame ("dirty rectangle") GIF could show minor artifacts.
  */
 object WebpTranscode {
-
     private const val TAG = "WebpTranscode"
 
     /** Cap on emitted frames so a very long GIF can't blow up encode time / output size. */
@@ -50,18 +49,24 @@ object WebpTranscode {
      * edge) and [maxFps], at WebP [quality] (0–100). Returns the smaller WebP, or null if decode/encode
      * fails, the timing is unknown, or the result isn't smaller than the input.
      */
-    fun shrink(bytes: ByteArray, maxDim: Int, maxFps: Int, quality: Int): ByteArray? {
-        val result = try {
-            shrinkInternal(bytes, maxDim, maxFps, quality)
-        } catch (ignored: Throwable) {
-            // A codec failure must never break sending — fall back to the original GIF bytes.
-            Log.i(
-                TAG,
-                "gif kept verbatim (${bytes.size} B) — webp transcode threw " +
-                    "${ignored.javaClass.simpleName}: ${ignored.message}",
-            )
-            null
-        }
+    fun shrink(
+        bytes: ByteArray,
+        maxDim: Int,
+        maxFps: Int,
+        quality: Int,
+    ): ByteArray? {
+        val result =
+            try {
+                shrinkInternal(bytes, maxDim, maxFps, quality)
+            } catch (ignored: Throwable) {
+                // A codec failure must never break sending — fall back to the original GIF bytes.
+                Log.i(
+                    TAG,
+                    "gif kept verbatim (${bytes.size} B) — webp transcode threw " +
+                        "${ignored.javaClass.simpleName}: ${ignored.message}",
+                )
+                null
+            }
         // A null result already logged its specific reason (undecodable / not smaller / threw) below.
         if (result == null) return null
         val pct = 100 - (result.bytes.size * 100L / bytes.size)
@@ -113,7 +118,12 @@ object WebpTranscode {
     }
 
     /** Per-frame single-frame WebP bytes + per-frame on-screen durations + the uniform output dims. */
-    private class Frames(val webp: List<ByteArray>, val durations: IntArray, val outW: Int, val outH: Int)
+    private class Frames(
+        val webp: List<ByteArray>,
+        val durations: IntArray,
+        val outW: Int,
+        val outH: Int,
+    )
 
     /**
      * Samples [movie] every [interval] ms up to [duration], downscaling each composited frame to [maxDim]

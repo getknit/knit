@@ -30,7 +30,10 @@ class DigestTracker {
      * (the precise decision is [reconcileWanted], which the loop makes with our own current version).
      */
     @Synchronized
-    fun onCue(nodeId: String, version: Long): Boolean = peerVersion.put(nodeId, version) != version
+    fun onCue(
+        nodeId: String,
+        version: Long,
+    ): Boolean = peerVersion.put(nodeId, version) != version
 
     /**
      * True if a data-path sync with [nodeId] is warranted given our current [localVersion]. Requires having
@@ -38,7 +41,10 @@ class DigestTracker {
      * on first divergence, or when either side has moved since our last completed sync.
      */
     @Synchronized
-    fun reconcileWanted(nodeId: String, localVersion: Long): Boolean {
+    fun reconcileWanted(
+        nodeId: String,
+        localVersion: Long,
+    ): Boolean {
         val theirs = peerVersion[nodeId] ?: return false // no cue heard → we hold no digest for it yet
         if (theirs == localVersion) return false // identical stores → nothing to pull or push
         val synced = syncedVersion[nodeId] ?: return true // digests differ and we've never synced → sync
@@ -51,7 +57,10 @@ class DigestTracker {
      * pair didn't actually converge, the peer's next cue (a different version) re-triggers.
      */
     @Synchronized
-    fun onReconciled(nodeId: String, localVersion: Long) {
+    fun onReconciled(
+        nodeId: String,
+        localVersion: Long,
+    ) {
         syncedVersion[nodeId] = localVersion
     }
 
@@ -70,6 +79,8 @@ class DigestTracker {
 
     /** Diagnostic snapshot: per-peer `id(peerVersion,syncedVersion)`. Temporary debugging aid. */
     @Synchronized
-    fun debug(): String = (peerVersion.keys + syncedVersion.keys).toSortedSet()
-        .joinToString(" ") { "$it(pv=${peerVersion[it]},sv=${syncedVersion[it]})" }
+    fun debug(): String =
+        (peerVersion.keys + syncedVersion.keys)
+            .toSortedSet()
+            .joinToString(" ") { "$it(pv=${peerVersion[it]},sv=${syncedVersion[it]})" }
 }

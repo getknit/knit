@@ -19,8 +19,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -44,20 +44,22 @@ fun OnboardingScreen(onReady: () -> Unit) {
     val meshSupported = remember { hasWifiAwareHardware(context) || hasBleHardware(context) }
     var granted by remember { mutableStateOf(hasAllMeshPermissions(context)) }
 
-    val launcher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) {
-        granted = hasAllMeshPermissions(context)
-    }
+    val launcher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions(),
+        ) {
+            granted = hasAllMeshPermissions(context)
+        }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
@@ -97,9 +99,10 @@ fun OnboardingScreen(onReady: () -> Unit) {
 
             OutlinedButton(
                 onClick = { requestIgnoreBatteryOptimizations(context) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
             ) {
                 Text(stringResource(R.string.battery_allow_button))
             }
@@ -107,10 +110,11 @@ fun OnboardingScreen(onReady: () -> Unit) {
             Button(
                 onClick = onReady,
                 enabled = granted,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 24.dp)
-                    .testTag("onboarding_start"),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 24.dp)
+                        .testTag("onboarding_start"),
             ) {
                 Text(stringResource(R.string.onboarding_start))
             }

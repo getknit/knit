@@ -8,7 +8,6 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface BlobDao {
-
     /** Stores [blob]; content-addressed, so a hash we already hold is silently ignored (dedup). */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(blob: BlobEntity)

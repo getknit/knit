@@ -28,9 +28,10 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AckSyncTest {
-
     /** The message author: records every frame it receives, exposing the delivery-receipt ack ids. */
-    private class Author(val id: String) {
+    private class Author(
+        val id: String,
+    ) {
         val transport = FakeLoopTransport(id)
         private val received = CopyOnWriteArrayList<InboundFrame>()
 
@@ -40,111 +41,119 @@ class AckSyncTest {
 
         fun receipts(): List<InboundFrame> = received.filter { it.envelope.type == FrameType.RECEIPT }
 
-        fun ackIds(): List<String> =
-            receipts().mapNotNull { WireCodec.decodePayload<ReceiptContent>(it.envelope.payload)?.ackId }
+        fun ackIds(): List<String> = receipts().mapNotNull { WireCodec.decodePayload<ReceiptContent>(it.envelope.payload)?.ackId }
     }
 
-    private fun ackSyncOn(transport: FakeLoopTransport, id: String, clock: () -> Long = { 0L }) =
-        AckSync(
-            transport = transport,
-            selfId = { id },
-            signRaw = { byteArrayOf(SIG_MARKER) },
-            now = clock,
-        )
+    private fun ackSyncOn(
+        transport: FakeLoopTransport,
+        id: String,
+        clock: () -> Long = { 0L },
+    ) = AckSync(
+        transport = transport,
+        selfId = { id },
+        signRaw = { byteArrayOf(SIG_MARKER) },
+        now = clock,
+    )
 
     @Test
-    fun tickReachesAuthorWhenAlreadyALiveNeighbor() = runTest(UnconfinedTestDispatcher()) {
-        val author = Author("author")
-        val recip = FakeLoopTransport("recip")
-        recip.connect(author.transport)
-        author.start(backgroundScope)
-        val ack = ackSyncOn(recip, "recip")
+    fun tickReachesAuthorWhenAlreadyALiveNeighbor() =
+        runTest(UnconfinedTestDispatcher()) {
+            val author = Author("author")
+            val recip = FakeLoopTransport("recip")
+            recip.connect(author.transport)
+            author.start(backgroundScope)
+            val ack = ackSyncOn(recip, "recip")
 
-        ack.owe("m1", "author")
+            ack.owe("m1", "author")
 
-        assertEquals(listOf("m1"), author.ackIds())
-        val receipt = author.receipts().first()
-        assertFalse("a delivery receipt must never be flooded", receipt.wire.relay)
-        assertArrayEquals("a delivery receipt must be signed", byteArrayOf(SIG_MARKER), receipt.wire.sig)
-    }
-
-    @Test
-    fun tickIsHeldWhileAuthorUnreachableThenDeliveredOnReconnect() = runTest(UnconfinedTestDispatcher()) {
-        // The field case: the author was out of range when we delivered its broadcast/group message, so the
-        // one-shot best-effort tick had nowhere to go — it must land once the author comes back.
-        val author = Author("author")
-        val recip = FakeLoopTransport("recip")
-        author.start(backgroundScope)
-        val ack = ackSyncOn(recip, "recip")
-
-        ack.owe("m1", "author") // not connected → best-effort fast-send no-ops, the tick is remembered
-        assertTrue("nothing delivered while the author is out of range", author.ackIds().isEmpty())
-
-        recip.connect(author.transport)
-        ack.onNeighborAdded(Peer("author")) // author reconnected as a live neighbor
-
-        assertEquals(listOf("m1"), author.ackIds())
-    }
+            assertEquals(listOf("m1"), author.ackIds())
+            val receipt = author.receipts().first()
+            assertFalse("a delivery receipt must never be flooded", receipt.wire.relay)
+            assertArrayEquals("a delivery receipt must be signed", byteArrayOf(SIG_MARKER), receipt.wire.sig)
+        }
 
     @Test
-    fun retryPendingResendsToAReconnectedAuthor() = runTest(UnconfinedTestDispatcher()) {
-        val author = Author("author")
-        val recip = FakeLoopTransport("recip")
-        author.start(backgroundScope)
-        val ack = ackSyncOn(recip, "recip")
+    fun tickIsHeldWhileAuthorUnreachableThenDeliveredOnReconnect() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The field case: the author was out of range when we delivered its broadcast/group message, so the
+            // one-shot best-effort tick had nowhere to go — it must land once the author comes back.
+            val author = Author("author")
+            val recip = FakeLoopTransport("recip")
+            author.start(backgroundScope)
+            val ack = ackSyncOn(recip, "recip")
 
-        ack.owe("m1", "author")
-        assertTrue(author.ackIds().isEmpty())
+            ack.owe("m1", "author") // not connected → best-effort fast-send no-ops, the tick is remembered
+            assertTrue("nothing delivered while the author is out of range", author.ackIds().isEmpty())
 
-        recip.connect(author.transport)
-        ack.retryPending()
+            recip.connect(author.transport)
+            ack.onNeighborAdded(Peer("author")) // author reconnected as a live neighbor
 
-        assertEquals(listOf("m1"), author.ackIds())
-    }
-
-    @Test
-    fun tickDeliveredOverALiveLinkIsNotResentForever() = runTest(UnconfinedTestDispatcher()) {
-        val author = Author("author")
-        val recip = FakeLoopTransport("recip")
-        recip.connect(author.transport)
-        author.start(backgroundScope)
-        val ack = ackSyncOn(recip, "recip")
-
-        ack.owe("m1", "author") // sent over the live link → dropped, nothing left to retry
-        ack.retryPending()
-
-        assertEquals("one tick, no perpetual resend once it has a live path home", listOf("m1"), author.ackIds())
-    }
+            assertEquals(listOf("m1"), author.ackIds())
+        }
 
     @Test
-    fun neverAcksOurOwnMessage() = runTest(UnconfinedTestDispatcher()) {
-        val author = Author("author")
-        val recip = FakeLoopTransport("recip")
-        recip.connect(author.transport)
-        author.start(backgroundScope)
-        val ack = ackSyncOn(recip, "recip")
+    fun retryPendingResendsToAReconnectedAuthor() =
+        runTest(UnconfinedTestDispatcher()) {
+            val author = Author("author")
+            val recip = FakeLoopTransport("recip")
+            author.start(backgroundScope)
+            val ack = ackSyncOn(recip, "recip")
 
-        ack.owe("m1", "recip") // author == us: never ack our own send
-        ack.retryPending()
+            ack.owe("m1", "author")
+            assertTrue(author.ackIds().isEmpty())
 
-        assertTrue(author.ackIds().isEmpty())
-    }
+            recip.connect(author.transport)
+            ack.retryPending()
+
+            assertEquals(listOf("m1"), author.ackIds())
+        }
 
     @Test
-    fun agedOutTickIsSweptNotResent() = runTest(UnconfinedTestDispatcher()) {
-        var clock = 0L
-        val author = Author("author")
-        val recip = FakeLoopTransport("recip")
-        author.start(backgroundScope)
-        val ack = ackSyncOn(recip, "recip") { clock }
+    fun tickDeliveredOverALiveLinkIsNotResentForever() =
+        runTest(UnconfinedTestDispatcher()) {
+            val author = Author("author")
+            val recip = FakeLoopTransport("recip")
+            recip.connect(author.transport)
+            author.start(backgroundScope)
+            val ack = ackSyncOn(recip, "recip")
 
-        ack.owe("m1", "author")     // held while the author is unreachable
-        clock += 25L * 60 * 60_000  // past the 24h owed TTL
-        recip.connect(author.transport)
-        ack.retryPending()          // sweep drops it before any resend
+            ack.owe("m1", "author") // sent over the live link → dropped, nothing left to retry
+            ack.retryPending()
 
-        assertTrue("an aged-out tick is swept, not resent", author.ackIds().isEmpty())
-    }
+            assertEquals("one tick, no perpetual resend once it has a live path home", listOf("m1"), author.ackIds())
+        }
+
+    @Test
+    fun neverAcksOurOwnMessage() =
+        runTest(UnconfinedTestDispatcher()) {
+            val author = Author("author")
+            val recip = FakeLoopTransport("recip")
+            recip.connect(author.transport)
+            author.start(backgroundScope)
+            val ack = ackSyncOn(recip, "recip")
+
+            ack.owe("m1", "recip") // author == us: never ack our own send
+            ack.retryPending()
+
+            assertTrue(author.ackIds().isEmpty())
+        }
+
+    @Test
+    fun agedOutTickIsSweptNotResent() =
+        runTest(UnconfinedTestDispatcher()) {
+            var clock = 0L
+            val author = Author("author")
+            val recip = FakeLoopTransport("recip")
+            author.start(backgroundScope)
+            val ack = ackSyncOn(recip, "recip") { clock }
+
+            ack.owe("m1", "author") // held while the author is unreachable
+            clock += 25L * 60 * 60_000 // past the 24h owed TTL
+            recip.connect(author.transport)
+            ack.retryPending() // sweep drops it before any resend
+
+            assertTrue("an aged-out tick is swept, not resent", author.ackIds().isEmpty())
+        }
 
     private companion object {
         const val SIG_MARKER: Byte = 0x5A

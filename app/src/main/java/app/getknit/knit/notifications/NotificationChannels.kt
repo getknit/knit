@@ -19,9 +19,9 @@ import app.getknit.knit.data.message.ConversationKind
  * creation sites (MeshService's raw `NotificationChannel` and MessageNotifier's Compat builders).
  */
 object NotificationChannels {
-
     // Messages group
     const val NEARBY = "knit_msg_nearby"
+
     // Bumped to _v2 to raise importance to HIGH: a channel's importance is immutable once created, so the
     // DEFAULT-importance `knit_msg_groups` is deleted (see [ensure]) and recreated under a fresh id.
     const val GROUPS = "knit_msg_groups_v2"
@@ -42,50 +42,95 @@ object NotificationChannels {
     private const val LEGACY_GROUPS = "knit_msg_groups"
 
     /** The message channel for a conversation [kind]. (Mentions route to [MENTIONS] separately.) */
-    fun channelFor(kind: ConversationKind): String = when (kind) {
-        ConversationKind.NEARBY -> NEARBY
-        ConversationKind.GROUP -> GROUPS
-        ConversationKind.DM -> DMS
-    }
+    fun channelFor(kind: ConversationKind): String =
+        when (kind) {
+            ConversationKind.NEARBY -> NEARBY
+            ConversationKind.GROUP -> GROUPS
+            ConversationKind.DM -> DMS
+        }
 
-    /** Creates the channel groups + channels and removes the legacy flat channels. Idempotent. */
+    /**
+     * Creates the channel groups + channels and removes the legacy flat channels. Idempotent.
+     *
+     * `@Suppress("LongMethod")`: ktlint's builder-chain wrapping inflates the raw line count past
+     * detekt's LongMethod=60; this is a flat sequence of createNotificationChannel(Group) calls.
+     */
+    @Suppress("LongMethod")
     fun ensure(context: Context) {
         val manager = NotificationManagerCompat.from(context)
 
         manager.createNotificationChannelGroup(
-            NotificationChannelGroupCompat.Builder(GROUP_MESSAGES)
+            NotificationChannelGroupCompat
+                .Builder(GROUP_MESSAGES)
                 .setName(context.getString(R.string.notif_group_messages))
                 .build(),
         )
         manager.createNotificationChannelGroup(
-            NotificationChannelGroupCompat.Builder(GROUP_APP)
+            NotificationChannelGroupCompat
+                .Builder(GROUP_APP)
                 .setName(context.getString(R.string.notif_group_app))
                 .build(),
         )
 
         manager.createNotificationChannel(
-            channel(context, NEARBY, GROUP_MESSAGES, NotificationManagerCompat.IMPORTANCE_DEFAULT,
-                R.string.channel_nearby_name, R.string.channel_nearby_desc),
+            channel(
+                context,
+                NEARBY,
+                GROUP_MESSAGES,
+                NotificationManagerCompat.IMPORTANCE_DEFAULT,
+                R.string.channel_nearby_name,
+                R.string.channel_nearby_desc,
+            ),
         )
         manager.createNotificationChannel(
-            channel(context, GROUPS, GROUP_MESSAGES, NotificationManagerCompat.IMPORTANCE_HIGH,
-                R.string.channel_groups_name, R.string.channel_groups_desc),
+            channel(
+                context,
+                GROUPS,
+                GROUP_MESSAGES,
+                NotificationManagerCompat.IMPORTANCE_HIGH,
+                R.string.channel_groups_name,
+                R.string.channel_groups_desc,
+            ),
         )
         manager.createNotificationChannel(
-            channel(context, DMS, GROUP_MESSAGES, NotificationManagerCompat.IMPORTANCE_HIGH,
-                R.string.channel_dms_name, R.string.channel_dms_desc),
+            channel(
+                context,
+                DMS,
+                GROUP_MESSAGES,
+                NotificationManagerCompat.IMPORTANCE_HIGH,
+                R.string.channel_dms_name,
+                R.string.channel_dms_desc,
+            ),
         )
         manager.createNotificationChannel(
-            channel(context, MENTIONS, GROUP_MESSAGES, NotificationManagerCompat.IMPORTANCE_HIGH,
-                R.string.mention_channel_name, R.string.mention_channel_description),
+            channel(
+                context,
+                MENTIONS,
+                GROUP_MESSAGES,
+                NotificationManagerCompat.IMPORTANCE_HIGH,
+                R.string.mention_channel_name,
+                R.string.mention_channel_description,
+            ),
         )
         manager.createNotificationChannel(
-            channel(context, STATUS, GROUP_APP, NotificationManagerCompat.IMPORTANCE_MIN,
-                R.string.mesh_channel_name, R.string.channel_status_desc),
+            channel(
+                context,
+                STATUS,
+                GROUP_APP,
+                NotificationManagerCompat.IMPORTANCE_MIN,
+                R.string.mesh_channel_name,
+                R.string.channel_status_desc,
+            ),
         )
         manager.createNotificationChannel(
-            channel(context, ALERTS, GROUP_APP, NotificationManagerCompat.IMPORTANCE_LOW,
-                R.string.channel_alerts_name, R.string.channel_alerts_desc),
+            channel(
+                context,
+                ALERTS,
+                GROUP_APP,
+                NotificationManagerCompat.IMPORTANCE_LOW,
+                R.string.channel_alerts_name,
+                R.string.channel_alerts_desc,
+            ),
         )
 
         // Drop the pre-reorg flat channels + the DEFAULT-importance Groups channel so they don't linger.
@@ -101,7 +146,8 @@ object NotificationChannels {
         importance: Int,
         nameRes: Int,
         descRes: Int,
-    ) = NotificationChannelCompat.Builder(id, importance)
+    ) = NotificationChannelCompat
+        .Builder(id, importance)
         .setName(context.getString(nameRes))
         .setDescription(context.getString(descRes))
         .setGroup(group)

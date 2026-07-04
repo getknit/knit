@@ -15,9 +15,10 @@ fun isIgnoringBatteryOptimizations(context: Context): Boolean {
 /** Opens the system prompt to exempt the app from battery optimization (no-op if already exempt). */
 fun requestIgnoreBatteryOptimizations(context: Context) {
     if (isIgnoringBatteryOptimizations(context)) return
-    val intent = Intent(
-        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-        "package:${context.packageName}".toUri(),
-    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val intent =
+        Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            "package:${context.packageName}".toUri(),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     runCatching { context.startActivity(intent) }
 }

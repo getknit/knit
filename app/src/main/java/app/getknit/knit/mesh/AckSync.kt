@@ -45,7 +45,10 @@ class AckSync(
     private val ttlMs: Long = OWED_TTL_MS,
     private val cap: Int = OWED_CAP,
 ) {
-    private data class Owed(val authorId: String, val recordedAt: Long)
+    private data class Owed(
+        val authorId: String,
+        val recordedAt: Long,
+    )
 
     // messageId -> the author we owe a broadcast/group delivery tick, and when we recorded it (for the TTL).
     private val owed = ConcurrentHashMap<String, Owed>()
@@ -55,7 +58,10 @@ class AckSync(
      * remember it so we retry until the tick lands or it ages out. Never acks our own message. If the author is
      * already a live neighbor the tick goes over that link and isn't stored (nothing to retry).
      */
-    suspend fun owe(messageId: String, authorId: String) {
+    suspend fun owe(
+        messageId: String,
+        authorId: String,
+    ) {
         val me = selfId()
         if (authorId == me) return
         sweep()
@@ -99,7 +105,11 @@ class AckSync(
      * child holding a data-path link to the author — reliable, so the owed entry can be dropped); false if it
      * could only be best-effort fast-sent over the coordination plane (kept for a later retry).
      */
-    private suspend fun attempt(me: String, messageId: String, authorId: String): Boolean {
+    private suspend fun attempt(
+        me: String,
+        messageId: String,
+        authorId: String,
+    ): Boolean {
         val wire = receipt(me, messageId)
         val linked = transport.neighbors.value.firstOrNull { it.nodeId == authorId }
         return if (linked != null) {
@@ -116,11 +126,17 @@ class AckSync(
      * and [MeshManager.onDeliver] never custodies it. A fresh id each send so the author's SeenSet never dedups
      * a retry (the payload's ackId is what flips the tick, idempotently).
      */
-    private fun receipt(me: String, messageId: String): WireEnvelope {
-        val env = RelayEnvelope(
-            type = FrameType.RECEIPT, id = newFrameId(), senderId = me,
-            payload = WireCodec.encodePayload(ReceiptContent(messageId)),
-        )
+    private fun receipt(
+        me: String,
+        messageId: String,
+    ): WireEnvelope {
+        val env =
+            RelayEnvelope(
+                type = FrameType.RECEIPT,
+                id = newFrameId(),
+                senderId = me,
+                payload = WireCodec.encodePayload(ReceiptContent(messageId)),
+            )
         val signed = WireCodec.encodeEnvelope(env)
         return WireEnvelope(relay = false, sig = signRaw(signed), signed = signed)
     }

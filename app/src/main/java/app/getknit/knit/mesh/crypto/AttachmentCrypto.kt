@@ -8,9 +8,11 @@ package app.getknit.knit.mesh.crypto
  * travels (base64) inside the encrypted [MessageContent], never on the wire in the clear.
  */
 object AttachmentCrypto {
-
     /** A sealed attachment: the `iv || ciphertext` [blob] to store/serve, and its [key]. */
-    data class Sealed(val blob: ByteArray, val key: ByteArray)
+    data class Sealed(
+        val blob: ByteArray,
+        val key: ByteArray,
+    )
 
     /** Encrypts [plain] under a fresh key. */
     fun seal(plain: ByteArray): Sealed {
@@ -20,12 +22,16 @@ object AttachmentCrypto {
     }
 
     /** Decrypts a stored `iv || ciphertext` [blob] with [key]; null on any failure (bad key/tag/size). */
-    fun open(blob: ByteArray, key: ByteArray): ByteArray? = runCatching {
-        require(blob.size > AesGcm.IV_BYTES) { "attachment blob too short" }
-        val iv = blob.copyOfRange(0, AesGcm.IV_BYTES)
-        val ct = blob.copyOfRange(AesGcm.IV_BYTES, blob.size)
-        AesGcm.decrypt(key, iv, ct, EMPTY_AAD)
-    }.getOrNull()
+    fun open(
+        blob: ByteArray,
+        key: ByteArray,
+    ): ByteArray? =
+        runCatching {
+            require(blob.size > AesGcm.IV_BYTES) { "attachment blob too short" }
+            val iv = blob.copyOfRange(0, AesGcm.IV_BYTES)
+            val ct = blob.copyOfRange(AesGcm.IV_BYTES, blob.size)
+            AesGcm.decrypt(key, iv, ct, EMPTY_AAD)
+        }.getOrNull()
 
     private val EMPTY_AAD = ByteArray(0)
 }
