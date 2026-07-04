@@ -18,31 +18,48 @@ import java.io.File
 // Sharing the app to a phone that doesn't have Knit can't ride the mesh (that needs Knit on
 // both ends). Instead we expose our own installed APK through a FileProvider and let the user fling
 // it over an OS transport the receiver already has — Quick Share or Bluetooth — fully offline.
+//
+// A single-APK (sideloaded) install shares its base APK directly. A Play App Bundle install is split
+// into per-config APKs on disk; the base alone won't install (INSTALL_FAILED_MISSING_SPLIT), so we merge
+// them into one universal, re-signed APK first (see ApkMerger.kt) and share that. Either way the receiver
+// just taps one file and their OS installs it.
 
 private const val APK_MIME = "application/vnd.android.package-archive"
 
-/** The install was a Play App Bundle (split APKs); the base split alone won't install, so we refuse. */
-class SplitApkException : Exception()
+/** No room in the cache dir to stage + merge a Play App Bundle install into one shareable APK. */
+class ShareStorageException(message: String) : Exception(message)
 
 /**
- * Copies this app's own installed APK into a FileProvider-shareable cache file and returns a
- * `content://` [Uri] for it. The copy runs on [Dispatchers.IO] (the base APK is several MB).
+ * Prepares this app's own install as a single shareable APK and returns a FileProvider `content://`
+ * [Uri] for it. Runs on [Dispatchers.IO]: a single-APK install is a quick copy; a Play App Bundle
+ * (split) install is merged + re-signed (seconds — see [buildSharableSplitApk]), cached per version.
  *
- * Throws [SplitApkException] for split (App Bundle) installs, where sharing only the base APK would
- * produce a file the receiver can't install.
+ * May throw [ShareStorageException] (no space to merge) or a merge/sign failure; the caller toasts.
  */
 suspend fun prepareKnitApk(context: Context): Uri = withContext(Dispatchers.IO) {
     val appInfo = context.applicationInfo
-    if (!appInfo.splitSourceDirs.isNullOrEmpty()) throw SplitApkException()
+    val dest = if (appInfo.splitSourceDirs.isNullOrEmpty()) {
+        copyBaseApk(context, File(appInfo.sourceDir))
+    } else {
+        buildSharableSplitApk(
+            context,
+            collectSplitPaths(appInfo.sourceDir, appInfo.splitSourceDirs),
+            BuildConfig.VERSION_NAME,
+            BuildConfig.VERSION_CODE.toLong(),
+        )
+    }
+    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", dest)
+}
 
-    val source = File(appInfo.sourceDir)
+/** Copies the app's own base APK into a shareable cache file, refreshing when missing or stale. */
+private fun copyBaseApk(context: Context, source: File): File {
     val dir = File(context.cacheDir, "apk").apply { mkdirs() }
     val dest = File(dir, "Knit-${BuildConfig.VERSION_NAME}.apk")
     // Refresh when missing or stale (an app update changes the base APK's length).
     if (!dest.exists() || dest.length() != source.length()) {
         source.copyTo(dest, overwrite = true)
     }
-    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", dest)
+    return dest
 }
 
 /** Fires the system share sheet to send the prepared Knit APK [uri] to another app (Quick Share, Bluetooth, …). */

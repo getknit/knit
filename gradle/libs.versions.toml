@@ -48,6 +48,15 @@ tink = "1.18.0"
 # lib's transitive 3.4.1) generates the QR bitmap.
 zxingEmbedded = "4.3.0"
 zxingCore = "3.5.3"
+# On-device APK merge + re-sign for the offline "Share Knit app" flow when Knit was installed from Play
+# as an App Bundle (split APKs). ARSCLib merges the on-disk splits into one universal APK; apksig re-signs
+# it (the merge rewrites the manifest, which breaks the Play signature). Both are pure Java (no Kotlin
+# metadata, no Gradle plugin) — like SQLCipher/Tink/LiteRT above they're immune to the AGP-9.2.1/Kotlin-2.4
+# metadata constraint and can't perturb the toolchain. ARSCLib has zero transitive deps; apksig resolves
+# from google() and also has none. apksig tracks the AGP/build-tools line (9.2.x here); its default signer
+# 16 KB-page-aligns uncompressed lib/*.so, matching the app's own 16 KB alignment requirement (see litert).
+arsclib = "1.4.0"
+apksig = "9.2.1"
 # detekt runs as a standalone CLI off the build classpath (never applied as a Gradle plugin) —
 # keep this in lockstep with DETEKT_VERSION in .gitlab-ci.yml so local and CI use the same rules.
 detekt = "1.23.8"
@@ -98,6 +107,11 @@ litert = { group = "com.google.ai.edge.litert", name = "litert", version.ref = "
 tink-android = { group = "com.google.crypto.tink", name = "tink-android", version.ref = "tink" }
 zxing-android-embedded = { group = "com.journeyapps", name = "zxing-android-embedded", version.ref = "zxingEmbedded" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxingCore" }
+
+# Offline "Share Knit app": merge on-device split (Play App Bundle) APKs into one universal APK (ARSCLib,
+# Maven Central) and re-sign it (apksig, google()). See the version notes above.
+reandroid-arsclib = { group = "io.github.reandroid", name = "ARSCLib", version.ref = "arsclib" }
+apksig = { group = "com.android.tools.build", name = "apksig", version.ref = "apksig" }
 
 # Put onto the root buildscript classpath so AGP 9's built-in Kotlin compiles with this KGP (2.4.0)
 # instead of AGP's bundled default (2.2.10). Kotlin 2.4 is supported on AGP 9.1+ per Google's

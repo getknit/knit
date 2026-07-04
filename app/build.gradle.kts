@@ -114,6 +114,12 @@ dependencies {
     implementation(libs.zxing.android.embedded)
     implementation(libs.zxing.core)
 
+    // Offline "Share Knit app": when installed from Play as an App Bundle, merge the on-device split
+    // APKs into one universal APK (ARSCLib) and re-sign it (apksig). Both pure Java, no Kotlin metadata —
+    // see gradle/libs.versions.toml. Used only by ui/invite/ApkMerger.kt.
+    implementation(libs.reandroid.arsclib)
+    implementation(libs.apksig)
+
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.koin.test.junit4)

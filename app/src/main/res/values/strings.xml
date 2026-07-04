@@ -133,8 +133,10 @@
     <string name="share_app_dialog_body">Send Knit to a nearby phone, even with no internet. Pick Quick Share or Bluetooth next. On the other phone, open the received file and allow installing it to finish.</string>
     <string name="share_app_dialog_confirm">Share</string>
     <string name="share_app_chooser_title">Share Knit app</string>
+    <!-- Shown while a Play (App Bundle / split) install is merged into one shareable APK — several seconds. -->
+    <string name="share_app_preparing">Preparing Knit to share…</string>
     <string name="share_app_error">Couldn\'t share the app</string>
-    <string name="share_app_error_split">Can\'t share this install of Knit. Reinstall from a single APK to share it offline.</string>
+    <string name="share_app_error_storage">Not enough free space to prepare Knit to share.</string>
 
     <!-- Share sheet target picker -->
     <string name="share_target_title">Share to…</string>

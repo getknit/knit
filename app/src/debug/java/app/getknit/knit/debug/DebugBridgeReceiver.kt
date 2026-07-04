@@ -21,6 +21,7 @@ import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.GroupInfo
+import app.getknit.knit.ui.invite.prepareKnitApk
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
@@ -52,6 +53,9 @@ import org.koin.core.component.inject
  * - [ACTION_REACT] — `--es id <messageId> --es emoji <emoji>` toggles a reaction.
  * - [ACTION_GIFSHRINK] — `--es path <gifFile>` runs the send-side GIF compression and reports the byte
  *   reduction (`origBytes`/`outBytes`/`pctSmaller`); add `--es out <file>` to write the shrunk GIF out.
+ * - [ACTION_SHARE_APK] — runs the offline "Share Knit app" prepare step (merging split installs into one
+ *   re-signed APK) headlessly and reports the staged `cacheDir/apk` files, so the result can be pulled +
+ *   verified without the share sheet.
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  *
  * Each action replies as a one-line JSON object: it is returned via the ordered-broadcast result
@@ -84,6 +88,7 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
                     ACTION_STORE -> handleStore(intent)
                     ACTION_REACT -> handleReact(intent)
                     ACTION_GIFSHRINK -> handleGifShrink(intent)
+                    ACTION_SHARE_APK -> handleShareApk(context)
                     ACTION_HEAL -> { mesh.heal(); reply("ok", "healed") }
                     else -> reply("error", "unknown action: $action")
                 }
@@ -142,6 +147,27 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
             .put("outBytes", outBytes)
             .put("pctSmaller", pct)
             .put("wroteTo", outPath ?: JSONObject.NULL)
+    }
+
+    /**
+     * Drives the offline "Share Knit app" prepare step headlessly (no share sheet): runs
+     * [prepareKnitApk], which for a Play App Bundle install merges the on-disk splits into one re-signed
+     * APK, and reports the staged `cacheDir/apk` files so the merged APK can be pulled and verified —
+     * `adb shell run-as app.getknit.knit cat cache/apk/<name>`. `splitInstall` says which path ran.
+     */
+    private suspend fun handleShareApk(context: Context): JSONObject {
+        val splitDirs = context.applicationInfo.splitSourceDirs?.toList().orEmpty()
+        val uri = prepareKnitApk(context)
+        val files = JSONArray()
+        File(context.cacheDir, "apk").listFiles()
+            ?.sortedByDescending { it.lastModified() }
+            ?.forEach { files.put(JSONObject().put("name", it.name).put("bytes", it.length())) }
+        return JSONObject()
+            .put("status", "ok")
+            .put("splitInstall", splitDirs.isNotEmpty())
+            .put("splitCount", splitDirs.size)
+            .put("uri", uri.toString())
+            .put("files", files)
     }
 
     private suspend fun handleReact(intent: Intent): JSONObject {
@@ -289,6 +315,7 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
         const val ACTION_STORE = "app.getknit.knit.debug.STORE"
         const val ACTION_REACT = "app.getknit.knit.debug.REACT"
         const val ACTION_GIFSHRINK = "app.getknit.knit.debug.GIFSHRINK"
+        const val ACTION_SHARE_APK = "app.getknit.knit.debug.SHAREAPK"
         const val ACTION_HEAL = "app.getknit.knit.debug.HEAL"
 
         const val EXTRA_TEXT = "text"

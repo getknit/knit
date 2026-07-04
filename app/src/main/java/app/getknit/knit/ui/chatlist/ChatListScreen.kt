@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -81,7 +82,7 @@ import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.invite.ShareKnitDialog
-import app.getknit.knit.ui.invite.SplitApkException
+import app.getknit.knit.ui.invite.ShareStorageException
 import app.getknit.knit.ui.invite.launchApkShareChooser
 import app.getknit.knit.ui.invite.prepareKnitApk
 import app.getknit.knit.ui.preview.KnitPreview
@@ -106,6 +107,9 @@ fun ChatListScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     var menuOpen by remember { mutableStateOf(false) }
     var showShareApp by remember { mutableStateOf(false) }
+    // A Play (App Bundle) install is merged into one shareable APK on the fly — several seconds — so we
+    // gate the share sheet behind a spinner. Flashes instantly for a single-APK install (fast copy path).
+    var preparingShare by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // A ticking clock so each row's relative timestamp recomposes as time passes; a bare
@@ -223,20 +227,41 @@ fun ChatListScreen(
         ShareKnitDialog(
             onConfirm = {
                 showShareApp = false
+                preparingShare = true
                 scope.launch {
-                    runCatching {
-                        launchApkShareChooser(context, prepareKnitApk(context))
-                    }.onFailure { e ->
-                        val msg = if (e is SplitApkException) {
-                            R.string.share_app_error_split
-                        } else {
-                            R.string.share_app_error
+                    try {
+                        runCatching {
+                            launchApkShareChooser(context, prepareKnitApk(context))
+                        }.onFailure { e ->
+                            val msg = if (e is ShareStorageException) {
+                                R.string.share_app_error_storage
+                            } else {
+                                R.string.share_app_error
+                            }
+                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
                         }
-                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                    } finally {
+                        preparingShare = false
                     }
                 }
             },
             onDismiss = { showShareApp = false },
+        )
+    }
+
+    if (preparingShare) {
+        // Non-dismissible: the merge/sign runs on a background coroutine; block interaction until the
+        // share sheet opens (or an error toast fires). onDismissRequest is a no-op so taps don't cancel it.
+        AlertDialog(
+            onDismissRequest = {},
+            confirmButton = {},
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.width(20.dp))
+                    Text(stringResource(R.string.share_app_preparing))
+                }
+            },
         )
     }
 }
