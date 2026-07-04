@@ -8,6 +8,7 @@ import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.forward.ForwardDao
+import app.getknit.knit.data.gif.GifTranscode
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.ConversationKind
@@ -20,6 +21,7 @@ import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.GroupInfo
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -48,6 +50,8 @@ import org.koin.core.component.inject
  *   with `digestVersion`, all/live fingerprints, `expiredIds`, the full `allIds`, and capped per-row detail
  *   (`--ei limit N`, default [DEFAULT_STORE_LIMIT]) — to diff why two devices never converge their digests.
  * - [ACTION_REACT] — `--es id <messageId> --es emoji <emoji>` toggles a reaction.
+ * - [ACTION_GIFSHRINK] — `--es path <gifFile>` runs the send-side GIF compression and reports the byte
+ *   reduction (`origBytes`/`outBytes`/`pctSmaller`); add `--es out <file>` to write the shrunk GIF out.
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  *
  * Each action replies as a one-line JSON object: it is returned via the ordered-broadcast result
@@ -79,6 +83,7 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
                     ACTION_STATE -> handleState(intent)
                     ACTION_STORE -> handleStore(intent)
                     ACTION_REACT -> handleReact(intent)
+                    ACTION_GIFSHRINK -> handleGifShrink(intent)
                     ACTION_HEAL -> { mesh.heal(); reply("ok", "healed") }
                     else -> reply("error", "unknown action: $action")
                 }
@@ -110,6 +115,33 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
             true -> reply("ok", "sent to $conv")
             false -> reply("blocked", "blocked by on-device content filter")
         }.put("conversation", conv)
+    }
+
+    /**
+     * Runs [GifTranscode.shrink] on the GIF at `--es path <file>` and reports the byte reduction — a
+     * headless check of the send-side GIF compression that [app.getknit.knit.data.AttachmentStore]
+     * applies (the ingest routing that selects the GIF branch is unchanged, so testing the transcoder
+     * directly covers the new code). Writes the shrunk GIF to `--es out <file>` when given so it can be
+     * pulled and validated as a real animated GIF. The bounds mirror `AttachmentStore.GIF_MAX_*`.
+     */
+    private fun handleGifShrink(intent: Intent): JSONObject {
+        val path = intent.getStringExtra(EXTRA_PATH) ?: return reply("error", "missing 'path' extra")
+        val file = File(path)
+        if (!file.exists()) return reply("error", "no such file: $path")
+        val bytes = file.readBytes()
+        val shrunk = GifTranscode.shrink(bytes, GIF_MAX_DIMENSION, GIF_MAX_FPS)
+        val outPath = intent.getStringExtra(EXTRA_OUT)
+        if (shrunk != null && outPath != null) File(outPath).writeBytes(shrunk)
+        val outBytes = shrunk?.size ?: bytes.size
+        val pct = if (bytes.isNotEmpty()) 100 - (outBytes.toLong() * 100 / bytes.size) else 0L
+        return JSONObject()
+            .put("status", "ok")
+            .put("path", path)
+            .put("origBytes", bytes.size)
+            .put("shrunk", shrunk != null)
+            .put("outBytes", outBytes)
+            .put("pctSmaller", pct)
+            .put("wroteTo", outPath ?: JSONObject.NULL)
     }
 
     private suspend fun handleReact(intent: Intent): JSONObject {
@@ -255,6 +287,7 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
         const val ACTION_STATE = "app.getknit.knit.debug.STATE"
         const val ACTION_STORE = "app.getknit.knit.debug.STORE"
         const val ACTION_REACT = "app.getknit.knit.debug.REACT"
+        const val ACTION_GIFSHRINK = "app.getknit.knit.debug.GIFSHRINK"
         const val ACTION_HEAL = "app.getknit.knit.debug.HEAL"
 
         const val EXTRA_TEXT = "text"
@@ -263,6 +296,13 @@ class DebugBridgeReceiver : BroadcastReceiver(), KoinComponent {
         const val EXTRA_ID = "id"
         const val EXTRA_EMOJI = "emoji"
         const val EXTRA_LIMIT = "limit"
+        const val EXTRA_PATH = "path"
+        const val EXTRA_OUT = "out"
+
+        // Mirror AttachmentStore.GIF_MAX_DIMENSION / GIF_MAX_FPS (private there) so this diagnostic
+        // shrinks a GIF with the same bounds the real ingest path uses.
+        const val GIF_MAX_DIMENSION = 480
+        const val GIF_MAX_FPS = 15
 
         const val DEFAULT_MESSAGE_LIMIT = 20
 

@@ -3,6 +3,7 @@ package app.getknit.knit.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import app.getknit.knit.data.gif.GifTranscode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -13,9 +14,10 @@ import java.security.MessageDigest
  * [app.getknit.knit.data.blob.BlobEntity]). The content hash both keys the blob and is the key carried
  * in the wire frame, so any holder can serve the bytes and identical images dedupe.
  *
- * Photos are decoded, EXIF-rotated, downscaled, and re-encoded to JPEG; GIFs are kept **verbatim** so
- * their animation survives (decoding through [android.graphics.BitmapFactory] would flatten them). The
- * bytes never touch disk — they go straight into the encrypted database.
+ * Photos are decoded, EXIF-rotated, downscaled, and re-encoded to JPEG. GIFs keep their animation but
+ * are re-encoded smaller via [app.getknit.knit.data.gif.GifTranscode] (downscaled + frame-rate-capped)
+ * so they transmit faster; a GIF that can't be shrunk falls back to its original bytes. The bytes never
+ * touch disk — they go straight into the encrypted database.
  *
  * Before staging, the image is screened for explicit content via [BlobRepository]. Sending an explicit
  * image is *allowed but discouraged*: a flagged image is still ingested, and [ingest] reports the flag
@@ -36,18 +38,21 @@ class AttachmentStore(private val context: Context, private val blobs: BlobRepos
     }
 
     /**
-     * Ingests [uri] into the blob store. GIFs are kept as-is; other images are downscaled to
-     * [MAX_DIMENSION] and re-encoded as JPEG. Returns [IngestResult.Failed] on a decode failure or if
+     * Ingests [uri] into the blob store. GIFs are re-encoded smaller (animation preserved); other
+     * images are downscaled to [MAX_DIMENSION] and re-encoded as JPEG. Returns [IngestResult.Failed]
+     * on a decode failure or if
      * the processed image exceeds [MAX_BYTES], else [IngestResult.Success] with [Success.flagged] set
      * when on-device screening judged the image explicit.
      */
     suspend fun ingest(uri: Uri): IngestResult = withContext(Dispatchers.IO) {
         val sourceMime = context.contentResolver.getType(uri)
         val (mime, bytes) = if (sourceMime == "image/gif") {
-            // GIFs are stored verbatim so their animation survives.
+            // Android's Bitmap APIs can't re-encode an animated GIF, so shrink it with a dedicated
+            // pure-JVM transcoder (downscale + cap frame rate + re-quantize) to speed up transmit.
+            // Keep the raw bytes if that fails or wouldn't be smaller, so a GIF is never regressed.
             val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: return@withContext IngestResult.Failed
-            "image/gif" to raw
+            "image/gif" to (GifTranscode.shrink(raw, GIF_MAX_DIMENSION, GIF_MAX_FPS) ?: raw)
         } else {
             val bitmap = decodeOrientedBounded(context, uri, MAX_DIMENSION)
                 ?: return@withContext IngestResult.Failed
@@ -87,6 +92,12 @@ class AttachmentStore(private val context: Context, private val blobs: BlobRepos
         const val MAX_DIMENSION = 1280
         const val JPEG_QUALITY = 85
         const val WEBP_QUALITY = 85
-        const val MAX_BYTES = 8 * 1024 * 1024 // 8 MiB cap (mostly bounds verbatim GIFs)
+
+        // GIFs are re-encoded (not re-photographed) so a tighter dimension + frame-rate cap keeps them
+        // legibly animated while cutting the bytes that go over BLE. See [GifTranscode].
+        const val GIF_MAX_DIMENSION = 480
+        const val GIF_MAX_FPS = 15
+
+        const val MAX_BYTES = 8 * 1024 * 1024 // 8 MiB cap (a transcoded GIF should land well under this)
     }
 }
