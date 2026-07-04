@@ -456,12 +456,30 @@ class WifiAwareTransport(
     private fun anySyncOwed(): Boolean {
         val v = storeDigest.version.value
         val now = SystemClock.elapsedRealtime()
-        return cueTarget.keys.any { nodeId ->
-            syncWanted(nodeId, v) &&
-                (peers.containsKey(nodeId) || lastSeenAt[nodeId]?.let { now - it <= REACHABLE_LINGER_MS } == true) &&
-                corroboratedPresent(nodeId)
-        }
+        return cueTarget.keys.any { nodeId -> reachableSyncOwed(nodeId, v, now) && corroboratedPresent(nodeId) }
     }
+
+    /**
+     * As [anySyncOwed] but **without** the [corroboratedPresent] gate — used by [checkWedge]'s Tier-1
+     * responder refresh, whose action (a cheap, safe [sessionCycleWithSettle]) is worth taking on an owed peer
+     * we merely *hear* (reachable), even with no corroborating plane. This is what lets the smallest node —
+     * everyone's pure responder — self-heal a wedged responder when Bluetooth is itself dark (so there is
+     * nothing to corroborate with); the corroboration gate remains on the Tier-2 process kill only.
+     */
+    private fun anyReachableSyncOwed(): Boolean {
+        val v = storeDigest.version.value
+        val now = SystemClock.elapsedRealtime()
+        return cueTarget.keys.any { nodeId -> reachableSyncOwed(nodeId, v, now) }
+    }
+
+    /** A sync to [nodeId] is wanted and the peer is a live link or was heard within [REACHABLE_LINGER_MS]. */
+    private fun reachableSyncOwed(
+        nodeId: String,
+        localVersion: Long,
+        now: Long,
+    ): Boolean =
+        syncWanted(nodeId, localVersion) &&
+            (peers.containsKey(nodeId) || lastSeenAt[nodeId]?.let { now - it <= REACHABLE_LINGER_MS } == true)
 
     /**
      * Whether an owed [nodeId] is corroborated genuinely-present strongly enough to justify the wedge self-kill.
@@ -495,11 +513,22 @@ class WifiAwareTransport(
      * holds NAN up (no flap possible). Under P1 concurrency an inbound accept also stamps [lastLinkOrAcceptAt],
      * which is correct: a real ghost blocks accepts too, so genuine wedges still trip it, while an
      * initiator-only pin is now a managed state ([responderPinsNdi]) with its own recovery, not a wedge.
+     *
+     * **Two tiers** (the owed-episode is measured on the *uncorroborated* [anyReachableSyncOwed] so both tiers
+     * work when the corroborating Bluetooth plane is itself dark):
+     * - **Tier 1 (light, [RESPONDER_REFRESH_MS]):** a sync owed with no link for the window → refresh a
+     *   possibly-wedged responder via [sessionCycleWithSettle]. This is the smallest node's self-heal — it is
+     *   everyone's pure responder and never recycles (recycle needs an owed *initiate* it never has), so a
+     *   responder that goes stuck after serving-then-idle would otherwise stay dead until process death
+     *   (field-observed 2026-07-04). The session cycle is safe at 0 NDPs (the NAN-down wipe clears any ghost an
+     *   in-place unregister would mint) and cheap, so it needs no corroboration.
+     * - **Tier 2 (last resort, [WEDGE_RESTART_MS]):** still owed *and* [anySyncOwed] (corroborated) → process
+     *   kill. Corroboration stays on the kill so an out-of-range-but-cueing peer can't self-kill the node.
      */
     private fun checkWedge() {
         val now = SystemClock.elapsedRealtime()
-        val owed = hasHardware && _health.value == TransportHealth.Healthy && session != null && anySyncOwed()
-        if (!owed) {
+        val healthy = hasHardware && _health.value == TransportHealth.Healthy && session != null
+        if (!healthy || !anyReachableSyncOwed()) {
             syncOwedSince = 0L
             return
         } // nothing owed (or can't sync) → not wedged; clear the episode
@@ -508,10 +537,19 @@ class WifiAwareTransport(
             syncOwedSince = now
             return
         }
-        if (now - syncOwedSince < WEDGE_RESTART_MS) return // owed, but not long enough with zero links yet
-        if (now - lastRestartAt < WEDGE_RESTART_MS) return // never restart-storm
+        val owedFor = now - syncOwedSince
+        // Tier 1: refresh the (possibly wedged) responder — light, uncorroborated, safe at 0 NDPs. Shares the
+        // reattach cooldown with the discovery-loop pinned-responder cycle so the two can't stack.
+        if (owedFor >= RESPONDER_REFRESH_MS && now - lastReattachAt >= REATTACH_COOLDOWN_MS) {
+            lastReattachAt = now
+            Log.w(TAG, "sync owed ${owedFor}ms with no link — refreshing responder via session cycle")
+            sessionCycleWithSettle()
+            return
+        }
+        // Tier 2: last-resort process kill, gated on corroboration so an out-of-range peer can't trigger it.
+        if (owedFor < WEDGE_RESTART_MS || now - lastRestartAt < WEDGE_RESTART_MS || !anySyncOwed()) return
         lastRestartAt = now
-        Log.e(TAG, "NAN data plane wedged (sync owed ${now - syncOwedSince}ms with no link) — restarting process")
+        Log.e(TAG, "NAN data plane wedged (sync owed ${owedFor}ms with no link) — restarting process")
         logState()
         Process.killProcess(Process.myPid())
     }
@@ -981,7 +1019,9 @@ class WifiAwareTransport(
         onHandler {
             if (anyLinkActivity()) return@onHandler // never drop live links; the loop re-evaluates
             if (!reattaching.compareAndSet(false, true)) return@onHandler
-            Log.w(TAG, "session cycle: pinned responder + initiate owed — tearing down, settling")
+            // Two callers: the discovery-loop pinned-responder branch (initiator NDI freed) and checkWedge's
+            // Tier-1 responder self-heal (a wedged responder refreshed) — each logs its own reason first.
+            Log.w(TAG, "session cycle: tearing down for a fresh session, settling")
             stopResponder()
             runCatching { publishSession?.close() }
             runCatching { subscribeSession?.close() }
@@ -2145,6 +2185,11 @@ class WifiAwareTransport(
         // restart window doubles as the min restart spacing so a persistently-unreachable peer can't loop us.
         const val WEDGE_CHECK_MS = 30_000L
         const val WEDGE_RESTART_MS = 180_000L
+
+        // Tier-1 responder self-heal: how long a sync stays owed with no link forming before a session cycle
+        // refreshes a possibly-wedged responder. Well under WEDGE_RESTART_MS (the last-resort process kill) and
+        // comfortably above a healthy owed→link latency, so it only fires on a genuine stuck episode.
+        const val RESPONDER_REFRESH_MS = 45_000L
 
         // Min spacing between subscribe re-arms to re-discover a stale/missing peer handle: long enough that a
         // departed peer's cue target is pruned (cue send fails) before we'd re-arm again, so we don't churn
