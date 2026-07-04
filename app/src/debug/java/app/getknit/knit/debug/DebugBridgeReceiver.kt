@@ -448,6 +448,8 @@ class DebugBridgeReceiver :
             .put("framesHeld", snap.framesHeld)
             .put("framesReplayed", snap.framesReplayed)
             .put("receiptsResent", snap.receiptsResent)
+            .put("nanServesPeak", snap.nanServesPeak)
+            .put("nanAcceptsRefused", snap.nanAcceptsRefused)
 
     /**
      * Flip the P0 NAN experiment toggles (`docs/NAN_CONCURRENCY_REAUDIT.md` §4) and report their state.

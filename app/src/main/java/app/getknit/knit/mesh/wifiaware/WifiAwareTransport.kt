@@ -228,10 +228,24 @@ class WifiAwareTransport(
     private val inFlight = HashSet<String>()
     private val discovered = HashMap<String, DiscoveredPeer>()
     private val retryAfter = HashMap<String, Long>()
-    private var accepting = false
 
-    // Anti-entropy state for the cue plane: each peer's advertised digest version + our last-synced version.
-    private val digestTracker = DigestTracker()
+    // Count of accepted sockets still reading their identity (HELLO) — reserved against [serveCap] but not
+    // yet in [peers]. A count (not a flag) since P1: concurrent inbound serves are admitted up to the cap.
+    private var accepting = 0
+
+    // Concurrent-inbound-serve cap for this device, from the firmware NDP budget (NanServePolicy.capFor over
+    // Characteristics.getNumberOfSupportedDataPaths(), read in start()). 1 = legacy single-slot semantics.
+    @Volatile private var serveCap = 1
+
+    // True while the standing accept-any responder request has served at least one NDP — from that first
+    // serve on, the framework keeps the request's NDI assigned even at 0 live NDPs, blocking this node's own
+    // initiator role until the request is recycled (docs/NAN_CONCURRENCY_REAUDIT.md §2). Diagnostic in P1
+    // (logState); P2's recycle policy makes it load-bearing. Reset when a fresh (never-served) request files.
+    @Volatile private var responderPinsNdi = false
+
+    // Anti-entropy state for the cue plane: each peer's advertised digest version + our last-synced version,
+    // plus the no-progress throttle (P3) — on the transport's monotonic clock.
+    private val digestTracker = DigestTracker(SystemClock::elapsedRealtime)
 
     // Peers currently served by a higher-preference plane (Bluetooth), pushed by CompositeMeshTransport: we
     // don't bring up an NDP sync to them (BLE carries their data) until they drop off it. Volatile — written
@@ -330,6 +344,12 @@ class WifiAwareTransport(
                 runCatching {
                     awareManager?.characteristics?.isInstantCommunicationModeSupported() == true
                 }.getOrDefault(false)
+            // Concurrent-serve cap from the firmware NDP budget (8 on Pixel-class hardware → cap 4; Samsung
+            // S.LSI ships 1 → legacy single-slot). Unreadable ⇒ 1, the conservative fallback.
+            serveCap =
+                NanServePolicy.capFor(
+                    runCatching { awareManager?.characteristics?.numberOfSupportedDataPaths }.getOrNull() ?: 1,
+                )
             registerAvailability()
             attach()
             loopJob = scope.launch { discoveryLoop() }
@@ -386,10 +406,13 @@ class WifiAwareTransport(
         val cues = cueTarget.keys.toSet()
         val wanted = cues.filter { localNodeId > it && syncWanted(it, v) }
         val initiable = wanted.filter { it in disc && (backoff[it]?.let { t -> now >= t } ?: true) }
+        val inbound = peers.values.count { !it.isInitiator }
+        val acc = synchronized(lock) { accepting }
         Log.i(
             TAG,
-            "state ver=$v live=${peers.keys} disc=$disc cue=$cues wanted=$wanted " +
-                "initiable=$initiable reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}]",
+            "state ver=$v live=${peers.keys} inbound=$inbound acc=$acc cap=$serveCap pin=$responderPinsNdi " +
+                "disc=$disc cue=$cues wanted=$wanted initiable=$initiable " +
+                "reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}]",
         )
     }
 
@@ -484,7 +507,7 @@ class WifiAwareTransport(
             inFlight.clear()
             discovered.clear()
             retryAfter.clear()
-            accepting = false
+            accepting = 0
         }
         cueTarget.clear()
         lastSeenAt.clear()
@@ -599,7 +622,7 @@ class WifiAwareTransport(
                         publishSession = null
                         subscribeSession = null
                         stopResponder()
-                        synchronized(lock) { accepting = false }
+                        synchronized(lock) { accepting = 0 }
                         // A session terminates both when the radio is switched off and when it's seized; distinguish so
                         // the UI can say "radios off" vs "radio busy". The availability receiver corrects this if it flips.
                         _health.value =
@@ -738,7 +761,7 @@ class WifiAwareTransport(
         publishSession = null
         subscribeSession = null
         stopResponder()
-        synchronized(lock) { accepting = false }
+        synchronized(lock) { accepting = 0 }
         _health.value =
             if (awareManager?.isAvailable == true) TransportHealth.Degraded else TransportHealth.Unavailable
         healSignal.trySend(Unit)
@@ -755,7 +778,7 @@ class WifiAwareTransport(
      */
     private fun reattach() =
         onHandler {
-            if (slotBusy()) return@onHandler
+            if (anyLinkActivity()) return@onHandler
             if (!reattaching.compareAndSet(false, true)) return@onHandler // collapse concurrent re-attach triggers
             Log.w(TAG, "re-attaching to recover wedged discovery/responder")
             stopResponder()
@@ -801,7 +824,7 @@ class WifiAwareTransport(
                 }
 
                 // radio came back / first attach failed
-                slotBusy() -> {
+                anyLinkActivity() -> {
                     Unit
                 }
 
@@ -864,8 +887,13 @@ class WifiAwareTransport(
         }
     }
 
-    /** True while the single NDI slot is occupied by a live link, an in-flight handshake, or an accept. */
-    private fun slotBusy(): Boolean = synchronized(lock) { peers.isNotEmpty() || inFlight.isNotEmpty() || accepting }
+    /**
+     * True while any link, in-flight handshake, or accept is live. Since P1 (concurrent serves) this is no
+     * longer "the slot is taken" — it is the conservative guard for operations that must not disturb live
+     * links (reattach, subscribe-wedge escalation, the after-serve reattach reschedule) and for the discovery
+     * loop's do-nothing branch (no initiates/re-arms while anything is active; P2 revisits initiate gating).
+     */
+    private fun anyLinkActivity(): Boolean = synchronized(lock) { peers.isNotEmpty() || inFlight.isNotEmpty() || accepting > 0 }
 
     /**
      * Whether an on-demand NDP sync to [nodeId] is worth bringing up: its advertised digest differs from ours
@@ -1003,7 +1031,7 @@ class WifiAwareTransport(
                 // A subscribe stuck in onSessionConfigFailed is wedged — re-subscribing won't clear it, but a
                 // full re-attach usually does. Escalate, rate-limited, and only when no live NDP would be lost.
                 val now = SystemClock.elapsedRealtime()
-                if (!slotBusy() && now - lastReattachAt > REATTACH_COOLDOWN_MS) {
+                if (!anyLinkActivity() && now - lastReattachAt > REATTACH_COOLDOWN_MS) {
                     lastReattachAt = now
                     handler.postDelayed({ reattach() }, REATTACH_DELAY_MS)
                 }
@@ -1324,7 +1352,10 @@ class WifiAwareTransport(
                 }.isSuccess
         // Note "listening" ≠ "serving": the framework can still refuse/queue the request (e.g. behind a
         // TERMINATING ghost of a previous responder — dumpsys shows requests=0 at the aware NetworkFactory).
-        if (filed) Log.i(TAG, "responder listening on port ${ss.localPort}")
+        if (filed) {
+            responderPinsNdi = false // a fresh (never-served) request idles interface-less
+            Log.i(TAG, "responder listening on port ${ss.localPort}")
+        }
     }
 
     @Suppress("LoopWithTooManyJumpStatements") // accept → admit-or-close is naturally break+continue
@@ -1398,6 +1429,13 @@ class WifiAwareTransport(
         lastLinkOrAcceptAt = SystemClock.elapsedRealtime() // the data plane produced a link (either role) — clears the wedge watchdog
         val prev = peers.put(peerNodeId, conn)
         prev?.close() // a stale link to the same peer (shouldn't happen, but never leak it)
+        if (callback == null) {
+            // A serve landed on the standing responder request: it now pins the NDI even after its NDPs end
+            // (docs/NAN_CONCURRENCY_REAUDIT.md §2) until recycled, and the concurrent-serve count feeds the
+            // P1 observability peak.
+            responderPinsNdi = true
+            metrics.onNanServes(peers.values.count { !it.isInitiator }.toLong())
+        }
         synchronized(lock) {
             inFlight.remove(peerNodeId)
             retryAfter.remove(peerNodeId)
@@ -1528,8 +1566,18 @@ class WifiAwareTransport(
         // quiescence-driven end (no EOF ⇒ the NDP may already be gone) must NOT unregister at 0 NDPs — that
         // IS the state=104 ghost — so it keeps the after-serve reattach, whose session cycle clears the pin
         // via NAN-down. Off-experiment, every serve takes the reattach (shipped behavior, verified Phase 0).
+        // P1 (concurrent serves): both actions terminate EVERY connection on the shared request (recycle
+        // unregisters it; reattach tears the whole session), so they run only when the departing link was the
+        // LAST live inbound and no accept is mid-HELLO — with siblings still serving there is nothing to do
+        // (the pin question only arises once the last inbound ends).
         if (wasServerLink) {
-            if (NanExperiments.e4bRecycle && eofDriven) recycleResponder() else scheduleServeReattach(peerNodeId)
+            val lastInbound =
+                synchronized(lock) { peers.values.none { !it.isInitiator } && accepting == 0 }
+            when {
+                !lastInbound -> Unit
+                NanExperiments.e4bRecycle && eofDriven -> recycleResponder()
+                else -> scheduleServeReattach(peerNodeId)
+            }
         }
     }
 
@@ -1565,7 +1613,7 @@ class WifiAwareTransport(
                 }
 
                 // detached; the loop re-attaches
-                slotBusy() -> {
+                anyLinkActivity() -> {
                     scheduleServeReattach(peerNodeId)
                 }
 
@@ -1594,25 +1642,39 @@ class WifiAwareTransport(
         synchronized(lock) {
             if (peerNodeId in peers.keys || peerNodeId in inFlight) return false
             // One NDI: at most one link/handshake/accept in flight, and only after the previous link's NDI has
-            // been released (SETTLE) — else requestNetwork fails with "no interfaces available".
-            if (peers.isNotEmpty() || inFlight.isNotEmpty() || accepting) return false
+            // been released (SETTLE) — else requestNetwork fails with "no interfaces available". Deliberately
+            // conservative under P1's concurrent serves too: an initiate while the responder request holds the
+            // NDI is framework-refused anyway, so attempting it is pure churn (P2's recycle gives it its turn).
+            if (peers.isNotEmpty() || inFlight.isNotEmpty() || accepting > 0) return false
             if (SystemClock.elapsedRealtime() < lastLinkEndedAt + SETTLE_MS) return false
             retryAfter[peerNodeId]?.let { if (SystemClock.elapsedRealtime() < it) return false } // backing off
             inFlight.add(peerNodeId)
             true
         }
 
-    /** Reserve the single NDI slot for an inbound accept (mirrors [beginConnect]); paired with [endAccept]. */
+    /**
+     * Admit an inbound accept per [NanServePolicy] (paired with [endAccept]): up to [serveCap] concurrent
+     * serves on the standing accept-any request — an accept consumes no NDI — excluded only by an in-flight
+     * *initiator* handshake (which genuinely contends for the single NDI). At cap 1 (tiny/unreadable firmware
+     * NDP budget) this is byte-equivalent to the legacy single-slot gate, SETTLE included.
+     */
     private fun beginAccept(): Boolean =
         synchronized(lock) {
-            if (peers.isNotEmpty() || inFlight.isNotEmpty() || accepting) return false
-            if (SystemClock.elapsedRealtime() < lastLinkEndedAt + SETTLE_MS) return false
-            accepting = true
-            true
+            val admitted =
+                NanServePolicy.admitAccept(
+                    inFlightHandshakes = inFlight.size,
+                    liveInbound = peers.values.count { !it.isInitiator },
+                    acceptsInHello = accepting,
+                    cap = serveCap,
+                    singleSlotBusy = peers.isNotEmpty() || inFlight.isNotEmpty() || accepting > 0,
+                    settleOk = SystemClock.elapsedRealtime() >= lastLinkEndedAt + SETTLE_MS,
+                )
+            if (admitted) accepting++ else metrics.onNanAcceptRefused()
+            admitted
         }
 
     private fun endAccept() {
-        synchronized(lock) { accepting = false }
+        synchronized(lock) { if (accepting > 0) accepting-- }
     }
 
     private fun refreshNeighbors() {
@@ -1689,7 +1751,7 @@ class WifiAwareTransport(
                         attaching.set(false)
                         subscribing.set(false)
                         reattaching.set(false)
-                        synchronized(lock) { accepting = false }
+                        synchronized(lock) { accepting = 0 }
                         cueTarget.clear()
                         lastSeenAt.clear()
                         reachablePeers.clear()

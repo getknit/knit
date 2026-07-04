@@ -209,7 +209,10 @@ Principles: keep the two-plane design, the digest/cue anti-entropy, custody, the
 per-link quiescence (**concurrency ≠ persistence** — an idle mesh must still do zero data-path work). What
 changes is the NDI lifecycle, which stops being "one link at a time + a session cycle per serve".
 
-1. **Serve concurrently, always** (productionize E2): `accepting` stays a counter; admit inbound serves
+1. **Serve concurrently, always** (productionize E2) — **✅ implemented + fleet-validated 2026-07-04**
+   (`NanServePolicy` + JVM tests; on-device: `inbound=2 acc=0 cap=4` with two framework NdpInfos, per-serve
+   recycles only on the last live inbound, `nanServesPeak=2`, zero refused accepts, zero ghosts):
+   `accepting` stays a counter; admit inbound serves
    whenever no *initiator* handshake is in flight; cap concurrent serves at
    `min(getNumberOfSupportedDataPaths() − 1, SERVE_CAP)` (reserve one NDP session for our own outbound;
    `SERVE_CAP` ~4 for sanity). Upstream layers are already N-neighbor-ready (BLE-tested). On
@@ -222,7 +225,10 @@ changes is the NDI lifecycle, which stops being "one link at a time + a session 
    0-NDPs-and-initiate-owed corner (recycle missed): session cycle that **waits for the availability flap**
    (`isAvailable == false` / `ACTION_WIFI_AWARE_STATE_CHANGED`) before re-attaching, turning the §2 race
    into a handshake. `checkWedge` stays as last resort and should ~never fire.
-3. **Convergence throttle** (interim for §3.2's churn): `DigestTracker` backs a peer off after N completed
+3. **Convergence throttle** (interim for §3.2's churn) — **✅ implemented 2026-07-04** (pure, JVM-tested;
+   convergence-only reset — the movement-based reset in the original text is self-defeating for the target
+   pathology, see `DigestTracker`'s kdoc; field drill deferred to the P2 co-validation session):
+   `DigestTracker` backs a peer off after N completed
    syncs without convergence inside a window (e.g. 3 syncs / 60 s ⇒ cool-down with exponential growth,
    reset on convergence or on either digest changing *for another reason than our own sync*). Root-causing
    why multi-day stores' digests keep *moving* every round is a separate investigation (likely

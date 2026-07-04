@@ -91,6 +91,8 @@ class MeshMetrics {
     private val connectFails: Map<ConnectFailReason, AtomicLong> =
         ConnectFailReason.entries.associateWith { AtomicLong() }
     private val btLinksEstablished = AtomicLong()
+    private val nanServesPeak = AtomicLong()
+    private val nanAcceptsRefused = AtomicLong()
 
     /** A frame this device authored and injected into the mesh. */
     fun onOriginated() {
@@ -168,6 +170,16 @@ class MeshMetrics {
         btLinksEstablished.incrementAndGet()
     }
 
+    /** Record the current count of concurrent inbound NAN serves; keeps the session peak (P1 observability). */
+    fun onNanServes(concurrent: Long) {
+        nanServesPeak.accumulateAndGet(concurrent) { a, b -> maxOf(a, b) }
+    }
+
+    /** An inbound NAN accept was refused by the serve policy (cap reached / initiator handshake in flight). */
+    fun onNanAcceptRefused() {
+        nanAcceptsRefused.incrementAndGet()
+    }
+
     fun snapshot(): Snapshot {
         val byReason = drops.mapValues { it.value.get() }
         val connectByReason = connectFails.mapValues { it.value.get() }
@@ -189,6 +201,8 @@ class MeshMetrics {
             btConnectFails = connectByReason.values.sum(),
             btConnectFailsByReason = connectByReason.filterValues { it > 0 },
             btLinksEstablished = btLinksEstablished.get(),
+            nanServesPeak = nanServesPeak.get(),
+            nanAcceptsRefused = nanAcceptsRefused.get(),
         )
     }
 
@@ -210,5 +224,7 @@ class MeshMetrics {
         val btConnectFails: Long = 0,
         val btConnectFailsByReason: Map<ConnectFailReason, Long> = emptyMap(),
         val btLinksEstablished: Long = 0,
+        val nanServesPeak: Long = 0,
+        val nanAcceptsRefused: Long = 0,
     )
 }
