@@ -266,6 +266,23 @@ changes is the NDI lifecycle, which stops being "one link at a time + a session 
    `ServerSocket` is reachable from any network), `driveSync` round-robin instead of HashMap-order
    `firstOrNull`, optional fixed 32-byte `setPmk` instead of the passphrase (skips per-NDP derivation,
    same public-constant security).
+7. **Initiator-side fast-fail churn gate (fix #3)** — **✅ implemented + fleet-validated 2026-07-04.** A *fast*
+   `onUnavailable` is ambiguous between a genuinely stale subscribe handle (peer restarted → re-discover for a
+   fresh one) and a present peer whose responder is wedged/contended (handle fine → re-discovering yields an
+   identical handle that fails the same way, and the repeated subscribe re-arm it drives is that session's own
+   wedge trigger). Treating *every* fast fail as stale drove the discover→initiate→fast-fail→re-arm livelock
+   (churned subscribe + 2.4 GHz airtime, never linked). `NanConnectPolicy` (pure, JVM-tested) discriminates by
+   the **consecutive fast-fail streak**: the 1st is treated as stale (drop + re-arm); a 2nd+ *consecutive*
+   fast-fail means the fresh handle failed too, so **keep** the handle (stops it driving the re-arm) and let a
+   geometric backoff (2→4→…→60 s, capped at ~the Tier-1 responder self-heal window) + peer-side recovery clear
+   it. Reset on link-up / peer absence. **Restart drill (3 Pixels, NAN-only, restart the smallest = everyone's
+   responder):** a genuine single-initiator restart reaches streak 1 (occasionally 2, on a ±50 ms
+   responder-readiness race) and **always relinks** — the streak≥2 branch never strands a benign restart (the
+   kept handle is valid, and the peer's digest-change SSI cue passively re-MATCHes it), so the gate only
+   suppresses genuine churn; the streak=6 never-links livelock needs a *chronically-diverged* contended peer.
+   Also drops the flat 10 s post-fail backoff to a 2 s base → restart reconnection fell from ~13 s to ~4 s.
+   Lands with the P6 post-overnight hardening (two-tier wedge watchdog self-heal before process-kill; BLE
+   scanner/advertiser re-acquire on adapter cycle).
 
 **Wire/compat:** none of this touches the wire or the cue format — `SERVICE_NAME` stays `.v6`. Topology
 becomes an emergent property of the same tie-break: every node holds ≤1 outbound (to a smaller,

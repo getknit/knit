@@ -236,6 +236,13 @@ class WifiAwareTransport(
     private val discovered = HashMap<String, DiscoveredPeer>()
     private val retryAfter = HashMap<String, Long>()
 
+    // Consecutive *fast* (stale-signature) handshake failures per peer — the fix-#3 churn gate ([NanConnectPolicy]).
+    // The 1st fast-fail is treated as a genuinely stale handle (drop + re-discover — a real restart links on the
+    // fresh handle first-try, field-drilled 2026-07-04); a 2nd+ means the fresh handle failed too (peer-side
+    // wedge/contention), so we keep the handle (stops it driving the re-arm) and back off geometrically. Reset on
+    // link-up and on the peer going absent ([pruneAbsentPeers]).
+    private val failStreak = HashMap<String, Int>()
+
     // elapsedRealtime of the last initiate attempt per peer, so driveSync picks the least-recently-attempted
     // eligible target instead of HashMap iteration order (which starves a peer under contention).
     private val lastInitiateAttemptAt = HashMap<String, Long>()
@@ -578,6 +585,7 @@ class WifiAwareTransport(
             inFlight.clear()
             discovered.clear()
             retryAfter.clear()
+            failStreak.clear()
             lastInitiateAttemptAt.clear()
             accepting = 0
         }
@@ -1645,6 +1653,7 @@ class WifiAwareTransport(
         synchronized(lock) {
             inFlight.remove(peerNodeId)
             retryAfter.remove(peerNodeId)
+            failStreak.remove(peerNodeId) // link formed → reset the fast-fail streak
         }
         framed.start() // launches read + write loops; stamps linkStartedAt/lastActivityAt at link-up
         conn.reaperJob = scope.launch { superviseLink(conn) }
@@ -1734,19 +1743,37 @@ class WifiAwareTransport(
         staleHandle: Boolean,
     ) {
         runCatching { connectivity.unregisterNetworkCallback(callback) }
-        synchronized(lock) {
-            inFlight.remove(peerNodeId)
-            retryAfter[peerNodeId] = SystemClock.elapsedRealtime() + CONNECT_BACKOFF_MS
-            // A *fast* failure means this subscribe handle is dead (the peer restarted): drop it so
-            // needsRediscovery re-arms subscribe for a fresh one. A slow (contention) failure keeps the handle
-            // — the peer was just busy on its one NDI, and its responder re-attaches after serving to free up.
-            if (staleHandle) discovered.remove(peerNodeId)
-        }
+        val streak =
+            synchronized(lock) {
+                inFlight.remove(peerNodeId)
+                if (staleHandle) {
+                    // Fast (stale-signature) failure — ambiguous between a genuinely stale handle (peer restarted)
+                    // and a peer whose responder is wedged/busy on its one NDI (handle fine). [NanConnectPolicy]
+                    // discriminates by the consecutive-fast-fail streak: the 1st is treated as stale → drop it so
+                    // needsRediscovery re-arms subscribe for a fresh one (a real restart links on that fresh handle
+                    // first-try — field-drilled 2026-07-04, 8/8, so the streak tops out at 1). A 2nd+ consecutive
+                    // fast-fail means the *fresh* handle failed identically → the fault is the peer's responder, so
+                    // KEEP the handle (it stays in `discovered`, which stops it driving the subscribe re-arm whose
+                    // repeated close/reopen is that session's own wedge trigger) and let the geometric backoff +
+                    // peer-side recovery clear it. The wedge watchdog ([checkWedge]) still backstops a sync owed
+                    // with no link. See docs/NAN_CONCURRENCY_REAUDIT.md.
+                    val s = (failStreak[peerNodeId] ?: 0) + 1
+                    failStreak[peerNodeId] = s
+                    retryAfter[peerNodeId] = SystemClock.elapsedRealtime() + NanConnectPolicy.backoffMs(s)
+                    if (NanConnectPolicy.dropHandleOnFastFail(s)) discovered.remove(peerNodeId)
+                    s
+                } else {
+                    // Slow (contention) or post-NDP failure: the handle is fine, the peer was just busy on its one
+                    // NDI. Keep it, use the flat contention backoff, and leave the fast-fail streak untouched.
+                    retryAfter[peerNodeId] = SystemClock.elapsedRealtime() + CONNECT_BACKOFF_MS
+                    failStreak[peerNodeId] ?: 0
+                }
+            }
         // A persistently un-formable data plane despite a sync being owed is caught by the wedge watchdog
         // ([checkWedge]) — we no longer nudge the peer to re-attach (that hint was net-negative: it can't clear
         // a leaked responder requestNetwork, and its churn during a wedge is what leaked one).
         noteLinkEnded() // yield to a different sync-wanted peer once the radio settles
-        Log.i(TAG, "handshake with $peerNodeId ended without a link (stale=$staleHandle)")
+        Log.i(TAG, "handshake with $peerNodeId ended without a link (stale=$staleHandle streak=$streak)")
     }
 
     private fun teardownPeer(
@@ -1951,6 +1978,7 @@ class WifiAwareTransport(
                 cueTarget.remove(nodeId)
                 reachablePeers.remove(nodeId)
                 digestTracker.forget(nodeId)
+                synchronized(lock) { failStreak.remove(nodeId) } // gone → fresh streak when it returns
             }
     }
 
