@@ -281,7 +281,10 @@ frames.
   (`suppressDataPath`), and converged custody digests make `reconcileWanted` false — so
   `childHoldingLinkTo` only ever finds BLE and a naive "prefer NAN in `sendFile`" silently falls back
   ~always, leaving images to crawl over untuned L2CAP. The fix: `CompositeMeshTransport.sendFile`
-  (ATTACHMENT ≥ `BULK_MIN_BYTES` = 256 KiB only) and `MeshManager.deliverChat` (at `blobExchange.want`)
+  (ATTACHMENT only; any size rides an already-live NAN link, and one ≥ `BULK_MIN_BYTES` = 128 KiB also
+  arms a bring-up — the gate compares the **transcoded wire blob**, not the user's source file: a 1-5 MB
+  GIF lands at ~150-250 KB as a 480px q70 animated WebP, which is how the original 256 KiB gate quietly
+  routed "large GIFs" over BLE) and `MeshManager.deliverChat` (at `blobExchange.want`)
   call `MeshTransport.expectBulkTransfer` on **both** sides of the pair — the requester marks the author,
   the serving side marks the requester; only the larger nodeId can initiate, so whichever side that is has
   a mark — which arms a TTL'd `BulkWantTracker` that `WifiAwareTransport.syncWanted` ORs in ahead of the
@@ -297,9 +300,13 @@ frames.
   `sendFile` now returns enqueue-acceptance so a link that died in the check→enqueue window falls back
   instead of silently dropping the file, and `BlobExchange` keeps a per-(hash, peer) 45 s serve memo so
   the re-ask storm around a slow transfer (60 s re-offer, post-link-up `onNeighborAdded`) can't ship a
-  second full copy (field-verified: the late-NDP re-ask after a BLE fallback is real, and the memo ate it). Frames, digests, avatars, and sub-256 KiB blobs keep the BLE-first route byte-for-byte.
-  Verify with the `FramedLink` `file ATTACHMENT/<hash> <N>B in <ms>ms` log line and `filesNan`/`filesBt`/
-  `bulkTimeouts` in `…debug.STATE`; `bulkTimeouts` climbing much faster than `filesNan` means ghosts are
+  second full copy (field-verified: the late-NDP re-ask after a BLE fallback is real, and the memo ate it).
+  Frames, digests, avatars, and (when no NAN link is already up) sub-128 KiB blobs keep the BLE-first
+  route byte-for-byte. Every routing decision logs `file route: <kind>/<key> <N>B → <peer> <choice+why>`
+  (tag `CompositeMeshTransport`) and every arm accept/reject logs `bulk arm <peer> …` (tag
+  `WifiAwareTransport`), so "why did this ride BLE" is one grep away; the `FramedLink`
+  `file ATTACHMENT/<hash> <N>B in <ms>ms` line gives the per-plane timing, and `filesNan`/`filesBt`/
+  `bulkTimeouts` ride `…debug.STATE`. `bulkTimeouts` climbing much faster than `filesNan` means ghosts are
   being armed.
 - **The BLE scan is demand-gated, and a *settled* clique used to scan continuously.** `BluetoothMeshTransport.scanLoop`
   duty-cycles the scan, but `onScanResult` pokes the loop's wake channel on **every** sighting — *including

@@ -56,7 +56,9 @@ val meshModule =
                             add(WifiAwareTransport(ctx, get(), get(), get(), get(), get()))
                         }
                     }
-                CompositeMeshTransport(children, get(), get())
+                CompositeMeshTransport(children, get(), get()) { msg ->
+                    android.util.Log.d("CompositeMeshTransport", msg)
+                }
             }
         }
         // The E2E message cipher, built from this device's identity private keysets.

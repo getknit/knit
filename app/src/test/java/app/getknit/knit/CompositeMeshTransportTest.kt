@@ -406,17 +406,31 @@ class CompositeMeshTransportTest {
         }
 
     @Test
-    fun smallAttachmentKeepsTheBluetoothFirstRoute() =
+    fun smallAttachmentRidesAnAlreadyLiveFastLink() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild()
+            val nan = FakeChild(highThroughput = true)
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            nan.setNeighbors(Peer("p")) // a link that's already up costs nothing — any size rides it
+            advanceUntilIdle()
+
+            composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES - 1), Peer("p"), bigAttachment())
+            assertEquals("live fast link carries any attachment size", 1, nan.sentFiles.size)
+            assertTrue(bt.sentFiles.isEmpty() && nan.expectBulkCalls.isEmpty())
+        }
+
+    @Test
+    fun smallAttachmentNeverArmsTheFastPlane() =
         runTest(UnconfinedTestDispatcher()) {
             val bt = FakeChild()
             val nan = FakeChild(highThroughput = true).apply { armBulk = true }
             val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
-            bt.setNeighbors(Peer("p"))
-            nan.setNeighbors(Peer("p"))
+            bt.setNeighbors(Peer("p")) // fast plane not linked — a small blob must not raise an NDP for it
             advanceUntilIdle()
 
             composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES - 1), Peer("p"), bigAttachment())
-            assertEquals("below the size gate BLE finishes before an NDP would even form", 1, bt.sentFiles.size)
+            assertEquals("below the arm gate BLE finishes before an NDP would even form", 1, bt.sentFiles.size)
             assertTrue(nan.sentFiles.isEmpty() && nan.expectBulkCalls.isEmpty())
         }
 

@@ -48,6 +48,8 @@ class CompositeMeshTransport(
     private val children: List<MeshTransport>,
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics? = null,
+    // Injected logger (the class stays Android-free): DI passes android.util.Log; tests default silent.
+    private val log: (String) -> Unit = {},
 ) : MeshTransport {
     override val hasFastPlane: Boolean = children.any { it.hasFastPlane }
 
@@ -209,15 +211,18 @@ class CompositeMeshTransport(
     }
 
     /**
-     * Files route like frames — preference-order link holder — EXCEPT large attachment blobs (≥
-     * [BULK_MIN_BYTES]), which prefer the [highThroughput] plane: ride its live link if one exists, else arm
-     * its on-demand bring-up ([expectBulkTransfer]) and wait ≤ [BULK_GRACE_MS] for the link **off the
+     * Files route like frames — preference-order link holder — EXCEPT attachment blobs, which prefer the
+     * [highThroughput] plane: ANY attachment rides its live link when one exists (a link that's already up
+     * costs nothing extra, and an NDP moves it orders of magnitude faster than L2CAP), and a **large** one
+     * (≥ [BULK_MIN_BYTES] — the size of the transcoded wire blob, NOT the user's source file) additionally
+     * arms an on-demand bring-up ([expectBulkTransfer]) and waits ≤ [BULK_GRACE_MS] for the link **off the
      * caller's coroutine** (sendFile is invoked inline from the serial inbound dispatch — the router's
-     * single collector — so suspending here would stall every frame on both radios), then fall back to the
+     * single collector — so suspending here would stall every frame on both radios), then falls back to the
      * link holder (Bluetooth). Each invocation resolves to exactly one route, so a file is never sent twice;
      * a child refusing the enqueue (link died in the check→enqueue window) falls back the same way instead
-     * of silently losing the file. Below the size gate the NDP setup (~1-4 s) costs more than BLE's whole
-     * transfer, so small blobs — and avatars/digests — keep today's path byte-for-byte.
+     * of silently losing the file. Below the size gate the NDP *setup* (~1-4 s) costs more than BLE's whole
+     * transfer, so small blobs don't arm — and avatars/digests keep today's path byte-for-byte. Every
+     * decision is logged (`file route: …`) so "which plane and why" is one grep away.
      */
     override suspend fun sendFile(
         file: File,
@@ -225,21 +230,39 @@ class CompositeMeshTransport(
         meta: FileMeta,
     ): Boolean {
         val fast = children.firstOrNull { it.highThroughput }
-        if (meta.kind != FileKind.ATTACHMENT || fast == null || file.length() < BULK_MIN_BYTES) {
+        if (meta.kind != FileKind.ATTACHMENT || fast == null) {
             return childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta) ?: false
         }
+        val tag = "${meta.kind}/${meta.key} ${file.length()}B → ${to.nodeId}"
         if (fast.neighbors.value.any { it.nodeId == to.nodeId }) {
-            // Fast link already up (e.g. a custody sync in flight) — ride it; fall back on a teardown race.
+            // Fast link already up (e.g. a custody sync in flight) — ride it whatever the size; fall back
+            // on a teardown race.
+            log("file route: $tag over fast link")
             return fast.sendFile(file, to, meta) ||
                 (childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta) ?: false)
         }
-        if (!fast.expectBulkTransfer(to.nodeId)) {
-            // Peer isn't fresh on the fast plane (or its marking is cooling down) — don't wait for a link
-            // that won't come.
+        // A small blob isn't worth RAISING an NDP for (BLE finishes before the setup would); a big one
+        // arms the on-demand bring-up unless the fast plane declines (stale sighting / cooldown / off).
+        val small = file.length() < BULK_MIN_BYTES
+        if (small || !fast.expectBulkTransfer(to.nodeId)) {
+            log("file route: $tag ${if (small) "below ${BULK_MIN_BYTES}B arm gate" else "fast plane won't arm"} — link holder")
             return childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta) ?: false
         }
         // Armed: whichever side of the pair is larger initiates the data path (both sides mark — the
         // requester at pull time, this serve side here). Wait for it detached, then send exactly once.
+        log("file route: $tag armed — waiting ≤${BULK_GRACE_MS}ms for the fast link")
+        awaitFastLinkThenSend(fast, file, to, meta, tag)
+        return true // scheduled: the waiter commits to exactly one plane (or drops if the peer left)
+    }
+
+    /** The armed-grace tail of [sendFile], detached so the serial inbound dispatch never suspends on it. */
+    private fun awaitFastLinkThenSend(
+        fast: MeshTransport,
+        file: File,
+        to: Peer,
+        meta: FileMeta,
+        tag: String,
+    ) {
         scope.launch {
             val linked =
                 withTimeoutOrNull(BULK_GRACE_MS) {
@@ -247,9 +270,13 @@ class CompositeMeshTransport(
                 } != null
             if (!linked) metrics?.onBulkGraceTimeout()
             val overFast = linked && fast.sendFile(file, to, meta)
-            if (!overFast) childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta)
+            if (overFast) {
+                log("file route: $tag over fast link after grace")
+            } else {
+                log("file route: $tag ${if (linked) "fast enqueue refused" else "grace expired"} — link holder")
+                childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta)
+            }
         }
-        return true // scheduled: the waiter above commits to exactly one plane (or drops if the peer left)
     }
 
     override suspend fun sendDigest(
@@ -312,9 +339,12 @@ class CompositeMeshTransport(
         // failing handshake falls back here rather than shadowing it.
         const val BULK_GRACE_MS = 10_000L
 
-        // Attachments below this ride the normal (Bluetooth-first) route: for a small blob, BLE finishes in
-        // ~2-3 s — less than the NDP setup it would replace — and skipping the fast plane spares the single
-        // NDI the per-file bring-up/teardown churn. User-tuned: typical 1280px photos sit well above it.
-        const val BULK_MIN_BYTES = 256L * 1024
+        // Attachments below this don't ARM an on-demand fast-plane link (they still ride one that's already
+        // up): for a small blob, BLE finishes in ~2-3 s — less than the NDP setup it would replace — and
+        // skipping the arm spares the single NDI the per-file bring-up/teardown churn. Compared against the
+        // TRANSCODED wire blob, not the user's source file — a 1-5 MB GIF lands at ~150-250 KB as a 480px
+        // q70 animated WebP (field-observed 176/233 KB), which is why the original 256 KiB gate routed
+        // "large GIFs" over BLE. 128 KiB captures those while stickers/thumbnails stay on BLE.
+        const val BULK_MIN_BYTES = 128L * 1024
     }
 }

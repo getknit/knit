@@ -645,11 +645,21 @@ class WifiAwareTransport(
      * SETTLE, and the initiator tie-break all unchanged.
      */
     override fun expectBulkTransfer(nodeId: String): Boolean {
-        if (!hasHardware || session == null) return false
+        if (!hasHardware || session == null) {
+            Log.d(TAG, "bulk arm $nodeId: refused (no session)")
+            return false
+        }
         if (peers.containsKey(nodeId)) return true // already linked — nothing to arm
-        val fresh = lastSeenAt[nodeId]?.let { SystemClock.elapsedRealtime() - it <= BULK_FRESH_MS } == true
-        if (!fresh || !cueTarget.containsKey(nodeId)) return false
-        if (!bulkWanted.note(nodeId)) return false // post-failure cooldown / cap
+        val ageMs = lastSeenAt[nodeId]?.let { SystemClock.elapsedRealtime() - it }
+        if (ageMs == null || ageMs > BULK_FRESH_MS || !cueTarget.containsKey(nodeId)) {
+            Log.d(TAG, "bulk arm $nodeId: refused (sighting ${ageMs ?: "never"}ms old, cue=${cueTarget.containsKey(nodeId)})")
+            return false
+        }
+        if (!bulkWanted.note(nodeId)) {
+            Log.d(TAG, "bulk arm $nodeId: refused (post-failure cooldown / cap)")
+            return false
+        }
+        Log.d(TAG, "bulk arm $nodeId (seen ${ageMs}ms ago)")
         healSignal.trySend(Unit) // re-evaluate driveSync now instead of waiting out the idle tick
         return true
     }

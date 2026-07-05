@@ -102,12 +102,14 @@ Implementations:
   (merging `neighbors`/`reachable`/`health`/`inbound` by nodeId, preferring Bluetooth for sends), so
   `MeshManager`/`MeshRouter` stay radio-agnostic. DI (`di/MeshModule.kt`) gates each child on hardware
   support, so a device with only one radio runs that plane alone. One deliberate exception to the
-  Bluetooth-first rule: an **ATTACHMENT ≥ 256 KiB prefers the `highThroughput` plane** (a NAN NDP moves
-  megabytes in under a second vs. L2CAP's seconds-to-minutes) — riding a live NAN link if one exists,
-  else arming an on-demand bring-up via `expectBulkTransfer` and grace-waiting ≤ 10 s (off the inbound
-  dispatch coroutine) before falling back to Bluetooth. See the AGENTS.md gotcha for why a plain routing
-  preference is not enough (steady-state digest parity + BLE suppression) and why the bulk mark must stay
-  out of the NAN recovery machinery.
+  Bluetooth-first rule: **ATTACHMENTs prefer the `highThroughput` plane** (a NAN NDP moves megabytes in
+  under a second vs. L2CAP's seconds-to-minutes) — any size rides a live NAN link if one exists, and one
+  ≥ 128 KiB (`BULK_MIN_BYTES`, compared against the **transcoded wire blob**, not the picked file — a
+  multi-MB GIF lands at ~150-250 KB as a 480px animated WebP) additionally arms an on-demand bring-up
+  via `expectBulkTransfer` and grace-waits ≤ 10 s (off the inbound dispatch coroutine) before falling
+  back to Bluetooth. Every decision logs a `file route: …` line under the `CompositeMeshTransport` tag.
+  See the AGENTS.md gotcha for why a plain routing preference is not enough (steady-state digest parity
+  + BLE suppression) and why the bulk mark must stay out of the NAN recovery machinery.
 - **`FakeLoopTransport`** / **`DemoTransport`** — in-process doubles for JVM tests and the demo build;
   `FakeLoopTransport.connect()` wires instances into an arbitrary topology so a multi-hop mesh (relay,
   blob pulls, custody) runs on the JVM with no radios.
