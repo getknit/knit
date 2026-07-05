@@ -473,7 +473,7 @@ fun ChatScreen(
                     val applied = pendingMentions.filter { text.contains("@${it.name}") }
                     // Don't clear here: a message blocked for abuse must keep the draft. The ViewModel
                     // emits clearInput only once a message is actually accepted (see the collector above).
-                    viewModel.send(text, applied)
+                    viewModel.send(text, applied, replyingTo)
                 },
             )
         },
