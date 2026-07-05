@@ -809,27 +809,6 @@ class MeshManager(
     }
 
     /**
-     * Whether [env] should *also* ride the [MeshTransport.fastFanout] coordination-plane fast path — a
-     * best-effort fan-out to every neighbor at once with **no data path** — on top of the normal flood and
-     * store-and-forward custody. It's for small, flood-to-everyone frames: the plaintext broadcast room plus the
-     * cleartext metadata frames (reactions, delivery receipts, group roster updates/leaves, profiles) — exactly
-     * the non-chat [FrameType.isCustodial] types. In an idle cue-driven mesh no NDP is up, so a plain flood
-     * reaches the ≤1 live neighbor (usually zero); the fast path delivers to every neighbor at once and custody
-     * backstops any peer that was away. Reused on both origination ([originateSigned]) and relay ([onDeliver]),
-     * so a frame hops the mesh at message-plane speed rather than only one hop from the originator. E2E DM/group
-     * *chat* frames are excluded (the broadcast-only arm): they carry wrapped keys and won't fit the ~255 B
-     * channel, so they ride the NDP flood + custody. The transport still size-gates (no-op if a frame won't
-     * fit), and the receiver's SeenSet dedups any copy that also arrives over the flood/custody backstop.
-     */
-    private fun shouldFastFanout(env: RelayEnvelope): Boolean =
-        when (env.type) {
-            FrameType.CHAT -> env.recipientId == null && env.group == null
-
-            // broadcast room only (DM/group are E2E)
-            else -> FrameType.isCustodial(env.type) // reaction/receipt/group-*/profile; blobreq/keyreq excluded
-        }
-
-    /**
      * Wraps [env] in a signed [WireEnvelope]: the canonical envelope bytes plus our raw Ed25519 signature
      * over exactly those bytes (so every relay reproduces them verbatim and the signature holds mesh-wide).
      */
@@ -1913,15 +1892,6 @@ class MeshManager(
         // Min spacing between first-contact profile floods (watchReachable): a burst of newcomers costs one
         // origination; custody + the per-link pushProfileTo cover anyone the coalesced flood skipped.
         const val PROFILE_REFLOOD_MIN_MS = 30_000L
-
-        /**
-         * Pull-time soft cap on bytes held *purely* to custody other peers' images (a carried frame references
-         * them but no local message does — see [BlobDao.carrierOnlyBlobBytes]). Our own/received images are
-         * uncapped (kept via their message row); this bounds only the altruistic relay footprint. Because these
-         * blobs are NOT folded into the content digest, this is a purely local knob and need not match across
-         * nodes, so it can later be made adaptive to free storage without any convergence risk.
-         */
-        const val CARRIER_BLOB_BUDGET_BYTES = 128L * 1024 * 1024
 
         /** Payload for a frame whose content lives entirely in the routing envelope (e.g. a group update). */
         val EMPTY_PAYLOAD = ByteArray(0)

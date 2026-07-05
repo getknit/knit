@@ -18,8 +18,8 @@ import kotlinx.coroutines.flow.map
  */
 class SettingsStore(
     private val dataStore: DataStore<Preferences>,
-) {
-    val displayName: Flow<String> = dataStore.data.map { it[KEY_NAME] ?: "" }
+) : InboundSettings {
+    override val displayName: Flow<String> = dataStore.data.map { it[KEY_NAME] ?: "" }
     val status: Flow<String> = dataStore.data.map { it[KEY_STATUS] ?: "" }
 
     /** Bumped whenever the avatar image changes, so profile re-broadcasts can be triggered. */
@@ -38,7 +38,7 @@ class SettingsStore(
      * encrypted `blobs` table keyed by this hash; the hash is what the profile frame advertises and
      * what the UI/notifications resolve against. (Pre-v6 this was derived from the avatar's filename.)
      */
-    val ownAvatarHash: Flow<String?> = dataStore.data.map { it[KEY_OWN_AVATAR_HASH] }
+    override val ownAvatarHash: Flow<String?> = dataStore.data.map { it[KEY_OWN_AVATAR_HASH] }
 
     /**
      * Per-conversation read watermarks: for each conversation id, the [MessageEntity.sentAt] of the
@@ -65,7 +65,7 @@ class SettingsStore(
      * regenerates its identity key (e.g. a reinstall that drops `identity.key`) gets a fresh id and is
      * no longer matched — the cost of binding identity to the key rather than the device.
      */
-    val blockedNodeIds: Flow<Set<String>> = dataStore.data.map { it[KEY_BLOCKED] ?: emptySet() }
+    override val blockedNodeIds: Flow<Set<String>> = dataStore.data.map { it[KEY_BLOCKED] ?: emptySet() }
 
     /**
      * Device tags (see [app.getknit.knit.identity.DeviceTag]) the user has blocked. Because a nodeId is
@@ -73,7 +73,7 @@ class SettingsStore(
      * device tag is key-independent, so `MeshManager.handleProfile` re-blocks the new id when the tag
      * matches. Maintained alongside [blockedNodeIds] by [block]/[unblock].
      */
-    val blockedDeviceTags: Flow<Set<String>> = dataStore.data.map { it[KEY_BLOCKED_TAGS] ?: emptySet() }
+    override val blockedDeviceTags: Flow<Set<String>> = dataStore.data.map { it[KEY_BLOCKED_TAGS] ?: emptySet() }
 
     /**
      * Whether to hide sensitive content received from others. Defaults to on. Gates receive-side hiding
@@ -83,7 +83,7 @@ class SettingsStore(
      * run regardless, so toggling this flips already-received content's blur/collapse reactively without
      * re-scanning.
      */
-    val contentFilteringEnabled: Flow<Boolean> =
+    override val contentFilteringEnabled: Flow<Boolean> =
         dataStore.data.map { it[KEY_CONTENT_FILTERING] ?: true }
 
     /**
@@ -128,13 +128,15 @@ class SettingsStore(
     ) = dataStore.edit { it[lastReadKey(conversationId)] = value }
 
     /** Blocks [nodeId]; also records the peer's [deviceTag] (when known) so the block survives a key reset. */
-    suspend fun block(
+    override suspend fun block(
         nodeId: String,
-        deviceTag: String? = null,
-    ) = dataStore.edit { prefs ->
-        prefs[KEY_BLOCKED] = (prefs[KEY_BLOCKED] ?: emptySet()) + nodeId
-        if (deviceTag != null) {
-            prefs[KEY_BLOCKED_TAGS] = (prefs[KEY_BLOCKED_TAGS] ?: emptySet()) + deviceTag
+        deviceTag: String?,
+    ) {
+        dataStore.edit { prefs ->
+            prefs[KEY_BLOCKED] = (prefs[KEY_BLOCKED] ?: emptySet()) + nodeId
+            if (deviceTag != null) {
+                prefs[KEY_BLOCKED_TAGS] = (prefs[KEY_BLOCKED_TAGS] ?: emptySet()) + deviceTag
+            }
         }
     }
 
