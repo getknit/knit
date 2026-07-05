@@ -71,7 +71,9 @@ object PromotionPolicy {
 data class PromotionConfig(
     /** Continuous presence before promoting — filters out passers-by. */
     val dwellThresholdMs: Long = 12_000,
-    /** Smoothed-RSSI floor ("same space") in dBm; below this a peer is never promoted. */
+    /** Smoothed-RSSI floor (edge of usable BLE range) in dBm; below this a peer is never promoted. BLE
+     *  reaches further than NAN's NDP, so this is set generously — it excludes only genuinely poor signals
+     *  rather than gating to same-room proximity. */
     val rssiFloorDbm: Int = DEFAULT_RSSI_FLOOR_DBM,
     /** Connection budget: max simultaneous persistent Bluetooth links. */
     val maxLinks: Int = 6,
@@ -82,6 +84,8 @@ data class PromotionConfig(
 ) {
     private companion object {
         // A negative default can't be inlined without tripping MagicNumber, so it lives here as a named const.
-        const val DEFAULT_RSSI_FLOOR_DBM = -80
+        // -90 keeps a small margin above typical BLE 1M-PHY sensitivity (~-90..-95 dBm): broaden reach to the
+        // edge of usable range without churning connect-backoff on doomed sub-sensitivity attempts.
+        const val DEFAULT_RSSI_FLOOR_DBM = -90
     }
 }

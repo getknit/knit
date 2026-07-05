@@ -819,7 +819,9 @@ class BluetoothMeshTransport(
         private const val PROMOTE_CHASE_MS = 60_000L
 
         // The scan boosts only for peers the promotion policy could actually link — mirrors the default
-        // PromotionConfig.rssiFloorDbm (-80) so a fainter, un-promotable peer at the edge can't keep re-boosting it.
-        private const val PROMOTE_RSSI_FLOOR = -80.0
+        // PromotionConfig.rssiFloorDbm (-90) so a fainter, un-promotable peer at the edge can't keep re-boosting it.
+        // Set generously (BLE reaches further than NAN's NDP): broaden BLE reach to the edge of usable range and
+        // exclude only genuinely poor signals, rather than gating to same-room proximity.
+        private const val PROMOTE_RSSI_FLOOR = -90.0
     }
 }
