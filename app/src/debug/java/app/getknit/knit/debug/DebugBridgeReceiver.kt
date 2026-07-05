@@ -28,7 +28,7 @@ import app.getknit.knit.data.webp.WebpTranscode
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.ForwardStore
-import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.GroupInfo
@@ -101,7 +101,7 @@ import java.nio.ByteBuffer
 class DebugBridgeReceiver :
     BroadcastReceiver(),
     KoinComponent {
-    private val mesh: MeshManager by inject()
+    private val mesh: MeshController by inject()
     private val attachments: AttachmentStore by inject()
     private val messages: MessageRepository by inject()
     private val peers: PeerRepository by inject()

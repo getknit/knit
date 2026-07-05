@@ -10,7 +10,7 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
-import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.MeshController
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -37,7 +37,7 @@ data class Contact(
  */
 class ContactsViewModel(
     peers: PeerRepository,
-    meshManager: MeshManager,
+    meshManager: MeshController,
     private val identity: Identity,
     settings: SettingsStore,
     private val groups: GroupRepository,

@@ -99,7 +99,7 @@ class MeshManager(
     private val messageCrypto: MessageCrypto,
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
-) {
+) : MeshController {
     // Per-session scope for the collectors + metrics loop + router; cancelled in stop() so they don't
     // accumulate across start/stop cycles (e.g. a Diagnostics-triggered restart()).
     private var sessionScope: CoroutineScope? = null
@@ -216,16 +216,16 @@ class MeshManager(
      * over the coordination plane), not the ≤1 live data-path link, so the header doesn't blink as the
      * cue-driven transport rotates through ephemeral syncs.
      */
-    val neighborCount: StateFlow<Int> =
+    override val neighborCount: StateFlow<Int> =
         transport.reachable
             .map { it.size }
             .stateIn(scope, SharingStarted.Eagerly, 0)
 
     /** Nearby peers for the contact picker (message someone nearby) — the smoothed [MeshTransport.reachable] set. */
-    val neighbors: StateFlow<Set<Peer>> get() = transport.reachable
+    override val neighbors: StateFlow<Set<Peer>> get() = transport.reachable
 
     /** Radio health for the Diagnostics screen (Healthy vs Degraded — e.g. radios seized by Quick Share). */
-    val transportHealth: StateFlow<TransportHealth> get() = transport.health
+    override val transportHealth: StateFlow<TransportHealth> get() = transport.health
 
     /**
      * Per-radio status for the Diagnostics screen (Bluetooth vs Wi-Fi Aware: health + live-link/nearby counts),
@@ -233,23 +233,23 @@ class MeshManager(
      * always a [CompositeMeshTransport]; the fallback describes a single non-composite transport (demo/fakes) as
      * one entry.
      */
-    val transportStatuses: StateFlow<List<TransportStatus>> =
+    override val transportStatuses: StateFlow<List<TransportStatus>> =
         (transport as? CompositeMeshTransport)?.statuses
             ?: combine(transport.neighbors, transport.reachable, transport.health) { linked, nearby, health ->
                 listOf(TransportStatus(transport.kind, health, linked.size, nearby.size))
             }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     /** nodeId → the radios each node is reachable over, so Diagnostics can tag a connected node BLE / NAN. */
-    val peerTransports: StateFlow<Map<String, Set<TransportKind>>> =
+    override val peerTransports: StateFlow<Map<String, Set<TransportKind>>> =
         (transport as? CompositeMeshTransport)?.peerTransports
             ?: transport.reachable
                 .map { set -> set.associate { it.nodeId to setOf(transport.kind) } }
                 .stateIn(scope, SharingStarted.Eagerly, emptyMap())
 
     /** conversationId → the set of peers currently shown as "typing" there, for the chat UI. Ephemeral (TTL'd). */
-    val typing: StateFlow<Map<String, Set<String>>> get() = typingTracker.typing
+    override val typing: StateFlow<Map<String, Set<String>>> get() = typingTracker.typing
 
-    fun start() {
+    override fun start() {
         if (started) return
         started = true
         blobStore.clearTransfers() // drop any plaintext transfer temp files left by a previous session
@@ -274,7 +274,7 @@ class MeshManager(
         logMetricsPeriodically(session)
     }
 
-    fun stop() {
+    override fun stop() {
         if (!started) return
         started = false
         transport.stop()
@@ -289,7 +289,7 @@ class MeshManager(
     }
 
     /** Triggers an immediate rescan/reconnect (heartbeat alarm, device motion) and sweeps stale carry. */
-    fun heal() {
+    override fun heal() {
         if (!started) return
         transport.heal()
         // Piggyback the forward-store TTL sweep on the 15-min heartbeat so it runs while backgrounded.
@@ -307,7 +307,7 @@ class MeshManager(
     }
 
     /** Tears down and re-establishes the transport (e.g. after Bluetooth toggles back on). */
-    fun restart() {
+    override fun restart() {
         if (!started) return
         transport.stop()
         transport.start()
@@ -332,13 +332,13 @@ class MeshManager(
      * straight-line branches, not complex.
      */
     @Suppress("LongMethod")
-    suspend fun sendChat(
+    override suspend fun sendChat(
         text: String,
-        attachment: AttachmentStore.Ingested? = null,
-        mentions: List<Mention> = emptyList(),
-        recipientId: String? = null,
-        group: GroupInfo? = null,
-        replyTo: ReplyRef? = null,
+        attachment: AttachmentStore.Ingested?,
+        mentions: List<Mention>,
+        recipientId: String?,
+        group: GroupInfo?,
+        replyTo: ReplyRef?,
     ): Boolean {
         if (isTextFlagged(text, "outgoing", isRoom = recipientId == null && group == null)) return false
         val me = identity.nodeId()
@@ -501,7 +501,7 @@ class MeshManager(
      * members converge without waiting for the next message. The receiver applies it last-writer-wins on
      * the group-update frame's `sentAt`; the local store has already been updated by the caller.
      */
-    suspend fun sendGroupUpdate(group: GroupInfo) {
+    override suspend fun sendGroupUpdate(group: GroupInfo) {
         originateSigned(
             RelayEnvelope(
                 type = FrameType.GROUP_UPDATE,
@@ -520,7 +520,7 @@ class MeshManager(
      * the leaver is the signer, so a forged leave can't evict anyone else. Flooded once (not custodied),
      * like [sendGroupUpdate].
      */
-    suspend fun sendGroupLeave(groupId: String) {
+    override suspend fun sendGroupLeave(groupId: String) {
         val me = identity.nodeId()
         originateSigned(
             RelayEnvelope(
@@ -539,7 +539,7 @@ class MeshManager(
      * change is stored optimistically and propagates as a `reaction` frame; `sentAt` is the wall clock
      * used for last-writer-wins so concurrent reactors across the mesh converge.
      */
-    suspend fun sendReaction(
+    override suspend fun sendReaction(
         messageId: String,
         emoji: String,
     ) {
@@ -569,7 +569,7 @@ class MeshManager(
      * compact [TypingContent.groupId] for a group (not the heavy [RelayEnvelope.group] roster, which could blow
      * the coordination-plane size cap).
      */
-    suspend fun sendTyping(conversationId: String) {
+    override suspend fun sendTyping(conversationId: String) {
         val me = identity.nodeId()
         val kind = Conversations.kindFor(conversationId)
         val recipientId = if (kind == ConversationKind.DM) conversationId else null

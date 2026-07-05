@@ -35,7 +35,7 @@ import org.koin.android.ext.android.inject
  * The UI controls the mesh by starting/stopping it.
  */
 class MeshService : LifecycleService() {
-    private val meshManager: MeshManager by inject()
+    private val meshManager: MeshController by inject()
     private val powerMonitor: PowerMonitor by inject()
 
     private val sensorManager by lazy { getSystemService(SensorManager::class.java) }

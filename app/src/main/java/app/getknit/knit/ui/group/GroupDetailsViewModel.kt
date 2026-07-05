@@ -17,7 +17,7 @@ import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.groupTitle
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
-import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.ui.util.computeAvatarCrop
@@ -64,7 +64,7 @@ class GroupDetailsViewModel(
     private val groupId: String,
     private val groups: GroupRepository,
     peers: PeerRepository,
-    private val meshManager: MeshManager,
+    private val meshManager: MeshController,
     private val avatars: AvatarStore,
     private val blobs: BlobRepository,
     identity: Identity,

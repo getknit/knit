@@ -24,7 +24,7 @@ import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
-import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
@@ -132,7 +132,7 @@ class ChatViewModel(
     private val groups: GroupRepository,
     private val peers: PeerRepository,
     private val reactions: ReactionRepository,
-    private val meshManager: MeshManager,
+    private val meshManager: MeshController,
     private val identity: Identity,
     private val settings: SettingsStore,
     private val notifier: Notifier,

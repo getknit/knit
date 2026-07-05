@@ -6,7 +6,7 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
-import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.crypto.SafetyNumber
 import app.getknit.knit.mesh.crypto.VerifyPayload
 import kotlinx.coroutines.Dispatchers
@@ -52,7 +52,7 @@ data class ProfileDetailsUiState(
 class ProfileDetailsViewModel(
     private val nodeId: String,
     private val peers: PeerRepository,
-    meshManager: MeshManager,
+    meshManager: MeshController,
     private val settings: SettingsStore,
     identity: Identity,
 ) : ViewModel() {

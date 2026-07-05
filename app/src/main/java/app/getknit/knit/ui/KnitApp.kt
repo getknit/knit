@@ -22,7 +22,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.message.Conversations
-import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshService
 import app.getknit.knit.review.ReviewPrompter
 import app.getknit.knit.ui.blocked.BlockedUsersScreen
@@ -95,7 +95,7 @@ fun KnitApp(startRoute: String? = null) {
     // recovers quickly after another app (e.g. Quick Share) briefly seized the Nearby radios. heal()
     // no-ops when the mesh isn't running, so this is safe before onboarding; demo builds skip it.
     if (!BuildConfig.SEED_DEMO) {
-        val meshManager = koinInject<MeshManager>()
+        val meshManager = koinInject<MeshController>()
         val lifecycleOwner = LocalLifecycleOwner.current
         DisposableEffect(lifecycleOwner) {
             val observer =

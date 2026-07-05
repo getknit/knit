@@ -14,7 +14,7 @@ import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
-import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.protocol.GroupInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
@@ -36,7 +36,7 @@ import org.koin.core.component.inject
 class NotificationActionReceiver :
     BroadcastReceiver(),
     KoinComponent {
-    private val mesh: MeshManager by inject()
+    private val mesh: MeshController by inject()
     private val messages: MessageRepository by inject()
     private val groups: GroupRepository by inject()
     private val settings: SettingsStore by inject()

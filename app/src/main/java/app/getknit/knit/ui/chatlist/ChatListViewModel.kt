@@ -17,7 +17,7 @@ import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
-import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.TransportHealth
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -64,7 +64,7 @@ class ChatListViewModel(
     peers: PeerRepository,
     settings: SettingsStore,
     identity: Identity,
-    meshManager: MeshManager,
+    meshManager: MeshController,
     private val groups: GroupRepository,
     private val context: Context,
 ) : ViewModel() {

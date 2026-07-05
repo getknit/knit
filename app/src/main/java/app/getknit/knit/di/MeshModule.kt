@@ -6,6 +6,7 @@ import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.demo.DemoSeeder
 import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.DemoTransport
+import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
@@ -89,4 +90,7 @@ val meshModule =
                 get(),
             )
         }
+        // UI ViewModels, MeshService, and the notification/debug entry points bind this narrow facade (not
+        // the concrete orchestrator) so they can be tested against a fake; the same singleton backs both keys.
+        single<MeshController> { get<MeshManager>() }
     }

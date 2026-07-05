@@ -7,7 +7,7 @@ import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
-import app.getknit.knit.mesh.MeshManager
+import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
@@ -61,7 +61,7 @@ private data class DiagExtras(
  */
 class DiagnosticsViewModel(
     peers: PeerRepository,
-    private val meshManager: MeshManager,
+    private val meshManager: MeshController,
     identity: Identity,
     settings: SettingsStore,
     private val metrics: MeshMetrics,
