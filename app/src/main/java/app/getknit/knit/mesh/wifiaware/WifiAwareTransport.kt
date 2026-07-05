@@ -65,6 +65,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.net.ServerSocket
 import java.net.Socket
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -1481,7 +1482,7 @@ class WifiAwareTransport(
         synchronized(lock) { lastInitiateAttemptAt[peerNodeId] = SystemClock.elapsedRealtime() } // driveSync's LRU rotation key
         Log.i(TAG, "initiating to $peerNodeId")
         // The handle is a subscribe-session handle (from discovery); only that can initiate an NDP here.
-        val specifier = WifiAwareNetworkSpecifier.Builder(sub, peerHandle).setPskPassphrase(PSK).build()
+        val specifier = WifiAwareNetworkSpecifier.Builder(sub, peerHandle).setPmk(PMK).build()
         val request =
             NetworkRequest
                 .Builder()
@@ -1584,7 +1585,7 @@ class WifiAwareTransport(
         val specifier =
             WifiAwareNetworkSpecifier
                 .Builder(pub)
-                .setPskPassphrase(PSK)
+                .setPmk(PMK)
                 .setPort(ss.localPort)
                 .build()
         val request =
@@ -2158,12 +2159,16 @@ class WifiAwareTransport(
         // ".v5" added the DIGEST data-path record (a v4 node has no DIGEST case and drops the link on it); ".v6"
         // removed the coordination-plane re-attach hint (tag 0x02) — a clean cut so no .v5 node keeps spamming it;
         // ".v7" widened the nodeId to 128 bits (new base32 derivation) so a v6 node derives a different id and its
-        // signatures/pins would never verify — a clean discovery partition, coordinated with BLE SERVICE_UUID + DB.
-        const val SERVICE_NAME = "app.getknit.knit.MESH.v7"
+        // signatures/pins would never verify — a clean discovery partition, coordinated with BLE SERVICE_UUID + DB;
+        // ".v8" swapped NDP security from setPskPassphrase to a fixed setPmk (a v7 node's NDP setup would fail
+        // against it while discovery still matched — the silent-churn case the swap was deferred to avoid).
+        const val SERVICE_NAME = "app.getknit.knit.MESH.v8"
 
-        // Fixed app-wide passphrase for link-layer (NDP) encryption. Real authentication is the per-frame
-        // Ed25519 signature + E2E layer above the transport; this only keeps the data path off open air.
-        const val PSK = "knit-mesh-nan-psk-v1"
+        // Fixed app-wide 32-byte PMK for link-layer (NDP) encryption, passed via setPmk so the firmware skips
+        // the per-NDP passphrase→PMK PBKDF2 derivation (same security either way — both forms are public
+        // constants baked into the app). Real authentication is the per-frame Ed25519 signature + E2E layer
+        // above the transport; this only keeps the data path off open air.
+        val PMK: ByteArray = MessageDigest.getInstance("SHA-256").digest("knit-mesh-nan-pmk-v1".toByteArray())
 
         // 2.4 GHz for instant mode: better range than 5 GHz (range is priority #2), at some throughput cost.
         const val INSTANT_BAND = ScanResult.WIFI_BAND_24_GHZ

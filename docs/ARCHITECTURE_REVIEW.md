@@ -1,6 +1,8 @@
 # Knit — Architecture Review
 
 **Date:** 2026-07-04
+**Status updates:** findings **#1** (`3df428a`), **#2** (`7b2c6ba`), and **#3** (`e18b1f4`) have been
+fixed since the review was written; they are marked ✅ below.
 **Scope:** Full codebase (~25k LOC main across `mesh/`, `data/`, `ui/`, `moderation/`, `identity/`,
 `notifications/`; ~6.3k LOC / 50 JVM test files; ~1.8k lines of design docs). Reviewed against the
 intended design in `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/WIRE_COMPAT.md`,
@@ -49,9 +51,9 @@ defects; only where the code diverges from its own docs, or a consequence is uns
 
 | # | Severity | Area | Finding | Fix sketch |
 |---|----------|------|---------|-----------|
-| 1 | **High** | Correctness | Custody **TTL is non-convergent**: `expiresAt = localReceiveTime + ttl` (`ForwardRepository.kt:73`), not `sentAt + ttl`. Late joiners expire a frame hours after originators; a still-live peer re-serves a swept frame via the id-diff and it re-stores with a **fresh full TTL** (no tombstone for TTL-swept ids). Broadcast/group frames effectively never die mesh-wide while nodes keep meeting — contradicting the stated 6h/24h retention *and* the repo's own "digest-folded state must be bounded identically on every node" rule. | Use frame-global `expiresAt = sentAt + ttl`, or tombstone swept ids like `acked`. |
-| 2 | **High** | Security | **nodeId is ~41 bits** (`NodeId.kt`: 8 chars × 36-symbol alphabet = 36⁸ ≈ 2⁴¹·⁴). The self-certifying-identity model (`verifyInbound`, `canCarry`, TOFU pin) rests on "a colliding bundle is computationally infeasible" — false at 41 bits. Targeted second-preimage ≈ days on a modest GPU/CPU farm; birthday collision ≈ 2²¹ (trivial). | Widen nodeId to ≥128 bits of the digest (coordinated wire break — the repo already has a wire-break process). |
-| 3 | **High** | Correctness / robustness | Moderation model-load can **throw out of the inbound handler**: `MlTextModerator.loadEngine()` catches only `IOException`/`IllegalStateException` (`:96,98`), but `Interpreter(model)` throws `IllegalArgumentException` on a bad flatbuffer and `SentencePieceTokenizer.fromJson` throws serialization errors; `classify()` wraps only `infer()`, not the load. A corrupt/LFS-pointer model asset propagates through `dispatchByType` (unwrapped) out of `onDeliver`, violating the load-bearing "never throw → keep relaying" contract, and crashes the send path (`ChatViewModel.send` try/**finally**). | `catch (e: Exception)` around load; wrap load in the `runCatching`. |
+| 1 | **High** | Correctness | **✅ Fixed** (`3df428a`) — Custody **TTL is non-convergent**: `expiresAt = localReceiveTime + ttl` (`ForwardRepository.kt:73`), not `sentAt + ttl`. Late joiners expire a frame hours after originators; a still-live peer re-serves a swept frame via the id-diff and it re-stores with a **fresh full TTL** (no tombstone for TTL-swept ids). Broadcast/group frames effectively never die mesh-wide while nodes keep meeting — contradicting the stated 6h/24h retention *and* the repo's own "digest-folded state must be bounded identically on every node" rule. | Use frame-global `expiresAt = sentAt + ttl`, or tombstone swept ids like `acked`. |
+| 2 | **High** | Security | **✅ Fixed** (`7b2c6ba`) — **nodeId is ~41 bits** (`NodeId.kt`: 8 chars × 36-symbol alphabet = 36⁸ ≈ 2⁴¹·⁴). The self-certifying-identity model (`verifyInbound`, `canCarry`, TOFU pin) rests on "a colliding bundle is computationally infeasible" — false at 41 bits. Targeted second-preimage ≈ days on a modest GPU/CPU farm; birthday collision ≈ 2²¹ (trivial). | Widen nodeId to ≥128 bits of the digest (coordinated wire break — the repo already has a wire-break process). |
+| 3 | **High** | Correctness / robustness | **✅ Fixed** (`e18b1f4`) — Moderation model-load can **throw out of the inbound handler**: `MlTextModerator.loadEngine()` catches only `IOException`/`IllegalStateException` (`:96,98`), but `Interpreter(model)` throws `IllegalArgumentException` on a bad flatbuffer and `SentencePieceTokenizer.fromJson` throws serialization errors; `classify()` wraps only `infer()`, not the load. A corrupt/LFS-pointer model asset propagates through `dispatchByType` (unwrapped) out of `onDeliver`, violating the load-bearing "never throw → keep relaying" contract, and crashes the send path (`ChatViewModel.send` try/**finally**). | `catch (e: Exception)` around load; wrap load in the `runCatching`. |
 | 4 | **High** | Testing | The **security gate is untested**: `MeshManager` (1838 LOC) is never instantiated by any test; `FrameSignatureTest` only *mirrors* `sign`/`verifyInbound`. The real `verifyInbound → onDeliver → decryptAndDeliver → canCarry` pipeline and its no-throw contract can drift undetected. | Add a `FakeLoopTransport` + fake-repo integration test driving `verifyInbound`→`onDeliver` end-to-end (it's constructor-injectable). |
 | 5 | **High** | Testing | **Zero executing DAO/migration tests.** All eviction/orphan/GC SQL is verified only by a hand-mirrored `FakeForwardDao`; a comment (`ForwardRepositoryTest.kt:60`) claims "the instrumented DAO test" — **which does not exist**. `androidx-room-testing` is on the classpath but unused. | Robolectric + in-memory Room to execute the real queries; delete the stale claim. |
 | 6 | **High** | Release | **R8 fully disabled** (`build.gradle.kts:40-43`): demo/fake classes ship in the release APK, ~30 MB tflite + unshrunk Compose bloat the *shareable* APK, and a privacy-marketed app ships zero obfuscation. No `signingConfig`; `versionCode = 1`. | Decide the R8 story now (enable + author keep rules, or record why-not); force `SEED_DEMO=false` in the release buildType; add a signing config. |
@@ -130,7 +132,8 @@ These are genuinely excellent and worth protecting through any refactor:
 
 ### 4.1 Correctness
 
-**[#1, High] Non-convergent custody TTL.** Verified in `ForwardRepository.store`: `expiresAt` is
+**[#1, High] Non-convergent custody TTL.** *✅ Fixed in `3df428a`: expiry is now keyed off the
+frame-global `sentAt`, not the local receive time.* Verified in `ForwardRepository.store`: `expiresAt` is
 computed from the local `now` (line 73), while the frame-global `sentAt` (line 67) is stored but used
 only for eviction ordering. Because `ForwardSync.onSeen` has no tombstone for TTL-swept ids (its `acked`
 set covers only receipt-purged DMs), a frame that node A sweeps at its local expiry is re-offered by any
@@ -142,7 +145,9 @@ violates the very convergence rule the custody design is otherwise careful to ho
 most consequential correctness gap because it's subtle, untested (no staggered-TTL cross-node test
 exists), and contradicts a stated invariant.
 
-**[#3, High] Moderation can break the no-throw inbound contract.** Confirmed by reading
+**[#3, High] Moderation can break the no-throw inbound contract.** *✅ Fixed in `e18b1f4`: the load
+catch is broadened to `Exception` and the load call is wrapped in `runCatching` (absorbing Errors too),
+in both `MlTextModerator` and `NsfwImageModerator`.* Confirmed by reading
 `MlTextModerator.classify`/`loadEngine`: the load is not inside the `runCatching`, and its `catch`
 clauses miss the exception types a corrupt model/tokenizer actually throw. This only triggers on a
 broken asset (e.g. a git-LFS pointer checked out as the model, a truncated build) — but when it does, it
@@ -157,7 +162,9 @@ failure.
 
 ### 4.2 Security & privacy
 
-**[#2, High] Under-sized nodeId** is the foundational issue: two independent audits and a hand-check
+**[#2, High] Under-sized nodeId** *(✅ fixed in `7b2c6ba`: nodeId widened to 128 bits of SHA-256,
+base32-encoded, as a coordinated wire break — SERVICE_NAME/SERVICE_UUID/DB/Protocol.VERSION bumped in
+lockstep)* is the foundational issue: two independent audits and a hand-check
 agree the id space is ~2⁴¹. Everything downstream — the "race-proof TOFU" claim, `canCarry`, the pin —
 inherits this ceiling. The mitigations (safety-number/QR verification) are opt-in and, per **[#14]**,
 can be silently overwritten for an already-verified contact. Widening the id is the highest-leverage
@@ -298,8 +305,10 @@ a structural limit, not a bug, but worth stating.
 Ordered by value-to-effort, safe to tackle incrementally:
 
 **Now (cheap, high-value, low-risk):**
-1. Fix the moderation load-failure `catch` (#3) — one line, restores a load-bearing invariant.
-2. Make custody TTL frame-global or tombstone swept ids (#1) — restores a stated convergence guarantee.
+1. ✅ Fix the moderation load-failure `catch` (#3) — one line, restores a load-bearing invariant.
+   *Done in `e18b1f4`.*
+2. ✅ Make custody TTL frame-global or tombstone swept ids (#1) — restores a stated convergence
+   guarantee. *Done in `3df428a`.*
 3. Cap `KeyExchange`/`BlobExchange` bookkeeping and chunk keyreq batches; add a mesh-scope
    `CoroutineExceptionHandler` (#9).
 4. temp-file+rename the key/DB-key writes (#12); reset `verified` on any pinned-key change (#14).
@@ -315,8 +324,8 @@ Ordered by value-to-effort, safe to tackle incrementally:
 10. Extract an `InboundPipeline` from `MeshManager` and a UI read-facade (#8, #15).
 11. Pull the NAN "sync-owed" predicate family, watchdog clock, and cue codec into tested policies; land
     or remove the round-robin fairness change (#8).
-12. Widen the nodeId to ≥128 bits as a coordinated wire break (#2) — schedule alongside the next planned
-    wire bump.
+12. ✅ Widen the nodeId to ≥128 bits as a coordinated wire break (#2) — schedule alongside the next
+    planned wire bump. *Done in `7b2c6ba`.*
 13. Decide and execute the R8 story with real keep rules (#6); split `ChatScreen` and extract
     `ImageScreeningService` (#16).
 

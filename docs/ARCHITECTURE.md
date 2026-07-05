@@ -116,13 +116,14 @@ Implementations:
 
 ### 3.2 Wi-Fi Aware specifics (`mesh/wifiaware/WifiAwareTransport.kt`)
 
-- **Service `SERVICE_NAME = "app.getknit.knit.MESH.v7"`.** Each node `attach()`es once, then both
+- **Service `SERVICE_NAME = "app.getknit.knit.MESH.v8"`.** Each node `attach()`es once, then both
   **publishes and subscribes** the service. The device's **node id + version + caps**
   (`Protocol.advertise`) ride in the publish `serviceSpecificInfo`, so a subscriber learns a peer's
   identity on discovery with zero round-trips and rejects discovering itself. `SERVICE_NAME` is the
   transport marker: any breaking change to the cue or socket format (or the node-id derivation) bumps it
   — a **hard cut** (old and new builds simply don't discover each other), history `.v2`…`.v6` in
-  `docs/DIGEST_PULL_REATTACH.md`; `.v7` widened the node id to 128 bits (see §10).
+  `docs/DIGEST_PULL_REATTACH.md`; `.v7` widened the node id to 128 bits (see §10); `.v8` swapped NDP
+  security from the passphrase to a fixed 32-byte PMK (`setPmk`).
 - **One data interface → two planes.** Real chipsets (Pixel 7/8/9) report `maxNdiInterfaces == 1`, and
   each aware *network* needs its own NDI — so a node holds at most one **outbound** (initiator) NDP, and
   cannot mix roles concurrently. (The **accept-any responder** is one network that can officially serve
@@ -147,7 +148,8 @@ Implementations:
     down on quiescence — freeing the interface for the next pair. An idle mesh does **zero** data-path work.
 - **Accept-any responder handshake.** Since the responder accepts a data path from any initiator, the
   **initiator sends its advert as the first `LinkFraming.Type.HELLO` record** (`mesh/link/LinkHandshake`,
-  shared with BLE) so the responder learns who connected. A fixed app-wide PSK encrypts the link; real
+  shared with BLE) so the responder learns who connected. A fixed app-wide 32-byte PMK (`setPmk` — skips
+  the per-NDP passphrase→PMK derivation; same public-constant security) encrypts the link; real
   authentication is the per-frame signature + E2E layer above. Instant Communication Mode (API 33, when
   supported) speeds discovery + data-path bring-up for the brief-encounter (festival) case.
 - **Neighbor vs. reachable.** `neighbors` is the ≤1 live NDP link — the routing target for `send` /

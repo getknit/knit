@@ -258,13 +258,14 @@ changes is the NDI lifecycle, which stops being "one link at a time + a session 
    cue contact** (not only on link-up), and/or re-seed custody with the self-profile whenever the store is
    empty at startup. Profiles ≤255 B ride the fast plane; larger ones create the digest divergence that
    pulls a link up — either way the key exchange bootstraps without BLE.
-6. **Hygiene batch** (independent) — **✅ implemented 2026-07-04** (all but the PMK swap, deferred: changing
-   NDP security silently breaks setup against old builds while discovery still matches — parked for the next
-   `SERVICE_NAME` hard cut): capability-driven `COORD_MSG_MAX`
+6. **Hygiene batch** (independent) — **✅ implemented 2026-07-04** (the PMK swap landed separately
+   2026-07-05 as its own `SERVICE_NAME` hard cut, `.v8` — changing NDP security silently breaks setup
+   against old builds while discovery still matches, and the app is pre-release so the cut was free):
+   capability-driven `COORD_MSG_MAX`
    (`characteristics.maxServiceSpecificInfoLength`), `onMessageSendSucceeded/Failed` counters in
    `MeshMetrics`, reject accepted sockets whose remote address isn't IPv6 link-local (the wildcard
    `ServerSocket` is reachable from any network), `driveSync` round-robin instead of HashMap-order
-   `firstOrNull`, optional fixed 32-byte `setPmk` instead of the passphrase (skips per-NDP derivation,
+   `firstOrNull`, fixed 32-byte `setPmk` instead of the passphrase (skips per-NDP derivation,
    same public-constant security).
 7. **Initiator-side fast-fail churn gate (fix #3)** — **✅ implemented + fleet-validated 2026-07-04.** A *fast*
    `onUnavailable` is ambiguous between a genuinely stale subscribe handle (peer restarted → re-discover for a

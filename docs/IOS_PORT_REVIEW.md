@@ -105,8 +105,8 @@ AWDL — but its shape is incompatible with an open stranger-mesh:
   fast fan-out / fast-send path (`MSG_FRAME_TAG 0x01`), the reverse-handle bootstrap for pure
   responders, the 30 s heartbeat, and the wedge-watchdog corroboration all ride it. The passive SSI
   digest tail (`|d<version>`) is the only cue an iOS publisher could even theoretically emit.
-- **No raw-PSK data path.** Our NDP uses a fixed app-wide passphrase
-  (`setPskPassphrase("knit-mesh-nan-psk-v1")`); Apple derives NDP security from its pairing
+- **No raw-PSK data path.** Our NDP uses a fixed app-wide 32-byte PMK (`setPmk`, SHA-256 of
+  `"knit-mesh-nan-pmk-v1"`); Apple derives NDP security from its pairing
   ceremony. Even if discovery matched, the data paths wouldn't.
 - **Service-name format.** Info.plist `WiFiAwareServices` names are `_name._proto`, ≤15 chars,
   letters/numbers/dashes. `app.getknit.knit.MESH.v6` (24 chars, dots) can't be declared on iOS at
