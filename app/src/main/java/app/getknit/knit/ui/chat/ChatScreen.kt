@@ -138,6 +138,7 @@ import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.Popup
@@ -767,6 +768,16 @@ private fun MessageBubble(
                                         color = MaterialTheme.colorScheme.primary,
                                         textDecoration = TextDecoration.Underline,
                                     )
+                                // A short emoji-only message renders enlarged (Signal-style), scaling
+                                // down as the count grows. annotateMessageBody is a no-op on it (an
+                                // all-emoji body has no mentions/URLs), so the call stays shared.
+                                val bodyStyle =
+                                    when (emojiOnlyCount(row.body)) {
+                                        0 -> MaterialTheme.typography.bodyLarge
+                                        1 -> MaterialTheme.typography.bodyLarge.copy(fontSize = 44.sp, lineHeight = 52.sp)
+                                        in 2..3 -> MaterialTheme.typography.bodyLarge.copy(fontSize = 34.sp, lineHeight = 42.sp)
+                                        else -> MaterialTheme.typography.bodyLarge.copy(fontSize = 26.sp, lineHeight = 34.sp)
+                                    }
                                 Text(
                                     text =
                                         annotateMessageBody(
@@ -776,7 +787,7 @@ private fun MessageBubble(
                                             linkStyle,
                                             onLinkClick = { url -> openUrl(context, url) },
                                         ),
-                                    style = MaterialTheme.typography.bodyLarge,
+                                    style = bodyStyle,
                                 )
                             }
                         }
@@ -1879,6 +1890,33 @@ fun MessageBubbleWithMentionPreview() =
                     sentAt = PREVIEW_NOW - 60 * 60_000L,
                     received = false,
                     mentions = listOf(Mention(nodeId = "node-grace", name = "Grace")),
+                ),
+            now = PREVIEW_NOW,
+            showSenderName = true,
+            onImageClick = {},
+            onOpenProfile = {},
+            onReact = { _, _ -> },
+            onDelete = {},
+            onBlock = {},
+            onCopy = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun MessageBubbleEmojiPreview() =
+    KnitPreview {
+        MessageBubble(
+            row =
+                ChatRow(
+                    id = "m4",
+                    body = "😀",
+                    mine = false,
+                    senderName = "Ada Lovelace",
+                    senderNodeId = "node-ada",
+                    avatarHash = null,
+                    sentAt = PREVIEW_NOW - 3 * 60_000L,
+                    received = false,
                 ),
             now = PREVIEW_NOW,
             showSenderName = true,
