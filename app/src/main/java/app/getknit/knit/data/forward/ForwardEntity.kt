@@ -26,8 +26,11 @@ import androidx.room.PrimaryKey
  * eviction is origin-agnostic. [sentAt] is the originator's envelope clock (identical on every node), so
  * trimming each over-quota bucket to its newest-N *by [sentAt]* keeps every node's carried set — and hence its
  * content digest — convergent; without it a chatty originator (which used to bypass the quota outright) held
- * frames a capped carrier could never accept, so the digests never matched. [receivedAt] records local arrival;
- * [expiresAt] drives the TTL sweep.
+ * frames a capped carrier could never accept, so the digests never matched. [receivedAt] records local arrival
+ * (diagnostic + `ForwardDao.liveRows` ordering only). [expiresAt] drives the TTL sweep and is
+ * `sentAt + TTL` — **frame-global** like the eviction key, so every node expires the frame at the same instant and
+ * the carried set (and hence its content digest) converges; keying it off local arrival let a late joiner re-store
+ * a swept frame with a fresh lease so it never died mesh-wide.
  *
  * [attachmentHash] is the content hash of the frame's image blob, denormalized from the decoded
  * [app.getknit.knit.mesh.protocol.ChatContent] (null for a non-chat frame or a chat with no image). It lets a

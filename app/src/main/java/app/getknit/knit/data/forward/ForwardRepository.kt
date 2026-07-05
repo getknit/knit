@@ -69,8 +69,14 @@ class ForwardRepository(
                 attachmentHash = attachmentHash,
                 // Broadcast-room chat is ambient, higher-volume, no-ack chatter, so it gets a shorter TTL than an
                 // addressed DM/group message or a carried metadata frame (reaction/receipt/profile keep the full
-                // TTL, so they never expire before the message/peer they describe).
-                expiresAt = now + if (isBroadcastChat) broadcastTtlMs else ttlMs,
+                // TTL, so they never expire before the message/peer they describe). Expiry is keyed off the
+                // frame-global sentAt (the originator's signed, node-identical clock), NOT local receivedAt, so every
+                // node — originator and every carrier — expires the same frame at the same absolute instant. Keying it
+                // off local arrival let a late joiner hold a frame long after the originator swept it; a still-live
+                // peer then re-served it via the id-diff and it re-stored with a fresh full TTL, so broadcast/group
+                // frames (bounded only by TTL — no ack) never died mesh-wide and the digests churned. Same
+                // convergence rule as the sentAt-ordered quota eviction below.
+                expiresAt = env.sentAt + if (isBroadcastChat) broadcastTtlMs else ttlMs,
             ),
         )
         // Enforce each bounded bucket by evicting its *oldest-by-sentAt* rows rather than refusing the new one,

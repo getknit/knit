@@ -217,4 +217,43 @@ class ForwardRepositoryTest {
             assertEquals(digestA.version.value, digestB.version.value)
             assertEquals(StoreDigest.fingerprint(listOf("f04", "f05", "f06", "f07", "f08")), digestB.version.value)
         }
+
+    @Test
+    fun `TTL is frame-global — the same frame expires at the same instant on every node`() =
+        runTest {
+            val ttl = 1_000L
+            // One frame authored at sentAt=500, received by two nodes at very different local clocks.
+            val frame = dm("d1", sender = "peer", sentAt = 500L)
+
+            val daoA = FakeForwardDao()
+            ForwardRepository(daoA, StoreDigest(), ttlMs = ttl)
+                .store(frame, ForwardStore.ORIGIN_RELAY, now = 600L) // A receives just after authoring
+            val daoB = FakeForwardDao()
+            ForwardRepository(daoB, StoreDigest(), ttlMs = ttl)
+                .store(frame, ForwardStore.ORIGIN_RELAY, now = 1_400L) // B receives much later (late joiner)
+
+            // Expiry is sentAt + ttl = 1_500 on BOTH — independent of local arrival (was 1_600 vs 2_400 under the bug).
+            assertEquals(1_500L, daoA.rows["d1"]!!.expiresAt)
+            assertEquals("a late joiner must not extend the frame's life", daoA.rows["d1"]!!.expiresAt, daoB.rows["d1"]!!.expiresAt)
+        }
+
+    @Test
+    fun `a late joiner sweeps a frame at its frame-global expiry, not TTL-from-arrival`() =
+        runTest {
+            val ttl = 1_000L
+            val dao = FakeForwardDao()
+            val digest = StoreDigest()
+            val repo = ForwardRepository(dao, digest, ttlMs = ttl)
+
+            // Authored at sentAt=500 ⇒ dies at absolute 1_500. This node receives it late (now=600).
+            repo.store(dm("d1", sender = "peer", sentAt = 500L), ForwardStore.ORIGIN_RELAY, now = 600L)
+            assertTrue(dao.exists("d1"))
+
+            // At now=1_600 the frame is past its frame-global expiry (1_500) and is reclaimed. Under the old
+            // `receivedAt + ttl` bug expiresAt would be 1_600, so `expiresAt < now` (1_600 < 1_600) is false and the
+            // frame would survive — the non-convergent leak this guards.
+            assertEquals(1, repo.sweepExpired(now = 1_600L))
+            assertEquals(0, dao.count())
+            assertEquals(StoreDigest.fingerprint(dao.allIds()), digest.version.value)
+        }
 }
