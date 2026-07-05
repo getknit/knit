@@ -7,7 +7,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
-import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -59,7 +58,10 @@ class MlTextModerator(
             mutex.withLock {
                 if (!loaded) {
                     loaded = true
-                    engine = loadEngine()
+                    // runCatching, not just loadEngine's own catch: it also absorbs Errors (TFLite's JNI
+                    // load can throw UnsatisfiedLinkError; the ~30 MB direct buffer can OOM). classify
+                    // sits on the no-throw inbound path (MeshManager.onDeliver) and must never throw.
+                    engine = runCatching { loadEngine() }.getOrNull()
                 }
                 val e = engine ?: return@withContext TextVerdict.ALLOWED
                 runCatching { infer(e, text) }.getOrDefault(TextVerdict.ALLOWED)
@@ -93,10 +95,10 @@ class MlTextModerator(
                     rewind()
                 }
             Engine(tokenizer, Interpreter(model), rules)
-        } catch (_: IOException) {
-            null // an asset is missing -> degrade to allow-all
-        } catch (_: IllegalStateException) {
-            null // malformed/incompatible model -> degrade to allow-all
+        } catch (_: Exception) {
+            // Missing asset (IOException), corrupt flatbuffer (Interpreter throws IllegalArgument /
+            // IllegalState), bad tokenizer JSON (SerializationException) -> degrade to allow-all.
+            null
         }
 
     private fun infer(

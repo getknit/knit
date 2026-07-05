@@ -9,7 +9,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
-import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -44,7 +43,10 @@ class NsfwImageModerator(
             mutex.withLock {
                 if (!loaded) {
                     loaded = true
-                    interpreter = loadInterpreter()
+                    // runCatching, not just loadInterpreter's own catch: it also absorbs Errors (TFLite's
+                    // JNI load can throw UnsatisfiedLinkError; the direct buffer can OOM). classify sits
+                    // on the inbound blob path and must never throw.
+                    interpreter = runCatching { loadInterpreter() }.getOrNull()
                 }
                 val tflite = interpreter ?: return@withContext ImageVerdict.ALLOWED
                 runCatching { infer(tflite, bitmap) }.getOrDefault(ImageVerdict.ALLOWED)
@@ -60,10 +62,10 @@ class NsfwImageModerator(
                     rewind()
                 }
             Interpreter(model)
-        } catch (_: IOException) {
-            null // no model bundled -> degrade to allow-all
-        } catch (_: IllegalStateException) {
-            null // malformed/incompatible model -> degrade to allow-all
+        } catch (_: Exception) {
+            // No model bundled (IOException) or malformed/incompatible flatbuffer (Interpreter throws
+            // IllegalArgument / IllegalState) -> degrade to allow-all.
+            null
         }
 
     private fun infer(
