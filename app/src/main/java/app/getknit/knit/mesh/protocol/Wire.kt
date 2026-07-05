@@ -218,7 +218,7 @@ data class TypingContent(
 )
 
 /**
- * A structured "@" mention inside a chat body. [nodeId] is the canonical 8-char id used for reliable
+ * A structured "@" mention inside a chat body. [nodeId] is the canonical node id used for reliable
  * "did this mention me" detection (display names aren't unique); [name] is the exact display name the
  * sender rendered, so the receiver can locate the "@name" span for highlighting. A plain nested value.
  */

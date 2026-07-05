@@ -8,8 +8,8 @@ import android.bluetooth.le.BluetoothLeAdvertiser
 
 /**
  * Thin wrapper over [BluetoothLeAdvertiser] for the coordination plane: connectable advertising of the
- * versioned service UUID plus the [BleAdvertPayload] service data (nodeId + capabilities + digest cue + L2CAP
- * PSM). Connectable so an initiator can open the L2CAP channel; low-power mode since it is always on. Callers
+ * [BleAdvertPayload] service data (nodeId + capabilities + digest cue + L2CAP PSM) under the versioned service
+ * UUID. Connectable so an initiator can open the L2CAP channel; low-power mode since it is always on. Callers
  * re-[update] the service data whenever the digest cue changes. Permission is gated at onboarding and the
  * transport self-degrades on denial, so the radio calls are [SuppressLint] "MissingPermission".
  */
@@ -54,7 +54,10 @@ internal class BleAdvertiser(
         val data =
             AdvertiseData
                 .Builder()
-                .addServiceUuid(BleConstants.SERVICE_UUID)
+                // Service data only — no separate service-UUID list AD. The service-data AD already carries the
+                // 16-bit UUID, and dropping the redundant list AD frees the 4 bytes the 16-byte raw nodeId needs
+                // to keep the payload inside the 31-byte legacy budget (see [BleAdvertPayload]). Scanners filter
+                // on the service data instead (see [BleScanner]).
                 .addServiceData(BleConstants.SERVICE_UUID, serviceData)
                 .build()
         runCatching { adv.startAdvertising(settings, data, callback) }

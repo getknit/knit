@@ -81,7 +81,13 @@ import java.io.File
     //      replyToHasAttachment) snapshotting the message a reply quotes, so the quote renders even if the
     //      original never arrived. Additive wire change (a new nullable ReplyRef on ChatContent + the
     //      encrypted MessageContent), so no SERVICE_NAME bump; destructive DB migration as usual.
-    version = 20,
+    // v21: nodeId widened to 128 bits — a new base32 SHA-256 derivation (was ~41-bit 8-char). A *breaking*
+    //      identity/wire change (every node re-derives a different id from the same keypair), so the mesh
+    //      SERVICE_NAME (.v6 → .v7) and BLE SERVICE_UUID (0xFE30 → 0xFE31) bump in lockstep to partition old
+    //      builds at discovery, and this destructive wipe clears the now-stale pins + old-format custodied
+    //      frames. No schema-column change — the version bump is the coordinated wire/DB break the format
+    //      requires (see docs/WIRE_COMPAT.md). The keypair itself is untouched (it lives outside the DB).
+    version = 21,
     exportSchema = false,
 )
 abstract class KnitDatabase : RoomDatabase() {

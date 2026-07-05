@@ -17,7 +17,7 @@ class ConversationsKindTest {
 
     @Test
     fun peerNodeIdIsDmKind() {
-        // A bare 8-char node id is neither the Nearby room nor a "g-" group id.
+        // A bare node id is neither the Nearby room nor a "g-" group id.
         assertEquals(ConversationKind.DM, Conversations.kindFor("node1234"))
     }
 }

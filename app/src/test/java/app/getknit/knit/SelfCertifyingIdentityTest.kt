@@ -32,7 +32,7 @@ class SelfCertifyingIdentityTest {
     fun aRealKeyBundleDerivesToItsOwnShapedNodeId() {
         val bundle = freshBundle()
         val nodeId = nodeIdOf(bundle)
-        assertTrue(Regex("^[a-z0-9]{8}$").matches(nodeId))
+        assertTrue(Regex("^[a-z2-7]{26}$").matches(nodeId))
         // The binding check accepts the genuine (nodeId, bundle) pair.
         assertEquals(nodeId, NodeId.fromPublicKeyBundle(bundle.encoded))
     }

@@ -116,12 +116,13 @@ Implementations:
 
 ### 3.2 Wi-Fi Aware specifics (`mesh/wifiaware/WifiAwareTransport.kt`)
 
-- **Service `SERVICE_NAME = "app.getknit.knit.MESH.v6"`.** Each node `attach()`es once, then both
-  **publishes and subscribes** the service. The device's 8-char **node id + version + caps**
+- **Service `SERVICE_NAME = "app.getknit.knit.MESH.v7"`.** Each node `attach()`es once, then both
+  **publishes and subscribes** the service. The device's **node id + version + caps**
   (`Protocol.advertise`) ride in the publish `serviceSpecificInfo`, so a subscriber learns a peer's
   identity on discovery with zero round-trips and rejects discovering itself. `SERVICE_NAME` is the
-  transport marker: any breaking change to the cue or socket format bumps it — a **hard cut** (old and
-  new builds simply don't discover each other), history `.v2`…`.v6` in `docs/DIGEST_PULL_REATTACH.md`.
+  transport marker: any breaking change to the cue or socket format (or the node-id derivation) bumps it
+  — a **hard cut** (old and new builds simply don't discover each other), history `.v2`…`.v6` in
+  `docs/DIGEST_PULL_REATTACH.md`; `.v7` widened the node id to 128 bits (see §10).
 - **One data interface → two planes.** Real chipsets (Pixel 7/8/9) report `maxNdiInterfaces == 1`, and
   each aware *network* needs its own NDI — so a node holds at most one **outbound** (initiator) NDP, and
   cannot mix roles concurrently. (The **accept-any responder** is one network that can officially serve
@@ -180,12 +181,15 @@ The BLE plane runs **simultaneously** with Wi-Fi Aware behind `CompositeMeshTran
 **many** links at once, so it needs no single-slot cue dance; it is also the mesh plane for phones with
 no Wi-Fi Aware hardware.
 
-- **Presence** — connectable BLE advertising of a versioned 16-bit service UUID
-  (`BleConstants.SERVICE_UUID`, bumped on every breaking wire change to hard-partition at discovery) plus
-  a fixed 16-byte service-data payload (`BleAdvertPayload`: format version, capabilities, nodeId, digest
-  cue, L2CAP PSM). A duty-cycled, service-UUID-filtered scan feeds `BlePresenceTracker` (per-peer smoothed
-  RSSI + continuous-presence dwell + last-seen linger), which drives the `reachable` set. Advertising is
-  always-on so BLE-only devices still discover us.
+- **Presence** — connectable BLE advertising of a fixed 23-byte service-data payload
+  (`BleAdvertPayload`: capabilities, the nodeId's raw 16 bytes, digest cue, L2CAP PSM) under a versioned
+  16-bit service UUID (`BleConstants.SERVICE_UUID`, bumped on every breaking wire change to hard-partition
+  at discovery; the layout/version is implied by the UUID, so there is no format-version byte). The advert
+  carries **only** the service-data AD — no separate service-UUID-list AD — so the 16 raw id bytes still
+  fit the 31-byte legacy budget; the scan filters on the presence of service data for the UUID. That
+  duty-cycled scan feeds `BlePresenceTracker` (per-peer smoothed RSSI + continuous-presence dwell +
+  last-seen linger), which drives the `reachable` set. Advertising is always-on so BLE-only devices still
+  discover us.
 - **Data links** — persistent **L2CAP CoC** sockets; `BluetoothSocketLink` adapts the socket to the same
   `LinkSocket` / `FramedLink` / `LinkFraming` machinery NAN uses, so framing, files, and the `DIGEST`
   id-diff are shared. `PromotionPolicy` (pure) decides which nearby peers to hold a link to (dwell + RSSI,
@@ -508,12 +512,18 @@ that budget is a purely local knob that can differ per node without breaking cue
 
 ## 10. Identity & profiles
 
-- **`Identity.nodeId()`** resolves (and lazily creates) the stable **8-char node id**, caching it.
-  The id is derived deterministically so clearing app data regenerates the *same* id:
-  `NodeId.derive(seed)` = `SHA-256(SALT + seed)` mapped into an 8-char `[a-z0-9]` string, where the
-  seed is the platform device id from `DeviceIdSource` (`AndroidDeviceIdSource` →
-  `Settings.Secure.ANDROID_ID`). If no stable device id is available it falls back to a random 8-char
-  id. The device's long-term **E2E keypair** lives in `data/crypto/IdentityKeyStore`; its public
+- **`Identity.nodeId()`** resolves (and caches) the stable **128-bit node id** — the *self-certifying*
+  hash of the device's E2E public-key bundle. `NodeId.derive(seed)` = the first **16 bytes** of
+  `SHA-256("knit-node-id-v2:" + seed)`, RFC4648-**base32**-encoded (lowercase, unpadded) to a 26-char
+  `[a-z2-7]` string, where `seed` is `Identity.publicKeyBundle()` (the base64 bundle) — **not** a
+  platform device id. Because the id is derived from the keypair, a peer can only claim an id it holds
+  the private key for (forging a colliding bundle is a 128-bit second-preimage), which is what makes the
+  TOFU key pin race-proof and the ~41-bit predecessor did not — this was widened as a coordinated wire
+  break (`SERVICE_NAME` `.v7` / BLE `SERVICE_UUID` `0xFE31` / DB v21). base32 keeps the id
+  filesystem/delimiter-safe so it stays disjoint from the `g-…` group-id namespace and rides avatar
+  filenames / the verify payload. The device's long-term **E2E keypair** lives in
+  `data/crypto/IdentityKeyStore` **outside** the destructively-migrated DB (so the id is stable for the
+  life of that keypair; an app-data wipe that drops `identity.key` mints a new identity); its public
   bundle is exposed via `Identity.publicKeyBundle()` and advertised in `ProfileContent.pubKey` (§14).
 - **`Alias`** maps any node id to a deterministic PascalCase "AdjectiveNoun" (e.g. `EnlightenedZebra`)
   via an FNV-1a hash over word lists — every device derives the same friendly name for a peer with no

@@ -69,10 +69,11 @@ Each evolves independently; bump the right one:
 
 ## Is this change wire-breaking?
 
-**Breaking** (needs a coordinated one-time bump of `SERVICE_NAME` + the DB version) if it: removes,
-renames, re-types, or repurposes a field or a `type`; changes `WireCodec`'s config or the `@ByteString`
-opacity of `signed`/`sig`/`payload`; changes what `signed` is signed over, the AEAD `header`, the
-`NodeId` derivation, or `SERVICE_NAME`; or makes `RelayEnvelope.type` polymorphic.
+**Breaking** (needs a coordinated one-time bump of **both** discovery markers — Wi-Fi Aware
+`SERVICE_NAME` *and* BLE `SERVICE_UUID` — plus the DB version) if it: removes, renames, re-types, or
+repurposes a field or a `type`; changes `WireCodec`'s config or the `@ByteString` opacity of
+`signed`/`sig`/`payload`; changes what `signed` is signed over, the AEAD `header`, the `NodeId`
+derivation, or a discovery marker; or makes `RelayEnvelope.type` polymorphic.
 
 **Additive** (safe) if it only adds a nullable/defaulted field to a content/envelope type, a new `type`
 string with its own content class, or a new capability bit — and rule 4 holds.
@@ -87,6 +88,18 @@ sealed inside `MessageContent`. This lets a relaying **carrier** — blind to th
 blob and custody it (store-and-forward for images). No `SERVICE_NAME` bump; the DB bump is local.
 *Metadata cost:* a carrier learns a message carries an image (~size); a fresh per-send attachment key
 means the ciphertext hash never correlates identical images across sends.
+
+**Precedent — a coordinated break (DB v21): the 128-bit nodeId.** The nodeId was widened from an 8-char
+`[a-z0-9]` (~41-bit) hash to **128 bits** of SHA-256, RFC4648-base32-encoded to a 26-char `[a-z2-7]`
+string (`NodeId.kt`, salt bumped to `knit-node-id-v2:`). Since the `NodeId` derivation is a breaking
+change (§ above) — every node re-derives a different id from the *same* keypair, so signatures/pins/
+custody against the old ids no longer verify — all three markers bumped in lockstep: `SERVICE_NAME`
+`.v6 → .v7`, BLE `SERVICE_UUID` `0xFE30 → 0xFE31`, DB `version 20 → 21` (destructive wipe clears the
+stale pins + old-format custody). The BLE advert also changed shape (the id now rides as its raw 16
+bytes, and the redundant service-UUID-list AD was dropped to keep the payload inside the 31-byte legacy
+budget — see `BleAdvertPayload`), which the `SERVICE_UUID` bump already partitions. `Protocol.VERSION`
+went `1 → 2` for honesty (nothing gates on it). The keypair itself is untouched (it lives outside the DB),
+so no identity is lost — every device just re-derives a wider id.
 
 **When you bump a version layer:** add a round-trip test plus an "unknown higher version drops locally
 but is counted" test. New crypto scheme ⇒ bump `EncEnvelope.MAX_SUPPORTED_VERSION` + branch in

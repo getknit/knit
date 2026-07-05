@@ -71,8 +71,8 @@ object Conversations {
      * Stable, order-agnostic id for a group defined by [members] (node ids). Derived from the sorted,
      * de-duplicated member set, so every device — and anyone who re-creates the same set of people —
      * resolves to the *same* group id rather than minting a duplicate thread. Prefixed [GROUP_ID_PREFIX]
-     * and hex-encoded so it can't collide with the 8-char `[a-z0-9]` node ids or the [NEARBY] room in
-     * conversation-id space. Pure (SHA-256 over the canonical member string), like
+     * (whose hyphen never appears in a base32 node id) so it can't collide with the node ids or the
+     * [NEARBY] room in conversation-id space. Pure (SHA-256 over the canonical member string), like
      * [app.getknit.knit.identity.NodeId.derive].
      */
     @Suppress("MagicNumber") // nibble math (4-bit shifts, 0xF masks) for hex encoding

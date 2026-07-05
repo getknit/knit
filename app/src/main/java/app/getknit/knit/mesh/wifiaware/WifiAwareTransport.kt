@@ -2156,8 +2156,10 @@ class WifiAwareTransport(
         // change (content-digest version, not a monotone epoch); ".v4" re-typed EncEnvelope nonce/ct +
         // WrappedKey.wk from base64 String to raw CBOR @ByteString (a v3 node can't decode a v4 E2E frame);
         // ".v5" added the DIGEST data-path record (a v4 node has no DIGEST case and drops the link on it); ".v6"
-        // removed the coordination-plane re-attach hint (tag 0x02) — a clean cut so no .v5 node keeps spamming it.
-        const val SERVICE_NAME = "app.getknit.knit.MESH.v6"
+        // removed the coordination-plane re-attach hint (tag 0x02) — a clean cut so no .v5 node keeps spamming it;
+        // ".v7" widened the nodeId to 128 bits (new base32 derivation) so a v6 node derives a different id and its
+        // signatures/pins would never verify — a clean discovery partition, coordinated with BLE SERVICE_UUID + DB.
+        const val SERVICE_NAME = "app.getknit.knit.MESH.v7"
 
         // Fixed app-wide passphrase for link-layer (NDP) encryption. Real authentication is the per-frame
         // Ed25519 signature + E2E layer above the transport; this only keeps the data path off open air.

@@ -182,8 +182,10 @@ class DemoSeeder(
         }.getOrNull()
 
     companion object {
-        // Stable demo node ids ([a-z0-9], length 8 — see NodeId). Names/avatars/messages vary by theme,
-        // but the id slots stay constant so ONLINE_NODE_IDS and the fake transport are theme-independent.
+        // Stable, illustrative demo node ids — short fixed slots (NOT the real 26-char base32 [NodeId]
+        // format; demo peers are seeded straight into the DB and never advertised over a radio, so any
+        // opaque string works). Names/avatars/messages vary by theme, but the id slots stay constant so
+        // ONLINE_NODE_IDS and the fake transport are theme-independent.
         const val SAM = "samr1v00"
         const val DANI = "danich01"
         const val THEO = "theob123"

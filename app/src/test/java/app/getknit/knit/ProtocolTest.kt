@@ -7,8 +7,10 @@ import org.junit.Test
 class ProtocolTest {
     @Test
     fun advertiseParseRoundTrips() {
-        val parsed = Protocol.parse(Protocol.advertise("abcd1234"))
-        assertEquals("abcd1234", parsed.nodeId)
+        // A real 26-char base32 nodeId (contains no '|', so the split-on-'|' round-trips cleanly).
+        val id = "ffbbh6thbepahqxsv2gqog45m4"
+        val parsed = Protocol.parse(Protocol.advertise(id))
+        assertEquals(id, parsed.nodeId)
         assertEquals(Protocol.VERSION, parsed.protoVersion)
         assertEquals(Protocol.LOCAL_CAPABILITIES, parsed.capabilities)
     }

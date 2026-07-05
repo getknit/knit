@@ -73,7 +73,7 @@ class ConversationsTest {
     @Test
     fun groupIdCannotCollideWithNodeIdsOrTheRoom() {
         val id = Conversations.groupIdFor(listOf("alice", "bob"))
-        // The "g-" prefix (with a hyphen) keeps it out of the 8-char [a-z0-9] node-id space and != NEARBY.
+        // The "g-" prefix (with a hyphen) keeps it out of the base32 node-id space (no hyphen) and != NEARBY.
         assertTrue(id.startsWith(Conversations.GROUP_ID_PREFIX))
         assertNotEquals(Conversations.NEARBY, id)
     }

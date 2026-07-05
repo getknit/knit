@@ -3,7 +3,7 @@ package app.getknit.knit.identity
 /**
  * Turns a stable [Identity] node id into a friendly "AdjectiveNoun" alias (PascalCase, no digits) —
  * e.g. `EnlightenedZebra`, `ZealousBook` — so a peer who hasn't set a profile name shows something
- * human-readable instead of a raw 8-char id.
+ * human-readable instead of a raw node id.
  *
  * The mapping is a pure, deterministic function of the node id, so **every device derives the same
  * alias for the same node id** with no extra exchange: there is nothing to broadcast or persist, and
