@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh
 
 import android.app.AlarmManager
+import android.app.Notification
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -11,14 +12,19 @@ import android.hardware.TriggerEvent
 import android.hardware.TriggerEventListener
 import android.os.Build
 import android.os.SystemClock
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.lifecycleScope
 import app.getknit.knit.MainActivity
 import app.getknit.knit.R
 import app.getknit.knit.mesh.power.PowerMonitor
 import app.getknit.knit.notifications.NotificationChannels
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import org.koin.android.ext.android.inject
 
 /**
@@ -49,6 +55,7 @@ class MeshService : LifecycleService() {
         // the process is started straight into the service.
         NotificationChannels.ensure(this)
         startForeground()
+        observeStatus()
         powerMonitor.start() // seed power state before the discovery loop first reads it
         meshManager.start()
         scheduleHeartbeat()
@@ -108,7 +115,35 @@ class MeshService : LifecycleService() {
         getSystemService(AlarmManager::class.java).cancel(heartbeatIntent())
     }
 
+    /** Post the initial ongoing notification synchronously, seeded from the current mesh state. */
     private fun startForeground() {
+        postForeground(
+            buildNotification(
+                meshManager.neighborCount.value,
+                meshManager.transportHealth.value,
+            ),
+        )
+    }
+
+    /**
+     * Keep the ongoing notification's text in step with live connectivity: the reachable-peer count and
+     * radio health. [MeshManager.neighborCount] is already smoothed (it rides the lingered `reachable`
+     * set), so the text won't thrash as ephemeral links flap. Cancelled with the service via
+     * [lifecycleScope].
+     */
+    private fun observeStatus() {
+        lifecycleScope.launch {
+            combine(meshManager.neighborCount, meshManager.transportHealth) { count, health ->
+                count to health
+            }.distinctUntilChanged()
+                .collect { (count, health) -> postForeground(buildNotification(count, health)) }
+        }
+    }
+
+    private fun buildNotification(
+        count: Int,
+        health: TransportHealth,
+    ): Notification {
         val openApp =
             PendingIntent.getActivity(
                 this,
@@ -123,17 +158,55 @@ class MeshService : LifecycleService() {
                 Intent(this, MeshService::class.java).setAction(ACTION_STOP),
                 PendingIntent.FLAG_IMMUTABLE,
             )
-        val notification =
-            NotificationCompat
-                .Builder(this, CHANNEL_ID)
-                .setContentTitle(getString(R.string.mesh_notification_title))
-                .setContentText(getString(R.string.mesh_notification_text))
-                .setSmallIcon(R.drawable.ic_stat_mesh)
-                .setOngoing(true)
-                .setContentIntent(openApp)
-                .addAction(0, getString(R.string.mesh_notification_stop), stop)
-                .build()
+        return NotificationCompat
+            .Builder(this, CHANNEL_ID)
+            .setContentTitle(getString(R.string.mesh_notification_title))
+            .setContentText(contentText(count, health))
+            .setSmallIcon(R.drawable.ic_stat_mesh)
+            .setOngoing(true)
+            .setContentIntent(openApp)
+            .addAction(0, getString(R.string.mesh_notification_stop), stop)
+            .build()
+    }
 
+    /**
+     * The ongoing notification's status line — the non-Compose twin of the chat screens'
+     * `connectionLabel`, sharing the same string resources so the shade and the in-app row stay in step.
+     */
+    private fun contentText(
+        count: Int,
+        health: TransportHealth,
+    ): CharSequence =
+        when (health) {
+            TransportHealth.Unavailable -> {
+                if (isAirplaneModeOn()) {
+                    getString(R.string.chat_connection_airplane)
+                } else {
+                    getString(R.string.chat_connection_radio_off)
+                }
+            }
+
+            TransportHealth.Degraded -> {
+                getString(R.string.chat_connection_degraded)
+            }
+
+            TransportHealth.Healthy -> {
+                if (count == 0) {
+                    getString(R.string.mesh_notification_searching)
+                } else {
+                    resources.getQuantityString(R.plurals.mesh_notification_connected, count, count)
+                }
+            }
+        }
+
+    private fun isAirplaneModeOn(): Boolean = Settings.Global.getInt(contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) != 0
+
+    /**
+     * (Re-)post the foreground notification. Calling [ServiceCompat.startForeground] again with the same
+     * id is the supported way to update it, and — unlike `NotificationManagerCompat.notify` — needs no
+     * `POST_NOTIFICATIONS` permission.
+     */
+    private fun postForeground(notification: Notification) {
         ServiceCompat.startForeground(
             this,
             NOTIFICATION_ID,

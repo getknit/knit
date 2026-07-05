@@ -9,7 +9,11 @@
     <string name="mesh_channel_name">Mesh networking</string>
     <string name="channel_status_desc">Keeps the mesh running while the app is in the background</string>
     <string name="mesh_notification_title">Knit mesh is active</string>
-    <string name="mesh_notification_text">Connecting to nearby devices</string>
+    <string name="mesh_notification_searching">Mesh is active and searching</string>
+    <plurals name="mesh_notification_connected">
+        <item quantity="one">Connected to %d nearby device</item>
+        <item quantity="other">Connected to %d nearby devices</item>
+    </plurals>
     <string name="mesh_notification_stop">Stop</string>
 
     <!-- Connection &amp; error alerts (App group) -->
