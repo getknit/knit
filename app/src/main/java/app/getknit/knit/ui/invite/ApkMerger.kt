@@ -1,7 +1,6 @@
 package app.getknit.knit.ui.invite
 
 import android.content.Context
-import app.getknit.knit.R
 import com.android.apksig.ApkSigner
 import com.reandroid.apk.ApkBundle
 import com.reandroid.apk.ApkModule
@@ -9,19 +8,16 @@ import com.reandroid.app.AndroidManifest
 import com.reandroid.arsc.chunk.xml.ResXmlElement
 import java.io.File
 import java.io.IOException
-import java.security.KeyFactory
-import java.security.cert.CertificateFactory
-import java.security.cert.X509Certificate
-import java.security.spec.PKCS8EncodedKeySpec
 import java.util.function.Predicate
 
 // When Knit is installed from the Play Store it lands as an App Bundle: a base APK plus per-config
 // (abi/density/language) split APKs on disk. A stock receiver phone can only install a *single* APK by
 // tapping a file, so to keep the one-tap offline-share flow working we merge the on-disk splits into one
 // universal APK here (ARSCLib), strip the split metadata that makes the OS refuse a standalone install,
-// and re-sign it (apksig) — the merge rewrites the manifest, which breaks the Play signature, so a fresh
-// self-signed key is required. The result is cached per app version. See ShareApk.prepareKnitApk for the
-// monolithic (already-single-APK) fast path. minSdk is 33, so v1 (JAR) signing is never needed.
+// and re-sign it (apksig) with a per-install AndroidKeyStore key (ShareSigningKey) — the merge rewrites
+// the manifest, which breaks the Play signature, so a self-signed key is required. The result is cached
+// per app version. See ShareApk.prepareKnitApk for the monolithic (already-single-APK) fast path. minSdk
+// is 33, so v1 (JAR) signing is never needed.
 
 private const val APK_CACHE_DIR = "apk"
 
@@ -91,7 +87,7 @@ fun buildSharableSplitApk(
     signedTmp.delete()
     try {
         buildUniversalApk(context, splitPaths, unsigned)
-        signApk(context, unsigned, signedTmp)
+        signApk(unsigned, signedTmp)
         // Publish atomically so a killed/OOM merge never leaves a truncated file that later reads as cached.
         if (!signedTmp.renameTo(dest)) throw IOException("could not publish merged APK to ${dest.name}")
         return dest
@@ -178,27 +174,16 @@ private fun splitMetaDataPredicate(): Predicate<ResXmlElement> =
     }
 
 /**
- * Re-signs [input] into [output] with the fixed self-signed key bundled in `res/raw` (v2+v3; v1 off since
- * the receiver is always >= minSdk 33). apksig re-aligns as it writes, 16 KB-page-aligning the uncompressed
- * native libs. [input] and [output] must be different files.
+ * Re-signs [input] into [output] with this install's per-install AndroidKeyStore key ([ShareSigningKey];
+ * v2+v3, v1 off since the receiver is always >= minSdk 33). apksig re-aligns as it writes,
+ * 16 KB-page-aligning the uncompressed native libs. [input] and [output] must be different files.
  */
 private fun signApk(
-    context: Context,
     input: File,
     output: File,
 ) {
-    val privateKey =
-        context.resources
-            .openRawResource(R.raw.knit_share_key)
-            .use { it.readBytes() }
-            .let { KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(it)) }
-    val cert =
-        context.resources.openRawResource(R.raw.knit_share_cert).use { stream ->
-            CertificateFactory.getInstance("X.509").generateCertificate(stream) as X509Certificate
-        }
-    val signerConfig = ApkSigner.SignerConfig.Builder("knit", privateKey, listOf(cert)).build()
     ApkSigner
-        .Builder(listOf(signerConfig))
+        .Builder(listOf(ShareSigningKey.signerConfig()))
         .setInputApk(input)
         .setOutputApk(output)
         .setMinSdkVersion(SIGN_MIN_SDK)

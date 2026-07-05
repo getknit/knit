@@ -57,7 +57,7 @@ defects; only where the code diverges from its own docs, or a consequence is uns
 | 4 | **High** | Testing | The **security gate is untested**: `MeshManager` (1838 LOC) is never instantiated by any test; `FrameSignatureTest` only *mirrors* `sign`/`verifyInbound`. The real `verifyInbound → onDeliver → decryptAndDeliver → canCarry` pipeline and its no-throw contract can drift undetected. | Add a `FakeLoopTransport` + fake-repo integration test driving `verifyInbound`→`onDeliver` end-to-end (it's constructor-injectable). |
 | 5 | **High** | Testing | **Zero executing DAO/migration tests.** All eviction/orphan/GC SQL is verified only by a hand-mirrored `FakeForwardDao`; a comment (`ForwardRepositoryTest.kt:60`) claims "the instrumented DAO test" — **which does not exist**. `androidx-room-testing` is on the classpath but unused. | Robolectric + in-memory Room to execute the real queries; delete the stale claim. |
 | 6 | **High** | Release | **R8 fully disabled** (`build.gradle.kts:40-43`): demo/fake classes ship in the release APK, ~30 MB tflite + unshrunk Compose bloat the *shareable* APK, and a privacy-marketed app ships zero obfuscation. No `signingConfig`; `versionCode = 1`. | Decide the R8 story now (enable + author keep rules, or record why-not); force `SEED_DEMO=false` in the release buildType; add a signing config. |
-| 7 | Med-High | Security | **Checked-in APK-share signing key** (`res/raw/knit_share_key.pk8`+`.der`) is public. `ApkMerger` re-signs offline-shared universal APKs with it, so anyone can sign a trojaned "Knit" that Android accepts as a **legitimate in-place update** for share-installed users (Play installs are unaffected). Undocumented threat. | Generate a per-install key at first share (Keystore), or document the tradeoff explicitly. |
+| 7 | Med-High | Security | **✅ Fixed** — the **checked-in APK-share signing key** (`res/raw/knit_share_key.pk8`+`.der`) was public, so anyone could sign a trojaned "Knit" that Android accepts as a **legitimate in-place update** for share-installed users. The key files are removed; `ApkMerger` now re-signs with a **per-install EC P-256 AndroidKeyStore key** (`ShareSigningKey`) generated on first share, so no signing identity is shared across installs and no attacker holds a key a victim's device would honor. Documented tradeoff: a share-installed Knit updates in place only from the device that produced its APK. | ✅ Per-install Keystore key generated at first share (`ShareSigningKey`). |
 | 8 | Med | Structure | `MeshManager` **god-object**: owns the transport, router, 5 DTN services, 8 repos, crypto, moderation; correctness of the whole stack rides on prose-enforced ordering (custody-before-relay, replay-runs-last, no-throw-out-of-onDeliver). | Extract an `InboundPipeline` / delivery collaborator; split profile, group-reconcile, and attachment-screen concerns. |
 | 9 | Med | Security | **KeyExchange bookkeeping is unbounded** and keyed by *unauthenticated* senderIds: `missing`/`lastAskedAt`/`wanters` have no cap/TTL (contrast the deliberately-capped `PendingInbound`). A peer flooding many forged senderIds triggers a signed-keyreq storm (with hop-by-hop recursion) and unbounded map growth; a giant batched keyreq can exceed `MAX_PAYLOAD_BYTES` and crash the writer coroutine. | Cap/evict `missing`; chunk keyreq batches; add a `CoroutineExceptionHandler` to the mesh scope. |
 | 10 | Med | Reliability | **Data-plane reliability rests on heuristic watchdogs.** The NAN single-NDI constraint has driven a long P0–P6 wedge-fighting campaign (two-tier watchdog, ghost-proof recycle, streak gates). It's impressively managed and documented, but self-heal loops around an opaque firmware resource are inherently fragile, and BLE has an analogous class of **sticky advertise/accept failures with no self-heal and `health` stuck `Healthy`**. | Add a health signal + re-advertise path to BLE `heal()`; continue extracting NAN decision logic into testable policies (below). |
@@ -171,12 +171,19 @@ can be silently overwritten for an already-verified contact. Widening the id is 
 security change; it is a coordinated wire break, but the project already treats those as a normal,
 documented operation.
 
-**[#7, Med-High] The public APK-share key** is a real, matching RSA keypair in the repo used to re-sign
+**[#7, Med-High] The public APK-share key** was a real, matching RSA keypair in the repo used to re-sign
 offline-shared universal APKs. Because Android treats the signing cert as package identity, any attacker
-can sign malware that share-installed users' devices accept as a legitimate update, inheriting Knit's
+could sign malware that share-installed users' devices accept as a legitimate update, inheriting Knit's
 permissions and data dir. Play-installed users are unaffected (Google signs those), but offline P2P
-spread is precisely this app's distribution story. At minimum this needs an explicit threat-model note;
-better, a per-install key generated at first share.
+spread is precisely this app's distribution story. **Addressed (2026-07-05):** the checked-in key/cert
+are removed and `ApkMerger.signApk` now re-signs with a **per-install EC P-256 key generated in
+AndroidKeyStore on first share** (`ui/invite/ShareSigningKey`, StrongBox-preferred with TEE fallback;
+apksig signs through the JCA `Signature` API so the non-extractable key never leaves the keystore, and
+the keystore's auto-generated self-signed cert avoids needing a cert-builder dependency). Every install
+now signs with its own device-private identity. The chosen tradeoff — that a share-installed Knit can be
+updated in place only by the device (share-tree root) that produced its APK, since a differently-keyed
+APK is rejected as a signature mismatch — is documented in `ShareSigningKey`'s KDoc; offline share is
+primarily first-install distribution, which is unaffected.
 
 **[#9, Med] keyreq amplification / unbounded state** and **[#11, Med] metadata & OTA tracking** are the
 remaining security items. The keyreq path is the one place an unauthenticated senderId drives unbounded
