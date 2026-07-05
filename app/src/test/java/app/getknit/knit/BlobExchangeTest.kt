@@ -5,6 +5,7 @@ import app.getknit.knit.mesh.BlobStore
 import app.getknit.knit.mesh.FakeLoopTransport
 import app.getknit.knit.mesh.MeshRouter
 import app.getknit.knit.mesh.MeshTransport
+import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -20,6 +21,7 @@ import org.junit.Test
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BlobExchangeTest {
@@ -166,5 +168,78 @@ class BlobExchangeTest {
             assertTrue("b should have cached the blob in transit", b.store.has("H"))
             assertTrue("c should have obtained the blob", c.store.has("H"))
             assertArrayEquals(bytes, c.store.fileFor("H")!!.readBytes())
+        }
+
+    @Test
+    fun fetchingGlobalCapEvictsOldestFirst() =
+        runTest(UnconfinedTestDispatcher()) {
+            val r = FakeLoopTransport("r")
+            val n = FakeLoopTransport("n")
+            val store = FakeBlobStore(Files.createTempDirectory("blob-fetchcap").toFile())
+            val exchange =
+                BlobExchange(
+                    transport = r,
+                    store = store,
+                    selfId = { "r" },
+                    onObtained = { _, _ -> },
+                    now = { 0L },
+                    maxFetching = 2,
+                )
+            val asked = CopyOnWriteArrayList<String>() // hashes n was asked for
+            backgroundScope.launch {
+                n.inbound.collect { f ->
+                    if (f.envelope.type == FrameType.BLOB_REQ) {
+                        WireCodec.decodePayload<BlobReqContent>(f.envelope.payload)?.let { asked += it.hash }
+                    }
+                }
+            }
+
+            exchange.want("a") // no neighbors yet — recorded as fetching
+            exchange.want("b")
+            exchange.want("c") // over the cap → oldest ("a") evicted
+
+            r.connect(n)
+            exchange.onNeighborAdded(Peer("n"))
+
+            assertEquals("oldest fetch evicted; the newest two are re-asked, oldest-first", listOf("b", "c"), asked)
+        }
+
+    @Test
+    fun wantersKeyCapEvictsOldest() =
+        runTest(UnconfinedTestDispatcher()) {
+            // r holds none of the hashes, so each onRequest records a wanter (and recurses want() to raw peers
+            // that never answer — no loopback). Over the cap, the oldest wanter key is evicted and never served.
+            val r = FakeLoopTransport("r")
+            val store = FakeBlobStore(Files.createTempDirectory("blob-wantcap").toFile())
+            val exchange =
+                BlobExchange(
+                    transport = r,
+                    store = store,
+                    selfId = { "r" },
+                    onObtained = { _, _ -> },
+                    now = { 0L },
+                    maxWanters = 2,
+                )
+            val peers =
+                listOf("p1", "p2", "p3").associateWith { pid ->
+                    val t = FakeLoopTransport(pid)
+                    val rx = CopyOnWriteArrayList<String>()
+                    r.connect(t)
+                    backgroundScope.launch { t.incomingFiles.collect { rx += it.key } }
+                    rx
+                }
+
+            exchange.onRequest("h1", "p1")
+            exchange.onRequest("h2", "p2")
+            exchange.onRequest("h3", "p3") // over the cap → wanters["h1"] (oldest) evicted
+
+            val src = Files.createTempFile("blob-src", ".bin").toFile().apply { writeBytes("x".toByteArray()) }
+            exchange.onReceived("h1", "image/jpeg", src.absolutePath, "someoneElse")
+            exchange.onReceived("h2", "image/jpeg", src.absolutePath, "someoneElse")
+            exchange.onReceived("h3", "image/jpeg", src.absolutePath, "someoneElse")
+
+            assertTrue("h1's wanter was evicted → p1 not forwarded a copy", peers.getValue("p1").none { it == "h1" })
+            assertTrue("h2 survived the cap → forwarded to p2", peers.getValue("p2").any { it == "h2" })
+            assertTrue("h3 survived the cap → forwarded to p3", peers.getValue("p3").any { it == "h3" })
         }
 }

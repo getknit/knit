@@ -12,6 +12,7 @@ import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.bluetooth.BluetoothMeshTransport
 import app.getknit.knit.mesh.crypto.MessageCrypto
+import app.getknit.knit.mesh.meshExceptionHandler
 import app.getknit.knit.mesh.power.PowerMonitor
 import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.mesh.wifiaware.WifiAwareTransport
@@ -24,8 +25,9 @@ import java.io.File
 
 val meshModule =
     module {
-        // Application-lifetime scope for the mesh engine.
-        single<CoroutineScope> { CoroutineScope(SupervisorJob() + Dispatchers.Default) }
+        // Application-lifetime scope for the mesh engine. The shared exception handler is the process-level
+        // backstop for an uncaught throw in a top-level child (e.g. a FramedLink writer coroutine).
+        single<CoroutineScope> { CoroutineScope(SupervisorJob() + Dispatchers.Default + meshExceptionHandler) }
         single { MeshMetrics() }
         // Content digest of this node's syncable state; shared between the forward-store impl (maintains the
         // message set), MeshManager (folds in profile changes), and WifiAwareTransport (cues it to neighbors) —

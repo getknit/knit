@@ -220,13 +220,13 @@ class FramedLink(
                 val item = nextOutbound() ?: break
                 when (item) {
                     is Outbound.Frame -> {
-                        LinkFraming.write(out, LinkFraming.Type.FRAME, item.bytes)
+                        writeRecordSafely(out, LinkFraming.Type.FRAME, item.bytes)
                         out.flush()
                         touch()
                     }
 
                     is Outbound.Digest -> {
-                        LinkFraming.write(out, LinkFraming.Type.DIGEST, LinkFraming.encodeDigest(DigestWire(item.ids)))
+                        writeRecordSafely(out, LinkFraming.Type.DIGEST, LinkFraming.encodeDigest(DigestWire(item.ids)))
                         out.flush()
                         touch()
                     }
@@ -239,6 +239,24 @@ class FramedLink(
         } catch (e: IOException) {
             log("write loop ended for $nodeId: ${e.message}")
             callbacks.onLinkDown(nodeId)
+        }
+    }
+
+    /**
+     * Encodes and writes one record, but **drops** (rather than kills the link) a record the codec rejects —
+     * e.g. a payload past [LinkFraming.MAX_PAYLOAD_BYTES], whose `require` throws *before* any bytes are
+     * written, so the stream stays intact and the loop continues. A real socket [IOException] from the write
+     * itself still propagates to end the write loop and bring the link down.
+     */
+    private fun writeRecordSafely(
+        out: OutputStream,
+        type: LinkFraming.Type,
+        payload: ByteArray,
+    ) {
+        try {
+            LinkFraming.write(out, type, payload)
+        } catch (e: IllegalArgumentException) {
+            log("dropping oversized $type record for $nodeId: ${e.message}")
         }
     }
 
@@ -279,11 +297,11 @@ class FramedLink(
             val item = outbound.tryReceive().getOrNull() ?: break
             when (item) {
                 is Outbound.Frame -> {
-                    LinkFraming.write(out, LinkFraming.Type.FRAME, item.bytes)
+                    writeRecordSafely(out, LinkFraming.Type.FRAME, item.bytes)
                 }
 
                 is Outbound.Digest -> {
-                    LinkFraming.write(out, LinkFraming.Type.DIGEST, LinkFraming.encodeDigest(DigestWire(item.ids)))
+                    writeRecordSafely(out, LinkFraming.Type.DIGEST, LinkFraming.encodeDigest(DigestWire(item.ids)))
                 }
 
                 is Outbound.FileSend -> {

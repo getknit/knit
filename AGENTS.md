@@ -505,9 +505,17 @@ not another flood. The request is signed (not unsigned like `blobreq`) so a resp
 against the requester's pinned key — always present, since direct neighbors exchange profiles on connect —
 and can ignore a blocked/unknown asker; signing is free precisely because the request never leaves the
 direct-neighbor hop. Throttled by a per-peer cooldown + a `missing` set re-asked of each newcomer
-(`onNeighborAdded`) and on `heal()`; bookkeeping is in-memory and repopulates as profiles re-arrive.
-Recovery is visible in Diagnostics (`keyRequestsSent`/`keysServed`/`keysRecovered`) and JVM-tested with
-`FakeLoopTransport` (`KeyExchangeTest`). `handleProfile` also gained a last-writer-wins `sentAt` guard so
+(`onNeighborAdded`) and on `heal()`; the in-memory bookkeeping repopulates as profiles re-arrive.
+Because `want`/`onRequest` are keyed by **unauthenticated** senderIds (a peer can flood forged ones), that
+bookkeeping is **bounded** exactly like `PendingInbound`: `missing` and `wanters` are capped with
+oldest-first eviction and `missing` is TTL-swept (`sweepExpired`, on the `heal()`/prune ticks); an outbound
+batch is **chunked** (`MAX_IDS_PER_REQ`) so it can never exceed the link's 512 KiB payload ceiling and crash
+the writer coroutine; and an inbound request's id list is **capped** (`MAX_REQUEST_IDS`) so it can't drive
+unbounded recursion. `BlobExchange` (whose `blobreq` is unsigned) bounds its `fetching`/`wanters`/serve-memo
+the same way. Backstopping all of it, both mesh scopes (the app-lifetime scope in `di/MeshModule.kt` and
+`MeshManager`'s session scope) carry a shared `meshExceptionHandler`, and a `FramedLink` writer drops (never
+dies on) a record the codec rejects. Recovery is visible in Diagnostics
+(`keyRequestsSent`/`keysServed`/`keysRecovered`) and JVM-tested with `FakeLoopTransport` (`KeyExchangeTest`). `handleProfile` also gained a last-writer-wins `sentAt` guard so
 a re-served (older) profile can never revert a newer name/status — the key itself is immutable per nodeId.
 
 The dropped frame that *triggered* the request is no longer lost: `verifyInbound` also **parks** it in

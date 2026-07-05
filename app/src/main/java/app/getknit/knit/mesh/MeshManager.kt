@@ -232,8 +232,10 @@ class MeshManager(
         started = true
         blobStore.clearTransfers() // drop any plaintext transfer temp files left by a previous session
         // Child of the app Job so app-scope cancellation still propagates; SupervisorJob isolates a
-        // single collector's failure from the rest of the session.
-        val session = CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Default)
+        // single collector's failure from the rest of the session. The shared handler logs any uncaught
+        // throw in a top-level session collector instead of letting it vanish silently.
+        val session =
+            CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Default + meshExceptionHandler)
         sessionScope = session
         router = MeshRouter(transport, session, metrics = metrics, onDeliver = ::onDeliver)
         router.start()
@@ -275,6 +277,8 @@ class MeshManager(
         sessionScope?.launch {
             forwardSync.sweepExpired()
             pendingInbound.sweepExpired()
+            keyExchange.sweepExpired() // age out stale (unauthenticated) key-wants; blob fetches that never arrived
+            blobExchange.sweepExpired()
             keyExchange.retryMissing()
             ackSync.retryPending() // re-send broadcast/group ticks we still owe absent authors (+ age out old ones)
         }
@@ -568,6 +572,8 @@ class MeshManager(
             reactions.deleteOrphans(System.currentTimeMillis()) // reclaim reactions left by deleted messages
             forwardSync.sweepExpired() // drop carried DMs whose TTL elapsed while we were down
             pendingInbound.sweepExpired() // and any key-wait frames whose TTL lapsed (in-memory, so usually a no-op)
+            keyExchange.sweepExpired() // stale unauthenticated key-wants
+            blobExchange.sweepExpired() // never-arriving blob fetches
             // Own/received message attachments: always re-pull (uncapped, kept alive by their message row).
             val ownHashes = messages.hashesNeedingFetch()
             ownHashes.forEach { blobExchange.want(it) }
@@ -588,6 +594,8 @@ class MeshManager(
                 delay(FORWARD_SWEEP_INTERVAL_MS)
                 forwardSync.sweepExpired()
                 pendingInbound.sweepExpired()
+                keyExchange.sweepExpired()
+                blobExchange.sweepExpired()
             }
         }
     }

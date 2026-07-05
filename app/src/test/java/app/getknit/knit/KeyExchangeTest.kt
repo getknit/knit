@@ -20,6 +20,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -32,11 +33,18 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class KeyExchangeTest {
-    /** A node: its transport, the keys it has pinned, every frame it received, and a wired [KeyExchange]. */
+    /** A node: its transport, the keys it has pinned, every frame it received, and a wired [KeyExchange].
+     *  The bound overrides default to the production values so existing tests are unaffected; the eviction/
+     *  chunk/cap tests shrink them to exercise the bounds. */
     private class Node(
         val id: String,
         scope: CoroutineScope,
         val blocked: Set<String> = emptySet(),
+        maxMissing: Int = 256,
+        maxWanters: Int = 256,
+        maxIdsPerReq: Int = 128,
+        maxRequestIds: Int = 128,
+        missingTtlMs: Long = 30 * 60_000L,
         val clock: () -> Long,
     ) {
         val transport = FakeLoopTransport(id)
@@ -49,6 +57,11 @@ class KeyExchangeTest {
                 signRaw = { byteArrayOf(SIG_MARKER) },
                 isBlocked = { it in blocked },
                 now = clock,
+                maxMissing = maxMissing,
+                maxWanters = maxWanters,
+                maxIdsPerReq = maxIdsPerReq,
+                maxRequestIds = maxRequestIds,
+                missingTtlMs = missingTtlMs,
             )
         private val router =
             MeshRouter(transport, scope) { wire, env, fromNodeId ->
@@ -194,6 +207,165 @@ class KeyExchangeTest {
             val reqs = n.keyRequestsReceived()
             assertEquals(1, reqs.size)
             assertEquals(listOf("x"), WireCodec.decodePayload<KeyReqContent>(reqs.first().envelope.payload)!!.nodeIds)
+        }
+
+    @Test
+    fun missingGlobalCapEvictsOldestFirst() =
+        runTest(UnconfinedTestDispatcher()) {
+            var clock = 0L
+            val r = Node("r", backgroundScope, maxMissing = 2) { clock }
+            val n = Node("n", backgroundScope) { clock }
+            r.start(backgroundScope)
+            n.start(backgroundScope)
+
+            r.exchange.want("a") // no neighbors yet — just recorded as missing
+            r.exchange.want("b")
+            r.exchange.want("c") // over the cap → oldest ("a") evicted
+
+            r.transport.connect(n.transport)
+            r.exchange.onNeighborAdded(Peer("n"))
+
+            val reqs = n.keyRequestsReceived()
+            assertEquals(1, reqs.size)
+            assertEquals(
+                "the oldest want is evicted; the newest two survive, oldest-first",
+                listOf("b", "c"),
+                WireCodec.decodePayload<KeyReqContent>(reqs.first().envelope.payload)!!.nodeIds,
+            )
+        }
+
+    @Test
+    fun missingTtlSweepDropsStaleWantsButKeepsFresh() =
+        runTest(UnconfinedTestDispatcher()) {
+            var clock = 0L
+            val r = Node("r", backgroundScope, missingTtlMs = 100) { clock }
+            val n = Node("n", backgroundScope) { clock }
+            r.start(backgroundScope)
+            n.start(backgroundScope)
+
+            r.exchange.want("a") // last-asked at clock 0
+            clock = 80
+            r.exchange.want("b") // last-asked at clock 80
+
+            clock = 150 // "a" is now 150ms stale (> 100 TTL); "b" is 70ms (fresh)
+            assertEquals(1, r.exchange.sweepExpired())
+
+            r.transport.connect(n.transport)
+            r.exchange.onNeighborAdded(Peer("n"))
+            assertEquals(
+                listOf("b"),
+                WireCodec
+                    .decodePayload<KeyReqContent>(
+                        n
+                            .keyRequestsReceived()
+                            .first()
+                            .envelope.payload,
+                    )!!
+                    .nodeIds,
+            )
+        }
+
+    @Test
+    fun newNeighborBatchIsChunkedUnderThePayloadLimit() =
+        runTest(UnconfinedTestDispatcher()) {
+            var clock = 0L
+            val r = Node("r", backgroundScope, maxIdsPerReq = 2) { clock }
+            val n = Node("n", backgroundScope) { clock }
+            r.start(backgroundScope)
+            n.start(backgroundScope)
+
+            val ids = listOf("a", "b", "c", "d", "e")
+            ids.forEach { r.exchange.want(it) } // no neighbors — all recorded as missing
+
+            r.transport.connect(n.transport)
+            r.exchange.onNeighborAdded(Peer("n"))
+
+            val reqs = n.keyRequestsReceived()
+            assertEquals("5 ids at 2 per frame → 3 frames", 3, reqs.size)
+            reqs.forEach { req ->
+                val batch = WireCodec.decodePayload<KeyReqContent>(req.envelope.payload)!!.nodeIds
+                assertTrue("each chunk stays within the cap", batch.size <= 2)
+            }
+            val union = reqs.flatMap { WireCodec.decodePayload<KeyReqContent>(it.envelope.payload)!!.nodeIds }.toSet()
+            assertEquals("every missing id is asked for exactly once across the chunks", ids.toSet(), union)
+        }
+
+    @Test
+    fun retryMissingChunksBatches() =
+        runTest(UnconfinedTestDispatcher()) {
+            var clock = 0L
+            val r = Node("r", backgroundScope, maxIdsPerReq = 2) { clock }
+            val n = Node("n", backgroundScope) { clock }
+            r.start(backgroundScope)
+            n.start(backgroundScope)
+
+            val ids = listOf("a", "b", "c", "d", "e")
+            ids.forEach { r.exchange.want(it) } // recorded while offline
+            r.transport.connect(n.transport)
+
+            r.exchange.retryMissing()
+
+            val reqs = n.keyRequestsReceived()
+            assertEquals(3, reqs.size)
+            reqs.forEach { req ->
+                assertTrue(WireCodec.decodePayload<KeyReqContent>(req.envelope.payload)!!.nodeIds.size <= 2)
+            }
+        }
+
+    @Test
+    fun onRequestCapsInboundIds() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A hostile peer sends more ids than we'll process; only the first maxRequestIds are recursed.
+            var clock = 0L
+            val r = Node("r", backgroundScope, maxRequestIds = 2) { clock }
+            val holder = Node("holder", backgroundScope) { clock }
+            r.transport.connect(holder.transport)
+            r.start(backgroundScope)
+            holder.start(backgroundScope)
+
+            r.exchange.onRequest(listOf("a", "b", "c", "d", "e"), "somePeer")
+
+            // r holds none of them, so it recurses want() for the ones it processed — exactly the first two.
+            val recursed =
+                holder
+                    .keyRequestsReceived()
+                    .flatMap { WireCodec.decodePayload<KeyReqContent>(it.envelope.payload)!!.nodeIds }
+                    .toSet()
+            assertEquals(setOf("a", "b"), recursed)
+        }
+
+    @Test
+    fun wantersKeyCapEvictsOldest() =
+        runTest(UnconfinedTestDispatcher()) {
+            // Raw peers (no KeyExchange/router) so r's recursive want() doesn't loop back and re-populate the
+            // evicted wanters key — we only observe what r serves once each profile is pinned.
+            var clock = 0L
+            val r = Node("r", backgroundScope, maxWanters = 2) { clock }
+            r.start(backgroundScope)
+            val peers =
+                listOf("p1", "p2", "p3").associateWith { pid ->
+                    val t = FakeLoopTransport(pid)
+                    val rx = CopyOnWriteArrayList<InboundFrame>()
+                    r.transport.connect(t)
+                    backgroundScope.launch { t.inbound.collect { rx.add(it) } }
+                    rx
+                }
+
+            r.exchange.onRequest(listOf("k1"), "p1")
+            r.exchange.onRequest(listOf("k2"), "p2")
+            r.exchange.onRequest(listOf("k3"), "p3") // over the cap → wanters["k1"] (oldest) evicted
+
+            r.exchange.onProfilePinned("k1", profileWire("k1", "K1"))
+            r.exchange.onProfilePinned("k2", profileWire("k2", "K2"))
+            r.exchange.onProfilePinned("k3", profileWire("k3", "K3"))
+
+            fun servedProfile(
+                rx: List<InboundFrame>,
+                senderId: String,
+            ) = rx.any { it.envelope.type == FrameType.PROFILE && it.envelope.senderId == senderId }
+            assertFalse("k1's wanter was evicted → never served", servedProfile(peers.getValue("p1"), "k1"))
+            assertTrue("k2 survived the cap → served to p2", servedProfile(peers.getValue("p2"), "k2"))
+            assertTrue("k3 survived the cap → served to p3", servedProfile(peers.getValue("p3"), "k3"))
         }
 
     private fun pinnedKeyOf(
