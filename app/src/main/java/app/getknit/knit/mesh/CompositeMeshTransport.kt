@@ -8,9 +8,11 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /**
@@ -45,8 +47,11 @@ import java.io.File
 class CompositeMeshTransport(
     private val children: List<MeshTransport>,
     private val scope: CoroutineScope,
+    private val metrics: MeshMetrics? = null,
 ) : MeshTransport {
     override val hasFastPlane: Boolean = children.any { it.hasFastPlane }
+
+    override val highThroughput: Boolean = children.any { it.highThroughput }
 
     override val neighbors: StateFlow<Set<Peer>> =
         if (children.isEmpty()) {
@@ -192,12 +197,59 @@ class CompositeMeshTransport(
         }
     }
 
+    /**
+     * Forwards the bulk-transfer hint to **every** child (each applies its own gates; only an on-demand
+     * plane arms anything). True if any armed — the serve path uses it to decide whether a fast-plane link
+     * is worth a grace wait.
+     */
+    override fun expectBulkTransfer(nodeId: String): Boolean {
+        var armed = false
+        for (child in children) if (child.expectBulkTransfer(nodeId)) armed = true
+        return armed
+    }
+
+    /**
+     * Files route like frames — preference-order link holder — EXCEPT large attachment blobs (≥
+     * [BULK_MIN_BYTES]), which prefer the [highThroughput] plane: ride its live link if one exists, else arm
+     * its on-demand bring-up ([expectBulkTransfer]) and wait ≤ [BULK_GRACE_MS] for the link **off the
+     * caller's coroutine** (sendFile is invoked inline from the serial inbound dispatch — the router's
+     * single collector — so suspending here would stall every frame on both radios), then fall back to the
+     * link holder (Bluetooth). Each invocation resolves to exactly one route, so a file is never sent twice;
+     * a child refusing the enqueue (link died in the check→enqueue window) falls back the same way instead
+     * of silently losing the file. Below the size gate the NDP setup (~1-4 s) costs more than BLE's whole
+     * transfer, so small blobs — and avatars/digests — keep today's path byte-for-byte.
+     */
     override suspend fun sendFile(
         file: File,
         to: Peer,
         meta: FileMeta,
-    ) {
-        childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta)
+    ): Boolean {
+        val fast = children.firstOrNull { it.highThroughput }
+        if (meta.kind != FileKind.ATTACHMENT || fast == null || file.length() < BULK_MIN_BYTES) {
+            return childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta) ?: false
+        }
+        if (fast.neighbors.value.any { it.nodeId == to.nodeId }) {
+            // Fast link already up (e.g. a custody sync in flight) — ride it; fall back on a teardown race.
+            return fast.sendFile(file, to, meta) ||
+                (childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta) ?: false)
+        }
+        if (!fast.expectBulkTransfer(to.nodeId)) {
+            // Peer isn't fresh on the fast plane (or its marking is cooling down) — don't wait for a link
+            // that won't come.
+            return childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta) ?: false
+        }
+        // Armed: whichever side of the pair is larger initiates the data path (both sides mark — the
+        // requester at pull time, this serve side here). Wait for it detached, then send exactly once.
+        scope.launch {
+            val linked =
+                withTimeoutOrNull(BULK_GRACE_MS) {
+                    fast.neighbors.first { set -> set.any { it.nodeId == to.nodeId } }
+                } != null
+            if (!linked) metrics?.onBulkGraceTimeout()
+            val overFast = linked && fast.sendFile(file, to, meta)
+            if (!overFast) childHoldingLinkTo(to.nodeId)?.sendFile(file, to, meta)
+        }
+        return true // scheduled: the waiter above commits to exactly one plane (or drops if the peer left)
     }
 
     override suspend fun sendDigest(
@@ -250,4 +302,19 @@ class CompositeMeshTransport(
             a.protoVersion != b.protoVersion -> if (a.protoVersion > b.protoVersion) a else b
             else -> if (a.capabilities >= b.capabilities) a else b
         }
+
+    internal companion object {
+        // How long the serve path waits for an armed fast-plane link before falling back to the link holder.
+        // Healthy NDP bring-up is 1-3 s with a free slot; a contended slot pays the current serve's
+        // contended linger (2 s) + teardown + settle (1.5 s) + handshake (~1-3 s) — field-measured 2026-07-04
+        // at ~8.3 s for receiver #2 of a two-receiver room, so 10 s lets the second pull ride NAN instead of
+        // missing the freed slot by a hair. Kept under the NAN handshake timeout (15 s) so a genuinely
+        // failing handshake falls back here rather than shadowing it.
+        const val BULK_GRACE_MS = 10_000L
+
+        // Attachments below this ride the normal (Bluetooth-first) route: for a small blob, BLE finishes in
+        // ~2-3 s — less than the NDP setup it would replace — and skipping the fast plane spares the single
+        // NDI the per-file bring-up/teardown churn. User-tuned: typical 1280px photos sit well above it.
+        const val BULK_MIN_BYTES = 256L * 1024
+    }
 }

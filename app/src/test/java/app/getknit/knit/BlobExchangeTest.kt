@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -85,6 +86,63 @@ class BlobExchangeTest {
             }
         }
     }
+
+    @Test
+    fun repeatedRequestWithinTheServeMemoShipsOneCopy() =
+        runTest(UnconfinedTestDispatcher()) {
+            // Server a linked to requester b; count the copies b actually receives.
+            val server = FakeLoopTransport("a")
+            val requester = FakeLoopTransport("b")
+            server.connect(requester)
+            val store = FakeBlobStore(Files.createTempDirectory("blob-serve").toFile())
+            store.seed("H", "image/jpeg", "img".toByteArray())
+            var now = 0L
+            val exchange =
+                BlobExchange(
+                    transport = server,
+                    store = store,
+                    selfId = { "a" },
+                    onObtained = { _, _ -> },
+                    now = { now },
+                )
+            val received = mutableListOf<String>()
+            backgroundScope.launch { requester.incomingFiles.collect { received += it.key } }
+
+            exchange.onRequest("H", "b")
+            exchange.onRequest("H", "b") // the re-ask storm around a slow transfer (re-offer / new link)
+            assertEquals("second ask within the memo is a no-op", listOf("H"), received)
+
+            now = BlobExchange.SERVE_MEMO_MS
+            exchange.onRequest("H", "b")
+            assertEquals("memo expired → the periodic re-ask is served again", listOf("H", "H"), received)
+        }
+
+    @Test
+    fun refusedServeIsRetriableImmediately() =
+        runTest(UnconfinedTestDispatcher()) {
+            // No link to b yet: sendFile reports false, so the memo must not swallow the next ask.
+            val server = FakeLoopTransport("a")
+            val requester = FakeLoopTransport("b")
+            val store = FakeBlobStore(Files.createTempDirectory("blob-refuse").toFile())
+            store.seed("H", "image/jpeg", "img".toByteArray())
+            val exchange =
+                BlobExchange(
+                    transport = server,
+                    store = store,
+                    selfId = { "a" },
+                    onObtained = { _, _ -> },
+                    now = { 0L },
+                )
+            val received = mutableListOf<String>()
+            backgroundScope.launch { requester.incomingFiles.collect { received += it.key } }
+
+            exchange.onRequest("H", "b") // no live link — nothing went out
+            assertTrue(received.isEmpty())
+
+            server.connect(requester)
+            exchange.onRequest("H", "b") // same instant: un-stamped refusal ⇒ served now
+            assertEquals(listOf("H"), received)
+        }
 
     @Test
     fun blobPropagatesHopByHopToOutOfRangeRequester() =

@@ -77,9 +77,10 @@ interface MeshTransport {
     suspend fun send(wire: WireEnvelope, to: Peer? = null)   // null = broadcast to all neighbors
     fun fastFanout(wire: WireEnvelope)                       // coordination-plane blast, no data path
     fun fastSend(wire: WireEnvelope, to: Peer)               // coordination-plane point-to-point
-    suspend fun sendFile(file: File, to: Peer, meta: FileMeta)
+    suspend fun sendFile(file: File, to: Peer, meta: FileMeta): Boolean  // false = no live route (caller's re-offer retries)
     suspend fun sendDigest(to: Peer, ids: List<String>)      // advertise held custody ids on link-up
-    // + kind / hasFastPlane / radioContended and the cross-plane hints suppressDataPath() / onForeignReachable()
+    fun expectBulkTransfer(nodeId: String): Boolean          // arm an on-demand data path for an imminent big blob
+    // + kind / hasFastPlane / highThroughput / radioContended and the cross-plane hints suppressDataPath() / onForeignReachable()
 }
 ```
 
@@ -100,7 +101,13 @@ Implementations:
 - **`CompositeMeshTransport`** — runs the two radio planes **simultaneously** behind this one interface
   (merging `neighbors`/`reachable`/`health`/`inbound` by nodeId, preferring Bluetooth for sends), so
   `MeshManager`/`MeshRouter` stay radio-agnostic. DI (`di/MeshModule.kt`) gates each child on hardware
-  support, so a device with only one radio runs that plane alone.
+  support, so a device with only one radio runs that plane alone. One deliberate exception to the
+  Bluetooth-first rule: an **ATTACHMENT ≥ 256 KiB prefers the `highThroughput` plane** (a NAN NDP moves
+  megabytes in under a second vs. L2CAP's seconds-to-minutes) — riding a live NAN link if one exists,
+  else arming an on-demand bring-up via `expectBulkTransfer` and grace-waiting ≤ 10 s (off the inbound
+  dispatch coroutine) before falling back to Bluetooth. See the AGENTS.md gotcha for why a plain routing
+  preference is not enough (steady-state digest parity + BLE suppression) and why the bulk mark must stay
+  out of the NAN recovery machinery.
 - **`FakeLoopTransport`** / **`DemoTransport`** — in-process doubles for JVM tests and the demo build;
   `FakeLoopTransport.connect()` wires instances into an arbitrary topology so a multi-hop mesh (relay,
   blob pulls, custody) runs on the JVM with no radios.
@@ -408,7 +415,10 @@ Images are **content-addressed** and pulled on demand, so the (large) bytes don'
     `blobreq` frame (`relay = false`) to **every direct neighbor**.
   - `onRequest(hash, fromNodeId)` — if we hold the blob, send it straight back over the file channel
     (`FileKind.ATTACHMENT`); if not, record the requester in `wanters[hash]` and **recurse** by
-    calling `want(hash)` (re-originating the request to our own neighbors).
+    calling `want(hash)` (re-originating the request to our own neighbors). A per-(hash, peer) **serve
+    memo** (45 s, un-stamped if the enqueue is refused) dedupes the re-ask storm around a transfer
+    slower than the requester's re-ask cadence (the 60 s re-offer, or the `onNeighborAdded` re-ask
+    when a new link comes up mid-stream) so a peer is never shipped a second full copy.
   - `onReceived(...)` — save the blob, clear `fetching`, fire `onObtained`
     (`MessageRepository.setAttachmentPath`, filling the local path on every message referencing the
     hash), then forward it to any recorded `wanters` (excluding the giver). So a blob walks back

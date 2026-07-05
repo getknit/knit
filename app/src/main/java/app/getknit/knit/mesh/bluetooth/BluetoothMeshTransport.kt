@@ -270,8 +270,10 @@ class BluetoothMeshTransport(
         file: java.io.File,
         to: Peer,
         meta: FileMeta,
-    ) {
-        links[to.nodeId]?.sendFile(file, meta)
+    ): Boolean {
+        val accepted = links[to.nodeId]?.sendFile(file, meta) ?: false
+        if (accepted) metrics.onFileSent(TransportKind.Bluetooth)
+        return accepted
     }
 
     override suspend fun sendDigest(

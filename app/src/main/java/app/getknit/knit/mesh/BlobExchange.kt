@@ -24,12 +24,19 @@ class BlobExchange(
     private val selfId: suspend () -> String,
     private val onObtained: suspend (hash: String, path: String) -> Unit,
     private val newRequestId: () -> String = { FrameId.new() },
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
     // hash -> neighbors awaiting the blob from us (forwarded to once we obtain it).
     private val wanters = ConcurrentHashMap<String, MutableSet<Peer>>()
 
     // Hashes we've requested and not yet obtained — dedups outbound requests.
     private val fetching = ConcurrentHashMap.newKeySet<String>()
+
+    // "hash|nodeId" -> when we last enqueued that blob to that peer. A transfer slower than the requester's
+    // re-ask cadence (the 60 s re-offer, or the onNeighborAdded re-ask when a new link — e.g. an on-demand
+    // fast-plane NDP — comes up mid-transfer) would otherwise queue a second full copy behind the first.
+    // The memo TTL is deliberately shorter than the 60 s re-offer so a genuinely lost serve still retries.
+    private val recentlyServed = ConcurrentHashMap<String, Long>()
 
     /** Requests [hash] from every direct neighbor, unless we already hold it or are already fetching it. */
     suspend fun want(hash: String) {
@@ -74,7 +81,10 @@ class BlobExchange(
         val file = store.fileFor(hash)
         val mime = store.mimeFor(hash)
         if (file != null && mime != null) {
-            transport.sendFile(file, peer, FileMeta(FileKind.ATTACHMENT, hash, mime))
+            if (servedRecently(hash, fromNodeId)) return // its copy is (still) in flight — don't ship a second
+            if (!transport.sendFile(file, peer, FileMeta(FileKind.ATTACHMENT, hash, mime))) {
+                recentlyServed.remove("$hash|$fromNodeId") // nothing went out — let the next ask retry at once
+            }
             return
         }
         wanters.getOrPut(hash) { ConcurrentHashMap.newKeySet() }.add(peer)
@@ -95,6 +105,29 @@ class BlobExchange(
         // Don't bounce the blob back to whoever just gave it to us.
         targets
             .filter { it.nodeId != fromNodeId }
-            .forEach { transport.sendFile(stored, it, FileMeta(FileKind.ATTACHMENT, hash, mime)) }
+            .forEach {
+                if (!servedRecently(hash, it.nodeId)) {
+                    transport.sendFile(stored, it, FileMeta(FileKind.ATTACHMENT, hash, mime))
+                }
+            }
+    }
+
+    /**
+     * True if we already enqueued [hash] to [nodeId] within [SERVE_MEMO_MS]; otherwise stamps the pair and
+     * returns false (the caller serves). Opportunistically prunes — the map only ever holds in-flight pairs.
+     */
+    private fun servedRecently(
+        hash: String,
+        nodeId: String,
+    ): Boolean {
+        val t = now()
+        recentlyServed.entries.removeAll { t - it.value >= SERVE_MEMO_MS }
+        return recentlyServed.putIfAbsent("$hash|$nodeId", t) != null
+    }
+
+    companion object {
+        // Shorter than MeshManager's 60 s neighbor re-offer, so the periodic re-ask always passes the memo
+        // and a serve whose bytes were lost (link died mid-stream) is retried on the next round.
+        const val SERVE_MEMO_MS = 45_000L
     }
 }

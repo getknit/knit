@@ -275,6 +275,32 @@ frames.
   carried count must be ≤ its quota. (Aside: the per-sender bucket lumps a node's profile in with its chat, so a
   node that sends >quota frames evicts its own profile *frame* from custody — harmless, since the pinned key +
   connect-time `pushProfileTo` / edit re-broadcast are the real profile paths, and every node evicts it alike.)
+- **Steady-state digest parity + BLE suppression means NAN has no NDP exactly when an image needs it —
+  large attachments go through the bulk-want escape hatch, and it must never feed the recovery machinery.**
+  With both radios up, BLE holds the link, the composite suppresses NAN's sync to that peer
+  (`suppressDataPath`), and converged custody digests make `reconcileWanted` false — so
+  `childHoldingLinkTo` only ever finds BLE and a naive "prefer NAN in `sendFile`" silently falls back
+  ~always, leaving images to crawl over untuned L2CAP. The fix: `CompositeMeshTransport.sendFile`
+  (ATTACHMENT ≥ `BULK_MIN_BYTES` = 256 KiB only) and `MeshManager.deliverChat` (at `blobExchange.want`)
+  call `MeshTransport.expectBulkTransfer` on **both** sides of the pair — the requester marks the author,
+  the serving side marks the requester; only the larger nodeId can initiate, so whichever side that is has
+  a mark — which arms a TTL'd `BulkWantTracker` that `WifiAwareTransport.syncWanted` ORs in ahead of the
+  suppression + digest gates. The split is load-bearing: the bulk term reaches ONLY the admission sites
+  (`driveSync`/`initiateOwed`/`initiateOwedToReachable`), while `reachableSyncOwed` (the wedge watchdog's
+  owed clock — Tier-2 is a process kill), `needsRediscovery` (subscribe re-arm churn is its own wedge
+  trigger), `needsIcmRelight`, and `rediscoverDelayMs` read the digest-pure `digestSyncWanted` — a pending
+  image always has the BLE fallback carrying it, so it is never an outage to "heal". Marks are gated on a
+  fresh sighting (`BULK_FRESH_MS` 45 s, not the 150 s linger), fail-cooled 120 s on a failed initiate, and
+  never bypass connect backoff / single-slot admission / SETTLE. The composite grace-waits ≤ 10 s for the
+  NDP **off the inbound dispatch coroutine** (`onRequest`→`sendFile` runs inline in the router's single
+  inbound collector — a suspension there stalls both radios) then falls back to the link holder;
+  `sendFile` now returns enqueue-acceptance so a link that died in the check→enqueue window falls back
+  instead of silently dropping the file, and `BlobExchange` keeps a per-(hash, peer) 45 s serve memo so
+  the re-ask storm around a slow transfer (60 s re-offer, post-link-up `onNeighborAdded`) can't ship a
+  second full copy (field-verified: the late-NDP re-ask after a BLE fallback is real, and the memo ate it). Frames, digests, avatars, and sub-256 KiB blobs keep the BLE-first route byte-for-byte.
+  Verify with the `FramedLink` `file ATTACHMENT/<hash> <N>B in <ms>ms` log line and `filesNan`/`filesBt`/
+  `bulkTimeouts` in `…debug.STATE`; `bulkTimeouts` climbing much faster than `filesNan` means ghosts are
+  being armed.
 - **The BLE scan is demand-gated, and a *settled* clique used to scan continuously.** `BluetoothMeshTransport.scanLoop`
   duty-cycles the scan, but `onScanResult` pokes the loop's wake channel on **every** sighting — *including
   already-linked peers* — and the loop consumes a buffered wake immediately, so whenever any peer is in range the
@@ -323,6 +349,13 @@ route extra is gated on `BuildConfig.DEBUG`. `app/build.gradle.kts` is untouched
     on-device shell**: `adb` re-parses the command on the device, so a bare `--es text "hi there"` is
     word-split and truncated to `hi`. Wrap the whole remote command in double quotes and single-quote the
     value (see the example).
+  - `…debug.SENDIMG` — sends a real **image attachment** with no UI (a locked device can't drive the photo
+    picker): `--es path <file the app can read>` plus the same `conv`/`to` targeting as SEND and optional
+    `--es text`. Stage the file into the app's own storage first (scoped storage — the app can't read
+    /sdcard paths): `adb push img.jpg /data/local/tmp/ && adb shell "cat /data/local/tmp/img.jpg | run-as
+    app.getknit.knit sh -c 'cat > files/img.jpg'"`, then pass `--es path /data/data/app.getknit.knit/files/img.jpg`.
+    Runs the production pipeline (AttachmentStore.ingest → sendChat), and the reply carries the attachment
+    `hash` to poll for on receivers.
   - `…debug.STATE` — self id/name, transport health, reachable peers, and mesh metrics. Add `--es conv <id>`
     to also dump that thread's latest messages (`--ei limit N`, default 20), each with its `received`
     delivery tick — this is how you **verify receipt on the other device without a screenshot**.

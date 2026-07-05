@@ -96,6 +96,9 @@ class MeshMetrics {
     private val nanIcmKeepaliveFailed = AtomicLong()
     private val nanMsgsAcked = AtomicLong()
     private val nanMsgSendsFailed = AtomicLong()
+    private val filesSentNan = AtomicLong()
+    private val filesSentBt = AtomicLong()
+    private val nanBulkGraceTimeouts = AtomicLong()
 
     /** A frame this device authored and injected into the mesh. */
     fun onOriginated() {
@@ -198,6 +201,24 @@ class MeshMetrics {
         nanMsgSendsFailed.incrementAndGet()
     }
 
+    /**
+     * A file (avatar/attachment) was accepted onto a live link on [transport]'s plane — the per-radio split
+     * that shows whether large blobs are riding the NAN fast path or falling back to BLE.
+     */
+    fun onFileSent(transport: TransportKind) {
+        when (transport) {
+            TransportKind.WifiAware -> filesSentNan.incrementAndGet()
+            TransportKind.Bluetooth -> filesSentBt.incrementAndGet()
+            TransportKind.Other -> Unit
+        }
+    }
+
+    /** An armed bulk-transfer NDP didn't come up within the composite's grace — the blob fell back to BLE.
+     *  Climbing far faster than [Snapshot.filesSentNan] means we're arming ghosts (see BulkWantTracker). */
+    fun onBulkGraceTimeout() {
+        nanBulkGraceTimeouts.incrementAndGet()
+    }
+
     fun snapshot(): Snapshot {
         val byReason = drops.mapValues { it.value.get() }
         val connectByReason = connectFails.mapValues { it.value.get() }
@@ -224,6 +245,9 @@ class MeshMetrics {
             nanIcmKeepaliveFailed = nanIcmKeepaliveFailed.get(),
             nanMsgsAcked = nanMsgsAcked.get(),
             nanMsgSendsFailed = nanMsgSendsFailed.get(),
+            filesSentNan = filesSentNan.get(),
+            filesSentBt = filesSentBt.get(),
+            nanBulkGraceTimeouts = nanBulkGraceTimeouts.get(),
         )
     }
 
@@ -250,5 +274,8 @@ class MeshMetrics {
         val nanIcmKeepaliveFailed: Long = 0,
         val nanMsgsAcked: Long = 0,
         val nanMsgSendsFailed: Long = 0,
+        val filesSentNan: Long = 0,
+        val filesSentBt: Long = 0,
+        val nanBulkGraceTimeouts: Long = 0,
     )
 }

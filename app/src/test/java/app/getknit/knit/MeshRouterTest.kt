@@ -59,7 +59,7 @@ class MeshRouterTest {
             file: File,
             to: Peer,
             meta: FileMeta,
-        ) = Unit
+        ): Boolean = true
     }
 
     /** Builds a (wrapper, envelope) pair for an addressed-or-broadcast chat frame. */

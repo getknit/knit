@@ -1369,6 +1369,11 @@ class MeshManager(
                 screenEncryptedAttachment(hash, attachmentKey)
             } else {
                 blobExchange.want(hash)
+                // Arm the fast plane toward the author — the guaranteed holder — so the pull can ride a NAN
+                // NDP instead of crawling over BLE (the serve side arms its own half in the composite; only
+                // the larger nodeId of a pair ever initiates, so an inert mark here is harmless). Freshness/
+                // cooldown gating lives in the transport; a multi-hop author simply isn't fresh and no-ops.
+                transport.expectBulkTransfer(env.senderId)
             }
         }
         // A message that @-mentions us notifies on the dedicated Mentions channel only; everything else
@@ -1809,7 +1814,8 @@ class MeshManager(
                         "dropped=${s.framesDropped} drops=${s.dropsByReason} " +
                         "keyReq=${s.keyRequestsSent} keyServed=${s.keysServed} keyRecovered=${s.keysRecovered} " +
                         "framesHeld=${s.framesHeld} framesReplayed=${s.framesReplayed} " +
-                        "receiptsResent=${s.receiptsResent}",
+                        "receiptsResent=${s.receiptsResent} " +
+                        "filesNan=${s.filesSentNan} filesBt=${s.filesSentBt} bulkTimeouts=${s.nanBulkGraceTimeouts}",
                 )
             }
         }

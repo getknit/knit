@@ -68,11 +68,11 @@ class FakeLoopTransport(
         file: File,
         to: Peer,
         meta: FileMeta,
-    ) {
+    ): Boolean {
         // In-process: hand the file straight to the linked peer's incomingFiles (same filesystem).
-        links[to.nodeId]?._incomingFiles?.emit(
-            ReceivedFile(nodeId, file.absolutePath, meta.kind, meta.key, meta.mime),
-        )
+        val target = links[to.nodeId] ?: return false
+        target._incomingFiles.emit(ReceivedFile(nodeId, file.absolutePath, meta.kind, meta.key, meta.mime))
+        return true
     }
 
     override suspend fun sendDigest(

@@ -39,5 +39,5 @@ class DemoTransport(
         file: File,
         to: Peer,
         meta: FileMeta,
-    ) = Unit
+    ): Boolean = false // inert: nothing is ever sent
 }

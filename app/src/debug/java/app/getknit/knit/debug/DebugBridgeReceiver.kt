@@ -9,7 +9,9 @@ import android.graphics.Color
 import android.graphics.ImageDecoder
 import android.graphics.Movie
 import android.graphics.drawable.AnimatedImageDrawable
+import android.net.Uri
 import android.util.Log
+import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -60,6 +62,11 @@ import java.nio.ByteBuffer
  *   peer node id for a DM, or a `g-…` group id) or `--es to <peerNodeId>` (a DM shorthand). No target ⇒
  *   the broadcast room. Add `--es replyTo <messageId>` to quote a message already in that thread (the
  *   ReplyRef is built exactly as the UI does; [ACTION_STATE] echoes the stored `replyTo*` fields back).
+ * - [ACTION_SENDIMG] — sends a real **image attachment** with no UI (a locked device can't drive the photo
+ *   picker): `--es path <file the app can read — e.g. run-as-copied into its filesDir>` plus the same
+ *   target extras as [ACTION_SEND] (`conv`/`to`, default the broadcast room) and optional `--es text`.
+ *   Runs the exact production pipeline (AttachmentStore.ingest → MeshManager.sendChat), so the image
+ *   send→pull→verify loop is fully scriptable; replies with the attachment `hash` to poll for on receivers.
  * - [ACTION_STATE] — self id/name, transport health, the reachable peer set, and the mesh metrics; add
  *   `--es conv <id>` to also dump that thread's most recent messages (`--ei limit N`, default
  *   [DEFAULT_MESSAGE_LIMIT]) with each message's `received` delivery tick — how "verify receipt" works.
@@ -93,6 +100,7 @@ class DebugBridgeReceiver :
     BroadcastReceiver(),
     KoinComponent {
     private val mesh: MeshManager by inject()
+    private val attachments: AttachmentStore by inject()
     private val messages: MessageRepository by inject()
     private val peers: PeerRepository by inject()
     private val groups: GroupRepository by inject()
@@ -118,6 +126,10 @@ class DebugBridgeReceiver :
                     when (action) {
                         ACTION_SEND -> {
                             handleSend(intent)
+                        }
+
+                        ACTION_SENDIMG -> {
+                            handleSendImg(intent)
                         }
 
                         ACTION_STATE -> {
@@ -219,6 +231,50 @@ class DebugBridgeReceiver :
             true -> reply("ok", "sent to $conv")
             false -> reply("blocked", "blocked by on-device content filter")
         }.put("conversation", conv)
+    }
+
+    /**
+     * Sends a real image attachment with no UI: ingest the file at `--es path` through the production
+     * pipeline ([AttachmentStore.ingest] — downscale/re-encode/moderate) and hand the result to
+     * [MeshManager.sendChat] (seal for a DM/group, flood + custody), routed by the same `conv`/`to`
+     * extras as [handleSend]. The reply carries the attachment `hash`, so a script can poll the
+     * receivers' blob state / logcat for exactly this transfer.
+     */
+    private suspend fun handleSendImg(intent: Intent): JSONObject {
+        val path = intent.getStringExtra(EXTRA_PATH) ?: return reply("error", "missing 'path' extra")
+        val file = File(path)
+        if (!file.exists()) return reply("error", "no such file: $path")
+        val text = intent.getStringExtra(EXTRA_TEXT).orEmpty()
+        val conv = intent.getStringExtra(EXTRA_CONV) ?: intent.getStringExtra(EXTRA_TO) ?: Conversations.NEARBY
+        val ingested =
+            when (val result = attachments.ingest(Uri.fromFile(file))) {
+                is AttachmentStore.IngestResult.Success -> {
+                    result.ingested
+                }
+
+                AttachmentStore.IngestResult.Failed -> {
+                    return reply("error", "ingest failed (decode error or over the size cap): $path")
+                }
+            }
+        val sent =
+            when (Conversations.kindFor(conv)) {
+                ConversationKind.NEARBY -> {
+                    mesh.sendChat(text, attachment = ingested, recipientId = null, group = null)
+                }
+
+                ConversationKind.DM -> {
+                    mesh.sendChat(text, attachment = ingested, recipientId = conv)
+                }
+
+                ConversationKind.GROUP -> {
+                    groups.find(conv)?.let { mesh.sendChat(text, attachment = ingested, group = it.toGroupInfo()) }
+                }
+            }
+        return when (sent) {
+            null -> reply("error", "unknown group (not joined on this device): $conv")
+            true -> reply("ok", "sent image to $conv")
+            false -> reply("blocked", "blocked by on-device content filter")
+        }.put("conversation", conv).put("hash", ingested.hash).put("mime", ingested.mime)
     }
 
     /**
@@ -530,6 +586,9 @@ class DebugBridgeReceiver :
             .put("nanIcmKeepaliveFailed", snap.nanIcmKeepaliveFailed)
             .put("nanMsgsAcked", snap.nanMsgsAcked)
             .put("nanMsgSendsFailed", snap.nanMsgSendsFailed)
+            .put("filesSentNan", snap.filesSentNan)
+            .put("filesSentBt", snap.filesSentBt)
+            .put("nanBulkGraceTimeouts", snap.nanBulkGraceTimeouts)
 
     private fun reply(
         status: String,
@@ -551,6 +610,7 @@ class DebugBridgeReceiver :
         const val TAG = "KnitBridge"
 
         const val ACTION_SEND = "app.getknit.knit.debug.SEND"
+        const val ACTION_SENDIMG = "app.getknit.knit.debug.SENDIMG"
         const val ACTION_STATE = "app.getknit.knit.debug.STATE"
         const val ACTION_STORE = "app.getknit.knit.debug.STORE"
         const val ACTION_REACT = "app.getknit.knit.debug.REACT"

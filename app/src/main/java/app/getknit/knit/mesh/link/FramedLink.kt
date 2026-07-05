@@ -115,13 +115,15 @@ class FramedLink(
         outbound.trySend(Outbound.Digest(ids))
     }
 
-    /** Enqueue a file (avatar or attachment) for streaming to this peer. */
+    /**
+     * Enqueue a file (avatar or attachment) for streaming to this peer. Returns whether the enqueue was
+     * accepted — the channel is UNLIMITED, so false means the link is already closed (the composite uses it
+     * to fall back to another plane instead of silently losing the file).
+     */
     fun sendFile(
         file: File,
         meta: FileMeta,
-    ) {
-        outbound.trySend(Outbound.FileSend(file, meta))
-    }
+    ): Boolean = outbound.trySend(Outbound.FileSend(file, meta)).isSuccess
 
     fun close() {
         readerJob?.cancel()
@@ -243,6 +245,8 @@ class FramedLink(
     @Suppress("NestedBlockDepth") // header → (drain frames → read chunk → write chunk) loop → end
     private fun streamFile(out: OutputStream, item: Outbound.FileSend) {
         txInProgress = true // don't let a supervisor tear down mid transfer
+        val startedAt = now()
+        val bytes = item.file.length()
         try {
             val header = FileHeaderWire(item.meta.kind.name, item.meta.key, item.meta.mime)
             LinkFraming.write(out, LinkFraming.Type.FILE_HEADER, LinkFraming.encodeFileHeader(header))
@@ -259,6 +263,8 @@ class FramedLink(
             LinkFraming.write(out, LinkFraming.Type.FILE_END)
             out.flush()
             touch()
+            // The per-plane throughput evidence (this same codec runs over the NAN NDP and BLE L2CAP sockets).
+            log("file ${item.meta.kind}/${item.meta.key} ${bytes}B in ${now() - startedAt}ms → $nodeId")
         } finally {
             txInProgress = false
         }

@@ -108,6 +108,7 @@ data class ReceivedDigest(
  * [CompositeMeshTransport]; keeping the rest of the app behind this interface is what lets the two planes
  * compose — and another sibling transport drop in — without touching orchestration.
  */
+@Suppress("TooManyFunctions") // the radio seam is inherently wide: lifecycle + sends + files + cross-plane hints
 interface MeshTransport {
     /**
      * Currently-connected neighbors — the peers we hold a live data-path link to *right now*. Under the
@@ -145,6 +146,15 @@ interface MeshTransport {
      * [TransportKind.Other]; only the real radio transports override it.
      */
     val kind: TransportKind get() = TransportKind.Other
+
+    /**
+     * True for a transport whose data path is high-throughput relative to its siblings (a Wi-Fi Aware NDP
+     * moves megabytes in well under a second; Bluetooth's L2CAP CoC takes seconds-to-minutes), so
+     * [CompositeMeshTransport] can prefer it for **large file payloads** ([FileKind.ATTACHMENT] blobs) while
+     * frames, digests, and avatars keep the normal preference order. A routing capability, deliberately
+     * distinct from [kind] (which is diagnostics-only). Default false; only Wi-Fi Aware overrides it.
+     */
+    val highThroughput: Boolean get() = false
 
     /**
      * Whether this transport currently believes its radio is contended by another user of the same radio —
@@ -195,6 +205,19 @@ interface MeshTransport {
      */
     fun onForeignReachable(peers: Set<String>) {}
 
+    /**
+     * Hints that a **large file transfer** with [peer nodeId] is imminent (an attachment blob is about to be
+     * requested from or served to it), so a transport with an on-demand data path (Wi-Fi Aware) may arm a
+     * link bring-up even when digest parity or higher-plane suppression would otherwise skip it — in the
+     * steady state a BLE-linked pair has converged digests and a suppressed NAN sync, so the fast plane's
+     * NDP never exists exactly when an image needs it. Best-effort and bounded: the mark is TTL'd, respects
+     * the transport's own freshness/backoff/admission gates, and never feeds recovery machinery (wedge
+     * watchdog, subscribe re-arm). Must be cheap and non-blocking — callers sit on the inbound dispatch
+     * path. Returns whether any on-demand plane actually armed (false ⇒ don't wait for a link that won't
+     * come). Default no-op false — a link-based transport (Bluetooth) is always "up" and needs no arming.
+     */
+    fun expectBulkTransfer(nodeId: String): Boolean = false
+
     /** Sends [wire] to one neighbor, or to all neighbors when [to] is null. */
     suspend fun send(
         wire: WireEnvelope,
@@ -225,12 +248,18 @@ interface MeshTransport {
         to: Peer,
     ) {}
 
-    /** Sends a file (avatar or attachment) tagged with [meta] to a single neighbor. */
+    /**
+     * Sends a file (avatar or attachment) tagged with [meta] to a single neighbor. Returns whether the
+     * transfer was **accepted for delivery** (enqueued on a live link, or scheduled by the composite's
+     * fast-plane wait); false means no live route existed — the file went nowhere and the caller's
+     * event-driven retry (neighbor join / periodic re-offer) is the recovery. Best-effort: true does not
+     * guarantee the bytes arrive (the link can still die mid-stream).
+     */
     suspend fun sendFile(
         file: File,
         to: Peer,
         meta: FileMeta,
-    )
+    ): Boolean
 
     /**
      * Advertises the custody message [ids] we hold to a single neighbor [to] over the data-path socket (an

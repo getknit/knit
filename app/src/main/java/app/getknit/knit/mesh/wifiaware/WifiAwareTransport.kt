@@ -148,6 +148,10 @@ class WifiAwareTransport(
     // fast-path (fastFanout/fastSend) here; a Bluetooth sibling with only persistent links leaves this false.
     override val hasFastPlane = true
 
+    // An NDP moves megabytes in under a second vs. BLE L2CAP's seconds-to-minutes, so the composite prefers
+    // this plane for large attachment blobs (and only those — frames/digests/avatars stay BLE-first).
+    override val highThroughput = true
+
     override val kind = TransportKind.WifiAware
 
     // Aware + connectivity callbacks are delivered on this dedicated thread's handler.
@@ -264,6 +268,12 @@ class WifiAwareTransport(
     // Anti-entropy state for the cue plane: each peer's advertised digest version + our last-synced version,
     // plus the no-progress throttle (P3) — on the transport's monotonic clock.
     private val digestTracker = DigestTracker(SystemClock::elapsedRealtime)
+
+    // Peers a bulk (attachment) transfer is pending with (expectBulkTransfer): counts as sync-wanted at the
+    // NDP admission sites only — see the syncWanted/digestSyncWanted split — so a large blob can raise the
+    // one data path through digest parity + BLE suppression, without ever feeding the wedge/rediscovery
+    // recovery machinery. TTL'd + capped + fail-cooled (see BulkWantTracker); cleared on link-up and stop().
+    private val bulkWanted = BulkWantTracker(SystemClock::elapsedRealtime)
 
     // Peers currently served by a higher-preference plane (Bluetooth), pushed by CompositeMeshTransport: we
     // don't bring up an NDP sync to them (BLE carries their data) until they drop off it. Volatile — written
@@ -445,7 +455,8 @@ class WifiAwareTransport(
             TAG,
             "state ver=$v live=${peers.keys} inbound=$inbound acc=$acc cap=$serveCap pin=$responderPinsNdi " +
                 "disc=$disc cue=$cues wanted=$wanted initiable=$initiable " +
-                "reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}]",
+                "reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}] " +
+                "bulk[${bulkWanted.debug()}]",
         )
     }
 
@@ -479,13 +490,17 @@ class WifiAwareTransport(
         return cueTarget.keys.any { nodeId -> reachableSyncOwed(nodeId, v, now) }
     }
 
-    /** A sync to [nodeId] is wanted and the peer is a live link or was heard within [REACHABLE_LINGER_MS]. */
+    /**
+     * A sync to [nodeId] is owed (digest-pure — a pending bulk transfer deliberately does NOT count: its
+     * bytes ride the BLE fallback, so it is never a stuck-data-plane signal for the watchdog) and the peer
+     * is a live link or was heard within [REACHABLE_LINGER_MS].
+     */
     private fun reachableSyncOwed(
         nodeId: String,
         localVersion: Long,
         now: Long,
     ): Boolean =
-        syncWanted(nodeId, localVersion) &&
+        digestSyncWanted(nodeId, localVersion) &&
             (peers.containsKey(nodeId) || lastSeenAt[nodeId]?.let { now - it <= REACHABLE_LINGER_MS } == true)
 
     /**
@@ -593,6 +608,7 @@ class WifiAwareTransport(
         lastSeenAt.clear()
         reachablePeers.clear()
         digestTracker.clear()
+        bulkWanted.clearAll()
         _neighbors.value = emptySet()
         _reachable.value = emptySet()
     }
@@ -619,6 +635,25 @@ class WifiAwareTransport(
         foreignReachable = peers
     }
 
+    /**
+     * Arm an on-demand NDP toward [nodeId] for an imminent attachment transfer (see [BulkWantTracker] for why
+     * this exists and what it deliberately does NOT feed). Gated on a **fresh** coordination-plane sighting
+     * ([BULK_FRESH_MS], not the [REACHABLE_LINGER_MS] UI linger, which keeps ghosts for 150 s) so a NAN-dark
+     * peer can't draw initiate→timeout cycles on the single NDI; the tracker's fail-cooldown backstops the
+     * ones that slip through. True means the plane is armed (or already linked) and a link is worth waiting
+     * a grace for; the actual bring-up rides the existing driveSync path — backoff, single-slot admission,
+     * SETTLE, and the initiator tie-break all unchanged.
+     */
+    override fun expectBulkTransfer(nodeId: String): Boolean {
+        if (!hasHardware || session == null) return false
+        if (peers.containsKey(nodeId)) return true // already linked — nothing to arm
+        val fresh = lastSeenAt[nodeId]?.let { SystemClock.elapsedRealtime() - it <= BULK_FRESH_MS } == true
+        if (!fresh || !cueTarget.containsKey(nodeId)) return false
+        if (!bulkWanted.note(nodeId)) return false // post-failure cooldown / cap
+        healSignal.trySend(Unit) // re-evaluate driveSync now instead of waiting out the idle tick
+        return true
+    }
+
     override suspend fun send(
         wire: WireEnvelope,
         to: Peer?,
@@ -632,8 +667,10 @@ class WifiAwareTransport(
         file: File,
         to: Peer,
         meta: FileMeta,
-    ) {
-        peers[to.nodeId]?.link?.sendFile(file, meta)
+    ): Boolean {
+        val accepted = peers[to.nodeId]?.link?.sendFile(file, meta) ?: false
+        if (accepted) metrics.onFileSent(TransportKind.WifiAware)
+        return accepted
     }
 
     override suspend fun sendDigest(
@@ -1076,15 +1113,35 @@ class WifiAwareTransport(
     private fun anyLinkActivity(): Boolean = synchronized(lock) { peers.isNotEmpty() || inFlight.isNotEmpty() || accepting > 0 }
 
     /**
-     * Whether an on-demand NDP sync to [nodeId] is worth bringing up: its advertised digest differs from ours
+     * Whether an on-demand NDP to [nodeId] is worth bringing up: a pending **bulk (attachment) transfer**
+     * ([bulkWanted], via [expectBulkTransfer]) or digest divergence ([digestSyncWanted]). The bulk term
+     * punches through both of [digestSyncWanted]'s gates on purpose — in the steady state a BLE-linked pair
+     * is suppressed AND digest-converged, so its NDP never exists exactly when an image needs the
+     * throughput. Consulted ONLY at the admission/teardown-decision sites ([driveSync], [initiateOwed],
+     * [initiateOwedToReachable], [logState]); every *recovery* site reads the digest-pure gate instead —
+     * see [digestSyncWanted] for why that split is load-bearing.
+     */
+    private fun syncWanted(
+        nodeId: String,
+        localVersion: Long,
+    ): Boolean = bulkWanted.isWanted(nodeId) || digestSyncWanted(nodeId, localVersion)
+
+    /**
+     * The digest-pure sync gate: [nodeId]'s advertised digest differs from ours
      * ([DigestTracker.reconcileWanted]) **and** it isn't already covered by a higher-preference plane. When the
      * composite reports [nodeId] as Bluetooth-linked (see [suppressDataPath]), BLE carries its data, so we spend
      * our single NDP elsewhere; the moment it drops off Bluetooth it's no longer [suppressed] and syncing to it
-     * resumes. This gate is applied at every sync-decision site (drive/rediscover/linger/wedge), so a
-     * BLE-covered peer never counts as a sync we owe — which also stops the wedge watchdog from ever firing on a
-     * "sync" the other plane is quietly handling.
+     * resumes — so a BLE-covered peer never counts as a sync we owe, which also stops the wedge watchdog from
+     * ever firing on a "sync" the other plane is quietly handling.
+     *
+     * The recovery machinery reads THIS gate, never the bulk-aware [syncWanted]: [reachableSyncOwed] (the
+     * wedge watchdog's owed signal — a pending image, whose bytes the BLE fallback still carries, must never
+     * run the owed-episode clock toward the Tier-1 session cycle or the Tier-2 process kill),
+     * [needsRediscovery] (subscribe re-arm churn is that session's own wedge trigger), [needsIcmRelight],
+     * and [rediscoverDelayMs] (no fast-tick cadence for a mark whose wake is the [expectBulkTransfer]
+     * healSignal poke).
      */
-    private fun syncWanted(
+    private fun digestSyncWanted(
         nodeId: String,
         localVersion: Long,
     ): Boolean = nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion)
@@ -1104,11 +1161,20 @@ class WifiAwareTransport(
         val target =
             synchronized(lock) {
                 discovered.entries
-                    .firstOrNull { (nodeId, _) ->
+                    .filter { (nodeId, _) ->
                         localNodeId > nodeId && nodeId !in peers.keys &&
                             (retryAfter[nodeId]?.let { now >= it } ?: true) &&
                             syncWanted(nodeId, localVersion)
-                    }?.let { it.key to it.value }
+                    }
+                    // Custody (digest-divergence) syncs outrank bulk-only marks — a photo burst must never
+                    // starve store-and-forward anti-entropy — and within a class the least-recently-attempted
+                    // peer goes first, so HashMap iteration order can't starve one under contention.
+                    .minWithOrNull(
+                        compareBy(
+                            { if (digestSyncWanted(it.key, localVersion)) 0 else 1 },
+                            { lastInitiateAttemptAt[it.key] ?: 0L },
+                        ),
+                    )?.let { it.key to it.value }
             } ?: return false
         initiateTo(target.first, target.second.advert, target.second.peerHandle)
         return true
@@ -1133,7 +1199,7 @@ class WifiAwareTransport(
         // churn on the normal fight for the single NDI.
         return cueTarget.keys.any { nodeId ->
             localNodeId > nodeId && nodeId !in peers.keys && nodeId !in disc &&
-                syncWanted(nodeId, localVersion)
+                digestSyncWanted(nodeId, localVersion) // digest-pure: bulk marks must not churn subscribe
         }
     }
 
@@ -1149,7 +1215,8 @@ class WifiAwareTransport(
     private fun needsIcmRelight(): Boolean {
         val localVersion = storeDigest.version.value
         return cueTarget.keys.any { nodeId ->
-            localNodeId < nodeId && nodeId !in peers.keys && syncWanted(nodeId, localVersion)
+            localNodeId < nodeId && nodeId !in peers.keys &&
+                digestSyncWanted(nodeId, localVersion) // digest-pure: a smaller-side bulk mark stays inert
         }
     }
 
@@ -1168,8 +1235,9 @@ class WifiAwareTransport(
             when {
                 cueTarget.isEmpty() -> REDISCOVER_LONELY_MS
 
-                // blind (no cue targets) → rediscover / recover fast
-                cueTarget.keys.any { localNodeId > it && syncWanted(it, localVersion) } -> SYNC_RETRY_IDLE_MS
+                // blind (no cue targets) → rediscover / recover fast. Digest-pure: a bulk mark's wake is
+                // the expectBulkTransfer healSignal poke, not a sustained fast-tick cadence.
+                cueTarget.keys.any { localNodeId > it && digestSyncWanted(it, localVersion) } -> SYNC_RETRY_IDLE_MS
 
                 // A sync owed to a peer we only respond to → tick around the ICM keepalive cadence so the loop can
                 // relight ICM (needsIcmRelight) before the ~30s auto-disable, instead of sleeping REDISCOVER_IDLE_MS.
@@ -1400,6 +1468,7 @@ class WifiAwareTransport(
     ) {
         val sub = subscribeSession ?: return
         if (!beginConnect(peerNodeId)) return
+        synchronized(lock) { lastInitiateAttemptAt[peerNodeId] = SystemClock.elapsedRealtime() } // driveSync's LRU rotation key
         Log.i(TAG, "initiating to $peerNodeId")
         // The handle is a subscribe-session handle (from discovery); only that can initiate an NDP here.
         val specifier = WifiAwareNetworkSpecifier.Builder(sub, peerHandle).setPskPassphrase(PSK).build()
@@ -1655,6 +1724,7 @@ class WifiAwareTransport(
             retryAfter.remove(peerNodeId)
             failStreak.remove(peerNodeId) // link formed → reset the fast-fail streak
         }
+        bulkWanted.clear(peerNodeId) // the mark's job is done; the next transfer re-marks if needed
         framed.start() // launches read + write loops; stamps linkStartedAt/lastActivityAt at link-up
         conn.reaperJob = scope.launch { superviseLink(conn) }
         noteReachable(Peer(peerNodeId, advert.protoVersion, advert.capabilities))
@@ -1769,6 +1839,10 @@ class WifiAwareTransport(
                     failStreak[peerNodeId] ?: 0
                 }
             }
+        // A failed initiate also cools this peer's bulk marking (120 s): the 60 s blobreq re-offer must not
+        // re-mark a NAN-dark peer into repeated initiate→timeout occupancy of the single NDI. Digest-driven
+        // retries keep their own (shorter) backoff above.
+        bulkWanted.noteFailed(peerNodeId)
         // A persistently un-formable data plane despite a sync being owed is caught by the wedge watchdog
         // ([checkWedge]) — we no longer nudge the peer to re-attach (that hint was net-negative: it can't clear
         // a leaked responder requestNetwork, and its churn during a wedge is what leaked one).
@@ -2198,6 +2272,12 @@ class WifiAwareTransport(
         // Comfortably exceeds the idle cue heartbeat + rediscover cadence so the UI doesn't blink to
         // "disconnected" between sightings.
         const val REACHABLE_LINGER_MS = 150_000L
+
+        // Freshness gate for arming a bulk-transfer NDP ([expectBulkTransfer]): the peer must have been heard
+        // on the coordination plane this recently. Deliberately much tighter than REACHABLE_LINGER_MS — the
+        // linger keeps walked-away/dozing ghosts for 150 s, and marking one draws initiate→timeout cycles on
+        // the single NDI for a link that can never form. ~One cue heartbeat + slack.
+        const val BULK_FRESH_MS = 45_000L
 
         // Recovery re-attach when subscribe is wedged: min spacing between resets, and a small settle delay
         // before the reset fires.

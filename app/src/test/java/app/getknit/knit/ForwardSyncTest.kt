@@ -121,7 +121,7 @@ class ForwardSyncTest {
             file: File,
             to: Peer,
             meta: FileMeta,
-        ) = Unit
+        ): Boolean = true
 
         override suspend fun sendDigest(
             to: Peer,

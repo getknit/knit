@@ -4,6 +4,7 @@ import app.getknit.knit.mesh.CompositeMeshTransport
 import app.getknit.knit.mesh.FileKind
 import app.getknit.knit.mesh.FileMeta
 import app.getknit.knit.mesh.InboundFrame
+import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedDigest
@@ -19,12 +20,14 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.io.RandomAccessFile
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class CompositeMeshTransportTest {
@@ -32,7 +35,15 @@ class CompositeMeshTransportTest {
     private class FakeChild(
         override val hasFastPlane: Boolean = false,
         override val kind: TransportKind = TransportKind.Other,
+        override val highThroughput: Boolean = false,
     ) : MeshTransport {
+        /** What [expectBulkTransfer] reports — i.e. whether this plane "armed" its on-demand link. */
+        var armBulk = false
+
+        /** What [sendFile] reports — false simulates the link dying in the check→enqueue window. */
+        var acceptFiles = true
+
+        val expectBulkCalls = mutableListOf<String>()
         private val _neighbors = MutableStateFlow<Set<Peer>>(emptySet())
         override val neighbors = _neighbors.asStateFlow()
         private val _reachable = MutableStateFlow<Set<Peer>>(emptySet())
@@ -47,7 +58,7 @@ class CompositeMeshTransportTest {
         override val incomingDigests = digestsFlow.asSharedFlow()
 
         val sends = mutableListOf<Pair<WireEnvelope, Peer?>>()
-        val sentFiles = mutableListOf<Peer>()
+        val sentFiles = mutableListOf<Pair<Peer, FileMeta>>()
         val sentDigests = mutableListOf<Pair<Peer, List<String>>>()
         val fastFanouts = mutableListOf<WireEnvelope>()
         val fastSends = mutableListOf<Peer>()
@@ -77,6 +88,11 @@ class CompositeMeshTransportTest {
             foreignCalls += peers
         }
 
+        override fun expectBulkTransfer(nodeId: String): Boolean {
+            expectBulkCalls += nodeId
+            return armBulk
+        }
+
         override suspend fun send(
             wire: WireEnvelope,
             to: Peer?,
@@ -99,8 +115,9 @@ class CompositeMeshTransportTest {
             file: File,
             to: Peer,
             meta: FileMeta,
-        ) {
-            sentFiles += to
+        ): Boolean {
+            sentFiles += to to meta
+            return acceptFiles
         }
 
         override suspend fun sendDigest(
@@ -305,9 +322,135 @@ class CompositeMeshTransportTest {
             advanceUntilIdle()
             composite.sendFile(File("x"), Peer("p"), FileMeta(FileKind.ATTACHMENT, "k", "image/jpeg"))
             composite.sendDigest(Peer("p"), listOf("i1"))
-            assertEquals(listOf("p"), nan.sentFiles.map { it.nodeId })
+            assertEquals(listOf("p"), nan.sentFiles.map { it.first.nodeId })
             assertEquals(listOf(listOf("i1")), nan.sentDigests.map { it.second })
             assertTrue(bt.sentFiles.isEmpty() && bt.sentDigests.isEmpty())
+        }
+
+    // --- Plane-aware attachment routing (the ≥ BULK_MIN_BYTES fast-plane preference) ---
+
+    /** A real file of [bytes] length (sparse — setLength allocates no data) so sendFile's size gate reads it. */
+    private fun fileOfSize(bytes: Long): File =
+        File.createTempFile("blob", ".bin").also { f ->
+            f.deleteOnExit()
+            RandomAccessFile(f, "rw").use { it.setLength(bytes) }
+        }
+
+    private fun bigAttachment() = FileMeta(FileKind.ATTACHMENT, "k", "image/jpeg")
+
+    @Test
+    fun bigAttachmentPrefersTheHighThroughputPlaneWhenBothLinked() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild()
+            val nan = FakeChild(highThroughput = true)
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            nan.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+            assertTrue(composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES), Peer("p"), bigAttachment()))
+            assertEquals("the fast plane carries the big blob", 1, nan.sentFiles.size)
+            assertTrue("Bluetooth is not double-sent", bt.sentFiles.isEmpty())
+        }
+
+    @Test
+    fun bigAttachmentWaitsForTheArmedFastLinkThenRidesIt() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild()
+            val nan = FakeChild(highThroughput = true).apply { armBulk = true }
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+            bt.setNeighbors(Peer("p")) // steady state: only BLE holds the link
+            advanceUntilIdle()
+
+            assertTrue(composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES), Peer("p"), bigAttachment()))
+            assertEquals("the fast plane was armed for the peer", listOf("p"), nan.expectBulkCalls)
+            assertTrue("nothing sent while the grace waits", nan.sentFiles.isEmpty() && bt.sentFiles.isEmpty())
+
+            advanceTimeBy(1_000)
+            nan.setNeighbors(Peer("p")) // the on-demand NDP came up inside the grace
+            advanceUntilIdle()
+            assertEquals("the blob rode the fast link", 1, nan.sentFiles.size)
+            assertTrue("exactly one route fires — no BLE copy", bt.sentFiles.isEmpty())
+        }
+
+    @Test
+    fun bigAttachmentFallsBackToBluetoothWhenTheGraceExpires() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild()
+            val nan = FakeChild(highThroughput = true).apply { armBulk = true }
+            val metrics = MeshMetrics()
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope, metrics)
+            bt.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+
+            composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES), Peer("p"), bigAttachment())
+            advanceTimeBy(CompositeMeshTransport.BULK_GRACE_MS + 1)
+            advanceUntilIdle()
+            assertEquals("the fast link never formed → BLE fallback", 1, bt.sentFiles.size)
+            assertTrue(nan.sentFiles.isEmpty())
+            assertEquals(1L, metrics.snapshot().nanBulkGraceTimeouts)
+        }
+
+    @Test
+    fun bigAttachmentSkipsTheWaitWhenTheFastPlaneWontArm() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild()
+            val nan = FakeChild(highThroughput = true) // armBulk = false: peer not fresh / cooling down
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+
+            composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES), Peer("p"), bigAttachment())
+            assertEquals("declined arm → immediate BLE, no grace", 1, bt.sentFiles.size)
+            assertEquals(listOf("p"), nan.expectBulkCalls)
+            assertTrue(nan.sentFiles.isEmpty())
+        }
+
+    @Test
+    fun smallAttachmentKeepsTheBluetoothFirstRoute() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild()
+            val nan = FakeChild(highThroughput = true).apply { armBulk = true }
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            nan.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+
+            composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES - 1), Peer("p"), bigAttachment())
+            assertEquals("below the size gate BLE finishes before an NDP would even form", 1, bt.sentFiles.size)
+            assertTrue(nan.sentFiles.isEmpty() && nan.expectBulkCalls.isEmpty())
+        }
+
+    @Test
+    fun avatarKeepsTheBluetoothFirstRoute() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild()
+            val nan = FakeChild(highThroughput = true).apply { armBulk = true }
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            nan.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+
+            composite.sendFile(
+                fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES),
+                Peer("p"),
+                FileMeta(FileKind.AVATAR, "p", "image/jpeg"),
+            )
+            assertEquals("avatars keep today's path byte-for-byte", 1, bt.sentFiles.size)
+            assertTrue(nan.sentFiles.isEmpty() && nan.expectBulkCalls.isEmpty())
+        }
+
+    @Test
+    fun fastEnqueueRefusalFallsBackToBluetooth() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild()
+            val nan = FakeChild(highThroughput = true).apply { acceptFiles = false } // link died in the TOCTOU window
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+            bt.setNeighbors(Peer("p"))
+            nan.setNeighbors(Peer("p"))
+            advanceUntilIdle()
+
+            assertTrue(composite.sendFile(fileOfSize(CompositeMeshTransport.BULK_MIN_BYTES), Peer("p"), bigAttachment()))
+            assertEquals("refused fast enqueue is not a silent loss", 1, bt.sentFiles.size)
         }
 
     @Test
