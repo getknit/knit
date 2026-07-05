@@ -157,6 +157,7 @@ class InboundPipelineTest {
         val typingTracker = TypingTracker(scope)
         val originated = mutableListOf<RelayEnvelope>()
         val flushed = mutableListOf<String>()
+        var failClassify = false
         val pipeline: InboundPipeline
 
         init {
@@ -187,7 +188,7 @@ class InboundPipelineTest {
                     typingTracker = typingTracker,
                     originate = { originated += it },
                     flushPending = { flushed += it },
-                    classifyText = { _, _, _ -> false },
+                    classifyText = { _, _, _ -> if (failClassify) error("moderation boom") else false },
                 )
         }
 
@@ -348,6 +349,23 @@ class InboundPipelineTest {
             assertEquals(1L, rig.drops(DropReason.KEY_NODEID_MISMATCH))
             assertFalse(rig.msgMap.containsKey("c6"))
             assertNull(rig.msgMap["c6"])
+        }
+
+    @Test
+    fun aThrowingHandlerIsContainedAndDoesNotEscapeOnDeliver() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.failClassify = true // deliverChat's on-device moderation classify() throws
+            val env = rig.broadcastChat(alice, id = "c7", body = "hi")
+
+            // Must NOT throw even though a handler does — the router relays only after onDeliver returns.
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            // Delivery was aborted by the throw, but custody-before-relay already captured it, so it re-serves later.
+            assertFalse(rig.msgMap.containsKey("c7"))
+            assertTrue(rig.forwardStore.has("c7"))
         }
 
     private companion object {

@@ -149,7 +149,16 @@ class InboundPipeline(
         // frames re-fan; a point-to-point frame (relay = false, e.g. a broadcast receipt) reaches its addressee
         // and goes no further.
         if (wire.relay && shouldFastFanout(env)) transport.fastFanout(wire)
-        dispatchByType(env, wire, fromNodeId)
+        // Completes the no-throw contract: a per-type handler must NEVER throw out of onDeliver. The router
+        // schedules the relay only *after* this returns, so an escape would silently stop this node forwarding
+        // the frame (a propagation black hole). verifyInbound/decrypt are already runCatching-guarded
+        // individually; this backstops every remaining handler — notably deliverChat's on-device moderation
+        // classify(), the runtime sibling of the model-load gap fixed in e18b1f4 (a corrupt/failed classify
+        // would otherwise crash both delivery and the shared block-on-send path). A swallowed error is logged
+        // (it's a should-never-happen bug path); the custody capture above already ran, so the frame still
+        // re-serves later.
+        runCatching { dispatchByType(env, wire, fromNodeId) }
+            .onFailure { Log.w(TAG, "handler error on ${env.type} ${env.id} from ${env.senderId}: ${it.message}") }
     }
 
     /**
