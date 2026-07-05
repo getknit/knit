@@ -158,6 +158,7 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.koin.test.junit4)
+    testImplementation(libs.mockk) // relaxed mocks of the concrete Room-backed repos in InboundPipelineTest
     // JVM Room/DAO + migration tests (finding #5): Robolectric supplies a Context + framework SQLite so
     // in-memory Room runs the real eviction/GC SQL, and room-testing's MigrationTestHelper rebuilds the
     // exported schema on that same shadowed SQLite (via androidx.sqlite's AndroidSQLiteDriver, already pulled

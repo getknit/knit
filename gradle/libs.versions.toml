@@ -5,6 +5,9 @@ agp = "9.2.1"
 coreKtx = "1.18.0"
 junit = "4.13.2"
 junitVersion = "1.3.0"
+# JVM-only mocking for the InboundPipeline seam test (relaxed mocks of the concrete Room-backed repos
+# the pipeline pulls in, so the test exercises the real DTN services + crypto without the full DB graph).
+mockk = "1.14.11"
 espressoCore = "3.7.0"
 # 2.11.0 requires minCompileSdk=37; 2.10.0 is the newest lifecycle that still targets API 36 (compileSdk 36.1).
 lifecycle = "2.10.0"
@@ -104,6 +107,7 @@ androidx-room-runtime = { group = "androidx.room", name = "room-runtime", versio
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 androidx-room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
+mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 
 # JVM Room/DAO + migration test deps (finding #5) — see the [versions] notes above.
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
