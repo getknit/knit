@@ -55,6 +55,36 @@ android {
         // On-device model files must stay uncompressed so TFLite can mmap them from the APK.
         noCompress += listOf("tflite")
     }
+
+    testOptions {
+        unitTests {
+            // Robolectric runs the JVM Room/DAO + migration tests (finding #5): it reads AGP's merged
+            // manifest/resources config and supplies a Context + framework SQLite so in-memory Room
+            // executes the real eviction/GC SQL. See app/src/test/java/app/getknit/knit/data/ and
+            // app/src/test/resources/robolectric.properties.
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+        }
+    }
+
+    sourceSets {
+        // Serve the exported Room schemas (app/schemas/) as DEBUG-variant assets so MigrationTestHelper can
+        // load them under Robolectric — it reads the schema from context.assets/<db-class>/<version>.json, and
+        // Robolectric serves the merged *debug* assets (unit tests run against the debug variant), but not the
+        // `test` source set's own assets. Scoped to debug, so the ~15 KB schema JSON never ships in release.
+        // See KnitDatabaseMigrationTest.
+        getByName("debug") {
+            assets.srcDir("schemas")
+        }
+    }
+}
+
+ksp {
+    // Export the Room schema JSON (app/schemas/<db-class>/<version>.json) so schema changes are diffable in
+    // review and the migration test's MigrationTestHelper can read them. Plugin-free — no Room Gradle plugin
+    // (same toolchain caution as Koin-not-Hilt). Requires exportSchema = true on KnitDatabase; regenerate the
+    // checked-in schema by building after any @Database version bump.
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencyLocking {
@@ -128,6 +158,14 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.koin.test.junit4)
+    // JVM Room/DAO + migration tests (finding #5): Robolectric supplies a Context + framework SQLite so
+    // in-memory Room runs the real eviction/GC SQL, and room-testing's MigrationTestHelper rebuilds the
+    // exported schema on that same shadowed SQLite (via androidx.sqlite's AndroidSQLiteDriver, already pulled
+    // by Room). See app/src/test/java/app/getknit/knit/data/.
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.junit) // AndroidJUnit4 runner on the JVM (delegated by Robolectric)
+    testImplementation(libs.androidx.test.core) // ApplicationProvider.getApplicationContext()
+    testImplementation(libs.androidx.room.testing) // MigrationTestHelper (was androidTest-only)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

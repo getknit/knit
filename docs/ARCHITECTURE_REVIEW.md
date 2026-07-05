@@ -238,6 +238,11 @@ The gap is precisely at the **integration seam and the persistence layer**:
   hand-written fake that "mirrors the SQL," and a comment even references an instrumented test that
   doesn't exist. This is the exact category of test that stays green while the real query is wrong.
   `androidx-room-testing` is already available.
+  **Addressed (2026-07-05):** `app/src/test/java/app/getknit/knit/data/` now executes the real DAO SQL under
+  Robolectric + in-memory Room (`ForwardDaoTest`, `BlobDaoTest`, `ReactionDaoTest`, `MessageDaoTest` — the
+  orphan/anti-join queries the fakes skipped are now run), `exportSchema` is on with a checked-in baseline
+  schema, a `MigrationTestHelper` harness (`KnitDatabaseMigrationTest`) is ready for the first real migration,
+  and the stale "instrumented DAO test" comment is corrected. See AGENTS.md "JVM Room/DAO + migration tests".
 - **[#15]** No ViewModel has a test, because each depends on the concrete `MeshManager`.
 
 None of these needs hardware — Robolectric + in-memory Room + fakes cover all three on the JVM.

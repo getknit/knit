@@ -56,8 +56,9 @@ class ForwardRepositoryTest {
 
         override suspend fun countByAttachmentHash(hash: String) = rows.values.count { it.attachmentHash == hash }
 
-        // The fake has no `blobs` table to join, so it returns every referenced hash (the SQL "needing fetch"
-        // filtering is exercised by the instrumented DAO test); enough to prove the column is populated.
+        // The fake has no `blobs` table to join, so it returns every referenced hash; the real SQL "needing
+        // fetch" anti-join (NOT IN (SELECT hash FROM blobs)) is exercised against an in-memory Room DB by
+        // ForwardDaoTest. Here it's enough to prove the column is populated.
         override suspend fun attachmentHashesNeedingFetch() = rows.values.mapNotNull { it.attachmentHash }.distinct()
 
         override suspend fun liveIds(now: Long) = rows.values.filter { it.expiresAt >= now }.map { it.id }

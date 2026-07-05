@@ -328,10 +328,39 @@ frames.
 
 ## Verifying changes
 
-1. `./gradlew :app:testDebugUnitTest` for mesh/protocol/data logic.
+1. `./gradlew :app:testDebugUnitTest` for mesh/protocol/data logic — now including **Robolectric +
+   in-memory Room** tests that execute the real DAO SQL (see below).
 2. Emulator smoke test for UI/startup (launch, Koin init, screen rendering, no crash) — the app
    runs fine on an emulator, it just can't form a real mesh there.
 3. Two physical phones for discovery → connect → relay and profile/avatar exchange.
+
+### JVM Room/DAO + migration tests (Robolectric)
+
+`app/src/test/java/app/getknit/knit/data/` runs the **real** DAO SQL — the eviction/orphan/GC queries the
+`FakeForwardDao`/`FakeReactionDao` only *mirror* (finding #5 in `docs/ARCHITECTURE_REVIEW.md`) — on the JVM
+under Robolectric 4.16, plus a `MigrationTestHelper` harness. They run inside the normal
+`:app:testDebugUnitTest` (and CI `test:unit`), no device. The wiring is non-obvious and load-bearing — read
+before "simplifying":
+
+- **The in-memory test DB skips SQLCipher.** `RoomDbTest` builds via `Room.inMemoryDatabaseBuilder(...)` with
+  **no** `openHelperFactory`, so it uses Robolectric's framework SQLite — no passphrase, no `libsqlcipher.so`.
+  The eviction/GC SQL runs identically (SQLCipher only encrypts at rest). Never call `KnitDatabase.build()` in
+  a test. Call `suspend` DAO methods inside `runTest { }`.
+- **`robolectric.properties` forces `application=android.app.Application`.** The real `KnitApplication.onCreate`
+  starts Koin, whose static `GlobalContext` isn't reset between tests → `KoinApplicationAlreadyStartedException`
+  on the 2nd test. DAO tests bypass Koin, so a plain Application is correct; `sdk=36` matches compileSdk.
+- **`exportSchema = true`** on `KnitDatabase` + `ksp { arg("room.schemaLocation", "$projectDir/schemas") }`
+  (plugin-free — no Room Gradle plugin) emit `app/schemas/app.getknit.knit.data.KnitDatabase/<version>.json`
+  (checked in). Regenerate by building after any `@Database` version bump.
+- **`MigrationTestHelper` reads the schema from *debug*-variant assets** —
+  `sourceSets["debug"].assets.srcDir("schemas")` in `app/build.gradle.kts`. Robolectric serves the merged
+  **debug** assets (unit tests run against debug) but **not** the `test` source set's own assets; release APKs
+  never carry the schema. It uses **`AndroidSQLiteDriver`** (the Robolectric-shadowed engine) — the
+  connection-returning API needs a `SQLiteDriver`, and `BundledSQLiteDriver` can't load its Android native
+  `.so` on the host JVM. There are no `Migration`s yet (destructive fallback), so it's a schema-export + drift
+  harness with a filled-in template for the first real migration.
+- After adding a test dep, **regenerate the lockfile** (`:app:dependencies --write-locks`, all configs) — see
+  the lockfile gotcha above.
 
 When driving the emulator over `adb`: the soft keyboard overlaps via `adjustResize`, so read element
 coordinates from `uiautomator dump` rather than guessing; seed the photo picker by `screencap`-ing

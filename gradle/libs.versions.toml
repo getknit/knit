@@ -71,6 +71,13 @@ detekt = "1.23.8"
 # Gradle plugin — the same AGP-9.2.1/Kotlin-2.4 toolchain that broke Hilt's plugin. Keep in lockstep
 # with the `ktlint` CLI contributors run locally (the repo's Stop hook invokes `./gradlew ktlint`).
 ktlint = "1.8.0"
+# JVM Room/DAO + migration tests (finding #5): Robolectric supplies a Context + framework SQLite on the JVM
+# so in-memory Room executes the real eviction/GC SQL, and MigrationTestHelper (room-testing) rebuilds the
+# exported schema via androidx.sqlite's AndroidSQLiteDriver on that same shadowed SQLite (BundledSQLiteDriver
+# can't load its Android native lib on the host JVM). androidx.test:core provides ApplicationProvider.
+# Robolectric 4.16 is the first release supporting SDK 36 (Baklava) and requires JDK 21 (this repo's toolchain).
+robolectric = "4.16"
+androidxTestCore = "1.7.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -97,6 +104,10 @@ androidx-room-runtime = { group = "androidx.room", name = "room-runtime", versio
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 androidx-room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
+
+# JVM Room/DAO + migration test deps (finding #5) — see the [versions] notes above.
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
 
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 

@@ -88,7 +88,10 @@ import java.io.File
     //      frames. No schema-column change — the version bump is the coordinated wire/DB break the format
     //      requires (see docs/WIRE_COMPAT.md). The keypair itself is untouched (it lives outside the DB).
     version = 21,
-    exportSchema = false,
+    // Export the schema JSON to app/schemas/ (location set via ksp { arg("room.schemaLocation", ...) } in
+    // app/build.gradle.kts). Keeps the schema diffable in review and feeds the migration test's
+    // MigrationTestHelper. Room also errors at compile time if an entity changes without a version bump.
+    exportSchema = true,
 )
 abstract class KnitDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
