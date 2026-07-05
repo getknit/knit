@@ -44,6 +44,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -211,8 +212,16 @@ class BluetoothMeshTransport(
             if (adapter?.isEnabled == true) bringUp() else _health.value = TransportHealth.Unavailable
             scanJob = scope.launch { scanLoop() }
             connectJob = scope.launch { connectLoop() }
-            // Re-advertise our epoch when the carried set changes so a peer that now wants our data links to pull it.
-            cueJob = scope.launch { storeDigest.version.drop(1).collect { readvertise() } }
+            // Re-advertise our epoch once the carried set settles so a peer that now wants our data links to pull it.
+            // Debounced via collectLatest: a newer cue cancels the pending delay, so the legacy advert (which has no
+            // in-place data update — it must stop→restart) churns once per burst, not once per store-and-forward frame.
+            cueJob =
+                scope.launch {
+                    storeDigest.version.drop(1).collectLatest {
+                        delay(CUE_READVERTISE_DEBOUNCE_MS)
+                        readvertise()
+                    }
+                }
             powerJob = scope.launch { powerState.state.drop(1).collect { wake() } }
             diagJob = scope.launch { diagLoop() }
             // A2DP forces the scan to its floor (audio contends the radio); wake the scan loop on any change so
@@ -807,6 +816,12 @@ class BluetoothMeshTransport(
 
         // Cadence of the periodic diagnostic state line (links/reach/inFlight/backoff/a2dp), mirroring NAN.
         private const val DIAG_INTERVAL_MS = 12_000L
+
+        // Quiet window to coalesce a burst of digest-cue changes into ONE re-advertise. The cue is only a coarse
+        // "my custody set changed, come sync" hint (the on-link DIGEST id-diff is authoritative), and the legacy
+        // advert must stop→restart to swap its service data, so settling ~1.5s before republishing is imperceptible
+        // to sync latency (the BLE scan floors at minutes) while it removes the per-change advertiser churn.
+        private const val CUE_READVERTISE_DEBOUNCE_MS = 1_500L
 
         private const val MS_PER_S = 1_000L
 
