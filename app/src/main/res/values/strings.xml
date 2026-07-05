@@ -65,6 +65,8 @@
     <string name="chatlist_radio_banner_dismiss">Dismiss</string>
     <string name="chat_empty">No messages yet.\nSay hello to nearby devices.</string>
     <string name="chat_message_hint">Knit Message</string>
+    <string name="chat_typing">%1$s is typing</string>
+    <string name="chat_typing_multiple">%1$s and others are typing</string>
     <string name="chat_loading_photo">Photo appears when a nearby device has it</string>
     <string name="chat_attachment_image_desc">Photo attachment</string>
     <string name="chat_view_photo">View photo</string>

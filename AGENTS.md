@@ -134,9 +134,10 @@ frames.
     `type` (a plain **string** discriminator, so an unknown future type decodes instead of throwing),
     `id`, `senderId`, `sentAt`, `recipientId`, `group` — plus the opaque per-type `payload`.
   - Per-type content (`ChatContent`, `ProfileContent`, `GroupLeaveContent`, `ReceiptContent`,
-    `ReactionContent`, `BlobReqContent`, `KeyReqContent`) lives inside `payload`; only endpoints parse it.
-    Current `type`s: `chat`, `groupupdate`, `profile`, `receipt`, `reaction`, `groupleave`, `blobreq`,
-    `keyreq`.
+    `ReactionContent`, `BlobReqContent`, `KeyReqContent`, `TypingContent`) lives inside `payload`; only
+    endpoints parse it. Current `type`s: `chat`, `groupupdate`, `profile`, `receipt`, `reaction`,
+    `groupleave`, `blobreq`, `keyreq`, `typing` (a best-effort, single-hop, never-custodied "now typing"
+    cue — see the typing-indicator flow).
   **One signature authenticates every type**: `WireEnvelope.sig` is raw Ed25519 over `signed` (which
   binds `type`/`id`/`senderId`), verified byte-exact in `MeshManager.verifyInbound`; `blobreq` (with
   `relay = false`) is the only unsigned frame. `MeshManager` signs on origination; `verifyInbound` drops

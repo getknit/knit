@@ -74,6 +74,8 @@ import java.nio.ByteBuffer
  *   with `digestVersion`, all/live fingerprints, `expiredIds`, the full `allIds`, and capped per-row detail
  *   (`--ei limit N`, default [DEFAULT_STORE_LIMIT]) — to diff why two devices never converge their digests.
  * - [ACTION_REACT] — `--es id <messageId> --es emoji <emoji>` toggles a reaction.
+ * - [ACTION_TYPING] — `--es conv <id>` (or `--es to <peerNodeId>`; default the broadcast room) fires one
+ *   best-effort "now typing" cue; poll a receiver's [ACTION_STATE] `typing` map to confirm it landed.
  * - [ACTION_SHARE_APK] — runs the offline "Share Knit app" prepare step (merging split installs into one
  *   re-signed APK) headlessly and reports the staged `cacheDir/apk` files, so the result can be pulled +
  *   verified without the share sheet.
@@ -142,6 +144,10 @@ class DebugBridgeReceiver :
 
                         ACTION_REACT -> {
                             handleReact(intent)
+                        }
+
+                        ACTION_TYPING -> {
+                            handleTyping(intent)
                         }
 
                         ACTION_SHARE_APK -> {
@@ -427,6 +433,17 @@ class DebugBridgeReceiver :
         return reply("ok", "reacted $emoji to $messageId")
     }
 
+    /**
+     * Fires one best-effort "now typing" cue for `--es conv <id>` (or the `to` DM shorthand; default the
+     * broadcast room), exactly as the chat input's throttle does. Poll a receiver's [ACTION_STATE] `typing`
+     * field to confirm it landed. Fire-and-forget: replies `ok` regardless of whether anyone was reachable.
+     */
+    private suspend fun handleTyping(intent: Intent): JSONObject {
+        val conv = intent.getStringExtra(EXTRA_CONV) ?: intent.getStringExtra(EXTRA_TO) ?: Conversations.NEARBY
+        mesh.sendTyping(conv)
+        return reply("ok", "typing cue sent to $conv").put("conversation", conv)
+    }
+
     private suspend fun handleState(intent: Intent): JSONObject {
         val selfId = identity.nodeId()
         val selfName = settings.displayName.first()
@@ -437,6 +454,11 @@ class DebugBridgeReceiver :
             reachable.put(JSONObject().put("nodeId", peer.nodeId).put("name", nameByNode[peer.nodeId] ?: ""))
         }
 
+        // Ephemeral "who's typing" state (conversationId -> [senderNodeId, …]), so a receiver can be polled
+        // headlessly to confirm a best-effort typing cue landed — the indicator itself is UI-only/transient.
+        val typing = JSONObject()
+        mesh.typing.value.forEach { (conv, senders) -> typing.put(conv, JSONArray(senders.toList())) }
+
         val out =
             JSONObject()
                 .put("status", "ok")
@@ -444,6 +466,7 @@ class DebugBridgeReceiver :
                 .put("health", mesh.transportHealth.value.name)
                 .put("neighborCount", mesh.neighborCount.value)
                 .put("reachable", reachable)
+                .put("typing", typing)
                 .put("metrics", metricsJson(metrics.snapshot()))
 
         intent.getStringExtra(EXTRA_CONV)?.let { conv ->
@@ -614,6 +637,7 @@ class DebugBridgeReceiver :
         const val ACTION_STATE = "app.getknit.knit.debug.STATE"
         const val ACTION_STORE = "app.getknit.knit.debug.STORE"
         const val ACTION_REACT = "app.getknit.knit.debug.REACT"
+        const val ACTION_TYPING = "app.getknit.knit.debug.TYPING"
         const val ACTION_SHARE_APK = "app.getknit.knit.debug.SHAREAPK"
         const val ACTION_WEBPPROBE = "app.getknit.knit.debug.WEBPPROBE"
         const val ACTION_WEBPCONV = "app.getknit.knit.debug.WEBPCONV"

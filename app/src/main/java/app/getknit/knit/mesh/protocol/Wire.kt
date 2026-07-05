@@ -40,6 +40,7 @@ object FrameType {
     const val REACTION = "reaction"
     const val BLOB_REQ = "blobreq"
     const val KEY_REQ = "keyreq"
+    const val TYPING = "typing"
 
     /**
      * Whether a frame of [type] is worth parking for replay when it's dropped for a missing sender key
@@ -56,8 +57,10 @@ object FrameType {
      * coordination-plane fast-fanout (see [isStorable] / `MeshManager.shouldFastFanout`): every floodable
      * type — the locally-delivered [isReplayable] family plus [PROFILE] (which self-certifies its key
      * in-band, so it can be authenticated and re-served without a prior pin). Excludes the point-to-point
-     * [BLOB_REQ]/[KEY_REQ] requests (relayed hop-by-hop, not flooded, and transient — nothing to custody)
-     * and any unknown future type (a carrier can't authenticate what it can't place).
+     * [BLOB_REQ]/[KEY_REQ] requests (relayed hop-by-hop, not flooded, and transient — nothing to custody),
+     * the best-effort [TYPING] cue (single-hop, fire-and-forget presence — worthless a moment later, so it
+     * is never carried, parked, or re-served), and any unknown future type (a carrier can't authenticate
+     * what it can't place).
      */
     fun isCustodial(type: String): Boolean = isReplayable(type) || type == PROFILE
 }
@@ -198,6 +201,20 @@ data class BlobReqContent(
 @Serializable
 data class KeyReqContent(
     val nodeIds: List<String>,
+)
+
+/**
+ * Content of a [FrameType.TYPING] cue — a best-effort, fire-and-forget "now typing" presence ping. Scoped
+ * to a conversation the same way a chat is: a DM by [RelayEnvelope.recipientId], the broadcast room by both
+ * that and [groupId] being null, and a group by [groupId] (carried here, NOT in the heavy
+ * [RelayEnvelope.group] roster, so a signed typing frame stays under the ~255 B coordination-plane cap). The
+ * cue is single-hop (`relay = false`) and never custodied ([isStorable] is false for it), so no field ever
+ * needs to survive store-and-forward. [groupId] is the only field and is defaulted, so a DM/broadcast frame
+ * encodes an empty payload.
+ */
+@Serializable
+data class TypingContent(
+    val groupId: String? = null,
 )
 
 /**

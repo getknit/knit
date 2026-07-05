@@ -94,6 +94,14 @@ data class MentionCandidate(
     val avatarHash: String?,
 )
 
+/** A peer currently shown as "typing" in this thread, resolved to a display [name] + [avatarHash] for the
+ *  animated indicator row. */
+data class TypingPeer(
+    val nodeId: String,
+    val name: String,
+    val avatarHash: String?,
+)
+
 data class ChatUiState(
     val rows: List<ChatRow> = emptyList(),
     val neighborCount: Int = 0,
@@ -113,6 +121,9 @@ data class ChatUiState(
     // offers "Rename group" / "Leave group" instead of Block/Unblock.
     val isGroup: Boolean = false,
     val memberCount: Int = 0,
+    // Peers currently typing in this thread, shown as an animated indicator above the input. Ephemeral
+    // (TTL'd in the mesh layer) and best-effort; empty most of the time.
+    val typingPeers: List<TypingPeer> = emptyList(),
 )
 
 class ChatViewModel(
@@ -224,10 +235,20 @@ class ChatViewModel(
             )
         }
 
-    // Neighbor count + radio health folded into one source so the main state combine stays within its
-    // five-flow arity.
+    // Neighbor count + radio health + the "who's typing" map folded into one source so the main state
+    // combine stays within its five-flow arity.
+    private data class MeshStatus(
+        val neighborCount: Int,
+        val transportHealth: TransportHealth,
+        val typing: Map<String, Set<String>>,
+    )
+
     private val meshStatus =
-        combine(meshManager.neighborCount, meshManager.transportHealth) { count, health -> count to health }
+        combine(
+            meshManager.neighborCount,
+            meshManager.transportHealth,
+            meshManager.typing,
+        ) { count, health, typing -> MeshStatus(count, health, typing) }
 
     val state: StateFlow<ChatUiState> =
         combine(
@@ -236,7 +257,7 @@ class ChatViewModel(
             meshStatus,
             myNodeId,
             settings.displayName,
-        ) { bundle, peerList, (count, health), me, myName ->
+        ) { bundle, peerList, (count, health, typingMap), me, myName ->
             val msgs = bundle.messages
             val reacts = bundle.reactions
             val blocked = bundle.blocked
@@ -306,6 +327,16 @@ class ChatViewModel(
                         )
                     }.sortedBy { it.displayName.lowercase() }
                     .toList()
+            // Peers typing in THIS thread, resolved for the indicator row. Skip ourselves (defensive — our
+            // own cue never lands here) and blocked senders (as their messages are already filtered out).
+            val typingPeers =
+                typingMap[conversationId]
+                    .orEmpty()
+                    .asSequence()
+                    .filter { it != me && it !in blocked }
+                    .map { id -> TypingPeer(id, displayNameFor(peersByNode[id]?.name, id), peersByNode[id]?.avatarHash) }
+                    .sortedBy { it.name.lowercase() }
+                    .toList()
             ChatUiState(
                 rows = rows,
                 neighborCount = count,
@@ -342,6 +373,7 @@ class ChatViewModel(
                 verified = !isRoom && !isGroup && peersByNode[conversationId]?.verified == true,
                 isGroup = isGroup,
                 memberCount = members.size,
+                typingPeers = typingPeers,
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom))
 
@@ -573,5 +605,28 @@ class ChatViewModel(
     fun onChatBackground() {
         chatForeground.value = false
         notifier.setVisibleConversation(null)
+    }
+
+    // Wall clock of the last typing cue we sent, so we throttle to at most one per TYPING_SEND_INTERVAL_MS
+    // while the user edits (see onUserTyping). Main-thread-confined (the screen's snapshotFlow collector).
+    private var lastTypingSentAt = 0L
+
+    /**
+     * The user changed the (non-empty) draft: emit a best-effort "now typing" cue, throttled to at most one per
+     * [TYPING_SEND_INTERVAL_MS] and only while the chat is foregrounded. Fires immediately on the first keystroke
+     * after an idle gap (the throttle window has elapsed), so the indicator appears promptly on the other side.
+     * Cheap and fire-and-forget — the screen may call this on every keystroke.
+     */
+    fun onUserTyping() {
+        val now = System.currentTimeMillis()
+        if (!chatForeground.value || now - lastTypingSentAt < TYPING_SEND_INTERVAL_MS) return
+        lastTypingSentAt = now
+        viewModelScope.launch { meshManager.sendTyping(conversationId) }
+    }
+
+    private companion object {
+        /** Send a typing cue at most this often while actively editing (< the receiver's ~12 s hold, so a peer
+         *  who keeps typing re-cues before their indicator would expire). */
+        const val TYPING_SEND_INTERVAL_MS = 8_000L
     }
 }

@@ -15,6 +15,7 @@
                 <action android:name="app.getknit.knit.debug.STATE" />
                 <action android:name="app.getknit.knit.debug.STORE" />
                 <action android:name="app.getknit.knit.debug.REACT" />
+                <action android:name="app.getknit.knit.debug.TYPING" />
                 <action android:name="app.getknit.knit.debug.SHAREAPK" />
                 <action android:name="app.getknit.knit.debug.HEAL" />
                 <action android:name="app.getknit.knit.debug.WEBPPROBE" />

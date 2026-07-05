@@ -45,6 +45,7 @@ import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.TypingContent
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.isStorable
@@ -166,6 +167,11 @@ class MeshManager(
     // a frame that raced ahead of its sender's profile still lands. The inbound complement of flushPendingFor.
     private val pendingInbound = PendingInbound(metrics = metrics)
 
+    // Receiver-side state for the best-effort "now typing" indicator: which senders are typing in which
+    // conversation. Ephemeral and never custodied — a typing cue is fire-and-forget, so nothing is persisted
+    // (a live typer re-cues within the TTL). Populated by handleTyping, cleared by deliverChat on a real message.
+    private val typingTracker = TypingTracker(scope)
+
     @Volatile
     private var started = false
 
@@ -217,6 +223,9 @@ class MeshManager(
             ?: transport.reachable
                 .map { set -> set.associate { it.nodeId to setOf(transport.kind) } }
                 .stateIn(scope, SharingStarted.Eagerly, emptyMap())
+
+    /** conversationId → the set of peers currently shown as "typing" there, for the chat UI. Ephemeral (TTL'd). */
+    val typing: StateFlow<Map<String, Set<String>>> get() = typingTracker.typing
 
     fun start() {
         if (started) return
@@ -521,6 +530,35 @@ class MeshManager(
                 payload = WireCodec.encodePayload(ReactionContent(messageId, next)),
             ),
         )
+    }
+
+    /**
+     * Broadcasts a best-effort "now typing" cue for [conversationId] to nearby peers — the presence ping behind
+     * the chat typing indicator. Deliberately NOT [originateSigned]: it must never flood, be custodied, or be
+     * parked, so it is signed with `relay = false` (single-hop, like a blob request) and sent only over the
+     * coordination-plane fast path — targeted [MeshTransport.fastSend] to a DM recipient, [MeshTransport.fastFanout]
+     * to every neighbor for the broadcast room / a group. A fresh [FrameId] each time so the receiver's SeenSet
+     * never dedups the next cue. Fire-and-forget: if it doesn't fit the ~255 B channel or no one is reachable it
+     * simply no-ops. Scope rides the frame the same way a chat does — [RelayEnvelope.recipientId] for a DM, a
+     * compact [TypingContent.groupId] for a group (not the heavy [RelayEnvelope.group] roster, which could blow
+     * the coordination-plane size cap).
+     */
+    suspend fun sendTyping(conversationId: String) {
+        val me = identity.nodeId()
+        val kind = Conversations.kindFor(conversationId)
+        val recipientId = if (kind == ConversationKind.DM) conversationId else null
+        val groupId = if (kind == ConversationKind.GROUP) conversationId else null
+        val env =
+            RelayEnvelope(
+                type = FrameType.TYPING,
+                id = FrameId.new(),
+                senderId = me,
+                sentAt = System.currentTimeMillis(),
+                recipientId = recipientId,
+                payload = WireCodec.encodePayload(TypingContent(groupId)),
+            )
+        val wire = sign(env, relay = false)
+        if (recipientId != null) transport.fastSend(wire, Peer(recipientId)) else transport.fastFanout(wire)
     }
 
     /** On startup, sweep orphaned blobs/reactions and re-request attachment blobs we're still missing. */
@@ -874,10 +912,35 @@ class MeshManager(
                 WireCodec.decodePayload<KeyReqContent>(env.payload)?.let { keyExchange.onRequest(it.nodeIds, fromNodeId) }
             }
 
+            FrameType.TYPING -> {
+                handleTyping(env)
+            }
+
             else -> {
                 Unit
             }
         }
+    }
+
+    /**
+     * Records a best-effort "now typing" cue in [typingTracker] so the chat UI can show it. The conversation is
+     * derived the same way [deliverChat] scopes a message: a group by the compact [TypingContent.groupId] (a group
+     * we don't know locally is ignored — nothing to show it in), a DM addressed to us keyed by the other party, and
+     * the broadcast room otherwise. A DM not addressed to us and our own cue looping back are dropped. Auto-expires
+     * in the tracker; a real message from the same sender clears it early ([deliverChat] → [TypingTracker.onMessageFrom]).
+     */
+    private suspend fun handleTyping(env: RelayEnvelope) {
+        val me = identity.nodeId()
+        if (env.senderId == me) return
+        val groupId = WireCodec.decodePayload<TypingContent>(env.payload)?.groupId
+        val conversationId =
+            when {
+                groupId != null -> if (groups.find(groupId) == null) return else groupId
+                env.recipientId == null -> Conversations.NEARBY
+                !Conversations.isForMe(env.recipientId, me) -> return
+                else -> env.senderId
+            }
+        typingTracker.onTyping(conversationId, env.senderId)
     }
 
     /**
@@ -953,10 +1016,13 @@ class MeshManager(
             if (bundle == null) {
                 metrics.onDropped(DropReason.NO_SENDER_KEY)
                 // Try to recover the sender's key so future frames from it verify (the inbound key-request
-                // path). Excludes a key request itself (don't request keys for key-requesters — no recursion)
-                // and a profile (its key rides in-band, so a null bundle there means a malformed key, not an
-                // absent pin that a request could fill). Safe inside verifyInbound's runCatching — never throws.
-                if (env.type != FrameType.KEY_REQ && env.type != FrameType.PROFILE) {
+                // path). Excludes a key request itself (don't request keys for key-requesters — no recursion),
+                // a profile (its key rides in-band, so a null bundle there means a malformed key, not an absent
+                // pin that a request could fill), and a typing cue (ephemeral best-effort presence — with no
+                // pinned key we can't render the peer's avatar anyway, so drop it silently rather than spend a
+                // key request / park slot on a frame that's worthless a moment later). Safe inside
+                // verifyInbound's runCatching — never throws.
+                if (env.type != FrameType.KEY_REQ && env.type != FrameType.PROFILE && env.type != FrameType.TYPING) {
                     keyExchange.want(env.senderId)
                     // Park a deliverable frame so it's replayed once the key arrives (handleProfile), instead of
                     // being lost — the inbound complement of the outbound pendingKey/flushPendingFor retransmit.
@@ -1332,6 +1398,9 @@ class MeshManager(
         conversationId: String,
         attachmentKey: String? = null,
     ) {
+        // A real message from this sender supersedes any "typing" indicator for them in this thread — clear it
+        // now (idempotent, and a no-op if they weren't shown as typing). Runs on re-delivery too, harmlessly.
+        typingTracker.onMessageFrom(conversationId, env.senderId)
         // First-ever delivery? Store-and-forward can re-serve a DM we already hold (after the 10-min
         // SeenSet window, or after a restart that empties it); notifying again would replay old messages.
         // The save below is an idempotent upsert, so only the notification needs gating.

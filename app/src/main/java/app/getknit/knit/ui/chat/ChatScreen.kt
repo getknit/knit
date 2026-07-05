@@ -156,6 +156,7 @@ import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.components.GroupAvatar
+import app.getknit.knit.ui.components.KnitStitchIndicator
 import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.openUrl
 import app.getknit.knit.ui.preview.KnitPreview
@@ -165,6 +166,7 @@ import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
@@ -475,10 +477,11 @@ fun ChatScreen(
                     // emits clearInput only once a message is actually accepted (see the collector above).
                     viewModel.send(text, applied, replyingTo)
                 },
+                onTyping = viewModel::onUserTyping,
             )
         },
     ) { padding ->
-        if (state.rows.isEmpty()) {
+        if (state.rows.isEmpty() && state.typingPeers.isEmpty()) {
             EmptyState(modifier = Modifier.fillMaxSize().padding(padding))
         } else {
             LazyColumn(
@@ -494,6 +497,13 @@ fun ChatScreen(
                 verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom),
                 reverseLayout = true,
             ) {
+                // Reverse layout: the first item is drawn at the visual bottom, so the typing indicator sits
+                // directly above the input and below the newest message (Signal-style, scrolls with content).
+                if (state.typingPeers.isNotEmpty()) {
+                    item(key = "typing_indicator") {
+                        TypingIndicatorRow(peers = state.typingPeers)
+                    }
+                }
                 items(state.rows.asReversed(), key = { it.id }) { row ->
                     if (row.kind == MessageEntity.KIND_MEMBER_LEFT) {
                         SystemNotice(stringResource(R.string.chat_group_member_left, row.senderName))
@@ -1461,6 +1471,43 @@ private fun EmptyState(modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * The "now typing" row: the typing peers' avatars (up to three, slightly overlapped for a group/room) beside
+ * a received-style bubble carrying the animated [KnitStitchIndicator]. Mirrors a received [MessageBubble]'s
+ * avatar + bubble layout so it reads as an incoming message forming. Best-effort presence — the ViewModel
+ * feeds it a TTL'd, ephemeral list, so this simply disappears when the list empties.
+ */
+@Composable
+private fun TypingIndicatorRow(peers: List<TypingPeer>) {
+    if (peers.isEmpty()) return
+    val description =
+        if (peers.size == 1) {
+            stringResource(R.string.chat_typing, peers.first().name)
+        } else {
+            stringResource(R.string.chat_typing_multiple, peers.first().name)
+        }
+    Row(
+        modifier = Modifier.fillMaxWidth().semantics { contentDescription = description },
+        horizontalArrangement = Arrangement.Start,
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        // Overlap avatars when more than one person is typing (a group/room), like a small stack.
+        Row(horizontalArrangement = Arrangement.spacedBy((-10).dp)) {
+            peers.take(3).forEach { peer ->
+                Avatar(avatarHash = peer.avatarHash, name = peer.name, size = 30.dp)
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 4.dp),
+        ) {
+            KnitStitchIndicator(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp))
+        }
+    }
+}
+
 /** A centered, muted status line in the thread (e.g. "Alice left the chat"); not a sender bubble. */
 @Composable
 private fun SystemNotice(text: String) {
@@ -1487,6 +1534,7 @@ private fun MessageInput(
     onClearAttachment: () -> Unit,
     onReceiveImage: (Uri) -> Unit,
     onSend: () -> Unit,
+    onTyping: () -> Unit = {},
 ) {
     // Capture images committed by the keyboard (Gboard GIFs), drag-and-drop, or paste. The state-based
     // BasicTextField is required here: it advertises the accepted content MIME types to the IME, so the
@@ -1519,6 +1567,13 @@ private fun MessageInput(
             .collect { (text, sel) ->
                 activeQuery = if (sel.collapsed) activeMentionQuery(text, sel.end) else null
             }
+    }
+    // Fire a best-effort "now typing" cue on each edit of a non-empty draft; the ViewModel throttles to at
+    // most one per interval. drop(1) skips the initial snapshot so opening a thread doesn't announce typing.
+    LaunchedEffect(state) {
+        snapshotFlow { state.text.toString() }
+            .drop(1)
+            .collect { text -> if (text.isNotBlank()) onTyping() }
     }
     val filtered =
         remember(activeQuery, candidates) {

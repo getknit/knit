@@ -13,6 +13,7 @@ import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.TypingContent
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.WrappedKey
@@ -238,6 +239,13 @@ class WireSerializationTest {
         assertNull(WireCodec.decodePayload<ReactionContent>(WireCodec.encodePayload(content))?.emoji)
     }
 
+    @Test
+    fun typingContentRoundTrips() {
+        assertEquals("g-1", WireCodec.decodePayload<TypingContent>(WireCodec.encodePayload(TypingContent("g-1")))?.groupId)
+        // A DM/broadcast typing cue carries no group id: the defaulted field encodes empty and decodes back null.
+        assertNull(WireCodec.decodePayload<TypingContent>(WireCodec.encodePayload(TypingContent()))?.groupId)
+    }
+
     // --- isStorable predicate ---
 
     @Test
@@ -252,6 +260,7 @@ class WireSerializationTest {
         assertTrue("group leaves are now custodied", envelope(type = FrameType.GROUP_LEAVE).isStorable())
         assertFalse("a point-to-point key request is never carried", envelope(type = FrameType.KEY_REQ).isStorable())
         assertFalse("a point-to-point blob request is never carried", envelope(type = FrameType.BLOB_REQ).isStorable())
+        assertFalse("a best-effort typing cue is never carried", envelope(type = FrameType.TYPING).isStorable())
     }
 
     // --- signature binding (the bytes the wrapper signature covers) ---

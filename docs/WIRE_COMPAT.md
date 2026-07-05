@@ -37,7 +37,7 @@ Each evolves independently; bump the right one:
   advert/handshake hint (Wi-Fi Aware `serviceSpecificInfo` / the BLE service-data payload), known at
   connection time, **unauthenticated** — a routing/degradation hint only, never a trust input.
 - **`RelayEnvelope.type` registry**: `chat`, `groupupdate`, `groupleave`, `profile`, `receipt`,
-  `reaction`, `blobreq`, `keyreq`.
+  `reaction`, `blobreq`, `keyreq`, `typing`.
 - **`EncEnvelope.v`**: the E2E crypto scheme (AES-GCM + HPKE wrap).
 - **`MessageContent.v`**: the decrypted plaintext schema.
 
