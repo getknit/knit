@@ -80,11 +80,13 @@ class ForwardSync(
 
     /**
      * A neighbor advertised the custody ids it holds ([theirIds]): unicast it every carried frame **it lacks** —
-     * the set difference that replaces pushing the whole store. Same targeting as before: never hand a message
-     * back to its author, and offer a group message only to a roster member (a DM/broadcast goes to any
-     * newcomer). Each frame is re-wrapped in a fresh [WireEnvelope] (full ttl, hops 0) around its verbatim
-     * signed blob; a duplicate that races in is still dropped by the receiver's SeenSet, so a stale digest only
-     * ever costs bytes, never correctness.
+     * the set difference that replaces pushing the whole store. Targeting: offer a group message only to a roster
+     * member (a DM/broadcast goes to any newcomer). We DO re-serve a peer frames it authored when the diff shows
+     * it no longer holds them (custody wiped by a destructive DB migration) — that is how a node's own sends
+     * reconverge, and it authenticates them against its own identity bundle ([MeshManager]). Each frame is
+     * re-wrapped in a fresh [WireEnvelope] (full ttl, hops 0) around its verbatim signed blob; a duplicate that
+     * races in is still dropped by the receiver's SeenSet, so a stale digest only ever costs bytes, never
+     * correctness.
      */
     suspend fun onDigest(
         fromNodeId: String,
@@ -95,7 +97,12 @@ class ForwardSync(
         store.liveFrames(clock()).forEach { carried ->
             val env = carried.envelope
             if (env.id in have) return@forEach // the diff: skip frames the peer already holds
-            if (env.senderId == fromNodeId) return@forEach // don't hand a message back to its author
+            // No author-skip: the `have` diff already elides any frame the peer still holds, so the only
+            // peer-authored frame reaching here is one it authored but no longer has — its custody wiped by a
+            // destructive DB migration. Re-serving it is exactly how a node re-carries its own sends so the
+            // content digest reconverges; it authenticates the frame against its own identity bundle (see
+            // MeshManager.verifierBundle). The old `senderId == fromNodeId` skip assumed the author always has
+            // its own frame, which a wipe breaks — leaving each node permanently short its own sends.
             val members = env.group?.members
             if (members != null && fromNodeId !in members) return@forEach // group: members only (DM/broadcast: anyone)
             transport.send(WireEnvelope(sig = carried.sig, signed = carried.signed), peer)

@@ -904,8 +904,17 @@ class MeshManager(
      * there is no key to verify with (an unpinned non-profile sender, or a malformed in-band key).
      */
     private suspend fun verifierBundle(env: RelayEnvelope): PublicKeyBundle? =
-        when (env.type) {
-            FrameType.PROFILE -> {
+        when {
+            // Our own frame looping back (a neighbor carried it and re-served it): verify against our identity's
+            // own bundle, which we always have. We never pin our own key in `peers`, so without this branch a
+            // re-served self frame fails the pinned-key lookup below and is dropped — and after a custody wipe
+            // (a destructive DB migration) we can then never re-carry our own sends, so the content digest never
+            // reconverges with peers who still hold them. Checked first: it out-ranks the PROFILE in-band path.
+            env.senderId == identity.nodeId() -> {
+                PublicKeyBundle.decode(identity.publicKeyBundle())
+            }
+
+            env.type == FrameType.PROFILE -> {
                 WireCodec.decodePayload<ProfileContent>(env.payload)?.pubKey?.let { PublicKeyBundle.decode(it) }
             }
 
@@ -933,14 +942,13 @@ class MeshManager(
     ): Boolean =
         runCatching {
             if (env.type == FrameType.BLOB_REQ) return true
-            // One of our own originated frames looping back to us: a neighbor carried it (store-and-forward) and,
-            // once our SeenSet dedup window lapsed, its re-serve re-flooded it back through a third node. We never
-            // pin our own key in `peers`, so this would otherwise fall through to the NO_SENDER_KEY path below —
-            // spuriously counting a drop, parking it in PendingInbound (which never releases, since a profile for
-            // ourselves never arrives), and asking neighbors for our own key (a KeyExchange.want no-op). We already
-            // delivered it locally when we originated it, so drop it as a silent local no-op; the router still
-            // relays it (that runs after onDeliver returns) and neighbors dedup it, so it dies at the next hop.
-            if (env.senderId == identity.nodeId()) return false
+            // A self frame — one of OUR own frames looping back, after a neighbor carried it and (once our SeenSet
+            // window lapsed) re-served it — is authenticated like any other via [verifierBundle], which resolves
+            // our identity's own bundle for it. It USED to be dropped here as a silent no-op ("we already have
+            // it"), but that assumption breaks after a destructive DB migration wipes custody: peers still hold
+            // our sends and re-serve them, yet the drop stopped [onDeliver]'s carry from re-custodying them, so
+            // the content digest never reconverged. Letting it through re-carries it; delivery is idempotent
+            // ([deliverChat]'s isNew gate, own-message notifications already skipped), so a duplicate is harmless.
             val bundle = verifierBundle(env)
             if (bundle == null) {
                 metrics.onDropped(DropReason.NO_SENDER_KEY)

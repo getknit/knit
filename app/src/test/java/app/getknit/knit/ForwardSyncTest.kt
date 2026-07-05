@@ -251,22 +251,30 @@ class ForwardSyncTest {
         }
 
     @Test
-    fun pushesCarriedBroadcastToAnyNewcomerButNotItsAuthor() =
+    fun reservesAnAuthorItsOwnBroadcastOnlyWhenItsDigestShowsItLostIt() =
         runTest {
             val transport = RecordingTransport()
             val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
             val env = broadcast("r1") // authored by "a"
             sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
 
-            sync.onDigest("a", emptyList()) // the author — never handed its own message back
-            assertTrue("broadcast isn't offered back to its author", transport.sent.isEmpty())
+            // Author "a" still holds r1 (advertises it): the `have` diff elides it — the common case, no re-serve.
+            sync.onDigest("a", listOf("r1"))
+            assertTrue("a frame the author still holds is not re-served", transport.sent.isEmpty())
 
-            sync.onDigest("z", emptyList()) // anyone else — offered once (no recipient/roster to target)
+            // Author "a" LACKS r1 (empty digest — e.g. its custody was wiped by a destructive DB migration): now
+            // re-served so the author re-carries its own send and the content digest reconverges.
+            sync.onDigest("a", emptyList())
+            assertEquals("an author that lost its own frame is re-served it", listOf("r1"), transport.sent.map { it.first.frameId() })
+
+            // Any other newcomer lacking it is offered it too (no recipient/roster to target).
+            transport.sent.clear()
+            sync.onDigest("z", emptyList())
             assertEquals(listOf("r1"), transport.sent.map { it.first.frameId() })
         }
 
     @Test
-    fun pushesCarriedReactionAndProfileToAnyNewcomerButNotTheirAuthor() =
+    fun reservesAnAuthorItsOwnMetadataOnlyWhenItsDigestShowsItLostIt() =
         runTest {
             val transport = RecordingTransport()
             val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
@@ -275,10 +283,21 @@ class ForwardSyncTest {
             sync.onSeen(wireOf(react), react, ForwardStore.ORIGIN_RELAY)
             sync.onSeen(wireOf(prof), prof, ForwardStore.ORIGIN_RELAY)
 
-            sync.onDigest("a", emptyList()) // the author — never handed its own metadata back
-            assertTrue("metadata isn't offered back to its author", transport.sent.isEmpty())
+            // Author "a" still holds both: the `have` diff elides them — no re-serve.
+            sync.onDigest("a", listOf("k1", "p1"))
+            assertTrue("metadata the author still holds is not re-served", transport.sent.isEmpty())
 
-            sync.onDigest("z", emptyList()) // anyone else — both offered (no recipient/roster to target)
+            // Author "a" lost its own metadata (empty digest → custody wiped): re-served so its custody reconverges.
+            sync.onDigest("a", emptyList())
+            assertEquals(
+                "author is re-served its own lost metadata",
+                listOf("k1", "p1"),
+                transport.sent.map { it.first.frameId() }.sorted(),
+            )
+
+            // Any other newcomer lacking them is offered both.
+            transport.sent.clear()
+            sync.onDigest("z", emptyList())
             assertEquals(listOf("k1", "p1"), transport.sent.map { it.first.frameId() }.sorted())
         }
 
@@ -455,16 +474,21 @@ class ForwardSyncTest {
         }
 
     @Test
-    fun doesNotPushADmBackToItsAuthor() =
+    fun reservesADmAuthorItsOwnMessageOnlyWhenItsDigestShowsItLostIt() =
         runTest {
             val transport = RecordingTransport()
             val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
-            val env = dm("m1", "a", "b")
+            val env = dm("m1", "a", "b") // DM from "a" to "b"
             sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
 
-            sync.onDigest("a", emptyList()) // "a" authored m1
+            // Author "a" still holds m1: the `have` diff elides it (the common case).
+            sync.onDigest("a", listOf("m1"))
+            assertTrue("a DM the author still holds is not re-served", transport.sent.isEmpty())
 
-            assertTrue("a should not be handed back its own message", transport.sent.isEmpty())
+            // Author "a" lost m1 (custody wiped by a destructive DB migration): re-served so "a" re-carries its
+            // own undelivered DM and the content digest reconverges — the same recovery as broadcast/group/metadata.
+            sync.onDigest("a", emptyList())
+            assertEquals("a DM author that lost its own message is re-served it", listOf("m1"), transport.sent.map { it.first.frameId() })
         }
 
     @Test
