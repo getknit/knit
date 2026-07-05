@@ -152,6 +152,7 @@ import app.getknit.knit.R
 import app.getknit.knit.TextLimits
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.ui.components.Avatar
@@ -173,7 +174,6 @@ import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 import org.koin.core.parameter.parametersOf
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     conversationId: String,
@@ -191,22 +191,11 @@ fun ChatScreen(
     // gotcha, draft state stays in the screen, not the ViewModel/DataStore). Filtered against the final
     // text on send so a mention whose "@name" was deleted doesn't ship.
     val pendingMentions = remember { mutableStateListOf<Mention>() }
-    var fullscreenImage by remember { mutableStateOf<FullscreenImage?>(null) }
     // The message being replied to (draft-local like inputState/pendingMentions, per the AGENTS.md
     // gotcha), rendered as a quote above the input until the reply is sent or cancelled. Null otherwise.
+    // Lives here (not in the content) because the clearInput collector below must reset it atomically
+    // with the input text and pending mentions.
     var replyingTo by remember { mutableStateOf<ReplyRef?>(null) }
-    // The message a tapped quote scrolled to, briefly highlighted then cleared (see the LaunchedEffect
-    // below and MessageBubble). Null when nothing is highlighted.
-    var highlightedMessageId by remember { mutableStateOf<String?>(null) }
-    var headerMenuOpen by remember { mutableStateOf(false) }
-    var showEncryptionInfo by remember { mutableStateOf(false) }
-    val listState = rememberLazyListState()
-    // Aspect ratios of already-decoded image attachments, keyed by content hash, kept above the
-    // LazyColumn so they survive item disposal. Coil doesn't memory-cache animated GIFs, so each one
-    // re-decodes every time it scrolls back into view; without a reserved height the bubble collapses
-    // to zero mid-decode and snaps back, which is what made the list "skip" when flinging past several
-    // GIFs. Caching the ratio lets a re-entering bubble reserve the right height before it decodes.
-    val imageRatios = remember { HashMap<String, Float>() }
     // A ticking clock so each bubble's relative timestamp ("2 min ago") recomposes as time passes;
     // System.currentTimeMillis() alone is not a tracked read and would freeze at first composition.
     val now by rememberCurrentTimeMillis()
@@ -243,19 +232,6 @@ fun ChatScreen(
         }
     }
 
-    // The thread is rendered bottom-anchored (the LazyColumn below uses reverseLayout), so it opens
-    // already resting on the newest message — no initial scroll, no visible glide through history — and
-    // the newest bubble stays glued to the bottom as the soft keyboard slides in and as late-loading
-    // images change earlier bubbles' heights. When a new trailing message arrives, follow it to the
-    // bottom if it's our own or the user is already parked there; if they've scrolled up to read
-    // history, leave their position untouched. After a prepend, reverseLayout shifts the bottom anchor
-    // from index 0 to 1, so treat <= 1 as "was at the bottom".
-    val newest = state.rows.lastOrNull()
-    LaunchedEffect(newest?.id) {
-        val row = newest ?: return@LaunchedEffect
-        if (row.mine || listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
-    }
-
     // Surface one-shot results (e.g. image saved) as toasts; a toast shows over the fullscreen Dialog,
     // unlike a Scaffold snackbar which the viewer would cover.
     val context = LocalContext.current
@@ -287,6 +263,133 @@ fun ChatScreen(
     LaunchedEffect(Unit) {
         viewModel.closeChat.collect { onBack() }
     }
+    val clipboard = LocalClipboard.current
+    val copyScope = rememberCoroutineScope()
+
+    ChatScreenContent(
+        conversationId = conversationId,
+        state = state,
+        inputState = inputState,
+        pendingAttachment = pendingAttachment,
+        replyingTo = replyingTo,
+        now = now,
+        onBack = onBack,
+        onOpenProfile = onOpenProfile,
+        onOpenGroupDetails = onOpenGroupDetails,
+        onSend = {
+            val text = inputState.text.toString()
+            val applied = pendingMentions.filter { text.contains("@${it.name}") }
+            // Don't clear here: a message blocked for abuse must keep the draft. The ViewModel
+            // emits clearInput only once a message is actually accepted (see the collector above).
+            viewModel.send(text, applied, replyingTo)
+        },
+        onAttachClick = {
+            picker.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+            )
+        },
+        onClearAttachment = viewModel::clearAttachment,
+        onReceiveImage = viewModel::attach,
+        onTyping = viewModel::onUserTyping,
+        onMentionAdded = { m -> if (pendingMentions.none { it == m }) pendingMentions.add(m) },
+        onStartReply = { replyingTo = it },
+        onCancelReply = { replyingTo = null },
+        onReact = viewModel::react,
+        onDeleteMessage = viewModel::deleteMessage,
+        onBlock = viewModel::block,
+        onUnblock = viewModel::unblock,
+        onCopy = { text ->
+            copyScope.launch {
+                clipboard.setClipEntry(
+                    ClipData.newPlainText("message", text).toClipEntry(),
+                )
+                // Android 13+ shows its own copy confirmation; skip the toast there
+                // so the user doesn't see a duplicate.
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                    viewModel.onMessageCopied()
+                }
+            }
+        },
+        onSaveAttachment = viewModel::saveAttachment,
+    )
+
+    // Sending an explicit image is allowed but discouraged: confirm before staging a flagged one.
+    // Stays with the wrapper: its trigger is the ViewModel's confirmAttachment flow and its buttons are
+    // pure ViewModel calls.
+    if (confirmAttachment != null) {
+        AlertDialog(
+            onDismissRequest = viewModel::dismissFlaggedAttachment,
+            title = { Text(stringResource(R.string.moderation_image_confirm_title)) },
+            text = { Text(stringResource(R.string.moderation_image_confirm_body)) },
+            confirmButton = {
+                TextButton(onClick = viewModel::confirmFlaggedAttachment) {
+                    Text(stringResource(R.string.moderation_image_confirm_send))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::dismissFlaggedAttachment) {
+                    Text(stringResource(android.R.string.cancel))
+                }
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ChatScreenContent(
+    conversationId: String,
+    state: ChatUiState,
+    inputState: TextFieldState,
+    pendingAttachment: AttachmentStore.Ingested?,
+    replyingTo: ReplyRef?,
+    now: Long,
+    onBack: () -> Unit,
+    onOpenProfile: (nodeId: String) -> Unit,
+    onOpenGroupDetails: (conversationId: String) -> Unit,
+    onSend: () -> Unit,
+    onAttachClick: () -> Unit,
+    onClearAttachment: () -> Unit,
+    onReceiveImage: (Uri) -> Unit,
+    onTyping: () -> Unit,
+    onMentionAdded: (Mention) -> Unit,
+    onStartReply: (ReplyRef) -> Unit,
+    onCancelReply: () -> Unit,
+    onReact: (messageId: String, emoji: String) -> Unit,
+    onDeleteMessage: (messageId: String) -> Unit,
+    onBlock: (nodeId: String) -> Unit,
+    onUnblock: (nodeId: String) -> Unit,
+    onCopy: (text: String) -> Unit,
+    onSaveAttachment: (hash: String) -> Unit,
+) {
+    var fullscreenImage by remember { mutableStateOf<FullscreenImage?>(null) }
+    // The message a tapped quote scrolled to, briefly highlighted then cleared (see the LaunchedEffect
+    // below and MessageBubble). Null when nothing is highlighted.
+    var highlightedMessageId by remember { mutableStateOf<String?>(null) }
+    var headerMenuOpen by remember { mutableStateOf(false) }
+    var showEncryptionInfo by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    // Aspect ratios of already-decoded image attachments, keyed by content hash, kept above the
+    // LazyColumn so they survive item disposal. Coil doesn't memory-cache animated GIFs, so each one
+    // re-decodes every time it scrolls back into view; without a reserved height the bubble collapses
+    // to zero mid-decode and snaps back, which is what made the list "skip" when flinging past several
+    // GIFs. Caching the ratio lets a re-entering bubble reserve the right height before it decodes.
+    val imageRatios = remember { HashMap<String, Float>() }
+    val scrollScope = rememberCoroutineScope()
+
+    // The thread is rendered bottom-anchored (the LazyColumn below uses reverseLayout), so it opens
+    // already resting on the newest message — no initial scroll, no visible glide through history — and
+    // the newest bubble stays glued to the bottom as the soft keyboard slides in and as late-loading
+    // images change earlier bubbles' heights. When a new trailing message arrives, follow it to the
+    // bottom if it's our own or the user is already parked there; if they've scrolled up to read
+    // history, leave their position untouched. After a prepend, reverseLayout shifts the bottom anchor
+    // from index 0 to 1, so treat <= 1 as "was at the bottom".
+    val newest = state.rows.lastOrNull()
+    LaunchedEffect(newest?.id) {
+        val row = newest ?: return@LaunchedEffect
+        if (row.mine || listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
+    }
+
     // A tapped quote scrolls to and briefly highlights its original (see MessageBubble); fade it after a
     // beat so the flash is transient.
     LaunchedEffect(highlightedMessageId) {
@@ -295,8 +398,6 @@ fun ChatScreen(
             highlightedMessageId = null
         }
     }
-    val clipboard = LocalClipboard.current
-    val copyScope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
@@ -442,9 +543,9 @@ fun ChatScreen(
                                         onClick = {
                                             headerMenuOpen = false
                                             if (state.isBlocked) {
-                                                viewModel.unblock(conversationId)
+                                                onUnblock(conversationId)
                                             } else {
-                                                viewModel.block(conversationId)
+                                                onBlock(conversationId)
                                             }
                                         },
                                     )
@@ -462,23 +563,13 @@ fun ChatScreen(
                 candidates = state.mentionCandidates,
                 replyingTo = replyingTo,
                 myNodeId = state.myNodeId,
-                onCancelReply = { replyingTo = null },
-                onMentionAdded = { m -> if (pendingMentions.none { it == m }) pendingMentions.add(m) },
-                onAttachClick = {
-                    picker.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                    )
-                },
-                onClearAttachment = viewModel::clearAttachment,
-                onReceiveImage = viewModel::attach,
-                onSend = {
-                    val text = inputState.text.toString()
-                    val applied = pendingMentions.filter { text.contains("@${it.name}") }
-                    // Don't clear here: a message blocked for abuse must keep the draft. The ViewModel
-                    // emits clearInput only once a message is actually accepted (see the collector above).
-                    viewModel.send(text, applied, replyingTo)
-                },
-                onTyping = viewModel::onUserTyping,
+                onCancelReply = onCancelReply,
+                onMentionAdded = onMentionAdded,
+                onAttachClick = onAttachClick,
+                onClearAttachment = onClearAttachment,
+                onReceiveImage = onReceiveImage,
+                onSend = onSend,
+                onTyping = onTyping,
             )
         },
     ) { padding ->
@@ -520,38 +611,28 @@ fun ChatScreen(
                             highlighted = row.id == highlightedMessageId,
                             onImageClick = { fullscreenImage = it },
                             onOpenProfile = onOpenProfile,
-                            onReact = viewModel::react,
+                            onReact = onReact,
                             onReply = { msg ->
-                                replyingTo =
+                                onStartReply(
                                     ReplyRef(
                                         messageId = msg.id,
                                         authorId = msg.senderNodeId,
                                         author = msg.senderName,
                                         snippet = buildReplySnippet(msg.body, msg.moderationFlagged),
                                         hasAttachment = msg.attachmentHash != null,
-                                    )
+                                    ),
+                                )
                             },
                             onQuoteClick = { targetId ->
                                 val idx = state.rows.asReversed().indexOfFirst { it.id == targetId }
                                 if (idx >= 0) {
                                     highlightedMessageId = targetId
-                                    copyScope.launch { listState.animateScrollToItem(idx) }
+                                    scrollScope.launch { listState.animateScrollToItem(idx) }
                                 }
                             },
-                            onDelete = viewModel::deleteMessage,
-                            onBlock = viewModel::block,
-                            onCopy = { text ->
-                                copyScope.launch {
-                                    clipboard.setClipEntry(
-                                        ClipData.newPlainText("message", text).toClipEntry(),
-                                    )
-                                    // Android 13+ shows its own copy confirmation; skip the toast there
-                                    // so the user doesn't see a duplicate.
-                                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                                        viewModel.onMessageCopied()
-                                    }
-                                }
-                            },
+                            onDelete = onDeleteMessage,
+                            onBlock = onBlock,
+                            onCopy = onCopy,
                         )
                     }
                 }
@@ -564,26 +645,7 @@ fun ChatScreen(
             fullscreen = fs,
             now = now,
             onDismiss = { fullscreenImage = null },
-            onSave = { viewModel.saveAttachment(fs.image.hash) },
-        )
-    }
-
-    // Sending an explicit image is allowed but discouraged: confirm before staging a flagged one.
-    if (confirmAttachment != null) {
-        AlertDialog(
-            onDismissRequest = viewModel::dismissFlaggedAttachment,
-            title = { Text(stringResource(R.string.moderation_image_confirm_title)) },
-            text = { Text(stringResource(R.string.moderation_image_confirm_body)) },
-            confirmButton = {
-                TextButton(onClick = viewModel::confirmFlaggedAttachment) {
-                    Text(stringResource(R.string.moderation_image_confirm_send))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = viewModel::dismissFlaggedAttachment) {
-                    Text(stringResource(android.R.string.cancel))
-                }
-            },
+            onSave = { onSaveAttachment(fs.image.hash) },
         )
     }
 
@@ -1986,4 +2048,259 @@ fun EmptyStatePreview() =
 fun SystemNoticePreview() =
     KnitPreview {
         SystemNotice(text = "Ada left the chat")
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun MessageBubbleLinkPreview() =
+    KnitPreview {
+        MessageBubble(
+            row =
+                ChatRow(
+                    id = "m5",
+                    body = "Map here: https://osm.org/go/xyz — see you!",
+                    mine = false,
+                    senderName = "Ada Lovelace",
+                    senderNodeId = "node-ada",
+                    avatarHash = null,
+                    sentAt = PREVIEW_NOW - 10 * 60_000L,
+                    received = false,
+                ),
+            now = PREVIEW_NOW,
+            showSenderName = true,
+            onImageClick = {},
+            onOpenProfile = {},
+            onReact = { _, _ -> },
+            onDelete = {},
+            onBlock = {},
+            onCopy = {},
+        )
+    }
+
+// The image itself stays blank (Coil/BlobImage has no DB-backed bytes in a preview); this shows the
+// black scrim + sender/time/overflow top bar.
+@Preview(showBackground = true)
+@Composable
+fun ChatFullscreenImageViewerPreview() =
+    KnitPreview {
+        FullscreenImageViewer(
+            fullscreen =
+                FullscreenImage(
+                    image = BlobImage(hash = "preview-hash"),
+                    mine = false,
+                    senderName = "Ada Lovelace",
+                    sentAt = PREVIEW_NOW - 5 * 60_000L,
+                ),
+            now = PREVIEW_NOW,
+            onDismiss = {},
+            onSave = {},
+        )
+    }
+
+// Shared fixture rows for the full-screen previews: a received message, our own delivered reply, and a
+// received reply-with-reactions quoting the first.
+private fun previewDmRows(): List<ChatRow> =
+    listOf(
+        ChatRow(
+            id = "m1",
+            body = "Hey! Are you coming to the trailhead at 8?",
+            mine = false,
+            senderName = "Ada Lovelace",
+            senderNodeId = "node-ada",
+            avatarHash = null,
+            sentAt = PREVIEW_NOW - 15 * 60_000L,
+            received = false,
+        ),
+        ChatRow(
+            id = "m2",
+            body = "On my way — see you in 10 minutes.",
+            mine = true,
+            senderName = "You",
+            senderNodeId = "node-self",
+            avatarHash = null,
+            sentAt = PREVIEW_NOW - 12 * 60_000L,
+            received = true,
+        ),
+        ChatRow(
+            id = "m3",
+            body = "Great, bringing the map 🗺️",
+            mine = false,
+            senderName = "Ada Lovelace",
+            senderNodeId = "node-ada",
+            avatarHash = null,
+            sentAt = PREVIEW_NOW - 5 * 60_000L,
+            received = false,
+            reactions = listOf(ReactionSummary("👍", 1, true)),
+            replyTo =
+                ReplyRef(
+                    messageId = "m2",
+                    authorId = "node-self",
+                    author = "Walter",
+                    snippet = "On my way — see you in 10 minutes.",
+                ),
+        ),
+    )
+
+@Preview(showBackground = true)
+@Composable
+fun ChatScreenDmPreview() =
+    KnitPreview {
+        ChatScreenContent(
+            conversationId = "node-ada",
+            state =
+                ChatUiState(
+                    rows = previewDmRows(),
+                    myNodeId = "node-self",
+                    isRoom = false,
+                    title = "Ada Lovelace",
+                    avatarHash = null,
+                    verified = true,
+                ),
+            inputState = rememberTextFieldState(),
+            pendingAttachment = null,
+            replyingTo = null,
+            now = PREVIEW_NOW,
+            onBack = {},
+            onOpenProfile = {},
+            onOpenGroupDetails = {},
+            onSend = {},
+            onAttachClick = {},
+            onClearAttachment = {},
+            onReceiveImage = {},
+            onTyping = {},
+            onMentionAdded = {},
+            onStartReply = {},
+            onCancelReply = {},
+            onReact = { _, _ -> },
+            onDeleteMessage = {},
+            onBlock = {},
+            onUnblock = {},
+            onCopy = {},
+            onSaveAttachment = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun ChatScreenGroupTypingPreview() =
+    KnitPreview {
+        ChatScreenContent(
+            conversationId = "g-hiking",
+            state =
+                ChatUiState(
+                    rows = previewDmRows().take(2),
+                    myNodeId = "node-self",
+                    isRoom = false,
+                    isGroup = true,
+                    memberCount = 3,
+                    title = "Hiking Crew",
+                    avatarHash = null,
+                    typingPeers = listOf(TypingPeer(nodeId = "node-grace", name = "Grace Hopper", avatarHash = null)),
+                ),
+            inputState = rememberTextFieldState(),
+            pendingAttachment = null,
+            replyingTo = null,
+            now = PREVIEW_NOW,
+            onBack = {},
+            onOpenProfile = {},
+            onOpenGroupDetails = {},
+            onSend = {},
+            onAttachClick = {},
+            onClearAttachment = {},
+            onReceiveImage = {},
+            onTyping = {},
+            onMentionAdded = {},
+            onStartReply = {},
+            onCancelReply = {},
+            onReact = { _, _ -> },
+            onDeleteMessage = {},
+            onBlock = {},
+            onUnblock = {},
+            onCopy = {},
+            onSaveAttachment = {},
+        )
+    }
+
+// The Nearby room with nobody around: EmptyState body + degraded connection header.
+@Preview(showBackground = true)
+@Composable
+fun ChatScreenRoomEmptyPreview() =
+    KnitPreview {
+        ChatScreenContent(
+            conversationId = "nearby",
+            state =
+                ChatUiState(
+                    rows = emptyList(),
+                    myNodeId = "node-self",
+                    isRoom = true,
+                    neighborCount = 0,
+                    transportHealth = TransportHealth.Degraded,
+                ),
+            inputState = rememberTextFieldState(),
+            pendingAttachment = null,
+            replyingTo = null,
+            now = PREVIEW_NOW,
+            onBack = {},
+            onOpenProfile = {},
+            onOpenGroupDetails = {},
+            onSend = {},
+            onAttachClick = {},
+            onClearAttachment = {},
+            onReceiveImage = {},
+            onTyping = {},
+            onMentionAdded = {},
+            onStartReply = {},
+            onCancelReply = {},
+            onReact = { _, _ -> },
+            onDeleteMessage = {},
+            onBlock = {},
+            onUnblock = {},
+            onCopy = {},
+            onSaveAttachment = {},
+        )
+    }
+
+// A reply draft in flight: the quoted message banner above a prefilled input.
+@Preview(showBackground = true)
+@Composable
+fun ChatScreenReplyDraftPreview() =
+    KnitPreview {
+        ChatScreenContent(
+            conversationId = "node-ada",
+            state =
+                ChatUiState(
+                    rows = previewDmRows(),
+                    myNodeId = "node-self",
+                    isRoom = false,
+                    title = "Ada Lovelace",
+                    avatarHash = null,
+                ),
+            inputState = rememberTextFieldState("Sounds good"),
+            pendingAttachment = null,
+            replyingTo =
+                ReplyRef(
+                    messageId = "m3",
+                    authorId = "node-ada",
+                    author = "Ada Lovelace",
+                    snippet = "Great, bringing the map 🗺️",
+                ),
+            now = PREVIEW_NOW,
+            onBack = {},
+            onOpenProfile = {},
+            onOpenGroupDetails = {},
+            onSend = {},
+            onAttachClick = {},
+            onClearAttachment = {},
+            onReceiveImage = {},
+            onTyping = {},
+            onMentionAdded = {},
+            onStartReply = {},
+            onCancelReply = {},
+            onReact = { _, _ -> },
+            onDeleteMessage = {},
+            onBlock = {},
+            onUnblock = {},
+            onCopy = {},
+            onSaveAttachment = {},
+        )
     }

@@ -61,7 +61,6 @@ import org.koin.androidx.compose.koinViewModel
  * Read-only mesh diagnostics: this device's identity, the live mesh metrics, directly-connected
  * nodes, and nodes reachable only via relay. Reached from the chat-list overflow menu.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DiagnosticsScreen(
     onBack: () -> Unit,
@@ -86,6 +85,28 @@ fun DiagnosticsScreen(
         }
     }
 
+    DiagnosticsScreenContent(
+        state = state,
+        health = health,
+        now = now,
+        snackbarHostState = snackbarHostState,
+        onBack = onBack,
+        onRestartMesh = viewModel::restartMesh,
+        onScan = viewModel::rescan,
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun DiagnosticsScreenContent(
+    state: DiagnosticsUiState,
+    health: TransportHealth,
+    now: Long,
+    snackbarHostState: SnackbarHostState,
+    onBack: () -> Unit,
+    onRestartMesh: () -> Unit,
+    onScan: () -> Unit,
+) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -112,8 +133,8 @@ fun DiagnosticsScreen(
             item {
                 MeshControlsSection(
                     health = health,
-                    onRestart = viewModel::restartMesh,
-                    onScan = viewModel::rescan,
+                    onRestart = onRestartMesh,
+                    onScan = onScan,
                 )
             }
 
@@ -547,4 +568,82 @@ fun DiagnosticsRowsPreview() =
             MetricRow(label = "Frames relayed", value = "1,024")
             EmptyLine(text = "No nodes connected directly.")
         }
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun DiagnosticsScreenPopulatedPreview() =
+    KnitPreview {
+        DiagnosticsScreenContent(
+            state =
+                DiagnosticsUiState(
+                    myNodeId = "8f3a2b1c9d4e",
+                    myName = "Ada Lovelace",
+                    directNodes =
+                        listOf(
+                            NodeInfo(
+                                nodeId = "a1b2c3d4e5f6",
+                                displayName = "Grace Hopper",
+                                direct = true,
+                                profileUpdatedAt = PREVIEW_NOW - 3 * 60_000L,
+                                transports = setOf(TransportKind.Bluetooth, TransportKind.WifiAware),
+                            ),
+                            NodeInfo(
+                                nodeId = "b2c3d4e5f6a1",
+                                displayName = "Edsger Dijkstra",
+                                direct = true,
+                                profileUpdatedAt = PREVIEW_NOW - 20 * 60_000L,
+                                transports = setOf(TransportKind.Bluetooth),
+                            ),
+                        ),
+                    relayNodes =
+                        listOf(
+                            NodeInfo(
+                                nodeId = "c3d4e5f6a1b2",
+                                displayName = "Radia Perlman",
+                                direct = false,
+                                profileUpdatedAt = null,
+                            ),
+                        ),
+                    metrics =
+                        MeshMetrics.Snapshot(
+                            framesOriginated = 128,
+                            framesDelivered = 96,
+                            framesRelayed = 1_024,
+                            framesSuppressed = 12,
+                            framesDeduped = 340,
+                            bytesSent = 2_500_000,
+                        ),
+                    transports =
+                        listOf(
+                            TransportStatus(TransportKind.Bluetooth, TransportHealth.Healthy, linked = 2, nearby = 4),
+                            TransportStatus(TransportKind.WifiAware, TransportHealth.Healthy, linked = 1, nearby = 3),
+                        ),
+                ),
+            health = TransportHealth.Healthy,
+            now = PREVIEW_NOW,
+            snackbarHostState = remember { SnackbarHostState() },
+            onBack = {},
+            onRestartMesh = {},
+            onScan = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun DiagnosticsScreenEmptyDegradedPreview() =
+    KnitPreview {
+        DiagnosticsScreenContent(
+            state =
+                DiagnosticsUiState(
+                    myNodeId = "8f3a2b1c9d4e",
+                    myName = "Ada Lovelace",
+                ),
+            health = TransportHealth.Degraded,
+            now = PREVIEW_NOW,
+            snackbarHostState = remember { SnackbarHostState() },
+            onBack = {},
+            onRestartMesh = {},
+            onScan = {},
+        )
     }

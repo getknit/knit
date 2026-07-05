@@ -52,6 +52,7 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
@@ -60,6 +61,7 @@ import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.FullscreenImageViewer
 import app.getknit.knit.ui.components.GroupAvatar
 import app.getknit.knit.ui.image.BlobImage
+import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.profile.AvatarCropDialog
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
@@ -71,7 +73,6 @@ import org.koin.core.parameter.parametersOf
  * their profile via [onOpenMemberProfile]; the local user's own row is labeled "You" and isn't tappable.
  * Leaving the group deletes the thread, so [onLeft] pops back past the (now-gone) chat.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GroupDetailsScreen(
     groupId: String,
@@ -81,10 +82,6 @@ fun GroupDetailsScreen(
     viewModel: GroupDetailsViewModel = koinViewModel { parametersOf(groupId) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    var menuOpen by remember { mutableStateOf(false) }
-    var showRenameDialog by remember { mutableStateOf(false) }
-    var showLeaveConfirm by remember { mutableStateOf(false) }
-    var showPhotoFullscreen by remember { mutableStateOf(false) }
 
     // Leaving tombstones the group and deletes its messages; pop back past the chat once it persists.
     LaunchedEffect(Unit) {
@@ -105,6 +102,35 @@ fun GroupDetailsScreen(
             onConfirm = viewModel::confirmGroupPhoto,
         )
     }
+
+    GroupDetailsScreenContent(
+        state = state,
+        onBack = onBack,
+        onOpenMemberProfile = onOpenMemberProfile,
+        onSetPhoto = {
+            groupPhotoPicker.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+            )
+        },
+        onRename = viewModel::renameGroup,
+        onLeave = viewModel::leaveGroup,
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun GroupDetailsScreenContent(
+    state: GroupDetailsUiState,
+    onBack: () -> Unit,
+    onOpenMemberProfile: (nodeId: String) -> Unit,
+    onSetPhoto: () -> Unit,
+    onRename: (name: String) -> Unit,
+    onLeave: () -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var showLeaveConfirm by remember { mutableStateOf(false) }
+    var showPhotoFullscreen by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -133,9 +159,7 @@ fun GroupDetailsScreen(
                                 leadingIcon = { Icon(Icons.Filled.AddPhotoAlternate, contentDescription = null) },
                                 onClick = {
                                     menuOpen = false
-                                    groupPhotoPicker.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                                    )
+                                    onSetPhoto()
                                 },
                             )
                             DropdownMenuItem(
@@ -230,7 +254,7 @@ fun GroupDetailsScreen(
             currentName = state.title,
             onDismiss = { showRenameDialog = false },
             onRename = { name ->
-                viewModel.renameGroup(name)
+                onRename(name)
                 showRenameDialog = false
             },
         )
@@ -244,7 +268,7 @@ fun GroupDetailsScreen(
             confirmButton = {
                 TextButton(onClick = {
                     showLeaveConfirm = false
-                    viewModel.leaveGroup()
+                    onLeave()
                 }) {
                     Text(
                         text = stringResource(R.string.chat_group_leave_confirm_action),
@@ -352,3 +376,98 @@ private fun RenameGroupDialog(
         },
     )
 }
+
+@Preview(showBackground = true)
+@Composable
+fun GroupDetailsScreenPreview() =
+    KnitPreview {
+        GroupDetailsScreenContent(
+            state =
+                GroupDetailsUiState(
+                    groupId = "g-hiking",
+                    title = "Hiking Crew",
+                    photoHash = null,
+                    members =
+                        listOf(
+                            GroupMemberRow(
+                                nodeId = "node-self",
+                                displayName = "Ada Lovelace",
+                                avatarHash = null,
+                                online = false,
+                                isSelf = true,
+                            ),
+                            GroupMemberRow(
+                                nodeId = "node-grace",
+                                displayName = "Grace Hopper",
+                                avatarHash = null,
+                                online = true,
+                                isSelf = false,
+                            ),
+                            GroupMemberRow(
+                                nodeId = "node-edsger",
+                                displayName = "Edsger Dijkstra",
+                                avatarHash = null,
+                                online = false,
+                                isSelf = false,
+                            ),
+                            GroupMemberRow(
+                                nodeId = "node-radia",
+                                displayName = "Radia Perlman",
+                                avatarHash = null,
+                                online = false,
+                                isSelf = false,
+                            ),
+                        ),
+                ),
+            onBack = {},
+            onOpenMemberProfile = {},
+            onSetPhoto = {},
+            onRename = {},
+            onLeave = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun MemberRowSelfPreview() =
+    KnitPreview {
+        MemberRow(
+            member =
+                GroupMemberRow(
+                    nodeId = "node-self",
+                    displayName = "Ada Lovelace",
+                    avatarHash = null,
+                    online = false,
+                    isSelf = true,
+                ),
+            onOpen = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun MemberRowOnlinePreview() =
+    KnitPreview {
+        MemberRow(
+            member =
+                GroupMemberRow(
+                    nodeId = "node-grace",
+                    displayName = "Grace Hopper",
+                    avatarHash = null,
+                    online = true,
+                    isSelf = false,
+                ),
+            onOpen = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun RenameGroupDialogPreview() =
+    KnitPreview {
+        RenameGroupDialog(
+            currentName = "Hiking Crew",
+            onDismiss = {},
+            onRename = {},
+        )
+    }

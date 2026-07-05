@@ -30,10 +30,12 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import app.getknit.knit.R
+import app.getknit.knit.ui.preview.KnitPreview
 import coil3.compose.AsyncImage
 
 /**
@@ -111,3 +113,16 @@ fun FullscreenImageViewer(
         }
     }
 }
+
+// Coil renders nothing for the empty model in a preview, so this shows the scrim + top bar chrome.
+@Preview(showBackground = true)
+@Composable
+fun FullscreenImageViewerPreview() =
+    KnitPreview {
+        FullscreenImageViewer(
+            model = "",
+            contentDescription = null,
+            onDismiss = {},
+            title = "Ada Lovelace",
+        )
+    }

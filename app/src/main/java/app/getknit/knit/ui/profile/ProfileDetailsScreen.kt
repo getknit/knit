@@ -82,8 +82,6 @@ fun ProfileDetailsScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val scanResult by viewModel.scanResult.collectAsStateWithLifecycle()
-    var menuOpen by remember { mutableStateOf(false) }
-    var showAvatarFullscreen by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     val matchMessage = stringResource(R.string.verify_match)
@@ -101,6 +99,39 @@ fun ProfileDetailsScreen(
         rememberLauncherForActivityResult(ScanContract()) { result ->
             result.contents?.let { viewModel.onScanned(it) }
         }
+
+    ProfileDetailsScreenContent(
+        state = state,
+        snackbarHostState = snackbarHostState,
+        onBack = onBack,
+        onMessage = onMessage,
+        onScan = {
+            scanLauncher.launch(
+                ScanOptions().setBeepEnabled(false).setOrientationLocked(false),
+            )
+        },
+        onBlock = viewModel::block,
+        onUnblock = viewModel::unblock,
+        onMarkVerified = viewModel::markVerified,
+        onClearVerification = viewModel::clearVerification,
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ProfileDetailsScreenContent(
+    state: ProfileDetailsUiState,
+    snackbarHostState: SnackbarHostState,
+    onBack: () -> Unit,
+    onMessage: (nodeId: String) -> Unit,
+    onScan: () -> Unit,
+    onBlock: () -> Unit,
+    onUnblock: () -> Unit,
+    onMarkVerified: () -> Unit,
+    onClearVerification: () -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    var showAvatarFullscreen by remember { mutableStateOf(false) }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -139,7 +170,7 @@ fun ProfileDetailsScreen(
                                 leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
                                 onClick = {
                                     menuOpen = false
-                                    if (state.isBlocked) viewModel.unblock() else viewModel.block()
+                                    if (state.isBlocked) onUnblock() else onBlock()
                                 },
                             )
                         }
@@ -239,13 +270,9 @@ fun ProfileDetailsScreen(
             HorizontalDivider()
             VerificationSection(
                 state = state,
-                onScan = {
-                    scanLauncher.launch(
-                        ScanOptions().setBeepEnabled(false).setOrientationLocked(false),
-                    )
-                },
-                onMarkVerified = viewModel::markVerified,
-                onClearVerification = viewModel::clearVerification,
+                onScan = onScan,
+                onMarkVerified = onMarkVerified,
+                onClearVerification = onClearVerification,
             )
         }
     }
@@ -411,6 +438,94 @@ fun VerificationSectionUnverifiedPreview() =
                     myQrPayload = "knit:verify:grace",
                 ),
             onScan = {},
+            onMarkVerified = {},
+            onClearVerification = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun ProfileDetailsScreenOnlineVerifiedPreview() =
+    KnitPreview {
+        ProfileDetailsScreenContent(
+            state =
+                ProfileDetailsUiState(
+                    nodeId = "8f3a2b1c9d4e",
+                    displayName = "Ada Lovelace",
+                    status = "Hiking this weekend",
+                    avatarHash = null,
+                    online = true,
+                    isBlocked = false,
+                    hasKey = true,
+                    verified = true,
+                    safetyNumber = "12345 67890 12345 67890 12345 67890",
+                    myQrPayload = "knit:verify:ada",
+                ),
+            snackbarHostState = remember { SnackbarHostState() },
+            onBack = {},
+            onMessage = {},
+            onScan = {},
+            onBlock = {},
+            onUnblock = {},
+            onMarkVerified = {},
+            onClearVerification = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun ProfileDetailsScreenOfflinePreview() =
+    KnitPreview {
+        ProfileDetailsScreenContent(
+            state =
+                ProfileDetailsUiState(
+                    nodeId = "a1b2c3d4e5f6",
+                    displayName = "Grace Hopper",
+                    status = "",
+                    avatarHash = null,
+                    online = false,
+                    isBlocked = false,
+                    hasKey = true,
+                    verified = false,
+                    safetyNumber = "98765 43210 98765 43210 98765 43210",
+                    myQrPayload = "knit:verify:grace",
+                ),
+            snackbarHostState = remember { SnackbarHostState() },
+            onBack = {},
+            onMessage = {},
+            onScan = {},
+            onBlock = {},
+            onUnblock = {},
+            onMarkVerified = {},
+            onClearVerification = {},
+        )
+    }
+
+// Exercises the hasKey = false branch: no safety number / QR, just the "no key yet" notice.
+@Preview(showBackground = true)
+@Composable
+fun ProfileDetailsScreenNoKeyPreview() =
+    KnitPreview {
+        ProfileDetailsScreenContent(
+            state =
+                ProfileDetailsUiState(
+                    nodeId = "b2c3d4e5f6a1",
+                    displayName = "Edsger Dijkstra",
+                    status = "",
+                    avatarHash = null,
+                    online = false,
+                    isBlocked = false,
+                    hasKey = false,
+                    verified = false,
+                    safetyNumber = null,
+                    myQrPayload = null,
+                ),
+            snackbarHostState = remember { SnackbarHostState() },
+            onBack = {},
+            onMessage = {},
+            onScan = {},
+            onBlock = {},
+            onUnblock = {},
             onMarkVerified = {},
             onClearVerification = {},
         )

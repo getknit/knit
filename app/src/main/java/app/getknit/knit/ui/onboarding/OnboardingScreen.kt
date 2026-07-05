@@ -23,11 +23,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.ui.hasAllMeshPermissions
 import app.getknit.knit.ui.hasBleHardware
 import app.getknit.knit.ui.hasWifiAwareHardware
+import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.requestIgnoreBatteryOptimizations
 import app.getknit.knit.ui.requiredMeshPermissions
 
@@ -36,6 +38,9 @@ import app.getknit.knit.ui.requiredMeshPermissions
  * and (optionally) battery exemption, requests them, then hands off to the chat once granted. The mesh
  * can start even if a permission was denied — it just degrades. Only on hardware with **neither** Wi-Fi
  * Aware nor Bluetooth LE does it show a clear "unsupported" notice (but still lets the user in).
+ *
+ * This stateful wrapper owns the Android-only pieces (hardware/permission probes, the permission
+ * launcher, the battery-exemption intent); [OnboardingScreenContent] is the previewable layout.
  */
 @Composable
 fun OnboardingScreen(onReady: () -> Unit) {
@@ -51,6 +56,23 @@ fun OnboardingScreen(onReady: () -> Unit) {
             granted = hasAllMeshPermissions(context)
         }
 
+    OnboardingScreenContent(
+        meshSupported = meshSupported,
+        granted = granted,
+        onGrantPermissions = { launcher.launch(requiredMeshPermissions()) },
+        onAllowBattery = { requestIgnoreBatteryOptimizations(context) },
+        onReady = onReady,
+    )
+}
+
+@Composable
+internal fun OnboardingScreenContent(
+    meshSupported: Boolean,
+    granted: Boolean,
+    onGrantPermissions: () -> Unit,
+    onAllowBattery: () -> Unit,
+    onReady: () -> Unit,
+) {
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
@@ -85,7 +107,7 @@ fun OnboardingScreen(onReady: () -> Unit) {
             }
 
             Button(
-                onClick = { launcher.launch(requiredMeshPermissions()) },
+                onClick = onGrantPermissions,
                 modifier = Modifier.fillMaxWidth().testTag("onboarding_grant"),
             ) {
                 Text(
@@ -98,7 +120,7 @@ fun OnboardingScreen(onReady: () -> Unit) {
             }
 
             OutlinedButton(
-                onClick = { requestIgnoreBatteryOptimizations(context) },
+                onClick = onAllowBattery,
                 modifier =
                     Modifier
                         .fillMaxWidth()
@@ -121,3 +143,42 @@ fun OnboardingScreen(onReady: () -> Unit) {
         }
     }
 }
+
+@Preview(showBackground = true)
+@Composable
+fun OnboardingScreenPreview() =
+    KnitPreview {
+        OnboardingScreenContent(
+            meshSupported = true,
+            granted = false,
+            onGrantPermissions = {},
+            onAllowBattery = {},
+            onReady = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun OnboardingScreenGrantedPreview() =
+    KnitPreview {
+        OnboardingScreenContent(
+            meshSupported = true,
+            granted = true,
+            onGrantPermissions = {},
+            onAllowBattery = {},
+            onReady = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun OnboardingScreenUnsupportedPreview() =
+    KnitPreview {
+        OnboardingScreenContent(
+            meshSupported = false,
+            granted = false,
+            onGrantPermissions = {},
+            onAllowBattery = {},
+            onReady = {},
+        )
+    }

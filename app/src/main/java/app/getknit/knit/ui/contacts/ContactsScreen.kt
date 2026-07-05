@@ -55,7 +55,6 @@ import org.koin.androidx.compose.koinViewModel
  * a 1:1 DM; two or more create a group. Reached from the chat-list FAB; [onPick] receives the chosen
  * conversation id — a peer's node id for a DM, or the new group's id once it's created.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ContactsScreen(
     onBack: () -> Unit,
@@ -63,7 +62,6 @@ fun ContactsScreen(
     viewModel: ContactsViewModel = koinViewModel(),
 ) {
     val contacts by viewModel.contacts.collectAsStateWithLifecycle()
-    val selected = remember { mutableStateListOf<String>() }
     val context = LocalContext.current
     val groupFullMessage =
         stringResource(R.string.contacts_group_full, ContactsViewModel.MAX_OTHER_MEMBERS + 1)
@@ -73,11 +71,31 @@ fun ContactsScreen(
         viewModel.created.collect { onPick(it) }
     }
 
+    ContactsScreenContent(
+        contacts = contacts,
+        onBack = onBack,
+        onPickSingle = onPick,
+        onCreateGroup = viewModel::createGroup,
+        onGroupFull = { Toast.makeText(context, groupFullMessage, Toast.LENGTH_SHORT).show() },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ContactsScreenContent(
+    contacts: List<Contact>,
+    onBack: () -> Unit,
+    onPickSingle: (nodeId: String) -> Unit,
+    onCreateGroup: (memberIds: List<String>) -> Unit,
+    onGroupFull: () -> Unit,
+) {
+    val selected = remember { mutableStateListOf<String>() }
+
     fun toggle(nodeId: String) {
         if (nodeId in selected) {
             selected.remove(nodeId)
         } else if (selected.size >= ContactsViewModel.MAX_OTHER_MEMBERS) {
-            Toast.makeText(context, groupFullMessage, Toast.LENGTH_SHORT).show()
+            onGroupFull()
         } else {
             selected.add(nodeId)
         }
@@ -102,9 +120,9 @@ fun ContactsScreen(
                 FloatingActionButton(
                     onClick = {
                         if (selected.size == 1) {
-                            onPick(selected.first())
+                            onPickSingle(selected.first())
                         } else {
-                            viewModel.createGroup(selected.toList())
+                            onCreateGroup(selected.toList())
                         }
                     },
                     modifier = Modifier.testTag("contacts_fab"),
@@ -190,6 +208,38 @@ private fun ContactRow(
         )
     }
 }
+
+@Preview(showBackground = true)
+@Composable
+fun ContactsScreenPreview() =
+    KnitPreview {
+        ContactsScreenContent(
+            contacts =
+                listOf(
+                    Contact(nodeId = "node-ada", displayName = "Ada Lovelace", avatarHash = null, online = true),
+                    Contact(nodeId = "node-grace", displayName = "Grace Hopper", avatarHash = null, online = true),
+                    Contact(nodeId = "node-edsger", displayName = "Edsger Dijkstra", avatarHash = null, online = false),
+                    Contact(nodeId = "node-radia", displayName = "Radia Perlman", avatarHash = null, online = false),
+                ),
+            onBack = {},
+            onPickSingle = {},
+            onCreateGroup = {},
+            onGroupFull = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun ContactsScreenEmptyPreview() =
+    KnitPreview {
+        ContactsScreenContent(
+            contacts = emptyList(),
+            onBack = {},
+            onPickSingle = {},
+            onCreateGroup = {},
+            onGroupFull = {},
+        )
+    }
 
 @Preview(showBackground = true)
 @Composable

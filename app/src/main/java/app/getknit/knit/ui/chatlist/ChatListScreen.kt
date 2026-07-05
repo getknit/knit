@@ -78,6 +78,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
+import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.image.BlobImage
@@ -93,7 +94,6 @@ import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatListScreen(
     onOpenConversation: (conversationId: String) -> Unit,
@@ -105,7 +105,6 @@ fun ChatListScreen(
     viewModel: ChatListViewModel = koinViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    var menuOpen by remember { mutableStateOf(false) }
     var showShareApp by remember { mutableStateOf(false) }
     // A Play (App Bundle) install is merged into one shareable APK on the fly — several seconds — so we
     // gate the share sheet behind a spinner. Flashes instantly for a single-APK install (fast copy path).
@@ -115,6 +114,83 @@ fun ChatListScreen(
     // A ticking clock so each row's relative timestamp recomposes as time passes; a bare
     // System.currentTimeMillis() read would freeze at first composition (see rememberCurrentTimeMillis).
     val now by rememberCurrentTimeMillis()
+
+    ChatListScreenContent(
+        state = state,
+        now = now,
+        onOpenConversation = onOpenConversation,
+        onNewMessage = onNewMessage,
+        onOpenProfile = onOpenProfile,
+        onOpenDiagnostics = onOpenDiagnostics,
+        onOpenBlockedUsers = onOpenBlockedUsers,
+        onOpenDonate = onOpenDonate,
+        onShareApp = { showShareApp = true },
+        onOpenRadioSettings = { warning -> openRadioSettings(context, warning) },
+        onDismissRadioWarning = viewModel::dismissRadioWarning,
+        onDeleteConversation = viewModel::deleteConversation,
+    )
+
+    if (showShareApp) {
+        ShareKnitDialog(
+            onConfirm = {
+                showShareApp = false
+                preparingShare = true
+                scope.launch {
+                    try {
+                        runCatching {
+                            launchApkShareChooser(context, prepareKnitApk(context))
+                        }.onFailure { e ->
+                            val msg =
+                                if (e is ShareStorageException) {
+                                    R.string.share_app_error_storage
+                                } else {
+                                    R.string.share_app_error
+                                }
+                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                        }
+                    } finally {
+                        preparingShare = false
+                    }
+                }
+            },
+            onDismiss = { showShareApp = false },
+        )
+    }
+
+    if (preparingShare) {
+        // Non-dismissible: the merge/sign runs on a background coroutine; block interaction until the
+        // share sheet opens (or an error toast fires). onDismissRequest is a no-op so taps don't cancel it.
+        AlertDialog(
+            onDismissRequest = {},
+            confirmButton = {},
+            text = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.width(20.dp))
+                    Text(stringResource(R.string.share_app_preparing))
+                }
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ChatListScreenContent(
+    state: ChatListUiState,
+    now: Long,
+    onOpenConversation: (conversationId: String) -> Unit,
+    onNewMessage: () -> Unit,
+    onOpenProfile: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
+    onOpenBlockedUsers: () -> Unit,
+    onOpenDonate: () -> Unit,
+    onShareApp: () -> Unit,
+    onOpenRadioSettings: (RadioWarning) -> Unit,
+    onDismissRadioWarning: () -> Unit,
+    onDeleteConversation: (conversationId: String) -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -177,7 +253,7 @@ fun ChatListScreen(
                                 leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
                                 onClick = {
                                     menuOpen = false
-                                    showShareApp = true
+                                    onShareApp()
                                 },
                             )
                         }
@@ -202,9 +278,9 @@ fun ChatListScreen(
             state.radioWarning?.let { warning ->
                 RadioWarningBanner(
                     warning = warning,
-                    onOpenSettings = { openRadioSettings(context, warning) },
+                    onOpenSettings = { onOpenRadioSettings(warning) },
                     // The critical "all radios off" banner is not dismissible.
-                    onDismiss = if (warning == RadioWarning.AllRadiosOff) null else viewModel::dismissRadioWarning,
+                    onDismiss = if (warning == RadioWarning.AllRadiosOff) null else onDismissRadioWarning,
                 )
             }
             LazyColumn(
@@ -216,54 +292,11 @@ fun ChatListScreen(
                         row = row,
                         now = now,
                         onClick = { onOpenConversation(row.id) },
-                        onDelete = viewModel::deleteConversation,
+                        onDelete = onDeleteConversation,
                     )
                 }
             }
         }
-    }
-
-    if (showShareApp) {
-        ShareKnitDialog(
-            onConfirm = {
-                showShareApp = false
-                preparingShare = true
-                scope.launch {
-                    try {
-                        runCatching {
-                            launchApkShareChooser(context, prepareKnitApk(context))
-                        }.onFailure { e ->
-                            val msg =
-                                if (e is ShareStorageException) {
-                                    R.string.share_app_error_storage
-                                } else {
-                                    R.string.share_app_error
-                                }
-                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                        }
-                    } finally {
-                        preparingShare = false
-                    }
-                }
-            },
-            onDismiss = { showShareApp = false },
-        )
-    }
-
-    if (preparingShare) {
-        // Non-dismissible: the merge/sign runs on a background coroutine; block interaction until the
-        // share sheet opens (or an error toast fires). onDismissRequest is a no-op so taps don't cancel it.
-        AlertDialog(
-            onDismissRequest = {},
-            confirmButton = {},
-            text = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator()
-                    Spacer(Modifier.width(20.dp))
-                    Text(stringResource(R.string.share_app_preparing))
-                }
-            },
-        )
     }
 }
 
@@ -575,5 +608,118 @@ fun ConversationListItemRoomPreview() =
                 ),
             now = PREVIEW_NOW,
             onClick = {},
+        )
+    }
+
+// Shared fixture rows for the full-screen previews.
+private fun previewConversations(): List<ConversationRow> =
+    listOf(
+        ConversationRow(
+            id = "room",
+            title = "Nearby",
+            avatarHash = null,
+            isRoom = true,
+            isGroup = false,
+            lastPreview = "Anyone at the north gate?",
+            lastMessageAt = PREVIEW_NOW - 3 * 60_000L,
+            unreadCount = 0,
+        ),
+        ConversationRow(
+            id = "group-1",
+            title = "Hiking Crew",
+            avatarHash = null,
+            isRoom = false,
+            isGroup = true,
+            lastPreview = "Lena: bringing the trail map",
+            lastMessageAt = PREVIEW_NOW - 60 * 60_000L,
+            unreadCount = 0,
+        ),
+        ConversationRow(
+            id = "dm-1",
+            title = "Ada Lovelace",
+            avatarHash = null,
+            isRoom = false,
+            isGroup = false,
+            lastPreview = "See you at the meetup tonight!",
+            lastMessageAt = PREVIEW_NOW - 5 * 60_000L,
+            unreadCount = 2,
+        ),
+    )
+
+@Preview(showBackground = true)
+@Composable
+fun ChatListScreenPopulatedPreview() =
+    KnitPreview {
+        ChatListScreenContent(
+            state =
+                ChatListUiState(
+                    conversations = previewConversations(),
+                    neighborCount = 3,
+                    transportHealth = TransportHealth.Healthy,
+                ),
+            now = PREVIEW_NOW,
+            onOpenConversation = {},
+            onNewMessage = {},
+            onOpenProfile = {},
+            onOpenDiagnostics = {},
+            onOpenBlockedUsers = {},
+            onOpenDonate = {},
+            onShareApp = {},
+            onOpenRadioSettings = {},
+            onDismissRadioWarning = {},
+            onDeleteConversation = {},
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun ChatListScreenRadioWarningPreview() =
+    KnitPreview {
+        ChatListScreenContent(
+            state =
+                ChatListUiState(
+                    conversations = previewConversations(),
+                    neighborCount = 1,
+                    transportHealth = TransportHealth.Degraded,
+                    radioWarning = RadioWarning.BluetoothOff,
+                ),
+            now = PREVIEW_NOW,
+            onOpenConversation = {},
+            onNewMessage = {},
+            onOpenProfile = {},
+            onOpenDiagnostics = {},
+            onOpenBlockedUsers = {},
+            onOpenDonate = {},
+            onShareApp = {},
+            onOpenRadioSettings = {},
+            onDismissRadioWarning = {},
+            onDeleteConversation = {},
+        )
+    }
+
+// Exercises the non-dismissible AllRadiosOff banner branch (no close affordance).
+@Preview(showBackground = true)
+@Composable
+fun ChatListScreenQuietPreview() =
+    KnitPreview {
+        ChatListScreenContent(
+            state =
+                ChatListUiState(
+                    conversations = previewConversations().take(1),
+                    neighborCount = 0,
+                    transportHealth = TransportHealth.Unavailable,
+                    radioWarning = RadioWarning.AllRadiosOff,
+                ),
+            now = PREVIEW_NOW,
+            onOpenConversation = {},
+            onNewMessage = {},
+            onOpenProfile = {},
+            onOpenDiagnostics = {},
+            onOpenBlockedUsers = {},
+            onOpenDonate = {},
+            onShareApp = {},
+            onOpenRadioSettings = {},
+            onDismissRadioWarning = {},
+            onDeleteConversation = {},
         )
     }

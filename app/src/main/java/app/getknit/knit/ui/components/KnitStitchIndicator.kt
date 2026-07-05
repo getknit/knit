@@ -7,6 +7,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -17,7 +18,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import app.getknit.knit.ui.preview.KnitPreview
 import kotlin.math.abs
 
 /**
@@ -73,3 +76,11 @@ private const val STITCHES = 3
 private const val PAUSE = 0.5f // tail of the sweep with every stitch dim, before it restarts
 private const val SWEEP_MS = 1200
 private const val DIM_ALPHA = 0.35f
+
+// A static preview renders the sweep at phase 0 (first stitch lit); run interactive mode for the animation.
+@Preview(showBackground = true)
+@Composable
+fun KnitStitchIndicatorPreview() =
+    KnitPreview {
+        KnitStitchIndicator(modifier = Modifier.padding(8.dp))
+    }

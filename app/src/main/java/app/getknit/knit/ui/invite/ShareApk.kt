@@ -8,9 +8,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.content.FileProvider
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.R
+import app.getknit.knit.ui.preview.KnitPreview
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -109,3 +111,10 @@ fun ShareKnitDialog(
         },
     )
 }
+
+@Preview(showBackground = true)
+@Composable
+fun ShareKnitDialogPreview() =
+    KnitPreview {
+        ShareKnitDialog(onConfirm = {}, onDismiss = {})
+    }

@@ -1,3 +1,7 @@
+// The file's single top-level class (ProfileFormState, the content composable's state holder) rides
+// along with the screen composable that is the file's real subject.
+@file:Suppress("MatchingDeclarationName")
+
 package app.getknit.knit.ui.profile
 
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -71,7 +75,17 @@ import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.requestIgnoreBatteryOptimizations
 import org.koin.androidx.compose.koinViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** UI-local projection of [ProfileViewModel]'s per-field flows for the stateless content. */
+internal data class ProfileFormState(
+    val name: String,
+    val status: String,
+    val nodeId: String,
+    val alias: String,
+    val avatarHash: String?,
+    val contentFilteringEnabled: Boolean,
+    val isDirty: Boolean,
+)
+
 @Composable
 fun ProfileScreen(
     onBack: () -> Unit,
@@ -106,6 +120,52 @@ fun ProfileScreen(
         )
     }
 
+    val context = LocalContext.current
+    ProfileScreenContent(
+        form =
+            ProfileFormState(
+                name = name,
+                status = status,
+                nodeId = nodeId,
+                alias = alias,
+                avatarHash = avatarHash,
+                contentFilteringEnabled = contentFilteringEnabled,
+                isDirty = isDirty,
+            ),
+        batteryExempt = rememberBatteryExempt(),
+        onBack = onBack,
+        onNameChange = viewModel::setDisplayName,
+        onNameCommit = viewModel::commitDisplayName,
+        onStatusChange = viewModel::setStatus,
+        onStatusCommit = viewModel::commitStatus,
+        onToggleContentFiltering = viewModel::setContentFilteringEnabled,
+        onPickPhoto = {
+            picker.launch(
+                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+            )
+        },
+        onClearPhoto = viewModel::clearAvatar,
+        onAllowBattery = { requestIgnoreBatteryOptimizations(context) },
+        onSave = viewModel::save,
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun ProfileScreenContent(
+    form: ProfileFormState,
+    batteryExempt: Boolean,
+    onBack: () -> Unit,
+    onNameChange: (String) -> Unit,
+    onNameCommit: () -> Unit,
+    onStatusChange: (String) -> Unit,
+    onStatusCommit: () -> Unit,
+    onToggleContentFiltering: (Boolean) -> Unit,
+    onPickPhoto: () -> Unit,
+    onClearPhoto: () -> Unit,
+    onAllowBattery: () -> Unit,
+    onSave: () -> Unit,
+) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -130,68 +190,64 @@ fun ProfileScreen(
         ) {
             Box {
                 Avatar(
-                    avatarHash = avatarHash,
-                    name = displayNameFor(name, nodeId),
+                    avatarHash = form.avatarHash,
+                    name = displayNameFor(form.name, form.nodeId),
                     size = 96.dp,
                     background = MaterialTheme.colorScheme.primaryContainer,
                     contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                     textStyle = MaterialTheme.typography.displaySmall,
                     contentDescription = stringResource(R.string.profile_change_photo_desc),
-                    onClick = {
-                        picker.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                        )
-                    },
+                    onClick = onPickPhoto,
                 )
                 // Only offer "remove" when a photo is set. This also covers a dangling hash whose blob is
                 // gone (the avatar shows the initial fallback, but the hash is still non-null), giving the
                 // user a way to drop it.
-                if (avatarHash != null) {
-                    RemovePhotoButton(onClick = viewModel::clearAvatar)
+                if (form.avatarHash != null) {
+                    RemovePhotoButton(onClick = onClearPhoto)
                 }
             }
 
             OutlinedTextField(
-                value = name,
-                onValueChange = viewModel::setDisplayName,
+                value = form.name,
+                onValueChange = onNameChange,
                 modifier =
                     Modifier
                         .fillMaxWidth()
                         .testTag("profile_name")
-                        .onFocusChanged { if (!it.isFocused) viewModel.commitDisplayName() },
+                        .onFocusChanged { if (!it.isFocused) onNameCommit() },
                 label = { Text(stringResource(R.string.profile_display_name_label)) },
-                placeholder = { if (alias.isNotEmpty()) Text(alias) },
+                placeholder = { if (form.alias.isNotEmpty()) Text(form.alias) },
                 singleLine = true,
-                supportingText = { CharCounter(name.length, TextLimits.DISPLAY_NAME) },
+                supportingText = { CharCounter(form.name.length, TextLimits.DISPLAY_NAME) },
             )
             OutlinedTextField(
-                value = status,
-                onValueChange = viewModel::setStatus,
+                value = form.status,
+                onValueChange = onStatusChange,
                 modifier =
                     Modifier
                         .fillMaxWidth()
                         .testTag("profile_status")
-                        .onFocusChanged { if (!it.isFocused) viewModel.commitStatus() },
+                        .onFocusChanged { if (!it.isFocused) onStatusCommit() },
                 label = { Text(stringResource(R.string.profile_status_label)) },
                 singleLine = true,
-                supportingText = { CharCounter(status.length, TextLimits.STATUS) },
+                supportingText = { CharCounter(form.status.length, TextLimits.STATUS) },
             )
             Text(
-                text = stringResource(R.string.profile_node_id, nodeId),
+                text = stringResource(R.string.profile_node_id, form.nodeId),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             ContentFilteringRow(
-                enabled = contentFilteringEnabled,
-                onToggle = viewModel::setContentFilteringEnabled,
+                enabled = form.contentFilteringEnabled,
+                onToggle = onToggleContentFiltering,
             )
 
-            BatteryOptimizationRow()
+            BatteryOptimizationRow(exempt = batteryExempt, onAllow = onAllowBattery)
 
             Button(
-                onClick = viewModel::save,
-                enabled = isDirty,
+                onClick = onSave,
+                enabled = form.isDirty,
                 modifier = Modifier.fillMaxWidth().testTag("profile_save"),
             ) {
                 Text(stringResource(R.string.action_save))
@@ -285,9 +341,13 @@ private fun ContentFilteringRow(
     }
 }
 
-/** Shows whether the app is exempt from battery optimization, refreshing when the screen resumes. */
+/**
+ * Whether the app is currently exempt from battery optimization, refreshed on every screen resume.
+ * Lives in the stateful wrapper (not [BatteryOptimizationRow]) because the `PowerManager` read is not
+ * available to the preview renderer.
+ */
 @Composable
-private fun BatteryOptimizationRow() {
+private fun rememberBatteryExempt(): Boolean {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var exempt by remember { mutableStateOf(isIgnoringBatteryOptimizations(context)) }
@@ -302,7 +362,15 @@ private fun BatteryOptimizationRow() {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+    return exempt
+}
 
+/** Shows whether the app is exempt from battery optimization, with an "allow" affordance when not. */
+@Composable
+private fun BatteryOptimizationRow(
+    exempt: Boolean,
+    onAllow: () -> Unit,
+) {
     Column(
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -319,7 +387,7 @@ private fun BatteryOptimizationRow() {
             textAlign = TextAlign.Center,
         )
         if (!exempt) {
-            TextButton(onClick = { requestIgnoreBatteryOptimizations(context) }) {
+            TextButton(onClick = onAllow) {
                 Text(stringResource(R.string.battery_allow_button))
             }
         }
@@ -344,4 +412,73 @@ fun ContentFilteringRowPreview() =
             ContentFilteringRow(enabled = true, onToggle = {})
             ContentFilteringRow(enabled = false, onToggle = {})
         }
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun BatteryOptimizationRowPreview() =
+    KnitPreview {
+        Column {
+            BatteryOptimizationRow(exempt = true, onAllow = {})
+            BatteryOptimizationRow(exempt = false, onAllow = {})
+        }
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun ProfileScreenPreview() =
+    KnitPreview {
+        ProfileScreenContent(
+            form =
+                ProfileFormState(
+                    name = "Ada Lovelace",
+                    status = "Hiking this weekend",
+                    nodeId = "8f3a2b1c9d4e",
+                    alias = "Rustling Rabbit",
+                    avatarHash = null,
+                    contentFilteringEnabled = true,
+                    isDirty = true,
+                ),
+            batteryExempt = false,
+            onBack = {},
+            onNameChange = {},
+            onNameCommit = {},
+            onStatusChange = {},
+            onStatusCommit = {},
+            onToggleContentFiltering = {},
+            onPickPhoto = {},
+            onClearPhoto = {},
+            onAllowBattery = {},
+            onSave = {},
+        )
+    }
+
+// A fresh install: no name yet (the generated alias shows as the placeholder), nothing to save.
+@Preview(showBackground = true)
+@Composable
+fun ProfileScreenNewUserPreview() =
+    KnitPreview {
+        ProfileScreenContent(
+            form =
+                ProfileFormState(
+                    name = "",
+                    status = "",
+                    nodeId = "8f3a2b1c9d4e",
+                    alias = "Rustling Rabbit",
+                    avatarHash = null,
+                    contentFilteringEnabled = true,
+                    isDirty = false,
+                ),
+            batteryExempt = true,
+            onBack = {},
+            onNameChange = {},
+            onNameCommit = {},
+            onStatusChange = {},
+            onStatusCommit = {},
+            onToggleContentFiltering = {},
+            onPickPhoto = {},
+            onClearPhoto = {},
+            onAllowBattery = {},
+            onSave = {},
+        )
     }
