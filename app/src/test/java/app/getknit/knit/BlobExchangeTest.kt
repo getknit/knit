@@ -4,7 +4,6 @@ import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.BlobStore
 import app.getknit.knit.mesh.FakeLoopTransport
 import app.getknit.knit.mesh.MeshRouter
-import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.FrameType

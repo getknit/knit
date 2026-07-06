@@ -34,6 +34,8 @@ naming:
     ignoreAnnotated: ['Composable']
 
 style:
+  UnusedImports:
+    active: true                           # not in detekt's default-on set; we want dead imports caught in CI
   MagicNumber:
     ignorePropertyDeclaration: true        # theme/Color.kt + Type.kt literals
     ignoreLocalVariableDeclaration: true
