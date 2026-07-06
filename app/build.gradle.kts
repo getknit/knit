@@ -102,6 +102,13 @@ android {
             // Unsigned when no keystore.properties / KNIT_UPLOAD_* creds are present (see signingConfigs).
             signingConfig = signingConfigs.findByName("release")
         }
+        create("staging") {
+            // Inherit release's R8 shrink/optimize + resource shrinking + the SEED_DEMO=false override.
+            initWith(getByName("release"))
+            // …but sign with the debug keystore (AGP auto-creates this config; always present, no secrets).
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -134,7 +141,13 @@ android {
         // `test` source set's own assets. Scoped to debug, so the ~15 KB schema JSON never ships in release.
         // See KnitDatabaseMigrationTest.
         getByName("debug") {
-            assets.srcDir("schemas")
+            assets.directories.add("schemas")
+        }
+        // The `staging` build type is release-with-R8 signed by the debug key (device testing only). It has
+        // no src/staging, so reuse the release variant's no-op DemoWiring stub for the two src/main demo
+        // seams (seedDemoIfEnabled / demoTransportOrNull) — staging must not demo-seed, exactly like release.
+        getByName("staging") {
+            kotlin.directories.add("src/release/java")
         }
     }
 }

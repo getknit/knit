@@ -392,7 +392,7 @@ class BluetoothMeshTransport(
         if (scanFloored != floor) {
             scanFloored = floor
             val reason = if (audioMonitor.contended.value) "a2dp" else "settled"
-            Log.i(
+            Log.d(
                 TAG,
                 if (floor) {
                     "bt scan → floor ($reason, links=${links.size})"
@@ -779,7 +779,7 @@ class BluetoothMeshTransport(
                     "$id:${((b.nextAt - now) / MS_PER_S).coerceAtLeast(0)}s/${b.streak}"
                 }
             }
-        Log.i(
+        Log.d(
             TAG,
             "bt state links=${links.keys} reach=${_reachable.value.map { it.nodeId }} " +
                 "inFlight=${inFlightSnapshot()} backoff=[$backoffStr] a2dp=${audioMonitor.state.value} psm=$currentPsm",
