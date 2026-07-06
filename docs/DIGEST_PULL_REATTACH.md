@@ -126,6 +126,11 @@ their version changed since last reconcile     messages each side lacks, then te
   currently in `ForwardStore`, folded with a small profile/key generation counter. XOR is **incremental**
   (add/remove an ID ⇒ XOR it in/out, O(1)) and **content-derived** ⇒ *restart-stable* (same store ⇒ same
   version, killing the session-local-epoch bug). Collision-negligible at 64 bits; go 128 if paranoid.
+  > **Amended by work item #8:** membership is the **live** (non-expired) id set, not every stored row — the
+  > digest must cover exactly what a sync can exchange, or TTL boundaries open sweep-phase divergence windows.
+  > Expiry (frame-global `sentAt + TTL`) is folded out **lazily** by `StoreDigest.current()` at every
+  > read/cue/advert site (one batched version change per read; no expiry timer for Doze to defer), and the
+  > `version` StateFlow remains the push channel that re-fires the cue/SSI/BLE-advert collectors.
 - **Cue payload** becomes `nodeId | digestVersion` (still well under 255 B). Sent on the same triggers as
   today (change + discovery + heartbeat).
 

@@ -504,16 +504,19 @@ class DebugBridgeReceiver :
     }
 
     /**
-     * Dumps the store-and-forward carry set — the exact id set the cue-plane content digest
-     * ([StoreDigest.version]) is folded over, so two devices that never converge (each keeps firing NDPs at the
-     * other) can be diffed to find the stranded id. Reports:
-     *  - `digestVersion` — the live in-memory digest the transport actually cues;
+     * Dumps the store-and-forward carry set — the **live** rows are the exact id set the cue-plane content
+     * digest ([StoreDigest.current]) is folded over (work item #8: expired-but-unswept rows are invisible to
+     * the digest, quotas, and serves — pure residue awaiting the sweep), so two devices that never converge
+     * (each keeps firing NDPs at the other) can be diffed to find the stranded id. Reports:
+     *  - `digestVersion` — the live in-memory digest the transport actually cues (read via [StoreDigest.current],
+     *    the same lazy-folding accessor the transports use, so a TTL boundary crossed since the transport's
+     *    last read can't masquerade as drift);
      *  - `allFingerprint` / `liveFingerprint` — the digest recomputed over *all* rows vs. *non-expired* rows.
-     *    `allFingerprint != digestVersion` ⇒ the in-memory digest drifted from the table; `liveFingerprint !=
-     *    digestVersion` (but `allFingerprint ==`) ⇒ expired-but-unswept rows inflate the digest yet are never
-     *    advertised/exchanged (a sync can't reconcile them until the next TTL sweep — the "syncs succeed but
-     *    never converge" case);
-     *  - `expiredIds` — the offending rows for that case;
+     *    **The invariant is `digestVersion == liveFingerprint`, always** — a mismatch means the in-memory
+     *    digest drifted from the table (a bug). `allFingerprint` legitimately lags behind by the expired
+     *    residue until the sweep, and is **no longer fleet-comparable** at a TTL boundary — cross-device
+     *    convergence checks (soak oracles included) must compare `liveFingerprint`;
+     *  - `expiredIds` — the residue rows (benign; reclaimed by the next sweep);
      *  - `allIds` — the full set, for a cross-device diff (`comm`/`diff` the sorted arrays across P7/P8/P9);
      *  - `rows` — per-frame detail (expired first, then newest), capped by `--ei limit` ([DEFAULT_STORE_LIMIT]).
      */
@@ -547,7 +550,7 @@ class DebugBridgeReceiver :
         return JSONObject()
             .put("status", "ok")
             .put("self", JSONObject().put("nodeId", identity.nodeId()).put("name", settings.displayName.first()))
-            .put("digestVersion", digest.version.value.toString())
+            .put("digestVersion", digest.current().toString())
             .put("allFingerprint", StoreDigest.fingerprint(rows.map { it.id }).toString())
             .put("liveFingerprint", StoreDigest.fingerprint(liveRows.map { it.id }).toString())
             .put(

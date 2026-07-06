@@ -190,9 +190,12 @@ frames.
   - **Coordination plane** — Wi-Fi Aware *messages* (`DiscoverySession.sendMessage` / `onMessageReceived`,
     ~255 B, best-effort, `maxQueuedTransmitMessages=8`) ride discovery follow-up frames and need **no data
     path**, so they reach every neighbor at once *and* keep working while the one NDP is busy. Each node
-    cues `nodeId|version` — a `StoreDigest` **content digest** (XOR over its held custody frame-id set, so
+    cues `nodeId|version` — a `StoreDigest` **content digest** (XOR over its **live** custody frame-id set, so
     it is O(1)-incremental and **restart-stable**: same store ⇒ same version, unlike the old monotone
-    `SyncEpoch` counter it replaced) — and `DigestTracker` (pure, JVM-tested) flags a peer *sync-wanted*
+    `SyncEpoch` counter it replaced; expired-but-unswept rows are excluded, folded out **lazily** by
+    `StoreDigest.current()` at every read/cue — expiry is frame-global `sentAt + TTL`, so all nodes flip
+    together modulo clock skew instead of diverging for up to a sweep period, work item #8) — and
+    `DigestTracker` (pure, JVM-tested) flags a peer *sync-wanted*
     when either side's digest changed since the last sync (an identical-digest pair skips the NDP entirely).
     Small floodable frames (broadcast chat, reactions, receipts, group-meta, profiles ≤255 B) *also* ride
     this plane as a best-effort **fast fan-out** (`fastFanout`/`fastSend`), deduped by the receiver's
@@ -270,10 +273,24 @@ frames.
   drip of NDP setup/teardown + re-attach churn, `wanted` never emptying); and (2) it **refused the new frame**
   when full and evicted by local `receivedAt`/origin — both per-node, so even matched counts kept *different*
   sets. The fix: trim each over-quota bucket to its newest-N by the **frame-global `(sentAt, id)`** on **every**
-  origin, so all nodes keep the identical set and the digests converge. Rule of thumb: **anything the content
+  origin, so all nodes keep the identical set and the digests converge. A third breakage of the same rule was
+  TTL expiry (work item #8): the digest folded **all** rows while a sync exchanges only live ones, so an
+  expired-but-unswept row (sweep ticks phase per-node) opened a divergence window of up to a sweep period at
+  every TTL boundary. Now **expired rows are invisible everywhere observable**: the digest folds live ids only
+  (`StoreDigest.current()` folds lapsed ids out lazily at each read — no expiry timer for Doze to defer), the
+  quota counts/evictions are live-filtered (buckets mix TTL classes, so an expired short-TTL row can be newer
+  by `sentAt` than a live long-TTL row — counting it would evict a live row on the unswept node only), and a
+  frame past its frame-global expiry is **refused at store time** (dead-on-arrival guard, which is also what
+  stops a skewed-clock peer's re-serve resurrecting a swept frame); the sweep is pure storage GC and
+  digest-neutral. Rule of thumb: **anything the content
   digest is folded over must be bounded by a rule that's identical on every node** (same key, same direction,
-  same origins). Verify with `…debug.STORE`: `allFingerprint` must match across devices and every sender's
-  carried count must be ≤ its quota. (Aside: the per-sender bucket lumps a node's profile in with its chat, so a
+  same origins, same liveness) — which makes the **TTL constants (`DEFAULT_TTL_MS`/`DEFAULT_BROADCAST_TTL_MS`)
+  and the broadcast-chat classification convergence-critical**: two app versions that disagree hold different
+  live sets *continuously* for the whole TTL delta, so treat changing them like a wire change. Verify with
+  `…debug.STORE`: **`liveFingerprint` must match across devices** (`digestVersion == liveFingerprint` is the
+  local invariant; `allFingerprint` legitimately lags by expired residue until the sweep and is NOT
+  fleet-comparable at a TTL boundary) and every sender's carried count must be ≤ its quota. (Aside: the
+  per-sender bucket lumps a node's profile in with its chat, so a
   node that sends >quota frames evicts its own profile *frame* from custody — harmless, since the pinned key +
   connect-time `pushProfileTo` / edit re-broadcast are the real profile paths, and every node evicts it alike.)
 - **Steady-state digest parity + BLE suppression means NAN has no NDP exactly when an image needs it —
@@ -396,14 +413,17 @@ route extra is gated on `BuildConfig.DEBUG`. `app/build.gradle.kts` is untouched
   - `…debug.STATE` — self id/name, transport health, reachable peers, and mesh metrics. Add `--es conv <id>`
     to also dump that thread's latest messages (`--ei limit N`, default 20), each with its `received`
     delivery tick — this is how you **verify receipt on the other device without a screenshot**.
-  - `…debug.STORE` — dumps the store-and-forward carry set (the id set the cue-plane content digest is folded
-    over), for diagnosing why two nodes never converge their digests (the churn from a carried-set delta):
-    `digestVersion` (what the transport actually cues), `allFingerprint`/`liveFingerprint` (the digest
-    recomputed over all rows vs. non-expired rows — `allFingerprint != digestVersion` ⇒ the in-memory digest
-    drifted from the table; `liveFingerprint != digestVersion` ⇒ expired-but-unswept rows inflate it), `counts`,
+  - `…debug.STORE` — dumps the store-and-forward carry set (the **live** rows are the id set the cue-plane
+    content digest is folded over; expired-unswept rows are digest/quota/serve-invisible residue awaiting the
+    sweep), for diagnosing why two nodes never converge their digests (the churn from a carried-set delta):
+    `digestVersion` (what the transport actually cues, read via the same lazy-folding `StoreDigest.current()`),
+    `allFingerprint`/`liveFingerprint` (the digest recomputed over all rows vs. non-expired rows — the
+    invariant is **`digestVersion == liveFingerprint`, always**; a mismatch is an in-memory-digest drift bug,
+    while `allFingerprint` legitimately lags by the expired residue until the sweep), `counts`,
     `expiredIds`, the full `allIds`, and capped per-row detail (`--ei limit N`, default 100). Diff `allIds`
     across devices to find the stranded frame(s): `… STORE | sed -n 's/.*data="//;s/"$//p' | jq -r '.allIds[]'
-    | sort` per device, then `comm`/`diff` the files. `allFingerprint` matching across devices = converged.
+    | sort` per device, then `comm`/`diff` the files. **`liveFingerprint` matching across devices = converged**
+    (`allFingerprint` is NOT fleet-comparable at a TTL boundary — soak oracles must compare `liveFingerprint`).
   - `…debug.REACT` — `--es id <messageId> --es emoji <emoji>`. `…debug.HEAL` — nudge rescan/re-advertise.
   ```
   # send on A, then confirm it landed on B — no UI, no screenshots. Outer quotes matter: adb re-parses
