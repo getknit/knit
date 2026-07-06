@@ -498,9 +498,10 @@ private fun LeadingVisual(row: ConversationRow) {
         row.isRoom -> {
             CircleGlyph(size) {
                 Icon(
-                    painter = painterResource(R.drawable.ic_stat_mesh),
+                    painter = painterResource(R.drawable.ic_knit_room),
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
         }
