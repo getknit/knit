@@ -439,7 +439,7 @@ class WifiAwareTransport(
 
     /** Temporary diagnostic: dump the connection-engine decision state so an idle-but-unsynced mesh is visible. */
     private fun logState() {
-        val v = storeDigest.version.value
+        val v = storeDigest.current()
         val now = SystemClock.elapsedRealtime()
         val disc: Set<String>
         val backoff: Map<String, Long>
@@ -473,7 +473,7 @@ class WifiAwareTransport(
      * peer cueing us over the (NDP-free) coordination plane, so it stays reachable and still trips the wedge.
      */
     private fun anySyncOwed(): Boolean {
-        val v = storeDigest.version.value
+        val v = storeDigest.current()
         val now = SystemClock.elapsedRealtime()
         return cueTarget.keys.any { nodeId -> reachableSyncOwed(nodeId, v, now) && corroboratedPresent(nodeId) }
     }
@@ -486,7 +486,7 @@ class WifiAwareTransport(
      * nothing to corroborate with); the corroboration gate remains on the Tier-2 process kill only.
      */
     private fun anyReachableSyncOwed(): Boolean {
-        val v = storeDigest.version.value
+        val v = storeDigest.current()
         val now = SystemClock.elapsedRealtime()
         return cueTarget.keys.any { nodeId -> reachableSyncOwed(nodeId, v, now) }
     }
@@ -825,7 +825,7 @@ class WifiAwareTransport(
      * backward-parseable; the unicast cue plane stays as the redundant active channel.
      */
     private fun buildPublishConfig(): PublishConfig {
-        val ssi = Protocol.advertise(localNodeId) + "$SSI_DIGEST_PREFIX${storeDigest.version.value}"
+        val ssi = Protocol.advertise(localNodeId) + "$SSI_DIGEST_PREFIX${storeDigest.current()}"
         val builder =
             PublishConfig
                 .Builder()
@@ -869,7 +869,7 @@ class WifiAwareTransport(
     private fun icmKeepalive() =
         onHandler {
             val pub = publishSession ?: return@onHandler
-            Log.i(TAG, "icm keepalive — updatePublish (ssi digest ${storeDigest.version.value})")
+            Log.i(TAG, "icm keepalive — updatePublish (ssi digest ${storeDigest.current()})")
             runCatching { pub.updatePublish(buildPublishConfig()) }
                 .onFailure { Log.w(TAG, "updatePublish threw", it) }
         }
@@ -1167,7 +1167,7 @@ class WifiAwareTransport(
      * [needsRediscovery] re-arming subscribe. Returns true if it started a handshake.
      */
     private fun driveSync(): Boolean {
-        val localVersion = storeDigest.version.value
+        val localVersion = storeDigest.current()
         val now = SystemClock.elapsedRealtime()
         val target =
             synchronized(lock) {
@@ -1202,7 +1202,7 @@ class WifiAwareTransport(
      */
     private fun needsRediscovery(): Boolean {
         if (cueTarget.isEmpty()) return true
-        val localVersion = storeDigest.version.value
+        val localVersion = storeDigest.current()
         val disc = synchronized(lock) { discovered.keys.toSet() }
         // A peer we hear cues from (alive, nearby), want to sync, are the initiator for, yet hold no subscribe
         // handle for — either never discovered, or its handle just fast-failed and failConnect dropped it
@@ -1224,7 +1224,7 @@ class WifiAwareTransport(
      * [DigestTracker.reconcileWanted] drops it) or it becomes BLE-suppressed, so a settled mesh does no re-arm.
      */
     private fun needsIcmRelight(): Boolean {
-        val localVersion = storeDigest.version.value
+        val localVersion = storeDigest.current()
         return cueTarget.keys.any { nodeId ->
             localNodeId < nodeId && nodeId !in peers.keys &&
                 digestSyncWanted(nodeId, localVersion) // digest-pure: a smaller-side bulk mark stays inert
@@ -1241,7 +1241,7 @@ class WifiAwareTransport(
         // Tick soon while a sync is still owed (a sync-wanted peer we initiate to, maybe backed off / busy)
         // so we retry promptly; hunt aggressively when we know of nobody; otherwise relax (a cue with a new
         // epoch wakes us via healSignal). Doubled when screen-off on battery.
-        val localVersion = storeDigest.version.value
+        val localVersion = storeDigest.current()
         val base =
             when {
                 cueTarget.isEmpty() -> REDISCOVER_LONELY_MS
@@ -1383,7 +1383,11 @@ class WifiAwareTransport(
 
     private fun cueAll() = cueTarget.keys.toList().forEach { sendCue(it) }
 
-    private fun encodeCue(): ByteArray = "$localNodeId$CUE_SEP${storeDigest.version.value}".encodeToByteArray()
+    // current(), not version.value: the digest folds live custody ids only, and expiry moves with time, so an
+    // outbound cue must fold any TTL boundary crossed since the last read — the 30 s heartbeat's cueAll() is
+    // what bounds boundary staleness on an otherwise-idle node, with no expiry timer for Doze to defer. The
+    // fold's version change then fires the digest-change collector (re-cue + SSI republish) by itself.
+    private fun encodeCue(): ByteArray = "$localNodeId$CUE_SEP${storeDigest.current()}".encodeToByteArray()
 
     private data class Cue(
         val nodeId: String,
@@ -1778,7 +1782,7 @@ class WifiAwareTransport(
                 // Record the sync at our *post-backfill* digest: if we gained nothing new after ingesting the
                 // peer's data, our version now equals theirs and the pair stays quiet (the identical-digest
                 // skip); if we later gain something, the version moves and re-triggers. Initiator-only — see kdoc.
-                if (isInitiator) digestTracker.onReconciled(conn.nodeId, storeDigest.version.value)
+                if (isInitiator) digestTracker.onReconciled(conn.nodeId, storeDigest.current())
                 Log.i(TAG, "sync with ${conn.nodeId} done (initiator=$isInitiator idle=${idle}ms held=${held}ms) — disconnecting")
                 teardownPeer(conn.nodeId, backoffMs = 0) // clean sync: no anti-churn backoff needed
                 break
@@ -1796,7 +1800,7 @@ class WifiAwareTransport(
      * [cueTarget]; [DigestTracker] is internally synchronized.
      */
     private fun initiateOwed(): Boolean {
-        val localVersion = storeDigest.version.value
+        val localVersion = storeDigest.current()
         return cueTarget.keys.any { nodeId ->
             localNodeId > nodeId && nodeId !in peers.keys && syncWanted(nodeId, localVersion)
         }
@@ -1810,7 +1814,7 @@ class WifiAwareTransport(
      * cheap in-place recycle keeps plain [initiateOwed] (a 7 ms no-op if the peer turns out gone).
      */
     private fun initiateOwedToReachable(): Boolean {
-        val localVersion = storeDigest.version.value
+        val localVersion = storeDigest.current()
         val now = SystemClock.elapsedRealtime()
         return cueTarget.keys.any { nodeId ->
             localNodeId > nodeId && nodeId !in peers.keys && syncWanted(nodeId, localVersion) &&

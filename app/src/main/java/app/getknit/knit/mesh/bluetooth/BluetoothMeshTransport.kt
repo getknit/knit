@@ -331,7 +331,7 @@ class BluetoothMeshTransport(
     private fun readvertise() {
         if (adapter?.isEnabled != true || currentPsm == 0 || !::localNodeId.isInitialized) return
         advertiser.update(
-            BleAdvertPayload.encode(localNodeId, Protocol.LOCAL_CAPABILITIES, storeDigest.version.value, currentPsm),
+            BleAdvertPayload.encode(localNodeId, Protocol.LOCAL_CAPABILITIES, storeDigest.current(), currentPsm),
         )
     }
 
