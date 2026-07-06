@@ -2,12 +2,21 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Mesh transport plane 1: Wi-Fi Aware (NAN). Crucially NO location permission —
-         NEARBY_WIFI_DEVICES with neverForLocation covers Wi-Fi Aware discovery on API 33+. -->
+    <!-- Mesh transport plane 1: Wi-Fi Aware (NAN). On API 33+ discovery is location-free via
+         NEARBY_WIFI_DEVICES (neverForLocation); on API 29-32 there is no such permission, so Wi-Fi Aware
+         discovery needs ACCESS_FINE_LOCATION (declared below, shared with the BLE scan and capped to 32). -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />
+
+    <!-- Discovery on API 29-32: Wi-Fi Aware (no NEARBY_WIFI_DEVICES before 33) and the BLE scan (no
+         neverForLocation before 31) both require fine location. Android 12 requires COARSE to be declared and
+         requested alongside FINE (the precise/approximate toggle). Both capped at 32 so API 33+ is location-free. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
+        android:maxSdkVersion="32" />
 
     <!-- Data path (NDP): request the Aware network and open a TCP socket over its link-local IPv6. -->
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
@@ -18,13 +27,17 @@
     <uses-feature android:name="android.hardware.wifi.aware" android:required="false" />
 
     <!-- Mesh transport plane 2: Bluetooth LE (advertise/scan for discovery + presence/RSSI, L2CAP CoC for
-         the data socket). neverForLocation on BLUETOOTH_SCAN keeps the app location-free like the Wi-Fi
-         plane — identity is the nodeId, RSSI is proximity-only, never location. No legacy BLUETOOTH/
-         BLUETOOTH_ADMIN (those are maxSdk 30; minSdk here is 33). -->
+         the data socket). On API 31+ the split BLUETOOTH_SCAN/ADVERTISE/CONNECT apply, and neverForLocation
+         on BLUETOOTH_SCAN keeps the scan location-free (identity is the nodeId, RSSI is proximity-only). On
+         API 29-30 those don't exist: legacy BLUETOOTH/BLUETOOTH_ADMIN (normal, auto-granted) drive the radio
+         and the scan rides ACCESS_FINE_LOCATION (declared above). The legacy pair is capped at 30 so 31+ uses
+         only the split perms. -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <!-- QR identity verification (scan a peer's key) -->

@@ -12,6 +12,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.os.Build
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.StyleSpan
@@ -529,8 +530,14 @@ class MessageNotifier(
                 .setLabel(context.getString(R.string.notif_reply_hint))
                 .build()
         val intent = actionIntent(ACTION_REPLY, tag).putExtra(EXTRA_CONV, conversationId)
-        // RemoteInput requires a MUTABLE PendingIntent so the system can fill in the typed reply.
-        val flags = PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        // RemoteInput requires a MUTABLE PendingIntent so the system can fill in the typed reply. FLAG_MUTABLE
+        // is API 31; pre-S PendingIntents are mutable by default, so the reply still works there without it.
+        val flags =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
         val pending = PendingIntent.getBroadcast(context, requestCode(tag, CODE_REPLY), intent, flags)
         return NotificationCompat.Action
             .Builder(R.drawable.ic_stat_mesh, context.getString(R.string.notif_action_reply), pending)

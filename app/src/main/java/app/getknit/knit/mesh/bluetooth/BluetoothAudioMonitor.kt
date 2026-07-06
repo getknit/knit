@@ -158,6 +158,9 @@ class BluetoothAudioMonitor(
     }
 
     private companion object {
+        // TYPE_BLE_HEADSET/TYPE_BLE_SPEAKER are API 31 but compile-time-inlined ints; on pre-31 they simply
+        // never match a device type, so this is safe on minSdk 29. @SuppressLint silences the InlinedApi note.
+        @SuppressLint("InlinedApi")
         val BT_OUTPUT_TYPES =
             setOf(
                 AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,

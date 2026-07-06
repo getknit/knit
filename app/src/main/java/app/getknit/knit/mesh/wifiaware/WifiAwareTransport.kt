@@ -22,12 +22,15 @@ import android.net.wifi.aware.WifiAwareManager
 import android.net.wifi.aware.WifiAwareNetworkInfo
 import android.net.wifi.aware.WifiAwareNetworkSpecifier
 import android.net.wifi.aware.WifiAwareSession
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import androidx.annotation.ChecksSdkIntAtLeast
+import androidx.annotation.RequiresApi
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.DigestTracker
 import app.getknit.knit.mesh.FileMeta
@@ -106,6 +109,10 @@ import java.util.concurrent.atomic.AtomicInteger
 @SuppressLint("MissingPermission")
 // A transport is inherently many small methods (lifecycle, discovery, sockets, files, cues) and one big class.
 @Suppress("TooManyFunctions", "LargeClass")
+// The NDP data path uses the accept-any responder (WifiAwareNetworkSpecifier.Builder(publishSession), API 31)
+// and setPmk (API 30), so the whole plane requires API 31 — below that isSupported() returns false and the
+// composite meshes over Bluetooth LE only. Instant Communication Mode (API 33) is further guarded per call site.
+@RequiresApi(Build.VERSION_CODES.S)
 class WifiAwareTransport(
     context: Context,
     private val identity: Identity,
@@ -165,9 +172,14 @@ class WifiAwareTransport(
     // The radio's actual coordination-plane message cap (maxServiceSpecificInfoLen covers sendMessage too);
     // COORD_MSG_MAX stays as the conservative fallback. Bigger caps let more frames ride the zero-NDP path.
     private val coordMsgMax =
-        runCatching { awareManager?.characteristics?.maxServiceSpecificInfoLength }
-            .getOrNull()
-            ?.takeIf { it > 0 } ?: COORD_MSG_MAX
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            runCatching { awareManager?.characteristics?.maxServiceSpecificInfoLength }
+                .getOrNull()
+                ?.takeIf { it > 0 } ?: COORD_MSG_MAX
+        } else {
+            // maxServiceSpecificInfoLength is API 33; pre-33 radios have no way to report it, so use the fallback.
+            COORD_MSG_MAX
+        }
 
     @Volatile private var session: WifiAwareSession? = null
 
@@ -374,6 +386,8 @@ class WifiAwareTransport(
         val session: DiscoverySession,
     )
 
+    // SDK-tiered ICM/serveCap capability probes (+ their rationale comments) push this just past LongMethod=60.
+    @Suppress("LongMethod")
     override fun start() {
         if (!hasHardware) {
             _health.value = TransportHealth.Unavailable
@@ -383,7 +397,10 @@ class WifiAwareTransport(
         scope.launch {
             localNodeId = identity.nodeId()
             lastLinkOrAcceptAt = SystemClock.elapsedRealtime() // grace window before the wedge watchdog can fire
+            // Instant Communication Mode is API 33; on 29-32 the probe method doesn't exist, so ICM stays off
+            // and Wi-Fi Aware falls back to standard discovery windows (slower, but functional).
             instantSupported =
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 runCatching {
                     awareManager?.characteristics?.isInstantCommunicationModeSupported() == true
                 }.getOrDefault(false)
@@ -391,7 +408,12 @@ class WifiAwareTransport(
             // S.LSI ships 1 → legacy single-slot). Unreadable ⇒ 1, the conservative fallback.
             serveCap =
                 NanServePolicy.capFor(
-                    runCatching { awareManager?.characteristics?.numberOfSupportedDataPaths }.getOrNull() ?: 1,
+                    // numberOfSupportedDataPaths is API 33; pre-33 falls back to the conservative single slot.
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        runCatching { awareManager?.characteristics?.numberOfSupportedDataPaths }.getOrNull() ?: 1
+                    } else {
+                        1
+                    },
                 )
             registerAvailability()
             attach()
@@ -831,7 +853,9 @@ class WifiAwareTransport(
                 .Builder()
                 .setServiceName(SERVICE_NAME)
                 .setServiceSpecificInfo(ssi.encodeToByteArray())
-        if (instantSupported) builder.setInstantCommunicationModeEnabled(true, INSTANT_BAND)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && instantSupported) {
+            builder.setInstantCommunicationModeEnabled(true, INSTANT_BAND)
+        }
         return builder.build()
     }
 
@@ -881,7 +905,9 @@ class WifiAwareTransport(
         // subscribe sessions outstanding and leak the one onSubscribeStarted doesn't keep.
         if (!subscribing.compareAndSet(false, true)) return
         val builder = SubscribeConfig.Builder().setServiceName(SERVICE_NAME)
-        if (instantSupported) builder.setInstantCommunicationModeEnabled(true, INSTANT_BAND)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && instantSupported) {
+            builder.setInstantCommunicationModeEnabled(true, INSTANT_BAND)
+        }
         // subscribe() is a binder call into the Aware service; if our client died framework-side (NAN
         // cycled) before onAwareSessionTerminated reached us, it throws (SecurityException: "invalid
         // uid+clientId mapping") — that must never escape into the caller's coroutine (a field crash:
@@ -1275,6 +1301,10 @@ class WifiAwareTransport(
                 onDiscovered(peerHandle, serviceSpecificInfo)
             }
 
+            // onServiceLost was added to DiscoverySessionCallback in API 33; the framework never dispatches it
+            // on 29-32 (the base class lacks it), so this override is simply dormant there. @RequiresApi keeps
+            // lint honest without gating the whole transport.
+            @RequiresApi(Build.VERSION_CODES.TIRAMISU)
             override fun onServiceLost(
                 peerHandle: PeerHandle,
                 reason: Int,
@@ -2151,9 +2181,17 @@ class WifiAwareTransport(
     internal companion object {
         const val TAG = "WifiAwareTransport"
 
-        /** True on a device with Wi-Fi Aware hardware — the composite includes this plane only if so. */
+        /**
+         * True on an **API 31+** device with Wi-Fi Aware hardware — the composite includes this plane only if
+         * so. The floor is 31, not the app's minSdk 29, because the accept-any responder the NDP data path
+         * depends on (`WifiAwareNetworkSpecifier.Builder(publishSession)`) is API 31; 29-30 devices mesh over
+         * Bluetooth LE only. `@ChecksSdkIntAtLeast` lets lint treat this as the SDK guard for the
+         * `@RequiresApi(S)` constructor at its single call site (`di/MeshModule`).
+         */
+        @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.S)
         fun isSupported(context: Context): Boolean =
-            context.getSystemService(Context.WIFI_AWARE_SERVICE) != null &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                context.getSystemService(Context.WIFI_AWARE_SERVICE) != null &&
                 context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_WIFI_AWARE)
 
         // The NAN service both nodes publish/subscribe. Bumped on every breaking wire change so a build across
@@ -2175,6 +2213,9 @@ class WifiAwareTransport(
         val PMK: ByteArray = MessageDigest.getInstance("SHA-256").digest("knit-mesh-nan-pmk-v1".toByteArray())
 
         // 2.4 GHz for instant mode: better range than 5 GHz (range is priority #2), at some throughput cost.
+        // WIFI_BAND_24_GHZ is API 30 but a compile-time-inlined int, so it's safe on minSdk 29 — and it is only
+        // ever read inside the API-33-guarded setInstantCommunicationModeEnabled calls above.
+        @SuppressLint("InlinedApi")
         const val INSTANT_BAND = ScanResult.WIFI_BAND_24_GHZ
 
         // Separator in a cue's `nodeId|epoch` payload (nodeIds/epochs never contain it).

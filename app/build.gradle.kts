@@ -16,9 +16,12 @@ android {
 
     defaultConfig {
         applicationId = "app.getknit.knit"
-        // Wi-Fi Aware transport needs API 33: Instant Communication Mode (fast discovery + data-path
-        // bring-up) and NEARBY_WIFI_DEVICES + neverForLocation (so the mesh needs no location permission).
-        minSdk = 33
+        // minSdk 29 is the shared data-path floor: BLE L2CAP CoC and the Wi-Fi Aware NDP
+        // (WifiAwareNetworkSpecifier.Builder) are both API 29. Both radios run on 29+. Wi-Fi Aware uses
+        // Instant Communication Mode + NEARBY_WIFI_DEVICES on 33+ and ACCESS_FINE_LOCATION (no ICM) on 29-32;
+        // BLE uses the split BLUETOOTH_* perms on 31+ and legacy BLUETOOTH/BLUETOOTH_ADMIN on 29-30. Location
+        // is confined to 29-32 (maxSdkVersion 32); 33+ stays location-free.
+        minSdk = 29
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"

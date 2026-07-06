@@ -3,6 +3,7 @@ package app.getknit.knit.review
 import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.MessageRepository
@@ -40,7 +41,14 @@ class ReviewPrompter(
     /** True when Play installed (and therefore can review) this package. */
     fun installedFromPlay(): Boolean =
         try {
-            val installer = context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
+            // getInstallSourceInfo is API 30; on 29 the deprecated getInstallerPackageName gives the installer.
+            @Suppress("DEPRECATION")
+            val installer =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
+                } else {
+                    context.packageManager.getInstallerPackageName(context.packageName)
+                }
             installer == PLAY_STORE_PACKAGE
         } catch (_: PackageManager.NameNotFoundException) {
             false

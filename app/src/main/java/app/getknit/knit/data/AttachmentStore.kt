@@ -3,6 +3,7 @@ package app.getknit.knit.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import app.getknit.knit.data.webp.WebpTranscode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -76,9 +77,17 @@ class AttachmentStore(
                     // black. When the source carries transparency, re-encode as lossy WebP instead — it keeps
                     // the alpha channel and still compresses well; opaque photos stay JPEG (smallest).
                     if (scaled.hasAlpha()) {
+                        // WEBP (deprecated at API 30) is the API-29 lossy WebP format; WEBP_LOSSY is API 30.
+                        @Suppress("DEPRECATION")
+                        val webpFormat =
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                Bitmap.CompressFormat.WEBP_LOSSY
+                            } else {
+                                Bitmap.CompressFormat.WEBP
+                            }
                         val webp =
                             ByteArrayOutputStream().use { out ->
-                                scaled.compress(Bitmap.CompressFormat.WEBP_LOSSY, WEBP_QUALITY, out)
+                                scaled.compress(webpFormat, WEBP_QUALITY, out)
                                 out.toByteArray()
                             }
                         "image/webp" to webp

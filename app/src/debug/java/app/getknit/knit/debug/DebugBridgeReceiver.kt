@@ -10,6 +10,7 @@ import android.graphics.ImageDecoder
 import android.graphics.Movie
 import android.graphics.drawable.AnimatedImageDrawable
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.GroupRepository
@@ -376,7 +377,16 @@ class DebugBridgeReceiver :
             val scaled = downscale(frameBuffer, dim)
             outDims = "${scaled.width}x${scaled.height}"
             val fo = ByteArrayOutputStream()
-            scaled.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, fo)
+
+            // WEBP (deprecated at API 30) is the API-29 lossy WebP format; WEBP_LOSSY is API 30.
+            @Suppress("DEPRECATION")
+            val webpFormat =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    Bitmap.CompressFormat.WEBP_LOSSY
+                } else {
+                    Bitmap.CompressFormat.WEBP
+                }
+            scaled.compress(webpFormat, quality, fo)
             lossyBytes += fo.size()
             if (scaled !== frameBuffer) scaled.recycle()
             frames++
@@ -578,9 +588,14 @@ class DebugBridgeReceiver :
             settings.clearReviewState()
             settings.setReviewEngagementStartedAt(now - ReviewPromptPolicy.MIN_ENGAGEMENT_AGE_MS - ARM_MARGIN_MS)
         }
+        @Suppress("DEPRECATION")
         val installer =
             runCatching {
-                context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
+                } else {
+                    context.packageManager.getInstallerPackageName(context.packageName)
+                }
             }.getOrNull()
         val inputs = reviewPrompter.gateInputs(now)
         return JSONObject()

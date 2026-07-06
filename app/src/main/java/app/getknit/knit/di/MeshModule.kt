@@ -1,5 +1,6 @@
 package app.getknit.knit.di
 
+import android.os.Build
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.crypto.IdentityKeyStore
@@ -55,7 +56,10 @@ val meshModule =
                         if (BluetoothMeshTransport.isSupported(ctx)) {
                             add(BluetoothMeshTransport(ctx, get(), get(), get(), get(), get()))
                         }
-                        if (WifiAwareTransport.isSupported(ctx)) {
+                        // WifiAwareTransport is @RequiresApi(31) (its NDP accept-any responder is API 31). The
+                        // explicit SDK_INT guard — redundant with isSupported()'s own — is what lint reads to
+                        // clear the @RequiresApi companion/constructor calls on this pre-31-reachable line.
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && WifiAwareTransport.isSupported(ctx)) {
                             add(WifiAwareTransport(ctx, get(), get(), get(), get(), get()))
                         }
                     }
