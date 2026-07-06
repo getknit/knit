@@ -17,6 +17,9 @@ plugins {
     alias(libs.plugins.kotlin.compose) apply false
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.ksp) apply false
+    // Kover (test coverage) — the one tooling Gradle plugin we apply; applied on :app (see
+    // app/build.gradle.kts and the version-catalog note for why the plugin, not a standalone CLI).
+    alias(libs.plugins.kover) apply false
 }
 
 // --- detekt (local static analysis) ----------------------------------------------------------

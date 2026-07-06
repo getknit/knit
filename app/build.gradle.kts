@@ -5,6 +5,10 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
+    // Test coverage. Deliberately the Gradle plugin (unlike detekt/ktlint, which run as standalone CLIs)
+    // — coverage must instrument bytecode and hook the test run, which a source-analyzer CLI can't do.
+    // See gradle/libs.versions.toml for why this is safe on the AGP-9.2.1/Kotlin-2.4 toolchain.
+    alias(libs.plugins.kover)
 }
 
 // Release signing credentials (Google Play upload key). Loaded from a gitignored keystore.properties at
@@ -141,6 +145,30 @@ ksp {
     // (same toolchain caution as Koin-not-Hilt). Requires exportSchema = true on KnitDatabase; regenerate the
     // checked-in schema by building after any @Database version bump.
     arg("room.schemaLocation", "$projectDir/schemas")
+}
+
+kover {
+    // Coverage is measured from the DEBUG unit tests (`:app:testDebugUnitTest` — the JVM mesh/protocol/data +
+    // Robolectric Room/Compose suites), so the per-variant report tasks to run are the *Debug ones:
+    //   ./gradlew :app:koverHtmlReportDebug   → app/build/reports/kover/htmlDebug/index.html
+    //   ./gradlew :app:koverXmlReportDebug    → app/build/reports/kover/reportDebug.xml (CI-parseable)
+    reports {
+        filters {
+            excludes {
+                // Only *generated* code — everything hand-written (including di/ wiring and the
+                // Robolectric-tested *ScreenContent composables) stays measured so the number is honest.
+                // NOTE: in Kover class globs, `*` does NOT cross the package separator `.` — use `**` to
+                // span packages (verified on-report; a bare `*_Impl` matches nothing here). `$$serializer`,
+                // `R`, and `Manifest` never appear in the report, so they need no rule.
+                classes(
+                    "**_Impl", // Room-generated DAO/database implementations (KSP)
+                    "**_Impl$*", // ...and their nested classes ($1, $Companion, open-delegates)
+                    "**ComposableSingletons*", // Compose-generated lambda-holder classes
+                    "**BuildConfig", // generated BuildConfig
+                )
+            }
+        }
+    }
 }
 
 dependencyLocking {

@@ -116,6 +116,27 @@ test:unit:
       - app/build/reports/tests/testDebugUnitTest/
     expire_in: 1 week
 
+# Test coverage (advisory) — Kover instruments the *debug* unit tests and reports line coverage over the
+# hand-written code (generated Room _Impl / Compose / BuildConfig are excluded in app/build.gradle.kts).
+# koverXmlReportDebug depends on testDebugUnitTest, so the report tasks run the tests themselves. Kept a
+# separate job (not folded into test:unit) to mirror the detekt/trivy advisory-verify pattern and keep the
+# pass/fail test signal clean; the tradeoff is it re-runs the Robolectric suite. allow_failure so coverage
+# never blocks. The `coverage:` regex scrapes the % that koverLogDebug prints so GitLab shows it on the MR
+# and as the pipeline badge. HTML (browsable) + XML (JaCoCo format) are archived.
+test:coverage:
+  extends: .android
+  stage: test
+  allow_failure: true
+  script:
+    - ./gradlew :app:koverXmlReportDebug :app:koverHtmlReportDebug :app:koverLogDebug --stacktrace --console=plain
+  coverage: '/application line coverage: \d+\.\d+%/'
+  artifacts:
+    when: always
+    paths:
+      - app/build/reports/kover/htmlDebug/
+      - app/build/reports/kover/reportDebug.xml
+    expire_in: 1 week
+
 # --------------- verify (advisory) -------
 verify:detekt:
   image: eclipse-temurin:21-jdk

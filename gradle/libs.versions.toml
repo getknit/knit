@@ -74,6 +74,17 @@ detekt = "1.23.8"
 # Gradle plugin — the same AGP-9.2.1/Kotlin-2.4 toolchain that broke Hilt's plugin. Keep in lockstep
 # with the `ktlint` CLI contributors run locally (the repo's Stop hook invokes `./gradlew ktlint`).
 ktlint = "1.8.0"
+# Kover — Kotlin test-coverage. This is the ONE tooling Gradle plugin we apply (detekt/ktlint run as
+# standalone CLIs off the build classpath — see above). The difference is fundamental: detekt/ktlint are
+# source analyzers, but coverage MUST instrument bytecode and hook test execution, which only the plugin
+# does cleanly (a CLI would have to swap offline-instrumented classes into AGP's unit-test task). It's
+# lower-risk than Hilt's plugin was: it hooks testDebugUnitTest *post-compile* (no compile-time codegen)
+# and only adds Java-only agent/offline-runtime jars to test-scope configurations, so it can't perturb the
+# pinned Kotlin-2.4 metadata graph on :app's compile/runtime classpath. Applied to :app only. 0.9.1 (the
+# 0.9 line's Gradle-9 fix) applied on this Gradle 9.4.1 build but did NOT hook AGP 9.2.1's variants (no
+# per-variant tasks, empty report); 0.9.8 detects the debug variant correctly. Run with
+# `./gradlew :app:koverHtmlReportDebug` (HTML) / `:app:koverXmlReportDebug` (CI-parseable XML).
+kover = "0.9.8"
 # JVM Room/DAO + migration tests (finding #5): Robolectric supplies a Context + framework SQLite on the JVM
 # so in-memory Room executes the real eviction/GC SQL, and MigrationTestHelper (room-testing) rebuilds the
 # exported schema via androidx.sqlite's AndroidSQLiteDriver on that same shadowed SQLite (BundledSQLiteDriver
@@ -159,3 +170,6 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+# The only tooling Gradle plugin applied here (coverage needs test-execution hooks a CLI can't provide) —
+# see the `kover` version note above. Applied on :app in app/build.gradle.kts.
+kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }

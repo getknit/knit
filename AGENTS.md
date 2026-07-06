@@ -25,6 +25,7 @@ moderation.
 ./gradlew installDebug              # install on a connected device
 ./gradlew detekt                    # static analysis via the standalone detekt CLI (reports in build/reports/detekt/)
 ./gradlew ktlint                    # Kotlin style/format lint via the standalone ktlint CLI (reports in build/reports/ktlint/)
+./gradlew :app:koverHtmlReportDebug # test coverage (Kover) — HTML in app/build/reports/kover/htmlDebug/ (XML: koverXmlReportDebug)
 ```
 
 `detekt` runs the standalone CLI (NOT the Gradle plugin) from an isolated `detektCli` configuration
@@ -45,6 +46,24 @@ lints `app/src/**/*.kt` + the `*.gradle.kts` scripts and exits non-zero on any v
 disagree: ktlint's one-arg-per-line wrapping can push a function past detekt's `LongMethod=60` — suppress
 `LongMethod` on that function (with a one-line reason) rather than fighting the formatter (see
 `MeshManager.sendChat`, `NotificationChannels.ensure`).
+
+`kover` (test coverage) is the **one deliberate exception** to the "tooling runs as a standalone CLI, not
+a Gradle plugin" rule above. detekt/ktlint are source analyzers, so a CLI over the sources is strictly
+better (isolated, can't perturb `:app`). Coverage is different in kind: it **must** instrument bytecode and
+hook the test run, which only the Gradle plugin does cleanly (a CLI would have to swap offline-instrumented
+classes into AGP's unit-test task). It's low-risk on this toolchain — unlike Hilt it does no compile-time
+codegen; it hooks `testDebugUnitTest` *post-compile* and only adds Java-only agent/offline-runtime jars to
+test-scope configs, so it never touches `:app`'s Kotlin-2.4 compile/runtime classpath (verified:
+`assembleDebug` + `lint` unaffected). Note: **Kover 0.9.1 applied but silently failed to detect AGP 9.2.1's
+build variants** (no per-variant tasks, empty report) — **0.9.8** fixes it, so don't downgrade below it.
+Coverage is measured from the debug unit tests (`koverHtmlReportDebug` / `koverXmlReportDebug` — the
+per-*variant* tasks; the un-suffixed `koverHtmlReport` aggregates all variants). Only *generated* code is
+excluded (Room `*_Impl`, Compose `ComposableSingletons`, `BuildConfig`) via `kover { reports { filters } }`
+in `app/build.gradle.kts` — everything hand-written stays measured. **In Kover class globs `*` does NOT
+cross the package `.` — use `**` to span packages** (a bare `*_Impl` matches nothing). CI runs it as the
+advisory `test:coverage` job (mirrors `verify:detekt`), which archives the HTML/XML and scrapes the % from
+`koverLogDebug`. Adding the plugin changed the lockfile (`kover-jvm-agent`) — regenerate per the lockfile
+gotcha below after any Kover bump.
 
 - **JDK 21** is required (the Gradle daemon toolchain is pinned to 21).
 - After changing the `MeshTransport` interface, run `testDebugUnitTest` — a test double
