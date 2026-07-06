@@ -223,6 +223,10 @@ dependencies {
     testImplementation(libs.androidx.junit) // AndroidJUnit4 runner on the JVM (delegated by Robolectric)
     testImplementation(libs.androidx.test.core) // ApplicationProvider.getApplicationContext()
     testImplementation(libs.androidx.room.testing) // MigrationTestHelper (was androidTest-only)
+    // Compose UI tests run on Robolectric (createComposeRule in :app:testDebugUnitTest, no emulator) against
+    // the stateless *ScreenContent composables. The BOM (implementation platform) and compose-ui-test-manifest
+    // (debugImplementation, below) are already on the unit-test classpath; only the junit4 rule needs adding.
+    testImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
