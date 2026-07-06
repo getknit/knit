@@ -1,11 +1,15 @@
 package app.getknit.knit.data.forward
 
+import androidx.room.withTransaction
+import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.WireCodec
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * [ForwardStore] backed by the encrypted `forward_store` table. Persists carried DM, group, and
@@ -30,6 +34,7 @@ class ForwardRepository(
     // Content digest of the carried set; kept in lockstep with the table so the transport can cue it and skip
     // no-op syncs. Maintained here (the one place that sees every mutation) rather than in the pure ForwardSync.
     private val digest: StoreDigest,
+    private val db: KnitDatabase,
     private val ttlMs: Long = DEFAULT_TTL_MS,
     private val broadcastTtlMs: Long = DEFAULT_BROADCAST_TTL_MS,
     private val maxRows: Int = DEFAULT_MAX_ROWS,
@@ -37,6 +42,16 @@ class ForwardRepository(
     private val maxPerGroup: Int = DEFAULT_MAX_PER_GROUP,
     private val maxBroadcast: Int = DEFAULT_MAX_BROADCAST,
 ) : ForwardStore {
+    // Serializes store/remove/sweepExpired so each in-memory [digest] update commits atomically with its
+    // forward_store row write: a Room transaction can't enroll the in-memory digest, and a concurrent sweep's
+    // wholesale rebuild would otherwise clobber an incremental add (leaving a live row absent from the digest
+    // and breaking StoreDigest's `current() == liveFingerprint` invariant). These run off the inbound collector
+    // too — own sends on viewModelScope / the notification scope, the sweep on the 10-min prune loop — so it is
+    // real contention, not belt-and-suspenders. Held OUTER to db.withTransaction; the reverse deadlocks on
+    // SQLCipher's single connection (a coroutine holding the connection while waiting on the mutex, vs. one
+    // holding the mutex while waiting to BEGIN).
+    private val mutex = Mutex()
+
     override suspend fun store(
         frame: CarriedFrame,
         origin: Int,
@@ -73,7 +88,7 @@ class ForwardRepository(
             } else {
                 null
             }
-        dao.insert(
+        val row =
             ForwardEntity(
                 id = env.id,
                 recipientId = env.recipientId,
@@ -87,32 +102,53 @@ class ForwardRepository(
                 receivedAt = now,
                 attachmentHash = attachmentHash,
                 expiresAt = expiresAt,
-            ),
-        )
-        // Enforce each bounded bucket by evicting its *oldest-by-sentAt* rows rather than refusing the new one,
-        // and apply the quotas to our own sends (ORIGIN_SELF) too. sentAt is a frame-global key, so every node —
-        // originator and every carrier — keeps the identical newest-N set and their content digests converge.
-        // The old scheme (refuse-when-full, and never cap our own outbox) let an originator that authored more
-        // than a quota's worth of custodial frames hold rows a capped carrier could never accept, so the
-        // cue-plane digests never matched and the mesh churned NDPs forever — observed with a 117-frame sender
-        // against the 100 per-sender quota. Trim order is fixed (sender, group, broadcast, global) so it's
-        // identical on every node. A just-stored frame older than the bucket's newest-N is evicted here too,
-        // which is correct: we converge on the newest-N regardless of arrival order. Counts and evictions are
-        // live-filtered (`expiresAt >= now`): buckets mix TTL classes, so an expired-unswept row can be newer
-        // by sentAt than a live one — counting it would evict a live frame on the unswept node only, and which
-        // rows are evicted would then depend on the local sweep phase, not a frame-global rule (work item #8).
-        var evicted = trim(dao.countBySender(env.senderId, now) - maxPerSender) { dao.evictOldestBySender(env.senderId, it, now) }
+            )
+        // The row insert + quota eviction (atomic under withTransaction) and the in-memory digest update are one
+        // critical section (mutex). The digest update runs AFTER commit but still under the lock, so a rolled-back
+        // transaction never leaves the digest ahead of the table and no concurrent store/sweep interleaves between
+        // the commit and the update.
+        mutex.withLock {
+            val didEvict = db.withTransaction { insertAndTrim(row, isBroadcastChat, now) }
+            // Eviction removed ids we don't track individually here, so rebuild the fingerprint wholesale;
+            // otherwise fold the single new id in incrementally (the hot path when no bucket is over quota).
+            if (didEvict) rebuildDigest(now) else digest.add(row.id, row.expiresAt, now)
+        }
+        return true
+    }
+
+    /**
+     * Inserts [row] and trims each over-quota bucket to its newest-N by the frame-global sentAt, in the fixed
+     * order (sender, group, broadcast, global) so every node keeps the identical set; returns whether any
+     * eviction ran. Runs inside the caller's [db] transaction.
+     *
+     * Evict a bucket's *oldest-by-sentAt* rows rather than refusing the new one, and apply the quotas to our own
+     * sends (ORIGIN_SELF) too. sentAt is a frame-global key, so every node — originator and every carrier — keeps
+     * the identical newest-N set and their content digests converge. The old scheme (refuse-when-full, and never
+     * cap our own outbox) let an originator that authored more than a quota's worth of custodial frames hold rows
+     * a capped carrier could never accept, so the cue-plane digests never matched and the mesh churned NDPs
+     * forever — observed with a 117-frame sender against the 100 per-sender quota. A just-stored frame older than
+     * the bucket's newest-N is evicted here too, which is correct: we converge on the newest-N regardless of
+     * arrival order. Counts and evictions are live-filtered (`expiresAt >= now`): buckets mix TTL classes, so an
+     * expired-unswept row can be newer by sentAt than a live one — counting it would evict a live frame on the
+     * unswept node only, and which rows are evicted would then depend on the local sweep phase, not a frame-global
+     * rule (work item #8).
+     */
+    private suspend fun insertAndTrim(
+        row: ForwardEntity,
+        isBroadcastChat: Boolean,
+        now: Long,
+    ): Boolean {
+        dao.insert(row)
+        val senderId = row.senderId
+        val groupId = row.groupId
+        var evicted = trim(dao.countBySender(senderId, now) - maxPerSender) { dao.evictOldestBySender(senderId, it, now) }
         if (groupId != null) {
             evicted = trim(dao.countByGroup(groupId, now) - maxPerGroup) { dao.evictOldestByGroup(groupId, it, now) } || evicted
         }
         if (isBroadcastChat) {
             evicted = trim(dao.countBroadcast(now) - maxBroadcast) { dao.evictOldestBroadcast(it, now) } || evicted
         }
-        evicted = trim(dao.count(now) - maxRows) { dao.evictOldest(it, now) } || evicted
-        // Eviction removed ids we don't track individually here, so rebuild the fingerprint wholesale; otherwise
-        // fold the single new id in incrementally (the hot path when no bucket is over quota).
-        if (evicted) rebuildDigest(now) else digest.add(env.id, expiresAt, now)
-        return true
+        return trim(dao.count(now) - maxRows) { dao.evictOldest(it, now) } || evicted
     }
 
     /** Evicts [over] rows via [evict] when a bucket exceeds its quota; returns whether anything was removed. */
@@ -139,19 +175,24 @@ class ForwardRepository(
     override suspend fun has(id: String): Boolean = dao.exists(id)
 
     override suspend fun remove(id: String) {
-        dao.delete(id)
-        digest.remove(id)
+        // Single delete needs no transaction, but the mutex keeps the digest.remove atomic with it and serial
+        // against a concurrent store/sweep (see [mutex]).
+        mutex.withLock {
+            dao.delete(id)
+            digest.remove(id)
+        }
     }
 
-    override suspend fun sweepExpired(now: Long): Int {
-        val removed = dao.deleteExpired(now)
-        // Runs at startup, periodically, and on heartbeat — also our reliable point to (re)sync the digest to
-        // the table (initialises it after a restart, and reconciles any drift from eviction). Digest-neutral by
-        // construction: every row the delete reclaimed was already outside the live fold, so the sweep is pure
-        // storage GC and its per-node tick phase can no longer open a divergence window (work item #8).
-        rebuildDigest(now)
-        return removed
-    }
+    override suspend fun sweepExpired(now: Long): Int =
+        mutex.withLock {
+            val removed = dao.deleteExpired(now)
+            // Runs at startup, periodically, and on heartbeat — also our reliable point to (re)sync the digest to
+            // the table (initialises it after a restart, and reconciles any drift from eviction). Digest-neutral by
+            // construction: every row the delete reclaimed was already outside the live fold, so the sweep is pure
+            // storage GC and its per-node tick phase can no longer open a divergence window (work item #8).
+            rebuildDigest(now)
+            removed
+        }
 
     /** Re-syncs the digest to the table's live `(id, expiresAt)` set — the only rebuild source. */
     private suspend fun rebuildDigest(now: Long) {

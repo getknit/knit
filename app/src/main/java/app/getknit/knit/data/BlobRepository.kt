@@ -1,6 +1,7 @@
 package app.getknit.knit.data
 
 import android.util.Log
+import androidx.room.withTransaction
 import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
@@ -36,6 +37,7 @@ class BlobRepository(
     private val imageModerator: ImageModerator,
     private val groups: GroupDao,
     private val forward: ForwardDao,
+    private val db: KnitDatabase,
 ) {
     suspend fun insert(
         hash: String,
@@ -112,16 +114,27 @@ class BlobRepository(
      * Safe to call after deleting a message, swapping an avatar/group photo, or discarding a staged-but-
      * unsent attachment; a no-op (and tolerates a null hash) when the blob is still in use. The forward
      * check keeps a carrier's custodied image alive until the frame that references it stops being carried.
+     *
+     * The reference checks + the two deletes run in one transaction so they see a consistent snapshot
+     * and commit atomically (the callers span the inbound collector, several ViewModels, and the send
+     * path — not one writer). This narrows but does not fully close the check-then-act against an
+     * *independent* concurrent inserter (e.g. inbound delivery saving a message that references [hash]
+     * just after the counts read zero); a blob reclaimed that way is content-addressed, so it self-heals
+     * via a later [app.getknit.knit.mesh.BlobExchange] re-pull. The own-avatar guard reads DataStore,
+     * which can't enroll in a Room transaction, so it stays outside (the own avatar isn't churned
+     * concurrently the way message/forward refs are).
      */
     suspend fun deleteIfUnreferenced(hash: String?) {
         if (hash == null) return
         if (hash == settings.ownAvatarHash.first()) return
-        if (messages.countByAttachmentHash(hash) > 0) return
-        if (peers.countByAvatarHash(hash) > 0) return
-        if (groups.countByPhotoHash(hash) > 0) return
-        if (forward.countByAttachmentHash(hash) > 0) return
-        blobs.delete(hash)
-        verdicts.delete(hash)
+        db.withTransaction {
+            if (messages.countByAttachmentHash(hash) > 0) return@withTransaction
+            if (peers.countByAvatarHash(hash) > 0) return@withTransaction
+            if (groups.countByPhotoHash(hash) > 0) return@withTransaction
+            if (forward.countByAttachmentHash(hash) > 0) return@withTransaction
+            blobs.delete(hash)
+            verdicts.delete(hash)
+        }
     }
 
     /**
@@ -138,9 +151,11 @@ class BlobRepository(
      */
     suspend fun deleteOrphans() {
         val own = settings.ownAvatarHash.first()
-        blobs.orphanHashes().filter { it != own }.forEach {
-            blobs.delete(it)
-            verdicts.delete(it)
+        db.withTransaction {
+            blobs.orphanHashes().filter { it != own }.forEach {
+                blobs.delete(it)
+                verdicts.delete(it)
+            }
         }
     }
 

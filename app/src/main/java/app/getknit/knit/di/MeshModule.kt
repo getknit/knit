@@ -70,9 +70,10 @@ val meshModule =
             MessageCrypto(keys.hybridPrivate, keys.sigPrivate)
         }
         // Constructor order: transport, messages, groups, reactions, peers, identity, settings, blobs,
-        // blobStore, forwardStore, notifier, textModeration, messageCrypto, scope, metrics.
+        // blobStore, forwardStore, notifier, textModeration, messageCrypto, scope, metrics, db.
         single {
             MeshManager(
+                get(),
                 get(),
                 get(),
                 get(),

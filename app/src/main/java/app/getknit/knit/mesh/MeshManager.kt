@@ -5,6 +5,7 @@ import app.getknit.knit.TextLimits
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GroupRepository
+import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -99,6 +100,7 @@ class MeshManager(
     private val messageCrypto: MessageCrypto,
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
+    private val db: KnitDatabase,
 ) : MeshController {
     // Per-session scope for the collectors + metrics loop + router; cancelled in stop() so they don't
     // accumulate across start/stop cycles (e.g. a Diagnostics-triggered restart()).
@@ -183,6 +185,7 @@ class MeshManager(
             peers = peers,
             blobs = blobs,
             blobStore = blobStore,
+            db = db,
             identity = identity,
             settings = settings,
             messageCrypto = messageCrypto,

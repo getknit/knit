@@ -1,9 +1,11 @@
 package app.getknit.knit.mesh
 
 import android.util.Log
+import androidx.room.withTransaction
 import app.getknit.knit.TextLimits
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GroupRepository
+import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -82,6 +84,7 @@ class InboundPipeline(
     private val peers: PeerRepository,
     private val blobs: BlobRepository,
     private val blobStore: MeshBlobStore,
+    private val db: KnitDatabase,
     private val identity: IdentitySource,
     private val settings: InboundSettings,
     private val messageCrypto: MessageCrypto,
@@ -542,37 +545,50 @@ class InboundPipeline(
         sentAt: Long,
         me: String,
     ): Boolean {
-        val existing = groups.find(group.id)
-        if (groupFrameRefused(group, senderId, existing, me)) return false
+        // DataStore read hoisted out of the transaction: it can't enroll in a Room transaction, and holding the
+        // exclusive DB lock across a DataStore suspend would stall every other writer.
+        val blocked = settings.blockedNodeIds.first()
+        // find → refuse-check → upsert run in one transaction, re-reading `existing` inside, so the left-tombstone
+        // check and the wholesale upsert can't tear apart from a concurrent transactional GroupRepository.leave()/
+        // delete(): otherwise a find that read left=false just before leave() commits would blind-upsert left=false
+        // and resurrect the group. Returns the PhotoDecision on adoption (its bytes may still need pulling), or null
+        // when the frame is refused.
+        val photo =
+            db.withTransaction {
+                val existing = groups.find(group.id)
+                if (groupFrameRefused(group, senderId, existing, me, blocked)) return@withTransaction null
 
-        // The name is shared only when explicitly set; an unnamed (blank/null) frame never clears a name
-        // someone else set. Adopt an incoming name only if it's newer (last-writer-wins on sentAt).
-        val incomingName = group.name?.takeIf { it.isNotBlank() }?.take(TextLimits.GROUP_NAME)
-        val keepName = existing?.name.orEmpty()
-        val keepClock = existing?.nameUpdatedAt ?: 0L
-        val takeIncoming = incomingName != null && sentAt >= keepClock
-        val photo = groupPhotoDecision(existing, group)
-        // Preserve our departure tombstone across the wholesale roster overwrite and re-subtract it, so a
-        // member who left stays gone even when this frame carries the stale pre-departure roster (a
-        // straggler who never saw the GroupLeaveFrame). The set only grows, so this can't re-add a leaver.
-        val keepDeparted = existing?.let { GroupMembersStore.decode(it.departed) }.orEmpty()
-        val effective = group.members.filter { it !in keepDeparted }
-        groups.upsert(
-            GroupEntity(
-                groupId = group.id,
-                name = if (takeIncoming) incomingName else keepName,
-                members = GroupMembersStore.encode(effective),
-                createdBy = group.createdBy,
-                createdAt = existing?.createdAt ?: sentAt,
-                nameUpdatedAt = if (takeIncoming) sentAt else keepClock,
-                left = false,
-                departed = GroupMembersStore.encode(keepDeparted),
-                photoHash = photo.hash,
-                photoUpdatedAt = photo.clock,
-            ),
-        )
-        // A newer photo whose bytes we don't hold yet: pull it hop-by-hop (after the upsert advanced the
-        // clock, so the adopt-on-arrival clock check matches), then adopt on arrival.
+                // The name is shared only when explicitly set; an unnamed (blank/null) frame never clears a name
+                // someone else set. Adopt an incoming name only if it's newer (last-writer-wins on sentAt).
+                val incomingName = group.name?.takeIf { it.isNotBlank() }?.take(TextLimits.GROUP_NAME)
+                val keepName = existing?.name.orEmpty()
+                val keepClock = existing?.nameUpdatedAt ?: 0L
+                val takeIncoming = incomingName != null && sentAt >= keepClock
+                val decision = groupPhotoDecision(existing, group)
+                // Preserve our departure tombstone across the wholesale roster overwrite and re-subtract it, so a
+                // member who left stays gone even when this frame carries the stale pre-departure roster (a
+                // straggler who never saw the GroupLeaveFrame). The set only grows, so this can't re-add a leaver.
+                val keepDeparted = existing?.let { GroupMembersStore.decode(it.departed) }.orEmpty()
+                val effective = group.members.filter { it !in keepDeparted }
+                groups.upsert(
+                    GroupEntity(
+                        groupId = group.id,
+                        name = if (takeIncoming) incomingName else keepName,
+                        members = GroupMembersStore.encode(effective),
+                        createdBy = group.createdBy,
+                        createdAt = existing?.createdAt ?: sentAt,
+                        nameUpdatedAt = if (takeIncoming) sentAt else keepClock,
+                        left = false,
+                        departed = GroupMembersStore.encode(keepDeparted),
+                        photoHash = decision.hash,
+                        photoUpdatedAt = decision.clock,
+                    ),
+                )
+                decision
+            } ?: return false
+        // A newer photo whose bytes we don't hold yet: pull it hop-by-hop (after the upsert advanced the clock,
+        // so the adopt-on-arrival clock check matches), then adopt on arrival. Outside the transaction — it's a
+        // network-bound blob fetch, not a DB write.
         photo.pull?.let { pullGroupPhoto(group.id, it, photo.clock) }
         return true
     }
@@ -583,18 +599,17 @@ class InboundPipeline(
      * creator we've blocked (covers the proxy case where a non-blocked member relays the first frame
      * carrying a blocked createdBy).
      */
-    private suspend fun groupFrameRefused(
+    private fun groupFrameRefused(
         group: GroupInfo,
         senderId: String,
         existing: GroupEntity?,
         me: String,
-    ): Boolean {
-        val blocked = settings.blockedNodeIds.first()
-        return senderId in blocked ||
+        blocked: Set<String>,
+    ): Boolean =
+        senderId in blocked ||
             existing?.left == true ||
             !Conversations.isGroupMember(group.members, me) ||
             (existing == null && group.createdBy in blocked)
-    }
 
     /**
      * Resolves a group's photo last-writer-wins on its own clock ([GroupInfo.photoUpdatedAt]), independent

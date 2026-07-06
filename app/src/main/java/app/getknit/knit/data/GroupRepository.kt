@@ -68,19 +68,28 @@ class GroupRepository(
      * deletes the thread's messages so it vanishes from the chat list. The local user stops receiving;
      * other members still treat them as a roster entry (membership is reconstructed per-device from
      * frames), but their frames are now ignored here.
+     *
+     * The tombstone + message purge run in one transaction so they can't tear apart, and so a
+     * concurrent inbound group frame — whose reconcile is likewise transactional — can't observe the
+     * row as still-present between the two writes and resurrect it.
      */
     suspend fun leave(groupId: String) {
-        dao.markLeft(groupId)
-        messages.deleteByConversation(groupId)
+        db.withTransaction {
+            dao.markLeft(groupId)
+            messages.deleteByConversation(groupId)
+        }
     }
 
     /**
      * Deletes [groupId] locally without leaving: hard-deletes the row and clears its messages, so the
      * chat disappears now but the next inbound group frame re-creates it via MeshManager.reconcileGroup
-     * (contrast [leave], which tombstones to block re-add).
+     * (contrast [leave], which tombstones to block re-add). The row delete + message purge run in one
+     * transaction so they can't tear apart.
      */
     suspend fun delete(groupId: String) {
-        dao.deleteById(groupId)
-        messages.deleteByConversation(groupId)
+        db.withTransaction {
+            dao.deleteById(groupId)
+            messages.deleteByConversation(groupId)
+        }
     }
 }

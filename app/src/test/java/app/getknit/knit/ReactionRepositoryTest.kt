@@ -1,55 +1,25 @@
 package app.getknit.knit
 
 import app.getknit.knit.data.ReactionRepository
-import app.getknit.knit.data.reaction.ReactionDao
+import app.getknit.knit.data.RoomDbTest
+import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.reaction.ReactionEntity
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-class ReactionRepositoryTest {
-    /** In-memory [ReactionDao] mirroring the real query semantics (observeAll hides tombstones). */
-    private class FakeReactionDao : ReactionDao {
-        private val rows = mutableMapOf<Pair<String, String>, ReactionEntity>()
-        private val live = MutableStateFlow<List<ReactionEntity>>(emptyList())
-
-        /** Message ids that count as "stored"; a reaction whose messageId is absent is an orphan. */
-        var storedMessageIds: Set<String> = emptySet()
-
-        override fun observeAll(): Flow<List<ReactionEntity>> = live
-
-        override suspend fun updatedAtFor(
-            messageId: String,
-            reactorNodeId: String,
-        ): Long? = rows[messageId to reactorNodeId]?.updatedAt
-
-        override suspend fun emojiFor(
-            messageId: String,
-            reactorNodeId: String,
-        ): String? = rows[messageId to reactorNodeId]?.emoji
-
-        override suspend fun upsert(reaction: ReactionEntity) {
-            rows[reaction.messageId to reaction.reactorNodeId] = reaction
-            live.value = rows.values.filter { it.emoji != null }.sortedBy { it.updatedAt }
-        }
-
-        override suspend fun deleteForMessage(messageId: String) {
-            rows.keys.filter { it.first == messageId }.forEach { rows.remove(it) }
-            live.value = rows.values.filter { it.emoji != null }.sortedBy { it.updatedAt }
-        }
-
-        override suspend fun deleteOrphansOlderThan(olderThan: Long) {
-            rows.entries
-                .filter { (key, value) -> value.updatedAt < olderThan && key.first !in storedMessageIds }
-                .map { it.key }
-                .forEach { rows.remove(it) }
-            live.value = rows.values.filter { it.emoji != null }.sortedBy { it.updatedAt }
-        }
-    }
+/**
+ * Drives [ReactionRepository] against a **real** in-memory Room DB (finding #5 — the last-writer-wins guard and the
+ * orphan anti-join were previously verified only against a hand-mirrored `FakeReactionDao`). [ReactionRepository.apply]
+ * now runs its read-compare-upsert in a transaction so a local reaction tap can't race the inbound echo of the same
+ * reaction and clobber a newer write; the LWW behaviour asserted here is unchanged, and now executes over the real SQL.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+class ReactionRepositoryTest : RoomDbTest() {
+    private fun repo() = ReactionRepository(db.reactionDao(), db)
 
     private fun reaction(
         reactor: String,
@@ -60,7 +30,7 @@ class ReactionRepositoryTest {
     @Test
     fun newerWinsAndStalerLoses() =
         runTest {
-            val repo = ReactionRepository(FakeReactionDao())
+            val repo = repo()
 
             repo.apply(reaction("alice", "👍", at = 100))
             repo.apply(reaction("alice", "❤️", at = 50)) // older — ignored
@@ -73,7 +43,7 @@ class ReactionRepositoryTest {
     @Test
     fun retractThenStaleAddStaysRetracted() =
         runTest {
-            val repo = ReactionRepository(FakeReactionDao())
+            val repo = repo()
 
             repo.apply(reaction("alice", "👍", at = 100))
             repo.apply(reaction("alice", null, at = 200)) // retract
@@ -86,7 +56,7 @@ class ReactionRepositoryTest {
     @Test
     fun observeExcludesRetractedReactions() =
         runTest {
-            val repo = ReactionRepository(FakeReactionDao())
+            val repo = repo()
 
             repo.apply(reaction("alice", "👍", at = 10))
             repo.apply(reaction("bob", "👍", at = 20))
@@ -100,11 +70,11 @@ class ReactionRepositoryTest {
     @Test
     fun deleteOrphansReapsOldOrphansOnly() =
         runTest {
-            val dao = FakeReactionDao()
-            val repo = ReactionRepository(dao)
+            val repo = repo()
             val day = 24L * 60 * 60 * 1000
             val now = 10 * day
-            dao.storedMessageIds = setOf("kept-msg")
+            // The real deleteOrphansOlderThan anti-joins `messages`, so a present message keeps its reaction.
+            db.messageDao().upsert(MessageEntity(id = "kept-msg", senderId = "s", body = "", sentAt = 1L))
 
             // Old orphan (no message) -> reaped; recent orphan within the grace window -> kept; an old
             // reaction whose message still exists -> kept regardless of age.

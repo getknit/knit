@@ -4,7 +4,8 @@
 **Status updates (last revised 2026-07-05):** the following have been fixed since the review was written
 and are marked ✅ below — **#1** (`3df428a`, completed by work item #8), **#2** (`7b2c6ba`), **#3**
 (`e18b1f4`; the no-throw contract was later made mechanical in `265c79a`), **#4** (`8c291bb`), **#5**
-(`c9cf64d`), **#7** (`53646bb`), **#9** (`db67f72`), and **#15** (`8a8f561` + `8c291bb`). **#8** is
+(`c9cf64d`), **#7** (`53646bb`), **#9** (`db67f72`), **#13** (`db.withTransaction` + a `ForwardRepository`
+mutex + transactional `reconcileGroup`), and **#15** (`8a8f561` + `8c291bb`). **#8** is
 **partially** fixed: the `InboundPipeline` extraction from `MeshManager` landed (`874e2ec`), but the
 `WifiAwareTransport` half has not.
 **Scope:** Full codebase (~25k LOC main across `mesh/`, `data/`, `ui/`, `moderation/`, `identity/`,
@@ -70,7 +71,7 @@ defects; only where the code diverges from its own docs, or a consequence is uns
 | 10 | Med | Reliability | **Data-plane reliability rests on heuristic watchdogs.** The NAN single-NDI constraint has driven a long P0–P6 wedge-fighting campaign (two-tier watchdog, ghost-proof recycle, streak gates). It's impressively managed and documented, but self-heal loops around an opaque firmware resource are inherently fragile, and BLE has an analogous class of **sticky advertise/accept failures with no self-heal and `health` stuck `Healthy`**. | Add a health signal + re-advertise path to BLE `heal()`; continue extracting NAN decision logic into testable policies (below). |
 | 11 | Med | Security / privacy | **Metadata & tracking exposure beyond what's documented**: the full group roster + name + `createdBy` travel cleartext on every group frame (passive social-graph reconstruction), and the stable nodeId is broadcast in the clear over NAN SSI + BLE service data (a keypair-lifetime OTA device-tracking identifier). `deviceTag` further defeats nodeId rotation as a privacy measure. | Surface these as explicit privacy notes; consider rotating/short-lived advert identifiers. |
 | 12 | Med | Correctness | **Non-atomic key-file writes**: `DatabaseKey`/`KeystoreSecret` `writeBytes` (no temp+rename). A crash mid-write wipes the whole DB or **mints a new identity/nodeId** (breaks every peer's pin). Written once, high blast radius. | temp-file + `rename`. |
-| 13 | Med | Correctness | **Read-then-write races** without transactions: `ReactionRepository.apply`, `ForwardRepository.store` (count→evict→digest), `BlobRepository.deleteIfUnreferenced`, `GroupRepository.leave/delete`. Safe only under an *implicit, undocumented* single-writer convention. | `@Transaction` the multi-step mutations; document the single-writer assumption. |
+| 13 | Med | Correctness | **✅ Fixed** — **Read-then-write races** without transactions: `ReactionRepository.apply`, `ForwardRepository.store` (count→evict→digest), `BlobRepository.deleteIfUnreferenced`, `GroupRepository.leave/delete`. The "single-writer convention" was **false** — UI (`viewModelScope`), the notification receiver, and session-scope sweep/`watch` loops all mutate these repos off the inbound collector. Each multi-step mutation now runs in `db.withTransaction` (`BEGIN EXCLUSIVE` serializes the read-modify-write); `ForwardRepository` additionally holds a `Mutex` *outer* to the transaction so the in-memory `StoreDigest` stays in lockstep (a Room txn can't enroll it); and the inbound `reconcileGroup` find→upsert was made transactional too, so a UI `leave`/`delete` can't be resurrected by a racing group frame. | ✅ `db.withTransaction` + a `ForwardRepository` `Mutex` + transactional `reconcileGroup`; convention documented in `AGENTS.md`. |
 | 14 | Med | Security (defense-in-depth) | **Pin overwrite keeps `verified` across a key change** (`handleProfile`, `MeshManager.kt:1563`): a profile whose key derives to the senderId overwrites the pinned key and preserves the verified badge, with no `pubKey != pinned → verified=false` reset. Reachable given #2; a defense-in-depth miss regardless. | Refuse or un-verify on any pinned-key change. |
 | 15 | Med | Structure | **✅ Fixed** (`8a8f561`, test in `8c291bb`) — a narrow `MeshController` facade (the 6 read StateFlows + send/heal/restart/start/stop) now fronts `MeshManager`; all 6 ViewModels, `MeshService`, `KnitApp`, the notification receiver, and the debug bridge inject the interface, so a VM is testable against a fake — demonstrated by the first-ever VM test, `DiagnosticsViewModelTest` (a `FakeMeshController`). | ✅ `MeshController` read-facade + first VM test. |
 | 16 | Low-Med | Structure | `ChatScreen.kt` (1896 lines) and `BlobRepository` (moderation hub in a data class, 8 ctor deps) warrant mechanical splits. | Split `ChatScreen` along its 4 already-private-composable seams; extract an `ImageScreeningService`. |
@@ -164,11 +165,13 @@ broken asset (e.g. a git-LFS pointer checked out as the model, a truncated build
 both crashes the composer's send and throws out of `onDeliver`, stopping that device from relaying the
 frame. The fix is one line; the value is upholding an invariant the rest of the code treats as sacred.
 
-**[#12, Med] Non-atomic key-file persistence** and **[#13, Med] untransacted read-then-write**
-sequences are both "works because nothing races it today" — the mesh serializes inbound handling and the
-files are written rarely. But the identity-key write happens exactly once per install and a torn write
-mints a new nodeId (breaking every pin), so temp-file+rename is cheap insurance against a high-blast
-failure.
+**[#12, Med] Non-atomic key-file persistence** remains — the identity-key write happens exactly once per
+install and a torn write mints a new nodeId (breaking every pin), so temp-file+rename is cheap insurance
+against a high-blast failure. **[#13, Med] untransacted read-then-write** is **✅ fixed**: the premise that
+"the mesh serializes inbound handling" proved false (UI, notification, and sweep paths write these repos
+concurrently off the inbound collector), so each multi-step mutation now runs in `db.withTransaction`, with a
+`ForwardRepository` `Mutex` keeping the in-memory `StoreDigest` in lockstep and a transactional `reconcileGroup`
+closing the leave-vs-reconcile group-resurrection race — see §2 #13 and the `AGENTS.md` gotcha.
 
 ### 4.2 Security & privacy
 
@@ -318,7 +321,7 @@ a structural limit, not a bug, but worth stating.
 | E2E crypto (`mesh/crypto`) | A− | AEAD/HPKE done right; identity width (#2) is the caveat. |
 | Bluetooth LE plane | B+ | Excellent policy extraction; sticky-failure self-heal gaps. |
 | Wi-Fi Aware plane | B | Heroic, well-documented — but a god-file with un-extracted, untested decision logic. |
-| Data / persistence | B+ | Coherent at-rest story; DAO/migration tests now execute (#5); untransacted races (#13) + atomicity gaps (#12) remain. |
+| Data / persistence | B+ | Coherent at-rest story; DAO/migration tests now execute (#5); untransacted races (#13) now transactional; atomicity gaps (#12) remain. |
 | Identity | B | Self-certifying model is elegant but under-sized (#2). |
 | Moderation | B | Good design; the load-failure path (#3) and asset/license loose ends. |
 | UI / Compose | A− | Textbook UDF, strong a11y; concrete-VM coupling now behind `MeshController` (#15); ChatScreen size remains. |

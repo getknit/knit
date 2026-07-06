@@ -1,5 +1,6 @@
 package app.getknit.knit.data
 
+import androidx.room.withTransaction
 import app.getknit.knit.data.reaction.ReactionDao
 import app.getknit.knit.data.reaction.ReactionEntity
 import kotlinx.coroutines.flow.Flow
@@ -10,6 +11,7 @@ import kotlinx.coroutines.flow.Flow
  */
 class ReactionRepository(
     private val dao: ReactionDao,
+    private val db: KnitDatabase,
 ) {
     fun observeReactions(): Flow<List<ReactionEntity>> = dao.observeAll()
 
@@ -17,10 +19,17 @@ class ReactionRepository(
      * Applies a reaction, keeping the existing one when this update is not strictly newer. This is
      * the single guard that makes out-of-order add/retract/replace frames (and plain duplicates)
      * converge: a stale frame for an already-newer ([messageId], [reactorNodeId]) is dropped.
+     *
+     * The read-compare-upsert runs in one [db] transaction so a concurrent [apply] for the same
+     * ([messageId], [reactorNodeId]) — a local reaction tap racing the inbound echo of that reaction
+     * — can't read the same `current` and clobber a newer write out of `updatedAt` order (the send
+     * and receive paths run on different coroutines, so this is not hypothetical).
      */
     suspend fun apply(reaction: ReactionEntity) {
-        val current = dao.updatedAtFor(reaction.messageId, reaction.reactorNodeId)
-        if (current == null || reaction.updatedAt > current) dao.upsert(reaction)
+        db.withTransaction {
+            val current = dao.updatedAtFor(reaction.messageId, reaction.reactorNodeId)
+            if (current == null || reaction.updatedAt > current) dao.upsert(reaction)
+        }
     }
 
     /** The reactor's current emoji on a message (null if none/retracted) — used for toggle decisions. */

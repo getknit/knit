@@ -66,11 +66,12 @@ val appModule =
         single { get<KnitDatabase>().forwardDao() }
         single { MessageRepository(get()) }
         single { PeerRepository(get()) }
-        single { ReactionRepository(get()) }
-        // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, imageModerator, groupDao, forwardDao.
-        single { BlobRepository(get(), get(), get(), get(), get(), get(), get(), get()) }
+        single { ReactionRepository(get(), get()) }
+        // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, imageModerator, groupDao, forwardDao, db.
+        single { BlobRepository(get(), get(), get(), get(), get(), get(), get(), get(), get()) }
         single { GroupRepository(get(), get(), get()) }
         // Store-and-forward custody for DMs, backed by the encrypted forward_store table. Takes the shared
-        // StoreDigest (from meshModule) so every carry-store mutation keeps the cue-plane content digest in sync.
-        single<ForwardStore> { ForwardRepository(get(), get()) }
+        // StoreDigest (from meshModule) so every carry-store mutation keeps the cue-plane content digest in sync,
+        // plus the KnitDatabase so store/remove/sweep run their DB writes in a transaction under the repo mutex.
+        single<ForwardStore> { ForwardRepository(get(), get(), get()) }
     }

@@ -1,7 +1,10 @@
 package app.getknit.knit.mesh
 
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GroupRepository
+import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -148,6 +151,14 @@ class InboundPipelineTest {
         val reactions = mockk<ReactionRepository>(relaxed = true)
         val blobs = mockk<BlobRepository>(relaxed = true)
         val blobStore = mockk<MeshBlobStore>(relaxed = true)
+
+        // A real in-memory DB purely as the transaction runner for reconcileGroup's db.withTransaction; the repos
+        // are mocked, so the mocked find/upsert calls just run harmlessly inside a real (empty) transaction.
+        val db =
+            Room
+                .inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), KnitDatabase::class.java)
+                .allowMainThreadQueries()
+                .build()
         val notifier = mockk<Notifier>(relaxed = true)
         val settings = FakeSettings()
         val forwardSync = ForwardSync(transport, forwardStore, clock = { 0L })
@@ -176,6 +187,7 @@ class InboundPipelineTest {
                     peers = peers,
                     blobs = blobs,
                     blobStore = blobStore,
+                    db = db,
                     identity = FakeIdentity(self),
                     settings = settings,
                     messageCrypto = self.crypto,
