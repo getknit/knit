@@ -37,6 +37,10 @@ enum class DropReason {
 
     /** A decrypted payload whose content-schema version this build doesn't support. */
     UNKNOWN_CONTENT_VERSION,
+
+    /** An inbound profile whose key differs from the sender's already-pinned key — a pinned-key change
+     *  is only reachable via a nodeId hash collision (impersonation), so we refuse it and keep the pin. */
+    PIN_CHANGE_REFUSED,
 }
 
 /**

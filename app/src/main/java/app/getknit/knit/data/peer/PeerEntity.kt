@@ -12,7 +12,9 @@ import androidx.room.PrimaryKey
  * [pubKey] is the peer's pinned end-to-end public-key bundle (base64; see
  * [app.getknit.knit.mesh.crypto.PublicKeyBundle]), learned from their profile frame on a
  * trust-on-first-use basis. [verified] is true once the local user has confirmed that key out of band
- * (safety number / QR); it is reset to false if the pinned key ever changes.
+ * (safety number / QR). The pinned key is immutable once set — a profile advertising a different key
+ * for the same nodeId is refused (it could only arise from a nodeId hash collision), so [verified]
+ * stays bound to that key and is never silently inherited by a swapped-in key.
  *
  * [deviceTag] is the peer's key-independent device tag (see [app.getknit.knit.identity.DeviceTag]),
  * used only to keep a block sticky when the peer regenerates its key (and thus its nodeId).

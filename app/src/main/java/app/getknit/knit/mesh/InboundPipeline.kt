@@ -889,6 +889,15 @@ class InboundPipeline(
             }
         }
 
+    /**
+     * Pins an inbound peer's profile (self-cert check → last-writer-wins → immutable-pin guard → upsert),
+     * then flushes/replays anything that was waiting on the sender's key.
+     *
+     * `@Suppress("CyclomaticComplexMethod")`: the #14 immutable-pin guard adds the one branch that tips this
+     * past detekt's threshold of 15. The body is a straight-line sequence of null-coalesced field resolutions
+     * and guards — not genuinely complex — and the guard is load-bearing, so suppress rather than reshuffle it.
+     */
+    @Suppress("CyclomaticComplexMethod")
     private suspend fun handleProfile(
         env: RelayEnvelope,
         wire: WireEnvelope,
@@ -910,13 +919,22 @@ class InboundPipeline(
         // re-served copy can never change the pinned key — it could only revert name/status. A first
         // profile (existing == null) is always accepted, so this never blocks recovering a missing key.
         if (existing != null && env.sentAt < existing.updatedAt) return
+        // Immutable pin: a peer's key is bound to its nodeId, so once pinned it can only "change" via a
+        // hash collision — an impersonation attempt. Refuse it: keep the first-pinned key and its verified
+        // badge rather than let a swapped-in key inherit a verified contact (finding #14). A first profile
+        // (existing?.pubKey == null) still pins normally; a same-key re-profile still updates name/status.
+        val pinned = existing?.pubKey
+        if (pinned != null && pinned != pubKey) {
+            Log.w(TAG, "drop profile from ${env.senderId}: pinned key change refused (collision/impersonation?)")
+            metrics.onDropped(DropReason.PIN_CHANGE_REFUSED)
+            return
+        }
         val advertised = content.avatarHash
         // The stored avatarHash means "bytes are present locally": adopt the advertised hash only once
         // we hold its blob, otherwise keep the current avatar (if any) until the new one is fetched.
         val haveAvatar = advertised != null && blobStore.has(advertised)
-        // The key is bound to the nodeId, so a verified peer's key cannot legitimately change; keep the
-        // pinned-verified state as-is. (A different key for the same nodeId would be a hash collision,
-        // already excluded above.)
+        // The pinned key is guaranteed unchanged here (a differing key was refused above), so carrying
+        // the prior [verified] state through the upsert is safe.
         peers.upsert(
             (existing ?: PeerEntity(env.senderId)).copy(
                 // Clamp inbound too: our own cap only bounds what we originate, not what a peer sends.

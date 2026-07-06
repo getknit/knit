@@ -381,6 +381,48 @@ class InboundPipelineTest {
             assertTrue(rig.forwardStore.has("c7"))
         }
 
+    @Test
+    fun profileWithADifferentKeyForAPinnedSenderIsRefusedAndKeepsVerified() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val other = party() // stands in for the (infeasible-to-generate) colliding key
+
+            // alice is already pinned AND user-verified. A real key-for-nodeId collision can't be
+            // generated in a test (128-bit), so we plant a pin whose key differs from the incoming
+            // self-certifying profile — reaching the exact "pinned key changed" branch in handleProfile.
+            rig.peerMap[alice.nodeId] =
+                PeerEntity(nodeId = alice.nodeId, pubKey = other.bundle.encoded, verified = true, updatedAt = 1L)
+
+            // alice's genuine, self-certifying profile arrives (its key derives to her nodeId, newer sentAt).
+            val profile = rig.profile(alice)
+            rig.pipeline.onDeliver(alice.sign(profile), profile, alice.nodeId)
+
+            // Refused: the first-pinned key and its verified badge are untouched, and the drop is counted.
+            assertEquals("pin must not change", other.bundle.encoded, rig.peerMap[alice.nodeId]?.pubKey)
+            assertTrue("verified badge must survive", rig.peerMap[alice.nodeId]?.verified == true)
+            assertEquals(1L, rig.drops(DropReason.PIN_CHANGE_REFUSED))
+        }
+
+    @Test
+    fun reProfileWithTheSameKeyIsNotRefusedAndKeepsVerified() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            // Pinned with her real key, user-verified, an older name.
+            rig.peerMap[alice.nodeId] =
+                PeerEntity(nodeId = alice.nodeId, pubKey = alice.bundle.encoded, verified = true, name = "Old", updatedAt = 1L)
+
+            // A normal profile update (same key, newer sentAt, name "Peer") must pass the guard untouched.
+            val profile = rig.profile(alice)
+            rig.pipeline.onDeliver(alice.sign(profile), profile, alice.nodeId)
+
+            assertEquals(0L, rig.drops(DropReason.PIN_CHANGE_REFUSED))
+            assertTrue("verified must survive a same-key update", rig.peerMap[alice.nodeId]?.verified == true)
+            assertEquals("name should update", "Peer", rig.peerMap[alice.nodeId]?.name)
+            assertEquals(alice.bundle.encoded, rig.peerMap[alice.nodeId]?.pubKey)
+        }
+
     private companion object {
         const val HYBRID_TEMPLATE = "DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM"
     }
