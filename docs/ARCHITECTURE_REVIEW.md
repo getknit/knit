@@ -1,8 +1,12 @@
 # Knit — Architecture Review
 
 **Date:** 2026-07-04
-**Status updates:** findings **#1** (`3df428a`), **#2** (`7b2c6ba`), and **#3** (`e18b1f4`) have been
-fixed since the review was written; they are marked ✅ below.
+**Status updates (last revised 2026-07-05):** the following have been fixed since the review was written
+and are marked ✅ below — **#1** (`3df428a`, completed by work item #8), **#2** (`7b2c6ba`), **#3**
+(`e18b1f4`; the no-throw contract was later made mechanical in `265c79a`), **#4** (`8c291bb`), **#5**
+(`c9cf64d`), **#7** (`53646bb`), **#9** (`db67f72`), and **#15** (`8a8f561` + `8c291bb`). **#8** is
+**partially** fixed: the `InboundPipeline` extraction from `MeshManager` landed (`874e2ec`), but the
+`WifiAwareTransport` half has not.
 **Scope:** Full codebase (~25k LOC main across `mesh/`, `data/`, `ui/`, `moderation/`, `identity/`,
 `notifications/`; ~6.3k LOC / 50 JVM test files; ~1.8k lines of design docs). Reviewed against the
 intended design in `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/WIRE_COMPAT.md`,
@@ -29,13 +33,16 @@ The weaknesses are concentrated and mostly **not** in the clever parts. They clu
 
 1. **A few genuine correctness defects** that contradict the design's own stated invariants — most
    notably a non-convergent custody TTL and a moderation failure path that can throw out of the inbound
-   handler.
+   handler. *(✅ Both since fixed — #1, #3.)*
 2. **Structural gravity** — `MeshManager` (1838 lines) and `WifiAwareTransport` (2233 lines) are
-   god-objects where correctness rides on prose-enforced ordering contracts.
+   god-objects where correctness rides on prose-enforced ordering contracts. *(✅ Addressed for
+   `MeshManager` since the review: its inbound half is now an injectable, tested `InboundPipeline` and
+   the file is down to 953 lines — #8/#4; `WifiAwareTransport` still stands.)*
 3. **A cryptographic-identity foundation that is under-sized** — the 8-char nodeId gives ~41 bits, which
    is brute-forceable and undercuts the self-certifying-identity claim the whole trust model rests on.
+   *(✅ Since fixed: nodeId widened to 128 bits — #2.)*
 4. **A test blind spot at the integration seam** — the security-critical `MeshManager` inbound pipeline
-   and every Room DAO query are unverified by any executing test.
+   and every Room DAO query are unverified by any executing test. *(✅ Since fixed — #4, #5.)*
 5. **An un-productionized release/build posture** — R8 fully disabled, demo code shipping, no signing
    config, thin CI gating.
 
@@ -54,18 +61,18 @@ defects; only where the code diverges from its own docs, or a consequence is uns
 | 1 | **High** | Correctness | **✅ Fixed** (`3df428a`, completed by work item #8) — Custody **TTL is non-convergent**: `expiresAt = localReceiveTime + ttl` (`ForwardRepository.kt:73`), not `sentAt + ttl`. Late joiners expire a frame hours after originators; a still-live peer re-serves a swept frame via the id-diff and it re-stores with a **fresh full TTL** (no tombstone for TTL-swept ids). Broadcast/group frames effectively never die mesh-wide while nodes keep meeting — contradicting the stated 6h/24h retention *and* the repo's own "digest-folded state must be bounded identically on every node" rule. | Use frame-global `expiresAt = sentAt + ttl`, or tombstone swept ids like `acked`. *(The tombstone became unnecessary: `sentAt + ttl` is itself a frame-global tombstone clock, and work item #8 added the dead-on-arrival store guard + live-only digest/quotas that close the residual sweep-phase divergence — no tombstone table, which would have been new per-node state, the very trap.)* |
 | 2 | **High** | Security | **✅ Fixed** (`7b2c6ba`) — **nodeId is ~41 bits** (`NodeId.kt`: 8 chars × 36-symbol alphabet = 36⁸ ≈ 2⁴¹·⁴). The self-certifying-identity model (`verifyInbound`, `canCarry`, TOFU pin) rests on "a colliding bundle is computationally infeasible" — false at 41 bits. Targeted second-preimage ≈ days on a modest GPU/CPU farm; birthday collision ≈ 2²¹ (trivial). | Widen nodeId to ≥128 bits of the digest (coordinated wire break — the repo already has a wire-break process). |
 | 3 | **High** | Correctness / robustness | **✅ Fixed** (`e18b1f4`) — Moderation model-load can **throw out of the inbound handler**: `MlTextModerator.loadEngine()` catches only `IOException`/`IllegalStateException` (`:96,98`), but `Interpreter(model)` throws `IllegalArgumentException` on a bad flatbuffer and `SentencePieceTokenizer.fromJson` throws serialization errors; `classify()` wraps only `infer()`, not the load. A corrupt/LFS-pointer model asset propagates through `dispatchByType` (unwrapped) out of `onDeliver`, violating the load-bearing "never throw → keep relaying" contract, and crashes the send path (`ChatViewModel.send` try/**finally**). | `catch (e: Exception)` around load; wrap load in the `runCatching`. |
-| 4 | **High** | Testing | The **security gate is untested**: `MeshManager` (1838 LOC) is never instantiated by any test; `FrameSignatureTest` only *mirrors* `sign`/`verifyInbound`. The real `verifyInbound → onDeliver → decryptAndDeliver → canCarry` pipeline and its no-throw contract can drift undetected. | Add a `FakeLoopTransport` + fake-repo integration test driving `verifyInbound`→`onDeliver` end-to-end (it's constructor-injectable). |
-| 5 | **High** | Testing | **Zero executing DAO/migration tests.** All eviction/orphan/GC SQL is verified only by a hand-mirrored `FakeForwardDao`; a comment (`ForwardRepositoryTest.kt:60`) claims "the instrumented DAO test" — **which does not exist**. `androidx-room-testing` is on the classpath but unused. | Robolectric + in-memory Room to execute the real queries; delete the stale claim. |
+| 4 | **High** | Testing | **✅ Fixed** (`8c291bb`, unblocked by the `874e2ec` extraction) — the security gate is now *executed*, not mirrored: `InboundPipelineTest` drives the real `InboundPipeline.onDeliver` (verify → custody → dispatch → decrypt → deliver/ack) with real Tink keypairs, the real DTN services, a `FakeLoopTransport`, and mockk repo stand-ins, covering the gate and all three ordering contracts (custody-before-relay, replay-runs-last, no-throw-out-of-`onDeliver`). *(Was: `MeshManager` never instantiated by any test; `FrameSignatureTest` only mirrored `sign`/`verifyInbound`.)* | ✅ `FakeLoopTransport` + fake-repo test drives `onDeliver` end-to-end. |
+| 5 | **High** | Testing | **✅ Fixed** (`c9cf64d`) — `ForwardDaoTest`/`BlobDaoTest`/`ReactionDaoTest`/`MessageDaoTest` now execute the real eviction/orphan/GC SQL against in-memory Room under Robolectric; `exportSchema` is on with a checked-in baseline (`app/schemas/…/21.json`), a `MigrationTestHelper` harness (`KnitDatabaseMigrationTest`) is ready for the first real migration, and the stale "instrumented DAO test" comment is corrected. | ✅ Robolectric + in-memory Room executing the real queries (see AGENTS.md "JVM Room/DAO + migration tests"). |
 | 6 | **High** | Release | **R8 fully disabled** (`build.gradle.kts:40-43`): demo/fake classes ship in the release APK, ~30 MB tflite + unshrunk Compose bloat the *shareable* APK, and a privacy-marketed app ships zero obfuscation. No `signingConfig`; `versionCode = 1`. | Decide the R8 story now (enable + author keep rules, or record why-not); force `SEED_DEMO=false` in the release buildType; add a signing config. |
-| 7 | Med-High | Security | **✅ Fixed** — the **checked-in APK-share signing key** (`res/raw/knit_share_key.pk8`+`.der`) was public, so anyone could sign a trojaned "Knit" that Android accepts as a **legitimate in-place update** for share-installed users. The key files are removed; `ApkMerger` now re-signs with a **per-install EC P-256 AndroidKeyStore key** (`ShareSigningKey`) generated on first share, so no signing identity is shared across installs and no attacker holds a key a victim's device would honor. Documented tradeoff: a share-installed Knit updates in place only from the device that produced its APK. | ✅ Per-install Keystore key generated at first share (`ShareSigningKey`). |
-| 8 | Med | Structure | `MeshManager` **god-object**: owns the transport, router, 5 DTN services, 8 repos, crypto, moderation; correctness of the whole stack rides on prose-enforced ordering (custody-before-relay, replay-runs-last, no-throw-out-of-onDeliver). | Extract an `InboundPipeline` / delivery collaborator; split profile, group-reconcile, and attachment-screen concerns. |
-| 9 | Med | Security | **KeyExchange bookkeeping is unbounded** and keyed by *unauthenticated* senderIds: `missing`/`lastAskedAt`/`wanters` have no cap/TTL (contrast the deliberately-capped `PendingInbound`). A peer flooding many forged senderIds triggers a signed-keyreq storm (with hop-by-hop recursion) and unbounded map growth; a giant batched keyreq can exceed `MAX_PAYLOAD_BYTES` and crash the writer coroutine. | Cap/evict `missing`; chunk keyreq batches; add a `CoroutineExceptionHandler` to the mesh scope. |
+| 7 | Med-High | Security | **✅ Fixed** (`53646bb`) — the **checked-in APK-share signing key** (`res/raw/knit_share_key.pk8`+`.der`) was public, so anyone could sign a trojaned "Knit" that Android accepts as a **legitimate in-place update** for share-installed users. The key files are removed; `ApkMerger` now re-signs with a **per-install EC P-256 AndroidKeyStore key** (`ShareSigningKey`) generated on first share, so no signing identity is shared across installs and no attacker holds a key a victim's device would honor. Documented tradeoff: a share-installed Knit updates in place only from the device that produced its APK. | ✅ Per-install Keystore key generated at first share (`ShareSigningKey`). |
+| 8 | Med | Structure | **✅ Partially fixed** (`874e2ec`, prep in `96cbe09`) — the whole inbound half of `MeshManager` moved verbatim into a constructor-injectable `InboundPipeline` (onDeliver, every per-type handler, reconcileGroup + group-photo helpers, avatar/attachment screening), dropping `MeshManager` from **1838 → 953 LOC**; the no-throw ordering contract was then made *mechanical* (`265c79a` wraps the whole `dispatchByType`) and is now covered by `InboundPipelineTest` (#4). **Remaining:** the `WifiAwareTransport` god-file (still 2334 LOC) and its un-extracted "sync-owed" predicate family / half-landed round-robin — see §6 item 11. | ✅ `InboundPipeline` extracted (the highest-value refactor); NAN decision-logic extraction still open. |
+| 9 | Med | Security | **✅ Fixed** (`db67f72`) — `KeyExchange` (`missing`/`wanters`) and `BlobExchange` (`fetching`/`wanters`/serve-memo) are now capped with oldest-first eviction + TTL sweep, outbound keyreq batches are chunked under the link payload ceiling (`MAX_IDS_PER_REQ`) and inbound id lists capped against recursion (`MAX_REQUEST_IDS`); `FramedLink` now drops (rather than dies on) a codec-rejected record, and both mesh scopes carry a shared `meshExceptionHandler` backstop. JVM-tested (`KeyExchangeTest`/`BlobExchangeTest` eviction cases). | ✅ Capped/evicted + TTL-swept; keyreq chunked; mesh-scope `CoroutineExceptionHandler` added. |
 | 10 | Med | Reliability | **Data-plane reliability rests on heuristic watchdogs.** The NAN single-NDI constraint has driven a long P0–P6 wedge-fighting campaign (two-tier watchdog, ghost-proof recycle, streak gates). It's impressively managed and documented, but self-heal loops around an opaque firmware resource are inherently fragile, and BLE has an analogous class of **sticky advertise/accept failures with no self-heal and `health` stuck `Healthy`**. | Add a health signal + re-advertise path to BLE `heal()`; continue extracting NAN decision logic into testable policies (below). |
 | 11 | Med | Security / privacy | **Metadata & tracking exposure beyond what's documented**: the full group roster + name + `createdBy` travel cleartext on every group frame (passive social-graph reconstruction), and the stable nodeId is broadcast in the clear over NAN SSI + BLE service data (a keypair-lifetime OTA device-tracking identifier). `deviceTag` further defeats nodeId rotation as a privacy measure. | Surface these as explicit privacy notes; consider rotating/short-lived advert identifiers. |
 | 12 | Med | Correctness | **Non-atomic key-file writes**: `DatabaseKey`/`KeystoreSecret` `writeBytes` (no temp+rename). A crash mid-write wipes the whole DB or **mints a new identity/nodeId** (breaks every peer's pin). Written once, high blast radius. | temp-file + `rename`. |
 | 13 | Med | Correctness | **Read-then-write races** without transactions: `ReactionRepository.apply`, `ForwardRepository.store` (count→evict→digest), `BlobRepository.deleteIfUnreferenced`, `GroupRepository.leave/delete`. Safe only under an *implicit, undocumented* single-writer convention. | `@Transaction` the multi-step mutations; document the single-writer assumption. |
 | 14 | Med | Security (defense-in-depth) | **Pin overwrite keeps `verified` across a key change** (`handleProfile`, `MeshManager.kt:1563`): a profile whose key derives to the senderId overwrites the pinned key and preserves the verified badge, with no `pubKey != pinned → verified=false` reset. Reachable given #2; a defense-in-depth miss regardless. | Refuse or un-verify on any pinned-key change. |
-| 15 | Med | Structure | Untestable-by-construction UI: every ViewModel depends on the **concrete** `MeshManager`; **zero VM tests exist**. | A narrow read-facade interface over the UI's `MeshManager` surface (`neighbors`, `transportHealth`, `heal()`, sends). |
+| 15 | Med | Structure | **✅ Fixed** (`8a8f561`, test in `8c291bb`) — a narrow `MeshController` facade (the 6 read StateFlows + send/heal/restart/start/stop) now fronts `MeshManager`; all 6 ViewModels, `MeshService`, `KnitApp`, the notification receiver, and the debug bridge inject the interface, so a VM is testable against a fake — demonstrated by the first-ever VM test, `DiagnosticsViewModelTest` (a `FakeMeshController`). | ✅ `MeshController` read-facade + first VM test. |
 | 16 | Low-Med | Structure | `ChatScreen.kt` (1896 lines) and `BlobRepository` (moderation hub in a data class, 8 ctor deps) warrant mechanical splits. | Split `ChatScreen` along its 4 already-private-composable seams; extract an `ImageScreeningService`. |
 | 17 | Low-Med | CI / process | CI gates only compile + unit tests. **No ktlint, no `./gradlew lint`, no `assembleRelease`, no instrumented tests**; detekt + trivy are `allow_failure`. Local (stop-hook) and CI enforcement have drifted. | Add ktlint + lint + a release-build job; make the supply-chain scan gating. |
 | 18 | Low | Docs | Drift: `AGENTS.md` still describes pre-P1 "single-slot" NAN admission though P1–P6 concurrent-serve shipped; `docs/CONTENT_MODERATION.md` omits the `ScopedTextModerator` DM/room split; NSFW threshold 0.9 in code vs 0.7 in docs; several renamed-symbol comments. | A doc-sync pass. |
@@ -147,7 +154,10 @@ exists), and contradicts a stated invariant.
 
 **[#3, High] Moderation can break the no-throw inbound contract.** *✅ Fixed in `e18b1f4`: the load
 catch is broadened to `Exception` and the load call is wrapped in `runCatching` (absorbing Errors too),
-in both `MlTextModerator` and `NsfwImageModerator`.* Confirmed by reading
+in both `MlTextModerator` and `NsfwImageModerator`. The runtime sibling — a throwing `classify()` on the
+relay path — was closed in `265c79a`, which wraps the whole `dispatchByType` so "never throw out of
+`onDeliver`" is now mechanical rather than prose-enforced (regression-covered by `InboundPipelineTest`).*
+Confirmed by reading
 `MlTextModerator.classify`/`loadEngine`: the load is not inside the `runCatching`, and its `catch`
 clauses miss the exception types a corrupt model/tokenizer actually throw. This only triggers on a
 broken asset (e.g. a git-LFS pointer checked out as the model, a truncated build) — but when it does, it
@@ -185,25 +195,31 @@ updated in place only by the device (share-tree root) that produced its APK, sin
 APK is rejected as a signature mismatch — is documented in `ShareSigningKey`'s KDoc; offline share is
 primarily first-install distribution, which is unaffected.
 
-**[#9, Med] keyreq amplification / unbounded state** and **[#11, Med] metadata & OTA tracking** are the
-remaining security items. The keyreq path is the one place an unauthenticated senderId drives unbounded
-work and map growth (with a plausible writer-crash chain via an oversized batched keyreq); `PendingInbound`
-shows the author already knows how to bound exactly this — the same treatment should extend to
-`KeyExchange` and `BlobExchange`. On privacy, the cleartext group roster and the persistent
-over-the-air nodeId are legitimate (and largely documented) tradeoffs, but their *consequences* —
-passive social-graph reconstruction and lifetime device tracking — deserve to be stated plainly for a
-privacy-positioned app.
+**[#9, Med] keyreq amplification / unbounded state** *(✅ fixed in `db67f72`)* was the one place an
+unauthenticated senderId drove unbounded work and map growth (with a plausible writer-crash chain via an
+oversized batched keyreq). `PendingInbound` already showed how to bound exactly this, and that treatment
+now extends to both `KeyExchange` and `BlobExchange`: `missing`/`wanters`/`fetching`/serve-memo are capped
+(oldest-first) and TTL-swept, keyreq batches are chunked under the payload ceiling, inbound id lists are
+capped against recursion, and a shared `meshExceptionHandler` backstops both mesh scopes.
+
+**[#11, Med] metadata & OTA tracking** is the remaining security item. On privacy, the cleartext group
+roster and the persistent over-the-air nodeId are legitimate (and largely documented) tradeoffs, but their
+*consequences* — passive social-graph reconstruction and lifetime device tracking — deserve to be stated
+plainly for a privacy-positioned app.
 
 ### 4.3 Structural gravity
 
-**[#8, Med] `MeshManager` (1838 LOC, 15 ctor deps)** and the **2233-line `WifiAwareTransport`** are the
-two mass centers. Neither is "bad code" — both are heavily and honestly documented, and the size is a
-*consequence* of genuinely hard problems — but both concentrate risk:
+**[#8, Med] `MeshManager`** (originally 1838 LOC, 15 ctor deps; **now 953** after the extraction below)
+and the **2334-line `WifiAwareTransport`** are the two mass centers. Neither is "bad code" — both are
+heavily and honestly documented, and the size is a *consequence* of genuinely hard problems — but both
+concentrate risk:
 
-- In `MeshManager`, the correctness of the DTN stack lives in ordering contracts expressed as comments
-  ("must run last", "runs before the router schedules the relay"). Extracting an `InboundPipeline`
-  object that makes those orderings *mechanical* (and testable — see #4) is the highest-value refactor
-  in the codebase.
+- **✅ In `MeshManager`, this is done** (`874e2ec` + prep `96cbe09`): the correctness of the DTN stack
+  lived in ordering contracts expressed as comments ("must run last", "runs before the router schedules
+  the relay"); the inbound half — `onDeliver`, every per-type handler, `reconcileGroup` + group-photo
+  helpers, and the avatar/attachment screening — moved verbatim into a constructor-injectable
+  `InboundPipeline`, and the "never throw out of `onDeliver`" contract is now *mechanical* (`265c79a`)
+  and testable (`InboundPipelineTest`, #4). Called the highest-value refactor in the codebase; it landed.
 - In `WifiAwareTransport`, ~40% is Android-free decision logic. A family of eight near-duplicate
   "sync-owed" predicates, the two-tier watchdog's episode clock, and the cue/SSI codec are all pure and
   belong in policy objects beside `NanConnectPolicy`/`NanServePolicy`. There is also a **half-landed
@@ -245,21 +261,27 @@ The pure-logic test suite is a real strength: behavioral (not change-detector) t
 virtual time, multi-node mini-meshes for the DTN services, and golden-value tests for crypto/identity.
 The gap is precisely at the **integration seam and the persistence layer**:
 
-- **[#4]** `MeshManager`'s inbound pipeline — the security gate and the no-throw contract — is only
-  *mirrored* by a test, never executed. It is constructor-injectable; a `FakeLoopTransport` + fake repos
-  test is the missing keystone.
+- **[#4]** *✅ Fixed (`8c291bb`).* `MeshManager`'s inbound pipeline — the security gate and the no-throw
+  contract — was only *mirrored* by a test, never executed. It is now the extracted `InboundPipeline`
+  (#8) and is driven end-to-end by `InboundPipelineTest`: real Tink keypairs, the real DTN services, a
+  `FakeLoopTransport`, and mockk repo stand-ins, covering valid/relayed DMs, bad-signature drop,
+  unpinned-sender park + keyreq, profile-arrival replay, and the key/nodeId mismatch — the missing
+  keystone, landed.
 - **[#5]** No DAO query is ever executed by a test; eviction/orphan/GC SQL is validated against a
   hand-written fake that "mirrors the SQL," and a comment even references an instrumented test that
   doesn't exist. This is the exact category of test that stays green while the real query is wrong.
   `androidx-room-testing` is already available.
-  **Addressed (2026-07-05):** `app/src/test/java/app/getknit/knit/data/` now executes the real DAO SQL under
+  **Addressed (2026-07-05, `c9cf64d`):** `app/src/test/java/app/getknit/knit/data/` now executes the real DAO SQL under
   Robolectric + in-memory Room (`ForwardDaoTest`, `BlobDaoTest`, `ReactionDaoTest`, `MessageDaoTest` — the
   orphan/anti-join queries the fakes skipped are now run), `exportSchema` is on with a checked-in baseline
   schema, a `MigrationTestHelper` harness (`KnitDatabaseMigrationTest`) is ready for the first real migration,
   and the stale "instrumented DAO test" comment is corrected. See AGENTS.md "JVM Room/DAO + migration tests".
-- **[#15]** No ViewModel has a test, because each depends on the concrete `MeshManager`.
+- **[#15]** *✅ Fixed (`8a8f561` + `8c291bb`).* No ViewModel had a test, because each depended on the
+  concrete `MeshManager`; a narrow `MeshController` facade now fronts the mesh and the first VM test
+  (`DiagnosticsViewModelTest`, against a `FakeMeshController`) exists.
 
-None of these needs hardware — Robolectric + in-memory Room + fakes cover all three on the JVM.
+None of these needed hardware — Robolectric + in-memory Room + fakes cover all three on the JVM, and all
+three have now landed (#4 `8c291bb`, #5 `c9cf64d`, #15 `8a8f561`).
 
 ### 4.6 Build, release & CI
 
@@ -296,12 +318,12 @@ a structural limit, not a bug, but worth stating.
 | E2E crypto (`mesh/crypto`) | A− | AEAD/HPKE done right; identity width (#2) is the caveat. |
 | Bluetooth LE plane | B+ | Excellent policy extraction; sticky-failure self-heal gaps. |
 | Wi-Fi Aware plane | B | Heroic, well-documented — but a god-file with un-extracted, untested decision logic. |
-| Data / persistence | B+ | Coherent at-rest story; untransacted races, no DAO tests, atomicity gaps. |
+| Data / persistence | B+ | Coherent at-rest story; DAO/migration tests now execute (#5); untransacted races (#13) + atomicity gaps (#12) remain. |
 | Identity | B | Self-certifying model is elegant but under-sized (#2). |
 | Moderation | B | Good design; the load-failure path (#3) and asset/license loose ends. |
-| UI / Compose | A− | Textbook UDF, strong a11y; ChatScreen size + concrete-VM coupling. |
+| UI / Compose | A− | Textbook UDF, strong a11y; concrete-VM coupling now behind `MeshController` (#15); ChatScreen size remains. |
 | Notifications | A | Genuinely well-engineered MessagingStyle integration. |
-| `MeshManager` orchestration | B− | The correctness core, but a 1838-line god-object, untested at the seam. |
+| `MeshManager` orchestration | B | The correctness core; inbound half now an injectable, tested `InboundPipeline` (#4/#8), 953 LOC. |
 | Build / CI / release | C+ | Great toolchain rationale; unproductionized release + thin CI. |
 | Documentation | A | Field-evidence-dated, honest, thorough; minor drift from shipped work. |
 
@@ -316,19 +338,21 @@ Ordered by value-to-effort, safe to tackle incrementally:
    *Done in `e18b1f4`.*
 2. ✅ Make custody TTL frame-global or tombstone swept ids (#1) — restores a stated convergence
    guarantee. *Done in `3df428a`.*
-3. Cap `KeyExchange`/`BlobExchange` bookkeeping and chunk keyreq batches; add a mesh-scope
-   `CoroutineExceptionHandler` (#9).
+3. ✅ Cap `KeyExchange`/`BlobExchange` bookkeeping and chunk keyreq batches; add a mesh-scope
+   `CoroutineExceptionHandler` (#9). *Done in `db67f72`.*
 4. temp-file+rename the key/DB-key writes (#12); reset `verified` on any pinned-key change (#14).
 5. Force `SEED_DEMO=false` in the release buildType; add a `signingConfig` (#6 partial).
-6. A doc-sync pass (#18) and delete the stale "instrumented DAO test" claim (#5).
+6. A doc-sync pass (#18); ✅ the stale "instrumented DAO test" claim (#5) is deleted (`c9cf64d`).
 
 **Next (moderate effort, closes the biggest blind spots):**
-7. Add the `MeshManager` inbound-pipeline integration test and Robolectric DAO tests (#4, #5).
+7. ✅ Add the `MeshManager` inbound-pipeline integration test and Robolectric DAO tests (#4, #5).
+   *Done in `8c291bb` + `c9cf64d`.*
 8. Add ktlint + lint + `assembleRelease` CI jobs; make trivy gating (#17).
 9. Add a BLE health signal + re-advertise `heal()` path; fix the non-idempotent backoff bump (#10).
 
 **Then (larger refactors, do behind the new tests):**
-10. Extract an `InboundPipeline` from `MeshManager` and a UI read-facade (#8, #15).
+10. ✅ Extract an `InboundPipeline` from `MeshManager` and a UI read-facade (#8, #15). *Done in
+    `874e2ec` + `8a8f561`; seam/VM tests in `8c291bb`.*
 11. Pull the NAN "sync-owed" predicate family, watchdog clock, and cue codec into tested policies; land
     or remove the round-robin fairness change (#8).
 12. ✅ Widen the nodeId to ≥128 bits as a coordinated wire break (#2) — schedule alongside the next
