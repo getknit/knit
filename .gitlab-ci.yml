@@ -82,6 +82,26 @@ build:debug:
       - app/build/outputs/apk/debug/*.apk
     expire_in: 1 week
 
+# R8 is exercised ONLY on the release variant (debug never shrinks), so this is the only CI guard against
+# keep-rule breakage. First cut: allow_failure while the keep rules stabilize (obfuscation is still off and
+# verification is on-device); flip to false once green so R8 regressions block the pipeline. Builds UNSIGNED
+# (no KNIT_UPLOAD_* creds in CI) — signing isn't needed to run R8. R8 is heap-heavy: if it OOMs on the 2 GB
+# runner (SerialGC / 1280m from .android), give this job a bigger heap or runner. Archives mapping/ so
+# usage.txt (removed classes, incl. the demo/fake code) and configuration.txt are auditable per pipeline.
+build:release:
+  extends: .android
+  stage: build
+  allow_failure: true
+  script:
+    - ./gradlew :app:assembleRelease --stacktrace --console=plain
+  artifacts:
+    name: "knit-release-r8-$CI_COMMIT_SHORT_SHA"
+    when: always
+    paths:
+      - app/build/outputs/apk/release/*.apk
+      - app/build/outputs/mapping/release/
+    expire_in: 1 week
+
 # ----------------- test ------------------
 test:unit:
   extends: .android

@@ -1,0 +1,49 @@
+# Knit R8 keep rules. AGP auto-combines every *.keep in this dir (app/src/main/keepRules) into R8's input
+# — there is no proguardFiles wiring in app/build.gradle.kts. Ref: https://d.android.com/r/tools/r8/keep-rules
+#
+# FIRST-CUT POSTURE (see the release buildType in app/build.gradle.kts): R8 shrinks + optimizes but does
+# NOT obfuscate (-dontobfuscate below). So these rules only need to stop the *removal* of reflection-/JNI-
+# reached code; the generous `{ *; }` keeps on the native/reflective libraries are cheap while renaming is
+# off, and are meant to be tightened once the release build is verified on-device. Enabling obfuscation is
+# a scheduled follow-up. If assembleRelease reports missing classes, append the -dontwarn lines AGP writes
+# to app/build/outputs/mapping/release/missing_rules.txt.
+
+# Shrink + optimize only — do NOT rename. Keeps stack traces readable and every reflection/JNI name intact.
+-dontobfuscate
+
+# ---- kotlinx-serialization -------------------------------------------------------------------------------
+# The library ships consumer R8 rules (auto-applied), and every @Serializable type here is resolved via
+# reified serializer<T>() (compile-time, no runtime Class.forName) — the friendly case. These app-scoped
+# keeps are insurance for the wire/crypto DTOs. If serialization misbehaves under R8, adopt the official
+# back-reference rules from the kotlinx.serialization README.
+-keep class app.getknit.knit.**$$serializer { *; }
+-keepclassmembers class app.getknit.knit.** {
+    *** Companion;
+    kotlinx.serialization.KSerializer serializer(...);
+}
+
+# ---- Tink (E2E crypto) -----------------------------------------------------------------------------------
+# HIGHEST risk: HybridConfig/SignatureConfig register key managers reflectively (+ protobuf). A stripped
+# manager fails SILENTLY at getPrimitive(), not at load — verify seal/open + sign/verify on an R8 build.
+-keep class com.google.crypto.tink.** { *; }
+-dontwarn com.google.crypto.tink.**
+
+# ---- SQLCipher (at-rest DB encryption) -------------------------------------------------------------------
+# JNI (libsqlcipher.so) — keep the classes with native methods.
+-keep class net.zetetic.** { *; }
+-dontwarn net.zetetic.**
+
+# ---- LiteRT / TensorFlow Lite (on-device moderation) -----------------------------------------------------
+# JNI (libtensorflowlite_jni.so). The moderators fail OPEN, so a stripped Interpreter silently disables
+# moderation rather than crashing — verify moderation FUNCTIONALLY on an R8 build, don't just check launch.
+-keep class org.tensorflow.lite.** { *; }
+-dontwarn org.tensorflow.lite.**
+
+# ---- Offline "Share Knit app": ARSCLib + apksig (ui/invite/ApkMerger) ------------------------------------
+-keep class com.reandroid.** { *; }
+-keep class com.android.apksig.** { *; }
+-dontwarn com.reandroid.**
+-dontwarn com.android.apksig.**
+
+# ---- Google Play In-App Review (optional GMS; pre-gated + failures swallowed at runtime) ------------------
+-dontwarn com.google.android.gms.**

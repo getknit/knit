@@ -1,12 +1,9 @@
 package app.getknit.knit.di
 
 import android.os.Build
-import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.crypto.IdentityKeyStore
-import app.getknit.knit.demo.DemoSeeder
 import app.getknit.knit.mesh.CompositeMeshTransport
-import app.getknit.knit.mesh.DemoTransport
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
@@ -40,15 +37,14 @@ val meshModule =
         single { PowerMonitor(androidContext(), get()) }
         // Bridges the mesh blob-exchange to the encrypted DB; materializes transfer temp files under cacheDir.
         single { MeshBlobStore(get(), File(androidContext().cacheDir, "blobtx")) }
-        // Demo-screenshot builds swap in a no-op transport that just reports a few connected neighbors (so the UI
-        // looks "connected" against the seeded data). Production wraps every hardware-supported plane in a
-        // CompositeMeshTransport behind the single-transport seam — Bluetooth LE and Wi-Fi Aware, in descending
-        // send-preference. Each plane is gated on isSupported() so an unsupported one is simply absent (a device
-        // with neither yields an inert, Degraded composite).
+        // Demo-screenshot builds (debug-only, `-PseedDemo=true`) swap in a no-op transport that just reports a
+        // few connected neighbors (so the UI looks "connected" against the seeded data); the seam returns null
+        // in release, where the demo classes don't ship (see the per-variant di/DemoWiring). Production wraps
+        // every hardware-supported plane in a CompositeMeshTransport behind the single-transport seam —
+        // Bluetooth LE and Wi-Fi Aware, in descending send-preference. Each plane is gated on isSupported() so
+        // an unsupported one is simply absent (a device with neither yields an inert, Degraded composite).
         single<MeshTransport> {
-            if (BuildConfig.SEED_DEMO) {
-                DemoTransport(DemoSeeder.ONLINE_NODE_IDS)
-            } else {
+            demoTransportOrNull() ?: run {
                 val ctx = androidContext()
                 val children =
                     buildList {

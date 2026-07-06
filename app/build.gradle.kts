@@ -1,9 +1,25 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
 }
+
+// Release signing credentials (Google Play upload key). Loaded from a gitignored keystore.properties at
+// the repo root, falling back to env vars (CI: KNIT_UPLOAD_*). Absent creds → the release build is left
+// unsigned (see android.signingConfigs), so assembleRelease still runs without secrets. Never commit a key.
+val keystoreProps =
+    Properties().apply {
+        val f = rootProject.file("keystore.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+
+fun releaseSigningCred(
+    prop: String,
+    env: String,
+): String? = (keystoreProps.getProperty(prop) ?: System.getenv(env))?.takeIf { it.isNotBlank() }
 
 android {
     namespace = "app.getknit.knit"
@@ -23,8 +39,11 @@ android {
         // is confined to 29-32 (maxSdkVersion 32); 33+ stays location-free.
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // Single source of truth in gradle.properties (knit.versionCode / knit.versionName). Play App
+        // Signing requires versionCode to strictly increase per upload — CI can inject a monotonic value
+        // with `-Pknit.versionCode=$CI_PIPELINE_IID` without editing this file.
+        versionCode = providers.gradleProperty("knit.versionCode").get().toInt()
+        versionName = providers.gradleProperty("knit.versionName").get()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -39,11 +58,45 @@ android {
         buildConfigField("String", "DEMO_THEME", "\"$demoTheme\"")
     }
 
+    signingConfigs {
+        // Release signing for Google Play upload. Creds come from keystore.properties / KNIT_UPLOAD_* env
+        // (see the loader above the android block). Missing creds → no "release" config is created and the
+        // release build stays UNSIGNED, so assembleRelease still runs (and exercises R8) without secrets;
+        // a key is only needed to install on a device or upload to Play. v1..v4 signing stay at AGP
+        // defaults, which are correct for an upload key.
+        val store = releaseSigningCred("storeFile", "KNIT_UPLOAD_STORE_FILE")
+        val storePass = releaseSigningCred("storePassword", "KNIT_UPLOAD_STORE_PASSWORD")
+        val alias = releaseSigningCred("keyAlias", "KNIT_UPLOAD_KEY_ALIAS")
+        val keyPass = releaseSigningCred("keyPassword", "KNIT_UPLOAD_KEY_PASSWORD")
+        if (store != null && storePass != null && alias != null && keyPass != null) {
+            create("release") {
+                storeFile = file(store)
+                storePassword = storePass
+                keyAlias = alias
+                keyPassword = keyPass
+            }
+        }
+    }
+
     buildTypes {
         release {
-            optimization {
-                enable = false
-            }
+            // R8: shrink + optimize dead code (including the demo/fake classes, now debug-only) and unused
+            // resources. Obfuscation is deliberately OFF for this first enablement (`-dontobfuscate` in
+            // src/main/keepRules/knit-r8.keep) — the app has fail-silent reflection surfaces (Tink, the
+            // tflite moderators) and renaming is the historically risky R8 pass, so it is a scheduled
+            // follow-up once the release build is proven stable on-device. Keep rules are auto-combined
+            // from src/main/keepRules/*.keep (AGP merges them; no proguardFiles wiring needed).
+            // isMinifyEnabled is the standard R8 switch (the previous `optimization { enable }` was AGP 9's
+            // experimental *gradual-R8* toggle, which needs android.r8.gradual.support — not what we want for
+            // a production release). It runs R8's shrink + optimize passes; obfuscation is disabled in the
+            // keep rules. isShrinkResources strips unused res/ (optimized shrinking is automatic in AGP 9).
+            isMinifyEnabled = true
+            isShrinkResources = true
+            // Never build a demo-seeded release, even with `-PseedDemo=true` — demo mode is debug-only and
+            // its classes ship only in src/debug. Overrides the defaultConfig SEED_DEMO field.
+            buildConfigField("boolean", "SEED_DEMO", "false")
+            // Unsigned when no keystore.properties / KNIT_UPLOAD_* creds are present (see signingConfigs).
+            signingConfig = signingConfigs.findByName("release")
         }
     }
     compileOptions {

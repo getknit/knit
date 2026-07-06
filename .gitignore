@@ -14,3 +14,7 @@
 .cxx
 local.properties
 scripts/soak/logs/
+# Release signing — never commit the upload keystore or its credentials (see keystore.properties.example).
+keystore.properties
+*.jks
+*.keystore

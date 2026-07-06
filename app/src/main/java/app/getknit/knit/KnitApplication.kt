@@ -2,10 +2,10 @@ package app.getknit.knit
 
 import android.app.Application
 import app.getknit.knit.data.blob.BlobDao
-import app.getknit.knit.demo.DemoSeeder
 import app.getknit.knit.di.appModule
 import app.getknit.knit.di.meshModule
 import app.getknit.knit.di.moderationModule
+import app.getknit.knit.di.seedDemoIfEnabled
 import app.getknit.knit.di.uiModule
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.ui.image.BlobFetcher
@@ -14,10 +14,6 @@ import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.gif.AnimatedImageDecoder
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import org.koin.android.ext.android.inject
 import org.koin.android.ext.koin.androidContext
 import org.koin.android.ext.koin.androidLogger
@@ -40,13 +36,10 @@ class KnitApplication :
         // Register the message notification channel up front so it appears in system settings.
         koinApp.koin.get<Notifier>().createChannel()
 
-        // Demo-screenshot mode (`-PseedDemo=true`): fill the DB with a realistic conversation history
-        // so the app renders populated on an emulator. Off by default — never runs in release builds.
-        if (BuildConfig.SEED_DEMO) {
-            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-                DemoSeeder(koinApp.koin).seed()
-            }
-        }
+        // Demo-screenshot mode (`-PseedDemo=true`): fill the DB with a realistic conversation history so
+        // the app renders populated on an emulator. Debug-only — the seeder lives in `src/debug`, so this is
+        // a no-op in release (see the per-variant di/DemoWiring). Off by default even in debug.
+        seedDemoIfEnabled(koinApp.koin)
     }
 
     /**
