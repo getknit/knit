@@ -51,7 +51,7 @@ class DatabaseKey(
         val passphrase = ByteArray(PASSPHRASE_BYTES).also { SecureRandom().nextBytes(it) }
         val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.ENCRYPT_MODE, keystoreKey()) }
         val ciphertext = cipher.doFinal(passphrase)
-        keyFile.writeBytes(cipher.iv + ciphertext)
+        keyFile.writeBytesAtomically(cipher.iv + ciphertext)
         return passphrase
     }
 

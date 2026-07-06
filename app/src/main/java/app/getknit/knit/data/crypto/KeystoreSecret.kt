@@ -39,7 +39,7 @@ class KeystoreSecret(
     fun store(plain: ByteArray) {
         val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.ENCRYPT_MODE, keystoreKey()) }
         val ciphertext = cipher.doFinal(plain)
-        file.writeBytes(cipher.iv + ciphertext)
+        file.writeBytesAtomically(cipher.iv + ciphertext)
     }
 
     fun delete() {
