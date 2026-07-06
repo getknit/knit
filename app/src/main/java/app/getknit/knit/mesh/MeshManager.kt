@@ -252,6 +252,17 @@ class MeshManager(
     /** conversationId → the set of peers currently shown as "typing" there, for the chat UI. Ephemeral (TTL'd). */
     override val typing: StateFlow<Map<String, Set<String>>> get() = typingTracker.typing
 
+    /**
+     * Demo-screenshot only: pin a persistent "now typing" indicator for [conversationId] from [senderId],
+     * bypassing the [TypingTracker] TTL so a statically-captured demo screenshot reliably catches it. Called
+     * by [app.getknit.knit.demo.DemoSeeder]; deliberately off the [MeshController] interface so the production
+     * facade stays clean.
+     */
+    fun seedDemoTyping(
+        conversationId: String,
+        senderId: String,
+    ) = typingTracker.seedPersistent(conversationId, senderId)
+
     override fun start() {
         if (started) return
         started = true

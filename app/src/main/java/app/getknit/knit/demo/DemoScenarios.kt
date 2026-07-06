@@ -28,6 +28,11 @@ data class DemoReaction(
 /**
  * One seeded message. [mentionsMe] adds an @-mention of the local user (highlighted in the room);
  * [reactions] attach an emoji cluster. [id] must be unique within a scenario.
+ *
+ * [replyTo] makes this a quoted reply to another message in the same scenario (by that message's [id]);
+ * the seeder denormalizes the quoted author/snippet onto the row, so the referenced original need not be
+ * loaded for the quote to render. [image] attaches an inline photo: the base name of a bundled asset under
+ * `demo/images/<theme>/<image>.jpg`, seeded as a plaintext blob (see [DemoSeeder]).
  */
 data class DemoMsg(
     val id: String,
@@ -36,6 +41,8 @@ data class DemoMsg(
     val minsAgo: Long,
     val mentionsMe: Boolean = false,
     val reactions: List<DemoReaction> = emptyList(),
+    val replyTo: String? = null,
+    val image: String? = null,
 )
 
 /** A peer contact. [verified] pins a (fake) key + out-of-band confirmation so the DM header shows the
@@ -121,7 +128,7 @@ private val HIKING_SCENARIO =
                         ),
                 ),
                 DemoMsg("demo-nearby-8", Slot.JONAS, "Good call, thanks for the warning.", 38),
-                DemoMsg("demo-nearby-9", Slot.PRIYA, "Sunset from the summit is unreal tonight 🌄", 12),
+                DemoMsg("demo-nearby-9", Slot.PRIYA, "Sunset from the summit is unreal tonight 🌄", 12, image = "summit"),
             ),
         nearbyReadMinsAgo = 20,
         dms =
@@ -163,6 +170,7 @@ private val HIKING_SCENARIO =
                     "Works for me. I'll grab snacks.",
                     290,
                     reactions = listOf(DemoReaction(Slot.SAM, "👍", 289)),
+                    replyTo = "demo-group-3",
                 ),
                 DemoMsg("demo-group-5", Slot.PRIYA, "You're the best 🥟", 288),
             ),
@@ -213,7 +221,7 @@ private val FESTIVAL_SCENARIO =
                         ),
                 ),
                 DemoMsg("fest-nearby-8", Slot.JONAS, "Whiteout at center camp already, stay safe out there.", 38),
-                DemoMsg("fest-nearby-9", Slot.PRIYA, "The Temple lit up at night is unreal ✨🛕", 12),
+                DemoMsg("fest-nearby-9", Slot.PRIYA, "The glowing dragon out on the playa is unreal tonight ✨🐉", 12, image = "dragon"),
             ),
         nearbyReadMinsAgo = 20,
         dms =
@@ -255,6 +263,7 @@ private val FESTIVAL_SCENARIO =
                     "Works for me. I'll bring the LED totem 🔆",
                     290,
                     reactions = listOf(DemoReaction(Slot.SAM, "👍", 289)),
+                    replyTo = "fest-group-3",
                 ),
                 DemoMsg("fest-group-5", Slot.PRIYA, "You're a legend 🔆", 288),
             ),

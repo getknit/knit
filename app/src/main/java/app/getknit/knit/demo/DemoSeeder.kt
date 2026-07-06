@@ -13,11 +13,14 @@ import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.mesh.protocol.ReplyRef
 import org.koin.core.Koin
 import java.security.MessageDigest
 
@@ -51,6 +54,10 @@ class DemoSeeder(
     private lateinit var me: String
     private lateinit var scenario: DemoScenario
 
+    // Every message in the scenario, keyed by id — so a reply can resolve the message it quotes (for the
+    // denormalized author/snippet, mirroring what a real inbound reply carries).
+    private lateinit var msgById: Map<String, DemoMsg>
+
     suspend fun seed() {
         runCatching { seedInternal() }
             .onFailure { Log.e("DemoSeeder", "demo seeding failed", it) }
@@ -59,16 +66,30 @@ class DemoSeeder(
     private suspend fun seedInternal() {
         me = koin.get<Identity>().nodeId()
         scenario = demoScenarioFor(BuildConfig.DEMO_THEME)
+        msgById =
+            (scenario.nearby + scenario.dms.flatMap { it.messages } + scenario.groupMessages)
+                .associateBy { it.id }
         val now = System.currentTimeMillis()
 
+        val myAvatar = avatar("me")
         settings.setDisplayName(scenario.meName)
         settings.setStatus(scenario.meStatus)
-        avatar("me")?.let { settings.setOwnAvatarHash(it) }
+        myAvatar?.let { settings.setOwnAvatarHash(it) }
+        // Pin our own profile as a peer row too. The real app never stores self in `peers` (it only caches
+        // inbound senders), so self-referential UI that resolves names against the peer table — the group
+        // details "You" row — would otherwise fall back to the generated device alias instead of the profile
+        // name/avatar. Self is filtered out of the contact/diagnostics lists, so this only feeds that lookup.
+        peers.upsert(PeerEntity(nodeId = me, name = scenario.meName, status = scenario.meStatus, avatarHash = myAvatar, updatedAt = now))
 
         seedPeers(now)
         seedNearby(now)
         seedDms(now)
         seedGroup(now)
+
+        // Pin one persistent "now typing" cue for the dm-sam marketing shot. A real cue is TTL'd (12s) and
+        // would race a static capture; this bypasses the TTL. For a DM the conversationId is the peer's
+        // nodeId (see seedDms), so both args are the same slot.
+        koin.get<MeshManager>().seedDemoTyping(conversationId = SAM, senderId = SAM)
     }
 
     private suspend fun seedPeers(now: Long) {
@@ -124,7 +145,9 @@ class DemoSeeder(
     /**
      * Writes one [DemoMsg] (and any reactions on it). For a DM, [dmPeer] is the other party so the
      * recipient is set per direction; for the room/group it's null. [received] doubles as the delivery
-     * tick and is only meaningful for our own outbound messages, so it tracks "is this mine".
+     * tick and is only meaningful for our own outbound messages, so it tracks "is this mine". A [DemoMsg.image]
+     * is ingested as a plaintext blob and pinned via [MessageEntity.attachmentHash]; a [DemoMsg.replyTo]
+     * denormalizes the quoted message onto the row (see [replyRefFor]).
      */
     private suspend fun save(
         m: DemoMsg,
@@ -133,6 +156,7 @@ class DemoSeeder(
         now: Long,
     ) {
         val fromMe = m.from == Slot.ME
+        val imageHash = m.image?.let { imageBlob(it) }
         messages.save(
             MessageEntity(
                 id = m.id,
@@ -146,12 +170,37 @@ class DemoSeeder(
                     MentionStore.encode(
                         if (m.mentionsMe) listOf(Mention(me, scenario.meName)) else emptyList(),
                     ),
-            ),
+                attachmentHash = imageHash,
+                // Plaintext blob (attachmentKey stays null) → BlobFetcher decodes the bytes directly.
+                attachmentMime = if (imageHash != null) "image/jpeg" else null,
+            ).withReply(replyRefFor(m)),
         )
         m.reactions.forEach { r ->
             reactions.apply(ReactionEntity(m.id, nodeId(r.reactor), r.emoji, now - r.minsAgo * 60_000L))
         }
     }
+
+    /**
+     * The denormalized [ReplyRef] for [m] when it quotes another seeded message (by [DemoMsg.replyTo] → the
+     * quoted [DemoMsg.id]), else null. The snippet/author are copied onto the row exactly like a real inbound
+     * reply, so the quote renders even though the demo never ran the mesh.
+     */
+    private fun replyRefFor(m: DemoMsg): ReplyRef? =
+        m.replyTo?.let { refId ->
+            msgById[refId]?.let { ref ->
+                ReplyRef(
+                    messageId = ref.id,
+                    authorId = nodeId(ref.from),
+                    author = displayName(ref.from),
+                    snippet = ref.body.take(120),
+                    hasAttachment = ref.image != null,
+                )
+            }
+        }
+
+    /** The display name of a [Slot]: the local profile name for [Slot.ME], else the peer's scenario name. */
+    private fun displayName(slot: Slot): String =
+        if (slot == Slot.ME) scenario.meName else scenario.peers.firstOrNull { it.slot == slot }?.name ?: nodeId(slot)
 
     /** Resolves a [Slot] to its node id ([Slot.ME] is this device's runtime id). */
     private fun nodeId(slot: Slot): String =
@@ -176,6 +225,20 @@ class DemoSeeder(
             val bytes = context.assets.open("demo/avatars/${scenario.theme}/$key.jpg").use { it.readBytes() }
             // Content-address the blob (like the real avatar pipeline) so swapping the image swaps the hash
             // too — a fixed key would collide with the prior run's blob (insert is conflict-IGNORE).
+            val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            blobs.insert(hash, "image/jpeg", bytes)
+            hash
+        }.getOrNull()
+
+    /**
+     * Loads bundled demo image [name] (the base name of `demo/images/<theme>/<name>.jpg`), stores it as a
+     * plaintext content blob, and returns its hash to pin on a message's [MessageEntity.attachmentHash] — or
+     * null if the asset is missing (the message then renders text-only). Mirrors [avatar]; the blob is
+     * plaintext (no per-attachment key), so [app.getknit.knit.ui.image.BlobFetcher] decodes it directly.
+     */
+    private suspend fun imageBlob(name: String): String? =
+        runCatching {
+            val bytes = context.assets.open("demo/images/${scenario.theme}/$name.jpg").use { it.readBytes() }
             val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
             blobs.insert(hash, "image/jpeg", bytes)
             hash

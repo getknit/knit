@@ -80,6 +80,16 @@ class TypingTracker(
         removeTyper(conversationId, senderId)
     }
 
+    /**
+     * Demo-screenshot only: show [senderId] as typing in [conversationId] permanently. Unlike [onTyping] it
+     * arms no [ttlMs] auto-clear (and no inbound message ever arrives in a demo build to fire [onMessageFrom]),
+     * so the indicator survives however long a statically-captured screenshot takes to launch and render.
+     */
+    fun seedPersistent(
+        conversationId: String,
+        senderId: String,
+    ) = addTyper(conversationId, senderId)
+
     private fun addTyper(
         conversationId: String,
         senderId: String,

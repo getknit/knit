@@ -450,11 +450,13 @@ route extra is gated on `BuildConfig.DEBUG`. `app/build.gradle.kts` is untouched
   # → data="{…,"messages":[{"from":"<A>","body":"hi there 😀","received":…}]}"
   ```
 - **Stable resource-ids** — the root sets `testTagsAsResourceId` (in `KnitApp`), so `Modifier.testTag`s
-  surface in `uiautomator dump` as `resource-id="app.getknit.knit:id/<tag>"`. Tagged so far: `chat_input`,
+  surface in `uiautomator dump` as `resource-id="<tag>"` (the bare tag — some Android/uiautomator versions
+  prefix it `app.getknit.knit:id/<tag>`, so a matcher should accept either; see `tap_by_resid` in
+  `scripts/screenshots.sh`). Tagged so far: `chat_input`,
   `chat_send`, `chat_row_<conversationId>` (e.g. `chat_row_nearby`), `chatlist_fab`, `contacts_fab`,
   `contact_<nodeId>`, `onboarding_grant`, `onboarding_start`, `profile_name`, `profile_status`,
-  `profile_save`. Use these when you must drive the real UI; add more with the same snake_case,
-  screen-prefixed convention.
+  `profile_save`, `chat_group_avatar` (opens group details). Use these when you must drive the real UI;
+  add more with the same snake_case, screen-prefixed convention.
 - **Cold-start navigation** — `adb shell am start -n app.getknit.knit/.MainActivity --es demo_route chat/<id>`
   opens a thread directly (`chat/nearby`, `chat/<nodeId>`, `chat/g-…`). Cold-start only; for a
   running instance tap a `chat_row_*` element instead.
