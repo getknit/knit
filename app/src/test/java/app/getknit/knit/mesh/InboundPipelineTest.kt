@@ -110,8 +110,9 @@ class InboundPipelineTest {
             frame: CarriedFrame,
             origin: Int,
             now: Long,
-        ) {
+        ): Boolean {
             frames.putIfAbsent(frame.envelope.id, frame)
+            return true
         }
 
         override suspend fun liveFrames(now: Long): List<CarriedFrame> = frames.values.toList()

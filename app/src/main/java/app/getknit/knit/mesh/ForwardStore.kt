@@ -25,13 +25,17 @@ class CarriedFrame(
 interface ForwardStore {
     /**
      * Persists [frame] seen at [now], tagged [origin] ([ORIGIN_SELF]/[ORIGIN_RELAY]). The implementation
-     * stamps a TTL and enforces the storage caps; a frame whose id is already held is ignored.
+     * stamps a frame-global TTL (`sentAt + ttl`) and enforces the storage caps; a frame whose id is already
+     * held is ignored. Returns whether the frame is now (or already was) in custody — false means it was
+     * **refused as dead on arrival** (its frame-global expiry has already passed, e.g. a skewed-clock peer
+     * re-served a frame every node has swept), so the caller must skip follow-on custody work like pulling
+     * the frame's attachment blob.
      */
     suspend fun store(
         frame: CarriedFrame,
         origin: Int,
         now: Long,
-    )
+    ): Boolean
 
     /** Non-expired carried frames (at [now]), newest first, for re-offering to a freshly-joined neighbor. */
     suspend fun liveFrames(now: Long): List<CarriedFrame>

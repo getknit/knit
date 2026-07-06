@@ -27,7 +27,7 @@ class ForwardDaoTest : RoomDbTest() {
         runTest {
             dao.insert(fwd("f1", senderId = "first"))
             dao.insert(fwd("f1", senderId = "second")) // same id — must be silently ignored
-            assertEquals(1, dao.count())
+            assertEquals(1, dao.count(now = 0L))
             assertEquals("first", dao.allRows().single().senderId)
         }
 
@@ -48,11 +48,11 @@ class ForwardDaoTest : RoomDbTest() {
             dao.insert(fwd("a2", senderId = "A", sentAt = 5L))
             dao.insert(fwd("b0", senderId = "B", sentAt = 1L)) // other bucket — must be untouched
 
-            dao.evictOldestBySender("A", 1) // oldest by sentAt: a0
+            dao.evictOldestBySender("A", 1, now = 0L) // oldest by sentAt: a0
             assertFalse(dao.exists("a0"))
             assertTrue(dao.exists("a1") && dao.exists("a2") && dao.exists("b0"))
 
-            dao.evictOldestBySender("A", 1) // now both sentAt=5; id ASC picks a1 before a2
+            dao.evictOldestBySender("A", 1, now = 0L) // now both sentAt=5; id ASC picks a1 before a2
             assertFalse(dao.exists("a1"))
             assertEquals(listOf("a2", "b0"), dao.allIds().sorted())
         }
@@ -66,8 +66,8 @@ class ForwardDaoTest : RoomDbTest() {
             dao.insert(fwd("bc_old", recipientId = null, sentAt = 1L)) // broadcast: chat, null recipient+group
             dao.insert(fwd("bc_new", recipientId = null, sentAt = 9L))
 
-            dao.evictOldestByGroup("g1", 1) // only g1's oldest (g_old); g2 + broadcast untouched
-            dao.evictOldestBroadcast(1) // only broadcast's oldest (bc_old)
+            dao.evictOldestByGroup("g1", 1, now = 0L) // only g1's oldest (g_old); g2 + broadcast untouched
+            dao.evictOldestBroadcast(1, now = 0L) // only broadcast's oldest (bc_old)
 
             assertEquals(listOf("bc_new", "g_new", "g_other"), dao.allIds().sorted())
         }
@@ -79,7 +79,7 @@ class ForwardDaoTest : RoomDbTest() {
             dao.insert(fwd("x1", senderId = "B", sentAt = 1L)) // globally oldest, ignores sender bucket
             dao.insert(fwd("x3", senderId = "A", sentAt = 3L))
 
-            dao.evictOldest(2) // x1 (sentAt 1) then x2 (sentAt 2)
+            dao.evictOldest(2, now = 0L) // x1 (sentAt 1) then x2 (sentAt 2)
             assertEquals(listOf("x3"), dao.allIds())
         }
 
@@ -91,9 +91,9 @@ class ForwardDaoTest : RoomDbTest() {
             dao.insert(fwd("gp", recipientId = null, groupId = "g1")) // chat in a group → not broadcast
             dao.insert(fwd("rx", recipientId = null).copy(type = "receipt")) // null/null but not chat → not broadcast
 
-            assertEquals(1, dao.countBroadcast()) // only "bc"
-            assertEquals(1, dao.countByGroup("g1"))
-            assertEquals(4, dao.countBySender("peer")) // every row shares the default sender
+            assertEquals(1, dao.countBroadcast(now = 0L)) // only "bc"
+            assertEquals(1, dao.countByGroup("g1", now = 0L))
+            assertEquals(4, dao.countBySender("peer", now = 0L)) // every row shares the default sender
         }
 
     @Test
@@ -118,6 +118,38 @@ class ForwardDaoTest : RoomDbTest() {
 
             assertEquals(setOf("edge", "live"), dao.liveIds(now = 1_000L).toSet())
             assertEquals(listOf("live", "edge"), dao.liveRows(now = 1_000L).map { it.id }) // receivedAt DESC
+        }
+
+    @Test
+    fun `quota counts and evictions are live-filtered — expired residue is invisible (work item #8)`() =
+        runTest {
+            // Buckets mix TTL classes, so an expired short-TTL row can be NEWER by sentAt than a live long-TTL
+            // row. If the count saw the residue (here pushing sender A "over quota") the eviction would remove
+            // the oldest LIVE row — a row a swept node keeps — de-converging the live sets the digest folds.
+            dao.insert(fwd("live_old", senderId = "A", sentAt = 1L, expiresAt = 9_000L))
+            dao.insert(fwd("dead_new", senderId = "A", sentAt = 5L, expiresAt = 100L)) // expired at now=1_000
+            dao.insert(fwd("live_new", senderId = "A", sentAt = 9L, expiresAt = 9_000L))
+
+            assertEquals("residue must not count against the quota", 2, dao.countBySender("A", now = 1_000L))
+            assertEquals(2, dao.count(now = 1_000L))
+
+            dao.evictOldest(1, now = 1_000L) // oldest LIVE row globally is live_old — never dead_new
+            assertFalse(dao.exists("live_old"))
+            assertTrue("an expired row is left for the sweep, not the eviction", dao.exists("dead_new"))
+            assertTrue(dao.exists("live_new"))
+        }
+
+    @Test
+    fun `liveIdExpiries projects the live (id, expiresAt) set — the digest rebuild source`() =
+        runTest {
+            dao.insert(fwd("dead", expiresAt = 100L))
+            dao.insert(fwd("edge", expiresAt = 1_000L)) // expiresAt == now → still live (>=)
+            dao.insert(fwd("live", expiresAt = 9_000L))
+
+            assertEquals(
+                setOf(ForwardIdExpiry("edge", 1_000L), ForwardIdExpiry("live", 9_000L)),
+                dao.liveIdExpiries(now = 1_000L).toSet(),
+            )
         }
 
     @Test

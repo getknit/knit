@@ -51,7 +51,7 @@ class KnitDatabaseTest : RoomDbTest() {
             )
 
             assertTrue(dao.exists("f1"))
-            assertEquals(1, dao.count())
+            assertEquals(1, dao.count(now = 0L))
             assertEquals(listOf("f1"), dao.allIds())
         }
 }

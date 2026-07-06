@@ -47,6 +47,8 @@ class ForwardSyncTest {
     /** In-memory [ForwardStore]; TTL/order mirror the real repository closely enough for the sync logic. */
     private class FakeForwardStore(
         private val ttlMs: Long = 60_000L,
+        // Mirrors the repository's dead-on-arrival guard (store() returning false) without modelling clocks.
+        private val refuseAll: Boolean = false,
     ) : ForwardStore {
         private data class Row(
             val frame: CarriedFrame,
@@ -60,8 +62,10 @@ class ForwardSyncTest {
             frame: CarriedFrame,
             origin: Int,
             now: Long,
-        ) {
+        ): Boolean {
+            if (refuseAll) return false
             rows.putIfAbsent(frame.envelope.id, Row(frame, origin, now + ttlMs))
+            return true
         }
 
         override suspend fun liveFrames(now: Long): List<CarriedFrame> =
@@ -339,6 +343,26 @@ class ForwardSyncTest {
             allowing.onSeen(wireOf(kr), kr, ForwardStore.ORIGIN_RELAY) // non-storable control frame → not stored
 
             assertTrue("no custody pull for an auth-rejected or non-storable frame", carried.isEmpty())
+        }
+
+    @Test
+    fun onCarriedDoesNotFireForADeadOnArrivalFrame() =
+        runTest {
+            val carried = mutableListOf<String>()
+            // The store refusing (the repository's dead-on-arrival guard: the frame's frame-global expiry has
+            // already passed, e.g. a skewed-clock peer re-serving what everyone swept) must skip the blob pull —
+            // otherwise we'd eager-fetch and pin bytes for a frame we hold no custody row for.
+            val sync =
+                ForwardSync(
+                    RecordingTransport(),
+                    FakeForwardStore(refuseAll = true),
+                    clock = { 0L },
+                    onCarried = { carried += it.id },
+                )
+            val env = dm("m1", "a", "b")
+            sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
+
+            assertTrue("no custody pull for a dead-on-arrival (store-refused) frame", carried.isEmpty())
         }
 
     @Test

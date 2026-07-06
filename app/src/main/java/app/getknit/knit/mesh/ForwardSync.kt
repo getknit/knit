@@ -57,8 +57,9 @@ class ForwardSync(
         if (acked.contains(envelope.id) || store.has(envelope.id)) return
         if (origin == ForwardStore.ORIGIN_RELAY && !authenticate(wire, envelope)) return
         // The store impl folds the new id into the StoreDigest, whose version change re-cues neighbors that
-        // we now hold something they may want to pull.
-        store.store(CarriedFrame(envelope, wire.sig, wire.signed), origin, clock())
+        // we now hold something they may want to pull. A dead-on-arrival frame (past its frame-global expiry —
+        // a skewed-clock peer re-serving what everyone has swept) is refused, so we must not custody its blob.
+        if (!store.store(CarriedFrame(envelope, wire.sig, wire.signed), origin, clock())) return
         // Now custody any blob the frame references (e.g. an image), so a late joiner can still pull it from us.
         onCarried(envelope)
     }

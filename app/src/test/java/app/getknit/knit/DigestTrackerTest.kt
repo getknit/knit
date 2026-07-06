@@ -185,4 +185,19 @@ class DigestTrackerTest {
             r.now += 30_000L
         }
     }
+
+    @Test
+    fun aTtlBoundaryFlipConvergesOnTheNextCueWithNoSync() {
+        // Work item #8: with a live-only StoreDigest, a custody frame expiring moves EVERY node's digest to the
+        // same new value at (nearly) the same instant. Between our own fold and the peer's next cue there is a
+        // legitimate skew window where a sync reads as wanted — but the peer's post-boundary cue must settle it
+        // to identical-skip (no NDP, throttle reset), with no data-path exchange having happened.
+        val t = DigestTracker()
+        t.onCue("p", 1L)
+        t.onReconciled("p", 1L) // converged and synced at v1
+
+        assertTrue("our side folded the boundary first — the skew window reads sync-wanted", t.reconcileWanted("p", 2L))
+        t.onCue("p", 2L) // the peer's own fold arrives with its next cue
+        assertFalse("identical digests → skip, no NDP", t.reconcileWanted("p", 2L))
+    }
 }

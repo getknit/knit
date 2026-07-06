@@ -2,6 +2,7 @@ package app.getknit.knit
 
 import app.getknit.knit.data.forward.ForwardDao
 import app.getknit.knit.data.forward.ForwardEntity
+import app.getknit.knit.data.forward.ForwardIdExpiry
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.ForwardStore
@@ -13,6 +14,7 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -26,7 +28,10 @@ import org.junit.Test
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ForwardRepositoryTest {
-    /** In-memory [ForwardDao] whose eviction ordering mirrors the SQL exactly (sentAt ASC, id ASC LIMIT n). */
+    /**
+     * In-memory [ForwardDao] whose eviction ordering mirrors the SQL exactly (live-filtered `expiresAt >= now`,
+     * then sentAt ASC, id ASC LIMIT n).
+     */
     private class FakeForwardDao : ForwardDao {
         val rows = LinkedHashMap<String, ForwardEntity>()
 
@@ -50,7 +55,7 @@ class ForwardRepositoryTest {
             return before - rows.size
         }
 
-        override suspend fun count() = rows.size
+        override suspend fun count(now: Long) = rows.values.count { it.expiresAt >= now }
 
         override suspend fun allIds() = rows.keys.toList()
 
@@ -63,34 +68,56 @@ class ForwardRepositoryTest {
 
         override suspend fun liveIds(now: Long) = rows.values.filter { it.expiresAt >= now }.map { it.id }
 
+        override suspend fun liveIdExpiries(now: Long) =
+            rows.values.filter { it.expiresAt >= now }.map { ForwardIdExpiry(it.id, it.expiresAt) }
+
         override suspend fun allRows() = rows.values.sortedByDescending { it.receivedAt }
 
-        override suspend fun countBySender(senderId: String) = rows.values.count { it.senderId == senderId }
+        override suspend fun countBySender(
+            senderId: String,
+            now: Long,
+        ) = rows.values.count { it.senderId == senderId && it.expiresAt >= now }
 
-        override suspend fun countByGroup(groupId: String) = rows.values.count { it.groupId == groupId }
+        override suspend fun countByGroup(
+            groupId: String,
+            now: Long,
+        ) = rows.values.count { it.groupId == groupId && it.expiresAt >= now }
 
-        override suspend fun countBroadcast() = rows.values.count { it.type == "chat" && it.recipientId == null && it.groupId == null }
+        override suspend fun countBroadcast(now: Long) =
+            rows.values.count { it.type == "chat" && it.recipientId == null && it.groupId == null && it.expiresAt >= now }
 
-        override suspend fun evictOldest(n: Int) = evict(rows.values.toList(), n)
+        override suspend fun evictOldest(
+            n: Int,
+            now: Long,
+        ) = evict(rows.values.toList(), n, now)
 
         override suspend fun evictOldestBySender(
             senderId: String,
             n: Int,
-        ) = evict(rows.values.filter { it.senderId == senderId }, n)
+            now: Long,
+        ) = evict(rows.values.filter { it.senderId == senderId }, n, now)
 
         override suspend fun evictOldestByGroup(
             groupId: String,
             n: Int,
-        ) = evict(rows.values.filter { it.groupId == groupId }, n)
+            now: Long,
+        ) = evict(rows.values.filter { it.groupId == groupId }, n, now)
 
-        override suspend fun evictOldestBroadcast(n: Int) =
-            evict(rows.values.filter { it.type == "chat" && it.recipientId == null && it.groupId == null }, n)
+        override suspend fun evictOldestBroadcast(
+            n: Int,
+            now: Long,
+        ) = evict(rows.values.filter { it.type == "chat" && it.recipientId == null && it.groupId == null }, n, now)
 
         private fun evict(
             bucket: List<ForwardEntity>,
             n: Int,
+            now: Long,
         ) {
-            bucket.sortedWith(compareBy({ it.sentAt }, { it.id })).take(n).forEach { rows.remove(it.id) }
+            bucket
+                .filter { it.expiresAt >= now }
+                .sortedWith(compareBy({ it.sentAt }, { it.id }))
+                .take(n)
+                .forEach { rows.remove(it.id) }
         }
     }
 
@@ -239,6 +266,93 @@ class ForwardRepositoryTest {
         }
 
     @Test
+    fun `a frame past its frame-global expiry is refused as dead on arrival, never stored as residue`() =
+        runTest {
+            val dao = FakeForwardDao()
+            val digest = StoreDigest()
+            val repo = ForwardRepository(dao, digest, ttlMs = 1_000L)
+
+            // sentAt=500 ⇒ dies at absolute 1_500. Arriving at now=2_000 it is already dead — the shape of a
+            // skewed-clock peer re-serving a frame every node has swept. Refusal (not insert-then-ignore) is
+            // what keeps it out of the table AND tells ForwardSync to skip custodying its blob.
+            assertFalse(repo.store(dm("dead", sender = "peer", sentAt = 500L), ForwardStore.ORIGIN_RELAY, now = 2_000L))
+            assertEquals(0, dao.rows.size)
+            assertEquals("a refused frame must not touch the digest", 0L, digest.version.value)
+
+            assertTrue(repo.store(dm("live", sender = "peer", sentAt = 1_900L), ForwardStore.ORIGIN_RELAY, now = 2_000L))
+            assertEquals(StoreDigest.fingerprint(listOf("live")), digest.version.value)
+        }
+
+    @Test
+    fun `the TTL sweep is digest-neutral — the lazy fold already dropped the lapsed id (work item 8)`() =
+        runTest {
+            var now = 0L
+            val dao = FakeForwardDao()
+            val digest = StoreDigest { now }
+            val repo = ForwardRepository(dao, digest, ttlMs = 1_000L)
+
+            repo.store(dm("dies", sender = "peer", sentAt = 0L), ForwardStore.ORIGIN_RELAY, now = 0L) // expires at 1_000
+            repo.store(dm("lives", sender = "peer", sentAt = 5_000L), ForwardStore.ORIGIN_RELAY, now = 0L) // expires at 6_000
+
+            now = 2_000L
+            val atBoundary = digest.current() // the read folds "dies" out — no sweep has run yet
+            assertEquals(StoreDigest.fingerprint(listOf("lives")), atBoundary)
+            assertTrue("the lapsed row is still physical residue awaiting GC", dao.rows.containsKey("dies"))
+
+            assertEquals(1, repo.sweepExpired(now = now)) // pure storage GC…
+            assertEquals("…that must not move the digest", atBoundary, digest.current())
+        }
+
+    @Test
+    fun `an expired-unswept row must not perturb which live rows the quota evicts (work item 8)`() =
+        runTest {
+            // Buckets mix TTL classes: an expired short-TTL broadcast row is NEWER by sentAt than two live
+            // long-TTL DMs. Node A has swept it; node B has not. When a fourth frame arrives at both, a count
+            // over all rows would push B (4 > quota 3) into evicting its oldest LIVE row — a row A keeps — so
+            // the live sets (and the live-only digests) would diverge on sweep phase alone.
+            fun boundedRepo(
+                dao: ForwardDao,
+                digest: StoreDigest,
+            ) = ForwardRepository(dao, digest, ttlMs = 10_000L, broadcastTtlMs = 1_000L, maxPerSender = 3)
+
+            val frames =
+                listOf(
+                    dm("dm_old", sender = "S", sentAt = 100L), // expires 10_100 — live throughout
+                    dm("dm_mid", sender = "S", sentAt = 200L), // expires 10_200 — live throughout
+                    chat("bc_new", "S", 5_000L, null, ChatContent(body = "x")), // broadcast: expires 6_000 — lapses
+                )
+
+            var nowA = 5_500L
+            val digestA = StoreDigest { nowA }
+            val daoA = FakeForwardDao()
+            val repoA = boundedRepo(daoA, digestA)
+            var nowB = 5_500L
+            val digestB = StoreDigest { nowB }
+            val daoB = FakeForwardDao()
+            val repoB = boundedRepo(daoB, digestB)
+            frames.forEach {
+                repoA.store(it, ForwardStore.ORIGIN_RELAY, now = 5_500L)
+                repoB.store(it, ForwardStore.ORIGIN_RELAY, now = 5_500L)
+            }
+
+            nowA = 7_000L // bc_new lapsed on both clocks…
+            nowB = 7_000L
+            repoA.sweepExpired(now = 7_000L) // …but only A's sweep tick has fired
+
+            val fresh = dm("dm_new", sender = "S", sentAt = 6_000L)
+            repoA.store(fresh, ForwardStore.ORIGIN_RELAY, now = 7_000L)
+            repoB.store(fresh, ForwardStore.ORIGIN_RELAY, now = 7_000L)
+
+            assertEquals(
+                "swept and unswept nodes must keep the identical live set",
+                daoA.liveIds(7_000L).sorted(),
+                daoB.liveIds(7_000L).sorted(),
+            )
+            assertEquals(listOf("dm_mid", "dm_new", "dm_old"), daoB.liveIds(7_000L).sorted()) // nobody evicted a live row
+            assertEquals("live-only digests converge across the sweep phase", digestA.current(), digestB.current())
+        }
+
+    @Test
     fun `a late joiner sweeps a frame at its frame-global expiry, not TTL-from-arrival`() =
         runTest {
             val ttl = 1_000L
@@ -254,7 +368,7 @@ class ForwardRepositoryTest {
             // `receivedAt + ttl` bug expiresAt would be 1_600, so `expiresAt < now` (1_600 < 1_600) is false and the
             // frame would survive — the non-convergent leak this guards.
             assertEquals(1, repo.sweepExpired(now = 1_600L))
-            assertEquals(0, dao.count())
+            assertEquals(0, dao.count(now = 1_600L))
             assertEquals(StoreDigest.fingerprint(dao.allIds()), digest.version.value)
         }
 }
