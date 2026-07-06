@@ -390,6 +390,14 @@ internal fun ChatScreenContent(
         if (row.mine || listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
     }
 
+    // Reveal the typing indicator when it appears: it's inserted at the visual bottom, where scroll
+    // anchoring would otherwise leave it clipped below the viewport (the effect above only fires for a
+    // new message). Same parked-at-bottom gate; a user scrolled up into history is never yanked down.
+    val typing = state.typingPeers.isNotEmpty()
+    LaunchedEffect(typing) {
+        if (typing && listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
+    }
+
     // A tapped quote scrolls to and briefly highlights its original (see MessageBubble); fade it after a
     // beat so the flash is transient.
     LaunchedEffect(highlightedMessageId) {
