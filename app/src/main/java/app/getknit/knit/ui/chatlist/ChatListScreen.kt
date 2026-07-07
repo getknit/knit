@@ -5,6 +5,12 @@ import android.content.Intent
 import android.provider.Settings
 import android.text.format.DateUtils
 import android.widget.Toast
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,6 +29,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Block
@@ -282,19 +289,82 @@ internal fun ChatListScreenContent(
                     onDismiss = if (warning == RadioWarning.AllRadiosOff) null else onDismissRadioWarning,
                 )
             }
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 4.dp),
-            ) {
-                items(state.conversations, key = { it.id }) { row ->
-                    ConversationListItem(
-                        row = row,
-                        now = now,
-                        onClick = { onOpenConversation(row.id) },
-                        onDelete = onDeleteConversation,
-                    )
+            if (state.isLoading) {
+                // Cold start: the state is a combine of Room + DataStore + mesh flows that emits nothing
+                // until all have first-emitted (~1s). Show a skeleton so the screen reads as "loading",
+                // not as an empty chat list.
+                ChatListSkeleton(modifier = Modifier.fillMaxSize())
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(vertical = 4.dp),
+                ) {
+                    items(state.conversations, key = { it.id }) { row ->
+                        ConversationListItem(
+                            row = row,
+                            now = now,
+                            onClick = { onOpenConversation(row.id) },
+                            onDelete = onDeleteConversation,
+                        )
+                    }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Placeholder rows shown while the conversation list is still loading (see [ChatListUiState.isLoading]).
+ * A row's shape mirrors [ConversationListItem] — leading circle + title/preview lines — so the real list
+ * slides in without a layout jump. A slow alpha pulse signals "loading" rather than empty content.
+ */
+@Composable
+private fun ChatListSkeleton(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "chatListSkeleton")
+    val alpha by transition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 0.9f,
+        animationSpec =
+            infiniteRepeatable(
+                animation = tween(durationMillis = 700, easing = FastOutSlowInEasing),
+                repeatMode = RepeatMode.Reverse,
+            ),
+        label = "chatListSkeletonAlpha",
+    )
+    Column(modifier = modifier.padding(vertical = 4.dp)) {
+        repeat(SKELETON_ROW_COUNT) { ConversationSkeletonRow(pulseAlpha = alpha) }
+    }
+}
+
+private const val SKELETON_ROW_COUNT = 6
+
+@Composable
+private fun ConversationSkeletonRow(pulseAlpha: Float) {
+    // Tint the placeholder blocks from the theme so they read correctly in light and dark; the pulse
+    // rides on top of a low base opacity so the shapes never fully disappear.
+    val blockColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f * pulseAlpha + 0.04f)
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(52.dp).clip(CircleShape).background(blockColor))
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Box(
+                Modifier
+                    .fillMaxWidth(0.45f)
+                    .height(14.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(blockColor),
+            )
+            Spacer(Modifier.height(8.dp))
+            Box(
+                Modifier
+                    .fillMaxWidth(0.75f)
+                    .height(12.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(blockColor),
+            )
         }
     }
 }
@@ -683,6 +753,27 @@ fun ChatListScreenRadioWarningPreview() =
                     transportHealth = TransportHealth.Degraded,
                     radioWarning = RadioWarning.BluetoothOff,
                 ),
+            now = PREVIEW_NOW,
+            onOpenConversation = {},
+            onNewMessage = {},
+            onOpenProfile = {},
+            onOpenDiagnostics = {},
+            onOpenBlockedUsers = {},
+            onOpenDonate = {},
+            onShareApp = {},
+            onOpenRadioSettings = {},
+            onDismissRadioWarning = {},
+            onDeleteConversation = {},
+        )
+    }
+
+// Cold-start loading state: the skeleton placeholder rows shown until the state flow first emits.
+@Preview(showBackground = true)
+@Composable
+fun ChatListScreenLoadingPreview() =
+    KnitPreview {
+        ChatListScreenContent(
+            state = ChatListUiState(isLoading = true),
             now = PREVIEW_NOW,
             onOpenConversation = {},
             onNewMessage = {},

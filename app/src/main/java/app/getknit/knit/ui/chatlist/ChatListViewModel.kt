@@ -52,6 +52,11 @@ data class ChatListUiState(
     val transportHealth: TransportHealth = TransportHealth.Healthy,
     // The radio-off warning banner to show (or null), already accounting for the user's dismissal.
     val radioWarning: RadioWarning? = null,
+    // True only for the initial seed value (see [state]'s stateIn below), before the underlying Room +
+    // DataStore + mesh flows have all first-emitted. The list shows a skeleton instead of a blank screen
+    // for that ~1s cold-start gap. Defaults false so every real combine emission — and the previews —
+    // render content; only the seed passes true.
+    val isLoading: Boolean = false,
 )
 
 /**
@@ -226,7 +231,7 @@ class ChatListViewModel(
                 transportHealth = health,
                 radioWarning = warning,
             )
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatListUiState())
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatListUiState(isLoading = true))
 
     /**
      * Hides the currently-shown radio-off banner. Only the dismissible warnings (Bluetooth/Wi-Fi off) are
