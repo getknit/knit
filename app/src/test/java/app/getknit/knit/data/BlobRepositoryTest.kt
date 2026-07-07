@@ -11,8 +11,11 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.moderation.ImageModerator
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -162,5 +165,40 @@ class BlobRepositoryTest : RoomDbTest() {
 
             assertFalse(db.blobDao().exists("orphan"))
             assertTrue(db.blobDao().exists("own"))
+        }
+
+    @Test
+    fun `insert then read round-trips bytes, mime, and existence`() =
+        runTest {
+            val repo = repo()
+            assertFalse(repo.exists("h1"))
+            repo.insert("h1", "image/webp", byteArrayOf(9, 8, 7))
+
+            assertTrue(repo.exists("h1"))
+            assertEquals("image/webp", repo.mimeFor("h1"))
+            assertArrayEquals(byteArrayOf(9, 8, 7), repo.bytes("h1"))
+            assertNull(repo.bytes("missing"))
+        }
+
+    @Test
+    fun `observeHashes reflects stored blobs`() =
+        runTest {
+            val repo = repo()
+            repo.insert("h1", "image/jpeg", byteArrayOf(1))
+            repo.insert("h2", "image/jpeg", byteArrayOf(2))
+            assertEquals(setOf("h1", "h2"), repo.observeHashes().first().toSet())
+        }
+
+    @Test
+    fun `isImageFlagged and observeFlaggedHashes reflect the cached verdict`() =
+        runTest {
+            val repo = repo()
+            db.blobVerdictDao().upsert(BlobVerdictEntity("bad", flagged = true, score = 0.95f))
+            db.blobVerdictDao().upsert(BlobVerdictEntity("ok", flagged = false, score = 0.1f))
+
+            assertTrue(repo.isImageFlagged("bad"))
+            assertFalse(repo.isImageFlagged("ok"))
+            assertFalse(repo.isImageFlagged("unknown"))
+            assertEquals(listOf("bad"), repo.observeFlaggedHashes().first())
         }
 }
