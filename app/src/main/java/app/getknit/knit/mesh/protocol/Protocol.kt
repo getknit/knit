@@ -17,10 +17,10 @@ package app.getknit.knit.mesh.protocol
  */
 object Protocol {
     /** This build's protocol/handshake version, advertised in endpoint-info and [ProfileContent]. */
-    const val VERSION = 2 // v2: 128-bit base32 nodeId (coordinated wire break; see docs/WIRE_COMPAT.md)
+    const val VERSION = 3 // v3: de-Tink raw crypto layouts + definite-length CBOR (coordinated wire break; see docs/WIRE_COMPAT.md)
 
     /** Lowest peer version we still interoperate with (reserved for future route-around; unused today). */
-    const val MIN_SUPPORTED = 2
+    const val MIN_SUPPORTED = 3
 
     /** Capability bits (append-only — never recycle a position). */
     const val CAP_E2E = 0x1L

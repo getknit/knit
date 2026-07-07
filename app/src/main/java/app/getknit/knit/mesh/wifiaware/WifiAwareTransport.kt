@@ -1591,9 +1591,19 @@ class WifiAwareTransport(
             runCatching { network.socketFactory.createSocket(ip, port) }.getOrNull()
                 ?: return failConnect(peerNodeId, cb, staleHandle = false) // NDP came up; socket issue, not a handle problem
         val link = NetSocketLink(socket)
-        // Send our identity first so the accept-any responder on the other side knows who connected.
+        // Two-way HELLO: send our identity first, then read the responder's reply and require it to match the
+        // peer we dialed — so the link's identity is confirmed by the peer over the socket, not taken from the
+        // (unauthenticated) discovery advert. Writes-then-reads while the responder reads-then-replies, so
+        // neither blocks. Bound the reply read with soTimeout so a stalled responder can't pin the NDI.
         val sent = runCatching { LinkHandshake.writeHello(link.output, localNodeId) }.isSuccess
         if (!sent) {
+            link.close()
+            return failConnect(peerNodeId, cb, staleHandle = false)
+        }
+        runCatching { socket.soTimeout = ACCEPT_HELLO_TIMEOUT_MS }
+        val reply = runCatching { LinkHandshake.readHello(link.input) }.getOrNull()
+        runCatching { socket.soTimeout = 0 } // back to blocking reads for the normal loop
+        if (reply == null || reply.nodeId != peerNodeId) {
             link.close()
             return failConnect(peerNodeId, cb, staleHandle = false)
         }
@@ -1713,6 +1723,12 @@ class WifiAwareTransport(
             val clientNodeId = advert.nodeId
             // Enforce the tie-break server side (we must be the smaller id) and don't double-link.
             if (clientNodeId == localNodeId || localNodeId >= clientNodeId || clientNodeId in peers.keys) {
+                link.close()
+                return
+            }
+            // Reply with our identity so the initiator can confirm it reached the intended peer (two-way
+            // HELLO; the initiator validates this before registering). We read first, then reply — no block.
+            if (runCatching { LinkHandshake.replyHello(link.output, localNodeId) }.isFailure) {
                 link.close()
                 return
             }
@@ -2204,7 +2220,13 @@ class WifiAwareTransport(
         // signatures/pins would never verify — a clean discovery partition, coordinated with BLE SERVICE_UUID + DB;
         // ".v8" swapped NDP security from setPskPassphrase to a fixed setPmk (a v7 node's NDP setup would fail
         // against it while discovery still matched — the silent-churn case the swap was deferred to avoid).
-        const val SERVICE_NAME = "app.getknit.knit.MESH.v8"
+        // v22 break: the `.vN` suffix scheme is retired for an Apple-`WiFiAwareServices`-conformant DNS-SD
+        // name (`_name._proto`, name label ≤15 chars; `_tcp` matches the NDP's TCP data path) so a future
+        // iOS client can share discovery. The trailing digit is the new version marker (was `.vN`) and rides
+        // Protocol.VERSION — bump it (…mesh4…) on the next breaking change. NOTE: confirm Apple's exact
+        // WiFiAwareServices length/charset rule when the iOS client is built (Android's setServiceName accepts
+        // any UTF-8 string, so this is iOS-facing).
+        const val SERVICE_NAME = "_knitmesh3._tcp"
 
         // Fixed app-wide 32-byte PMK for link-layer (NDP) encryption, passed via setPmk so the firmware skips
         // the per-NDP passphrase→PMK PBKDF2 derivation (same security either way — both forms are public

@@ -101,6 +101,26 @@ budget — see `BleAdvertPayload`), which the `SERVICE_UUID` bump already partit
 went `1 → 2` for honesty (nothing gates on it). The keypair itself is untouched (it lives outside the DB),
 so no identity is lost — every device just re-derives a wider id.
 
+**Precedent — a coordinated break (DB v22): de-Tink the crypto wire layout.** The published key bundle and
+the crypto byte layouts were made Tink-free for cross-platform (iOS) interop: `PublicKeyBundle` now carries
+two **raw 32-byte** keys (CBOR `{sigPub, hpkePub}`, `@ByteString`) instead of serialized Tink `Keyset`
+protos; `IdentityKeyStore` uses the `_RAW` (NO_PREFIX) templates so `WireEnvelope.sig` is bare 64-byte RFC
+8032 (was 69 = `0x01‖keyId[4]‖sig`) and `WrappedKey.wk` is bare RFC 9180 `enc‖ct` (was Tink-prefixed); and
+both CBOR codecs (`WireCodec.cbor`, `cryptoCbor`) pin `useDefiniteLengthEncoding = true` (kotlinx's default
+is indefinite-length, the awkward case for a Swift codec) + explicit `encodeDefaults = false`. Android keeps
+Tink internally — the raw bytes are extracted from / re-imported into `KeysetHandle`s (the reconstruction
+`HpkeParameters` are asserted to match the `_RAW` template in `PublicKeyBundleTest`). Because the bundle
+bytes are hashed into `NodeId`, every node re-derives a different id (breaking, § above), so all markers
+bumped in lockstep: `SERVICE_NAME` `.v8 → _knitmesh3._tcp` (also adopting the Apple-`WiFiAwareServices`
+`_name._proto` form — name label ≤15 chars, `_tcp` matching the NDP's TCP data path; the trailing digit is
+the version marker now), BLE `SERVICE_UUID`
+`0xFE31 → 0xFE32`, `Protocol.VERSION` `2 → 3`, DB `version 21 → 22` (destructive wipe clears stale pins +
+old-format custody — the **last** pre-launch destructive bump; see `docs/ARCHITECTURE.md` §9 for the
+migrate-forward posture from v22). The keypair is untouched (only its public-key *encoding* changed). Golden
+vectors (`GoldenVectorTest`) pin the definite-length bytes of every wire type + the raw-key bundle so a
+future iOS codec has byte-exact fixtures. Also bundled: the two-way responder HELLO (`LinkHandshake`) so a
+link's peer identity is confirmed over the socket, not parsed from the (unauthenticated) discovery advert.
+
 **When you bump a version layer:** add a round-trip test plus an "unknown higher version drops locally
 but is counted" test. New crypto scheme ⇒ bump `EncEnvelope.MAX_SUPPORTED_VERSION` + branch in
 `MeshManager.decrypt`. New content schema ⇒ bump `MessageContent.MAX_SUPPORTED`.

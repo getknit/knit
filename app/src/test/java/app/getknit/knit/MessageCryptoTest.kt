@@ -31,7 +31,7 @@ class MessageCryptoTest {
     private fun party(nodeId: String): Party {
         TinkInit.ensure()
         val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE))
-        val sig = KeysetHandle.generateNew(KeyTemplates.get("ED25519"))
+        val sig = KeysetHandle.generateNew(KeyTemplates.get(SIG_TEMPLATE))
         return Party(MessageCrypto(hybrid, sig), PublicKeyBundle.fromPrivate(hybrid, sig), nodeId)
     }
 
@@ -225,7 +225,30 @@ class MessageCryptoTest {
         assertNull(PublicKeyBundle.decode("not-a-bundle"))
     }
 
+    // --- v22 raw byte layouts (no Tink output prefix) ---
+
+    @Test
+    fun rawLayoutsCarryNoTinkPrefix() {
+        val alice = party("alice000")
+        val bob = party("bob00000")
+        val header = MessageCrypto.header("m9", alice.nodeId, 1L, bob.nodeId)
+
+        // Bare RFC 8032 signature is 64 bytes; the old TINK-variant emitted 69 (0x01‖keyId[4]‖sig).
+        assertEquals(64, alice.crypto.signRaw("frame".toByteArray()).size)
+
+        // Wrapped key is bare RFC 9180 `enc‖ct`: X25519 enc (32) ‖ AES-256-GCM of the 32-byte content key
+        // (32 + 16-byte tag = 48) = 80 bytes, with no Tink prefix.
+        val envelope = alice.crypto.seal(content("hi"), header, mapOf(bob.nodeId to bob.bundle))!!
+        assertEquals(
+            80,
+            envelope.keys
+                .first()
+                .wk.size,
+        )
+    }
+
     private companion object {
-        const val HYBRID_TEMPLATE = "DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM"
+        const val HYBRID_TEMPLATE = "DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW"
+        const val SIG_TEMPLATE = "ED25519_RAW"
     }
 }

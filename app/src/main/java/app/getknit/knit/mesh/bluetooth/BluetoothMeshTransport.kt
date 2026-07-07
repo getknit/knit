@@ -512,11 +512,31 @@ class BluetoothMeshTransport(
                 return@launch failConnect(nodeId, classify(connectErr, timedOut.get()), startedAt, connectErr)
             }
             val link = BluetoothSocketLink(socket)
-            // Initiator sends its identity first so the accept-any responder learns who connected.
+            // Two-way HELLO: send our identity first, then read the responder's reply and require it to match
+            // the peer we dialed — so the link's identity is confirmed by the peer over the socket, not taken
+            // from the (unauthenticated) scanned advert. Writes-then-reads while the responder reads-then-
+            // replies, so neither blocks. A BluetoothSocket has no soTimeout, so bound the reply read by
+            // closing the socket from a watchdog.
             val helloErr = runCatching { LinkHandshake.writeHello(link.output, localNodeId) }.exceptionOrNull()
             if (helloErr != null) {
                 link.close()
                 return@launch failConnect(nodeId, ConnectFailReason.HANDSHAKE, startedAt, helloErr)
+            }
+            val replyWatchdog =
+                scope.launch {
+                    delay(ACCEPT_HELLO_TIMEOUT_MS)
+                    runCatching { socket.close() }
+                }
+            val reply = runCatching { LinkHandshake.readHello(link.input) }.getOrNull()
+            replyWatchdog.cancel()
+            if (reply == null || reply.nodeId != nodeId) {
+                link.close()
+                return@launch failConnect(
+                    nodeId,
+                    ConnectFailReason.HANDSHAKE,
+                    startedAt,
+                    IllegalStateException("hello reply ${reply?.nodeId ?: "absent"} != expected $nodeId"),
+                )
             }
             Log.i(TAG, "bt connect ok $nodeId durMs=${elapsed() - startedAt}")
             registerLink(nodeId, advert, link)
@@ -548,6 +568,12 @@ class BluetoothMeshTransport(
         }
         // Tie-break: the responder must be the SMALLER id (larger initiates); don't double-link.
         if (localNodeId >= clientNodeId || clientNodeId in links.keys) {
+            link.close()
+            return
+        }
+        // Reply with our identity so the initiator can confirm it reached us (two-way HELLO; the initiator
+        // validates this before registering). We read first, then reply — no mutual block.
+        if (runCatching { LinkHandshake.replyHello(link.output, localNodeId) }.isFailure) {
             link.close()
             return
         }

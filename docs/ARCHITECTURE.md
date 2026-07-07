@@ -472,9 +472,12 @@ that budget is a purely local knob that can differ per node without breaking cue
 ## 9. Data layer (`data/`)
 
 - **Room** (`KnitDatabase`, `knit.db`) — **encrypted at rest with SQLCipher**: the passphrase is a
-  random key wrapped under a hardware AndroidKeyStore key by `data/crypto/DatabaseKey`. Schema bumps
-  use `fallbackToDestructiveMigration(dropAllTables = true)` (local history is treated as ephemeral
-  pre-launch; currently at **DB v19**). Seven tables:
+  random key wrapped under a hardware AndroidKeyStore key by `data/crypto/DatabaseKey`. **DB v22 is the
+  frozen launch baseline.** Pre-launch schemas (≤ v21) get one final destructive wipe on upgrade
+  (`fallbackToDestructiveMigrationFrom(dropAllTables = true, 1..21)`); from v22 forward every schema bump
+  ships a tested `Migration` in `KnitMigrations` (validated by `KnitDatabaseMigrationTest`) — a missing one
+  makes Room throw at open time (caught in CI) instead of silently wiping a user's messages/custody/pins.
+  The schema JSON is exported to `app/schemas/` and checked in per version. Seven tables:
   - `messages`: `id` (PK, wire id), `senderId`, `recipientId?`, `conversationId` (default `NEARBY`,
     indexed), `body` (the **decrypted plaintext**, held only inside the encrypted DB), `sentAt`,
     `received`, `mentions` (JSON, default `"[]"`), `attachmentHash?`, `attachmentMime?`,
@@ -755,8 +758,10 @@ before bumping anything that could pull in a newer Kotlin stdlib.
 - Receipts/relays add some flood overhead (reduced by overhear suppression); no per-recipient delivery
   state beyond the single ✓, and DMs have **no routing table** (they flood; store-and-forward carries
   undelivered ones).
-- Destructive Room migrations (local history is treated as ephemeral; the DB is SQLCipher-encrypted at
-  rest, but a schema bump drops its rows — the identity key lives outside the DB to survive this).
+- Room migrations are **tested and non-destructive from v22 on** (the frozen launch baseline); only
+  pre-launch schemas (≤ v21) still wipe. The identity key lives outside the DB (so even the pre-launch
+  wipes never lose it), and the v22 destructive bump was the last one — it cleared the stale pins/custody
+  left by the de-Tink identity re-mint.
 - **Deferred by design:** true (targeted) DM routing, forward secrecy / a ratchet, encrypting
   reactions/receipts/the broadcast room, a group key-gap retransmit, and a BLE connect-time gate on A2DP
   audio contention (see *Out of scope* in `AGENTS.md`).

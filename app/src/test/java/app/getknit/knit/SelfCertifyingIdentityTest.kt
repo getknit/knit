@@ -21,7 +21,7 @@ class SelfCertifyingIdentityTest {
     private fun freshBundle(): PublicKeyBundle {
         TinkInit.ensure()
         val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE))
-        val sig = KeysetHandle.generateNew(KeyTemplates.get("ED25519"))
+        val sig = KeysetHandle.generateNew(KeyTemplates.get("ED25519_RAW"))
         return PublicKeyBundle.fromPrivate(hybrid, sig)
     }
 
@@ -51,6 +51,6 @@ class SelfCertifyingIdentityTest {
     }
 
     private companion object {
-        const val HYBRID_TEMPLATE = "DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM"
+        const val HYBRID_TEMPLATE = "DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW"
     }
 }

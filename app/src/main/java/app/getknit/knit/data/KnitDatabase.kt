@@ -87,7 +87,15 @@ import java.io.File
     //      builds at discovery, and this destructive wipe clears the now-stale pins + old-format custodied
     //      frames. No schema-column change — the version bump is the coordinated wire/DB break the format
     //      requires (see docs/WIRE_COMPAT.md). The keypair itself is untouched (it lives outside the DB).
-    version = 21,
+    // v22: de-Tink wire crypto — PublicKeyBundle now carries raw 32-byte RFC 8032/9180 keys (not Tink keyset
+    //      protos), IdentityKeyStore uses the _RAW (NO_PREFIX) templates, and both CBOR codecs pin
+    //      definite-length encoding. The bundle bytes change, so every nodeId re-derives — a *breaking*
+    //      identity/wire change like v21. Markers bump in lockstep: mesh SERVICE_NAME (.v8 → _knitmesh3._tcp),
+    //      BLE SERVICE_UUID (0xFE31 → 0xFE32), Protocol.VERSION (2 → 3). No schema-column change — the bump is
+    //      the coordinated wire/DB break, and this is the **last destructive (pre-launch) wipe**: it clears the
+    //      now-stale pins + old-format custody, and from here on schema changes ship a tested KnitMigrations
+    //      entry (fallbackToDestructiveMigrationFrom only covers ≤ v21). Keypair untouched (outside the DB).
+    version = 22,
     // Export the schema JSON to app/schemas/ (location set via ksp { arg("room.schemaLocation", ...) } in
     // app/build.gradle.kts). Keeps the schema diffable in review and feeds the migration test's
     // MigrationTestHelper. Room also errors at compile time if an entity changes without a version bump.
@@ -110,10 +118,17 @@ abstract class KnitDatabase : RoomDatabase() {
 
     companion object {
         /**
+         * Schema versions ≤ this were shipped pre-launch and still wipe destructively on upgrade; v22 (the
+         * frozen launch baseline) and above require a tested [KnitMigrations] entry. See the class KDoc.
+         */
+        private const val LAST_DESTRUCTIVE_VERSION = 21
+
+        /**
          * Builds the encrypted database. [passphrase] is the SQLCipher key (see
          * [app.getknit.knit.data.crypto.DatabaseKey]); SQLCipher zeroes it once the DB is opened.
          * The native `libsqlcipher.so` must be loaded explicitly before the factory is created.
          */
+        @Suppress("SpreadOperator") // vararg Room APIs (fallback versions + migrations); a one-time DB-init copy
         fun build(
             context: Context,
             passphrase: ByteArray,
@@ -122,7 +137,13 @@ abstract class KnitDatabase : RoomDatabase() {
             return Room
                 .databaseBuilder(context, KnitDatabase::class.java, "knit.db")
                 .openHelperFactory(SupportOpenHelperFactory(passphrase))
-                .fallbackToDestructiveMigration(dropAllTables = true)
+                // Production migration posture: v22 is the frozen launch baseline. Pre-launch schemas (1..21)
+                // still get one final destructive wipe-and-recreate on upgrade; from v22 forward, only a tested
+                // KnitMigrations entry may change the schema. A version bump with no matching migration and no
+                // listed fallback version makes Room throw at open time (caught by KnitDatabaseMigrationTest) —
+                // a loud failure in CI, never a silent wipe of a user's messages/custody/pins in production.
+                .fallbackToDestructiveMigrationFrom(true, *IntArray(LAST_DESTRUCTIVE_VERSION) { it + 1 })
+                .addMigrations(*KnitMigrations.ALL)
                 .addCallback(
                     object : Callback() {
                         override fun onDestructiveMigration(db: SupportSQLiteDatabase) {

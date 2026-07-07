@@ -76,6 +76,17 @@ internal fun b64(bytes: ByteArray): String = Base64.getEncoder().encodeToString(
 
 internal fun b64d(value: String): ByteArray = Base64.getDecoder().decode(value)
 
-/** Shared CBOR codec for the binary blobs the crypto layer (de)serializes (key bundles, content, keys). */
+/**
+ * Shared CBOR codec for the binary blobs the crypto layer (de)serializes (key bundles, content, keys).
+ * Config kept explicit and in lockstep with [app.getknit.knit.mesh.protocol.WireCodec] so the frozen wire
+ * contract is spelled out, not implied by library defaults: `encodeDefaults = false` (the null-field
+ * omission [app.getknit.knit.mesh.crypto.MessageContent] relies on) and definite-length CBOR (iOS-codec
+ * friendly), both pinned at the v22 wire break.
+ */
 @OptIn(ExperimentalSerializationApi::class)
-internal val cryptoCbor: Cbor = Cbor { ignoreUnknownKeys = true }
+internal val cryptoCbor: Cbor =
+    Cbor {
+        ignoreUnknownKeys = true
+        encodeDefaults = false
+        useDefiniteLengthEncoding = true
+    }
