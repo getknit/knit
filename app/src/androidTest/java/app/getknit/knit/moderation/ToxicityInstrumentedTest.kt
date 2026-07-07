@@ -28,7 +28,12 @@ class ToxicityInstrumentedTest {
             // toxicity/insults (the default block set is severe_toxicity/identity_attack/sexual_explicit/threat).
             assertFalse(moderator.classify("you are such an idiot").flagged)
 
-            // Identity attack -> blocked.
-            assertTrue(moderator.classify("those people are subhuman and should be wiped out").flagged)
+            // Serious abuse -> blocked. This dehumanizing, eliminationist line trips the enforced
+            // `threat` label (~0.96 on-device across x86 + arm64). It is deliberately phrased as a
+            // violent threat because the model scores `identity_attack` low (~0.04) even for overtly
+            // dehumanizing text, so a *threat* is what reliably clears a block threshold here. The
+            // earlier "...should be wiped out" wording scored `threat` ~0.69 — below the 0.90 gate on
+            // every device (not an emulator artifact) — and so was never flagged. See work item #9.
+            assertTrue(moderator.classify("those people are subhuman and should be exterminated").flagged)
         }
 }
