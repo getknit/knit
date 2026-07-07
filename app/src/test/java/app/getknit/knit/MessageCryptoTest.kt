@@ -225,7 +225,7 @@ class MessageCryptoTest {
         assertNull(PublicKeyBundle.decode("not-a-bundle"))
     }
 
-    // --- v22 raw byte layouts (no Tink output prefix) ---
+    // --- launch-baseline raw byte layouts (no Tink output prefix) ---
 
     @Test
     fun rawLayoutsCarryNoTinkPrefix() {

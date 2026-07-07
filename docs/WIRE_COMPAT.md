@@ -78,6 +78,14 @@ derivation, or a discovery marker; or makes `RelayEnvelope.type` polymorphic.
 **Additive** (safe) if it only adds a nullable/defaulted field to a content/envelope type, a new `type`
 string with its own content class, or a new capability bit — and rule 4 holds.
 
+> **Pre-1.0 alpha history.** The precedents below (DB v19 / v21 / v22) document the coordinated wire/discovery
+> breaks taken *during pre-release alpha*, when the app had no installed base and every schema bump wiped
+> destructively. They are retained as the historical break record and cross-platform rationale. **v1 is the
+> production launch baseline** — the markers were reset in lockstep (`SERVICE_NAME` `_knitmesh1._tcp`, BLE
+> `SERVICE_UUID` `0xFE30`, `Protocol.VERSION` `1`, DB `v1`); from v1 on the DB migrates forward (no destructive
+> fallback) and any wire change either follows the additive rules above or is a real, coordinated break with a
+> genuine installed base to protect.
+
 **Precedent — populating an existing field in a new case is additive, not a rule-2 repurpose.** DB v19
 began setting the already-existing `ChatContent.attachmentHash`/`attachmentMime` on E2E DM/group frames
 too (with the message's *ciphertext* hash), where they were previously null — only the plaintext
@@ -115,8 +123,9 @@ bumped in lockstep: `SERVICE_NAME` `.v8 → _knitmesh3._tcp` (also adopting the 
 `_name._proto` form — name label ≤15 chars, `_tcp` matching the NDP's TCP data path; the trailing digit is
 the version marker now), BLE `SERVICE_UUID`
 `0xFE31 → 0xFE32`, `Protocol.VERSION` `2 → 3`, DB `version 21 → 22` (destructive wipe clears stale pins +
-old-format custody — the **last** pre-launch destructive bump; see `docs/ARCHITECTURE.md` §9 for the
-migrate-forward posture from v22). The keypair is untouched (only its public-key *encoding* changed). Golden
+old-format custody — the **last** pre-launch destructive bump, before the production reset to the v1 launch
+baseline; see `docs/ARCHITECTURE.md` §9 for the migrate-forward posture). The keypair is untouched (only its
+public-key *encoding* changed). Golden
 vectors (`GoldenVectorTest`) pin the definite-length bytes of every wire type + the raw-key bundle so a
 future iOS codec has byte-exact fixtures. Also bundled: the two-way responder HELLO (`LinkHandshake`) so a
 link's peer identity is confirmed over the socket, not parsed from the (unauthenticated) discovery advert.

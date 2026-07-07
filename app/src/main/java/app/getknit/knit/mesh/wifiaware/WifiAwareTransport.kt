@@ -2210,23 +2210,14 @@ class WifiAwareTransport(
                 context.getSystemService(Context.WIFI_AWARE_SERVICE) != null &&
                 context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_WIFI_AWARE)
 
-        // The NAN service both nodes publish/subscribe. Bumped on every breaking wire change so a build across
-        // the break hard-partitions at discovery rather than silently mis-decoding. ".v3" was the cue-format
-        // change (content-digest version, not a monotone epoch); ".v4" re-typed EncEnvelope nonce/ct +
-        // WrappedKey.wk from base64 String to raw CBOR @ByteString (a v3 node can't decode a v4 E2E frame);
-        // ".v5" added the DIGEST data-path record (a v4 node has no DIGEST case and drops the link on it); ".v6"
-        // removed the coordination-plane re-attach hint (tag 0x02) — a clean cut so no .v5 node keeps spamming it;
-        // ".v7" widened the nodeId to 128 bits (new base32 derivation) so a v6 node derives a different id and its
-        // signatures/pins would never verify — a clean discovery partition, coordinated with BLE SERVICE_UUID + DB;
-        // ".v8" swapped NDP security from setPskPassphrase to a fixed setPmk (a v7 node's NDP setup would fail
-        // against it while discovery still matched — the silent-churn case the swap was deferred to avoid).
-        // v22 break: the `.vN` suffix scheme is retired for an Apple-`WiFiAwareServices`-conformant DNS-SD
-        // name (`_name._proto`, name label ≤15 chars; `_tcp` matches the NDP's TCP data path) so a future
-        // iOS client can share discovery. The trailing digit is the new version marker (was `.vN`) and rides
-        // Protocol.VERSION — bump it (…mesh4…) on the next breaking change. NOTE: confirm Apple's exact
-        // WiFiAwareServices length/charset rule when the iOS client is built (Android's setServiceName accepts
-        // any UTF-8 string, so this is iOS-facing).
-        const val SERVICE_NAME = "_knitmesh3._tcp"
+        // The NAN service both nodes publish/subscribe — an Apple-`WiFiAwareServices`-conformant DNS-SD name
+        // (`_name._proto`, name label ≤15 chars; `_tcp` matches the NDP's TCP data path) so a future iOS client
+        // can share discovery. The `knitmesh<N>` digit is the discovery-partition marker: bump it (…mesh2…) on
+        // the next breaking wire/discovery change so a build across the break hard-partitions at discovery
+        // rather than silently mis-decoding. `_knitmesh1._tcp` is the launch baseline. (Android's setServiceName
+        // accepts any UTF-8 string, so the length/charset rule is iOS-facing — confirm it when the iOS client
+        // is built.)
+        const val SERVICE_NAME = "_knitmesh1._tcp"
 
         // Fixed app-wide 32-byte PMK for link-layer (NDP) encryption, passed via setPmk so the firmware skips
         // the per-NDP passphrase→PMK PBKDF2 derivation (same security either way — both forms are public

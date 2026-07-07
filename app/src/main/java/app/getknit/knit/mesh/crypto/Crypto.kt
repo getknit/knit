@@ -81,7 +81,7 @@ internal fun b64d(value: String): ByteArray = Base64.getDecoder().decode(value)
  * Config kept explicit and in lockstep with [app.getknit.knit.mesh.protocol.WireCodec] so the frozen wire
  * contract is spelled out, not implied by library defaults: `encodeDefaults = false` (the null-field
  * omission [app.getknit.knit.mesh.crypto.MessageContent] relies on) and definite-length CBOR (iOS-codec
- * friendly), both pinned at the v22 wire break.
+ * friendly), both pinned as the launch-baseline wire layout.
  */
 @OptIn(ExperimentalSerializationApi::class)
 internal val cryptoCbor: Cbor =

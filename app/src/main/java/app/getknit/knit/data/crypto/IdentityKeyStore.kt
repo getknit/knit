@@ -90,8 +90,8 @@ class IdentityKeyStore(
 
         // HPKE with X25519 + HKDF-SHA256 + AES-256-GCM (Tink's own impl; works on minSdk 29). The _RAW
         // (NO_PREFIX) variants emit bare RFC 9180 wrapped keys (`enc‖ct`) and RFC 8032 signatures (64 B) —
-        // no 5-byte Tink output prefix — so the wire is Tink-free and iOS-interoperable (v22 wire break;
-        // see PublicKeyBundle + docs/WIRE_COMPAT.md). Changing these re-mints every nodeId.
+        // no 5-byte Tink output prefix — so the wire is Tink-free and iOS-interoperable (the launch-baseline
+        // wire layout; see PublicKeyBundle + docs/WIRE_COMPAT.md). Changing these re-mints every nodeId.
         const val HYBRID_TEMPLATE = "DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW"
         const val SIG_TEMPLATE = "ED25519_RAW"
     }

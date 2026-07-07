@@ -333,7 +333,7 @@ object WireCodec {
             ignoreUnknownKeys = true
             encodeDefaults = false
             // Definite-length CBOR (kotlinx defaults to indefinite-length). The friendlier target for
-            // non-kotlinx codecs (e.g. an iOS SwiftCBOR client); pinned at the v22 wire break. Every field
+            // non-kotlinx codecs (e.g. an iOS SwiftCBOR client); pinned as the launch-baseline wire layout. Every field
             // of the frozen contract is explicit — see docs/WIRE_COMPAT.md.
             useDefiniteLengthEncoding = true
         }

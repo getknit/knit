@@ -410,13 +410,13 @@ before "simplifying":
   **debug** assets (unit tests run against debug) but **not** the `test` source set's own assets; release APKs
   never carry the schema. It uses **`AndroidSQLiteDriver`** (the Robolectric-shadowed engine) — the
   connection-returning API needs a `SQLiteDriver`, and `BundledSQLiteDriver` can't load its Android native
-  `.so` on the host JVM. **DB v22 is the frozen launch baseline:** pre-launch schemas (≤ v21) still wipe via
-  `fallbackToDestructiveMigrationFrom(dropAllTables = true, 1..21)`, but from v22 forward every `@Database`
-  bump MUST add a tested `Migration` to `KnitMigrations` (`data/KnitMigrations.kt`, `ALL` is empty at launch)
-  and a from→to case to `KnitDatabaseMigrationTest` — a missing migration throws at open time (caught here in
-  CI), never silently wipes. Today the harness validates the exported v22 schema; the first real migration
-  (`MIGRATION_22_23`) fills in the commented template. A version bump with **no** schema-column change is
-  still a real bump when it must clear stale rows (v22 did this to drop the de-Tink-re-minted pins/custody).
+  `.so` on the host JVM. **DB v1 is the frozen launch baseline** — there is **no** destructive fallback: from
+  v1 forward every `@Database` bump MUST add a tested `Migration` to `KnitMigrations` (`data/KnitMigrations.kt`,
+  `ALL` is empty at launch) and a from→to case to `KnitDatabaseMigrationTest` — a missing migration throws at
+  open time (caught here in CI), never silently wipes. Today the harness validates the exported v1 schema; the
+  first real migration (`MIGRATION_1_2`) fills in the commented template. (The pre-1.0 alpha builds churned
+  through destructive v2…v22 bumps that rode the wire/crypto breaks; that history is collapsed — see
+  `docs/WIRE_COMPAT.md` for the break record.)
 - After adding a test dep, **regenerate the lockfile** (`:app:dependencies --write-locks`, all configs) — see
   the lockfile gotcha above.
 

@@ -12,7 +12,7 @@ import org.junit.Test
 /**
  * Equality is by [PublicKeyBundle.encoded] — the property TOFU key-change detection relies on: a re-parsed
  * bundle compares equal to itself, and a bundle for a *different* key never does (which is how a swapped-in
- * key for a pinned nodeId is refused). Also pins the v22 raw-key wire layout: raw 32-byte keys and the
+ * key for a pinned nodeId is refused). Also pins the launch-baseline raw-key wire layout: raw 32-byte keys and the
  * `HPKE_PARAMS` that the wrapped-key reconstruction depends on matching the `_RAW` template exactly.
  */
 class PublicKeyBundleTest {

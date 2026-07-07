@@ -5,6 +5,14 @@ Reviewed 2026-07-04, against the shipped two-plane transport (BLE + Wi-Fi Aware 
 largely a **separate codebase**; this review is about what the *protocol and the Android app* should
 look like so that codebase can interoperate, and what on iOS simply cannot be replicated.
 
+> **Status update (production launch).** The "do-now, pre-release" wire/discovery break prescribed in §2.2 /
+> §2.3 / §5 (de-Tink the crypto byte layouts, settle the BLE service UUID, adopt an Apple-conformant NAN
+> service name, definite-length CBOR) **has landed** and is now the **v1 production launch baseline**
+> (`SERVICE_NAME` `_knitmesh1._tcp`, BLE `SERVICE_UUID` `0xFE30`, `Protocol.VERSION` `1`, DB `v1`). The
+> sections below are retained as the design rationale and the cross-platform contract —
+> `mesh/protocol/GoldenVectorTest` pins the frozen v1 wire bytes an iOS/Swift codec must reproduce. The
+> marker/version numbers in the prose below reflect the pre-1.0 alpha state at review time.
+
 **TL;DR verdict:**
 
 - **Bluetooth LE is the cross-platform plane.** CoreBluetooth has everything the link layer needs

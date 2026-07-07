@@ -116,14 +116,14 @@ Implementations:
 
 ### 3.2 Wi-Fi Aware specifics (`mesh/wifiaware/WifiAwareTransport.kt`)
 
-- **Service `SERVICE_NAME = "app.getknit.knit.MESH.v8"`.** Each node `attach()`es once, then both
+- **Service `SERVICE_NAME = "_knitmesh1._tcp"`.** Each node `attach()`es once, then both
   **publishes and subscribes** the service. The device's **node id + version + caps**
   (`Protocol.advertise`) ride in the publish `serviceSpecificInfo`, so a subscriber learns a peer's
   identity on discovery with zero round-trips and rejects discovering itself. `SERVICE_NAME` is the
-  transport marker: any breaking change to the cue or socket format (or the node-id derivation) bumps it
-  — a **hard cut** (old and new builds simply don't discover each other), history `.v2`…`.v6` in
-  `docs/DIGEST_PULL_REATTACH.md`; `.v7` widened the node id to 128 bits (see §10); `.v8` swapped NDP
-  security from the passphrase to a fixed 32-byte PMK (`setPmk`).
+  transport marker: any breaking change to the cue or socket format (or the node-id derivation) bumps the
+  `knitmesh<N>` digit — a **hard cut** (old and new builds simply don't discover each other). *(Pre-1.0
+  alpha churned through the markers `.v2`…`.v8`, recorded in `docs/DIGEST_PULL_REATTACH.md`; that history
+  is collapsed into the v1 launch baseline.)*
 - **One data interface → two planes.** Real chipsets (Pixel 7/8/9) report `maxNdiInterfaces == 1`, and
   each aware *network* needs its own NDI — so a node holds at most one **outbound** (initiator) NDP, and
   cannot mix roles concurrently. (The **accept-any responder** is one network that can officially serve
@@ -436,12 +436,12 @@ Images are **content-addressed** and pulled on demand, so the (large) bytes don'
     never flooded — each hop mints a fresh request id), and never bouncing a blob back to its giver.
 
 On startup, `MeshManager.resumePendingFetches()` re-requests any attachment referenced by a stored
-message whose bytes aren't present yet (`MessageDao.hashesNeedingFetch()`) — and, since DB v19, any
+message whose bytes aren't present yet (`MessageDao.hashesNeedingFetch()`) — and any
 attachment referenced by a **carried store-and-forward frame** whose bytes are missing
 (`ForwardStore.attachmentHashesNeedingFetch()`, gated by the carrier budget below), so a carrier keeps
 retrying the image it is custodying for a late joiner.
 
-**Blob custody (DB v19).** Store-and-forward carries the *frame* but historically not the image bytes,
+**Blob custody.** Store-and-forward carries the *frame* but historically not the image bytes,
 so a custodied message re-served to a late joiner — after the sender and every recipient who pulled it
 have left — referenced an image no reachable node held (a permanent "Loading photo" spinner; for E2E
 DMs/groups the carrier couldn't even see the sealed hash). Now a node that *carries* a chat frame also
@@ -472,11 +472,10 @@ that budget is a purely local knob that can differ per node without breaking cue
 ## 9. Data layer (`data/`)
 
 - **Room** (`KnitDatabase`, `knit.db`) — **encrypted at rest with SQLCipher**: the passphrase is a
-  random key wrapped under a hardware AndroidKeyStore key by `data/crypto/DatabaseKey`. **DB v22 is the
-  frozen launch baseline.** Pre-launch schemas (≤ v21) get one final destructive wipe on upgrade
-  (`fallbackToDestructiveMigrationFrom(dropAllTables = true, 1..21)`); from v22 forward every schema bump
-  ships a tested `Migration` in `KnitMigrations` (validated by `KnitDatabaseMigrationTest`) — a missing one
-  makes Room throw at open time (caught in CI) instead of silently wiping a user's messages/custody/pins.
+  random key wrapped under a hardware AndroidKeyStore key by `data/crypto/DatabaseKey`. **DB v1 is the
+  frozen launch baseline**, with **no** destructive fallback: from v1 forward every schema bump ships a
+  tested `Migration` in `KnitMigrations` (validated by `KnitDatabaseMigrationTest`) — a missing one makes
+  Room throw at open time (caught in CI) instead of silently wiping a user's messages/custody/pins.
   The schema JSON is exported to `app/schemas/` and checked in per version. Seven tables:
   - `messages`: `id` (PK, wire id), `senderId`, `recipientId?`, `conversationId` (default `NEARBY`,
     indexed), `body` (the **decrypted plaintext**, held only inside the encrypted DB), `sentAt`,
@@ -524,10 +523,10 @@ that budget is a purely local knob that can differ per node without breaking cue
   platform device id. Because the id is derived from the keypair, a peer can only claim an id it holds
   the private key for (forging a colliding bundle is a 128-bit second-preimage), which is what makes the
   TOFU key pin race-proof and the ~41-bit predecessor did not — this was widened as a coordinated wire
-  break (`SERVICE_NAME` `.v7` / BLE `SERVICE_UUID` `0xFE31` / DB v21). base32 keeps the id
+  break during pre-1.0 alpha (folded into the v1 launch baseline). base32 keeps the id
   filesystem/delimiter-safe so it stays disjoint from the `g-…` group-id namespace and rides avatar
   filenames / the verify payload. The device's long-term **E2E keypair** lives in
-  `data/crypto/IdentityKeyStore` **outside** the destructively-migrated DB (so the id is stable for the
+  `data/crypto/IdentityKeyStore` **outside** the DB (so the id is stable for the
   life of that keypair; an app-data wipe that drops `identity.key` mints a new identity); its public
   bundle is exposed via `Identity.publicKeyBundle()` and advertised in `ProfileContent.pubKey` (§14).
 - **`Alias`** maps any node id to a deterministic PascalCase "AdjectiveNoun" (e.g. `EnlightenedZebra`)
@@ -758,10 +757,10 @@ before bumping anything that could pull in a newer Kotlin stdlib.
 - Receipts/relays add some flood overhead (reduced by overhear suppression); no per-recipient delivery
   state beyond the single ✓, and DMs have **no routing table** (they flood; store-and-forward carries
   undelivered ones).
-- Room migrations are **tested and non-destructive from v22 on** (the frozen launch baseline); only
-  pre-launch schemas (≤ v21) still wipe. The identity key lives outside the DB (so even the pre-launch
-  wipes never lose it), and the v22 destructive bump was the last one — it cleared the stale pins/custody
-  left by the de-Tink identity re-mint.
+- Room migrations are **tested and non-destructive** from the v1 launch baseline on (there is no
+  destructive fallback). The identity key lives outside the DB, so it survives regardless. *(Pre-1.0 alpha
+  builds churned through destructive v2…v22 bumps that rode the wire/crypto breaks; that history is
+  collapsed — see `docs/WIRE_COMPAT.md`.)*
 - **Deferred by design:** true (targeted) DM routing, forward secrecy / a ratchet, encrypting
   reactions/receipts/the broadcast room, a group key-gap retransmit, and a BLE connect-time gate on A2DP
   audio contention (see *Out of scope* in `AGENTS.md`).

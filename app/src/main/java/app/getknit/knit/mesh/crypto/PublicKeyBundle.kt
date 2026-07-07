@@ -28,7 +28,7 @@ import kotlinx.serialization.encodeToByteArray
  * so a non-Tink implementation (e.g. an iOS CryptoKit client) can interoperate. Android keeps Tink
  * internally: the raw bytes are extracted from / re-imported into Tink `KeysetHandle`s with the
  * `NO_PREFIX` (RAW) variant, so signatures verify as bare 64-byte Ed25519 and wrapped keys as bare
- * `enc‖ct`. See docs/WIRE_COMPAT.md (v22 coordinated break) and docs/IOS_PORT_REVIEW.md §2.2.
+ * `enc‖ct`. See docs/WIRE_COMPAT.md (the launch-baseline wire layout) and docs/IOS_PORT_REVIEW.md §2.2.
  *
  * Equality is by [encoded] so two bundles parsed from the same string compare equal (used for
  * trust-on-first-use key-change detection).

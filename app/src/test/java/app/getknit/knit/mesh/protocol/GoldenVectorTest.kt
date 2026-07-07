@@ -14,13 +14,13 @@ import org.junit.Assert.assertNotNull
 import org.junit.Test
 
 /**
- * Golden vectors for the frozen v22 wire (definite-length CBOR, raw-key bundle). Pins the exact bytes of a
+ * Golden vectors for the frozen v1 wire (definite-length CBOR, raw-key bundle). Pins the exact bytes of a
  * fixed instance of every wire type so an accidental format change — a re-typed field, a codec-config flip
  * (e.g. losing `useDefiniteLengthEncoding`), a field reorder — fails loudly, and so a future iOS/Swift codec
  * has byte-exact fixtures to validate against. See docs/WIRE_COMPAT.md and docs/IOS_PORT_REVIEW.md §2.3.
  *
  * The map headers are definite-length (`a5` = map(5), not the indefinite `bf…ff`), which is what pins the
- * v22 `useDefiniteLengthEncoding = true` flip. To regenerate after an *intended* wire break, temporarily
+ * v1 `useDefiniteLengthEncoding = true` flip. To regenerate after an *intended* wire break, temporarily
  * print `vectors()` + the bundle probe and paste the new hex here.
  *
  * Keyed crypto known-answer vectors (a fixed-key signature / HPKE seal) need RFC 8032 / RFC 9180 test
@@ -70,7 +70,7 @@ class GoldenVectorTest {
                         avatarHash = "av1",
                         pubKey = "pk1",
                         deviceTag = "dt1",
-                        protoVersion = 3,
+                        protoVersion = 1,
                         capabilities = 15L,
                     ),
                 ),
@@ -151,7 +151,7 @@ class GoldenVectorTest {
                     "686d656e7448617368666162633132336e6174746163686d656e744d696d656a696d6167652f77656270",
                 "profileContent" to
                     "a7646e616d6563416e6e667374617475736668696b696e676a6176617461724861736863617631667075624b657963706b3169646576" +
-                    "696365546167636474316c70726f746f56657273696f6e036c6361706162696c69746965730f",
+                    "696365546167636474316c70726f746f56657273696f6e016c6361706162696c69746965730f",
                 "groupInfo" to
                     "a662696463672d31646e616d65645465616d676d656d6265727382616161626963726561746564427961616970686f746f4861736863" +
                     "7068316e70686f746f557064617465644174182a",
