@@ -18,4 +18,5 @@ design notes are in `docs/ARCHITECTURE.md`.
   `CompositeMeshTransport`, not Google Nearby/GMS. Keep `android.net.wifi.aware.*` (and the NAN
   data-path `ConnectivityManager`/`NetworkRequest`) imports inside `mesh/wifiaware/`, and
   `android.bluetooth.*` inside `mesh/bluetooth/`; everything else talks to the `MeshTransport`
-  interface. minSdk is 33.
+  interface. minSdk is 29 (both radios' data paths are API 29; Wi-Fi Aware ICM + `NEARBY_WIFI_DEVICES`
+  ride 33+, with an `ACCESS_FINE_LOCATION` fallback on 29–32 — see `AGENTS.md`).
