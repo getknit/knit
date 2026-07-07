@@ -474,7 +474,7 @@ class WifiAwareTransport(
         val initiable = wanted.filter { it in disc && (backoff[it]?.let { t -> now >= t } ?: true) }
         val inbound = peers.values.count { !it.isInitiator }
         val acc = synchronized(lock) { accepting }
-        Log.i(
+        Log.d(
             TAG,
             "state ver=$v live=${peers.keys} inbound=$inbound acc=$acc cap=$serveCap pin=$responderPinsNdi " +
                 "disc=$disc cue=$cues wanted=$wanted initiable=$initiable " +
