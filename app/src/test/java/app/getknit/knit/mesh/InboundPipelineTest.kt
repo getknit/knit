@@ -9,6 +9,9 @@ import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.group.GroupEntity
+import app.getknit.knit.data.group.GroupMembersStore
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.settings.InboundSettings
@@ -18,16 +21,26 @@ import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
+import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.ChatContent
+import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.GroupInfo
+import app.getknit.knit.mesh.protocol.GroupLeaveContent
+import app.getknit.knit.mesh.protocol.KeyReqContent
+import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileContent
+import app.getknit.knit.mesh.protocol.ReactionContent
+import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
+import app.getknit.knit.mesh.protocol.TypingContent
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.notifications.Notifier
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,6 +53,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -55,6 +69,7 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * Runs under Robolectric so `android.util.Log` (used throughout the pipeline) is shadowed on the JVM.
  */
+@Suppress("LargeClass", "TooManyFunctions") // cohesive single-SUT suite over one shared Rig; splitting would scatter it
 @RunWith(RobolectricTestRunner::class)
 class InboundPipelineTest {
     /** A device identity: its cipher (private keys), its public bundle, and the nodeId it derives to. */
@@ -145,6 +160,7 @@ class InboundPipelineTest {
         val forwardStore = FakeForwardStore()
         val peerMap = ConcurrentHashMap<String, PeerEntity>()
         val msgMap = ConcurrentHashMap<String, MessageEntity>()
+        val groupMap = ConcurrentHashMap<String, GroupEntity>()
         val peers = mockk<PeerRepository>(relaxed = true)
         val messages = mockk<MessageRepository>(relaxed = true)
         val groups = mockk<GroupRepository>(relaxed = true)
@@ -178,6 +194,12 @@ class InboundPipelineTest {
             coEvery { messages.exists(any()) } answers { msgMap.containsKey(firstArg<String>()) }
             coEvery { messages.save(any()) } answers { msgMap[firstArg<MessageEntity>().id] = firstArg() }
             coEvery { messages.recipientOf(any()) } answers { msgMap[firstArg<String>()]?.recipientId }
+            coEvery { groups.find(any()) } answers { groupMap[firstArg()] }
+            coEvery { groups.upsert(any()) } answers { groupMap[firstArg<GroupEntity>().groupId] = firstArg() }
+            // Realistic "nothing held" defaults: relaxed mockk otherwise returns "" for a String? and a bare
+            // Object (not a byte[]) for a ByteArray?, which would crash the attachment-screen path in onObtained.
+            coEvery { messages.attachmentKeyForHash(any()) } returns null
+            coEvery { blobs.bytes(any()) } returns null
             pipeline =
                 InboundPipeline(
                     transport = transport,
@@ -209,6 +231,12 @@ class InboundPipelineTest {
         fun pin(p: Party) {
             peerMap[p.nodeId] = PeerEntity(nodeId = p.nodeId, pubKey = p.bundle.encoded, updatedAt = 1L)
         }
+
+        /** Signs [env] with [author]'s key and drives it through the pipeline (the common onDeliver call). */
+        suspend fun deliver(
+            author: Party,
+            env: RelayEnvelope,
+        ) = pipeline.onDeliver(author.sign(env), env, author.nodeId)
 
         fun drops(reason: DropReason): Long = metrics.snapshot().dropsByReason[reason] ?: 0L
 
@@ -245,14 +273,198 @@ class InboundPipelineTest {
             )
         }
 
-        fun profile(author: Party): RelayEnvelope =
+        fun profile(
+            author: Party,
+            avatarHash: String? = null,
+            sentAt: Long = 6L,
+        ): RelayEnvelope =
             RelayEnvelope(
                 type = FrameType.PROFILE,
-                id = "profile-${author.nodeId}",
+                id = "profile-${author.nodeId}-$sentAt",
                 senderId = author.nodeId,
-                sentAt = 6L,
-                payload = WireCodec.encodePayload(ProfileContent(name = "Peer", status = "", pubKey = author.bundle.encoded)),
+                sentAt = sentAt,
+                payload =
+                    WireCodec.encodePayload(
+                        ProfileContent(name = "Peer", status = "", pubKey = author.bundle.encoded, avatarHash = avatarHash),
+                    ),
             )
+
+        /** A plaintext broadcast chat that @-mentions [mentionOf]. */
+        fun mentionChat(
+            author: Party,
+            id: String,
+            body: String,
+            mentionOf: Party,
+        ): RelayEnvelope =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = author.nodeId,
+                sentAt = 5L,
+                payload =
+                    WireCodec.encodePayload(
+                        ChatContent(body = body, mentions = listOf(Mention(nodeId = mentionOf.nodeId, name = "Me"))),
+                    ),
+            )
+
+        /** A plaintext group chat carrying [group]'s roster (delivered when we're a member). */
+        fun groupChat(
+            author: Party,
+            group: GroupInfo,
+            id: String,
+            body: String,
+        ): RelayEnvelope =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = author.nodeId,
+                sentAt = 5L,
+                group = group,
+                payload = WireCodec.encodePayload(ChatContent(body = body)),
+            )
+
+        /** A plaintext broadcast chat that references an out-of-band attachment blob [attachmentHash]. */
+        fun attachmentChat(
+            author: Party,
+            id: String,
+            attachmentHash: String,
+        ): RelayEnvelope =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = author.nodeId,
+                sentAt = 5L,
+                payload = WireCodec.encodePayload(ChatContent(body = "", attachmentHash = attachmentHash)),
+            )
+
+        /** A DM whose encrypted envelope claims crypto-scheme version [v] (for the decrypt version gate). */
+        fun dmWithEnvVersion(
+            author: Party,
+            to: Party,
+            id: String,
+            v: Int,
+        ): RelayEnvelope =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = author.nodeId,
+                sentAt = 5L,
+                recipientId = to.nodeId,
+                payload =
+                    WireCodec.encodePayload(
+                        ChatContent(enc = EncEnvelope(v = v, nonce = ByteArray(12), ct = ByteArray(0), keys = emptyList())),
+                    ),
+            )
+
+        fun reaction(
+            author: Party,
+            messageId: String,
+            emoji: String?,
+            sentAt: Long = 7L,
+        ): RelayEnvelope =
+            RelayEnvelope(
+                type = FrameType.REACTION,
+                id = "react-$messageId-${author.nodeId}",
+                senderId = author.nodeId,
+                sentAt = sentAt,
+                payload = WireCodec.encodePayload(ReactionContent(messageId = messageId, emoji = emoji)),
+            )
+
+        fun receipt(
+            author: Party,
+            ackId: String,
+        ): RelayEnvelope =
+            RelayEnvelope(
+                type = FrameType.RECEIPT,
+                id = "receipt-$ackId-${author.nodeId}",
+                senderId = author.nodeId,
+                sentAt = 7L,
+                payload = WireCodec.encodePayload(ReceiptContent(ackId = ackId)),
+            )
+
+        fun groupLeave(
+            author: Party,
+            groupId: String,
+        ): RelayEnvelope =
+            RelayEnvelope(
+                type = FrameType.GROUP_LEAVE,
+                id = "leave-$groupId-${author.nodeId}",
+                senderId = author.nodeId,
+                sentAt = 7L,
+                payload = WireCodec.encodePayload(GroupLeaveContent(groupId = groupId)),
+            )
+
+        fun groupUpdate(
+            author: Party,
+            group: GroupInfo,
+            sentAt: Long = 7L,
+        ): RelayEnvelope =
+            RelayEnvelope(
+                type = FrameType.GROUP_UPDATE,
+                id = "gupd-${group.id}-$sentAt",
+                senderId = author.nodeId,
+                sentAt = sentAt,
+                group = group,
+                payload = ByteArray(0),
+            )
+
+        fun typing(
+            author: Party,
+            groupId: String? = null,
+            recipientId: String? = null,
+        ): RelayEnvelope =
+            RelayEnvelope(
+                type = FrameType.TYPING,
+                id = "typing-${author.nodeId}",
+                senderId = author.nodeId,
+                sentAt = 7L,
+                recipientId = recipientId,
+                payload = WireCodec.encodePayload(TypingContent(groupId = groupId)),
+            )
+
+        fun keyReq(
+            author: Party,
+            wanted: List<String>,
+        ): RelayEnvelope =
+            RelayEnvelope(
+                type = FrameType.KEY_REQ,
+                id = "keyreq-${author.nodeId}",
+                senderId = author.nodeId,
+                sentAt = 7L,
+                payload = WireCodec.encodePayload(KeyReqContent(nodeIds = wanted)),
+            )
+
+        /** A blob request is unsigned by design; build the wire directly with an empty signature. */
+        fun blobReqWire(
+            fromNodeId: String,
+            hash: String,
+        ): Pair<WireEnvelope, RelayEnvelope> {
+            val env =
+                RelayEnvelope(
+                    type = FrameType.BLOB_REQ,
+                    id = "blobreq-$hash",
+                    senderId = fromNodeId,
+                    sentAt = 7L,
+                    payload = WireCodec.encodePayload(BlobReqContent(hash = hash)),
+                )
+            return WireEnvelope(relay = false, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env)) to env
+        }
+
+        fun group(
+            id: String,
+            members: List<String>,
+            createdBy: String,
+            name: String? = null,
+            photoHash: String? = null,
+            photoUpdatedAt: Long? = null,
+        ) = GroupInfo(
+            id = id,
+            name = name,
+            members = members,
+            createdBy = createdBy,
+            photoHash = photoHash,
+            photoUpdatedAt = photoUpdatedAt,
+        )
     }
 
     @Test
@@ -421,6 +633,664 @@ class InboundPipelineTest {
             assertTrue("verified must survive a same-key update", rig.peerMap[alice.nodeId]?.verified == true)
             assertEquals("name should update", "Peer", rig.peerMap[alice.nodeId]?.name)
             assertEquals(alice.bundle.encoded, rig.peerMap[alice.nodeId]?.pubKey)
+        }
+
+    // --- Tier 1: metadata handlers + dispatchByType arms ---
+
+    @Test
+    fun reactionFromAnAllowedSenderIsApplied() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val env = rig.reaction(alice, messageId = "m1", emoji = "👍")
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            coVerify {
+                rig.reactions.apply(
+                    match {
+                        it.messageId == "m1" && it.reactorNodeId == alice.nodeId && it.emoji == "👍" && it.updatedAt == 7L
+                    },
+                )
+            }
+        }
+
+    @Test
+    fun reactionFromABlockedSenderIsDropped() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.blocked.value = setOf(alice.nodeId)
+            val env = rig.reaction(alice, messageId = "m1", emoji = "👍")
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            coVerify(exactly = 0) { rig.reactions.apply(any()) }
+        }
+
+    @Test
+    fun receiptFromTheDmRecipientMarksTheMessageReceived() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            // The acked DM's recipient is alice — she's allowed to ack it.
+            rig.msgMap["m1"] = MessageEntity(id = "m1", senderId = rig.self.nodeId, recipientId = alice.nodeId, body = "", sentAt = 1L)
+            val env = rig.receipt(alice, ackId = "m1")
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            coVerify { rig.messages.markReceived("m1") }
+        }
+
+    @Test
+    fun forgedReceiptFromANonRecipientDoesNotMarkReceived() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            // The acked DM is addressed to bob, not alice — alice can't spoof its delivery tick.
+            rig.msgMap["m2"] = MessageEntity(id = "m2", senderId = rig.self.nodeId, recipientId = "bob", body = "", sentAt = 1L)
+            val env = rig.receipt(alice, ackId = "m2")
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            coVerify(exactly = 0) { rig.messages.markReceived("m2") }
+        }
+
+    @Test
+    fun typingCueForADmScopesToTheSenderThread() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val env = rig.typing(alice, recipientId = rig.self.nodeId)
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            assertTrue(
+                rig.typingTracker.typing.value[alice.nodeId]
+                    ?.contains(alice.nodeId) == true,
+            )
+        }
+
+    @Test
+    fun typingCueForTheBroadcastRoomScopesToNearby() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val env = rig.typing(alice)
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            assertTrue(
+                rig.typingTracker.typing.value[Conversations.NEARBY]
+                    ?.contains(alice.nodeId) == true,
+            )
+        }
+
+    @Test
+    fun typingCueForAnUnknownGroupIsIgnored() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val env = rig.typing(alice, groupId = "g-unknown")
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            assertTrue(
+                "no typing recorded for a group we don't know",
+                rig.typingTracker.typing.value
+                    .isEmpty(),
+            )
+        }
+
+    @Test
+    fun ourOwnTypingCueLoopingBackIsIgnored() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val env = rig.typing(rig.self)
+
+            rig.pipeline.onDeliver(rig.self.sign(env), env, rig.self.nodeId)
+
+            assertTrue(
+                rig.typingTracker.typing.value
+                    .isEmpty(),
+            )
+        }
+
+    @Test
+    fun anUnknownFrameTypeIsNeitherDeliveredNorThrows() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val env =
+                RelayEnvelope(type = "mystery", id = "u1", senderId = alice.nodeId, sentAt = 7L, payload = ByteArray(0))
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId) // must not throw
+
+            assertTrue(rig.msgMap.isEmpty())
+        }
+
+    @Test
+    fun aBlobRequestIsDispatchedToBlobExchange() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val requester = party()
+            val (wire, env) = rig.blobReqWire(requester.nodeId, hash = "bhash")
+
+            rig.pipeline.onDeliver(wire, env, requester.nodeId)
+
+            // onRequest consults the store to decide whether to serve — proves the arm ran (blobreq is unsigned).
+            coVerify { rig.blobStore.fileFor("bhash") }
+        }
+
+    @Test
+    fun aKeyRequestIsDispatchedToKeyExchange() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            // A neighbor must exist for the recursive key request to actually go out (and bump the metric).
+            rig.transport.connect(FakeLoopTransport("neighbor-node"))
+            val env = rig.keyReq(alice, wanted = listOf("wanted-node"))
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            // For an unheld key, onRequest records the wanter and fires an outbound key request to neighbors.
+            assertTrue(rig.metrics.snapshot().keyRequestsSent >= 1)
+        }
+
+    // --- Tier 2: group path (reconcileGroup runs inside the rig's real in-memory Room transaction) ---
+
+    private fun Rig.seedGroup(
+        id: String,
+        members: List<String>,
+        createdBy: String,
+        name: String = "",
+        nameUpdatedAt: Long = 0L,
+        left: Boolean = false,
+    ) {
+        groupMap[id] =
+            GroupEntity(
+                groupId = id,
+                name = name,
+                members = GroupMembersStore.encode(members),
+                createdBy = createdBy,
+                createdAt = 1L,
+                nameUpdatedAt = nameUpdatedAt,
+                left = left,
+            )
+    }
+
+    @Test
+    fun groupLeaveFromAMemberRecordsTheDeparture() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val env = rig.groupLeave(alice, groupId = "g-1")
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            coVerify { rig.groups.recordDeparture("g-1", alice.nodeId, 7L) }
+        }
+
+    @Test
+    fun groupLeaveFromABlockedSenderIsIgnored() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.blocked.value = setOf(alice.nodeId)
+            val env = rig.groupLeave(alice, groupId = "g-1")
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            coVerify(exactly = 0) { rig.groups.recordDeparture(any(), any(), any()) }
+        }
+
+    @Test
+    fun aNewGroupUpdateCreatesTheGroupFromItsRoster() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val group = rig.group("g-2", members = listOf(rig.self.nodeId, alice.nodeId), createdBy = alice.nodeId, name = "Trip")
+
+            rig.deliver(alice, rig.groupUpdate(alice, group, sentAt = 7L))
+
+            val stored = rig.groupMap["g-2"]
+            assertNotNull(stored)
+            assertEquals("Trip", stored?.name)
+            assertEquals(7L, stored?.nameUpdatedAt)
+            assertEquals(alice.nodeId, stored?.createdBy)
+            assertEquals(listOf(rig.self.nodeId, alice.nodeId), GroupMembersStore.decode(stored!!.members))
+        }
+
+    @Test
+    fun aGroupNameIsLastWriterWinsOnSentAt() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.seedGroup(
+                "g-3",
+                members = listOf(rig.self.nodeId, alice.nodeId),
+                createdBy = alice.nodeId,
+                name = "Old",
+                nameUpdatedAt = 10L,
+            )
+            val members = listOf(rig.self.nodeId, alice.nodeId)
+
+            // An older rename (sentAt 5 < clock 10) must not win.
+            val stale = rig.group("g-3", members = members, createdBy = alice.nodeId, name = "Stale")
+            rig.deliver(alice, rig.groupUpdate(alice, stale, sentAt = 5L))
+            assertEquals("Old", rig.groupMap["g-3"]?.name)
+
+            // A newer rename (sentAt 20 >= 10) wins.
+            val newer = rig.group("g-3", members = members, createdBy = alice.nodeId, name = "Newer")
+            rig.deliver(alice, rig.groupUpdate(alice, newer, sentAt = 20L))
+            assertEquals("Newer", rig.groupMap["g-3"]?.name)
+            assertEquals(20L, rig.groupMap["g-3"]?.nameUpdatedAt)
+        }
+
+    @Test
+    fun aGroupFrameFromANonMemberIsRefused() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            // Roster does not include us → refused, nothing stored.
+            val group = rig.group("g-4", members = listOf(alice.nodeId), createdBy = alice.nodeId, name = "Secret")
+
+            rig.deliver(alice, rig.groupUpdate(alice, group))
+
+            assertNull(rig.groupMap["g-4"])
+        }
+
+    @Test
+    fun aFrameForALeftGroupDoesNotResurrectIt() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.seedGroup("g-5", members = listOf(rig.self.nodeId, alice.nodeId), createdBy = alice.nodeId, name = "Gone", left = true)
+            val group = rig.group("g-5", members = listOf(rig.self.nodeId, alice.nodeId), createdBy = alice.nodeId, name = "Back")
+
+            rig.deliver(alice, rig.groupUpdate(alice, group, sentAt = 9L))
+
+            assertTrue("a left group stays left", rig.groupMap["g-5"]?.left == true)
+            assertEquals("Gone", rig.groupMap["g-5"]?.name)
+        }
+
+    @Test
+    fun aNewGroupWhoseCreatorIsBlockedIsRefused() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.blocked.value = setOf("evil")
+            // A non-blocked member (alice) relays the first frame for a group created by a blocked node.
+            val group = rig.group("g-6", members = listOf(rig.self.nodeId, "evil"), createdBy = "evil")
+
+            rig.deliver(alice, rig.groupUpdate(alice, group))
+
+            assertNull(rig.groupMap["g-6"])
+        }
+
+    @Test
+    fun aGroupPhotoWithLocalBytesIsAdoptedImmediately() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            coEvery { rig.blobStore.has("photoA") } returns true
+            val group =
+                rig.group(
+                    "g-7",
+                    members = listOf(rig.self.nodeId, alice.nodeId),
+                    createdBy = alice.nodeId,
+                    photoHash = "photoA",
+                    photoUpdatedAt = 100L,
+                )
+
+            rig.deliver(alice, rig.groupUpdate(alice, group))
+
+            assertEquals("photoA", rig.groupMap["g-7"]?.photoHash)
+            assertEquals(100L, rig.groupMap["g-7"]?.photoUpdatedAt)
+        }
+
+    @Test
+    fun aGroupPhotoWithoutLocalBytesIsPulledThenAdoptedOnArrival() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            // blobStore.has("photoB") defaults false → keep the old (null) photo but arm a pull.
+            val group =
+                rig.group(
+                    "g-8",
+                    members = listOf(rig.self.nodeId, alice.nodeId),
+                    createdBy = alice.nodeId,
+                    photoHash = "photoB",
+                    photoUpdatedAt = 100L,
+                )
+
+            rig.deliver(alice, rig.groupUpdate(alice, group))
+            assertNull("photo not shown until its bytes arrive", rig.groupMap["g-8"]?.photoHash)
+            assertEquals(100L, rig.groupMap["g-8"]?.photoUpdatedAt)
+
+            // The pulled blob lands → adopt it onto the group now that the clock still matches.
+            rig.pipeline.onObtained("photoB")
+            assertEquals("photoB", rig.groupMap["g-8"]?.photoHash)
+        }
+
+    @Test
+    fun anExplicitGroupPhotoIsNotAdopted() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            coEvery { rig.blobs.isImageFlagged("photoC") } returns true
+            val group =
+                rig.group(
+                    "g-9",
+                    members = listOf(rig.self.nodeId, alice.nodeId),
+                    createdBy = alice.nodeId,
+                    photoHash = "photoC",
+                    photoUpdatedAt = 100L,
+                )
+
+            rig.deliver(alice, rig.groupUpdate(alice, group))
+            rig.pipeline.onObtained("photoC")
+
+            assertNull("an explicit photo is dropped, not adopted", rig.groupMap["g-9"]?.photoHash)
+            coVerify { rig.blobs.deleteIfUnreferenced("photoC") }
+        }
+
+    // --- Tier 3: custody gate, notifications, avatar path, attachment screening, decrypt version ---
+
+    @Test
+    fun canCarryRefusesABlockedSender() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.blocked.value = setOf(alice.nodeId)
+            val env = rig.broadcastChat(alice, id = "c1", body = "hi")
+
+            assertFalse(rig.pipeline.canCarry(alice.sign(env), env))
+        }
+
+    @Test
+    fun canCarryRefusesADmWithNoEncryptedPayload() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            // A DM (recipientId set) whose ChatContent carries no enc envelope must not be custodied in the clear.
+            val env =
+                RelayEnvelope(
+                    type = FrameType.CHAT,
+                    id = "c2",
+                    senderId = alice.nodeId,
+                    sentAt = 5L,
+                    recipientId = "bob",
+                    payload = WireCodec.encodePayload(ChatContent(body = "plaintext dm")),
+                )
+
+            assertFalse(rig.pipeline.canCarry(alice.sign(env), env))
+        }
+
+    @Test
+    fun canCarryRefusesAnUnauthenticatableFrame() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party() // deliberately NOT pinned → no key to verify with
+            val env = rig.broadcastChat(alice, id = "c3", body = "hi")
+
+            assertFalse(rig.pipeline.canCarry(alice.sign(env), env))
+            assertEquals(1L, rig.drops(DropReason.CARRY_REFUSED))
+        }
+
+    @Test
+    fun canCarryAcceptsAValidBroadcastFrame() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val env = rig.broadcastChat(alice, id = "c4", body = "hi")
+
+            assertTrue(rig.pipeline.canCarry(alice.sign(env), env))
+        }
+
+    @Test
+    fun onCarriedFrameWantsAnAbsentAttachmentBlob() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val env = rig.attachmentChat(alice, id = "a1", attachmentHash = "att1")
+
+            rig.pipeline.onCarriedFrame(env)
+
+            // Passed the have-it gate (has=false) and the budget gate (bytes=0) → pulled.
+            coVerify { rig.blobStore.has("att1") }
+            coVerify { rig.blobs.carrierOnlyBlobBytes() }
+        }
+
+    @Test
+    fun onCarriedFrameSkipsABlobWeAlreadyHold() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            coEvery { rig.blobStore.has("att2") } returns true
+            val env = rig.attachmentChat(alice, id = "a2", attachmentHash = "att2")
+
+            rig.pipeline.onCarriedFrame(env)
+
+            // Short-circuited at has()==true, so the budget was never consulted.
+            coVerify(exactly = 0) { rig.blobs.carrierOnlyBlobBytes() }
+        }
+
+    @Test
+    fun onCarriedFrameSkipsAChatWithNoAttachment() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val env = rig.broadcastChat(alice, id = "a3", body = "text only")
+
+            rig.pipeline.onCarriedFrame(env)
+
+            coVerify(exactly = 0) { rig.blobStore.has(any()) }
+        }
+
+    @Test
+    fun onCarriedFrameSkipsWhenOverTheCarrierBudget() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            coEvery { rig.blobs.carrierOnlyBlobBytes() } returns Long.MAX_VALUE
+            val env = rig.attachmentChat(alice, id = "a4", attachmentHash = "att4")
+
+            rig.pipeline.onCarriedFrame(env)
+
+            // Reached the budget gate (proving has()==false was passed) and bailed there.
+            coVerify { rig.blobs.carrierOnlyBlobBytes() }
+        }
+
+    @Test
+    fun aBroadcastChatNotifiesOnTheNearbyChannel() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+
+            rig.deliver(alice, rig.broadcastChat(alice, id = "b1", body = "hello room"))
+
+            assertEquals("hello room", rig.msgMap["b1"]?.body)
+            coVerify { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aMessageThatMentionsUsNotifiesOnTheMentionsChannel() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+
+            rig.deliver(alice, rig.mentionChat(alice, id = "b2", body = "hey @me", mentionOf = rig.self))
+
+            coVerify { rig.notifier.notifyMention(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aGroupMessageIsDeliveredAndNotifiedViaItsGroupConversation() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val group = rig.group("g-11", members = listOf(rig.self.nodeId, alice.nodeId), createdBy = alice.nodeId, name = "Crew")
+
+            rig.deliver(alice, rig.groupChat(alice, group, id = "gm1", body = "team hi"))
+
+            assertEquals("team hi", rig.msgMap["gm1"]?.body)
+            coVerify { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aRelayedPeerAvatarIsPulledThenAdoptedOnArrival() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            // A profile self-certifies its key, so no pin needed. blobStore.has("av1") is false → pull, don't adopt yet.
+            rig.deliver(alice, rig.profile(alice, avatarHash = "av1"))
+            assertNull("avatar not shown until its bytes arrive", rig.peerMap[alice.nodeId]?.avatarHash)
+
+            rig.pipeline.onObtained("av1")
+
+            assertEquals("av1", rig.peerMap[alice.nodeId]?.avatarHash)
+        }
+
+    @Test
+    fun anExplicitRelayedAvatarIsNotAdopted() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            coEvery { rig.blobs.isImageFlagged("av2") } returns true
+
+            rig.deliver(alice, rig.profile(alice, avatarHash = "av2"))
+            rig.pipeline.onObtained("av2")
+
+            assertNull(rig.peerMap[alice.nodeId]?.avatarHash)
+            coVerify { rig.blobs.deleteIfUnreferenced("av2") }
+        }
+
+    @Test
+    fun clearingAnAvatarReclaimsTheOldBlob() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            // Already pinned with an avatar; a newer profile with no avatar clears it and reclaims the blob.
+            rig.peerMap[alice.nodeId] =
+                PeerEntity(nodeId = alice.nodeId, pubKey = alice.bundle.encoded, avatarHash = "old", updatedAt = 1L)
+
+            rig.deliver(alice, rig.profile(alice, avatarHash = null, sentAt = 6L))
+
+            assertNull(rig.peerMap[alice.nodeId]?.avatarHash)
+            coVerify { rig.blobs.deleteIfUnreferenced("old") }
+        }
+
+    @Test
+    fun onAvatarReceivedAdoptsAValidPushedAvatar() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bytes = byteArrayOf(1, 2, 3, 4, 5)
+            val hash = sha256Hex(bytes)
+            val file = File.createTempFile("avatar", ".bin").apply { writeBytes(bytes) }
+
+            rig.pipeline.onAvatarReceived(alice.nodeId, hash, "image/jpeg", file.absolutePath)
+
+            assertEquals(hash, rig.peerMap[alice.nodeId]?.avatarHash)
+            coVerify { rig.blobs.insert(hash, "image/jpeg", any()) }
+            assertFalse("the staging file is deleted after ingest", file.exists())
+        }
+
+    @Test
+    fun onAvatarReceivedRejectsBytesThatDoNotMatchTheClaimedHash() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bytes = byteArrayOf(9, 9, 9)
+            val wrongHash = "0".repeat(64) // valid format, but not sha256(bytes)
+            val file = File.createTempFile("avatar", ".bin").apply { writeBytes(bytes) }
+
+            rig.pipeline.onAvatarReceived(alice.nodeId, wrongHash, "image/jpeg", file.absolutePath)
+
+            assertNull(rig.peerMap[alice.nodeId])
+            coVerify(exactly = 0) { rig.blobs.insert(any(), any(), any()) }
+            assertFalse("a spoofed avatar's staging file is deleted", file.exists())
+        }
+
+    @Test
+    fun onAvatarReceivedDropsAnExplicitPushedAvatar() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bytes = byteArrayOf(7, 7, 7, 7)
+            val hash = sha256Hex(bytes)
+            coEvery { rig.blobs.isImageFlagged(hash) } returns true
+            val file = File.createTempFile("avatar", ".bin").apply { writeBytes(bytes) }
+
+            rig.pipeline.onAvatarReceived(alice.nodeId, hash, "image/jpeg", file.absolutePath)
+
+            assertNull("an explicit avatar is not adopted onto the peer", rig.peerMap[alice.nodeId]?.avatarHash)
+            coVerify { rig.blobs.deleteIfUnreferenced(hash) }
+        }
+
+    @Test
+    fun screenObtainedAttachmentIsANoOpWithoutAKey() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            // No attachment key held (the harness default) → screening is skipped, no bitmap decode.
+            rig.pipeline.onObtained("somehash")
+
+            coVerify { rig.messages.attachmentKeyForHash("somehash") }
+            coVerify(exactly = 0) { rig.blobs.screenImage(any(), any()) }
+        }
+
+    @Test
+    fun screenEncryptedAttachmentReturnsWhenTheBlobIsAbsent() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            // We hold the key but not the ciphertext blob yet → nothing to screen.
+            coEvery { rig.messages.attachmentKeyForHash("h2") } returns "a2V5"
+
+            rig.pipeline.onObtained("h2")
+
+            coVerify { rig.blobs.bytes("h2") }
+            coVerify(exactly = 0) { rig.blobs.screenImage(any(), any()) }
+        }
+
+    @Test
+    fun aDmWithAnUnsupportedEnvelopeVersionIsDropped() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val env = rig.dmWithEnvVersion(alice, rig.self, id = "dmv", v = EncEnvelope.MAX_SUPPORTED_VERSION + 1)
+
+            rig.deliver(alice, env)
+
+            assertEquals(1L, rig.drops(DropReason.UNKNOWN_ENVELOPE_VERSION))
+            assertFalse(rig.msgMap.containsKey("dmv"))
         }
 
     private companion object {
