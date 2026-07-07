@@ -743,6 +743,17 @@ before bumping anything that could pull in a newer Kotlin stdlib.
   profile/avatar exchange, attachment pulls, store-and-forward backfill, and — with three nodes — that
   overhear suppression fires (`framesSuppressed > 0` in the metrics log) and the single-NDI cue/digest
   sync converges while messages still deliver.
+- **Seeded UI instrumentation suite** (`app/src/androidTest/java/app/getknit/knit/ui/`) hunts device- and
+  API-specific UI quirks on real hardware. The mesh radios can't run on a Firebase Test Lab (FTL) device,
+  so the suite runs the **demo-seeded, radio-less build** (`-PseedDemo=true`): `DemoTransport` replaces the
+  radios, `DemoSeeder` populates Room through the real repositories, and onboarding/`MeshService` are
+  skipped, so every screen renders populated and deterministic. Tests assert on the seeded ids + existing
+  `testTag`s and capture a screenshot each (via `UiAutomation` + test-services `TestStorage`, collected by
+  FTL). Run locally (emulator OK — no real mesh) with `./gradlew :app:connectedDebugAndroidTest
+  -PseedDemo=true`, or on FTL physical devices with `bash scripts/ftl.sh` (Android Test Orchestrator +
+  `clearPackageData`, default matrix API 29/33/36). This is the UI-rendering complement to the radio-absent
+  **graceful-degradation** logic, which the JVM tests above already cover (`CompositeMeshTransportTest`,
+  `RadioWarningTest`, `OnboardingScreenContentTest`). See `AGENTS.md` for the full setup and gotchas.
 
 ## 18. Known limitations & deferred work
 

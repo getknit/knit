@@ -29,6 +29,8 @@ moderation.
 ./gradlew detekt                    # static analysis via the standalone detekt CLI (reports in build/reports/detekt/)
 ./gradlew ktlint                    # Kotlin style/format lint via the standalone ktlint CLI (reports in build/reports/ktlint/)
 ./gradlew :app:koverHtmlReportDebug # test coverage (Kover) — HTML in app/build/reports/kover/htmlDebug/ (XML: koverXmlReportDebug)
+./gradlew :app:connectedDebugAndroidTest -PseedDemo=true  # seeded UI instrumentation suite on a device/emulator (Orchestrator)
+bash scripts/ftl.sh                 # build seeded APKs + run the suite on Firebase Test Lab physical devices
 ```
 
 `detekt` runs the standalone CLI (NOT the Gradle plugin) from an isolated `detektCli` configuration
@@ -389,6 +391,9 @@ frames.
 2. Emulator smoke test for UI/startup (launch, Koin init, screen rendering, no crash) — the app
    runs fine on an emulator, it just can't form a real mesh there.
 3. Two physical phones for discovery → connect → relay and profile/avatar exchange.
+4. **Seeded UI instrumentation suite** (`app/src/androidTest/…/ui/`) for populated-screen rendering across
+   devices/API levels — locally on an emulator (`:app:connectedDebugAndroidTest -PseedDemo=true`) or on
+   Firebase Test Lab physical devices (`bash scripts/ftl.sh`). See below.
 
 ### JVM Room/DAO + migration tests (Robolectric)
 
@@ -422,6 +427,43 @@ before "simplifying":
   `docs/WIRE_COMPAT.md` for the break record.)
 - After adding a test dep, **regenerate the lockfile** (`:app:dependencies --write-locks`, all configs) — see
   the lockfile gotcha above.
+
+### Seeded UI instrumentation suite + Firebase Test Lab
+
+`app/src/androidTest/java/app/getknit/knit/ui/` is a Compose/Espresso instrumentation suite that hunts
+**device- and API-specific UI quirks** on real hardware. Because the mesh radios can't work on a Firebase
+Test Lab (FTL) datacenter device (no peers, no NAN), the suite runs the app against the **demo-seeded,
+radio-less build** (`-PseedDemo=true`): the no-op `DemoTransport` replaces the radios, `DemoSeeder` populates
+Room through the real repositories, onboarding is skipped, and `MeshService` never starts — so every screen
+renders fully populated and deterministic (the "hiking" theme; seeded ids `samr1v00`/`danich01`/… and the
+existing `testTag`s are the assertion anchors). Graceful **radio-absent** behaviour is verified separately by
+the JVM tests (`CompositeMeshTransportTest`, `RadioWarningTest`, `OnboardingScreenContentTest`), not here.
+
+- **Run locally** (emulator is fine — no real mesh needed):
+  `./gradlew :app:connectedDebugAndroidTest -PseedDemo=true` (target one device with `ANDROID_SERIAL=…`).
+- **Run on FTL**: `bash scripts/ftl.sh` — builds the seeded app + androidTest APKs and runs the default
+  3-device matrix **a10@29 / cheetah@33 / b0q@36** (API 29/33/36) under `--use-orchestrator`. Override with
+  `DEVICES=…`, `PROJECT=…`, `TIMEOUT=…`, or `SKIP_BUILD=1`. gcloud must be authed to the Firebase project
+  (`knit-mesh`); the **free tier is 5 physical-device runs/day**, so the default spends 3.
+- **Isolation is Android Test Orchestrator + `clearPackageData=true`** (`testOptions.execution` +
+  `androidTestUtil` orchestrator/test-services in `app/build.gradle.kts`): each test runs in a fresh,
+  data-wiped process, so the identity + DB regenerate and the seed re-runs every time.
+- **`BuildConfig.SEED_DEMO` is compile-time-inlined into the androidTest DEX**, so the **test** APK must also
+  be built with `-PseedDemo=true` (the gradle/FTL commands above pass it to both). `SeededUiTest` fails loudly
+  with a `check(SEED_DEMO)` if not — never gate the suite on `Assume.assumeTrue(SEED_DEMO)` (a mis-build would
+  silently skip everything green).
+- **Screenshots**: every test captures one (pass or fail) via `UiAutomation` + test-services `TestStorage`
+  (`androidx.test.services:storage`), which FTL collects as a per-device output and AGP mirrors locally under
+  `app/build/outputs/connected_android_test_additional_output/`. This is the scoped-storage-safe path (no
+  `WRITE_EXTERNAL_STORAGE` on any API); do **not** switch to `testlab-instr-lib`'s `FirebaseScreenCaptureProcessor`,
+  which hardcodes a `/sdcard/screenshots` write that only FTL's device env grants (it silently no-ops on a
+  plain emulator).
+- **Gotchas that bit us:** the seed is async, so `waitUntil` for content (never assert on immediate launch);
+  assert on the **newest/on-screen** message (a `LazyColumn` won't compose off-screen items, and an
+  image-attachment message's async height throws off the auto-scroll on some devices — assert a freshly-sent
+  echo instead); a text send cold-loads the tflite moderator, so give the echo a generous timeout; and
+  `ProfileViewModel` one-shot-reads the display name in `init`, racing the seed (test the edit round-trip, not
+  the pre-loaded name).
 
 When driving the emulator over `adb`: the soft keyboard overlaps via `adjustResize`, so read element
 coordinates from `uiautomator dump` rather than guessing; seed the photo picker by `screencap`-ing

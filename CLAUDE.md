@@ -10,6 +10,11 @@ design notes are in `docs/ARCHITECTURE.md`.
 
 - Run `./gradlew :app:testDebugUnitTest` after touching `mesh/`, `protocol/`, or `data/`; run
   `./gradlew :app:assembleDebug` to validate a build (it does **not** compile test sources).
+- For UI/screen changes there's a **seeded UI instrumentation suite** (`app/src/androidTest/…/ui/`) that
+  renders every screen populated with **no radios** (the `-PseedDemo=true` build): run locally with
+  `./gradlew :app:connectedDebugAndroidTest -PseedDemo=true` or on Firebase Test Lab with `bash scripts/ftl.sh`
+  (captures a screenshot per test) — see the FTL section in `AGENTS.md` (build the test APK with the flag too;
+  FTL free tier is 5 physical runs/day).
 - This is bleeding-edge tooling (AGP 9.2.1 / Kotlin 2.4.0): **Koin not Hilt**, **built-in Kotlin
   overridden to 2.4.0** (KGP on the root buildscript classpath, since AGP bundles 2.2.10), and
   `android.disallowKotlinSourceSets=false` is required — see `AGENTS.md` for why before changing
