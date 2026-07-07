@@ -6,6 +6,7 @@ import app.getknit.knit.di.appModule
 import app.getknit.knit.di.meshModule
 import app.getknit.knit.di.moderationModule
 import app.getknit.knit.di.seedDemoIfEnabled
+import app.getknit.knit.di.startDemoDirectorIfEnabled
 import app.getknit.knit.di.uiModule
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.ui.image.BlobFetcher
@@ -40,6 +41,9 @@ class KnitApplication :
         // the app renders populated on an emulator. Debug-only — the seeder lives in `src/debug`, so this is
         // a no-op in release (see the per-variant di/DemoWiring). Off by default even in debug.
         seedDemoIfEnabled(koinApp.koin)
+        // Demo-trailer mode (`-PdemoDirector=true`): play the scripted, animated promo conversation instead
+        // of the static seed. Also debug-only and a no-op in release.
+        startDemoDirectorIfEnabled(koinApp.koin)
     }
 
     /**

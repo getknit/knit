@@ -18,3 +18,11 @@ scripts/soak/logs/
 keystore.properties
 *.jks
 *.keystore
+
+# Trailer pipeline (scripts/record-trailer.sh + scripts/build-trailer.sh): raw captures and ffmpeg
+# stage intermediates are large + regenerable; the finished masters in trailer/out/ are kept. A
+# user-supplied music bed (assets/trailer/*) is not committed (check its license).
+/trailer/raw/
+/trailer/stage/
+/trailer/build.log
+/assets/trailer/

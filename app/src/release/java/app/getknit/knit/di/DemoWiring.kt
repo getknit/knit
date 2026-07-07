@@ -14,3 +14,8 @@ fun demoTransportOrNull(): MeshTransport? = null
 fun seedDemoIfEnabled(koin: Koin) {
     // No-op: demo seeding is a debug-only affordance (see the debug variant's DemoWiring).
 }
+
+@Suppress("UNUSED_PARAMETER")
+fun startDemoDirectorIfEnabled(koin: Koin) {
+    // No-op: the trailer director is a debug-only affordance (see the debug variant's DemoWiring).
+}

@@ -148,10 +148,14 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.getknit.knit.BuildConfig
 import app.getknit.knit.R
 import app.getknit.knit.TextLimits
 import app.getknit.knit.data.AttachmentStore
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.demo.DemoComposeCommand
+import app.getknit.knit.demo.DemoComposer
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
@@ -257,6 +261,33 @@ fun ChatScreen(
         shareInbox.consume()?.let { shared ->
             shared.text?.let { if (it.isNotEmpty()) inputState.setTextAndPlaceCursorAtEnd(it) }
             shared.imageUri?.let { viewModel.attach(Uri.parse(it)) }
+        }
+    }
+    // Debug trailer director: on the Nearby room, drive the REAL composer from scripted DemoComposer
+    // commands — type char-by-char (which fires the real typing cue via MessageInput's snapshotFlow) then
+    // send through the same path as the button. DEMO_DIRECTOR is a compile-time false in release, so R8
+    // dead-code-eliminates this whole block; it never ships.
+    if (BuildConfig.DEMO_DIRECTOR) {
+        val demoComposer = koinInject<DemoComposer>()
+        LaunchedEffect(conversationId) {
+            if (conversationId != Conversations.NEARBY) return@LaunchedEffect
+            demoComposer.commands.collect { cmd ->
+                when (cmd) {
+                    is DemoComposeCommand.Type -> {
+                        val typed = StringBuilder()
+                        cmd.text.forEach { ch ->
+                            typed.append(ch)
+                            inputState.setTextAndPlaceCursorAtEnd(typed.toString())
+                            delay(cmd.perCharMs)
+                        }
+                    }
+
+                    // clearInput (collected above) resets the field once the send is accepted.
+                    DemoComposeCommand.Send -> {
+                        viewModel.send(inputState.text.toString())
+                    }
+                }
+            }
         }
     }
     // Blocking the peer of a DM hides this whole thread, so leave the now-empty screen.

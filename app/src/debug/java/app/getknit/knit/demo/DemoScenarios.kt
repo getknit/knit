@@ -43,6 +43,9 @@ data class DemoMsg(
     val reactions: List<DemoReaction> = emptyList(),
     val replyTo: String? = null,
     val image: String? = null,
+    // MIME of [image]: "image/jpeg" for the bundled scene photos, "image/webp" for the animated GIF beat
+    // (an animated WebP under demo/images/<theme>/<image>.webp, played by Coil's AnimatedImageDecoder).
+    val imageMime: String = "image/jpeg",
 )
 
 /** A peer contact. [verified] pins a (fake) key + out-of-band confirmation so the DM header shows the

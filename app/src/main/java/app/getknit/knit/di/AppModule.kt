@@ -18,6 +18,7 @@ import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.crypto.KeystoreSecret
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.demo.DemoComposer
 import app.getknit.knit.identity.AndroidDeviceIdSource
 import app.getknit.knit.identity.DeviceIdSource
 import app.getknit.knit.identity.Identity
@@ -50,6 +51,9 @@ val appModule =
         single<Notifier> { MessageNotifier(androidContext()) }
         // Single-shot handoff for content arriving via the system share sheet (ACTION_SEND).
         single { ShareInbox() }
+        // Debug trailer seam driving the real Nearby composer (see DemoComposer). Inert in every build
+        // unless the debug DemoDirector emits into it; R8 strips it from release.
+        single { DemoComposer() }
         // Single-shot handoff for a notification-tap deep-link route (drained by KnitApp).
         single { RouteInbox() }
         // Play In-App Review gatekeeper (triggered from KnitApp's chat-list route; no-op off Play).

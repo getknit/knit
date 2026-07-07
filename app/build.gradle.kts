@@ -54,10 +54,16 @@ android {
         // Demo-screenshot mode: when built with `-PseedDemo=true`, the app seeds a realistic data set
         // and swaps in a no-op transport so every screen renders populated on an emulator (no real
         // mesh). Defaults false, so release/normal builds are unaffected. See DemoSeeder/DemoTransport.
-        val seedDemo = (project.findProperty("seedDemo") as? String)?.toBoolean() == true
+        // Demo-trailer mode: `-PdemoDirector=true` plays a scripted, animated conversation (the promo
+        // trailer) instead of the static screenshot seed. It IMPLIES seedDemo — it reuses every demo seam
+        // (no-op transport, permission-gate skip, no MeshService, `demo_route`) — so turning it on lights
+        // those up for free. Debug-only; the director + seeder live in src/debug (see DemoWiring).
+        val demoDirector = (project.findProperty("demoDirector") as? String)?.toBoolean() == true
+        val seedDemo = (project.findProperty("seedDemo") as? String)?.toBoolean() == true || demoDirector
         buildConfigField("boolean", "SEED_DEMO", seedDemo.toString())
-        // Which seed scenario DemoSeeder loads: "hiking" (default) or "festival". Only meaningful when
-        // seedDemo is on; picks the persona/message/avatar set so we can shoot multiple marketing themes.
+        buildConfigField("boolean", "DEMO_DIRECTOR", demoDirector.toString())
+        // Which seed scenario DemoSeeder/DemoDirector loads: "hiking" (default) or "festival". Only meaningful
+        // when seedDemo is on; picks the persona/message/avatar set so we can shoot multiple marketing themes.
         val demoTheme = (project.findProperty("demoTheme") as? String) ?: "hiking"
         buildConfigField("String", "DEMO_THEME", "\"$demoTheme\"")
     }
@@ -97,8 +103,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             // Never build a demo-seeded release, even with `-PseedDemo=true` — demo mode is debug-only and
-            // its classes ship only in src/debug. Overrides the defaultConfig SEED_DEMO field.
+            // its classes ship only in src/debug. Overrides the defaultConfig SEED_DEMO/DEMO_DIRECTOR fields.
             buildConfigField("boolean", "SEED_DEMO", "false")
+            buildConfigField("boolean", "DEMO_DIRECTOR", "false")
             // Unsigned when no keystore.properties / KNIT_UPLOAD_* creds are present (see signingConfigs).
             signingConfig = signingConfigs.findByName("release")
         }

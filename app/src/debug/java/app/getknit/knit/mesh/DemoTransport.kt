@@ -8,17 +8,19 @@ import kotlinx.coroutines.flow.emptyFlow
 import java.io.File
 
 /**
- * A no-op [MeshTransport] used only by the demo-screenshot build (`-PseedDemo=true`, see
- * [app.getknit.knit.demo.DemoSeeder]). It never touches the radios — it simply *reports* a fixed set
- * of connected neighbors so the "connected" header ([MeshManager.neighborCount]) and the contact
- * "online" dots light up against the seeded data, with no real mesh. Every other operation is inert.
+ * A no-op [MeshTransport] used only by the demo builds. It never touches the radios — it simply
+ * *reports* a set of connected neighbors so the "connected" header ([MeshManager.neighborCount]) and the
+ * contact "online" dots light up against the seeded data, with no real mesh. Every other operation is inert.
+ *
+ * The neighbor set is injected as a [StateFlow] the caller owns: the static screenshot build
+ * (`-PseedDemo=true`, [app.getknit.knit.demo.DemoSeeder]) supplies a fixed set, while the trailer build
+ * (`-PdemoDirector=true`, [app.getknit.knit.demo.DemoDirector]) supplies a [MutableStateFlow] it grows over
+ * the timeline so the "connected to N" header climbs live. [MeshTransport.reachable] defaults to
+ * [neighbors], so this drives both.
  */
 class DemoTransport(
-    onlineNodeIds: Set<String>,
+    override val neighbors: StateFlow<Set<Peer>>,
 ) : MeshTransport {
-    override val neighbors: StateFlow<Set<Peer>> =
-        MutableStateFlow(onlineNodeIds.map { Peer(it) }.toSet())
-
     override val health: StateFlow<TransportHealth> = MutableStateFlow(TransportHealth.Healthy)
 
     override val inbound: Flow<InboundFrame> = emptyFlow()
@@ -40,4 +42,9 @@ class DemoTransport(
         to: Peer,
         meta: FileMeta,
     ): Boolean = false // inert: nothing is ever sent
+
+    companion object {
+        /** Wraps a set of node ids as bare [Peer]s for the neighbor flow. */
+        fun peersOf(ids: Set<String>): Set<Peer> = ids.map { Peer(it) }.toSet()
+    }
 }

@@ -246,6 +246,16 @@ class MeshManager(
         senderId: String,
     ) = typingTracker.seedPersistent(conversationId, senderId)
 
+    /**
+     * Demo-director only: resolve a typing indicator (bubble → message) the instant a scripted message is
+     * about to land, so the trailer's "typing…" cue converts into the message rather than lingering. Mirrors
+     * [seedDemoTyping]; kept off the [MeshController] interface so the production facade stays clean.
+     */
+    fun clearDemoTyping(
+        conversationId: String,
+        senderId: String,
+    ) = typingTracker.onMessageFrom(conversationId, senderId)
+
     override fun start() {
         if (started) return
         started = true
