@@ -471,6 +471,12 @@ into `/sdcard/Pictures` if you need an image to select.
 
 ## Driving the app on a device (debug builds)
 
+**Never drive a non-emulator (physical) device without the user's explicit go-ahead for that specific
+session** — installing, uninstalling, sending broadcasts, adb-driving the UI, or anything else that
+touches a real phone. The emulator is fair game per the usual rules; physical hardware (including any
+lab devices on network adb) is not a default target just because it's reachable. Ask first each time —
+prior authorization doesn't carry over to a new task or a new conversation.
+
 Debug builds carry three affordances so an agent can drive the send→verify loop **without** screenshots
 or hunting the (unlabeled, state-dependent) send button's pixel bounds. All are **debug-only** — the
 bridge receiver and its manifest entry live in `app/src/debug/` (so the release APK has neither), and the
