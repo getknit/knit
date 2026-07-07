@@ -92,6 +92,14 @@ kover = "0.9.8"
 # Robolectric 4.16 is the first release supporting SDK 36 (Baklava) and requires JDK 21 (this repo's toolchain).
 robolectric = "4.16"
 androidxTestCore = "1.7.0"
+# Android Test Orchestrator (instrumentation isolation for Firebase Test Lab): each test runs in its own
+# process with `clearPackageData` wiping app data between tests. The orchestrator/test-services pair is a
+# separate 1.6.x train from core/runner/rules (all 1.7.0); orchestrator 1.6.1's POM depends on
+# test-services 1.6.0 (the lockfile already carries androidx.test.services:storage:1.6.0). These are only
+# needed for LOCAL `connectedDebugAndroidTest` parity — FTL injects its own orchestrator via
+# `--use-orchestrator` and reads `clearPackageData` from `--environment-variables`.
+androidxTestOrchestrator = "1.6.1"
+androidxTestServices = "1.6.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -123,6 +131,17 @@ mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 # JVM Room/DAO + migration test deps (finding #5) — see the [versions] notes above.
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
+# Instrumentation runner/rules (promote the transitive runner to explicit; rules gives GrantPermissionRule
+# / ActivityScenario helpers) + the Orchestrator and its test-services APK (androidTestUtil). See the
+# version notes above.
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestCore" }
+androidx-test-rules = { group = "androidx.test", name = "rules", version.ref = "androidxTestCore" }
+androidx-test-orchestrator = { group = "androidx.test", name = "orchestrator", version.ref = "androidxTestOrchestrator" }
+androidx-test-services = { group = "androidx.test.services", name = "test-services", version.ref = "androidxTestServices" }
+# Scoped-storage-safe test output (TestStorage) — how screenshots reach Firebase Test Lab's collected
+# per-device outputs without WRITE_EXTERNAL_STORAGE on any API level (the doc's no-permission promise, kept
+# on the emulator too — unlike testlab-instr-lib, which hardcodes a /sdcard write only FTL's env grants).
+androidx-test-services-storage = { group = "androidx.test.services", name = "storage", version.ref = "androidxTestServices" }
 
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 

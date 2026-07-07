@@ -59,4 +59,24 @@ class OnboardingScreenContentTest {
         compose.onNodeWithTag("onboarding_start").performClick()
         assertEquals(1, ready)
     }
+
+    @Test
+    fun unsupportedHardwareDoesNotBlockStart() {
+        compose.setContent {
+            KnitTheme {
+                OnboardingScreenContent(
+                    meshSupported = false,
+                    granted = true,
+                    onGrantPermissions = {},
+                    onAllowBattery = {},
+                    onReady = {},
+                )
+            }
+        }
+
+        // No mesh radio hardware (the radio-less Firebase Test Lab / single-radio-missing reality), yet
+        // Start gates only on permissions (enabled = granted, independent of meshSupported) — the app
+        // degrades gracefully rather than dead-ending, so the user can still reach the app.
+        compose.onNodeWithTag("onboarding_start").assertIsEnabled()
+    }
 }

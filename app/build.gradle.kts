@@ -50,6 +50,11 @@ android {
         versionName = providers.gradleProperty("knit.versionName").get()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Android Test Orchestrator isolation: wipe app data (identity keystore + SQLCipher DB + DataStore)
+        // between instrumentation tests so each test re-generates a fresh identity and re-seeds a clean demo
+        // DB. Paired with testOptions.execution below; on Firebase Test Lab pass the same via
+        // `--use-orchestrator --environment-variables clearPackageData=true` (see scripts/ftl.sh).
+        testInstrumentationRunnerArguments["clearPackageData"] = "true"
 
         // Demo-screenshot mode: when built with `-PseedDemo=true`, the app seeds a realistic data set
         // and swaps in a no-op transport so every screen renders populated on an emulator (no real
@@ -131,6 +136,11 @@ android {
     }
 
     testOptions {
+        // Run instrumentation tests under Android Test Orchestrator (each test in its own process; combined
+        // with the `clearPackageData` runner arg above). Only affects LOCAL connectedDebugAndroidTest —
+        // FTL injects its own orchestrator via `--use-orchestrator`. animationsDisabled stabilizes UI tests.
+        execution = "ANDROIDX_TEST_ORCHESTRATOR"
+        animationsDisabled = true
         unitTests {
             // Robolectric runs the JVM Room/DAO + migration tests (finding #5): it reads AGP's merged
             // manifest/resources config and supplies a Context + framework SQLite so in-memory Room
@@ -280,6 +290,15 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.room.testing)
+    // Firebase Test Lab seeded UI suite (app/src/androidTest/…/ui): explicit runner + rules
+    // (ActivityScenario/GrantPermissionRule; runner was only transitive) and the Orchestrator + its
+    // test-services APK (androidTestUtil, for local connectedDebugAndroidTest parity). See AGENTS.md /
+    // scripts/ftl.sh.
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.rules)
+    androidTestImplementation(libs.androidx.test.services.storage) // TestStorage: FTL-collected screenshots
+    androidTestUtil(libs.androidx.test.orchestrator)
+    androidTestUtil(libs.androidx.test.services)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
