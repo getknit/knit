@@ -28,6 +28,9 @@ object NotificationChannels {
     const val DMS = "knit_msg_dms"
     const val MENTIONS = "knit_msg_mentions"
 
+    // Quiet, coalesced "N message requests" heads-up for a stranger's first (unaccepted) DM/group.
+    const val REQUESTS = "knit_msg_requests"
+
     // App group
     const val STATUS = "knit_mesh" // ongoing foreground notification; id kept stable
     const val ALERTS = "knit_alerts"
@@ -110,6 +113,16 @@ object NotificationChannels {
                 NotificationManagerCompat.IMPORTANCE_HIGH,
                 R.string.mention_channel_name,
                 R.string.mention_channel_description,
+            ),
+        )
+        manager.createNotificationChannel(
+            channel(
+                context,
+                REQUESTS,
+                GROUP_MESSAGES,
+                NotificationManagerCompat.IMPORTANCE_LOW,
+                R.string.channel_requests_name,
+                R.string.channel_requests_desc,
             ),
         )
         manager.createNotificationChannel(

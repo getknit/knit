@@ -43,6 +43,15 @@
     <string name="notif_action_mark_read">Mark read</string>
     <string name="notif_summary">%1$d messages in %2$d chats</string>
 
+    <!-- Message requests (quiet, coalesced heads-up) -->
+    <string name="channel_requests_name">Message requests</string>
+    <string name="channel_requests_desc">Quiet heads-up when someone new messages you</string>
+    <string name="notif_requests_title">New message requests</string>
+    <plurals name="notif_requests_body">
+        <item quantity="one">%d message request</item>
+        <item quantity="other">%d message requests</item>
+    </plurals>
+
     <!-- Onboarding -->
     <string name="onboarding_title">Welcome to Knit</string>
     <string name="onboarding_blurb">Knit connects directly to nearby phones over Wi-Fi Aware to relay encrypted messages — no internet, no servers. It needs the nearby-devices permission to find peers, and works best when allowed to run in the background.</string>
@@ -130,6 +139,16 @@
     <string name="blocked_users_title">Blocked users</string>
     <string name="blocked_users_empty">No blocked users</string>
     <string name="blocked_users_unblock">Unblock</string>
+
+    <!-- Message requests -->
+    <string name="message_requests_title">Message requests</string>
+    <string name="message_requests_empty">No message requests</string>
+    <string name="message_requests_accept">Accept</string>
+    <string name="message_requests_block">Block</string>
+    <string name="message_requests_block_confirm_title">Block this person?</string>
+    <string name="message_requests_block_confirm_body">You won\'t receive messages from them, and this request is removed.</string>
+    <string name="message_requests_delete_confirm_title">Delete request?</string>
+    <string name="message_requests_delete_confirm_body">This conversation will be removed from this device only.</string>
 
     <!-- Donate -->
     <string name="donate_title">Support Knit</string>

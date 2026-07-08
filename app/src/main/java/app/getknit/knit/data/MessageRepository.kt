@@ -62,6 +62,9 @@ class MessageRepository(
     /** Distinct conversations the local user ([me]) has authored in — the "threads I started" accepted signal. */
     suspend fun conversationsIAuthoredIn(me: String): List<String> = dao.conversationsIAuthoredIn(me)
 
+    /** Every distinct conversation with any message — the candidate set for the pending-request count. */
+    suspend fun distinctConversations(): List<String> = dao.distinctConversations()
+
     /**
      * Bounds the local `messages` table so a Sybil flood can't exhaust storage. Unlike the convergent
      * `forward_store`, `messages` is pure local state (no content digest), so this is plain GC — no mutex, no

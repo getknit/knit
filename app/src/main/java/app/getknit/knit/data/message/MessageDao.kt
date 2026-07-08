@@ -81,6 +81,10 @@ interface MessageDao {
     @Query("SELECT DISTINCT conversationId FROM messages WHERE senderId = :me")
     suspend fun conversationsIAuthoredIn(me: String): List<String>
 
+    /** Every distinct conversation id with any message — the candidate set for counting pending requests. */
+    @Query("SELECT DISTINCT conversationId FROM messages")
+    suspend fun distinctConversations(): List<String>
+
     /** Per-conversation row count + newest sentAt, for the retention sweep's cap / age / thread-count decisions. */
     @Query("SELECT conversationId, MAX(sentAt) AS lastSentAt, COUNT(*) AS count FROM messages GROUP BY conversationId")
     suspend fun conversationActivity(): List<ConversationActivity>

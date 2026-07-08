@@ -8,6 +8,7 @@ import app.getknit.knit.ui.diagnostics.DiagnosticsViewModel
 import app.getknit.knit.ui.group.GroupDetailsViewModel
 import app.getknit.knit.ui.profile.ProfileDetailsViewModel
 import app.getknit.knit.ui.profile.ProfileViewModel
+import app.getknit.knit.ui.requests.MessageRequestsViewModel
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.module.dsl.viewModel
 import org.koin.dsl.module
@@ -45,4 +46,5 @@ val uiModule =
             GroupDetailsViewModel(params.get(), get(), get(), get(), get(), get(), get(), androidContext())
         }
         viewModel { BlockedUsersViewModel(get(), get()) }
+        viewModel { MessageRequestsViewModel(get(), get(), get(), get(), get(), androidContext()) }
     }

@@ -54,6 +54,7 @@ class ChatListViewModelTest {
     private val groupsFlow = MutableStateFlow(emptyList<GroupEntity>())
     private val peersFlow = MutableStateFlow(emptyList<PeerEntity>())
     private val lastReadFlow = MutableStateFlow(emptyMap<String, Long>())
+    private val acceptedFlow = MutableStateFlow(emptySet<String>())
 
     @Before
     fun setUp() {
@@ -64,6 +65,7 @@ class ChatListViewModelTest {
         every { groups.observeGroups() } returns groupsFlow
         every { peers.observePeers() } returns peersFlow
         every { settings.lastReadAll } returns lastReadFlow
+        every { settings.acceptedConversations } returns acceptedFlow
     }
 
     @After
@@ -133,6 +135,9 @@ class ChatListViewModelTest {
                     msg(senderId = "ada", sentAt = 200, conversationId = "ada", recipientId = "me"),
                 )
             groupsFlow.value = listOf(group(groupId = "g-1", members = listOf("me", "x"), createdAt = 50))
+            // ada + g-1 are accepted so they stay in the main list; this test asserts sort order, not the
+            // request partition (covered by aStrangerDmRequestIsPartitionedOutOfTheListButCounted).
+            acceptedFlow.value = setOf("ada", "g-1")
             advanceUntilIdle()
 
             val convos = vm.state.value.conversations
@@ -159,5 +164,40 @@ class ChatListViewModelTest {
                     "hello",
                 )
             assertEquals(expected, nearby.lastPreview)
+        }
+
+    @Test
+    fun aStrangerDmRequestIsPartitionedOutOfTheListButCounted() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value =
+                listOf(msg(senderId = "stranger", sentAt = 100, conversationId = "stranger", recipientId = "me"))
+            advanceUntilIdle()
+
+            // The stranger's DM is not in the main list (it's a pending request)...
+            assertTrue(
+                vm.state.value.conversations
+                    .none { it.id == "stranger" },
+            )
+            // ...but it is counted for the top-bar badge.
+            assertEquals(1, vm.state.value.requestCount)
+        }
+
+    @Test
+    fun anAcceptedDmStaysInTheListAndIsNotCounted() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value =
+                listOf(msg(senderId = "friend", sentAt = 100, conversationId = "friend", recipientId = "me"))
+            acceptedFlow.value = setOf("friend")
+            advanceUntilIdle()
+
+            assertTrue(
+                vm.state.value.conversations
+                    .any { it.id == "friend" },
+            )
+            assertEquals(0, vm.state.value.requestCount)
         }
 }

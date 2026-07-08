@@ -57,6 +57,10 @@ class MessageNotifier(
     @Volatile
     private var visibleConversationId: String? = null
 
+    /** Whether the Message Requests inbox is on screen (suppresses the coalesced request heads-up). */
+    @Volatile
+    private var requestsVisible = false
+
     /** Last "me" identity seen on a post, so a Mark-read-driven summary refresh can rebuild. */
     @Volatile
     private var lastSelf: Self? = null
@@ -203,6 +207,33 @@ class MessageNotifier(
         }
         synchronized(states) { states.remove(tag) }
         postSummary()
+    }
+
+    override fun notifyMessageRequests(count: Int) {
+        // Quiet + coalesced: one low-priority summary, refreshed in place. A Sybil flood only updates the
+        // count, never re-alerts (setOnlyAlertOnce). count <= 0 — or the inbox being on screen — cancels it.
+        if (count <= 0 || requestsVisible) {
+            runCatching { manager.cancel(ID_REQUESTS) }
+            return
+        }
+        val notification =
+            NotificationCompat
+                .Builder(context, NotificationChannels.REQUESTS)
+                .setSmallIcon(R.drawable.ic_stat_mesh)
+                .setContentTitle(context.getString(R.string.notif_requests_title))
+                .setContentText(context.resources.getQuantityString(R.plurals.notif_requests_body, count, count))
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setContentIntent(openRequestsIntent())
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .build()
+        postNotification(null, ID_REQUESTS, notification)
+    }
+
+    override fun setRequestsVisible(visible: Boolean) {
+        requestsVisible = visible
+        // Opening the inbox clears any already-posted heads-up (the user is looking at the list).
+        if (visible) runCatching { manager.cancel(ID_REQUESTS) }
     }
 
     /** Snapshots the mutable [state] into an immutable [Render] (call under the [states] lock). */
@@ -520,6 +551,16 @@ class MessageNotifier(
         return PendingIntent.getActivity(context, CODE_SUMMARY_OPEN, intent, immutable())
     }
 
+    /** Deep-link tap: opens (or brings forward) [MainActivity] straight to the Message Requests inbox. */
+    private fun openRequestsIntent(): PendingIntent {
+        val intent =
+            Intent(context, MainActivity::class.java)
+                .setAction(ACTION_OPEN_REQUESTS)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(MainActivity.EXTRA_ROUTE, ROUTE_REQUESTS)
+        return PendingIntent.getActivity(context, CODE_REQUESTS_OPEN, intent, immutable())
+    }
+
     private fun replyAction(
         tag: String,
         conversationId: String,
@@ -588,6 +629,7 @@ class MessageNotifier(
         const val KEY_TEXT_REPLY = "app.getknit.knit.KEY_TEXT_REPLY"
 
         const val ACTION_OPEN_CHAT = "app.getknit.knit.NOTIF_OPEN_CHAT"
+        const val ACTION_OPEN_REQUESTS = "app.getknit.knit.NOTIF_OPEN_REQUESTS"
         const val ACTION_REPLY = "app.getknit.knit.NOTIF_REPLY"
         const val ACTION_MARK_READ = "app.getknit.knit.NOTIF_MARK_READ"
         const val ACTION_DISMISS = "app.getknit.knit.NOTIF_DISMISS"
@@ -601,6 +643,9 @@ class MessageNotifier(
         // buckets. Per-conversation notifications now share one id disambiguated by tag; the summary gets its own.
         private const val ID_MESSAGE = 6
         private const val ID_SUMMARY = 7
+
+        // The single coalesced "N message requests" heads-up (standalone — not in the messages group/summary).
+        private const val ID_REQUESTS = 8
 
         /** Groups every message notification under one stack with the summary. */
         private const val GROUP_KEY_MESSAGES = "app.getknit.knit.MESSAGES"
@@ -618,5 +663,9 @@ class MessageNotifier(
         private const val CODE_DISMISS = 3
         private const val CODE_SLOTS = 4
         private const val CODE_SUMMARY_OPEN = 1
+        private const val CODE_REQUESTS_OPEN = 2
+
+        // The NavHost route the requests deep-link navigates to; MUST equal KnitApp's Routes.MESSAGE_REQUESTS.
+        private const val ROUTE_REQUESTS = "requests"
     }
 }

@@ -68,6 +68,28 @@ object Conversations {
         }
 
     /**
+     * Whether [conversationId] is an accepted/known chat rather than a stranger's **message request** —
+     * the single source of truth for the notify gate (`InboundPipeline`), the local retention sweep
+     * (`MeshManager`), and the Message Requests UI. Pure: the caller supplies the three signals as sets so
+     * a per-conversation check and a whole-list partition share one rule. The broadcast room ([NEARBY]) is
+     * always accepted (public, bounded by retention, never a request); a DM is accepted if it was explicitly
+     * accepted, if its peer is out-of-band verified (a DM's [conversationId] *is* the peer node id, so this
+     * is a set lookup), or if the user has authored a message in it. A [GROUP_ID_PREFIX] group id never
+     * matches a peer node id, so a group needs an explicit accept or a self-authored reply. Convergence-safe:
+     * a local presentation decision only (never folded into custody/relay).
+     */
+    fun isAccepted(
+        conversationId: String,
+        accepted: Set<String>,
+        verifiedNodeIds: Set<String>,
+        authoredConversationIds: Set<String>,
+    ): Boolean =
+        conversationId == NEARBY ||
+            conversationId in accepted ||
+            conversationId in verifiedNodeIds ||
+            conversationId in authoredConversationIds
+
+    /**
      * Stable, order-agnostic id for a group defined by [members] (node ids). Derived from the sorted,
      * de-duplicated member set, so every device — and anyone who re-creates the same set of people —
      * resolves to the *same* group id rather than minting a duplicate thread. Prefixed [GROUP_ID_PREFIX]

@@ -197,6 +197,8 @@ class InboundPipelineTest {
         init {
             coEvery { peers.find(any()) } answers { peerMap[firstArg()] }
             coEvery { peers.upsert(any()) } answers { peerMap[firstArg<PeerEntity>().nodeId] = firstArg() }
+            // isAccepted now reads the batch "verified" signal; derive it from the same fake map the repo backs.
+            coEvery { peers.verifiedNodeIds() } answers { peerMap.values.filter { it.verified }.map { it.nodeId } }
             coEvery { messages.exists(any()) } answers { msgMap.containsKey(firstArg<String>()) }
             coEvery { messages.save(any()) } answers { msgMap[firstArg<MessageEntity>().id] = firstArg() }
             coEvery { messages.recipientOf(any()) } answers { msgMap[firstArg<String>()]?.recipientId }
@@ -1235,11 +1237,41 @@ class InboundPipelineTest {
             val rig = Rig(backgroundScope)
             val alice = party()
             rig.pin(alice)
-            coEvery { rig.messages.countMineIn(alice.nodeId, rig.self.nodeId) } returns 1 // we've posted here → known
+            // We've authored in this thread → known. isAccepted now reads conversationsIAuthoredIn (batch).
+            coEvery { rig.messages.conversationsIAuthoredIn(rig.self.nodeId) } returns listOf(alice.nodeId)
 
             rig.deliver(alice, rig.dmChat(alice, rig.self, id = "dm-r", body = "reply?"))
 
             coVerify { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aStrangerDmRefreshesTheCoalescedRequestNotificationInsteadOfNotifying() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice) // pinned (verifies) but not accepted/verified/replied → a request
+            // Two pending request threads on file, so the coalesced heads-up shows the running total.
+            coEvery { rig.messages.distinctConversations() } returns listOf(alice.nodeId, "bob-node")
+
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "dm-req2", body = "hello?"))
+
+            coVerify { rig.notifier.notifyMessageRequests(2) } // one quiet coalesced heads-up…
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) } // …not a per-message notify
+        }
+
+    @Test
+    fun anAcceptedDmTakesTheNormalNotifyPathNotTheRequestSummary() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId)
+
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "dm-ok2", body = "yo"))
+
+            coVerify { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { rig.notifier.notifyMessageRequests(any()) }
         }
 
     // --- Fix 1: inbound body + future-dated sentAt are clamped ---

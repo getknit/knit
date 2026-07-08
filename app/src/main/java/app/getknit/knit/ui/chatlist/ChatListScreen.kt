@@ -36,12 +36,14 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.MarkChatUnread
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -107,6 +109,7 @@ fun ChatListScreen(
     onOpenProfile: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenBlockedUsers: () -> Unit,
+    onOpenMessageRequests: () -> Unit,
     onOpenDonate: () -> Unit,
     viewModel: ChatListViewModel = koinViewModel(),
 ) {
@@ -129,6 +132,7 @@ fun ChatListScreen(
         onOpenProfile = onOpenProfile,
         onOpenDiagnostics = onOpenDiagnostics,
         onOpenBlockedUsers = onOpenBlockedUsers,
+        onOpenMessageRequests = onOpenMessageRequests,
         onOpenDonate = onOpenDonate,
         onShareApp = { showShareApp = true },
         onOpenRadioSettings = { warning -> openRadioSettings(context, warning) },
@@ -190,6 +194,7 @@ internal fun ChatListScreenContent(
     onOpenProfile: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenBlockedUsers: () -> Unit,
+    onOpenMessageRequests: () -> Unit,
     onOpenDonate: () -> Unit,
     onShareApp: () -> Unit,
     onOpenRadioSettings: (RadioWarning) -> Unit,
@@ -214,6 +219,22 @@ internal fun ChatListScreenContent(
                     }
                 },
                 actions = {
+                    // Signal-style: the requests inbox affordance appears only when something is pending.
+                    if (state.requestCount > 0) {
+                        BadgedBox(
+                            badge = { Badge { Text(state.requestCount.toString()) } },
+                        ) {
+                            IconButton(
+                                onClick = onOpenMessageRequests,
+                                modifier = Modifier.size(48.dp).semantics { testTag = "chatlist_requests" },
+                            ) {
+                                Icon(
+                                    Icons.Filled.MarkChatUnread,
+                                    contentDescription = stringResource(R.string.message_requests_title),
+                                )
+                            }
+                        }
+                    }
                     Box {
                         IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.chat_more_options))
@@ -733,6 +754,7 @@ fun ChatListScreenPopulatedPreview() =
             onOpenProfile = {},
             onOpenDiagnostics = {},
             onOpenBlockedUsers = {},
+            onOpenMessageRequests = {},
             onOpenDonate = {},
             onShareApp = {},
             onOpenRadioSettings = {},
@@ -759,6 +781,7 @@ fun ChatListScreenRadioWarningPreview() =
             onOpenProfile = {},
             onOpenDiagnostics = {},
             onOpenBlockedUsers = {},
+            onOpenMessageRequests = {},
             onOpenDonate = {},
             onShareApp = {},
             onOpenRadioSettings = {},
@@ -780,6 +803,7 @@ fun ChatListScreenLoadingPreview() =
             onOpenProfile = {},
             onOpenDiagnostics = {},
             onOpenBlockedUsers = {},
+            onOpenMessageRequests = {},
             onOpenDonate = {},
             onShareApp = {},
             onOpenRadioSettings = {},
@@ -807,6 +831,7 @@ fun ChatListScreenQuietPreview() =
             onOpenProfile = {},
             onOpenDiagnostics = {},
             onOpenBlockedUsers = {},
+            onOpenMessageRequests = {},
             onOpenDonate = {},
             onShareApp = {},
             onOpenRadioSettings = {},

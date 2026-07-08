@@ -47,6 +47,8 @@ data class ConversationRow(
 
 data class ChatListUiState(
     val conversations: List<ConversationRow> = emptyList(),
+    // Number of pending message-request threads (stranger DM/group not yet accepted), for the top-bar badge.
+    val requestCount: Int = 0,
     val neighborCount: Int = 0,
     // Radio health, so the connection header can distinguish "nobody nearby" from radios off/seized.
     val transportHealth: TransportHealth = TransportHealth.Healthy,
@@ -85,6 +87,7 @@ class ChatListViewModel(
         val messages: List<MessageEntity>,
         val blocked: Set<String>,
         val groups: List<GroupEntity>,
+        val accepted: Set<String>,
     )
 
     // Neighbor count + radio health + the (already-dismissal-aware) banner, folded into one source.
@@ -99,8 +102,9 @@ class ChatListViewModel(
             messages.observeMessages(), // ORDER BY sentAt ASC -> newest is last()
             settings.blockedNodeIds,
             groups.observeGroups(),
-        ) { msgs, blocked, groupList ->
-            ListBundle(msgs.filter { it.senderId !in blocked }, blocked, groupList)
+            settings.acceptedConversations,
+        ) { msgs, blocked, groupList, accepted ->
+            ListBundle(msgs.filter { it.senderId !in blocked }, blocked, groupList, accepted)
         }
 
     // Radio-off banner: which warning the per-radio statuses imply, and whether the user has dismissed it.
@@ -146,6 +150,16 @@ class ChatListViewModel(
             val groupIds = bundle.groups.map { it.groupId }.toSet() // left groups too, to hide stray rows
             val peersByNode = peerList.associateBy { it.nodeId }
             val byConversation = msgs.groupBy { it.conversationId }
+            // Partition out stranger "message requests" using the SAME shared predicate as the notify gate
+            // (Nearby / accepted-set / verified peer / self-authored) so this list and the gate agree. A
+            // pending DM/group is dropped from here and surfaced in the Message Requests inbox instead.
+            val accepted = bundle.accepted
+            val verified = peerList.filter { it.verified }.map { it.nodeId }.toSet()
+            val authored = msgs.filter { it.senderId == me }.map { it.conversationId }.toSet()
+
+            fun isPending(conversationId: String): Boolean =
+                conversationId !in blocked &&
+                    !Conversations.isAccepted(conversationId, accepted, verified, authored)
 
             fun rowFor(
                 conversationId: String,
@@ -192,7 +206,7 @@ class ChatListViewModel(
                     avatarHash = null,
                 )
             val groupRows =
-                activeGroups.map { g ->
+                activeGroups.filter { !isPending(it.groupId) }.map { g ->
                     val title =
                         groupTitle(
                             storedName = g.name,
@@ -214,7 +228,7 @@ class ChatListViewModel(
                 }
             val dms =
                 byConversation
-                    .filterKeys { it != Conversations.NEARBY && it !in blocked && it !in groupIds }
+                    .filterKeys { it != Conversations.NEARBY && it !in blocked && it !in groupIds && !isPending(it) }
                     .map { (conversationId, threadMsgs) ->
                         rowFor(
                             conversationId,
@@ -225,8 +239,13 @@ class ChatListViewModel(
                             avatarHash = peersByNode[conversationId]?.avatarHash,
                         )
                     }
+            // Count of threads moved to the requests inbox (mirrors exactly what the two filters above drop).
+            val requestCount =
+                byConversation.keys.count { it != Conversations.NEARBY && it !in groupIds && isPending(it) } +
+                    activeGroups.count { isPending(it.groupId) }
             ChatListUiState(
                 conversations = (listOf(nearby) + groupRows + dms).sortedByDescending { it.lastMessageAt ?: 0L },
+                requestCount = requestCount,
                 neighborCount = neighborCount,
                 transportHealth = health,
                 radioWarning = warning,

@@ -35,6 +35,7 @@ import app.getknit.knit.ui.group.GroupDetailsScreen
 import app.getknit.knit.ui.onboarding.OnboardingScreen
 import app.getknit.knit.ui.profile.ProfileDetailsScreen
 import app.getknit.knit.ui.profile.ProfileScreen
+import app.getknit.knit.ui.requests.MessageRequestsScreen
 import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.share.ShareTargetScreen
 import org.koin.compose.koinInject
@@ -46,6 +47,7 @@ private object Routes {
     const val PROFILE = "profile"
     const val DIAGNOSTICS = "diagnostics"
     const val BLOCKED_USERS = "blocked"
+    const val MESSAGE_REQUESTS = "requests"
     const val DONATE = "donate"
     const val SHARE = "share"
     const val CHAT = "chat/{conversationId}"
@@ -167,6 +169,7 @@ fun KnitApp(startRoute: String? = null) {
                 onOpenProfile = { navController.navigate(Routes.PROFILE) },
                 onOpenDiagnostics = { navController.navigate(Routes.DIAGNOSTICS) },
                 onOpenBlockedUsers = { navController.navigate(Routes.BLOCKED_USERS) },
+                onOpenMessageRequests = { navController.navigate(Routes.MESSAGE_REQUESTS) },
                 onOpenDonate = { navController.navigate(Routes.DONATE) },
             )
         }
@@ -252,6 +255,9 @@ fun KnitApp(startRoute: String? = null) {
         }
         composable(Routes.BLOCKED_USERS) {
             BlockedUsersScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Routes.MESSAGE_REQUESTS) {
+            MessageRequestsScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.DONATE) {
             DonateScreen(onBack = { navController.popBackStack() })

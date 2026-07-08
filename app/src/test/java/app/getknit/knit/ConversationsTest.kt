@@ -77,4 +77,93 @@ class ConversationsTest {
         assertTrue(id.startsWith(Conversations.GROUP_ID_PREFIX))
         assertNotEquals(Conversations.NEARBY, id)
     }
+
+    // --- isAccepted: the single-source-of-truth "known chat vs. message request" predicate ---
+
+    @Test
+    fun nearbyRoomIsAlwaysAccepted() {
+        // The public room is never a message request, even with every signal empty.
+        assertTrue(
+            Conversations.isAccepted(
+                Conversations.NEARBY,
+                accepted = emptySet(),
+                verifiedNodeIds = emptySet(),
+                authoredConversationIds = emptySet(),
+            ),
+        )
+    }
+
+    @Test
+    fun anExplicitlyAcceptedConversationIsAccepted() {
+        assertTrue(
+            Conversations.isAccepted(
+                "peer1",
+                accepted = setOf("peer1"),
+                verifiedNodeIds = emptySet(),
+                authoredConversationIds = emptySet(),
+            ),
+        )
+    }
+
+    @Test
+    fun aVerifiedDmPeerIsAccepted() {
+        // A DM's conversationId IS the peer node id, so out-of-band verification is a set lookup.
+        assertTrue(
+            Conversations.isAccepted(
+                "peer1",
+                accepted = emptySet(),
+                verifiedNodeIds = setOf("peer1"),
+                authoredConversationIds = emptySet(),
+            ),
+        )
+    }
+
+    @Test
+    fun aConversationTheUserHasAuthoredInIsAccepted() {
+        assertTrue(
+            Conversations.isAccepted(
+                "peer1",
+                accepted = emptySet(),
+                verifiedNodeIds = emptySet(),
+                authoredConversationIds = setOf("peer1"),
+            ),
+        )
+    }
+
+    @Test
+    fun aStrangerDmMatchingNoSignalIsARequest() {
+        // Not Nearby, not accepted, peer not verified, never replied to => a pending request.
+        assertFalse(
+            Conversations.isAccepted(
+                "stranger",
+                accepted = setOf("someoneElse"),
+                verifiedNodeIds = setOf("someoneElse"),
+                authoredConversationIds = setOf("someoneElse"),
+            ),
+        )
+    }
+
+    @Test
+    fun aGroupIsNeverAcceptedByPeerVerificationAlone() {
+        // A "g-" group id can't appear in the verified-node set, so a stranger's group stays a request
+        // until it is explicitly accepted or replied to.
+        val groupId = Conversations.groupIdFor(listOf("alice", "bob"))
+        assertFalse(
+            Conversations.isAccepted(
+                groupId,
+                accepted = emptySet(),
+                verifiedNodeIds = setOf("alice", "bob"),
+                authoredConversationIds = emptySet(),
+            ),
+        )
+        // But an explicit accept does accept the group.
+        assertTrue(
+            Conversations.isAccepted(
+                groupId,
+                accepted = setOf(groupId),
+                verifiedNodeIds = emptySet(),
+                authoredConversationIds = emptySet(),
+            ),
+        )
+    }
 }

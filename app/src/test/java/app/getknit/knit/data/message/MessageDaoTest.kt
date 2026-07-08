@@ -97,6 +97,16 @@ class MessageDaoTest : RoomDbTest() {
         }
 
     @Test
+    fun `distinctConversations returns every thread id once, regardless of sender`() =
+        runTest {
+            dao.upsert(msg("a", conversationId = "t1", sender = "me"))
+            dao.upsert(msg("b", conversationId = "t1", sender = "them")) // same thread, different sender
+            dao.upsert(msg("c", conversationId = "t2", sender = "them"))
+            dao.upsert(msg("d", conversationId = Conversations.NEARBY, sender = "them"))
+            assertEquals(setOf("t1", "t2", Conversations.NEARBY), dao.distinctConversations().toSet())
+        }
+
+    @Test
     fun `deleteOldestInConversation keeps only the newest N by sentAt`() =
         runTest {
             (1..5).forEach { dao.upsert(msg("m$it", conversationId = "t", sentAt = it.toLong())) }

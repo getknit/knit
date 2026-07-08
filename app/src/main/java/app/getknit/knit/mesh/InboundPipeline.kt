@@ -700,21 +700,41 @@ class InboundPipeline(
 
     /**
      * Whether [conversationId] should surface a notification / be treated as a known chat rather than a
-     * stranger's **message request**. Convergence-safe: read only on the local delivery path (never in
-     * [canCarry]/relay). The broadcast room is public (always shown; bounded by retention, not the request
-     * queue); a DM/group is "accepted" if the user explicitly accepted it, the DM peer is out-of-band
-     * verified (a `"g-…"` group id never matches a peer row, so a group needs an explicit accept or a reply),
-     * or the user has already authored a message there (they initiated/replied). A stranger's first DM/group
-     * is otherwise silent until accepted — see the Message Requests design.
+     * stranger's **message request**. Delegates to the shared, pure [Conversations.isAccepted] so the notify
+     * gate here, the retention sweep in [MeshManager], and the Message Requests UI all apply one identical
+     * rule. Convergence-safe: read only on the local delivery path (never in [canCarry]/relay); a stranger's
+     * first DM/group is silent until accepted — see the Message Requests design.
      */
     private suspend fun isAccepted(
         conversationId: String,
         me: String,
     ): Boolean =
-        conversationId == Conversations.NEARBY ||
-            conversationId in settings.acceptedConversations.first() ||
-            peers.find(conversationId)?.verified == true ||
-            messages.countMineIn(conversationId, me) > 0
+        Conversations.isAccepted(
+            conversationId,
+            settings.acceptedConversations.first(),
+            peers.verifiedNodeIds().toSet(),
+            messages.conversationsIAuthoredIn(me).toSet(),
+        )
+
+    /**
+     * Refreshes the single quiet, coalesced "N message requests" notification with the current count of
+     * pending (unaccepted) request threads. Reuses the shared [Conversations.isAccepted] predicate so the
+     * count matches the per-message gate; excludes Nearby and blocked senders. Local / notify only, so mesh
+     * convergence is untouched (custody + relay run outside this dispatch path).
+     */
+    private suspend fun notifyPendingRequests(me: String) {
+        val accepted = settings.acceptedConversations.first()
+        val verified = peers.verifiedNodeIds().toSet()
+        val authored = messages.conversationsIAuthoredIn(me).toSet()
+        val blocked = settings.blockedNodeIds.first()
+        val count =
+            messages.distinctConversations().count { id ->
+                id != Conversations.NEARBY &&
+                    id !in blocked &&
+                    !Conversations.isAccepted(id, accepted, verified, authored)
+            }
+        notifier.notifyMessageRequests(count)
+    }
 
     /**
      * Persists an inbound chat into [conversationId], starts pulling any attachment blob we don't hold,
@@ -787,11 +807,17 @@ class InboundPipeline(
         // above and still acks below — only the interruption is withheld (the Message Requests gate). Custody
         // and relay run outside this dispatch path (before it / after it returns), so mesh convergence is
         // untouched; this is a purely local presentation decision.
-        if (isNew && isAccepted(conversationId, me)) {
-            if (env.senderId != me && content.mentions.mention(me)) {
-                notifyMention(env, content, conversationId)
-            } else {
-                notifyIncoming(env, content, conversationId)
+        if (isNew) {
+            if (isAccepted(conversationId, me)) {
+                if (env.senderId != me && content.mentions.mention(me)) {
+                    notifyMention(env, content, conversationId)
+                } else {
+                    notifyIncoming(env, content, conversationId)
+                }
+            } else if (env.senderId != me) {
+                // A stranger's first DM/group: no per-message alert — just refresh the quiet, coalesced
+                // "N message requests" heads-up. A purely local presentation decision, like the accepted path.
+                notifyPendingRequests(me)
             }
         }
         // Ack unconditionally (even on a re-delivery): the receipt floods back to the sender and, for a

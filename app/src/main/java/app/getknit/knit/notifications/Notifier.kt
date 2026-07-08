@@ -130,6 +130,20 @@ interface Notifier {
 
     /** Drops the accumulated state for the dismissed [tag] only (notification swiped away). */
     fun onDismissed(tag: String)
+
+    /**
+     * Posts (or refreshes) the single quiet, coalesced "N message requests" heads-up — a stranger's DM/group
+     * that isn't yet accepted. Passed the current total [count] of pending request threads so a Sybil flood
+     * collapses into one low-priority summary with an updated count; [count] `<= 0` cancels it.
+     */
+    fun notifyMessageRequests(count: Int)
+
+    /**
+     * Records whether the Message Requests inbox is on screen. While visible, the coalesced request
+     * notification is suppressed and any already-posted one is cleared (the user is looking at the list) —
+     * the requests-list analogue of [setVisibleConversation].
+     */
+    fun setRequestsVisible(visible: Boolean)
 }
 
 /**

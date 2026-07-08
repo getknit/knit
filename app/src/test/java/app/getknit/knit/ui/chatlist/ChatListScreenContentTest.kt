@@ -4,6 +4,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.mesh.TransportHealth
@@ -62,6 +63,7 @@ class ChatListScreenContentTest {
                     onOpenProfile = {},
                     onOpenDiagnostics = {},
                     onOpenBlockedUsers = {},
+                    onOpenMessageRequests = {},
                     onOpenDonate = {},
                     onShareApp = {},
                     onOpenRadioSettings = {},
@@ -92,6 +94,7 @@ class ChatListScreenContentTest {
                     onOpenProfile = {},
                     onOpenDiagnostics = {},
                     onOpenBlockedUsers = {},
+                    onOpenMessageRequests = {},
                     onOpenDonate = {},
                     onShareApp = {},
                     onOpenRadioSettings = {},
@@ -104,5 +107,66 @@ class ChatListScreenContentTest {
         compose.onNodeWithTag("chatlist_fab").assertIsDisplayed()
         compose.onNodeWithTag("chatlist_fab").performClick()
         assertEquals(1, newMessage)
+    }
+
+    @Test
+    fun requestsBadgeShowsCountAndTapOpensRequests() {
+        var openedRequests = 0
+        compose.setContent {
+            KnitTheme {
+                ChatListScreenContent(
+                    state =
+                        ChatListUiState(
+                            conversations = listOf(row("nearby", "Nearby", isRoom = true)),
+                            requestCount = 3,
+                        ),
+                    now = now,
+                    onOpenConversation = {},
+                    onNewMessage = {},
+                    onOpenProfile = {},
+                    onOpenDiagnostics = {},
+                    onOpenBlockedUsers = {},
+                    onOpenMessageRequests = { openedRequests++ },
+                    onOpenDonate = {},
+                    onShareApp = {},
+                    onOpenRadioSettings = {},
+                    onDismissRadioWarning = {},
+                    onDeleteConversation = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("3").assertIsDisplayed()
+        compose.onNodeWithTag("chatlist_requests").performClick()
+        assertEquals(1, openedRequests)
+    }
+
+    @Test
+    fun requestsBadgeHiddenWhenNoPendingRequests() {
+        compose.setContent {
+            KnitTheme {
+                ChatListScreenContent(
+                    state =
+                        ChatListUiState(
+                            conversations = listOf(row("nearby", "Nearby", isRoom = true)),
+                            requestCount = 0,
+                        ),
+                    now = now,
+                    onOpenConversation = {},
+                    onNewMessage = {},
+                    onOpenProfile = {},
+                    onOpenDiagnostics = {},
+                    onOpenBlockedUsers = {},
+                    onOpenMessageRequests = {},
+                    onOpenDonate = {},
+                    onShareApp = {},
+                    onOpenRadioSettings = {},
+                    onDismissRadioWarning = {},
+                    onDeleteConversation = {},
+                )
+            }
+        }
+
+        compose.onNodeWithTag("chatlist_requests").assertDoesNotExist()
     }
 }
