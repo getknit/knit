@@ -211,7 +211,7 @@ iOS test suite. Vectors are the single cheapest way to keep two codebases from d
 
 ### 2.4 Convergence constants become cross-platform law
 
-The convergent-custody-quota invariant (see AGENTS.md) — every node must bound the carried set by
+The convergent-custody-quota invariant (see `.agents/rules/mesh.md` and `.agents/context/store-and-forward.md`) — every node must bound the carried set by
 the *identical* rule, or digests never match and the cue plane churns — now spans platforms. The
 custody TTLs, global cap, per-sender/per-group/broadcast quotas, the eviction key (frame-global
 `(sentAt, id)`, newest-N), `FrameType.isCustodial`'s exact membership, and the `StoreDigest` fold

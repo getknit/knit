@@ -19,8 +19,8 @@ group chats**, with profiles (name / status / avatar), emoji **reactions**, **@-
 **attachments** (GIF/JPEG/PNG/WebP). DMs and group messages flood like broadcast traffic — only the
 addressed recipient(s) deliver/ack them — but they are **end-to-end encrypted** (§14), so relays
 carry ciphertext; the public Nearby room stays plaintext by design. A **store-and-forward** custody
-layer makes delivery delay-tolerant (design detail in `AGENTS.md` → *Store-and-forward message
-delivery*), and on-device **content moderation** screens abusive text and explicit images
+layer makes delivery delay-tolerant (design detail in `.agents/context/store-and-forward.md`),
+and on-device **content moderation** screens abusive text and explicit images
 (`docs/CONTENT_MODERATION.md`). The wire format and identity layer still leave room for true
 (targeted) routing without rework.
 
@@ -287,7 +287,7 @@ per-type content:
 - **`reaction`** → `ReactionRepository.apply(...)` (last-writer-wins, §6).
 - **`blobreq`** → `BlobExchange.onRequest(...)` (serve the blob or recurse the pull, §7). **`keyreq`** →
   `KeyExchange` re-serves the requested peer's profile verbatim or records the asker and recurses (the
-  inbound key-recovery path — see `AGENTS.md` → *Store-and-forward message delivery*).
+  inbound key-recovery path — see `.agents/context/store-and-forward.md`).
 
 Every custodial frame is also persisted for store-and-forward (`ForwardSync`, `FrameType.isCustodial`).
 Also: `sendChat` (broadcast / DM / group, with optional attachment + mentions — **encrypts** for DM/group,
@@ -775,4 +775,4 @@ before bumping anything that could pull in a newer Kotlin stdlib.
   collapsed — see `docs/WIRE_COMPAT.md`.)*
 - **Deferred by design:** true (targeted) DM routing, forward secrecy / a ratchet, encrypting
   reactions/receipts/the broadcast room, a group key-gap retransmit, and a BLE connect-time gate on A2DP
-  audio contention (see *Out of scope* in `AGENTS.md`).
+  audio contention (see `.agents/memory/roadmap.md`).
