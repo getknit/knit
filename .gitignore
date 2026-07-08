@@ -26,3 +26,7 @@ keystore.properties
 /assets/trailer/
 
 app/release/*
+
+# Kover coverage Stop-hook (.claude/hooks/gradle-kover-stop.sh): per-clone high-water baseline,
+# re-banked on every commit. Machine-local state, not shared — regenerated on the next Stop.
+.claude/hooks/.kover-baseline
