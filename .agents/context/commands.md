@@ -12,7 +12,8 @@ the Kover exception), see `context/toolchain.md`.
 ./gradlew detekt                    # static analysis via the standalone detekt CLI (reports in build/reports/detekt/)
 ./gradlew ktlint                    # Kotlin style/format lint via the standalone ktlint CLI (reports in build/reports/ktlint/)
 ./gradlew :app:koverHtmlReportDebug # test coverage (Kover) — HTML in app/build/reports/kover/htmlDebug/ (XML: koverXmlReportDebug)
-./gradlew :app:connectedDebugAndroidTest -PseedDemo=true  # seeded UI instrumentation suite on a device/emulator (Orchestrator)
+./gradlew :app:connectedDebugAndroidTest -PseedDemo=true  # seeded UI instrumentation suite on ALL attached adb devices (Orchestrator)
+./gradlew :app:pixel7api33DebugAndroidTest -PseedDemo=true # same suite on a Gradle-managed emulator ONLY (Pixel 7 @ API 33; ignores adb)
 bash scripts/ftl.sh                 # build seeded APKs + run the suite on Firebase Test Lab physical devices
 ```
 

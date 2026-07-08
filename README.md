@@ -160,9 +160,13 @@ send→verify loop can be driven over `adb` without screenshots — see [`AGENTS
   emulator or any device:
 
   ```bash
-  ./gradlew :app:connectedDebugAndroidTest -PseedDemo=true   # locally, on an emulator/device
+  ./gradlew :app:connectedDebugAndroidTest -PseedDemo=true   # on every attached adb device/emulator
+  ./gradlew :app:pixel7api33DebugAndroidTest -PseedDemo=true # on a Gradle-managed emulator only (Pixel 7 @ API 33)
   bash scripts/ftl.sh                                        # on Firebase Test Lab physical devices
   ```
+
+  The `pixel7api33` variant is a **Gradle Managed Device**: Gradle boots a headless emulator, runs the suite,
+  and tears it down — it never touches attached physical devices (which the plain `connected…` task would).
 
   `scripts/ftl.sh` builds the APKs and runs the suite across a 3-device / 3-API matrix on Firebase Test Lab
   (Android Test Orchestrator, per-test isolation), capturing a screenshot per test per device. See

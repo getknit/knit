@@ -149,6 +149,22 @@ android {
             isIncludeAndroidResources = true
             isReturnDefaultValues = true
         }
+
+        // Gradle Managed Device: a headless emulator Gradle provisions/boots/tears down itself, so
+        // `./gradlew :app:pixel7api33DebugAndroidTest -PseedDemo=true` runs the seeded suite on an
+        // emulator ONLY — it never touches whatever physical lab devices are attached to adb (which
+        // plain `connectedDebugAndroidTest` would). Pixel 7 @ API 33 mirrors the FTL matrix's middle
+        // device (cheetah@33 is a Pixel 7). `aosp-atd` = the Automated Test Device image: headless,
+        // GMS-stripped, fastest for UI tests — and the app uses no GMS, so nothing is lost.
+        managedDevices {
+            localDevices {
+                create("pixel7api33") {
+                    device = "Pixel 7"
+                    apiLevel = 33
+                    systemImageSource = "aosp-atd"
+                }
+            }
+        }
     }
 
     sourceSets {
