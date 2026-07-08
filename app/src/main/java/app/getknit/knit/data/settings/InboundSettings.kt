@@ -18,6 +18,9 @@ interface InboundSettings {
     val ownAvatarHash: Flow<String?>
     val displayName: Flow<String>
 
+    /** Conversation ids explicitly accepted out of the message-request queue (see [SettingsStore.acceptedConversations]). */
+    val acceptedConversations: Flow<Set<String>>
+
     /** Blocks [nodeId]; also records the peer's [deviceTag] (when known) so the block survives a key reset. */
     suspend fun block(
         nodeId: String,

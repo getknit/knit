@@ -32,6 +32,13 @@ interface MessageDao {
     @Query("UPDATE messages SET received = 1 WHERE id = :id")
     suspend fun markReceived(id: String)
 
+    /** How many messages in [conversationId] were authored by [me] — nonzero means the user has replied there. */
+    @Query("SELECT COUNT(*) FROM messages WHERE conversationId = :conversationId AND senderId = :me")
+    suspend fun countMineIn(
+        conversationId: String,
+        me: String,
+    ): Int
+
     /** Outgoing DMs to [recipientId] saved while their key was unknown, awaiting retransmit on key arrival. */
     @Query("SELECT * FROM messages WHERE recipientId = :recipientId AND pendingKey = 1")
     suspend fun pendingForRecipient(recipientId: String): List<MessageEntity>
@@ -69,4 +76,36 @@ interface MessageDao {
             "WHERE attachmentHash IS NOT NULL AND attachmentHash NOT IN (SELECT hash FROM blobs)",
     )
     suspend fun hashesNeedingFetch(): List<String>
+
+    /** Distinct conversations the local user ([me]) has authored a message in — the "threads I started" signal. */
+    @Query("SELECT DISTINCT conversationId FROM messages WHERE senderId = :me")
+    suspend fun conversationsIAuthoredIn(me: String): List<String>
+
+    /** Per-conversation row count + newest sentAt, for the retention sweep's cap / age / thread-count decisions. */
+    @Query("SELECT conversationId, MAX(sentAt) AS lastSentAt, COUNT(*) AS count FROM messages GROUP BY conversationId")
+    suspend fun conversationActivity(): List<ConversationActivity>
+
+    /** Keeps only the newest [keep] messages (by sentAt) in [conversationId], deleting the rest. */
+    @Query(
+        "DELETE FROM messages WHERE conversationId = :conversationId AND id NOT IN " +
+            "(SELECT id FROM messages WHERE conversationId = :conversationId ORDER BY sentAt DESC, id DESC LIMIT :keep)",
+    )
+    suspend fun deleteOldestInConversation(
+        conversationId: String,
+        keep: Int,
+    )
+
+    /** Deletes messages in [conversationId] older than [cutoff] (frame-global sentAt). */
+    @Query("DELETE FROM messages WHERE conversationId = :conversationId AND sentAt < :cutoff")
+    suspend fun deleteOlderThan(
+        conversationId: String,
+        cutoff: Long,
+    )
 }
+
+/** Room projection for [MessageDao.conversationActivity]: a thread's id, newest message time, and row count. */
+data class ConversationActivity(
+    val conversationId: String,
+    val lastSentAt: Long,
+    val count: Int,
+)

@@ -10,6 +10,7 @@ import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import kotlinx.coroutines.Dispatchers
@@ -227,6 +228,34 @@ class ForwardRepositoryTest : RoomDbTest() {
 
             assertTrue(repo.store(dm("live", sender = "peer", sentAt = 1_900L), ForwardStore.ORIGIN_RELAY, now = 2_000L))
             assertEquals(StoreDigest.fingerprint(listOf("live")), digest.version.value)
+        }
+
+    @Test
+    fun `a future-dated frame is refused and cannot evict honest custody`() =
+        runTest {
+            val dao = db.forwardDao()
+            val digest = StoreDigest()
+            val repo = repo(db, digest) // per-sender quota = 5
+
+            (1..5).forEach {
+                repo.store(dm("h%d".format(it), sender = "peer", sentAt = 1_000L + it), ForwardStore.ORIGIN_RELAY, now = 1_000L)
+            }
+
+            // Future-dated far beyond the skew window: refused outright, so it never displaces the honest frames
+            // (the custody-wipe attack — a fresh-timestamped frame would otherwise win every oldest-by-sentAt evict).
+            val future = 1_000L + Protocol.MAX_FUTURE_SKEW_MS + 60_000L
+            assertFalse(repo.store(dm("evil", sender = "peer", sentAt = future), ForwardStore.ORIGIN_RELAY, now = 1_000L))
+            assertFalse(dao.exists("evil"))
+            assertEquals(listOf("h1", "h2", "h3", "h4", "h5"), dao.allIds().sorted())
+
+            // A frame within the skew window is still accepted (honest clock skew tolerated).
+            assertTrue(
+                repo.store(
+                    dm("skewed", sender = "other", sentAt = 1_000L + Protocol.MAX_FUTURE_SKEW_MS - 1),
+                    ForwardStore.ORIGIN_RELAY,
+                    now = 1_000L,
+                ),
+            )
         }
 
     @Test

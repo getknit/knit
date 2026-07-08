@@ -5,6 +5,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -70,5 +72,31 @@ class PeerDaoTest : RoomDbTest() {
             dao.upsert(PeerEntity(nodeId = "a", name = "Zed"))
             dao.upsert(PeerEntity(nodeId = "b", name = "Amy"))
             assertEquals(listOf("Amy", "Zed"), dao.observeAll().first().map { it.name })
+        }
+
+    @Test
+    fun `verifiedNodeIds returns only verified peers`() =
+        runTest {
+            dao.upsert(PeerEntity(nodeId = "v", pubKey = "K", verified = true))
+            dao.upsert(PeerEntity(nodeId = "u", pubKey = "K", verified = false))
+            assertEquals(listOf("v"), dao.verifiedNodeIds())
+        }
+
+    @Test
+    fun `countCappable and evictOldestCappable spare verified and protected peers`() =
+        runTest {
+            dao.upsert(PeerEntity(nodeId = "verified", verified = true, updatedAt = 1L))
+            dao.upsert(PeerEntity(nodeId = "protected", verified = false, updatedAt = 2L))
+            dao.upsert(PeerEntity(nodeId = "old", verified = false, updatedAt = 3L))
+            dao.upsert(PeerEntity(nodeId = "new", verified = false, updatedAt = 4L))
+
+            val protectedIds = listOf("protected")
+            assertEquals(2, dao.countCappable(protectedIds)) // "old" + "new" (verified + protected excluded)
+
+            dao.evictOldestCappable(protectedIds, over = 1) // evict the single oldest cappable → "old"
+            assertNull(dao.findByNodeId("old"))
+            assertNotNull(dao.findByNodeId("new"))
+            assertNotNull(dao.findByNodeId("verified"))
+            assertNotNull(dao.findByNodeId("protected"))
         }
 }

@@ -2,6 +2,7 @@ package app.getknit.knit.mesh
 
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import app.getknit.knit.TextLimits
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.KnitDatabase
@@ -30,6 +31,7 @@ import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileContent
+import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
@@ -112,6 +114,8 @@ class InboundPipelineTest {
         override val contentFilteringEnabled = MutableStateFlow(true)
         override val ownAvatarHash = MutableStateFlow<String?>(null)
         override val displayName = MutableStateFlow("Me")
+        val accepted = MutableStateFlow(emptySet<String>())
+        override val acceptedConversations get() = accepted
 
         override suspend fun block(
             nodeId: String,
@@ -1154,17 +1158,125 @@ class InboundPipelineTest {
         }
 
     @Test
-    fun aGroupMessageIsDeliveredAndNotifiedViaItsGroupConversation() =
+    fun anAcceptedGroupMessageIsDeliveredAndNotifiedViaItsGroupConversation() =
         runTest {
             val rig = Rig(backgroundScope)
             val alice = party()
             rig.pin(alice)
             val group = rig.group("g-11", members = listOf(rig.self.nodeId, alice.nodeId), createdBy = alice.nodeId, name = "Crew")
+            rig.settings.accepted.value = setOf("g-11") // an accepted group — not a stranger request
 
             rig.deliver(alice, rig.groupChat(alice, group, id = "gm1", body = "team hi"))
 
             assertEquals("team hi", rig.msgMap["gm1"]?.body)
             coVerify { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    // --- Message Requests: a stranger's DM/group is delivered + acked but silent until "accepted" ---
+
+    @Test
+    fun aStrangerGroupInviteIsDeliveredButNotNotified() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice) // key pinned (so it verifies) but the group is neither accepted nor one we've posted in
+            val group = rig.group("g-req", members = listOf(rig.self.nodeId, alice.nodeId), createdBy = alice.nodeId, name = "Randos")
+
+            rig.deliver(alice, rig.groupChat(alice, group, id = "gm-req", body = "join us"))
+
+            assertEquals("join us", rig.msgMap["gm-req"]?.body) // still delivered/persisted…
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) } // …but not notified
+        }
+
+    @Test
+    fun aStrangerDmIsDeliveredAndAckedButNotNotified() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice) // pinned so it verifies, but NOT verified/accepted and we've never replied → a request
+
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "dm-req", body = "hi stranger"))
+
+            assertEquals("hi stranger", rig.msgMap["dm-req"]?.body) // delivered
+            assertTrue("keep-ack: a pending DM still acks", rig.originated.any { it.type == FrameType.RECEIPT })
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) } // but silent
+        }
+
+    @Test
+    fun anExplicitlyAcceptedDmSenderNotifies() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.accepted.value = setOf(alice.nodeId) // the user accepted this DM request
+
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "dm-ok", body = "thanks"))
+
+            coVerify { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aVerifiedDmSenderNotifiesWithoutAnExplicitAccept() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            // Pinned AND out-of-band verified → a known contact, not a request.
+            rig.peerMap[alice.nodeId] =
+                PeerEntity(nodeId = alice.nodeId, pubKey = alice.bundle.encoded, verified = true, updatedAt = 1L)
+
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "dm-v", body = "hey"))
+
+            coVerify { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aDmInAThreadWeHaveAlreadyRepliedInNotifies() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            coEvery { rig.messages.countMineIn(alice.nodeId, rig.self.nodeId) } returns 1 // we've posted here → known
+
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "dm-r", body = "reply?"))
+
+            coVerify { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    // --- Fix 1: inbound body + future-dated sentAt are clamped ---
+
+    @Test
+    fun anOversizedInboundBodyIsClampedToTheMessageLimit() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+
+            rig.deliver(alice, rig.broadcastChat(alice, id = "big", body = "x".repeat(TextLimits.MESSAGE * 3)))
+
+            assertEquals(TextLimits.MESSAGE, rig.msgMap["big"]?.body?.length)
+        }
+
+    @Test
+    fun aFutureDatedInboundSentAtIsClampedForLocalOrdering() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val farFuture = System.currentTimeMillis() + 3_650L * 24 * 60 * 60_000 // ~10 years ahead
+            val env =
+                RelayEnvelope(
+                    type = FrameType.CHAT,
+                    id = "fut",
+                    senderId = alice.nodeId,
+                    sentAt = farFuture,
+                    payload = WireCodec.encodePayload(ChatContent(body = "from the future")),
+                )
+
+            rig.deliver(alice, env)
+
+            val stored = rig.msgMap["fut"]!!.sentAt
+            assertTrue("a far-future sentAt must be clamped down", stored < farFuture)
+            assertTrue(stored <= System.currentTimeMillis() + Protocol.MAX_FUTURE_SKEW_MS)
         }
 
     @Test

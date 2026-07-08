@@ -75,6 +75,16 @@ class SettingsStore(
     override val blockedDeviceTags: Flow<Set<String>> = dataStore.data.map { it[KEY_BLOCKED_TAGS] ?: emptySet() }
 
     /**
+     * Conversation ids the user has explicitly **accepted** out of the message-request queue — a DM keyed by
+     * the peer's node id, or a group keyed by its "g-…" id (see [app.getknit.knit.data.message.Conversations]).
+     * `InboundPipeline` treats a DM/group as a stranger *request* — notifications suppressed, storage bounded —
+     * unless it is accepted here, the DM peer is verified, or the user has already sent into it. Local-only and,
+     * like [blockedNodeIds], keyed by node id for DMs, so a contact that regenerates its identity key returns as
+     * a fresh request (a one-tap re-accept; the verified / own-message signals usually cover it anyway).
+     */
+    override val acceptedConversations: Flow<Set<String>> = dataStore.data.map { it[KEY_ACCEPTED] ?: emptySet() }
+
+    /**
      * Whether to hide sensitive content received from others. Defaults to on. Gates receive-side hiding
      * only — the inbound toxic-text collapse, the inbound explicit-image blur, and the explicit-avatar
      * rejection (off → adopt anyway). It does **not** affect sending: the sender-side "good-citizen"
@@ -150,6 +160,12 @@ class SettingsStore(
         }
     }
 
+    /** Accepts [conversationId] out of the message-request queue (a DM peer id or a "g-…" group id). */
+    suspend fun accept(conversationId: String) = dataStore.edit { it[KEY_ACCEPTED] = (it[KEY_ACCEPTED] ?: emptySet()) + conversationId }
+
+    /** Moves [conversationId] back to the request queue (undo an accept). */
+    suspend fun unaccept(conversationId: String) = dataStore.edit { it[KEY_ACCEPTED] = (it[KEY_ACCEPTED] ?: emptySet()) - conversationId }
+
     suspend fun setContentFilteringEnabled(value: Boolean) = dataStore.edit { it[KEY_CONTENT_FILTERING] = value }
 
     suspend fun setReviewEngagementStartedAt(value: Long) = dataStore.edit { it[KEY_REVIEW_ENGAGEMENT_STARTED_AT] = value }
@@ -182,6 +198,7 @@ class SettingsStore(
         val KEY_OWN_AVATAR_HASH = stringPreferencesKey("own_avatar_hash")
         val KEY_BLOCKED = stringSetPreferencesKey("blocked_node_ids")
         val KEY_BLOCKED_TAGS = stringSetPreferencesKey("blocked_device_tags")
+        val KEY_ACCEPTED = stringSetPreferencesKey("accepted_conversations")
         val KEY_CONTENT_FILTERING = booleanPreferencesKey("content_filtering_enabled")
         val KEY_REVIEW_ENGAGEMENT_STARTED_AT = longPreferencesKey("review_engagement_started_at")
         val KEY_REVIEW_LAST_ATTEMPT_AT = longPreferencesKey("review_last_attempt_at")

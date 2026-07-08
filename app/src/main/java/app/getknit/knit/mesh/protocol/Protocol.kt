@@ -22,6 +22,21 @@ object Protocol {
     /** Lowest peer version we still interoperate with (reserved for future route-around; unused today). */
     const val MIN_SUPPORTED = 1
 
+    /**
+     * How far a peer's signed `sentAt` may lead our local clock before we treat it as bogus future-dating
+     * rather than honest clock skew. `sentAt` is self-attested and unverifiable, yet it is *also* the
+     * frame-global custody eviction key and the local sort key, so an unbounded future value is a weapon:
+     * a custody frame future-dated past this window is refused at store time
+     * ([app.getknit.knit.data.forward.ForwardRepository.store]) so it can't become un-sweepable and win
+     * every oldest-by-`sentAt` eviction (a handful of Sybil identities would otherwise displace all honest
+     * custody mesh-wide), and an inbound chat's stored `sentAt` is clamped to it
+     * ([app.getknit.knit.mesh.InboundPipeline.deliverChat]) so a future-dated frame can't pin itself to the
+     * top of a conversation forever. 5 min tolerates an unsynced device without giving an attacker a usable
+     * window. Every node compares against its own `now`, exactly like the dead-on-arrival lower bound, so an
+     * honest frame (`sentAt ≈ now`) passes on every node and only the attacker's window closes.
+     */
+    const val MAX_FUTURE_SKEW_MS = 5 * 60_000L
+
     /** Capability bits (append-only — never recycle a position). */
     const val CAP_E2E = 0x1L
     const val CAP_GROUPS = 0x2L

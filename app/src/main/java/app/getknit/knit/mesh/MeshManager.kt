@@ -606,6 +606,7 @@ class MeshManager(
             pendingInbound.sweepExpired() // and any key-wait frames whose TTL lapsed (in-memory, so usually a no-op)
             keyExchange.sweepExpired() // stale unauthenticated key-wants
             blobExchange.sweepExpired() // never-arriving blob fetches
+            sweepLocalStorage() // bound the local messages/peers tables against a Sybil flood (Message Requests hardening)
             // Own/received message attachments: always re-pull (uncapped, kept alive by their message row).
             val ownHashes = messages.hashesNeedingFetch()
             ownHashes.forEach { blobExchange.want(it) }
@@ -628,8 +629,25 @@ class MeshManager(
                 pendingInbound.sweepExpired()
                 keyExchange.sweepExpired()
                 blobExchange.sweepExpired()
+                sweepLocalStorage()
             }
         }
+    }
+
+    /**
+     * Bounds the local `messages` + `peers` tables so a Sybil DM/profile flood can't exhaust storage. Local-only
+     * GC (no wire/convergence effect): the protected set — conversations/peers that are accepted, out-of-band
+     * verified, or that the user has authored in — is exempt from wholesale eviction, matching the notify gate's
+     * "not a request" predicate. Runs on the prune loop and at startup, alongside the forward-store sweep.
+     */
+    private suspend fun sweepLocalStorage() {
+        val now = System.currentTimeMillis()
+        val accepted = settings.acceptedConversations.first()
+        val verified = peers.verifiedNodeIds().toSet()
+        val authored = messages.conversationsIAuthoredIn(identity.nodeId()).toSet()
+        val protectedIds = accepted + verified + authored
+        messages.sweepRetention(now, protectedIds)
+        peers.sweepCap(protectedIds)
     }
 
     /**

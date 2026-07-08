@@ -7,6 +7,7 @@ import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.WireCodec
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -78,6 +79,13 @@ class ForwardRepository(
         // it would be pure invisible residue — and the refusal is also what stops a skewed-clock peer's re-serve
         // from resurrecting a swept frame. Refuse so the caller skips the follow-on work (blob custody).
         if (expiresAt < now) return false
+        // Future-dated cap — the upper complement of the dead-on-arrival guard above. `sentAt` is the sender's
+        // self-attested, unverifiable clock AND the frame-global eviction key, so a frame future-dated past a
+        // generous skew window would be un-sweepable (its expiry is far off) and the newest-by-`sentAt` in every
+        // bucket, letting a handful of Sybil identities win every quota eviction and permanently displace honest
+        // custody mesh-wide. Refuse it. Every node compares against its own `now` exactly like the DOA guard, so
+        // an honest frame (sentAt ≈ now) passes on every node and only the attacker's future window closes.
+        if (env.sentAt > now + Protocol.MAX_FUTURE_SKEW_MS) return false
         // Denormalize the image content hash so the carrier can pull+hold the blob and pin it against GC. This
         // decode is best-effort metadata ONLY — it must never gate the insert: a null (non-chat, no attachment,
         // or an unreadable payload) still stores the frame, so `forward_store` ids stay byte-identical mesh-wide

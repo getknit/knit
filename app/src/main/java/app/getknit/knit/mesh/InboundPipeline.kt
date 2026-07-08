@@ -38,6 +38,7 @@ import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.ProfileContent
+import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
@@ -698,6 +699,24 @@ class InboundPipeline(
     )
 
     /**
+     * Whether [conversationId] should surface a notification / be treated as a known chat rather than a
+     * stranger's **message request**. Convergence-safe: read only on the local delivery path (never in
+     * [canCarry]/relay). The broadcast room is public (always shown; bounded by retention, not the request
+     * queue); a DM/group is "accepted" if the user explicitly accepted it, the DM peer is out-of-band
+     * verified (a `"g-…"` group id never matches a peer row, so a group needs an explicit accept or a reply),
+     * or the user has already authored a message there (they initiated/replied). A stranger's first DM/group
+     * is otherwise silent until accepted — see the Message Requests design.
+     */
+    private suspend fun isAccepted(
+        conversationId: String,
+        me: String,
+    ): Boolean =
+        conversationId == Conversations.NEARBY ||
+            conversationId in settings.acceptedConversations.first() ||
+            peers.find(conversationId)?.verified == true ||
+            messages.countMineIn(conversationId, me) > 0
+
+    /**
      * Persists an inbound chat into [conversationId], starts pulling any attachment blob we don't hold,
      * fires the appropriate notification, and acks. Shared by the DM/broadcast and group delivery paths.
      */
@@ -722,8 +741,14 @@ class InboundPipeline(
                 senderId = env.senderId,
                 recipientId = env.recipientId,
                 conversationId = conversationId,
-                body = content.body,
-                sentAt = env.sentAt,
+                // Clamp the inbound body: our sender-side TextLimits.MESSAGE only bounds what we originate, not
+                // what a peer floods (otherwise bounded only by the 512 KiB record cap → unbounded local growth).
+                // Mirrors the profile name/status clamp in handleProfile.
+                body = content.body.take(TextLimits.MESSAGE),
+                // Clamp a future-dated sentAt for local ordering so a bogus far-future frame can't pin itself to
+                // the top of the conversation forever (the local-display complement of ForwardRepository's custody
+                // guard). Honest clock skew within the window is kept as-is.
+                sentAt = minOf(env.sentAt, System.currentTimeMillis() + Protocol.MAX_FUTURE_SKEW_MS),
                 received = false,
                 mentions = MentionStore.encode(content.mentions),
                 attachmentHash = hash,
@@ -758,7 +783,11 @@ class InboundPipeline(
         // A message that @-mentions us notifies on the dedicated Mentions channel only; everything else
         // takes the per-context channel (Nearby / Group messages / Direct messages), keyed off conversationId.
         // Only on first delivery — a re-served carried DM must not re-notify.
-        if (isNew) {
+        // Suppress notifications for a stranger's request (an unaccepted DM/group): the message still persists
+        // above and still acks below — only the interruption is withheld (the Message Requests gate). Custody
+        // and relay run outside this dispatch path (before it / after it returns), so mesh convergence is
+        // untouched; this is a purely local presentation decision.
+        if (isNew && isAccepted(conversationId, me)) {
             if (env.senderId != me && content.mentions.mention(me)) {
                 notifyMention(env, content, conversationId)
             } else {
