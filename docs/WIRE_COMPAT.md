@@ -67,7 +67,7 @@ Each evolves independently; bump the right one:
    of `onDeliver`; never gate `canCarry` on a scheme version) so a peer that *can* read it still
    receives it.
 
-## Is this change wire-breaking?
+## Wire-breaking vs. additive changes
 
 **Breaking** (needs a coordinated one-time bump of **both** discovery markers — Wi-Fi Aware
 `SERVICE_NAME` *and* BLE `SERVICE_UUID` — plus the DB version) if it: removes, renames, re-types, or

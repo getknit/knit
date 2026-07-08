@@ -48,7 +48,7 @@ NFKD-fold (diacritics/homoglyphs), leetspeak mapping (`$h1t`→`shit`), repeated
 substrings) to avoid the Scunthorpe problem; `allowedTerms` is an allow-list escape hatch. Word list:
 `assets/moderation/profanity_en.txt` (starter set — replace with a vetted corpus, e.g. LDNOOBW).
 
-**Hook points**
+### Hook points
 
 - **Outbound (block-on-send):** `MeshManager.sendChat()` returns `false` and stores/sends nothing if
   `isTextFlagged(text)`. `ChatViewModel.send()` keeps the draft and toasts; only an accepted message

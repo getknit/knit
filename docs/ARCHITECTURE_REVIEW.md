@@ -338,6 +338,7 @@ a structural limit, not a bug, but worth stating.
 Ordered by value-to-effort, safe to tackle incrementally:
 
 **Now (cheap, high-value, low-risk):**
+
 1. ✅ Fix the moderation load-failure `catch` (#3) — one line, restores a load-bearing invariant.
    *Done in `e18b1f4`.*
 2. ✅ Make custody TTL frame-global or tombstone swept ids (#1) — restores a stated convergence
@@ -350,12 +351,14 @@ Ordered by value-to-effort, safe to tackle incrementally:
 6. A doc-sync pass (#18); ✅ the stale "instrumented DAO test" claim (#5) is deleted (`c9cf64d`).
 
 **Next (moderate effort, closes the biggest blind spots):**
+
 7. ✅ Add the `MeshManager` inbound-pipeline integration test and Robolectric DAO tests (#4, #5).
    *Done in `8c291bb` + `c9cf64d`.*
 8. Add ktlint + lint + `assembleRelease` CI jobs; make trivy gating (#17).
 9. Add a BLE health signal + re-advertise `heal()` path; fix the non-idempotent backoff bump (#10).
 
 **Then (larger refactors, do behind the new tests):**
+
 10. ✅ Extract an `InboundPipeline` from `MeshManager` and a UI read-facade (#8, #15). *Done in
     `874e2ec` + `8a8f561`; seam/VM tests in `8c291bb`.*
 11. Pull the NAN "sync-owed" predicate family, watchdog clock, and cue codec into tested policies; land

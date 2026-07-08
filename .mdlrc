@@ -1,0 +1,7 @@
+style "relaxed"
+# MD029: ordered-list numbering is intentional in the docs.
+# MD002: the README title (`# Knit`) is an H1 nested in a centered <div>, which
+#        mdl's parser reads as raw HTML — so it flags the next heading as the
+#        first. MD002 is deprecated (superseded by MD041) and conflicts with the
+#        centered-title README idiom.
+rules "~MD029", "~MD002"

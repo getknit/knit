@@ -48,6 +48,7 @@ Field forensics (`dumpsys wifiaware` + logcat, 3 Pixels, 2026-07-01) showed the 
 So Part B's premise — *"a served responder is wedged; a fresh session is the only reliable reset"* — is only
 half true: `reattach()` clears wedge 1 but is powerless against wedge 2, and Part B's own machinery caused
 wedge 2. **Fix (implemented):**
+
 - **Prevention.** The whole attach→publish→subscribe→responder lifecycle now runs on the single callback
   handler thread with a **generation token** (stale `onAttached`/`onPublishStarted` close their session and
   never arm a responder); `reattach()` is **single-flight**; `startResponder()` is **idempotent** (one

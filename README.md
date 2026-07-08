@@ -158,10 +158,12 @@ send→verify loop can be driven over `adb` without screenshots — see [`AGENTS
   every screen fully populated with **no radios**, to hunt device/API-specific UI quirks. It runs the
   demo-seeded build (`-PseedDemo=true`: a no-op transport + a seeded conversation history), so it works on an
   emulator or any device:
+
   ```bash
   ./gradlew :app:connectedDebugAndroidTest -PseedDemo=true   # locally, on an emulator/device
   bash scripts/ftl.sh                                        # on Firebase Test Lab physical devices
   ```
+
   `scripts/ftl.sh` builds the APKs and runs the suite across a 3-device / 3-API matrix on Firebase Test Lab
   (Android Test Orchestrator, per-test isolation), capturing a screenshot per test per device. See
   [`AGENTS.md`](AGENTS.md) for the matrix, env-var overrides, and the free-tier budget.

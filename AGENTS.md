@@ -517,6 +517,7 @@ route extra is gated on `BuildConfig.DEBUG`. `app/build.gradle.kts` is untouched
     | sort` per device, then `comm`/`diff` the files. **`liveFingerprint` matching across devices = converged**
     (`allFingerprint` is NOT fleet-comparable at a TTL boundary — soak oracles must compare `liveFingerprint`).
   - `…debug.REACT` — `--es id <messageId> --es emoji <emoji>`. `…debug.HEAL` — nudge rescan/re-advertise.
+
   ```
   # send on A, then confirm it landed on B — no UI, no screenshots. Outer quotes matter: adb re-parses
   # on the device, so quote the whole command and single-quote the text (a bare --es text is word-split).
@@ -524,6 +525,7 @@ route extra is gated on `BuildConfig.DEBUG`. `app/build.gradle.kts` is untouched
   adb -s B shell  am broadcast -a app.getknit.knit.debug.STATE -p app.getknit.knit --es conv nearby
   # → data="{…,"messages":[{"from":"<A>","body":"hi there 😀","received":…}]}"
   ```
+
 - **Stable resource-ids** — the root sets `testTagsAsResourceId` (in `KnitApp`), so `Modifier.testTag`s
   surface in `uiautomator dump` as `resource-id="<tag>"` (the bare tag — some Android/uiautomator versions
   prefix it `app.getknit.knit:id/<tag>`, so a matcher should accept either; see `tap_by_resid` in

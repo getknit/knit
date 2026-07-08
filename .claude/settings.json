@@ -27,6 +27,12 @@
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/gradle-ktlint-stop.sh\"",
             "timeout": 300,
             "statusMessage": "Running ./gradlew ktlint"
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/lintorama-stop.sh\"",
+            "timeout": 300,
+            "statusMessage": "Running lintorama"
           }
         ]
       }

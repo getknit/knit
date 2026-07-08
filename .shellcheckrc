@@ -1,0 +1,6 @@
+# Follow `# shellcheck source=…` hints so definitions in the sourced soak
+# library (scripts/soak/lib.sh) are visible to the scripts that source it.
+# Without this, shellcheck can't resolve the dynamic `"$(dirname …)/lib.sh"`
+# path and emits SC1091 (can't follow) plus SC2153 false positives on vars
+# that are actually defined in lib.sh.
+external-sources=true

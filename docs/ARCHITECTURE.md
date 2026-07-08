@@ -94,6 +94,7 @@ on-radio unit, §4); the two `fast*` methods are the best-effort **coordination-
 neighbors with no data path (§3.2) and no-op on a transport without one.
 
 Implementations:
+
 - **`WifiAwareTransport`** — the Wi-Fi Aware (NAN) plane: a coordination plane (Aware messages) plus one
   ephemeral NDP data path; see §3.2.
 - **`BluetoothMeshTransport`** — the Bluetooth LE plane: BLE advertise/scan presence plus several
@@ -108,8 +109,8 @@ Implementations:
   multi-MB GIF lands at ~150-250 KB as a 480px animated WebP) additionally arms an on-demand bring-up
   via `expectBulkTransfer` and grace-waits ≤ 10 s (off the inbound dispatch coroutine) before falling
   back to Bluetooth. Every decision logs a `file route: …` line under the `CompositeMeshTransport` tag.
-  See the AGENTS.md gotcha for why a plain routing preference is not enough (steady-state digest parity
-  + BLE suppression) and why the bulk mark must stay out of the NAN recovery machinery.
+  See the AGENTS.md gotcha for why a plain routing preference is not enough (steady-state digest parity +
+  BLE suppression) and why the bulk mark must stay out of the NAN recovery machinery.
 - **`FakeLoopTransport`** / **`DemoTransport`** — in-process doubles for JVM tests and the demo build;
   `FakeLoopTransport.connect()` wires instances into an arbitrary topology so a multi-hop mesh (relay,
   blob pulls, custody) runs on the JVM with no radios.
