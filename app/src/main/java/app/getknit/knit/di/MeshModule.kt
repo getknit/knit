@@ -36,7 +36,7 @@ val meshModule =
         single { PowerStateSource() }
         single { PowerMonitor(androidContext(), get()) }
         // Bridges the mesh blob-exchange to the encrypted DB; materializes transfer temp files under cacheDir.
-        single { MeshBlobStore(get(), File(androidContext().cacheDir, "blobtx")) }
+        single { MeshBlobStore(get(), get(), File(androidContext().cacheDir, "blobtx")) }
         // Demo-screenshot builds (debug-only, `-PseedDemo=true`) swap in a no-op transport that just reports a
         // few connected neighbors (so the UI looks "connected" against the seeded data); the seam returns null
         // in release, where the demo classes don't ship (see the per-variant di/DemoWiring). Production wraps
@@ -70,9 +70,10 @@ val meshModule =
             MessageCrypto(keys.hybridPrivate, keys.sigPrivate)
         }
         // Constructor order: transport, messages, groups, reactions, peers, identity, settings, blobs,
-        // blobStore, forwardStore, notifier, textModeration, messageCrypto, scope, metrics, db.
+        // imageScreening, blobStore, forwardStore, notifier, textModeration, messageCrypto, scope, metrics, db.
         single {
             MeshManager(
+                get(),
                 get(),
                 get(),
                 get(),

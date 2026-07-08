@@ -36,6 +36,7 @@ import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.TypingContent
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.notifications.Notifier
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
@@ -166,6 +167,7 @@ class InboundPipelineTest {
         val groups = mockk<GroupRepository>(relaxed = true)
         val reactions = mockk<ReactionRepository>(relaxed = true)
         val blobs = mockk<BlobRepository>(relaxed = true)
+        val imageScreening = mockk<ImageScreeningService>(relaxed = true)
         val blobStore = mockk<MeshBlobStore>(relaxed = true)
 
         // A real in-memory DB purely as the transaction runner for reconcileGroup's db.withTransaction; the repos
@@ -208,6 +210,7 @@ class InboundPipelineTest {
                     reactions = reactions,
                     peers = peers,
                     blobs = blobs,
+                    imageScreening = imageScreening,
                     blobStore = blobStore,
                     db = db,
                     identity = FakeIdentity(self),
@@ -997,7 +1000,7 @@ class InboundPipelineTest {
             val rig = Rig(backgroundScope)
             val alice = party()
             rig.pin(alice)
-            coEvery { rig.blobs.isImageFlagged("photoC") } returns true
+            coEvery { rig.imageScreening.isImageFlagged("photoC") } returns true
             val group =
                 rig.group(
                     "g-9",
@@ -1183,7 +1186,7 @@ class InboundPipelineTest {
         runTest {
             val rig = Rig(backgroundScope)
             val alice = party()
-            coEvery { rig.blobs.isImageFlagged("av2") } returns true
+            coEvery { rig.imageScreening.isImageFlagged("av2") } returns true
 
             rig.deliver(alice, rig.profile(alice, avatarHash = "av2"))
             rig.pipeline.onObtained("av2")
@@ -1246,7 +1249,7 @@ class InboundPipelineTest {
             val alice = party()
             val bytes = byteArrayOf(7, 7, 7, 7)
             val hash = sha256Hex(bytes)
-            coEvery { rig.blobs.isImageFlagged(hash) } returns true
+            coEvery { rig.imageScreening.isImageFlagged(hash) } returns true
             val file = File.createTempFile("avatar", ".bin").apply { writeBytes(bytes) }
 
             rig.pipeline.onAvatarReceived(alice.nodeId, hash, "image/jpeg", file.absolutePath)
@@ -1263,7 +1266,7 @@ class InboundPipelineTest {
             rig.pipeline.onObtained("somehash")
 
             coVerify { rig.messages.attachmentKeyForHash("somehash") }
-            coVerify(exactly = 0) { rig.blobs.screenImage(any(), any()) }
+            coVerify(exactly = 0) { rig.imageScreening.screenImage(any(), any()) }
         }
 
     @Test
@@ -1276,7 +1279,7 @@ class InboundPipelineTest {
             rig.pipeline.onObtained("h2")
 
             coVerify { rig.blobs.bytes("h2") }
-            coVerify(exactly = 0) { rig.blobs.screenImage(any(), any()) }
+            coVerify(exactly = 0) { rig.imageScreening.screenImage(any(), any()) }
         }
 
     @Test

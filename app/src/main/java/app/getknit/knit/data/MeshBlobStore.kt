@@ -4,6 +4,7 @@ import android.util.Log
 import app.getknit.knit.mesh.BlobStore
 import app.getknit.knit.mesh.isValidBlobHash
 import app.getknit.knit.mesh.sha256Hex
+import app.getknit.knit.moderation.ImageScreeningService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -20,6 +21,7 @@ import java.io.File
  */
 class MeshBlobStore(
     private val blobs: BlobRepository,
+    private val imageScreening: ImageScreeningService,
     private val transferDir: File,
 ) : BlobStore {
     override suspend fun has(hash: String): Boolean = blobs.exists(hash)
@@ -69,7 +71,7 @@ class MeshBlobStore(
             blobs.insert(hash, mime, bytes)
             // Screen the received image on-device and cache the verdict by hash (the UI blurs flagged
             // attachments). Stored regardless, so a false positive never drops content.
-            blobs.screenImage(hash, bytes)
+            imageScreening.screenImage(hash, bytes)
             src.delete() // drop the plaintext staging copy now that the bytes are encrypted
             fileFor(hash)
         }

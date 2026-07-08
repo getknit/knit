@@ -46,6 +46,7 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.isStorable
 import app.getknit.knit.mesh.protocol.mention
+import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.notifications.NotifConversation
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.notifications.incomingNotification
@@ -83,6 +84,7 @@ class InboundPipeline(
     private val reactions: ReactionRepository,
     private val peers: PeerRepository,
     private val blobs: BlobRepository,
+    private val imageScreening: ImageScreeningService,
     private val blobStore: MeshBlobStore,
     private val db: KnitDatabase,
     private val identity: IdentitySource,
@@ -671,7 +673,7 @@ class InboundPipeline(
         if (targets.isEmpty()) return
         // Mirror the avatar gate: don't adopt an explicit photo when filtering is on (the setting gates
         // receive-side hiding, so off -> adopt anyway); drop the now-unwanted blob.
-        if (settings.contentFilteringEnabled.first() && blobs.isImageFlagged(hash)) {
+        if (settings.contentFilteringEnabled.first() && imageScreening.isImageFlagged(hash)) {
             targets.forEach { advertisedGroupPhotos.remove(it) }
             blobs.deleteIfUnreferenced(hash)
             return
@@ -1048,7 +1050,7 @@ class InboundPipeline(
         if (owners.isEmpty()) return
         // A pulled avatar was screened in MeshBlobStore.saveIncoming; with content filtering on, don't
         // adopt it if flagged explicit (the setting gates receive-side hiding, so off → adopt anyway).
-        if (settings.contentFilteringEnabled.first() && blobs.isImageFlagged(hash)) {
+        if (settings.contentFilteringEnabled.first() && imageScreening.isImageFlagged(hash)) {
             owners.forEach { advertisedAvatars.remove(it) }
             blobs.deleteIfUnreferenced(hash)
             return
@@ -1084,10 +1086,10 @@ class InboundPipeline(
         blobs.insert(hash, mime, bytes)
         File(srcPath).delete()
         advertisedAvatars.remove(nodeId) // pushed directly; no need to also pull it
-        blobs.screenImage(hash, bytes)
+        imageScreening.screenImage(hash, bytes)
         // With content filtering on, don't adopt an explicit avatar: leave the peer on its monogram
         // fallback and drop the blob (the setting gates receive-side hiding, so off → adopt anyway).
-        if (settings.contentFilteringEnabled.first() && blobs.isImageFlagged(hash)) {
+        if (settings.contentFilteringEnabled.first() && imageScreening.isImageFlagged(hash)) {
             blobs.deleteIfUnreferenced(hash)
             return
         }
@@ -1124,7 +1126,7 @@ class InboundPipeline(
         if (hash == null || key == null) return
         val cipher = blobs.bytes(hash) ?: return
         val plain = AttachmentCrypto.open(cipher, b64d(key)) ?: return
-        blobs.screenImage(hash, plain)
+        imageScreening.screenImage(hash, plain)
     }
 
     private companion object {

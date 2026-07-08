@@ -20,6 +20,7 @@ import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.FakeMeshController
+import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.ui.msg
 import app.getknit.knit.ui.peer
@@ -63,6 +64,7 @@ class ChatViewModelTest {
     private val notifier = mockk<Notifier>(relaxed = true)
     private val attachments = mockk<AttachmentStore>(relaxed = true)
     private val blobs = mockk<BlobRepository>(relaxed = true)
+    private val imageScreening = mockk<ImageScreeningService>(relaxed = true)
     private val gallerySaver = mockk<GallerySaver>(relaxed = true)
 
     private val messagesFlow = MutableStateFlow(emptyList<MessageEntity>())
@@ -83,7 +85,7 @@ class ChatViewModelTest {
         every { reactions.observeReactions() } returns reactionsFlow
         every { settings.blockedNodeIds } returns blockedFlow
         every { blobs.observeHashes() } returns hashesFlow
-        every { blobs.observeFlaggedHashes() } returns flaggedFlow
+        every { imageScreening.observeFlaggedHashes() } returns flaggedFlow
         every { settings.contentFilteringEnabled } returns filteringFlow
         every { groups.observeGroup(Conversations.NEARBY) } returns groupFlow
         every { peers.observePeers() } returns peersFlow
@@ -108,6 +110,7 @@ class ChatViewModelTest {
             notifier,
             attachments,
             blobs,
+            imageScreening,
             gallerySaver,
             context,
         )

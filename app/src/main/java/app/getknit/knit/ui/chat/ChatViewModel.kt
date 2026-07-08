@@ -29,6 +29,7 @@ import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.notifications.Notifier
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -138,6 +139,7 @@ class ChatViewModel(
     private val notifier: Notifier,
     private val attachments: AttachmentStore,
     private val blobs: BlobRepository,
+    private val imageScreening: ImageScreeningService,
     private val gallerySaver: GallerySaver,
     private val context: Context,
 ) : ViewModel() {
@@ -210,7 +212,7 @@ class ChatViewModel(
     private val blobState =
         combine(
             blobs.observeHashes(),
-            blobs.observeFlaggedHashes(),
+            imageScreening.observeFlaggedHashes(),
             settings.contentFilteringEnabled,
         ) { present, flagged, hideSensitive ->
             Triple(present.toSet(), flagged.toSet(), hideSensitive)

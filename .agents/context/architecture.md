@@ -32,14 +32,18 @@ mesh/          MeshTransport (interface) · CompositeMeshTransport (runs the rad
                (layered CBOR WireEnvelope) · link/ (LinkFraming — transport-neutral socket record codec)
 mesh/crypto/   E2E (Tink): MessageCrypto (per-msg seal/open) · PublicKeyBundle · MessageContent
                · AttachmentCrypto · SafetyNumber · VerifyPayload (pure, JVM-testable)
-mesh/wifiaware/ WifiAwareTransport — the ONLY place that imports android.net.wifi.aware.*
+mesh/wifiaware/ WifiAwareTransport — the ONLY place that imports android.net.wifi.aware.* · pure
+               JVM-tested policies: NanConnectPolicy/NanServePolicy/NanSyncPolicy (sync-owed folds)
+               /NanWatchdogPolicy (wedge episode clock)/NanCueCodec (cue/SSI codec)
 mesh/bluetooth/ BluetoothMeshTransport (BLE advertise/scan + persistent L2CAP links) — the ONLY place
                that imports android.bluetooth.* · ScanDemandPolicy/PromotionPolicy/ConnectBackoffPolicy
 moderation/    on-device TextModerator (LexicalTextFilter + MlTextModerator) + ImageModerator
-               (NsfwImageModerator) — see docs/CONTENT_MODERATION.md
+               (NsfwImageModerator) + ImageScreeningService (screens image blobs, caches NSFW
+               verdicts — pulled out of BlobRepository) — see docs/CONTENT_MODERATION.md
 data/          Room (messages, peers, reactions, blobs, groups, blob_verdicts, forward_store) + repositories
                · settings/SettingsStore (DataStore) · AvatarStore + AttachmentStore + BlobRepository
-               (image bytes + NSFW verdicts) · message/Conversations (DM keys) · crypto/ DatabaseKey +
+               (content-addressed image bytes + cross-table GC; NSFW screening now in
+               moderation/ImageScreeningService) · message/Conversations (DM keys) · crypto/ DatabaseKey +
                IdentityKeyStore (AndroidKeyStore-wrapped secrets) + KeystoreSecret
 identity/      Identity (stable nodeId + E2E keypair) · NodeId (derive) · DeviceIdSource · DeviceTag · Alias
 notifications/ Notifier + MessageNotifier (per-context channels: nearby, groups, DMs, mentions)

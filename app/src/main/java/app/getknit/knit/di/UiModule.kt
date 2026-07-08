@@ -30,6 +30,7 @@ val uiModule =
                 get(),
                 get(),
                 get(),
+                get(),
                 androidContext(),
             )
         }

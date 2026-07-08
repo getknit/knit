@@ -46,7 +46,7 @@ val appModule =
         // nodeId is derived from the keypair's public bundle; the device id only feeds the block tag.
         single { Identity(get(), get()) }
         single { AvatarStore(androidContext(), get()) }
-        single { AttachmentStore(androidContext(), get()) }
+        single { AttachmentStore(androidContext(), get(), get()) }
         single { GallerySaver(androidContext()) }
         single<Notifier> { MessageNotifier(androidContext()) }
         // Single-shot handoff for content arriving via the system share sheet (ACTION_SEND).
@@ -71,8 +71,8 @@ val appModule =
         single { MessageRepository(get()) }
         single { PeerRepository(get()) }
         single { ReactionRepository(get(), get()) }
-        // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, imageModerator, groupDao, forwardDao, db.
-        single { BlobRepository(get(), get(), get(), get(), get(), get(), get(), get(), get()) }
+        // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, groupDao, forwardDao, db.
+        single { BlobRepository(get(), get(), get(), get(), get(), get(), get(), get()) }
         single { GroupRepository(get(), get(), get()) }
         // Store-and-forward custody for DMs, backed by the encrypted forward_store table. Takes the shared
         // StoreDigest (from meshModule) so every carry-store mutation keeps the cue-plane content digest in sync,

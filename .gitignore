@@ -24,3 +24,5 @@ keystore.properties
 # user-supplied music bed (assets/trailer/*) is not committed (check its license).
 /trailer/
 /assets/trailer/
+
+app/release/*

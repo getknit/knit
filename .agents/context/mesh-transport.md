@@ -112,10 +112,14 @@ routed "large GIFs" over BLE) and `MeshManager.deliverChat` (at `blobExchange.wa
 serving side marks the requester; only the larger nodeId can initiate, so whichever side that is has a
 mark — which arms a TTL'd `BulkWantTracker` that `WifiAwareTransport.syncWanted` ORs in ahead of the
 suppression + digest gates. The split is load-bearing: the bulk term reaches ONLY the admission sites
-(`driveSync`/`initiateOwed`/`initiateOwedToReachable`), while `reachableSyncOwed` (the wedge watchdog's
+(`driveSync`/`initiateOwed`/`initiateOwedToReachable`), while `anyReachableSyncOwed` (the wedge watchdog's
 owed clock — Tier-2 is a process kill), `needsRediscovery` (subscribe re-arm churn is its own wedge
-trigger), `needsIcmRelight`, and `rediscoverDelayMs` read the digest-pure `digestSyncWanted` — a pending
-image always has the BLE fallback carrying it, so it is never an outage to "heal". Marks are gated on a
+trigger), `needsIcmRelight`, and `rediscoverDelayMs` read the digest-pure gate — a pending
+image always has the BLE fallback carrying it, so it is never an outage to "heal". This whole predicate
+family is now a **pure `NanSyncPolicy`** (per-candidate `PeerFacts` snapshots carry `digestWanted` and
+`bulkWanted` as sibling flags so the split is structural and JVM-tested); the transport keeps thin wrappers
+that build the snapshot and call the policy. The two-tier watchdog clock is `NanWatchdogPolicy` and the
+cue/SSI codec is `NanCueCodec` — both pure and tested alongside `NanConnectPolicy`/`NanServePolicy`. Marks are gated on a
 fresh sighting (`BULK_FRESH_MS` 45 s, not the 150 s linger), fail-cooled 120 s on a failed initiate, and
 never bypass connect backoff / single-slot admission / SETTLE. The composite grace-waits ≤ 10 s for the
 NDP **off the inbound dispatch coroutine** (`onRequest`→`sendFile` runs inline in the router's single

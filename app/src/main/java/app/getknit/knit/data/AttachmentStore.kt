@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import app.getknit.knit.data.webp.WebpTranscode
+import app.getknit.knit.moderation.ImageScreeningService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -21,13 +22,14 @@ import java.security.MessageDigest
  * faster; a GIF that somehow can't be shrunk falls back to its original bytes. The bytes never touch
  * disk — they go straight into the encrypted database.
  *
- * Before staging, the image is screened for explicit content via [BlobRepository]. Sending an explicit
- * image is *allowed but discouraged*: a flagged image is still ingested, and [ingest] reports the flag
- * so the caller can ask the user to confirm before staging/sending it (the receive side blurs it).
+ * Before staging, the image is screened for explicit content via [ImageScreeningService]. Sending an
+ * explicit image is *allowed but discouraged*: a flagged image is still ingested, and [ingest] reports the
+ * flag so the caller can ask the user to confirm before staging/sending it (the receive side blurs it).
  */
 class AttachmentStore(
     private val context: Context,
     private val blobs: BlobRepository,
+    private val imageScreening: ImageScreeningService,
 ) {
     /** The result of ingesting a picked/keyboard image: its content [hash] and [mime]. */
     data class Ingested(
@@ -105,7 +107,7 @@ class AttachmentStore(
             // send-side verdict matches what the recipient computes rather than scoring the sharper,
             // pre-JPEG source. Stored regardless — an explicit image is allowed but the caller confirms
             // before sending; fail-open when the bytes can't be decoded.
-            val flagged = blobs.isImageExplicit(bytes)
+            val flagged = imageScreening.isImageExplicit(bytes)
             val hash = sha256(bytes)
             blobs.insert(hash, mime, bytes)
             IngestResult.Success(Ingested(hash, mime), flagged)

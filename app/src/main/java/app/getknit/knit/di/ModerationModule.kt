@@ -2,6 +2,7 @@ package app.getknit.knit.di
 
 import app.getknit.knit.moderation.HybridTextModerator
 import app.getknit.knit.moderation.ImageModerator
+import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.moderation.LexicalTextFilter
 import app.getknit.knit.moderation.MlTextModerator
 import app.getknit.knit.moderation.NsfwImageModerator
@@ -35,4 +36,7 @@ val moderationModule =
             )
         }
         single<ImageModerator> { NsfwImageModerator(androidContext()) }
+        // Screens image blobs against the classifier and caches the NSFW verdict by content hash
+        // (blobVerdictDao). Extracted from BlobRepository so the data layer no longer invokes the classifier.
+        single { ImageScreeningService(get(), get()) }
     }

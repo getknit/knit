@@ -6,9 +6,16 @@ and are marked ✅ below — **#1** (`3df428a`, completed by work item #8), **#2
 (`e18b1f4`; the no-throw contract was later made mechanical in `265c79a`), **#4** (`8c291bb`), **#5**
 (`c9cf64d`), **#7** (`53646bb`), **#9** (`db67f72`), **#13** (`db.withTransaction` + a `ForwardRepository`
 mutex + transactional `reconcileGroup`), **#14** (immutable key pin — a differing key is refused),
-and **#15** (`8a8f561` + `8c291bb`). **#8** is
-**partially** fixed: the `InboundPipeline` extraction from `MeshManager` landed (`874e2ec`), but the
-`WifiAwareTransport` half has not.
+and **#15** (`8a8f561` + `8c291bb`). **#8** was
+**partially** fixed: the `InboundPipeline` extraction from `MeshManager` landed (`874e2ec`).
+**Status updates (2026-07-07):** **#8** is now fully addressed — the `WifiAwareTransport` decision logic is
+extracted into three pure, JVM-tested policies: `NanSyncPolicy` + `PeerFacts` (the eight "sync-owed"
+predicates), `NanWatchdogPolicy` (the two-tier episode clock), and `NanCueCodec` (the cue/SSI codec). The
+"half-landed round-robin" turned out **already landed** — `driveSync` selects via an LRU
+`minWithOrNull(compareBy(…))`, not `firstOrNull`, and `lastInitiateAttemptAt` *is* read; the review's claim
+was stale. **#16** is partially addressed: `ImageScreeningService` is extracted out of `BlobRepository`
+(now 8 ctor deps, classifier-free); the `ChatScreen.kt` split (reviewability-only, no test gain) remains
+deliberately deferred.
 **Scope:** Full codebase (~25k LOC main across `mesh/`, `data/`, `ui/`, `moderation/`, `identity/`,
 `notifications/`; ~6.3k LOC / 50 JVM test files; ~1.8k lines of design docs). Reviewed against the
 intended design in `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/WIRE_COMPAT.md`,
@@ -36,10 +43,11 @@ The weaknesses are concentrated and mostly **not** in the clever parts. They clu
 1. **A few genuine correctness defects** that contradict the design's own stated invariants — most
    notably a non-convergent custody TTL and a moderation failure path that can throw out of the inbound
    handler. *(✅ Both since fixed — #1, #3.)*
-2. **Structural gravity** — `MeshManager` (1838 lines) and `WifiAwareTransport` (2233 lines) are
-   god-objects where correctness rides on prose-enforced ordering contracts. *(✅ Addressed for
-   `MeshManager` since the review: its inbound half is now an injectable, tested `InboundPipeline` and
-   the file is down to 953 lines — #8/#4; `WifiAwareTransport` still stands.)*
+2. **Structural gravity** — `MeshManager` (1838 lines) and `WifiAwareTransport` (2388 lines) are
+   god-objects where correctness rides on prose-enforced ordering contracts. *(✅ Both addressed since the
+   review: `MeshManager`'s inbound half is now an injectable, tested `InboundPipeline` (953 lines — #8/#4),
+   and `WifiAwareTransport`'s decision logic is extracted into three pure, JVM-tested policies —
+   `NanSyncPolicy`/`NanWatchdogPolicy`/`NanCueCodec`, 2026-07-07.)*
 3. **A cryptographic-identity foundation that is under-sized** — the 8-char nodeId gives ~41 bits, which
    is brute-forceable and undercuts the self-certifying-identity claim the whole trust model rests on.
    *(✅ Since fixed: nodeId widened to 128 bits — #2.)*
@@ -67,7 +75,7 @@ defects; only where the code diverges from its own docs, or a consequence is uns
 | 5 | **High** | Testing | **✅ Fixed** (`c9cf64d`) — `ForwardDaoTest`/`BlobDaoTest`/`ReactionDaoTest`/`MessageDaoTest` now execute the real eviction/orphan/GC SQL against in-memory Room under Robolectric; `exportSchema` is on with a checked-in baseline (`app/schemas/…/21.json`), a `MigrationTestHelper` harness (`KnitDatabaseMigrationTest`) is ready for the first real migration, and the stale "instrumented DAO test" comment is corrected.                                                                                                                                                                                                                                                                                                                                                                                                        | ✅ Robolectric + in-memory Room executing the real queries (see `.agents/context/testing.md`, "JVM Room/DAO + migration tests"). |
 | 6 | **High** | Release | **R8 fully disabled** (`build.gradle.kts:40-43`): demo/fake classes ship in the release APK, ~30 MB tflite + unshrunk Compose bloat the *shareable* APK, and a privacy-marketed app ships zero obfuscation. No `signingConfig`; `versionCode = 1`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Decide the R8 story now (enable + author keep rules, or record why-not); force `SEED_DEMO=false` in the release buildType; add a signing config. |
 | 7 | Med-High | Security | **✅ Fixed** (`53646bb`) — the **checked-in APK-share signing key** (`res/raw/knit_share_key.pk8`+`.der`) was public, so anyone could sign a trojaned "Knit" that Android accepts as a **legitimate in-place update** for share-installed users. The key files are removed; `ApkMerger` now re-signs with a **per-install EC P-256 AndroidKeyStore key** (`ShareSigningKey`) generated on first share, so no signing identity is shared across installs and no attacker holds a key a victim's device would honor. Documented tradeoff: a share-installed Knit updates in place only from the device that produced its APK.                                                                                                                                                                                                           | ✅ Per-install Keystore key generated at first share (`ShareSigningKey`). |
-| 8 | Med | Structure | **✅ Partially fixed** (`874e2ec`, prep in `96cbe09`) — the whole inbound half of `MeshManager` moved verbatim into a constructor-injectable `InboundPipeline` (onDeliver, every per-type handler, reconcileGroup + group-photo helpers, avatar/attachment screening), dropping `MeshManager` from **1838 → 953 LOC**; the no-throw ordering contract was then made *mechanical* (`265c79a` wraps the whole `dispatchByType`) and is now covered by `InboundPipelineTest` (#4). **Remaining:** the `WifiAwareTransport` god-file (still 2334 LOC) and its un-extracted "sync-owed" predicate family / half-landed round-robin — see §6 item 11.                                                                                                                                                                                       | ✅ `InboundPipeline` extracted (the highest-value refactor); NAN decision-logic extraction still open. |
+| 8 | Med | Structure | **✅ Partially fixed** (`874e2ec`, prep in `96cbe09`) — the whole inbound half of `MeshManager` moved verbatim into a constructor-injectable `InboundPipeline` (onDeliver, every per-type handler, reconcileGroup + group-photo helpers, avatar/attachment screening), dropping `MeshManager` from **1838 → 953 LOC**; the no-throw ordering contract was then made *mechanical* (`265c79a` wraps the whole `dispatchByType`) and is now covered by `InboundPipelineTest` (#4). **✅ NAN half also done** (2026-07-07): the eight "sync-owed" predicates, the two-tier watchdog episode clock, and the cue/SSI codec are extracted into pure JVM-tested policies (`NanSyncPolicy` + `PeerFacts` / `NanWatchdogPolicy` / `NanCueCodec`); the decision logic is now testable off-Android and `WifiAwareTransport` is 2360 LOC. The "half-landed round-robin" was already landed (LRU `minWithOrNull`, not `firstOrNull`) — see §6 item 11.                                                                                                                                                                                       | ✅ `InboundPipeline` + the three NAN policies extracted. |
 | 9 | Med | Security | **✅ Fixed** (`db67f72`) — `KeyExchange` (`missing`/`wanters`) and `BlobExchange` (`fetching`/`wanters`/serve-memo) are now capped with oldest-first eviction + TTL sweep, outbound keyreq batches are chunked under the link payload ceiling (`MAX_IDS_PER_REQ`) and inbound id lists capped against recursion (`MAX_REQUEST_IDS`); `FramedLink` now drops (rather than dies on) a codec-rejected record, and both mesh scopes carry a shared `meshExceptionHandler` backstop. JVM-tested (`KeyExchangeTest`/`BlobExchangeTest` eviction cases).                                                                                                                                                                                                                                                                                     | ✅ Capped/evicted + TTL-swept; keyreq chunked; mesh-scope `CoroutineExceptionHandler` added. |
 | 10 | Med | Reliability | **Data-plane reliability rests on heuristic watchdogs.** The NAN single-NDI constraint has driven a long P0–P6 wedge-fighting campaign (two-tier watchdog, ghost-proof recycle, streak gates). It's impressively managed and documented, but self-heal loops around an opaque firmware resource are inherently fragile, and BLE has an analogous class of **sticky advertise/accept failures with no self-heal and `health` stuck `Healthy`**.                                                                                                                                                                                                                                                                                                                                                                                       | Add a health signal + re-advertise path to BLE `heal()`; continue extracting NAN decision logic into testable policies (below). |
 | 11 | Med | Security / privacy | **Won't fix** **Metadata & tracking exposure beyond what's documented**: the full group roster + name + `createdBy` travel cleartext on every group frame (passive social-graph reconstruction), and the stable nodeId is broadcast in the clear over NAN SSI + BLE service data (a keypair-lifetime OTA device-tracking identifier). `deviceTag` further defeats nodeId rotation as a privacy measure.                                                                                                                                                                                                                                                                                                                                                                                                                              | Surface these as explicit privacy notes; consider rotating/short-lived advert identifiers. |
@@ -75,7 +83,7 @@ defects; only where the code diverges from its own docs, or a consequence is uns
 | 13 | Med | Correctness | **✅ Fixed** — **Read-then-write races** without transactions: `ReactionRepository.apply`, `ForwardRepository.store` (count→evict→digest), `BlobRepository.deleteIfUnreferenced`, `GroupRepository.leave/delete`. The "single-writer convention" was **false** — UI (`viewModelScope`), the notification receiver, and session-scope sweep/`watch` loops all mutate these repos off the inbound collector. Each multi-step mutation now runs in `db.withTransaction` (`BEGIN EXCLUSIVE` serializes the read-modify-write); `ForwardRepository` additionally holds a `Mutex` *outer* to the transaction so the in-memory `StoreDigest` stays in lockstep (a Room txn can't enroll it); and the inbound `reconcileGroup` find→upsert was made transactional too, so a UI `leave`/`delete` can't be resurrected by a racing group frame. | ✅ `db.withTransaction` + a `ForwardRepository` `Mutex` + transactional `reconcileGroup`; convention documented in `AGENTS.md`. |
 | 14 | Med | Security (defense-in-depth) | **✅ Fixed** — was: pin overwrite kept `verified` across a key change (`handleProfile`, since moved to `InboundPipeline.kt`): a profile whose key derives to the senderId overwrote the pinned key while preserving the verified badge, with no reset. Now the pin is **immutable** — `handleProfile` refuses a profile whose key differs from the sender's already-pinned key (a change is only reachable via a nodeId hash collision), counts it `PIN_CHANGE_REFUSED`, and keeps the first-pinned key + its `verified` state, so a colliding key can't inherit a verified contact. (`verified` is UI-only; no mesh gate ever read it.) JVM-tested in `InboundPipelineTest`.                                                                                                                                                         | ✅ `handleProfile` refuses any pinned-key change (immutable pin); `verified` stays bound to it. |
 | 15 | Med | Structure | **✅ Fixed** (`8a8f561`, test in `8c291bb`) — a narrow `MeshController` facade (the 6 read StateFlows + send/heal/restart/start/stop) now fronts `MeshManager`; all 6 ViewModels, `MeshService`, `KnitApp`, the notification receiver, and the debug bridge inject the interface, so a VM is testable against a fake — demonstrated by the first-ever VM test, `DiagnosticsViewModelTest` (a `FakeMeshController`).                                                                                                                                                                                                                                                                                                                                                                                                                   | ✅ `MeshController` read-facade + first VM test. |
-| 16 | Low-Med | Structure | `ChatScreen.kt` (1896 lines) and `BlobRepository` (moderation hub in a data class, 8 ctor deps) warrant mechanical splits.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Split `ChatScreen` along its 4 already-private-composable seams; extract an `ImageScreeningService`. |
+| 16 | Low-Med | Structure | **✅ `BlobRepository` split done** (2026-07-07): the classifier + verdict-cache screening moved to a dedicated `ImageScreeningService` (`imageModerator` + `verdicts`, JVM-tested), so the data class no longer invokes moderation (9 → 8 ctor deps; it keeps `verdicts` only for the atomic GC verdict-row delete). **Remaining:** the mechanical `ChatScreen.kt` split (now ~2345 lines) — pure reviewability, no test gain — is **deliberately deferred**, with a ready seam map in the refactor plan.                                                                                                                                                                                                                                                                                                                                          | ✅ `ImageScreeningService` extracted; `ChatScreen` split deferred. |
 | 17 | Low-Med | CI / process | CI gates only compile + unit tests. **No ktlint, no `./gradlew lint`, no `assembleRelease`, no instrumented tests**; detekt + trivy are `allow_failure`. Local (stop-hook) and CI enforcement have drifted.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Add ktlint + lint + a release-build job; make the supply-chain scan gating. |
 | 18 | Low | Docs | Drift: `AGENTS.md` still describes pre-P1 "single-slot" NAN admission though P1–P6 concurrent-serve shipped; `docs/CONTENT_MODERATION.md` omits the `ScopedTextModerator` DM/room split; NSFW threshold 0.9 in code vs 0.7 in docs; several renamed-symbol comments.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | A doc-sync pass. |
 
@@ -120,11 +128,12 @@ These are genuinely excellent and worth protecting through any refactor:
   keys wrapped under StrongBox-preferred AndroidKeyStore and kept *outside* the destructively-migrated
   DB; Coil disk cache disabled so decrypted bytes never touch disk.
 
-- **The pure-policy extraction pattern** — `NanConnectPolicy`, `NanServePolicy`, `ScanDemandPolicy`,
-  `PromotionPolicy`, `ConnectBackoffPolicy`, `PowerPolicy`, `BlePresenceTracker`, `Conversations`,
-  `DigestTracker`, `ReviewPromptPolicy` — pulls the hard decisions out of Android-bound classes into
-  JVM-tested units. This is the right strategy and pays for itself; the recommendation below is simply
-  to apply it *further*.
+- **The pure-policy extraction pattern** — `NanConnectPolicy`, `NanServePolicy`, `NanSyncPolicy`,
+  `NanWatchdogPolicy`, `NanCueCodec`, `ScanDemandPolicy`, `PromotionPolicy`, `ConnectBackoffPolicy`,
+  `PowerPolicy`, `BlePresenceTracker`, `Conversations`, `DigestTracker`, `ReviewPromptPolicy` — pulls the hard
+  decisions out of Android-bound classes into JVM-tested units. This is the right strategy and pays for
+  itself; the last three NAN policies (2026-07-07) applied it to the `WifiAwareTransport` decision logic
+  the recommendation below called out.
 
 - **Notifications, accessibility, and Compose UDF** are all above-average: MessagingStyle with
   conversation shortcuts/LocusId, correct summary-child cancel handling, `clearAndSetSemantics` row
@@ -214,9 +223,9 @@ plainly for a privacy-positioned app.
 ### 4.3 Structural gravity
 
 **[#8, Med] `MeshManager`** (originally 1838 LOC, 15 ctor deps; **now 953** after the extraction below)
-and the **2334-line `WifiAwareTransport`** are the two mass centers. Neither is "bad code" — both are
-heavily and honestly documented, and the size is a *consequence* of genuinely hard problems — but both
-concentrate risk:
+and the **`WifiAwareTransport`** (2388 → 2360 LOC) were the two mass centers. Neither is "bad code" — both
+are heavily and honestly documented, and the size is a *consequence* of genuinely hard problems — but both
+concentrated risk. **Both are now addressed:**
 
 - **✅ In `MeshManager`, this is done** (`874e2ec` + prep `96cbe09`): the correctness of the DTN stack
   lived in ordering contracts expressed as comments ("must run last", "runs before the router schedules
@@ -224,20 +233,29 @@ concentrate risk:
   helpers, and the avatar/attachment screening — moved verbatim into a constructor-injectable
   `InboundPipeline`, and the "never throw out of `onDeliver`" contract is now *mechanical* (`265c79a`)
   and testable (`InboundPipelineTest`, #4). Called the highest-value refactor in the codebase; it landed.
-- In `WifiAwareTransport`, ~40% is Android-free decision logic. A family of eight near-duplicate
-  "sync-owed" predicates, the two-tier watchdog's episode clock, and the cue/SSI codec are all pure and
-  belong in policy objects beside `NanConnectPolicy`/`NanServePolicy`. There is also a **half-landed
-  round-robin fairness change** (`lastInitiateAttemptAt` is written and cleared but never read;
-  `driveSync` still selects `firstOrNull` in HashMap order) that the NAN re-audit doc claims as
-  "implemented" — a doc/code divergence plus a real initiate-starvation behavior.
+- **✅ In `WifiAwareTransport`, this is done** (2026-07-07): the ~40% that was Android-free decision logic —
+  the eight near-duplicate "sync-owed" predicates, the two-tier watchdog's episode clock, and the cue/SSI
+  codec — is extracted into three pure policy objects beside `NanConnectPolicy`/`NanServePolicy`:
+  `NanSyncPolicy` (a per-candidate `PeerFacts` snapshot the transport builds under its own locks/clock, so
+  each fold is a pure boolean; the digest-pure-vs-bulk-aware split is now a *structural, tested* invariant),
+  `NanWatchdogPolicy` (the episode-clock arithmetic → an `Action` + next-clock decision), and `NanCueCodec`
+  (the pure cue/SSI parse/encode). Each has a JVM test; the transport keeps thin wrappers whose bodies now
+  call the policies, preserving every call site and lock footprint. The **"half-landed round-robin"** claim
+  was **stale** — `driveSync` already selects the least-recently-attempted peer via
+  `minWithOrNull(compareBy(…))` and `lastInitiateAttemptAt` *is* read (landed in `7de4697`); there is no
+  starvation bug and the NAN re-audit doc's "implemented" is correct.
 
-`ChatScreen.kt` (1896 lines) is a milder version of the same: every concern is already a private
+`ChatScreen.kt` (~2345 lines) is a milder version of the same: every concern is already a private
 composable, so the split into `MessageBubble.kt` / `MessageInput.kt` / `ReactionPicker.kt` is purely
-mechanical and improves reviewability with no logic risk.
+mechanical and improves reviewability with no logic risk — **deliberately deferred** as reviewability-only
+(no test gain).
 
-`BlobRepository` doubling as the image-moderation hub (invoking the classifier and policy-logging inside
-a data-layer class, with 8 positional `get()` dependencies) is scope creep worth reversing with an
-`ImageScreeningService`.
+**✅ `BlobRepository`'s image-moderation hub role is reversed** (2026-07-07): invoking the classifier and
+policy-logging inside a data-layer class was scope creep; the screening (`isImageExplicit`/`screenImage`/
+`isImageFlagged`/`observeFlaggedHashes` + the classifier) moved to a dedicated `ImageScreeningService`
+(`imageModerator` + `verdicts`), JVM-tested against a fake moderator + in-memory verdict DAO. `BlobRepository`
+drops the `imageModerator` dep (9 → 8) and keeps `verdicts` only for its GC — the blob delete and the
+verdict-row delete stay atomic in one `db.withTransaction`.
 
 ### 4.4 Reliability
 
@@ -321,7 +339,7 @@ a structural limit, not a bug, but worth stating.
 | DTN custody / anti-entropy | A− | Elegant and well-tested; docked for the non-convergent TTL (#1). |
 | E2E crypto (`mesh/crypto`) | A− | AEAD/HPKE done right; identity width (#2) is the caveat. |
 | Bluetooth LE plane | B+ | Excellent policy extraction; sticky-failure self-heal gaps. |
-| Wi-Fi Aware plane | B | Heroic, well-documented — but a god-file with un-extracted, untested decision logic. |
+| Wi-Fi Aware plane | B+ | Heroic, well-documented; the decision logic (sync-owed folds, watchdog clock, cue codec) is now extracted into pure, JVM-tested policies (#8). |
 | Data / persistence | B+ | Coherent at-rest story; DAO/migration tests now execute (#5); untransacted races (#13) now transactional; atomicity gaps (#12) remain. |
 | Identity | B | Self-certifying model is elegant but under-sized (#2). |
 | Moderation | B | Good design; the load-failure path (#3) and asset/license loose ends. |
@@ -361,12 +379,13 @@ Ordered by value-to-effort, safe to tackle incrementally:
 
 10. ✅ Extract an `InboundPipeline` from `MeshManager` and a UI read-facade (#8, #15). *Done in
     `874e2ec` + `8a8f561`; seam/VM tests in `8c291bb`.*
-11. Pull the NAN "sync-owed" predicate family, watchdog clock, and cue codec into tested policies; land
-    or remove the round-robin fairness change (#8).
+11. ✅ Pull the NAN "sync-owed" predicate family, watchdog clock, and cue codec into tested policies
+    (`NanSyncPolicy`/`NanWatchdogPolicy`/`NanCueCodec`) (#8). The round-robin fairness change needed no
+    action — it was already landed (`7de4697`). *Done 2026-07-07.*
 12. ✅ Widen the nodeId to ≥128 bits as a coordinated wire break (#2) — schedule alongside the next
     planned wire bump. *Done in `7b2c6ba`.*
-13. Decide and execute the R8 story with real keep rules (#6); split `ChatScreen` and extract
-    `ImageScreeningService` (#16).
+13. Decide and execute the R8 story with real keep rules (#6); ✅ extract `ImageScreeningService` (#16,
+    *done 2026-07-07*) — `ChatScreen`'s split is deferred (reviewability-only).
 
 ---
 

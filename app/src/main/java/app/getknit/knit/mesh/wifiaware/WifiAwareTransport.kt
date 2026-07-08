@@ -494,37 +494,20 @@ class WifiAwareTransport(
      * [REACHABLE_LINGER_MS] (5 cue heartbeats) counts as reachable; a genuine leaked-request wedge keeps the
      * peer cueing us over the (NDP-free) coordination plane, so it stays reachable and still trips the wedge.
      */
-    private fun anySyncOwed(): Boolean {
-        val v = storeDigest.current()
-        val now = SystemClock.elapsedRealtime()
-        return cueTarget.keys.any { nodeId -> reachableSyncOwed(nodeId, v, now) && corroboratedPresent(nodeId) }
-    }
+    private fun anySyncOwed(): Boolean =
+        NanSyncPolicy.anySyncOwed(snapshotPeerFacts(SystemClock.elapsedRealtime(), storeDigest.current(), includeDiscovered = false))
 
     /**
-     * As [anySyncOwed] but **without** the [corroboratedPresent] gate — used by [checkWedge]'s Tier-1
-     * responder refresh, whose action (a cheap, safe [sessionCycleWithSettle]) is worth taking on an owed peer
-     * we merely *hear* (reachable), even with no corroborating plane. This is what lets the smallest node —
+     * As [anySyncOwed] but **without** the [NanSyncPolicy.PeerFacts.corroborated] gate — used by [checkWedge]'s
+     * Tier-1 responder refresh, whose action (a cheap, safe [sessionCycleWithSettle]) is worth taking on an owed
+     * peer we merely *hear* (reachable), even with no corroborating plane. This is what lets the smallest node —
      * everyone's pure responder — self-heal a wedged responder when Bluetooth is itself dark (so there is
      * nothing to corroborate with); the corroboration gate remains on the Tier-2 process kill only.
      */
-    private fun anyReachableSyncOwed(): Boolean {
-        val v = storeDigest.current()
-        val now = SystemClock.elapsedRealtime()
-        return cueTarget.keys.any { nodeId -> reachableSyncOwed(nodeId, v, now) }
-    }
-
-    /**
-     * A sync to [nodeId] is owed (digest-pure — a pending bulk transfer deliberately does NOT count: its
-     * bytes ride the BLE fallback, so it is never a stuck-data-plane signal for the watchdog) and the peer
-     * is a live link or was heard within [REACHABLE_LINGER_MS].
-     */
-    private fun reachableSyncOwed(
-        nodeId: String,
-        localVersion: Long,
-        now: Long,
-    ): Boolean =
-        digestSyncWanted(nodeId, localVersion) &&
-            (peers.containsKey(nodeId) || lastSeenAt[nodeId]?.let { now - it <= REACHABLE_LINGER_MS } == true)
+    private fun anyReachableSyncOwed(): Boolean =
+        NanSyncPolicy.anyReachableSyncOwed(
+            snapshotPeerFacts(SystemClock.elapsedRealtime(), storeDigest.current(), includeDiscovered = false),
+        )
 
     /**
      * Whether an owed [nodeId] is corroborated genuinely-present strongly enough to justify the wedge self-kill.
@@ -538,6 +521,32 @@ class WifiAwareTransport(
      * no corroborator, so it falls back to the prior behaviour.
      */
     private fun corroboratedPresent(nodeId: String): Boolean = !hasForeignPlane || peers.containsKey(nodeId) || nodeId in foreignReachable
+
+    /**
+     * Reduce every [cueTarget] candidate to an immutable [NanSyncPolicy.PeerFacts] at one instant ([now]/[v]),
+     * so the pure [NanSyncPolicy] folds replace the former inline predicate family. Each field is the exact
+     * sub-expression of the original inline predicate. Reads [discovered] under [lock] ONLY when
+     * [includeDiscovered] (i.e. only [needsRediscovery]), matching each original predicate's lock footprint —
+     * every other caller stays lock-free, exactly as before.
+     */
+    private fun snapshotPeerFacts(
+        now: Long,
+        v: Long,
+        includeDiscovered: Boolean,
+    ): List<NanSyncPolicy.PeerFacts> {
+        val disc = if (includeDiscovered) synchronized(lock) { discovered.keys.toSet() } else emptySet<String>()
+        return cueTarget.keys.toList().map { id ->
+            NanSyncPolicy.PeerFacts(
+                initiator = localNodeId > id,
+                linked = peers.containsKey(id),
+                discovered = id in disc,
+                digestWanted = digestSyncWanted(id, v),
+                bulkWanted = bulkWanted.isWanted(id),
+                lingerReachable = peers.containsKey(id) || (lastSeenAt[id]?.let { now - it <= REACHABLE_LINGER_MS } == true),
+                corroborated = corroboratedPresent(id),
+            )
+        }
+    }
 
     /**
      * Last-resort self-heal for the **leaked-request wedge** (a framework RESPONDER `requestNetwork` orphaned at
@@ -573,30 +582,39 @@ class WifiAwareTransport(
     private fun checkWedge() {
         val now = SystemClock.elapsedRealtime()
         val healthy = hasHardware && _health.value == TransportHealth.Healthy && session != null
-        if (!healthy || !anyReachableSyncOwed()) {
-            syncOwedSince = 0L
-            return
-        } // nothing owed (or can't sync) → not wedged; clear the episode
-        // Episode not yet started, or a data-path link formed since it began → making progress → (re)start it.
-        if (syncOwedSince == 0L || lastLinkOrAcceptAt >= syncOwedSince) {
-            syncOwedSince = now
-            return
+        val decision =
+            NanWatchdogPolicy.decide(
+                healthy = healthy,
+                reachableOwed = anyReachableSyncOwed(), // Tier-1 / episode signal (uncorroborated)
+                corroboratedOwed = anySyncOwed(), // extra Tier-2 gate (corroborated)
+                now = now,
+                syncOwedSince = syncOwedSince,
+                lastLinkOrAcceptAt = lastLinkOrAcceptAt,
+                lastReattachAt = lastReattachAt,
+                lastRestartAt = lastRestartAt,
+                responderRefreshMs = RESPONDER_REFRESH_MS,
+                reattachCooldownMs = REATTACH_COOLDOWN_MS,
+                wedgeRestartMs = WEDGE_RESTART_MS,
+            )
+        syncOwedSince = decision.nextSyncOwedSince
+        when (decision.action) {
+            NanWatchdogPolicy.Action.None -> {}
+
+            // Tier 1: refresh the (possibly wedged) responder — light, uncorroborated, safe at 0 NDPs.
+            NanWatchdogPolicy.Action.RefreshResponder -> {
+                lastReattachAt = now
+                Log.w(TAG, "sync owed ${now - syncOwedSince}ms with no link — refreshing responder via session cycle")
+                sessionCycleWithSettle()
+            }
+
+            // Tier 2: last-resort process kill (MeshService is START_STICKY, so the service is recreated).
+            NanWatchdogPolicy.Action.RestartProcess -> {
+                lastRestartAt = now
+                Log.e(TAG, "NAN data plane wedged (sync owed ${now - syncOwedSince}ms with no link) — restarting process")
+                logState()
+                Process.killProcess(Process.myPid())
+            }
         }
-        val owedFor = now - syncOwedSince
-        // Tier 1: refresh the (possibly wedged) responder — light, uncorroborated, safe at 0 NDPs. Shares the
-        // reattach cooldown with the discovery-loop pinned-responder cycle so the two can't stack.
-        if (owedFor >= RESPONDER_REFRESH_MS && now - lastReattachAt >= REATTACH_COOLDOWN_MS) {
-            lastReattachAt = now
-            Log.w(TAG, "sync owed ${owedFor}ms with no link — refreshing responder via session cycle")
-            sessionCycleWithSettle()
-            return
-        }
-        // Tier 2: last-resort process kill, gated on corroboration so an out-of-range peer can't trigger it.
-        if (owedFor < WEDGE_RESTART_MS || now - lastRestartAt < WEDGE_RESTART_MS || !anySyncOwed()) return
-        lastRestartAt = now
-        Log.e(TAG, "NAN data plane wedged (sync owed ${owedFor}ms with no link) — restarting process")
-        logState()
-        Process.killProcess(Process.myPid())
     }
 
     override fun stop() {
@@ -847,7 +865,7 @@ class WifiAwareTransport(
      * backward-parseable; the unicast cue plane stays as the redundant active channel.
      */
     private fun buildPublishConfig(): PublishConfig {
-        val ssi = Protocol.advertise(localNodeId) + "$SSI_DIGEST_PREFIX${storeDigest.current()}"
+        val ssi = Protocol.advertise(localNodeId) + NanCueCodec.encodeSsiDigest(storeDigest.current())
         val builder =
             PublishConfig
                 .Builder()
@@ -1171,10 +1189,10 @@ class WifiAwareTransport(
      * resumes — so a BLE-covered peer never counts as a sync we owe, which also stops the wedge watchdog from
      * ever firing on a "sync" the other plane is quietly handling.
      *
-     * The recovery machinery reads THIS gate, never the bulk-aware [syncWanted]: [reachableSyncOwed] (the
-     * wedge watchdog's owed signal — a pending image, whose bytes the BLE fallback still carries, must never
-     * run the owed-episode clock toward the Tier-1 session cycle or the Tier-2 process kill),
-     * [needsRediscovery] (subscribe re-arm churn is that session's own wedge trigger), [needsIcmRelight],
+     * The recovery machinery reads THIS gate, never the bulk-aware [syncWanted]:
+     * [NanSyncPolicy.anyReachableSyncOwed] (the wedge watchdog's owed signal — a pending image, whose bytes the
+     * BLE fallback still carries, must never run the owed-episode clock toward the Tier-1 session cycle or the
+     * Tier-2 process kill), [needsRediscovery] (subscribe re-arm churn is that session's own wedge trigger), [needsIcmRelight],
      * and [rediscoverDelayMs] (no fast-tick cadence for a mark whose wake is the [expectBulkTransfer]
      * healSignal poke).
      */
@@ -1226,19 +1244,11 @@ class WifiAwareTransport(
      * [pruneAbsentPeers] reaps after [REACHABLE_LINGER_MS] of silence — can't spin subscribe into its wedge
      * state past that bounded window.
      */
-    private fun needsRediscovery(): Boolean {
-        if (cueTarget.isEmpty()) return true
-        val localVersion = storeDigest.current()
-        val disc = synchronized(lock) { discovered.keys.toSet() }
-        // A peer we hear cues from (alive, nearby), want to sync, are the initiator for, yet hold no subscribe
-        // handle for — either never discovered, or its handle just fast-failed and failConnect dropped it
-        // (it restarted). NOT merely backing off: a contention timeout keeps its handle, so re-arm doesn't
-        // churn on the normal fight for the single NDI.
-        return cueTarget.keys.any { nodeId ->
-            localNodeId > nodeId && nodeId !in peers.keys && nodeId !in disc &&
-                digestSyncWanted(nodeId, localVersion) // digest-pure: bulk marks must not churn subscribe
-        }
-    }
+    private fun needsRediscovery(): Boolean =
+        // Blind (no cue targets → empty snapshot → true), or a peer we hear cues from (alive, nearby), want to
+        // sync, are the initiator for, yet hold no subscribe handle for. digest-pure: bulk marks must not churn
+        // subscribe. includeDiscovered reads `discovered` under lock, matching the old predicate's footprint.
+        NanSyncPolicy.needsRediscovery(snapshotPeerFacts(SystemClock.elapsedRealtime(), storeDigest.current(), includeDiscovered = true))
 
     /**
      * True when we should re-arm subscribe purely to **re-light Instant Communication Mode** as a *responder*: a
@@ -1249,13 +1259,9 @@ class WifiAwareTransport(
      * brief post-attach/post-serve windows. Demand-gated: goes false once the peer converges ([syncWanted] →
      * [DigestTracker.reconcileWanted] drops it) or it becomes BLE-suppressed, so a settled mesh does no re-arm.
      */
-    private fun needsIcmRelight(): Boolean {
-        val localVersion = storeDigest.current()
-        return cueTarget.keys.any { nodeId ->
-            localNodeId < nodeId && nodeId !in peers.keys &&
-                digestSyncWanted(nodeId, localVersion) // digest-pure: a smaller-side bulk mark stays inert
-        }
-    }
+    private fun needsIcmRelight(): Boolean =
+        // digest-pure: a smaller-side bulk mark stays inert.
+        NanSyncPolicy.needsIcmRelight(snapshotPeerFacts(SystemClock.elapsedRealtime(), storeDigest.current(), includeDiscovered = false))
 
     private fun rediscoverDelayMs(): Long {
         // Detached (no Aware session): retry attach() promptly. A reattach's inline attach() often can't
@@ -1272,9 +1278,11 @@ class WifiAwareTransport(
             when {
                 cueTarget.isEmpty() -> REDISCOVER_LONELY_MS
 
-                // blind (no cue targets) → rediscover / recover fast. Digest-pure: a bulk mark's wake is
-                // the expectBulkTransfer healSignal poke, not a sustained fast-tick cadence.
-                cueTarget.keys.any { localNodeId > it && digestSyncWanted(it, localVersion) } -> SYNC_RETRY_IDLE_MS
+                // an initiator peer is digest-owed → rediscover / recover fast. Digest-pure: a bulk mark's wake
+                // is the expectBulkTransfer healSignal poke, not a sustained fast-tick cadence.
+                NanSyncPolicy.anyInitiatorDigestOwed(
+                    snapshotPeerFacts(SystemClock.elapsedRealtime(), localVersion, includeDiscovered = false),
+                ) -> SYNC_RETRY_IDLE_MS
 
                 // A sync owed to a peer we only respond to → tick around the ICM keepalive cadence so the loop can
                 // relight ICM (needsIcmRelight) before the ~30s auto-disable, instead of sleeping REDISCOVER_IDLE_MS.
@@ -1356,7 +1364,7 @@ class WifiAwareTransport(
         // Passive cue (P4): the publisher's SSI carries its digest as a trailing |d<version> segment, and a
         // changed SSI re-fires this callback — so a re-discovery IS a cue, with zero unicast messages. Same
         // deferred wake as onCueReceived (let a racing fast-fanout converge the digest before an NDP fires).
-        parseSsiDigest(ssiText)?.let { v ->
+        NanCueCodec.parseSsiDigest(ssiText)?.let { v ->
             if (digestTracker.onCue(peerNodeId, v)) {
                 scope.launch {
                     delay(CUE_SETTLE_MS)
@@ -1383,7 +1391,7 @@ class WifiAwareTransport(
             onFastFrame(message)
             return
         }
-        val cue = parseCue(message) ?: return
+        val cue = NanCueCodec.parseCue(message) ?: return
         if (cue.nodeId == localNodeId) return
         val firstContact = cueTarget.put(cue.nodeId, CueTarget(handle, sess)) == null
         noteReachable(Peer(cue.nodeId))
@@ -1405,39 +1413,18 @@ class WifiAwareTransport(
         if (firstContact) sendCue(cue.nodeId)
     }
 
+    // storeDigest.current(), not version.value: the digest folds live custody ids only, and expiry moves with
+    // time, so an outbound cue must fold any TTL boundary crossed since the last read — the 30 s heartbeat's
+    // cueAll() is what bounds boundary staleness on an otherwise-idle node, with no expiry timer for Doze to
+    // defer. The fold's version change then fires the digest-change collector (re-cue + SSI republish) by itself.
     private fun sendCue(nodeId: String) {
         val target = cueTarget[nodeId] ?: return
-        runCatching { target.session.sendMessage(target.handle, msgSeq.getAndIncrement(), encodeCue()) }
+        val cue = NanCueCodec.encodeCue(localNodeId, storeDigest.current())
+        runCatching { target.session.sendMessage(target.handle, msgSeq.getAndIncrement(), cue) }
             .onFailure { cueTarget.remove(nodeId) } // stale handle/session; refreshed on next discover/receive
     }
 
     private fun cueAll() = cueTarget.keys.toList().forEach { sendCue(it) }
-
-    // current(), not version.value: the digest folds live custody ids only, and expiry moves with time, so an
-    // outbound cue must fold any TTL boundary crossed since the last read — the 30 s heartbeat's cueAll() is
-    // what bounds boundary staleness on an otherwise-idle node, with no expiry timer for Doze to defer. The
-    // fold's version change then fires the digest-change collector (re-cue + SSI republish) by itself.
-    private fun encodeCue(): ByteArray = "$localNodeId$CUE_SEP${storeDigest.current()}".encodeToByteArray()
-
-    private data class Cue(
-        val nodeId: String,
-        val version: Long,
-    )
-
-    /** The trailing `|d<version>` digest segment of a peer's publish SSI, or null (no segment / older build). */
-    private fun parseSsiDigest(ssi: String): Long? {
-        val i = ssi.lastIndexOf(SSI_DIGEST_PREFIX)
-        if (i < 0) return null
-        return ssi.substring(i + SSI_DIGEST_PREFIX.length).toLongOrNull()
-    }
-
-    private fun parseCue(bytes: ByteArray): Cue? {
-        val s = runCatching { bytes.decodeToString() }.getOrNull() ?: return null
-        val i = s.lastIndexOf(CUE_SEP)
-        if (i <= 0) return null
-        val version = s.substring(i + 1).toLongOrNull() ?: return null
-        return Cue(s.substring(0, i), version)
-    }
 
     /**
      * Fast path (see [MeshTransport.fastFanout]): fan a small broadcast frame out to every neighbor over the
@@ -1845,12 +1832,8 @@ class WifiAwareTransport(
      * needs our initiator role), and the pinned-responder session-cycle fallback. Reads the concurrent
      * [cueTarget]; [DigestTracker] is internally synchronized.
      */
-    private fun initiateOwed(): Boolean {
-        val localVersion = storeDigest.current()
-        return cueTarget.keys.any { nodeId ->
-            localNodeId > nodeId && nodeId !in peers.keys && syncWanted(nodeId, localVersion)
-        }
-    }
+    private fun initiateOwed(): Boolean =
+        NanSyncPolicy.initiateOwed(snapshotPeerFacts(SystemClock.elapsedRealtime(), storeDigest.current(), includeDiscovered = false))
 
     /**
      * [initiateOwed] restricted to peers heard on the coordination plane within [REACHABLE_LINGER_MS] — the
@@ -1859,14 +1842,10 @@ class WifiAwareTransport(
      * whole session for a peer nobody can reach would burn up to ~7 pointless cycles in that window. The
      * cheap in-place recycle keeps plain [initiateOwed] (a 7 ms no-op if the peer turns out gone).
      */
-    private fun initiateOwedToReachable(): Boolean {
-        val localVersion = storeDigest.current()
-        val now = SystemClock.elapsedRealtime()
-        return cueTarget.keys.any { nodeId ->
-            localNodeId > nodeId && nodeId !in peers.keys && syncWanted(nodeId, localVersion) &&
-                lastSeenAt[nodeId]?.let { now - it <= REACHABLE_LINGER_MS } == true
-        }
-    }
+    private fun initiateOwedToReachable(): Boolean =
+        NanSyncPolicy.initiateOwedToReachable(
+            snapshotPeerFacts(SystemClock.elapsedRealtime(), storeDigest.current(), includeDiscovered = false),
+        )
 
     private fun failConnect(
         peerNodeId: String,
@@ -2231,9 +2210,6 @@ class WifiAwareTransport(
         @SuppressLint("InlinedApi")
         const val INSTANT_BAND = ScanResult.WIFI_BAND_24_GHZ
 
-        // Separator in a cue's `nodeId|epoch` payload (nodeIds/epochs never contain it).
-        const val CUE_SEP = '|'
-
         // Coordination-plane message multiplexing. A cue is a plain "nodeId|version" text string whose first
         // byte is a printable base64 nodeId char, so a single non-printable tag byte cleanly distinguishes a
         // small broadcast frame fanned out over the message channel (fastFanout / onFastFrame, [MSG_FRAME_TAG]).
@@ -2298,10 +2274,6 @@ class WifiAwareTransport(
         // on-device measurement; 2 s covers it with a wide margin. Broadcasts are NOT the signal — their
         // delivery lags many seconds on a screen-off device.
         const val SESSION_CYCLE_SETTLE_MS = 2_000L
-
-        // The publish-SSI digest segment prefix ("|d<version>", always the fourth |-segment). Protocol.parse
-        // ignores segments past the third, so old and new peers alike read the advert unchanged.
-        const val SSI_DIGEST_PREFIX = "|d"
 
         // Min gap between SSI republishes (updatePublish) on digest change, trailing-edge coalesced: a
         // backfill burst becomes one update carrying the final version. Each republish re-fires every

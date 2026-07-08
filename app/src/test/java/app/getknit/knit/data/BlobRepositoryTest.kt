@@ -8,7 +8,6 @@ import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.settings.SettingsStore
-import app.getknit.knit.moderation.ImageModerator
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.first
@@ -23,12 +22,12 @@ import org.junit.Test
 
 /**
  * The cross-table blob GC (the load-bearing part of [BlobRepository]) had no direct test. Exercises
- * `deleteIfUnreferenced`'s four reference checks + own-avatar guard and `deleteOrphans` against the real DB.
- * The image-moderation methods (Bitmap/TFLite) are intentionally out of scope.
+ * `deleteIfUnreferenced`'s four reference checks + own-avatar guard and `deleteOrphans` against the real DB,
+ * including the atomic verdict-row deletion. The image *screening* itself now lives in
+ * [app.getknit.knit.moderation.ImageScreeningService] (see `ImageScreeningServiceTest`).
  */
 class BlobRepositoryTest : RoomDbTest() {
     private val settings = mockk<SettingsStore>(relaxed = true)
-    private val imageModerator = mockk<ImageModerator>(relaxed = true)
 
     private fun repo() =
         BlobRepository(
@@ -37,7 +36,6 @@ class BlobRepositoryTest : RoomDbTest() {
             peers = db.peerDao(),
             settings = settings,
             verdicts = db.blobVerdictDao(),
-            imageModerator = imageModerator,
             groups = db.groupDao(),
             forward = db.forwardDao(),
             db = db,
@@ -187,18 +185,5 @@ class BlobRepositoryTest : RoomDbTest() {
             repo.insert("h1", "image/jpeg", byteArrayOf(1))
             repo.insert("h2", "image/jpeg", byteArrayOf(2))
             assertEquals(setOf("h1", "h2"), repo.observeHashes().first().toSet())
-        }
-
-    @Test
-    fun `isImageFlagged and observeFlaggedHashes reflect the cached verdict`() =
-        runTest {
-            val repo = repo()
-            db.blobVerdictDao().upsert(BlobVerdictEntity("bad", flagged = true, score = 0.95f))
-            db.blobVerdictDao().upsert(BlobVerdictEntity("ok", flagged = false, score = 0.1f))
-
-            assertTrue(repo.isImageFlagged("bad"))
-            assertFalse(repo.isImageFlagged("ok"))
-            assertFalse(repo.isImageFlagged("unknown"))
-            assertEquals(listOf("bad"), repo.observeFlaggedHashes().first())
         }
 }

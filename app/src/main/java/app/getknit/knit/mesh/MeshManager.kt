@@ -38,6 +38,7 @@ import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.TypingContent
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.moderation.ScopedTextModerator
 import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.notifications.Notifier
@@ -76,6 +77,7 @@ class MeshManager(
     private val identity: Identity,
     private val settings: SettingsStore,
     private val blobs: BlobRepository,
+    private val imageScreening: ImageScreeningService,
     private val blobStore: MeshBlobStore,
     private val forwardStore: ForwardStore,
     private val notifier: Notifier,
@@ -167,6 +169,7 @@ class MeshManager(
             reactions = reactions,
             peers = peers,
             blobs = blobs,
+            imageScreening = imageScreening,
             blobStore = blobStore,
             db = db,
             identity = identity,
