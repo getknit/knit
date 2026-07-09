@@ -50,6 +50,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -478,6 +479,7 @@ class BluetoothMeshTransport(
         decision.promote.forEach { initiateTo(it) }
     }
 
+    @Suppress("LongMethod") // the connect + watchdog + two-way HELLO is one linear flow; splitting it obscures it
     private fun initiateTo(nodeId: String) {
         val device = deviceFor[nodeId] ?: return
         val psm = presence.psmFor(nodeId) ?: return
@@ -494,22 +496,34 @@ class BluetoothMeshTransport(
             val startedAt = elapsed()
             val socket =
                 runCatching { device.createInsecureL2capChannel(psm) }
-                    .getOrElse { t -> return@launch failConnect(nodeId, classify(t, timedOut = false), startedAt, t) }
-            // Time-box the blocking connect() by closing the socket if it stalls, so a wedged handshake can't
-            // pin this peer in inFlight and stall scanning (the "always time-box a connect" discipline). The
-            // flag separates a watchdog-forced close (TIMEOUT) from an immediate stack throw.
-            val timedOut = AtomicBoolean(false)
+                    .getOrElse { t -> return@launch failConnect(nodeId, classify(t), startedAt, t) }
+            // Time-box the blocking connect(): on stall, give up this peer's inFlight slot at the timeout so the
+            // scan (paused while any connect is in flight) resumes promptly — instead of after connect() finally
+            // unwinds. Closing the socket is best-effort only: on some stacks (the API-30 device's Qualcomm
+            // cherokee) close() can't abort an in-progress L2CAP connect and itself blocks until the *native*
+            // connect timeout (~21s ≫ our 12s), which is exactly what used to pin inFlight and blind the scan for
+            // that whole window. [settled] lets whichever fires first — the watchdog or connect() returning — own
+            // the single failConnect; the loser just tidies up the socket.
+            val settled = AtomicBoolean(false)
             val watchdog =
-                scope.launch {
+                scope.launch(Dispatchers.IO) {
                     delay(CONNECT_TIMEOUT_MS)
-                    timedOut.set(true)
-                    runCatching { socket.close() }
+                    if (settled.compareAndSet(false, true)) {
+                        val cause = TimeoutException("connect watchdog ${CONNECT_TIMEOUT_MS}ms")
+                        failConnect(nodeId, ConnectFailReason.TIMEOUT, startedAt, cause)
+                    }
+                    runCatching { socket.close() } // may block until the native connect unwinds; the slot is already freed
                 }
             val connectErr = runCatching { socket.connect() }.exceptionOrNull()
+            if (!settled.compareAndSet(false, true)) {
+                // The watchdog already timed this attempt out and released the slot; just tidy up and stop.
+                runCatching { socket.close() }
+                return@launch
+            }
             watchdog.cancel()
             if (connectErr != null) {
                 runCatching { socket.close() }
-                return@launch failConnect(nodeId, classify(connectErr, timedOut.get()), startedAt, connectErr)
+                return@launch failConnect(nodeId, classify(connectErr), startedAt, connectErr)
             }
             val link = BluetoothSocketLink(socket)
             // Two-way HELLO: send our identity first, then read the responder's reply and require it to match
@@ -668,12 +682,9 @@ class BluetoothMeshTransport(
         return entry.streak to entry.nextAt
     }
 
-    /** Best-effort bucket for the (otherwise-discarded) connect exception; the raw [cause] is logged regardless. */
-    private fun classify(
-        cause: Throwable?,
-        timedOut: Boolean,
-    ): ConnectFailReason {
-        if (timedOut) return ConnectFailReason.TIMEOUT
+    /** Best-effort bucket for the (otherwise-discarded) connect exception; the raw [cause] is logged regardless.
+     *  A watchdog-forced timeout is failed as [ConnectFailReason.TIMEOUT] at its call site, so it never lands here. */
+    private fun classify(cause: Throwable?): ConnectFailReason {
         val msg = (cause?.message ?: "").lowercase()
         return when {
             cause is java.net.SocketTimeoutException -> ConnectFailReason.TIMEOUT
