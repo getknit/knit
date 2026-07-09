@@ -228,11 +228,22 @@ fun KnitApp(startRoute: String? = null) {
                 nodeId = nodeId,
                 onBack = { navController.popBackStack() },
                 onMessage = { id ->
-                    navController.navigate(Routes.chat(id)) {
-                        // Replace this details screen so Back from the DM returns to the chat you came
-                        // from, and don't stack a duplicate DM if it was opened from that same thread.
-                        popUpTo(Routes.PROFILE_DETAILS) { inclusive = true }
-                        launchSingleTop = true
+                    // Nearby, groups, and DMs all share the chat/{conversationId} destination, so
+                    // launchSingleTop here would reuse whatever chat sits under this profile — its
+                    // retained ChatViewModel is still bound to that conversation — instead of opening
+                    // the peer's DM (the reported "Message just returns to Nearby" bug). If we arrived
+                    // straight from this peer's own DM, just return to it so we don't stack a duplicate;
+                    // otherwise open it, replacing the profile so Back lands on the chat we came from.
+                    val parent = navController.previousBackStackEntry
+                    val fromSameDm =
+                        parent?.destination?.route == Routes.CHAT &&
+                            parent.arguments?.getString("conversationId") == id
+                    if (fromSameDm) {
+                        navController.popBackStack()
+                    } else {
+                        navController.navigate(Routes.chat(id)) {
+                            popUpTo(Routes.PROFILE_DETAILS) { inclusive = true }
+                        }
                     }
                 },
             )
