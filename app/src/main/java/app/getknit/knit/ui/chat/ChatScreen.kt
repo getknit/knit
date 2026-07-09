@@ -178,6 +178,10 @@ import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
 import org.koin.core.parameter.parametersOf
 
+// Grace period before the send button shows a spinner, so a fast send never flashes one; it surfaces
+// only for a genuinely slow send (chiefly the first after a cold start — the one-time model load).
+private const val SEND_SPINNER_DELAY_MS = 300L
+
 @Composable
 fun ChatScreen(
     conversationId: String,
@@ -187,6 +191,7 @@ fun ChatScreen(
     viewModel: ChatViewModel = koinViewModel { parametersOf(conversationId) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val isSending by viewModel.isSending.collectAsStateWithLifecycle()
     val pendingAttachment by viewModel.pendingAttachment.collectAsStateWithLifecycle()
     val confirmAttachment by viewModel.confirmAttachment.collectAsStateWithLifecycle()
     val inputState = rememberTextFieldState()
@@ -300,6 +305,7 @@ fun ChatScreen(
     ChatScreenContent(
         conversationId = conversationId,
         state = state,
+        isSending = isSending,
         inputState = inputState,
         pendingAttachment = pendingAttachment,
         replyingTo = replyingTo,
@@ -371,6 +377,7 @@ fun ChatScreen(
 internal fun ChatScreenContent(
     conversationId: String,
     state: ChatUiState,
+    isSending: Boolean = false,
     inputState: TextFieldState,
     pendingAttachment: AttachmentStore.Ingested?,
     replyingTo: ReplyRef?,
@@ -598,6 +605,7 @@ internal fun ChatScreenContent(
         bottomBar = {
             MessageInput(
                 state = inputState,
+                isSending = isSending,
                 pendingAttachment = pendingAttachment,
                 candidates = state.mentionCandidates,
                 replyingTo = replyingTo,
@@ -1636,6 +1644,7 @@ private fun SystemNotice(text: String) {
 @Composable
 private fun MessageInput(
     state: TextFieldState,
+    isSending: Boolean = false,
     pendingAttachment: AttachmentStore.Ingested?,
     candidates: List<MentionCandidate>,
     replyingTo: ReplyRef? = null,
@@ -1670,6 +1679,22 @@ private fun MessageInput(
         }
     // The trailing button doubles as Attach when there's nothing to send, and Send once there is.
     val canSend = state.text.isNotBlank() || pendingAttachment != null
+
+    // Show a spinner in the send button only once a send has been in flight past a short grace period.
+    // Most sends complete in well under a frame, so gating on the delay keeps them from flashing a
+    // spinner; it surfaces only for a genuinely slow send — chiefly the first send after a cold start,
+    // which blocks on the one-time toxicity-model load (see ChatViewModel.isSending). When isSending
+    // flips false before the delay elapses the effect restarts and cancels the pending delay, so the
+    // flag never trips.
+    var showSending by remember { mutableStateOf(false) }
+    LaunchedEffect(isSending) {
+        if (isSending) {
+            delay(SEND_SPINNER_DELAY_MS)
+            showSending = true
+        } else {
+            showSending = false
+        }
+    }
 
     // Track the "@token" the cursor is inside to drive the autocomplete dropdown. snapshotFlow observes
     // the field reactively; the LaunchedEffect ties the collector to composition (cancels on dispose).
@@ -1795,20 +1820,45 @@ private fun MessageInput(
                 }
                 Spacer(Modifier.width(8.dp))
                 FilledIconButton(
-                    onClick = { if (canSend) onSend() else onAttachClick() },
+                    // Swallow taps while a send is in flight (the ViewModel guard also drops re-entrant
+                    // sends, but suppressing the click keeps the button from feeling dead-but-pressable).
+                    onClick = {
+                        if (!showSending) {
+                            if (canSend) {
+                                onSend()
+                            } else {
+                                onAttachClick()
+                            }
+                        }
+                    },
                     shape = CircleShape,
                     modifier = Modifier.size(48.dp).align(Alignment.CenterVertically).testTag("chat_send"),
                 ) {
-                    Icon(
-                        imageVector = if (canSend) Icons.AutoMirrored.Filled.Send else Icons.Filled.AddPhotoAlternate,
-                        contentDescription =
-                            if (canSend) {
-                                stringResource(R.string.action_send)
-                            } else {
-                                stringResource(R.string.action_attach_photo)
-                            },
-                        modifier = Modifier.size(24.dp),
-                    )
+                    if (showSending) {
+                        val sendingLabel = stringResource(R.string.chat_sending)
+                        CircularProgressIndicator(
+                            modifier =
+                                Modifier
+                                    .size(24.dp)
+                                    .semantics { contentDescription = sendingLabel },
+                            strokeWidth = 2.dp,
+                            // LocalContentColor is the button's onPrimary content color, so the spinner
+                            // reads against the filled container.
+                            color = LocalContentColor.current,
+                        )
+                    } else {
+                        Icon(
+                            imageVector =
+                                if (canSend) Icons.AutoMirrored.Filled.Send else Icons.Filled.AddPhotoAlternate,
+                            contentDescription =
+                                if (canSend) {
+                                    stringResource(R.string.action_send)
+                                } else {
+                                    stringResource(R.string.action_attach_photo)
+                                },
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
                 }
             }
         }

@@ -68,6 +68,18 @@ class MlTextModerator(
             }
         }
 
+    /**
+     * Load the model and run one throwaway inference *off* the send path — call this at startup so the
+     * first real [classify] (the first outgoing send, or an inbound flagged-check) hits a warm engine
+     * instead of paying the ~16 MB asset read + [Interpreter] build + first-inference tensor/graph
+     * allocation on the send coroutine. Reuses [classify], so [mutex]/[loaded] dedupe it against a
+     * first real send that races it (no double-load), and the verdict is discarded. Never throws:
+     * [classify] already degrades to [TextVerdict.ALLOWED] on any load/inference failure.
+     */
+    suspend fun warmUp() {
+        classify(WARMUP_PROBE)
+    }
+
     private fun loadEngine(): Engine? =
         try {
             val tokenizer =
@@ -172,6 +184,10 @@ class MlTextModerator(
         const val DEFAULT_TOKENIZER_ASSET = "moderation/tokenizer.json"
         const val DEFAULT_LABELS_ASSET = "moderation/labels.txt"
         const val DEFAULT_MAX_LEN = 128
+
+        // A short non-blank probe for warmUp(): non-blank so it forces a real infer() (which is where
+        // first-inference graph/tensor allocation is paid), not just the model load.
+        const val WARMUP_PROBE = "knit"
 
         // Block serious abuse only; ignore general rudeness (toxicity/insult/obscene) and the
         // identity-mention columns. Starting thresholds — tune on-device.

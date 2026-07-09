@@ -81,6 +81,7 @@
     <string name="chat_typing">%1$s is typing</string>
     <string name="chat_typing_multiple">%1$s and others are typing</string>
     <string name="chat_loading_photo">Photo appears when a nearby device has it</string>
+    <string name="chat_sending">Sending…</string>
     <string name="chat_attachment_image_desc">Photo attachment</string>
     <string name="chat_view_photo">View photo</string>
     <string name="chat_image_viewer_desc">Photo</string>

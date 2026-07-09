@@ -8,6 +8,7 @@ import app.getknit.knit.di.moderationModule
 import app.getknit.knit.di.seedDemoIfEnabled
 import app.getknit.knit.di.startDemoDirectorIfEnabled
 import app.getknit.knit.di.uiModule
+import app.getknit.knit.moderation.MlTextModerator
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.ui.image.BlobFetcher
 import app.getknit.knit.ui.image.BlobKeyer
@@ -15,6 +16,8 @@ import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.gif.AnimatedImageDecoder
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import org.koin.android.ext.android.inject
 import org.koin.android.ext.koin.androidContext
 import org.koin.android.ext.koin.androidLogger
@@ -36,6 +39,15 @@ class KnitApplication :
             }
         // Register the message notification channel up front so it appears in system settings.
         koinApp.koin.get<Notifier>().createChannel()
+
+        // Warm the toxicity model off the send path. The first classify() lazily loads a ~16 MB TFLite
+        // model + tokenizer + Interpreter and pays first-inference allocation; done on the first outgoing
+        // send it freezes the UI on a cold start (worst on low-end devices). Fire-and-forget on the
+        // app-lifetime scope (Dispatchers.Default) so it never blocks startup; MlTextModerator degrades
+        // gracefully if the assets fail to load, and warmUp() dedupes against a racing first send.
+        koinApp.koin.get<CoroutineScope>().launch {
+            koinApp.koin.get<MlTextModerator>().warmUp()
+        }
 
         // Demo-screenshot mode (`-PseedDemo=true`): fill the DB with a realistic conversation history so
         // the app renders populated on an emulator. Debug-only — the seeder lives in `src/debug`, so this is

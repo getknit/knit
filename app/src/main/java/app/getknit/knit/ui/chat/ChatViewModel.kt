@@ -385,8 +385,14 @@ class ChatViewModel(
      * enqueue), and the input isn't cleared until it returns, so without this a rapid burst of taps on
      * the always-enabled send button would each read the same still-present draft and flood duplicates.
      * Main-thread-confined: touched only from [send] and [onInputCleared], both on the main dispatcher.
+     *
+     * Exposed as [isSending] so the chat screen can show a "working…" spinner in the send button while a
+     * send is in flight — on a cold start the first send blocks on the one-time toxicity-model load
+     * (~16 MB TFLite + tokenizer + Interpreter), which otherwise looks like a frozen app. Backing the
+     * guard and the UI signal with the same value keeps them from ever diverging.
      */
-    private var sending = false
+    private val _isSending = MutableStateFlow(false)
+    val isSending: StateFlow<Boolean> = _isSending.asStateFlow()
 
     fun send(
         text: String,
@@ -399,8 +405,8 @@ class ChatViewModel(
         // Ignore re-entrant taps while a send is in flight, and — on success — until the field is
         // actually cleared, so a tap landing in the gap between sendChat returning and clearText running
         // can't re-send the same draft. Released in the blocked branch and in onInputCleared().
-        if (sending) return
-        sending = true
+        if (_isSending.value) return
+        _isSending.value = true
         viewModelScope.launch {
             // Deferred release: an accepted send keeps the guard held until the field is actually
             // cleared (onInputCleared); the finally frees it on a block or an unexpected send-path throw
@@ -439,7 +445,7 @@ class ChatViewModel(
                     _events.tryEmit(R.string.moderation_text_blocked)
                 }
             } finally {
-                if (!accepted) sending = false
+                if (!accepted) _isSending.value = false
             }
         }
     }
@@ -461,10 +467,10 @@ class ChatViewModel(
     /**
      * The screen finished clearing the input after an accepted send; release the double-submit guard.
      * Deferred to here (rather than the success branch above) so the guard covers the window between
-     * [send] returning and the field visually clearing — see [sending].
+     * [send] returning and the field visually clearing — see [isSending].
      */
     fun onInputCleared() {
-        sending = false
+        _isSending.value = false
     }
 
     /**

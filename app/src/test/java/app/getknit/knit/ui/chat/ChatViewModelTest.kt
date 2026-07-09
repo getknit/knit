@@ -289,6 +289,34 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun isSendingTracksTheSendLifecycleForTheSpinner() =
+        runTest {
+            val vm = vm()
+            assertFalse("idle before any send", vm.isSending.value)
+
+            vm.send("hi")
+            advanceUntilIdle()
+            // An accepted send holds the signal (like the double-submit guard it backs) until the screen
+            // reports the field cleared, so the send-button spinner stays put across the
+            // sendChat → clearInput → clearText hop rather than blinking off mid-send.
+            assertTrue("send in flight → spinner shown", vm.isSending.value)
+
+            vm.onInputCleared()
+            assertFalse("field cleared → spinner cleared", vm.isSending.value)
+        }
+
+    @Test
+    fun isSendingClearsWhenASendIsBlocked() =
+        runTest {
+            mesh.sendChatResult = false // moderator flags the text
+            val vm = vm()
+
+            vm.send("bad")
+            advanceUntilIdle()
+            assertFalse("a blocked send releases the spinner signal", vm.isSending.value)
+        }
+
+    @Test
     fun attachingAFlaggedImageInTheRoomBlocksItInsteadOfStaging() =
         runTest {
             val uri = Uri.parse("content://images/1")
