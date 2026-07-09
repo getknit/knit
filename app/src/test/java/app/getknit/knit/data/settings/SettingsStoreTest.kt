@@ -107,6 +107,17 @@ class SettingsStoreTest {
         }
 
     @Test
+    fun `mesh enabled defaults on and round-trips off then back on`() =
+        runTest {
+            val store = newStore()
+            assertTrue(store.meshEnabled.first())
+            store.setMeshEnabled(false)
+            assertEquals(false, store.meshEnabled.first())
+            store.setMeshEnabled(true)
+            assertTrue(store.meshEnabled.first())
+        }
+
+    @Test
     fun `profile version and avatar timestamp round-trip`() =
         runTest {
             val store = newStore()

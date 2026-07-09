@@ -96,6 +96,14 @@ class SettingsStore(
         dataStore.data.map { it[KEY_CONTENT_FILTERING] ?: true }
 
     /**
+     * Whether the mesh foreground service should be running — the persisted twin of "is the mesh on".
+     * Defaults to on. Flipped to false when the user manually stops the service from its ongoing
+     * notification, and back to true whenever the service (re)starts, so [app.getknit.knit.mesh.BootReceiver]
+     * can restore the mesh after a device reboot **unless** the user had stopped it beforehand.
+     */
+    val meshEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_MESH_ENABLED] ?: true }
+
+    /**
      * Local-clock time the first peer message was observed (0 until then) — the start of the
      * review-prompt engagement window (see [app.getknit.knit.review.ReviewPromptPolicy]). Deliberately a
      * locally-stamped watermark rather than anything derived from a message's `sentAt`, which is the
@@ -168,6 +176,8 @@ class SettingsStore(
 
     suspend fun setContentFilteringEnabled(value: Boolean) = dataStore.edit { it[KEY_CONTENT_FILTERING] = value }
 
+    suspend fun setMeshEnabled(value: Boolean) = dataStore.edit { it[KEY_MESH_ENABLED] = value }
+
     suspend fun setReviewEngagementStartedAt(value: Long) = dataStore.edit { it[KEY_REVIEW_ENGAGEMENT_STARTED_AT] = value }
 
     /** Stamps the attempt time and bumps the lifetime count in one transaction (mirrors [setProfile]). */
@@ -200,6 +210,7 @@ class SettingsStore(
         val KEY_BLOCKED_TAGS = stringSetPreferencesKey("blocked_device_tags")
         val KEY_ACCEPTED = stringSetPreferencesKey("accepted_conversations")
         val KEY_CONTENT_FILTERING = booleanPreferencesKey("content_filtering_enabled")
+        val KEY_MESH_ENABLED = booleanPreferencesKey("mesh_enabled")
         val KEY_REVIEW_ENGAGEMENT_STARTED_AT = longPreferencesKey("review_engagement_started_at")
         val KEY_REVIEW_LAST_ATTEMPT_AT = longPreferencesKey("review_last_attempt_at")
         val KEY_REVIEW_ATTEMPT_COUNT = longPreferencesKey("review_attempt_count")

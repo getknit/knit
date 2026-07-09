@@ -20,10 +20,13 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import app.getknit.knit.MainActivity
 import app.getknit.knit.R
+import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.mesh.power.PowerMonitor
 import app.getknit.knit.notifications.NotificationChannels
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.koin.android.ext.android.inject
 
@@ -37,6 +40,8 @@ import org.koin.android.ext.android.inject
 class MeshService : LifecycleService() {
     private val meshManager: MeshController by inject()
     private val powerMonitor: PowerMonitor by inject()
+    private val settings: SettingsStore by inject()
+    private val scope: CoroutineScope by inject()
 
     private val sensorManager by lazy { getSystemService(SensorManager::class.java) }
     private var significantMotion: Sensor? = null
@@ -58,6 +63,9 @@ class MeshService : LifecycleService() {
         observeStatus()
         powerMonitor.start() // seed power state before the discovery loop first reads it
         meshManager.start()
+        // Remember the mesh is running so BootReceiver restores it after a reboot; a later manual Stop
+        // flips this off. Guarded to skip the redundant write on the common already-enabled start.
+        scope.launch { if (!settings.meshEnabled.first()) settings.setMeshEnabled(true) }
         scheduleHeartbeat()
         armSignificantMotion()
     }
@@ -70,6 +78,9 @@ class MeshService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
         when (intent?.action) {
             ACTION_STOP -> {
+                // User tapped Stop on the ongoing notification: remember it so we don't auto-restart on
+                // the next reboot. On the app-lifetime scope so the write outlives stopSelf()/onDestroy().
+                scope.launch { settings.setMeshEnabled(false) }
                 stopSelf()
                 return START_NOT_STICKY
             }

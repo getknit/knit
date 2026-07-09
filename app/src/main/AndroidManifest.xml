@@ -49,6 +49,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Restart the mesh foreground service after a device reboot (see .mesh.BootReceiver). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:name=".KnitApplication"
@@ -99,6 +101,20 @@
             android:name=".mesh.MeshService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- Restart the always-on mesh after a device reboot, unless the user manually stopped it
+             (mesh_enabled=false). BOOT_COMPLETED is delivered post-unlock, so the credential-encrypted
+             settings DataStore is readable, and its receipt is an exemption to the background
+             foreground-service-start restrictions; connectedDevice is a boot-permitted FGS type.
+             exported=true because the system delivers this from outside the app; BOOT_COMPLETED is a
+             protected broadcast that only the system can send. -->
+        <receiver
+            android:name=".mesh.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Message-notification quick actions (inline Reply, Mark read) + swipe-away dismiss. Not exported:
              only the system delivers these PendingIntents (Reply rides a MUTABLE one carrying RemoteInput). -->
