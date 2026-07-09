@@ -9,6 +9,7 @@ import app.getknit.knit.ui.group.GroupDetailsViewModel
 import app.getknit.knit.ui.profile.ProfileDetailsViewModel
 import app.getknit.knit.ui.profile.ProfileViewModel
 import app.getknit.knit.ui.requests.MessageRequestsViewModel
+import app.getknit.knit.ui.verify.VerifyContactViewModel
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.module.dsl.viewModel
 import org.koin.dsl.module
@@ -36,7 +37,7 @@ val uiModule =
             )
         }
         viewModel { ChatListViewModel(get(), get(), get(), get(), get(), get(), androidContext()) }
-        viewModel { ContactsViewModel(get(), get(), get(), get(), get()) }
+        viewModel { ContactsViewModel(get(), get(), get(), get(), get(), get()) }
         viewModel { DiagnosticsViewModel(get(), get(), get(), get(), get()) }
         viewModel { ProfileViewModel(get(), get(), get(), get()) }
         // ProfileDetailsViewModel takes the tapped peer's node id as a runtime param.
@@ -47,4 +48,5 @@ val uiModule =
         }
         viewModel { BlockedUsersViewModel(get(), get()) }
         viewModel { MessageRequestsViewModel(get(), get(), get(), get(), get(), androidContext()) }
+        viewModel { VerifyContactViewModel(get(), get()) }
     }

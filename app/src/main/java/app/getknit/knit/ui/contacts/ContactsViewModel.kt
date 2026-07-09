@@ -3,10 +3,13 @@ package app.getknit.knit.ui.contacts
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.data.GroupRepository
+import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
+import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
@@ -30,10 +33,19 @@ data class Contact(
 )
 
 /**
- * Backs the "new message" contact picker. The list is every known peer (we hold a cached
- * profile/avatar for them) plus any currently-connected neighbor we haven't profiled yet — so you can
- * message someone the instant they connect, before their profile frame arrives. Selecting one person
- * starts a DM; selecting several creates a group via [createGroup].
+ * Backs the "new message" contact picker. The list is your **established contacts** — deliberately not
+ * every stranger you've seen in the Nearby room: a node id qualifies only if you've engaged with it
+ * (an *accepted* DM, or a shared group) or explicitly verified its key. Concretely, after removing
+ * yourself and blocked ids, a contact is any node in the union of:
+ *  - **accepted DM peers** — a DM thread whose peer passes the shared [Conversations.isAccepted] rule
+ *    (accepted out of the request queue / verified / already replied to), so an unanswered stranger DM
+ *    stays a message request and out of this picker;
+ *  - **group co-members** — everyone in any active (non-left) group you're in, even one with no messages
+ *    yet; and
+ *  - **verified peers** — anyone whose key you've verified out of band (covers a QR-verified contact you
+ *    have never chatted with, who may not have a cached profile yet).
+ *
+ * Selecting one person starts a DM; selecting several creates a group via [createGroup].
  */
 class ContactsViewModel(
     peers: PeerRepository,
@@ -41,6 +53,7 @@ class ContactsViewModel(
     private val identity: Identity,
     settings: SettingsStore,
     private val groups: GroupRepository,
+    messages: MessageRepository,
 ) : ViewModel() {
     private val myNodeId = MutableStateFlow<String?>(null)
 
@@ -92,18 +105,57 @@ class ContactsViewModel(
         const val MAX_OTHER_MEMBERS = 7
     }
 
-    /** Known peers ∪ live neighbors, minus ourselves and blocked ids; connected first, then alphabetical. */
+    // Messages + groups + the accepted set are pre-combined so the outer combine stays within the
+    // 5-flow typed overload (it then adds peers + neighbors + blocked + myNodeId).
+    private data class Bundle(
+        val messages: List<MessageEntity>,
+        val groups: List<GroupEntity>,
+        val accepted: Set<String>,
+    )
+
+    private val bundle =
+        combine(
+            messages.observeMessages(),
+            groups.observeGroups(),
+            settings.acceptedConversations,
+        ) { msgs, groupList, accepted -> Bundle(msgs, groupList, accepted) }
+
+    /** Accepted DM peers ∪ active-group co-members ∪ verified peers, minus self and blocked; connected first, then name. */
     val contacts: StateFlow<List<Contact>> =
         combine(
+            bundle,
             peers.observePeers(),
             meshManager.neighbors,
-            myNodeId,
             settings.blockedNodeIds,
-        ) { peerList, neighbors, me, blocked ->
+            myNodeId,
+        ) { b, peerList, neighbors, blocked, me ->
+            // Until our own id resolves we can't compute "self-authored" (nor filter ourselves out), so
+            // surface nothing rather than mis-including a thread during the ~1s cold-start gap.
+            if (me == null) return@combine emptyList<Contact>()
             val online = neighbors.map { it.nodeId }.toSet()
             val byNode = peerList.associateBy { it.nodeId }
-            val nodeIds = (peerList.map { it.nodeId } + online).toSet() - setOfNotNull(me) - blocked
-            nodeIds
+            val verifiedIds = peerList.filter { it.verified }.map { it.nodeId }.toSet()
+            val authored =
+                b.messages
+                    .filter { it.senderId == me }
+                    .map { it.conversationId }
+                    .toSet()
+            // A DM thread's conversationId IS the peer's node id; keep only those the shared accept
+            // predicate treats as a real conversation (matching the chat list / requests split).
+            val acceptedDmPeers =
+                b.messages
+                    .asSequence()
+                    .map { it.conversationId }
+                    .filter { Conversations.kindFor(it) == ConversationKind.DM }
+                    .filter { Conversations.isAccepted(it, b.accepted, verifiedIds, authored) }
+                    .toSet()
+            val groupMembers =
+                b.groups
+                    .filterNot { it.left }
+                    .flatMap { GroupMembersStore.decode(it.members) }
+                    .toSet()
+            val contactIds = (acceptedDmPeers + groupMembers + verifiedIds) - blocked - me
+            contactIds
                 .map { id ->
                     Contact(
                         nodeId = id,

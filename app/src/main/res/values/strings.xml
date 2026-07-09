@@ -172,7 +172,7 @@
     <!-- Direct messages / contacts -->
     <string name="contacts_title">New message</string>
     <string name="contacts_new_message">New message</string>
-    <string name="contacts_empty">No one to message yet.\nConnect with nearby people first.</string>
+    <string name="contacts_empty">No contacts yet.\nSay hi in Nearby, or use Verify contact to add someone by code.</string>
     <string name="contacts_start_chat">Start chat</string>
     <string name="contacts_selected">Selected</string>
     <string name="contacts_not_selected">Not selected</string>
@@ -228,6 +228,14 @@
     <string name="verify_clear">Clear verification</string>
     <string name="verify_match">Verified — keys match.</string>
     <string name="verify_mismatch">Codes don\'t match. This may not be the right contact.</string>
+
+    <!-- Standalone "Verify contact" screen (chat-list overflow) -->
+    <string name="verify_contact_title">Verify contact</string>
+    <string name="verify_standalone_caption">Show your code to someone nearby, or scan theirs, to add them as a verified contact — even if you\'ve never chatted.</string>
+    <string name="verify_qr_caption_generic">Let them scan this code</string>
+    <string name="verify_added">Verified — added to your contacts.</string>
+    <string name="verify_self">That\'s your own code.</string>
+    <string name="verify_invalid">That\'s not a Knit contact code.</string>
 
     <!-- Diagnostics -->
     <string name="diagnostics_title">Diagnostics</string>

@@ -38,6 +38,7 @@ import app.getknit.knit.ui.profile.ProfileScreen
 import app.getknit.knit.ui.requests.MessageRequestsScreen
 import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.share.ShareTargetScreen
+import app.getknit.knit.ui.verify.VerifyContactScreen
 import org.koin.compose.koinInject
 
 private object Routes {
@@ -49,6 +50,7 @@ private object Routes {
     const val BLOCKED_USERS = "blocked"
     const val MESSAGE_REQUESTS = "requests"
     const val DONATE = "donate"
+    const val VERIFY = "verify"
     const val SHARE = "share"
     const val CHAT = "chat/{conversationId}"
 
@@ -171,6 +173,7 @@ fun KnitApp(startRoute: String? = null) {
                 onOpenBlockedUsers = { navController.navigate(Routes.BLOCKED_USERS) },
                 onOpenMessageRequests = { navController.navigate(Routes.MESSAGE_REQUESTS) },
                 onOpenDonate = { navController.navigate(Routes.DONATE) },
+                onOpenVerify = { navController.navigate(Routes.VERIFY) },
             )
         }
         composable(Routes.CONTACTS) {
@@ -261,6 +264,9 @@ fun KnitApp(startRoute: String? = null) {
         }
         composable(Routes.DONATE) {
             DonateScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Routes.VERIFY) {
+            VerifyContactScreen(onBack = { navController.popBackStack() })
         }
     }
 }
