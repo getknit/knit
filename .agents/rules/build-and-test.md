@@ -1,7 +1,7 @@
 # Build & test discipline
 
 Which task to run when, and the two ways the build bites back. Full command list: `context/commands.md`.
-Why the tooling is wired this way (standalone detekt/ktlint CLI, Kover): `context/toolchain.md`.
+Why the tooling is wired this way (detekt/ktlint/Kover Gradle plugins): `context/toolchain.md`.
 
 ## Run the right task
 
@@ -13,10 +13,11 @@ Why the tooling is wired this way (standalone detekt/ktlint CLI, Kover): `contex
 - Run `./gradlew :app:assembleDebug` to validate a build; `./gradlew :app:compileDebugKotlin` for a fast
   main-sources compile check.
 
-## detekt / ktlint don't autocorrect
+## ktlint autocorrects; detekt doesn't
 
-Both run as `Stop` hooks alongside `./gradlew lint`. **ktlint does NOT autocorrect** — fix mechanical
-issues locally with the `ktlint --format` CLI, then re-run the task. The two tools can disagree: ktlint's
+Both run as `Stop` hooks (`./gradlew ktlintCheck` / `./gradlew detekt`) alongside `./gradlew lint`.
+**`./gradlew ktlintFormat` autocorrects** the mechanical ktlint violations in place — run it, then
+re-check. detekt has no autofix; fix its findings by hand. The two tools can disagree: ktlint's
 one-arg-per-line wrapping can push a function past detekt's `LongMethod=60` — **suppress `LongMethod` on
 that function** (with a one-line reason) rather than fighting the formatter (see `MeshManager.sendChat`,
 `NotificationChannels.ensure`).

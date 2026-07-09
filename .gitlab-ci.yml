@@ -1,6 +1,6 @@
 # Knit — GitLab CI. Stages: build -> test -> verify.
-# Bleeding-edge toolchain (AGP 9.2.1 / Kotlin 2.2.10 / JDK 21 / compileSdk 36.1):
-# all analysis runs as standalone tools so nothing new is added to the Gradle build.
+# Bleeding-edge toolchain (AGP 9.2.1 / Kotlin 2.4.0 / JDK 21 / compileSdk 36.1).
+# Static analysis (detekt/ktlint) and coverage (Kover) run as Gradle plugins via `./gradlew` tasks.
 
 stages:
   - build
@@ -22,7 +22,6 @@ variables:
   CMDLINE_TOOLS_VERSION: "11076708"   # commandlinetools-linux revision
   ANDROID_COMPILE_SDK: "36"
   ANDROID_BUILD_TOOLS: "36.0.0"
-  DETEKT_VERSION: "1.23.8"
 
 workflow:
   rules:                              # avoid duplicate branch+MR pipelines
@@ -138,24 +137,32 @@ test:coverage:
     expire_in: 1 week
 
 # --------------- verify (advisory) -------
+# detekt/ktlint run as Gradle plugins now (was: a downloaded detekt-cli jar). Both are advisory
+# (allow_failure) to mirror the prior detekt job and keep the pass/fail test signal clean; locally they
+# are enforced by the Stop hooks. Reports land under build/reports/{detekt,ktlint}/.
 verify:detekt:
-  image: eclipse-temurin:21-jdk
+  extends: .android
   stage: verify
   allow_failure: true
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq wget > /dev/null
-    - wget -q "https://github.com/detekt/detekt/releases/download/v${DETEKT_VERSION}/detekt-cli-${DETEKT_VERSION}-all.jar" -O /tmp/detekt.jar
   script:
-    - >
-      java -jar /tmp/detekt.jar
-      --input app/src/main/java,app/src/test/java
-      --config config/detekt/detekt.yml
-      --build-upon-default-config
-      --jvm-target 11
-      --report xml:detekt.xml --report html:detekt.html --report sarif:detekt.sarif
+    - ./gradlew detekt --stacktrace --console=plain
   artifacts:
     when: always
-    paths: [detekt.html, detekt.xml, detekt.sarif]
+    paths:
+      - app/build/reports/detekt/
+    expire_in: 1 week
+
+verify:ktlint:
+  extends: .android
+  stage: verify
+  allow_failure: true
+  script:
+    - ./gradlew ktlintCheck --stacktrace --console=plain
+  artifacts:
+    when: always
+    paths:
+      - app/build/reports/ktlint/
+      - build/reports/ktlint/
     expire_in: 1 week
 
 verify:trivy:

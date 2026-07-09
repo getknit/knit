@@ -30,9 +30,10 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
     //     From v1 on, every @Database bump ships a tested KnitMigrations entry — a missing one throws at open
     //     time (caught by KnitDatabaseMigrationTest), never a silent wipe of a user's messages/custody/pins.
     version = 1,
-    // Export the schema JSON to app/schemas/ (location set via ksp { arg("room.schemaLocation", ...) } in
-    // app/build.gradle.kts). Keeps the schema diffable in review and feeds the migration test's
-    // MigrationTestHelper. Room also errors at compile time if an entity changes without a version bump.
+    // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
+    // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
+    // the migration test's MigrationTestHelper. Room also errors at compile time if an entity changes without
+    // a version bump.
     exportSchema = true,
 )
 abstract class KnitDatabase : RoomDatabase() {

@@ -14,8 +14,8 @@ import java.io.File
  * v1 forward every schema bump ships a tested [KnitMigrations] entry validated here. `KnitMigrations.ALL` is
  * empty at launch, so today this exercises the schema-export pipeline end-to-end: `createDatabase(version)`
  * rebuilds the DB from the checked-in `app/schemas/app.getknit.knit.data.KnitDatabase/<version>.json`, proving
- * `exportSchema`, the ksp `room.schemaLocation`, the unit-test asset wiring (Robolectric serves
- * `sourceSets["test"]` assets), and the `MigrationTestHelper` harness all line up. The version is read from the
+ * `exportSchema`, the Room Gradle plugin's `schemaDirectory` export, the unit-test asset wiring (Robolectric
+ * serves `sourceSets["test"]` assets), and the `MigrationTestHelper` harness all line up. The version is read from the
  * `@Database` annotation, so this always targets the current schema and fails loudly if its exported JSON is
  * missing.
  *

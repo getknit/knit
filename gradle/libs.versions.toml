@@ -67,13 +67,19 @@ apksig = "9.2.1"
 # device the request Task simply fails and ReviewPrompter swallows it — the pre-gate on the Play installer
 # means the API is normally never even touched there. See review/ReviewPrompter.kt.
 playReview = "2.0.2"
-# detekt runs as a standalone CLI off the build classpath (never applied as a Gradle plugin) —
-# keep this in lockstep with DETEKT_VERSION in .gitlab-ci.yml so local and CI use the same rules.
-detekt = "1.23.8"
-# ktlint (Kotlin style/format lint) also runs as a standalone CLI off the build classpath, never as a
-# Gradle plugin — the same AGP-9.2.1/Kotlin-2.4 toolchain that broke Hilt's plugin. Keep in lockstep
-# with the `ktlint` CLI contributors run locally (the repo's Stop hook invokes `./gradlew ktlint`).
+# detekt static analysis, applied as the `dev.detekt` Gradle plugin (see [plugins] below). 2.0.0-alpha.x
+# is the first detekt line that supports Gradle 9 — 1.23.x caps at Gradle 8.12.1, and this build is on
+# 9.4.1 — and it ships the new `dev.detekt` plugin/group id (was io.gitlab.arturbosch.detekt). Runs in its
+# own isolated task classpath, so it doesn't touch :app's compile/runtime graph. Keep the CI `verify:detekt`
+# job (now `./gradlew detekt`) on this same version.
+detekt = "2.0.0-alpha.5"
+# ktlint (Kotlin style/format lint), applied via the org.jlleitschuh.gradle.ktlint plugin (ktlintPlugin
+# below). This `ktlint` version is the underlying ktlint *tool* version the plugin runs — pinned in
+# app/build.gradle.kts via `ktlint { version.set(...) }` so rule behavior stays fixed independent of the
+# plugin bump. `./gradlew ktlintFormat` now autocorrects; `./gradlew ktlintCheck` verifies.
 ktlint = "1.8.0"
+# org.jlleitschuh.gradle.ktlint plugin version — 14.x supports Gradle 9.1+ and the configuration cache.
+ktlintPlugin = "14.2.0"
 # Kover — Kotlin test-coverage. This is the ONE tooling Gradle plugin we apply (detekt/ktlint run as
 # standalone CLIs off the build classpath — see above). The difference is fundamental: detekt/ktlint are
 # source analyzers, but coverage MUST instrument bytecode and hook test execution, which only the plugin
@@ -176,19 +182,19 @@ play-review-ktx = { group = "com.google.android.play", name = "review-ktx", vers
 # AGP↔Kotlin matrix; this is what lets us read Coil 3.4+/latest Compose's Kotlin-2.4 metadata.
 kotlin-gradle-plugin = { group = "org.jetbrains.kotlin", name = "kotlin-gradle-plugin", version.ref = "kotlin" }
 
-# Resolved only into the isolated `detektCli` configuration in the root build (the runnable
-# classpath for the standalone analyzer) — never onto :app's compile/runtime classpath.
-detekt-cli = { group = "io.gitlab.arturbosch.detekt", name = "detekt-cli", version.ref = "detekt" }
-
-# Resolved only into the isolated `ktlintCli` configuration in the root build (the runnable classpath
-# for the standalone linter) — never onto :app's compile/runtime classpath, exactly like detekt-cli.
-ktlint-cli = { group = "com.pinterest.ktlint", name = "ktlint-cli", version.ref = "ktlint" }
-
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
-# The only tooling Gradle plugin applied here (coverage needs test-execution hooks a CLI can't provide) —
-# see the `kover` version note above. Applied on :app in app/build.gradle.kts.
+# Test coverage — hooks test execution to instrument bytecode. Applied on :app in app/build.gradle.kts.
 kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
+# Static analysis (dev.detekt). Applied on :app; analyzes src/main/java + src/test/java without type
+# resolution (matching the old CLI). See the `detekt` version note above for the Gradle-9 requirement.
+detekt = { id = "dev.detekt", version.ref = "detekt" }
+# Kotlin style/format lint. Applied on the root project (lints the *.gradle.kts scripts) and on :app
+# (lints app/src Kotlin). `ktlintCheck` verifies, `ktlintFormat` autocorrects.
+ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlintPlugin" }
+# Room schema export — replaces the raw `ksp { arg("room.schemaLocation", …) }`. Applied on :app; the
+# schema dir is set via `room { schemaDirectory(…) }`. Versioned with room (2.8.4).
+androidx-room = { id = "androidx.room", version.ref = "room" }

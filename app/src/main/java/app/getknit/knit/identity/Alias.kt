@@ -57,6 +57,7 @@ object Alias {
     private const val FNV_PRIME = 0x00000100000001b3uL
     private const val MAX_REROLLS = 8
 
+    @Suppress("MagicNumber") // the `and 0xFFuL` mask avoids byte sign-extension (see the FNV constants above)
     private fun fnv1a(
         seed: ULong,
         bytes: ByteArray,

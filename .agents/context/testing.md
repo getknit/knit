@@ -29,9 +29,10 @@ before "simplifying":
 - **`robolectric.properties` forces `application=android.app.Application`.** The real `KnitApplication.onCreate`
   starts Koin, whose static `GlobalContext` isn't reset between tests → `KoinApplicationAlreadyStartedException`
   on the 2nd test. DAO tests bypass Koin, so a plain Application is correct; `sdk=36` matches compileSdk.
-- **`exportSchema = true`** on `KnitDatabase` + `ksp { arg("room.schemaLocation", "$projectDir/schemas") }`
-  (plugin-free — no Room Gradle plugin) emit `app/schemas/app.getknit.knit.data.KnitDatabase/<version>.json`
-  (checked in). Regenerate by building after any `@Database` version bump.
+- **`exportSchema = true`** on `KnitDatabase` + the Room Gradle plugin's
+  `room { schemaDirectory("$projectDir/schemas") }` emit
+  `app/schemas/app.getknit.knit.data.KnitDatabase/<version>.json` (checked in). Regenerate by clearing
+  `app/schemas/` and rebuilding after any `@Database` version bump (KSP caching can otherwise skip re-export).
 - **`MigrationTestHelper` reads the schema from *debug*-variant assets** —
   `sourceSets["debug"].assets.srcDir("schemas")` in `app/build.gradle.kts`. Robolectric serves the merged
   **debug** assets (unit tests run against debug) but **not** the `test` source set's own assets; release APKs

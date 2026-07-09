@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop hook: enforce `./gradlew detekt` (the standalone detekt CLI) before Claude finishes a turn.
+# Stop hook: enforce `./gradlew detekt` (the dev.detekt Gradle plugin) before Claude finishes a turn.
 #
 # detekt clean         -> exit 0, Claude stops normally.
 # detekt finds issues  -> exit 2 with the `path:line:col: message [Rule]` findings on stderr, which

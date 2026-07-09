@@ -1,3 +1,4 @@
+import org.jlleitschuh.gradle.ktlint.reporter.ReporterType
 import java.util.Properties
 
 plugins {
@@ -5,10 +6,10 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
-    // Test coverage. Deliberately the Gradle plugin (unlike detekt/ktlint, which run as standalone CLIs)
-    // — coverage must instrument bytecode and hook the test run, which a source-analyzer CLI can't do.
-    // See gradle/libs.versions.toml for why this is safe on the AGP-9.2.1/Kotlin-2.4 toolchain.
-    alias(libs.plugins.kover)
+    alias(libs.plugins.kover) // test coverage — instruments bytecode + hooks the test run
+    alias(libs.plugins.detekt) // static analysis (dev.detekt)
+    alias(libs.plugins.ktlint) // Kotlin style/format lint (ktlintCheck / ktlintFormat)
+    alias(libs.plugins.androidx.room) // Room schema export (room { schemaDirectory(…) } below)
 }
 
 // Release signing credentials (Google Play upload key). Loaded from a gitignored keystore.properties at
@@ -185,12 +186,14 @@ android {
     }
 }
 
-ksp {
-    // Export the Room schema JSON (app/schemas/<db-class>/<version>.json) so schema changes are diffable in
-    // review and the migration test's MigrationTestHelper can read them. Plugin-free — no Room Gradle plugin
-    // (same toolchain caution as Koin-not-Hilt). Requires exportSchema = true on KnitDatabase; regenerate the
-    // checked-in schema by building after any @Database version bump.
-    arg("room.schemaLocation", "$projectDir/schemas")
+room {
+    // Export the Room schema JSON via the Room Gradle plugin (replaces the raw ksp `room.schemaLocation`
+    // arg — the plugin rejects that arg if also set). With only build types (no product flavors) it writes
+    // the flat schemas/app.getknit.knit.data.KnitDatabase/<version>.json — same layout the ksp arg produced —
+    // which the debug sourceSet below serves as a unit-test asset so MigrationTestHelper can read it.
+    // Requires exportSchema = true on KnitDatabase; regenerate the checked-in schema by clearing app/schemas/
+    // and rebuilding after any @Database version bump (KSP incremental caching can otherwise skip re-export).
+    schemaDirectory("$projectDir/schemas")
 }
 
 kover {
@@ -214,6 +217,29 @@ kover {
                 )
             }
         }
+    }
+}
+
+detekt {
+    // Overlay config/detekt/detekt.yml on detekt's bundled defaults (== the old CLI's
+    // --build-upon-default-config). Analyze the same inputs the CLI did — main + unit-test Kotlin — set
+    // explicitly rather than via source-set autodiscovery: AGP 9's built-in Kotlin (no kotlin-android
+    // plugin) can leave detekt's discovery empty. No compile classpath is wired, so this runs WITHOUT type
+    // resolution, exactly like the old `detekt-cli` invocation. Reports land in build/reports/detekt/.
+    buildUponDefaultConfig = true
+    config.setFrom(files("$rootDir/config/detekt/detekt.yml"))
+    source.setFrom(files("src/main/java", "src/test/java"))
+}
+
+ktlint {
+    // Pin the ktlint *tool* version (libs.versions.ktlint) so rule behavior stays fixed independent of the
+    // plugin version. Rules come from the repo-root .editorconfig (auto-discovered), incl. the @Composable
+    // function-naming opt-out. `ktlintFormat` autocorrects; `ktlintCheck` verifies. Reports → build/reports/ktlint/.
+    version.set(libs.versions.ktlint.get())
+    reporters {
+        reporter(ReporterType.PLAIN)
+        reporter(ReporterType.HTML)
+        reporter(ReporterType.SARIF)
     }
 }
 

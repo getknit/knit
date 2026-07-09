@@ -14,8 +14,8 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
 ## Context routing
 
 - **Before any build / dependency / tooling change:** READ `.agents/context/toolchain.md` — the
-  bleeding-edge choices (Koin-not-Hilt, the Kotlin-2.4 override, standalone detekt/ktlint, the Kover
-  exception) are deliberate; don't "fix" them.
+  bleeding-edge choices (Koin-not-Hilt, the Kotlin-2.4 override, detekt/ktlint/Kover/Room as Gradle
+  plugins) are deliberate; don't "fix" them.
 - **Before / after running Gradle:** obey `.agents/rules/build-and-test.md` (which task when, JDK 21,
   lockfile regen). Command list: `.agents/context/commands.md`.
 - **When editing any Kotlin/Compose/data code:** obey `.agents/rules/coding.md`.

@@ -1,16 +1,22 @@
-# Project detekt config — a thin OVERLAY applied with `--build-upon-default-config` (CI: verify:detekt).
+# Project detekt config — a thin OVERLAY on detekt's bundled defaults (applied with
+# `buildUponDefaultConfig = true` in app/build.gradle.kts; CI `verify:detekt` runs `./gradlew detekt`).
 # Only rules whose defaults misfire on this Jetpack Compose + Koin codebase are listed; everything else
 # keeps detekt's bundled defaults. Goal: silence framework-shaped false positives so the report is
 # signal, not noise. Genuine nits are fixed in code instead (see the MR that introduced this file).
+#
+# Uses the detekt 2.0 config schema: LongParameterList's constructorThreshold/functionThreshold are now
+# allowedConstructorParameters/allowedFunctionParameters; TooManyFunctions' thresholdIn* are now
+# allowedFunctionsPer*; and the style rule UnusedImports is now the singular UnusedImport.
 #
 # Rationale per rule:
 #  - @Composable functions are PascalCase by Compose convention, are naturally long (declarative UI
 #    trees), and take many hoisted-state/callback params — so FunctionNaming/LongMethod/LongParameterList/
 #    CyclomaticComplexMethod/TooManyFunctions exempt them.
 #  - Koin DI constructors legitimately take one param per injected collaborator (MeshManager/ChatViewModel
-#    have 10) — raise constructorThreshold rather than inventing parameter-objects that just relocate wiring.
+#    have 10) — raise the allowed constructor params rather than inventing parameter-objects that just
+#    relocate wiring.
 #  - The mesh orchestrator (MeshManager, 31 fns) and the single GMS adapter (NearbyTransport, 14 fns) are
-#    by-design per AGENTS.md — raise thresholdInClasses rather than split them.
+#    by-design per AGENTS.md — raise the per-class function allowance rather than split them.
 #  - MagicNumber: theme color/typography literals live in property declarations; ignore those.
 #  - ReturnCount: the flagged functions are guard-clause early-returns (some lint-mandated).
 
@@ -21,20 +27,20 @@ complexity:
     ignoreAnnotated: ['Composable']
   LongParameterList:
     ignoreAnnotated: ['Composable']
-    constructorThreshold: 15   # Koin DI constructors (ChatViewModel = 14 args incl. group repo + avatar store)
-    functionThreshold: 8       # the 6-arg Notifier functions are fine
+    allowedConstructorParameters: 15   # Koin DI constructors (ChatViewModel = 14 args incl. group repo + avatar store)
+    allowedFunctionParameters: 8       # the 6-arg Notifier functions are fine
   TooManyFunctions:
     ignoreAnnotatedFunctions: ['Composable', 'Preview']  # Compose screen files are many small composables
-    thresholdInClasses: 40     # MeshManager 31 (+ content-moderation gate), NearbyTransport 14
-    thresholdInFiles: 20
-    thresholdInObjects: 15
+    allowedFunctionsPerClass: 40       # MeshManager 31 (+ content-moderation gate), NearbyTransport 14
+    allowedFunctionsPerFile: 20
+    allowedFunctionsPerObject: 15
 
 naming:
   FunctionNaming:
     ignoreAnnotated: ['Composable']
 
 style:
-  UnusedImports:
+  UnusedImport:
     active: true                           # not in detekt's default-on set; we want dead imports caught in CI
   MagicNumber:
     ignorePropertyDeclaration: true        # theme/Color.kt + Type.kt literals

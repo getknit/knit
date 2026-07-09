@@ -57,7 +57,7 @@ on every origin, fold live ids only. Makes TTL constants convergence-critical. D
 
 ## 007. Static analysis via standalone CLI; Kover is the one plugin exception
 
-Status: Accepted
+Status: Superseded by 011
 
 detekt/ktlint run as standalone CLIs in isolated root-build configs so they can't perturb `:app`'s
 Kotlin-2.4 classpath. Coverage must instrument bytecode, so Kover is the deliberate plugin exception
@@ -97,3 +97,17 @@ one), so when the blocker is the sender's only reachable acker, dropping it stra
 is custodied (real delay-tolerance, no single-hop trap) and acking it would also vaccine-purge it from
 mesh-wide custody. This is a local-delivery-path decision (like ADR 009), never folded into custody/relay,
 so it is not convergence-critical. Regression tests: `InboundPipelineTest` (broadcast/group acked, DM not).
+
+## 011. Static analysis + Room schema run as Gradle plugins (supersedes 007)
+
+Status: Accepted (2026-07-08, branch `build/gradle-plugins`)
+
+Reverses ADR 007's "standalone CLI" doctrine. detekt (`dev.detekt` 2.0.x — the first line supporting
+Gradle 9; 1.23.x capped at Gradle 8.12.1), ktlint (`org.jlleitschuh.gradle.ktlint` 14.x), and Room schema
+export (`androidx.room`) now run as ordinary Gradle plugins. Safe because each analyzer runs in its own
+isolated task classpath and adds nothing to `:app`'s compile/runtime graph (verified: `assembleDebug` +
+`lint` unaffected), so the Kotlin-2.4-metadata hazard that motivated the CLIs (and Koin-not-Hilt, ADR 001)
+doesn't apply — none does compile-time codegen on `:app`'s sources. Kover was already a plugin (its old
+"one exception" framing is retired). ktlint's check task is now `ktlintCheck` (and `ktlintFormat`
+autocorrects); the CI `verify:detekt` job runs `./gradlew detekt` (a `verify:ktlint` job was added).
+Detail: `context/toolchain.md`.
