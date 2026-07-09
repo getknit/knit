@@ -85,6 +85,10 @@ interface MessageDao {
     @Query("SELECT DISTINCT conversationId FROM messages")
     suspend fun distinctConversations(): List<String>
 
+    /** Distinct node ids that have sent a message in [conversationId] — a group is "known" once one is. */
+    @Query("SELECT DISTINCT senderId FROM messages WHERE conversationId = :conversationId")
+    suspend fun sendersIn(conversationId: String): List<String>
+
     /** Per-conversation row count + newest sentAt, for the retention sweep's cap / age / thread-count decisions. */
     @Query("SELECT conversationId, MAX(sentAt) AS lastSentAt, COUNT(*) AS count FROM messages GROUP BY conversationId")
     suspend fun conversationActivity(): List<ConversationActivity>

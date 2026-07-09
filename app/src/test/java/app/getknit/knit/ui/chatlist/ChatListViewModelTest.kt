@@ -16,6 +16,7 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.FakeMeshController
 import app.getknit.knit.ui.group
 import app.getknit.knit.ui.msg
+import app.getknit.knit.ui.peer
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -181,6 +182,44 @@ class ChatListViewModelTest {
                     .none { it.id == "stranger" },
             )
             // ...but it is counted for the top-bar badge.
+            assertEquals(1, vm.state.value.requestCount)
+        }
+
+    @Test
+    fun aGroupAKnownPeerHasPostedInStaysInTheListAndIsNotCounted() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            // Verified peer "b" posts in the group: it reads as a normal chat, not a request — so it stays
+            // in the list and isn't counted for the badge.
+            groupsFlow.value = listOf(group(groupId = "g-1", members = listOf("me", "x", "b"), createdAt = 50))
+            messagesFlow.value = listOf(msg(senderId = "b", sentAt = 100, conversationId = "g-1"))
+            peersFlow.value = listOf(peer("b", verified = true))
+            advanceUntilIdle()
+
+            assertTrue(
+                vm.state.value.conversations
+                    .any { it.id == "g-1" },
+            )
+            assertEquals(0, vm.state.value.requestCount)
+        }
+
+    @Test
+    fun aGroupWhereAKnownPeerIsAMemberButOnlyAStrangerPostedIsPartitionedOutAndCounted() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            // Verified "b" is a member but silent; only stranger "x" has posted. Membership alone doesn't
+            // promote it — it stays a request.
+            groupsFlow.value = listOf(group(groupId = "g-1", members = listOf("me", "x", "b"), createdAt = 50))
+            messagesFlow.value = listOf(msg(senderId = "x", sentAt = 100, conversationId = "g-1"))
+            peersFlow.value = listOf(peer("b", verified = true))
+            advanceUntilIdle()
+
+            assertTrue(
+                vm.state.value.conversations
+                    .none { it.id == "g-1" },
+            )
             assertEquals(1, vm.state.value.requestCount)
         }
 

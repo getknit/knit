@@ -144,9 +144,10 @@ class ConversationsTest {
     }
 
     @Test
-    fun aGroupIsNeverAcceptedByPeerVerificationAlone() {
-        // A "g-" group id can't appear in the verified-node set, so a stranger's group stays a request
-        // until it is explicitly accepted or replied to.
+    fun aGroupIsNotAcceptedByPeerSignalsWhenNoSendersAreSupplied() {
+        // A "g-" group id can't appear in the verified-node set, so without the thread's senders in hand a
+        // group stays a request until it is explicitly accepted or replied to (the per-conversation checks
+        // that don't pass senders rely on this).
         val groupId = Conversations.groupIdFor(listOf("alice", "bob"))
         assertFalse(
             Conversations.isAccepted(
@@ -163,6 +164,74 @@ class ConversationsTest {
                 accepted = setOf(groupId),
                 verifiedNodeIds = emptySet(),
                 authoredConversationIds = emptySet(),
+            ),
+        )
+    }
+
+    @Test
+    fun aGroupIsAcceptedOnceAKnownPeerHasPostedInIt() {
+        // A known peer speaking in the group — not mere membership — makes it a real chat: a sender that is
+        // verified / accepted / previously DM'd accepts the whole group.
+        val groupId = Conversations.groupIdFor(listOf("alice", "bob", "me"))
+        // A verified sender.
+        assertTrue(
+            Conversations.isAccepted(
+                groupId,
+                accepted = emptySet(),
+                verifiedNodeIds = setOf("alice"),
+                authoredConversationIds = emptySet(),
+                groupSenders = setOf("alice"),
+            ),
+        )
+        // A sender whose DM we previously accepted.
+        assertTrue(
+            Conversations.isAccepted(
+                groupId,
+                accepted = setOf("bob"),
+                verifiedNodeIds = emptySet(),
+                authoredConversationIds = emptySet(),
+                groupSenders = setOf("bob"),
+            ),
+        )
+        // A sender we've previously DM'd (authored to).
+        assertTrue(
+            Conversations.isAccepted(
+                groupId,
+                accepted = emptySet(),
+                verifiedNodeIds = emptySet(),
+                authoredConversationIds = setOf("alice"),
+                groupSenders = setOf("alice"),
+            ),
+        )
+    }
+
+    @Test
+    fun aKnownPeerMerelyInTheRosterButSilentDoesNotAcceptTheGroup() {
+        // "alice" is verified but has not posted — only stranger "stranger1" has spoken. Membership alone
+        // isn't enough: the group stays a request until a known peer actually sends.
+        val groupId = Conversations.groupIdFor(listOf("alice", "stranger1", "me"))
+        assertFalse(
+            Conversations.isAccepted(
+                groupId,
+                accepted = emptySet(),
+                verifiedNodeIds = setOf("alice"),
+                authoredConversationIds = emptySet(),
+                groupSenders = setOf("stranger1"),
+            ),
+        )
+    }
+
+    @Test
+    fun aGroupOnlyStrangersHaveSpokenInStaysARequest() {
+        // No sender is a known peer, so supplying the senders changes nothing — still a request.
+        val groupId = Conversations.groupIdFor(listOf("stranger1", "stranger2", "me"))
+        assertFalse(
+            Conversations.isAccepted(
+                groupId,
+                accepted = setOf("someoneElse"),
+                verifiedNodeIds = setOf("someoneElse"),
+                authoredConversationIds = setOf("someoneElse"),
+                groupSenders = setOf("stranger1", "stranger2"),
             ),
         )
     }

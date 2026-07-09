@@ -208,6 +208,13 @@ class InboundPipelineTest {
             coEvery { messages.recipientOf(any()) } answers { msgMap[firstArg<String>()]?.recipientId }
             coEvery { groups.find(any()) } answers { groupMap[firstArg()] }
             coEvery { groups.upsert(any()) } answers { groupMap[firstArg<GroupEntity>().groupId] = firstArg() }
+            // isAccepted's group branch reads the thread's senders; back it with the fake message map.
+            coEvery { messages.sendersIn(any()) } answers {
+                msgMap.values
+                    .filter { it.conversationId == firstArg<String>() }
+                    .map { it.senderId }
+                    .distinct()
+            }
             // Realistic "nothing held" defaults: relaxed mockk otherwise returns "" for a String? and a bare
             // Object (not a byte[]) for a ByteArray?, which would crash the attachment-screen path in onObtained.
             coEvery { messages.attachmentKeyForHash(any()) } returns null
@@ -1192,6 +1199,46 @@ class InboundPipelineTest {
 
             assertEquals("join us", rig.msgMap["gm-req"]?.body) // still delivered/persisted…
             coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) } // …but not notified
+        }
+
+    @Test
+    fun aGroupMessageFromAKnownSenderNotifiesLikeANormalChat() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            // alice is pinned AND out-of-band verified → a known contact who has now spoken in the group.
+            rig.peerMap[alice.nodeId] =
+                PeerEntity(nodeId = alice.nodeId, pubKey = alice.bundle.encoded, verified = true, updatedAt = 1L)
+            val group =
+                rig.group("g-known", members = listOf(rig.self.nodeId, alice.nodeId), createdBy = alice.nodeId, name = "Crew")
+
+            rig.deliver(alice, rig.groupChat(alice, group, id = "gm-known", body = "hey all"))
+
+            assertEquals("hey all", rig.msgMap["gm-known"]?.body) // delivered…
+            coVerify { rig.notifier.notify(any(), any(), any(), any(), any()) } // …and notified as a normal chat
+            coVerify(exactly = 0) { rig.notifier.notifyMessageRequests(any()) } // not silenced as a request
+        }
+
+    @Test
+    fun aGroupMessageFromAStrangerIsSilentEvenWhenAKnownPeerIsAMember() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice) // the sender is pinned (verifies) but NOT verified/accepted → a stranger
+            // A verified contact "bob" is in the roster but has not posted here — membership isn't enough.
+            rig.peerMap["bob-node"] = PeerEntity(nodeId = "bob-node", verified = true, updatedAt = 1L)
+            val group =
+                rig.group(
+                    "g-mixed",
+                    members = listOf(rig.self.nodeId, alice.nodeId, "bob-node"),
+                    createdBy = alice.nodeId,
+                    name = "Randos",
+                )
+
+            rig.deliver(alice, rig.groupChat(alice, group, id = "gm-mixed", body = "join us"))
+
+            assertEquals("join us", rig.msgMap["gm-mixed"]?.body) // delivered…
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) } // …but silent: the sender is a stranger
         }
 
     @Test

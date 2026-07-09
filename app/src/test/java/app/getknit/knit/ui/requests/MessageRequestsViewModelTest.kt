@@ -104,6 +104,40 @@ class MessageRequestsViewModelTest {
         }
 
     @Test
+    fun aGroupAKnownPeerHasPostedInIsNotARequest() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.requests.collect {} }
+            // Verified peer "b" speaks in the group — a known sender, so it isn't a cold request.
+            groupsFlow.value = listOf(group(groupId = "g-1", members = listOf("me", "x", "b"), name = "Hikers"))
+            messagesFlow.value = listOf(msg(senderId = "b", sentAt = 100, conversationId = "g-1", body = "welcome"))
+            peersFlow.value = listOf(peer("b", verified = true))
+            advanceUntilIdle()
+
+            assertTrue(vm.requests.value.isEmpty())
+        }
+
+    @Test
+    fun aGroupWhereAKnownPeerIsAMemberButOnlyAStrangerHasPostedIsARequest() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.requests.collect {} }
+            // Verified peer "b" is in the roster but hasn't spoken; only stranger "x" has. Membership alone
+            // doesn't bypass the inbox — the sender must be known.
+            groupsFlow.value = listOf(group(groupId = "g-1", members = listOf("me", "x", "b"), name = "Hikers"))
+            messagesFlow.value = listOf(msg(senderId = "x", sentAt = 100, conversationId = "g-1", body = "welcome"))
+            peersFlow.value = listOf(peer("b", verified = true))
+            advanceUntilIdle()
+
+            assertEquals(
+                "g-1",
+                vm.requests.value
+                    .single()
+                    .conversationId,
+            )
+        }
+
+    @Test
     fun anExplicitlyAcceptedConversationIsNotARequest() =
         runTest {
             val vm = vm()

@@ -156,10 +156,18 @@ class ChatListViewModel(
             val accepted = bundle.accepted
             val verified = peerList.filter { it.verified }.map { it.nodeId }.toSet()
             val authored = msgs.filter { it.senderId == me }.map { it.conversationId }.toSet()
+            // Senders per thread, so a group a known peer has posted in reads as a chat rather than a request.
+            val sendersByConversation = byConversation.mapValues { (_, tms) -> tms.map { it.senderId }.toSet() }
 
             fun isPending(conversationId: String): Boolean =
                 conversationId !in blocked &&
-                    !Conversations.isAccepted(conversationId, accepted, verified, authored)
+                    !Conversations.isAccepted(
+                        conversationId,
+                        accepted,
+                        verified,
+                        authored,
+                        sendersByConversation[conversationId].orEmpty(),
+                    )
 
             fun rowFor(
                 conversationId: String,

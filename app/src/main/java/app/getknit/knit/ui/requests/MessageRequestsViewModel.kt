@@ -90,13 +90,17 @@ class MessageRequestsViewModel(
             val groupsById = groupList.associateBy { it.groupId }
             val verified = peerList.filter { it.verified }.map { it.nodeId }.toSet()
             val authored = msgs.filter { it.senderId == me }.map { it.conversationId }.toSet()
+            // Senders per thread, so a group a known peer has posted in falls through to the chat list
+            // instead of showing here (matches the notify gate and chat list).
+            val sendersByConversation =
+                msgs.groupBy { it.conversationId }.mapValues { (_, tms) -> tms.map { it.senderId }.toSet() }
 
             // A conversation is a pending request when it isn't Nearby, isn't blocked, and the shared
             // predicate says it's not yet accepted — matching the notify gate exactly.
             fun isRequest(id: String): Boolean =
                 id != Conversations.NEARBY &&
                     id !in bundle.blocked &&
-                    !Conversations.isAccepted(id, bundle.accepted, verified, authored)
+                    !Conversations.isAccepted(id, bundle.accepted, verified, authored, sendersByConversation[id].orEmpty())
 
             val byConversation = msgs.groupBy { it.conversationId }
             val rows =

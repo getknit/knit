@@ -637,15 +637,26 @@ class MeshManager(
     /**
      * Bounds the local `messages` + `peers` tables so a Sybil DM/profile flood can't exhaust storage. Local-only
      * GC (no wire/convergence effect): the protected set — conversations/peers that are accepted, out-of-band
-     * verified, or that the user has authored in — is exempt from wholesale eviction, matching the notify gate's
-     * "not a request" predicate. Runs on the prune loop and at startup, alongside the forward-store sweep.
+     * verified, or that the user has authored in, plus any group a known peer has posted in — is exempt from
+     * wholesale eviction, matching the notify gate's "not a request" predicate ([Conversations.isAccepted]) so a
+     * group that reads as a normal chat keeps its history like one. Runs on the prune loop and at startup,
+     * alongside the forward-store sweep.
      */
     private suspend fun sweepLocalStorage() {
         val now = System.currentTimeMillis()
         val accepted = settings.acceptedConversations.first()
         val verified = peers.verifiedNodeIds().toSet()
         val authored = messages.conversationsIAuthoredIn(identity.nodeId()).toSet()
-        val protectedIds = accepted + verified + authored
+        // A group inherits protection once a known peer has posted in it (the id lookups alone never match a
+        // "g-" group id). sendersIn is suspend, so gather in a loop rather than a filter lambda.
+        val protectedGroups = mutableListOf<String>()
+        for (group in groups.observeGroups().first()) {
+            val senders = messages.sendersIn(group.groupId).toSet()
+            if (Conversations.isAccepted(group.groupId, accepted, verified, authored, senders)) {
+                protectedGroups += group.groupId
+            }
+        }
+        val protectedIds = accepted + verified + authored + protectedGroups
         messages.sweepRetention(now, protectedIds)
         peers.sweepCap(protectedIds)
     }

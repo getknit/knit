@@ -748,7 +748,21 @@ class InboundPipeline(
             settings.acceptedConversations.first(),
             peers.verifiedNodeIds().toSet(),
             messages.conversationsIAuthoredIn(me).toSet(),
+            groupSendersOf(conversationId),
         )
+
+    /**
+     * The senders who have posted in [conversationId] when it's a group (empty otherwise), for the group
+     * known-sender branch of [Conversations.isAccepted]. Read on the delivery path *after* the inbound
+     * message is saved, so it includes the current sender — a group first spoken in by a known peer is
+     * accepted on that very message.
+     */
+    private suspend fun groupSendersOf(conversationId: String): Set<String> =
+        if (Conversations.kindFor(conversationId) == ConversationKind.GROUP) {
+            messages.sendersIn(conversationId).toSet()
+        } else {
+            emptySet()
+        }
 
     /**
      * Refreshes the single coalesced "message request received" heads-up with the current count of
@@ -761,11 +775,18 @@ class InboundPipeline(
         val verified = peers.verifiedNodeIds().toSet()
         val authored = messages.conversationsIAuthoredIn(me).toSet()
         val blocked = settings.blockedNodeIds.first()
+        val conversations = messages.distinctConversations()
+        // Per-group senders, so a group a known peer has posted in counts as a chat, not a request
+        // (matches the per-message gate above and the Message Requests inbox).
+        val sendersByGroup =
+            conversations
+                .filter { Conversations.kindFor(it) == ConversationKind.GROUP }
+                .associateWith { messages.sendersIn(it).toSet() }
         val count =
-            messages.distinctConversations().count { id ->
+            conversations.count { id ->
                 id != Conversations.NEARBY &&
                     id !in blocked &&
-                    !Conversations.isAccepted(id, accepted, verified, authored)
+                    !Conversations.isAccepted(id, accepted, verified, authored, sendersByGroup[id].orEmpty())
             }
         notifier.notifyMessageRequests(count)
     }
