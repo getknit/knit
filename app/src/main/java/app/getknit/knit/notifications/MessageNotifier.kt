@@ -210,7 +210,7 @@ class MessageNotifier(
     }
 
     override fun notifyMessageRequests(count: Int) {
-        // Quiet + coalesced: one low-priority summary, refreshed in place. A Sybil flood only updates the
+        // Coalesced: one HIGH-importance heads-up, refreshed in place. A Sybil flood only updates the
         // count, never re-alerts (setOnlyAlertOnce). count <= 0 — or the inbox being on screen — cancels it.
         if (count <= 0 || requestsVisible) {
             runCatching { manager.cancel(ID_REQUESTS) }

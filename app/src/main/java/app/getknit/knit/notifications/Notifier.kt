@@ -132,9 +132,9 @@ interface Notifier {
     fun onDismissed(tag: String)
 
     /**
-     * Posts (or refreshes) the single quiet, coalesced "N message requests" heads-up — a stranger's DM/group
+     * Posts (or refreshes) the single coalesced "message request received" heads-up — a stranger's DM/group
      * that isn't yet accepted. Passed the current total [count] of pending request threads so a Sybil flood
-     * collapses into one low-priority summary with an updated count; [count] `<= 0` cancels it.
+     * collapses into one heads-up (alert-once) with an updated count; [count] `<= 0` cancels it.
      */
     fun notifyMessageRequests(count: Int)
 

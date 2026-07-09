@@ -43,10 +43,10 @@
     <string name="notif_action_mark_read">Mark read</string>
     <string name="notif_summary">%1$d messages in %2$d chats</string>
 
-    <!-- Message requests (quiet, coalesced heads-up) -->
+    <!-- Message requests (coalesced heads-up) -->
     <string name="channel_requests_name">Message requests</string>
-    <string name="channel_requests_desc">Quiet heads-up when someone new messages you</string>
-    <string name="notif_requests_title">New message requests</string>
+    <string name="channel_requests_desc">Alerts you when someone new messages you</string>
+    <string name="notif_requests_title">Message request received</string>
     <plurals name="notif_requests_body">
         <item quantity="one">%d message request</item>
         <item quantity="other">%d message requests</item>

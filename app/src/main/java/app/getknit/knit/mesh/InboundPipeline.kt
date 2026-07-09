@@ -751,7 +751,7 @@ class InboundPipeline(
         )
 
     /**
-     * Refreshes the single quiet, coalesced "N message requests" notification with the current count of
+     * Refreshes the single coalesced "message request received" heads-up with the current count of
      * pending (unaccepted) request threads. Reuses the shared [Conversations.isAccepted] predicate so the
      * count matches the per-message gate; excludes Nearby and blocked senders. Local / notify only, so mesh
      * convergence is untouched (custody + relay run outside this dispatch path).
@@ -849,8 +849,8 @@ class InboundPipeline(
                     notifyIncoming(env, content, conversationId)
                 }
             } else if (env.senderId != me) {
-                // A stranger's first DM/group: no per-message alert — just refresh the quiet, coalesced
-                // "N message requests" heads-up. A purely local presentation decision, like the accepted path.
+                // A stranger's first DM/group: no per-message alert — just refresh the coalesced
+                // "message request received" heads-up. A purely local presentation decision, like the accepted path.
                 notifyPendingRequests(me)
             }
         }

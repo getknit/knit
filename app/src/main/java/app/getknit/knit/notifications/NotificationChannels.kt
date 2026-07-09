@@ -28,8 +28,11 @@ object NotificationChannels {
     const val DMS = "knit_msg_dms"
     const val MENTIONS = "knit_msg_mentions"
 
-    // Quiet, coalesced "N message requests" heads-up for a stranger's first (unaccepted) DM/group.
-    const val REQUESTS = "knit_msg_requests"
+    // Coalesced "message request received" heads-up for a stranger's first (unaccepted) DM/group.
+    // Bumped to _v2 to raise importance to HIGH so it pops up (even while the app is foregrounded): a
+    // channel's importance is immutable once created, so the LOW-importance `knit_msg_requests` is
+    // deleted (see [ensure]) and recreated under a fresh id.
+    const val REQUESTS = "knit_msg_requests_v2"
 
     // App group
     const val STATUS = "knit_mesh" // ongoing foreground notification; id kept stable
@@ -43,6 +46,9 @@ object NotificationChannels {
 
     // The pre-bump DEFAULT-importance Groups channel; replaced by [GROUPS] (_v2) at HIGH importance.
     private const val LEGACY_GROUPS = "knit_msg_groups"
+
+    // The pre-bump LOW-importance Requests channel; replaced by [REQUESTS] (_v2) at HIGH importance.
+    private const val LEGACY_REQUESTS = "knit_msg_requests"
 
     /** The message channel for a conversation [kind]. (Mentions route to [MENTIONS] separately.) */
     fun channelFor(kind: ConversationKind): String =
@@ -120,7 +126,7 @@ object NotificationChannels {
                 context,
                 REQUESTS,
                 GROUP_MESSAGES,
-                NotificationManagerCompat.IMPORTANCE_LOW,
+                NotificationManagerCompat.IMPORTANCE_HIGH,
                 R.string.channel_requests_name,
                 R.string.channel_requests_desc,
             ),
@@ -146,10 +152,11 @@ object NotificationChannels {
             ),
         )
 
-        // Drop the pre-reorg flat channels + the DEFAULT-importance Groups channel so they don't linger.
+        // Drop the pre-reorg flat channels + the pre-bump DEFAULT/LOW channels so they don't linger.
         manager.deleteNotificationChannel(LEGACY_MESSAGES)
         manager.deleteNotificationChannel(LEGACY_MENTIONS)
         manager.deleteNotificationChannel(LEGACY_GROUPS)
+        manager.deleteNotificationChannel(LEGACY_REQUESTS)
     }
 
     private fun channel(
