@@ -225,12 +225,14 @@ internal fun ChatListScreenContent(
                 actions = {
                     // Signal-style: the requests inbox affordance appears only when something is pending.
                     if (state.requestCount > 0) {
-                        BadgedBox(
-                            badge = { Badge { Text(state.requestCount.toString()) } },
+                        // Anchor the badge to the 24dp icon (not the 48dp button) so it sits at the
+                        // glyph's top-right corner per the M3 badge spec, not out at the touch-target edge.
+                        IconButton(
+                            onClick = onOpenMessageRequests,
+                            modifier = Modifier.size(48.dp).semantics { testTag = "chatlist_requests" },
                         ) {
-                            IconButton(
-                                onClick = onOpenMessageRequests,
-                                modifier = Modifier.size(48.dp).semantics { testTag = "chatlist_requests" },
+                            BadgedBox(
+                                badge = { Badge { Text(state.requestCount.toString()) } },
                             ) {
                                 Icon(
                                     Icons.Filled.MarkChatUnread,
