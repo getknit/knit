@@ -86,6 +86,10 @@ class MeshManager(
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
     private val db: KnitDatabase,
+    // Injectable wall clock so the send path's timestamps (a frame and its stored local copy share one
+    // sentAt) are deterministic under test. Defaults to the real clock, so production wiring (the Koin
+    // module) is unchanged; mirrors the house convention — ForwardSync(clock = …), AckSync, KeyExchange.
+    private val clock: () -> Long = { System.currentTimeMillis() },
 ) : MeshController {
     // Per-session scope for the collectors + metrics loop + router; cancelled in stop() so they don't
     // accumulate across start/stop cycles (e.g. a Diagnostics-triggered restart()).
@@ -353,7 +357,7 @@ class MeshManager(
         if (isTextFlagged(text, "outgoing", isRoom = recipientId == null && group == null)) return false
         val me = identity.nodeId()
         val id = FrameId.new()
-        val sentAt = System.currentTimeMillis()
+        val sentAt = clock()
         val conversationId = Conversations.idFor(me, recipientId, me, group?.id)
 
         // Broadcast room: plaintext (no fixed recipient set to encrypt to) — the legacy path, unchanged.
@@ -517,7 +521,7 @@ class MeshManager(
                 type = FrameType.GROUP_UPDATE,
                 id = FrameId.new(),
                 senderId = identity.nodeId(),
-                sentAt = System.currentTimeMillis(),
+                sentAt = clock(),
                 group = group,
                 payload = EMPTY_PAYLOAD, // the roster rides in `group`; no per-type content
             ),
@@ -537,7 +541,7 @@ class MeshManager(
                 type = FrameType.GROUP_LEAVE,
                 id = FrameId.new(),
                 senderId = me,
-                sentAt = System.currentTimeMillis(),
+                sentAt = clock(),
                 payload = WireCodec.encodePayload(GroupLeaveContent(groupId)),
             ),
         )
@@ -555,7 +559,7 @@ class MeshManager(
     ) {
         val me = identity.nodeId()
         val next = if (reactions.currentEmoji(messageId, me) == emoji) null else emoji
-        val now = System.currentTimeMillis()
+        val now = clock()
         reactions.apply(ReactionEntity(messageId, me, next, now))
         originateSigned(
             RelayEnvelope(
@@ -589,7 +593,7 @@ class MeshManager(
                 type = FrameType.TYPING,
                 id = FrameId.new(),
                 senderId = me,
-                sentAt = System.currentTimeMillis(),
+                sentAt = clock(),
                 recipientId = recipientId,
                 payload = WireCodec.encodePayload(TypingContent(groupId)),
             )
@@ -601,7 +605,7 @@ class MeshManager(
     private fun resumePendingFetches(session: CoroutineScope) {
         session.launch {
             blobs.deleteOrphans() // reclaim blobs left by attachments staged but never sent (keeps carried ones)
-            reactions.deleteOrphans(System.currentTimeMillis()) // reclaim reactions left by deleted messages
+            reactions.deleteOrphans(clock()) // reclaim reactions left by deleted messages
             forwardSync.sweepExpired() // drop carried DMs whose TTL elapsed while we were down
             pendingInbound.sweepExpired() // and any key-wait frames whose TTL lapsed (in-memory, so usually a no-op)
             keyExchange.sweepExpired() // stale unauthenticated key-wants
@@ -643,7 +647,7 @@ class MeshManager(
      * alongside the forward-store sweep.
      */
     private suspend fun sweepLocalStorage() {
-        val now = System.currentTimeMillis()
+        val now = clock()
         val accepted = settings.acceptedConversations.first()
         val verified = peers.verifiedNodeIds().toSet()
         val authored = messages.conversationsIAuthoredIn(identity.nodeId()).toSet()
@@ -749,7 +753,7 @@ class MeshManager(
                 val newcomers = ids - known
                 known = ids
                 if (newcomers.isEmpty()) return@collect
-                val now = System.currentTimeMillis()
+                val now = clock()
                 if (now - lastFloodAt < PROFILE_REFLOOD_MIN_MS) return@collect
                 lastFloodAt = now
                 originateSigned(currentProfileEnvelope())
@@ -768,7 +772,7 @@ class MeshManager(
                 .collect {
                     // Monotonic bump, persisted: a version that's stable across restarts is what keeps a
                     // custodied profile from minting a new frame every launch (see SettingsStore.profileVersion).
-                    settings.setProfileVersion(maxOf(System.currentTimeMillis(), settings.profileVersion.first() + 1))
+                    settings.setProfileVersion(maxOf(clock(), settings.profileVersion.first() + 1))
                     broadcastProfile()
                 }
         }
