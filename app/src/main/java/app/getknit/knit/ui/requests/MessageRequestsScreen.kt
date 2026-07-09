@@ -59,6 +59,7 @@ import org.koin.compose.koinInject
 @Composable
 fun MessageRequestsScreen(
     onBack: () -> Unit,
+    onOpenProfile: (nodeId: String) -> Unit,
     viewModel: MessageRequestsViewModel = koinViewModel(),
 ) {
     val requests by viewModel.requests.collectAsStateWithLifecycle()
@@ -74,6 +75,7 @@ fun MessageRequestsScreen(
         onAccept = viewModel::accept,
         onBlock = viewModel::block,
         onDelete = viewModel::delete,
+        onOpenProfile = onOpenProfile,
         onBack = onBack,
     )
 }
@@ -85,6 +87,7 @@ internal fun MessageRequestsScreenContent(
     onAccept: (conversationId: String) -> Unit,
     onBlock: (nodeId: String) -> Unit,
     onDelete: (conversationId: String) -> Unit,
+    onOpenProfile: (nodeId: String) -> Unit,
     onBack: () -> Unit,
 ) {
     Scaffold(
@@ -124,6 +127,9 @@ internal fun MessageRequestsScreenContent(
                         onAccept = { onAccept(row.conversationId) },
                         onBlock = { onBlock(row.conversationId) },
                         onDelete = { onDelete(row.conversationId) },
+                        // A DM's conversationId is the peer's node id; a group has no single peer, so
+                        // its glyph stays non-interactive (RequestLeadingVisual ignores this then).
+                        onOpenProfile = { onOpenProfile(row.conversationId) },
                     )
                 }
             }
@@ -137,6 +143,7 @@ private fun RequestRowItem(
     onAccept: () -> Unit,
     onBlock: () -> Unit,
     onDelete: () -> Unit,
+    onOpenProfile: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var showBlockConfirm by remember { mutableStateOf(false) }
@@ -146,7 +153,7 @@ private fun RequestRowItem(
         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, top = 8.dp, end = 4.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RequestLeadingVisual(row)
+        RequestLeadingVisual(row, onOpenProfile = onOpenProfile)
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -257,14 +264,27 @@ private fun RequestRowItem(
     }
 }
 
-/** Leading glyph: the group photo (or people glyph) for a group request, an [Avatar] for a DM request. */
+/**
+ * Leading glyph: the group photo (or people glyph) for a group request, an [Avatar] for a DM request.
+ * The DM avatar is tappable — it opens the sender's profile (where Message accepts the request and opens
+ * the DM). A group request has no single peer, so its glyph stays non-interactive.
+ */
 @Composable
-private fun RequestLeadingVisual(row: RequestRow) {
+private fun RequestLeadingVisual(
+    row: RequestRow,
+    onOpenProfile: () -> Unit,
+) {
     val size = 44.dp
     if (row.isGroup) {
         GroupAvatar(photoHash = row.avatarHash, size = size)
     } else {
-        Avatar(avatarHash = row.avatarHash, name = row.title, size = size)
+        Avatar(
+            avatarHash = row.avatarHash,
+            name = row.title,
+            size = size,
+            contentDescription = stringResource(R.string.chat_view_profile, row.title),
+            onClick = onOpenProfile,
+        )
     }
 }
 
@@ -295,6 +315,7 @@ fun MessageRequestsScreenContentPreview() =
             onAccept = {},
             onBlock = {},
             onDelete = {},
+            onOpenProfile = {},
             onBack = {},
         )
     }
@@ -308,6 +329,7 @@ fun MessageRequestsScreenContentEmptyPreview() =
             onAccept = {},
             onBlock = {},
             onDelete = {},
+            onOpenProfile = {},
             onBack = {},
         )
     }

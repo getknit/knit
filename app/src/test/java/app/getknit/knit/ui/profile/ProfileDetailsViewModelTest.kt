@@ -108,6 +108,18 @@ class ProfileDetailsViewModelTest {
         }
 
     @Test
+    fun acceptPersistsThePeersConversationSoTappingMessageClearsAnyRequest() =
+        runTest {
+            val vm = vm()
+
+            vm.accept()
+            advanceUntilIdle()
+
+            // A DM's conversationId is the peer's node id, so accepting adds exactly that.
+            coVerify { settings.accept(nodeId) }
+        }
+
+    @Test
     fun blockUsesTheCapturedDeviceTagSoItSticksAcrossAKeyReset() =
         runTest {
             val vm = vm()

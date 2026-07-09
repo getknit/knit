@@ -271,7 +271,12 @@ fun KnitApp(startRoute: String? = null) {
             BlockedUsersScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.MESSAGE_REQUESTS) {
-            MessageRequestsScreen(onBack = { navController.popBackStack() })
+            MessageRequestsScreen(
+                onBack = { navController.popBackStack() },
+                // Tapping a request's avatar opens the sender's profile; its Message action accepts the
+                // request and opens the DM (see ProfileDetailsScreen.onMessage).
+                onOpenProfile = { navController.navigate(Routes.profileDetails(it)) },
+            )
         }
         composable(Routes.DONATE) {
             DonateScreen(onBack = { navController.popBackStack() })

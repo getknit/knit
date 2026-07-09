@@ -117,6 +117,15 @@ class ProfileDetailsViewModel(
             ),
         )
 
+    /**
+     * Accepts this peer's DM (idempotent). Tapping Message means we've chosen to converse, so any
+     * pending request from them clears — their thread moves into the main chat list and their messages
+     * notify normally. A no-op for a peer that's already accepted, so it's safe on every Message tap.
+     */
+    fun accept() {
+        viewModelScope.launch { settings.accept(nodeId) }
+    }
+
     /** Blocks this peer locally: their messages/reactions stop being stored, shown, and notified. */
     fun block() {
         viewModelScope.launch { settings.block(nodeId, peerDeviceTag) }

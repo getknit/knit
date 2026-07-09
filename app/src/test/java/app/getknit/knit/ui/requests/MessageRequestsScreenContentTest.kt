@@ -2,6 +2,7 @@ package app.getknit.knit.ui.requests
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -42,6 +43,7 @@ class MessageRequestsScreenContentTest {
                     onAccept = { accepted = it },
                     onBlock = {},
                     onDelete = {},
+                    onOpenProfile = {},
                     onBack = {},
                 )
             }
@@ -53,6 +55,38 @@ class MessageRequestsScreenContentTest {
     }
 
     @Test
+    fun tappingDmAvatarOpensSenderProfile() {
+        var opened: String? = null
+        compose.setContent {
+            KnitTheme {
+                MessageRequestsScreenContent(
+                    requests =
+                        listOf(
+                            RequestRow(
+                                conversationId = "stranger-1",
+                                title = "Stranger",
+                                avatarHash = null,
+                                isGroup = false,
+                                lastPreview = "hi there",
+                                lastMessageAt = 0L,
+                            ),
+                        ),
+                    onAccept = {},
+                    onBlock = {},
+                    onDelete = {},
+                    onOpenProfile = { opened = it },
+                    onBack = {},
+                )
+            }
+        }
+
+        // The DM avatar carries the "View <name>'s profile" accessible name; tapping it routes the
+        // conversationId (the peer's node id) to onOpenProfile.
+        compose.onNodeWithContentDescription("View Stranger's profile").performClick()
+        assertEquals("stranger-1", opened)
+    }
+
+    @Test
     fun emptyStateShownWhenNoRequests() {
         compose.setContent {
             KnitTheme {
@@ -61,6 +95,7 @@ class MessageRequestsScreenContentTest {
                     onAccept = {},
                     onBlock = {},
                     onDelete = {},
+                    onOpenProfile = {},
                     onBack = {},
                 )
             }

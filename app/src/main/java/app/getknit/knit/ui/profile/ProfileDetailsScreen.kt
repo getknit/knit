@@ -60,8 +60,9 @@ import org.koin.core.parameter.parametersOf
 /**
  * Read-only "contact details" view of another peer (keyed by [nodeId]): avatar, display name, live
  * online/offline state, free-text status, node id, and end-to-end key verification (safety number + QR
- * scan). Offers a Message action (open/start a DM via [onMessage]) and Block/Unblock in the overflow
- * menu. Reached by tapping a peer's avatar in a chat.
+ * scan). Offers a Message action (accepts any pending request from this peer, then opens/starts a DM via
+ * [onMessage]) and Block/Unblock in the overflow menu. Reached by tapping a peer's avatar in a chat, or
+ * a sender's avatar in the Message Requests inbox.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -95,7 +96,12 @@ fun ProfileDetailsScreen(
         state = state,
         snackbarHostState = snackbarHostState,
         onBack = onBack,
-        onMessage = onMessage,
+        // Tapping Message accepts any pending request from this peer (idempotent) before opening the DM,
+        // so answering a request from the sender's profile behaves like accepting it in the inbox.
+        onMessage = { id ->
+            viewModel.accept()
+            onMessage(id)
+        },
         onScan = {
             scanLauncher.launch(
                 ScanOptions().setBeepEnabled(false).setOrientationLocked(false),
