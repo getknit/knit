@@ -24,7 +24,7 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `.agents/context/wire-format.md` (CBOR wire), `.agents/context/store-and-forward.md` (custody /
   convergence), `.agents/context/e2e-encryption.md` (crypto).
 - **When writing or running tests:** READ `.agents/context/testing.md` (unit + Robolectric Room + seeded
-  UI / FTL).
+  UI / FTL + black-box UIAutomator).
 - **When driving the app on a device:** obey `.agents/rules/devices.md` first, then use
   `.agents/context/debug-bridge.md`.
 - **Before an architectural choice:** CONSULT `.agents/memory/decisions.md`; for what's deliberately

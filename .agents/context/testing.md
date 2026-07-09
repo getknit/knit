@@ -9,7 +9,8 @@
 3. Two physical phones for discovery → connect → relay and profile/avatar exchange.
 4. **Seeded UI instrumentation suite** (`app/src/androidTest/…/ui/`) for populated-screen rendering across
    devices/API levels — locally on an emulator (`:app:connectedDebugAndroidTest -PseedDemo=true`) or on
-   Firebase Test Lab physical devices (`bash scripts/ftl.sh`). See below.
+   Firebase Test Lab physical devices (`bash scripts/ftl.sh`). See below. A **black-box UIAutomator** twin
+   (`…/uiauto/`) covers the system shade + process lifecycle — see below (`bash scripts/ftl-uiauto.sh`).
 
 > Wi-Fi Aware needs physical devices — an emulator can't do NAN. Use `FakeLoopTransport` for logic tests
 > and two physical Wi-Fi-Aware-capable phones (e.g. Pixels) for real discovery → data path → relay.
@@ -84,6 +85,35 @@ the JVM tests (`CompositeMeshTransportTest`, `RadioWarningTest`, `OnboardingScre
   echo instead); a text send cold-loads the tflite moderator, so give the echo a generous timeout; and
   `ProfileViewModel` one-shot-reads the display name in `init`, racing the seed (test the edit round-trip, not
   the pre-loaded name).
+
+## Black-box UIAutomator suite
+
+`app/src/androidTest/java/app/getknit/knit/uiauto/` (base `SeededUiAutomatorTest`) is the **UIAutomator**
+twin of the Compose suite: it drives the *real running app* through the accessibility / resource-id layer
+instead of the in-process semantics tree, so it can reach what Compose testing can't — the **system
+notification shade** and **process lifecycle** (Home / Recents / Back / rotation). Same demo-seeded,
+radio-less build (`-PseedDemo=true`); `SeededUiAutomatorTest` shares `SeededUiTest`'s contract
+(`requireSeededBuild`, `launch(route)` via the `demo_route` extra, `TestStorage` screenshots).
+
+- **Selectors ride the same `testTag`s.** `testTagsAsResourceId` is set at the NavHost root, so a Compose
+  `testTag` surfaces to UIAutomator as a `resource-id`. Compose exports it **unqualified**
+  (`resource-id="chat_input"`), so `SeededUiAutomatorTest.byTag()` uses a tolerant `By.res(Pattern)` that
+  accepts an optional `pkg:id/` prefix. Screens without tags (Diagnostics, request rows' inner text) match
+  by `waitText`/`waitDesc`.
+- **Isolated FTL target.** `scripts/ftl-uiauto.sh` runs **only** this package
+  (`--test-targets "package app.getknit.knit.uiauto"`); `scripts/ftl.sh` now **excludes** it
+  (`TEST_TARGETS` defaults to `notPackage app.getknit.knit.uiauto`) so black-box system-UI flakiness never
+  reddens the Compose run. Both build the one seeded androidTest APK — the split is a runtime filter.
+- **Run locally**: `./gradlew :app:connectedDebugAndroidTest -PseedDemo=true
+  -Pandroid.testInstrumentationRunnerArguments.package=app.getknit.knit.uiauto` (drop the `-P…package` arg
+  to run everything). `@After` force-stops the app so a bare run (no orchestrator) still isolates.
+- **The message-request notification seam.** The radio-less build never runs `InboundPipeline` (the only
+  caller of `Notifier.notifyMessageRequests`) and seeds no requests, so the debug bridge action
+  **`REQNOTIF`** (`DebugBridgeReceiver`) writes synthetic unaccepted inbound DMs and posts the real
+  heads-up: `adb shell am broadcast -p app.getknit.knit -a app.getknit.knit.debug.REQNOTIF --ei count 1`.
+  The test grants `POST_NOTIFICATIONS` via `pm grant` (API 33+ only; install-time granted on 29–32), fires
+  the seam, then drives the shade → tap → Requests inbox → Accept. The inbox rows carry
+  `request_row_<id>` / `request_accept_<id>` tags.
 
 When driving the emulator over `adb`: the soft keyboard overlaps via `adjustResize`, so read element
 coordinates from `uiautomator dump` rather than guessing; seed the photo picker by `screencap`-ing

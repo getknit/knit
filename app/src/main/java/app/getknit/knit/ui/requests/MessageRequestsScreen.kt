@@ -37,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -150,7 +151,11 @@ private fun RequestRowItem(
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
     Row(
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, top = 8.dp, end = 4.dp, bottom = 8.dp),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .testTag("request_row_${row.conversationId}")
+                .padding(start = 16.dp, top = 8.dp, end = 4.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RequestLeadingVisual(row, onOpenProfile = onOpenProfile)
@@ -174,7 +179,10 @@ private fun RequestRowItem(
             }
         }
         Spacer(Modifier.width(4.dp))
-        TextButton(onClick = onAccept) {
+        TextButton(
+            onClick = onAccept,
+            modifier = Modifier.testTag("request_accept_${row.conversationId}"),
+        ) {
             Text(stringResource(R.string.message_requests_accept))
         }
         Box {

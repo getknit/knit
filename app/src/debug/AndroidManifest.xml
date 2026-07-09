@@ -22,6 +22,7 @@
                 <action android:name="app.getknit.knit.debug.WEBPCONV" />
                 <action android:name="app.getknit.knit.debug.WEBPCHECK" />
                 <action android:name="app.getknit.knit.debug.REVIEW" />
+                <action android:name="app.getknit.knit.debug.REQNOTIF" />
             </intent-filter>
         </receiver>
     </application>

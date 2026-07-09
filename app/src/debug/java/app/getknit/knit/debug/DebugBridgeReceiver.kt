@@ -24,6 +24,7 @@ import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.webp.WebpTranscode
 import app.getknit.knit.identity.Identity
@@ -34,6 +35,7 @@ import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.review.ReviewPromptPolicy
 import app.getknit.knit.review.ReviewPrompter
 import app.getknit.knit.ui.chat.buildReplySnippet
@@ -93,6 +95,9 @@ import java.nio.ByteBuffer
  *   `--ez reset true` clears the persisted review state; `--ez arm true` additionally backdates the
  *   engagement watermark past the age gate and forgets prior attempts, so the next chat-list visit
  *   prompts as soon as the (real) message-count gates hold.
+ * - [ACTION_REQNOTIF] — posts the coalesced "message request received" heads-up: writes `--ei count N`
+ *   (default 1) synthetic unaccepted inbound DMs from unknown peers and calls [Notifier.notifyMessageRequests],
+ *   so the UIAutomator suite can drive the real system notification + Requests inbox. Needs POST_NOTIFICATIONS.
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  *
  * Each action replies as a one-line JSON object: it is returned via the ordered-broadcast result
@@ -113,6 +118,7 @@ class DebugBridgeReceiver :
     private val forwardDao: ForwardDao by inject()
     private val digest: StoreDigest by inject()
     private val reviewPrompter: ReviewPrompter by inject()
+    private val notifier: Notifier by inject()
     private val scope: CoroutineScope by inject()
 
     override fun onReceive(
@@ -169,6 +175,10 @@ class DebugBridgeReceiver :
 
                         ACTION_REVIEW -> {
                             handleReview(context, intent)
+                        }
+
+                        ACTION_REQNOTIF -> {
+                            handleReqNotif(intent)
                         }
 
                         ACTION_HEAL -> {
@@ -610,6 +620,46 @@ class DebugBridgeReceiver :
             .put("shouldPrompt", ReviewPromptPolicy.shouldPrompt(inputs))
     }
 
+    /**
+     * Posts the coalesced "message request received" heads-up on demand — the seam the UIAutomator
+     * notification test drives ([app.getknit.knit] `uiauto`). The radio-less demo build never runs
+     * [app.getknit.knit.mesh.InboundPipeline] (the sole production caller of
+     * [Notifier.notifyMessageRequests]) and seeds no requests, so nothing would otherwise post one. This
+     * writes `count` synthetic **unaccepted inbound DMs** from fresh unknown peers — each a message request
+     * per [Conversations.isAccepted] (not accepted / verified / self-authored) so a tap on the heads-up lands
+     * on a populated Requests inbox — then posts the heads-up. The app must hold `POST_NOTIFICATIONS` (the
+     * test grants it) or the post silently no-ops. `--ei count N` (default 1, capped at [MAX_REQNOTIF]).
+     */
+    private suspend fun handleReqNotif(intent: Intent): JSONObject {
+        val count = intent.getIntExtra(EXTRA_COUNT, 1).coerceIn(1, MAX_REQNOTIF)
+        val me = identity.nodeId()
+        val now = System.currentTimeMillis()
+        repeat(count) { i ->
+            val nodeId = "strngr0${i + 1}"
+            val name = if (i == 0) "Alex Stranger" else "Stranger ${i + 1}"
+            // A discovered-but-unaccepted peer (no pinned key, not verified) so its DM stays a request.
+            peers.upsert(PeerEntity(nodeId = nodeId, name = name, updatedAt = now))
+            // One inbound DM: for a received DM the conversationId is the sender's node id and recipientId
+            // is us (Conversations.idFor); received=false marks it as not ours.
+            messages.save(
+                MessageEntity(
+                    id = "reqnotif-$nodeId-$now",
+                    senderId = nodeId,
+                    recipientId = me,
+                    conversationId = nodeId,
+                    body = "Hey! Mind if I join the hike?",
+                    sentAt = now - i * 1_000L,
+                    received = false,
+                ),
+            )
+        }
+        // The demo build never starts MeshService, so the channels may not exist yet — ensure them first.
+        notifier.createChannel()
+        // The exact call InboundPipeline makes when it silences a stranger's first contact as a request.
+        notifier.notifyMessageRequests(count)
+        return reply("ok", "posted $count message request(s)").put("count", count)
+    }
+
     private fun metricsJson(snap: MeshMetrics.Snapshot): JSONObject =
         JSONObject()
             .put("originated", snap.framesOriginated)
@@ -662,6 +712,7 @@ class DebugBridgeReceiver :
         const val ACTION_WEBPCHECK = "app.getknit.knit.debug.WEBPCHECK"
         const val ACTION_REVIEW = "app.getknit.knit.debug.REVIEW"
         const val ACTION_HEAL = "app.getknit.knit.debug.HEAL"
+        const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
 
         const val EXTRA_TEXT = "text"
         const val EXTRA_CONV = "conv"
@@ -674,6 +725,10 @@ class DebugBridgeReceiver :
         const val EXTRA_OUT = "out"
         const val EXTRA_RESET = "reset"
         const val EXTRA_ARM = "arm"
+        const val EXTRA_COUNT = "count"
+
+        /** Cap on the synthetic requests [ACTION_REQNOTIF] injects (keeps each stranger's node-id single-digit). */
+        const val MAX_REQNOTIF = 9
 
         /** How far past the age gate [ACTION_REVIEW]'s arm backdates the watermark (clock-skew slack). */
         const val ARM_MARGIN_MS = 60_000L

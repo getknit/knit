@@ -339,6 +339,9 @@ dependencies {
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)
     androidTestImplementation(libs.androidx.test.services.storage) // TestStorage: FTL-collected screenshots
+    // UIAutomator black-box suite (app.getknit.knit.uiauto): drives the real app process via resource-ids
+    // (testTagsAsResourceId) + the system UI (notification shade, Recents). See scripts/ftl-uiauto.sh.
+    androidTestImplementation(libs.androidx.test.uiautomator)
     androidTestUtil(libs.androidx.test.orchestrator)
     androidTestUtil(libs.androidx.test.services)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
