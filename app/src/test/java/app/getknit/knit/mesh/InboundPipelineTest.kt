@@ -47,6 +47,10 @@ import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -1272,6 +1276,102 @@ class InboundPipelineTest {
 
             coVerify { rig.notifier.notify(any(), any(), any(), any(), any()) }
             coVerify(exactly = 0) { rig.notifier.notifyMessageRequests(any()) }
+        }
+
+    // --- Blocking is a local presentation choice: a blocked sender's *broadcast/group* message is never
+    //     surfaced, but its best-effort delivery tick still goes home so blocking stays invisible and the
+    //     sender's ✓✓ isn't stranded when we're their only reachable acker. A blocked DM is not acked. ---
+
+    /**
+     * Links [author] as a live neighbor and records every frame we send it over that link, so a test can
+     * observe the best-effort broadcast/group delivery tick [AckSync] routes home. Call before delivering.
+     */
+    private fun TestScope.recordFramesSentTo(
+        rig: Rig,
+        author: Party,
+    ): List<RelayEnvelope> {
+        val theirs = FakeLoopTransport(author.nodeId)
+        rig.transport.connect(theirs)
+        val received = mutableListOf<RelayEnvelope>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            theirs.inbound.collect { received += it.envelope }
+        }
+        return received
+    }
+
+    @Test
+    fun aBlockedSendersBroadcastIsNotSurfacedButStillAcked() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.blocked.value = setOf(alice.nodeId)
+            val acksToAlice = recordFramesSentTo(rig, alice)
+
+            rig.deliver(alice, rig.broadcastChat(alice, id = "blk-b", body = "hi room"))
+            advanceUntilIdle()
+
+            // Nothing from a blocked sender is surfaced locally…
+            assertFalse("a blocked sender's message is not persisted", rig.msgMap.containsKey("blk-b"))
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            // …but the best-effort delivery tick still goes back, so blocking stays invisible and their ✓✓
+            // isn't stranded when we're their only reachable acker (the reported bug).
+            assertTrue(
+                "a blocked broadcast should still be acked",
+                acksToAlice.any {
+                    it.type == FrameType.RECEIPT && WireCodec.decodePayload<ReceiptContent>(it.payload)?.ackId == "blk-b"
+                },
+            )
+        }
+
+    @Test
+    fun aBlockedMembersGroupMessageIsNotSurfacedButStillAcked() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            // We're a member of this group locally; we then blocked co-member alice.
+            val group = rig.group("g-blk", members = listOf(rig.self.nodeId, alice.nodeId), createdBy = rig.self.nodeId)
+            rig.groupMap["g-blk"] =
+                GroupEntity(
+                    groupId = "g-blk",
+                    name = "",
+                    members = GroupMembersStore.encode(listOf(rig.self.nodeId, alice.nodeId)),
+                    createdBy = rig.self.nodeId,
+                    createdAt = 1L,
+                )
+            rig.settings.blocked.value = setOf(alice.nodeId)
+            val acksToAlice = recordFramesSentTo(rig, alice)
+
+            rig.deliver(alice, rig.groupChat(alice, group, id = "blk-g", body = "team hi"))
+            advanceUntilIdle()
+
+            assertFalse("a blocked member's group message is not persisted", rig.msgMap.containsKey("blk-g"))
+            assertTrue(
+                "a blocked member's group message should still be acked when we're a member",
+                acksToAlice.any {
+                    it.type == FrameType.RECEIPT && WireCodec.decodePayload<ReceiptContent>(it.payload)?.ackId == "blk-g"
+                },
+            )
+        }
+
+    @Test
+    fun aBlockedSendersDmIsNeitherDeliveredNorAcked() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.settings.blocked.value = setOf(alice.nodeId)
+
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "blk-dm", body = "let me in"))
+
+            // A DM is deliberately excluded: not delivered, and no flooded receipt originated (which would
+            // also vaccine-purge it from custody) — unlike the best-effort broadcast/group tick above.
+            assertFalse(rig.msgMap.containsKey("blk-dm"))
+            assertTrue(
+                "a blocked DM must not be acked",
+                rig.originated.none { it.type == FrameType.RECEIPT },
+            )
         }
 
     // --- Fix 1: inbound body + future-dated sentAt are clamped ---

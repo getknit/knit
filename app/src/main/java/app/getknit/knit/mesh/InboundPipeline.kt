@@ -370,9 +370,19 @@ class InboundPipeline(
 
     private suspend fun handleChat(env: RelayEnvelope) {
         val me = identity.nodeId()
-        // Blocked sender: never persist, notify, or ack — but the router still relays it onward, so a
-        // blocked user stays a working mesh peer (we just don't surface anything from them).
-        if (env.senderId in settings.blockedNodeIds.first()) return
+        // Blocked sender: never persist, notify, or reconcile their group/roster state — we surface nothing
+        // from them. But a broadcast- or group-room message still gets its best-effort delivery tick
+        // ([ackBlockedRoomChat]): blocking is a purely local presentation choice and must stay invisible to
+        // the blocked party. Concretely, that broadcast/group tick is a fragile unicast `relay = false`
+        // receipt (unlike a DM's flooded, custodied one), so when we're the sender's *only* reachable acker,
+        // dropping it strands their Nearby/group message with no ✓✓ forever — the reported bug. A DM is
+        // deliberately left un-acked: its receipt floods and is custodied (real delay-tolerance, no single-hop
+        // trap), and acking one would also vaccine-purge it from mesh-wide custody — a heavier, separate
+        // change. The router still relays the frame onward regardless, so a blocked user stays a working peer.
+        if (env.senderId in settings.blockedNodeIds.first()) {
+            ackBlockedRoomChat(env)
+            return
+        }
         val content = WireCodec.decodePayload<ChatContent>(env.payload) ?: return
         // Group messages take the membership-gated path; they carry recipientId null, so they must be
         // handled before the DM check below (which would otherwise treat them as broadcast).
@@ -385,6 +395,30 @@ class InboundPipeline(
         // isn't ours, so don't persist, notify, or ack it.
         if (!Conversations.isForMe(env.recipientId, me)) return
         decryptAndDeliver(env, content, me, Conversations.idFor(env.senderId, env.recipientId, me))
+    }
+
+    /**
+     * The one thing [handleChat] still does for a *blocked* sender: send the best-effort broadcast/group
+     * delivery tick, so their ✓✓ isn't stranded when we're their only reachable acker (see the block-branch
+     * comment for why that tick is fragile and why blocking must stay invisible). A group message ticks only
+     * when we're actually a member locally (not merely relaying it, and not a group we've left) — the same
+     * recipient gate [reconcileGroup] applies on the delivery path, minus the state mutation. A DM is never
+     * acked here. [AckSync.owe] sends now and retries until it lands or ages out, and no-ops for our own
+     * frame looping back — so this is convergence-neutral (a new receipt origination, never a custody/relay
+     * decision) and matches the "block is read only on the local delivery path" rule.
+     */
+    private suspend fun ackBlockedRoomChat(env: RelayEnvelope) {
+        val group = env.group
+        if (group != null) {
+            // Group message: tick only when we're actually a member locally (not merely relaying it, and not
+            // a group we've left) — the recipient gate reconcileGroup applies on the deliver path, minus the mutation.
+            val local = groups.find(group.id)
+            if (local != null && !local.left) ackSync.owe(env.id, env.senderId)
+        } else if (env.recipientId == null) {
+            // Broadcast room: no addressee, so everyone is a recipient — always tick.
+            ackSync.owe(env.id, env.senderId)
+        }
+        // A DM (recipientId set) is deliberately not acked for a blocked sender — see handleChat's block comment.
     }
 
     /**
