@@ -34,6 +34,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DownloadForOffline
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.MarkChatUnread
@@ -41,7 +42,6 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -291,7 +291,7 @@ internal fun ChatListScreenContent(
                             )
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.share_app_menu)) },
-                                leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+                                leadingIcon = { Icon(Icons.Filled.DownloadForOffline, contentDescription = null) },
                                 onClick = {
                                     menuOpen = false
                                     onShareApp()

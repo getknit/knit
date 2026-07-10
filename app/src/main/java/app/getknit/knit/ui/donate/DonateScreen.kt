@@ -21,6 +21,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,10 +41,12 @@ import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.ui.openUrl
 import app.getknit.knit.ui.preview.KnitPreview
+import app.getknit.knit.ui.shareText
 
 /**
  * "Support Knit" screen: Knit is funded entirely by tips, so this links out to the maintainer's
- * donation platforms. Reached from the chat-list overflow menu. Purely static — no ViewModel.
+ * donation platforms, plus a "Share Knit" row that opens the share sheet with the Play Store link.
+ * Reached from the chat-list overflow menu. Purely static — no ViewModel.
  *
  * Platforms are data-driven via [DONATION_PLATFORMS]; adding another (Buy Me a Coffee, etc.) is a
  * single list entry with nothing else to change.
@@ -90,13 +93,23 @@ fun DonateScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(24.dp))
             DONATION_PLATFORMS.forEach { platform ->
                 PlatformRow(
-                    platform = platform,
+                    nameRes = platform.nameRes,
+                    icon = platform.icon,
                     onClick = { openUrl(context, platform.url) },
                 )
             }
+            val shareMessage = stringResource(R.string.share_knit_text, PLAY_STORE_URL)
+            val shareChooserTitle = stringResource(R.string.share_knit_chooser_title)
+            PlatformRow(
+                nameRes = R.string.share_knit_menu,
+                icon = Icons.Filled.Share,
+                onClick = { shareText(context, shareMessage, shareChooserTitle) },
+            )
         }
     }
 }
+
+private const val PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=app.getknit.knit"
 
 private data class DonationPlatform(
     @param:StringRes val nameRes: Int,
@@ -112,7 +125,8 @@ private val DONATION_PLATFORMS =
 
 @Composable
 private fun PlatformRow(
-    platform: DonationPlatform,
+    @StringRes nameRes: Int,
+    icon: ImageVector,
     onClick: () -> Unit,
 ) {
     Row(
@@ -133,14 +147,14 @@ private fun PlatformRow(
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                platform.icon,
+                icon,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSecondaryContainer,
             )
         }
         Spacer(Modifier.width(16.dp))
         Text(
-            text = stringResource(platform.nameRes),
+            text = stringResource(nameRes),
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.weight(1f),
         )
@@ -157,7 +171,8 @@ private fun PlatformRow(
 @Composable
 fun PlatformRowPreview() =
     KnitPreview {
-        PlatformRow(platform = DONATION_PLATFORMS.first(), onClick = {})
+        val platform = DONATION_PLATFORMS.first()
+        PlatformRow(nameRes = platform.nameRes, icon = platform.icon, onClick = {})
     }
 
 // DonateScreen takes no ViewModel (LocalContext is only touched inside a click lambda), so the whole
