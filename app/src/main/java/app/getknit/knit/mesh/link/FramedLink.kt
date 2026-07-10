@@ -14,6 +14,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.BufferedOutputStream
@@ -60,6 +61,9 @@ class FramedLink(
     private val metrics: MeshMetrics,
     private val callbacks: LinkCallbacks,
     private val now: () -> Long,
+    // Average file-feed cap in bytes/sec for a slow shared channel (BLE L2CAP); ≤ 0 = unbounded (Wi-Fi Aware
+    // NDP, and the default so existing callers/tests are unchanged). See [TransferPacePolicy] for the why.
+    private val paceBytesPerSec: Int = 0,
     private val log: (String) -> Unit = {},
 ) {
     private val outbound = Channel<Outbound>(Channel.UNLIMITED)
@@ -260,22 +264,34 @@ class FramedLink(
         }
     }
 
-    @Suppress("NestedBlockDepth") // header → (drain frames → read chunk → write chunk) loop → end
-    private fun streamFile(out: OutputStream, item: Outbound.FileSend) {
+    @Suppress("NestedBlockDepth") // header → (drain frames → read chunk → write chunk → pace) loop → end
+    private suspend fun streamFile(out: OutputStream, item: Outbound.FileSend) {
         txInProgress = true // don't let a supervisor tear down mid transfer
         val startedAt = now()
         val bytes = item.file.length()
+        val pace = PaceConfig(paceBytesPerSec)
         try {
             val header = FileHeaderWire(item.meta.kind.wire, item.meta.key, item.meta.mime)
             LinkFraming.write(out, LinkFraming.Type.FILE_HEADER, LinkFraming.encodeFileHeader(header))
             item.file.inputStream().use { input ->
                 val buf = ByteArray(LinkFraming.FILE_CHUNK_BYTES)
+                var sent = 0L
                 while (true) {
-                    drainFramesInto(out) // interleave live frames between chunks
+                    // Interleave live frames between chunks — and flush them NOW so they ride the pace gap ahead
+                    // of the next chunk instead of trailing behind it in the socket buffer.
+                    if (drainFramesInto(out)) out.flush()
                     val n = input.read(buf)
                     if (n == -1) break
                     LinkFraming.write(out, LinkFraming.Type.FILE_CHUNK, if (n == buf.size) buf else buf.copyOf(n))
+                    out.flush() // hand the chunk to the stack so the pace below measures real fed bytes
                     touch()
+                    sent += n
+                    // On a paced (BLE) link, hold the feed at ~link capacity so the stack TX queue stays shallow:
+                    // interleaved frames sit near the wire head and the freed ACL budget carries reverse traffic.
+                    if (paceBytesPerSec > 0) {
+                        val wait = TransferPacePolicy.delayMs(sent, now() - startedAt, pace)
+                        if (wait > 0) delay(wait)
+                    }
                 }
             }
             LinkFraming.write(out, LinkFraming.Type.FILE_END)
@@ -291,17 +307,24 @@ class FramedLink(
     /** Next outbound item: a file stashed during a prior transfer, else the channel head. */
     private suspend fun nextOutbound(): Outbound? = stash.removeFirstOrNull() ?: outbound.receiveCatching().getOrNull()
 
-    /** Write any queued frames now (called between file chunks); stash any files for later. */
-    private fun drainFramesInto(out: OutputStream) {
+    /**
+     * Write any queued frames now (called between file chunks); stash any files for later. Returns whether any
+     * record was actually written to [out] (a stashed file doesn't count), so the caller can flush it ahead of
+     * the next chunk.
+     */
+    private fun drainFramesInto(out: OutputStream): Boolean {
+        var wrote = false
         while (true) {
             val item = outbound.tryReceive().getOrNull() ?: break
             when (item) {
                 is Outbound.Frame -> {
                     writeRecordSafely(out, LinkFraming.Type.FRAME, item.bytes)
+                    wrote = true
                 }
 
                 is Outbound.Digest -> {
                     writeRecordSafely(out, LinkFraming.Type.DIGEST, LinkFraming.encodeDigest(DigestWire(item.ids)))
+                    wrote = true
                 }
 
                 is Outbound.FileSend -> {
@@ -309,6 +332,7 @@ class FramedLink(
                 }
             }
         }
+        return wrote
     }
 
     // --- Inbound file reassembly ---

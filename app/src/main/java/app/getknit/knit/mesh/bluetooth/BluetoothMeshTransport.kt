@@ -610,6 +610,7 @@ class BluetoothMeshTransport(
                 metrics = metrics,
                 callbacks = linkCallbacks,
                 now = SystemClock::elapsedRealtime,
+                paceBytesPerSec = BLE_PACE_BYTES_PER_SEC,
                 log = { msg -> Log.d(TAG, msg) },
             )
         val prev = links.put(nodeId, framed)
@@ -875,5 +876,13 @@ class BluetoothMeshTransport(
         // Set generously (BLE reaches further than NAN's NDP): broaden BLE reach to the edge of usable range and
         // exclude only genuinely poor signals, rather than gating to same-room proximity.
         private const val PROMOTE_RSSI_FLOOR = -90.0
+
+        // Average byte/sec cap on a file feed over an L2CAP CoC link (passed to FramedLink; NAN stays unbounded).
+        // A blob otherwise bursts into the BT-stack TX queue ahead of any later text frame and saturates the ACL,
+        // so chat stalls until the transfer completes and the reverse direction is starved. Holding the feed
+        // BELOW real L2CAP throughput keeps that queue shallow, so interleaved frames reach the wire promptly and
+        // reverse traffic gets connection-event budget. Deliberately conservative — the transfer is a bit slower
+        // in exchange for live chat. Field-tune against the `file …/… <N>B in <ms>ms` timing (FramedLink).
+        private const val BLE_PACE_BYTES_PER_SEC = 28 * 1024
     }
 }

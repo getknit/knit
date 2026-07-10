@@ -85,10 +85,15 @@ class FramedLinkTest {
         val callbacks: Recording,
     )
 
-    private fun harness(nodeId: String = "peer0001"): Harness {
+    private fun harness(
+        nodeId: String = "peer0001",
+        // A small out-pipe lets a test force the writer to back-pressure mid-file (see the interleave test).
+        fromLinkBuffer: Int = 1 shl 18,
+        paceBytesPerSec: Int = 0,
+    ): Harness {
         val toLink = PipedOutputStream()
         val linkInput = PipedInputStream(toLink, 1 shl 18)
-        val fromLink = PipedInputStream(1 shl 18)
+        val fromLink = PipedInputStream(fromLinkBuffer)
         val linkOutput = PipedOutputStream(fromLink)
         val socket =
             object : LinkSocket {
@@ -111,6 +116,7 @@ class FramedLinkTest {
                 metrics = MeshMetrics(),
                 callbacks = callbacks,
                 now = { 0L },
+                paceBytesPerSec = paceBytesPerSec,
             )
         link.start()
         return Harness(link, toLink, fromLink, callbacks)
@@ -224,6 +230,36 @@ class FramedLinkTest {
             rec = LinkFraming.read(h.fromLink)
         }
         assertArrayEquals(body, received.toByteArray())
+    }
+
+    @Test
+    fun liveFrameInterleavesBetweenFileChunks() {
+        // A blob is streamed as many chunks; a frame enqueued during it must ride the wire BEFORE FILE_END, not
+        // queue behind the whole file. A small out-pipe (16 KiB) forces the writer to block after the first
+        // chunk, so the frame — enqueued before the test starts draining — is deterministically picked up by
+        // drainFramesInto between chunks rather than racing to the end. Body spans several FILE_CHUNK_BYTES.
+        val h = harness(fromLinkBuffer = 16 * 1024)
+        val key = "c".repeat(64)
+        val body = ByteArray(80 * 1024) { (it % 251).toByte() }
+        val file = tmp.newFile("interleave.bin").apply { writeBytes(body) }
+        val framePayload = frameBytes(id = "live1", senderId = "sender01")
+
+        h.link.sendFile(file, FileMeta(FileKind.ATTACHMENT, key, "image/webp"))
+        h.link.send(framePayload) // enqueued while the writer is back-pressured mid-file
+
+        val types = ArrayList<LinkFraming.Type>()
+        var interleaved: ByteArray? = null
+        var rec = LinkFraming.read(h.fromLink)
+        while (rec != null && rec.type != LinkFraming.Type.FILE_END) {
+            types.add(rec.type)
+            if (rec.type == LinkFraming.Type.FRAME && interleaved == null) interleaved = rec.payload
+            rec = LinkFraming.read(h.fromLink)
+        }
+        if (rec != null) types.add(rec.type) // the terminating FILE_END
+        val frameAt = types.indexOf(LinkFraming.Type.FRAME)
+        val endAt = types.indexOf(LinkFraming.Type.FILE_END)
+        assertTrue("a FRAME must interleave before FILE_END, saw $types", frameAt in 0 until endAt)
+        assertArrayEquals("the interleaved frame's bytes are intact", framePayload, interleaved)
     }
 
     @Test

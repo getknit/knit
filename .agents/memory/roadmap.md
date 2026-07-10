@@ -26,6 +26,12 @@ doc). **Don't start a deferred item without explicit direction.**
 - **BLE promotion gate on A2DP audio** — the adaptive scan throttle now drops the **scan** to its floor
   while streaming (`ScanDemandPolicy` / the demand-gated `scanLoop`), but **connects** are still not gated
   on `contended` (it remains diagnostic-only for the connect path).
+- **Connectionless BLE side-channel for small frames** — the BLE analogue of the NAN coordination/fast-fanout
+  plane: carry small floodable frames (broadcast chat, receipts, reactions, typing) over BLE **extended
+  advertising** so they bypass an in-flight L2CAP file transfer entirely instead of head-of-line-queuing
+  behind it on the one ordered stream. The shipped `TransferPacePolicy` feed-cap (`FramedLink.paceBytesPerSec`)
+  *mitigates* the stall by pacing the blob feed below link capacity; this would *structurally* split
+  interactive frames from bulk. DMs stay on L2CAP. See knit/knit-next#13.
 - **True DM routing** — DMs still flood; only the addressed recipient delivers/acks. Store-and-forward now
   *carries* undelivered DMs (`context/store-and-forward.md`), but there is still no routing table.
 - **Group key-gap retransmit** — the group analogue of the DM `flushPendingFor`: a group message already

@@ -76,8 +76,13 @@ internal object LinkFraming {
      */
     const val MAX_PAYLOAD_BYTES = 512 * 1024
 
-    /** Bytes read from disk per [Type.FILE_CHUNK] record when streaming a file. */
-    const val FILE_CHUNK_BYTES = 64 * 1024
+    /**
+     * Bytes read from disk per [Type.FILE_CHUNK] record when streaming a file. Kept small so the writer's
+     * between-chunk interleave/pace points (see [app.getknit.knit.mesh.link.FramedLink]) are frequent — the
+     * finer the granularity, the sooner a live frame jumps ahead of a slow BLE blob. No L2CAP throughput cost
+     * (the controller fragments to MPS K-frames regardless — see [BluetoothSocketLink]) and negligible on NAN.
+     */
+    const val FILE_CHUNK_BYTES = 16 * 1024
 
     /** Encodes one record: `[type][big-endian length][payload]`. */
     fun encode(
