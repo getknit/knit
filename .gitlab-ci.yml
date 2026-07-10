@@ -82,11 +82,13 @@ build:debug:
     expire_in: 1 week
 
 # R8 is exercised ONLY on the release variant (debug never shrinks), so this is the only CI guard against
-# keep-rule breakage. First cut: allow_failure while the keep rules stabilize (obfuscation is still off and
-# verification is on-device); flip to false once green so R8 regressions block the pipeline. Builds UNSIGNED
-# (no KNIT_UPLOAD_* creds in CI) — signing isn't needed to run R8. R8 is heap-heavy: if it OOMs on the 2 GB
-# runner (SerialGC / 1280m from .android), give this job a bigger heap or runner. Archives mapping/ so
-# usage.txt (removed classes, incl. the demo/fake code) and configuration.txt are auditable per pipeline.
+# keep-rule breakage — and now that obfuscation (name mangling) is ON, mapping/release/mapping.txt is the
+# DEOBFUSCATION MAP (retain per shipped release to symbolicate crashes; see the artifacts note below). Still
+# allow_failure until a pipeline is confirmed green on this constrained runner WITH obfuscation; flip to false
+# then so R8/keep-rule regressions block. Builds UNSIGNED (no KNIT_UPLOAD_* creds in CI) — signing isn't
+# needed to run R8. R8 is heap-heavy: if it OOMs on the 2 GB runner (SerialGC / 1280m from .android), give
+# this job a bigger heap or runner. Archives mapping/ so mapping.txt (deobfuscation), usage.txt (removed
+# code) and configuration.txt (merged rules) are auditable/retained per pipeline.
 build:release:
   extends: .android
   stage: build
@@ -99,7 +101,9 @@ build:release:
     paths:
       - app/build/outputs/apk/release/*.apk
       - app/build/outputs/mapping/release/
-    expire_in: 1 week
+    # mapping.txt is the deobfuscation map now that obfuscation is ON — keep it long enough to symbolicate a
+    # shipped build's crashes (for a tagged release, also upload mapping.txt to Play Console / a durable store).
+    expire_in: 1 year
 
 # ----------------- test ------------------
 test:unit:

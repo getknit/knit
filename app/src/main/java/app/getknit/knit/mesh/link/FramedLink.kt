@@ -266,7 +266,7 @@ class FramedLink(
         val startedAt = now()
         val bytes = item.file.length()
         try {
-            val header = FileHeaderWire(item.meta.kind.name, item.meta.key, item.meta.mime)
+            val header = FileHeaderWire(item.meta.kind.wire, item.meta.key, item.meta.mime)
             LinkFraming.write(out, LinkFraming.Type.FILE_HEADER, LinkFraming.encodeFileHeader(header))
             item.file.inputStream().use { input ->
                 val buf = ByteArray(LinkFraming.FILE_CHUNK_BYTES)
@@ -282,7 +282,7 @@ class FramedLink(
             out.flush()
             touch()
             // The per-plane throughput evidence (this same codec runs over the NAN NDP and BLE L2CAP sockets).
-            log("file ${item.meta.kind}/${item.meta.key} ${bytes}B in ${now() - startedAt}ms → $nodeId")
+            log("file ${item.meta.kind.wire}/${item.meta.key} ${bytes}B in ${now() - startedAt}ms → $nodeId")
         } finally {
             txInProgress = false
         }
@@ -325,7 +325,7 @@ class FramedLink(
         rxOut = BufferedOutputStream(temp.outputStream())
         rxMeta =
             FileMeta(
-                kind = runCatching { FileKind.valueOf(header.kind) }.getOrDefault(FileKind.ATTACHMENT),
+                kind = FileKind.fromWire(header.kind),
                 key = header.key,
                 mime = header.mime,
             )

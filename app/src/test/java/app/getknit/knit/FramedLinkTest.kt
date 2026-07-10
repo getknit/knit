@@ -181,6 +181,17 @@ class FramedLinkTest {
     }
 
     @Test
+    fun fileKindWireTokensAreFrozen() {
+        // The JSON file-header `kind` token is the on-wire contract and must NOT track the enum constant
+        // name (which R8 obfuscation may rename). Freeze both tokens, both directions, plus the fallback.
+        assertEquals("AVATAR", FileKind.AVATAR.wire)
+        assertEquals("ATTACHMENT", FileKind.ATTACHMENT.wire)
+        assertEquals(FileKind.AVATAR, FileKind.fromWire("AVATAR"))
+        assertEquals(FileKind.ATTACHMENT, FileKind.fromWire("ATTACHMENT"))
+        assertEquals("an unknown token routes as a chat attachment", FileKind.ATTACHMENT, FileKind.fromWire("nope"))
+    }
+
+    @Test
     fun sendEmitsAFrameRecordOnTheWire() {
         val h = harness()
         val payload = frameBytes(id = "out1", senderId = "me000001")
@@ -202,6 +213,8 @@ class FramedLinkTest {
         val header = LinkFraming.read(h.fromLink)
         assertEquals(LinkFraming.Type.FILE_HEADER, header!!.type)
         assertEquals(key, LinkFraming.decodeFileHeader(header.payload)!!.key)
+        // The producer writes the frozen wire token (FileKind.wire), not the obfuscatable constant name.
+        assertEquals("ATTACHMENT", LinkFraming.decodeFileHeader(header.payload)!!.kind)
         // Collect chunks until FILE_END and assert they reassemble to the original bytes.
         val received = ArrayList<Byte>()
         var rec = LinkFraming.read(h.fromLink)

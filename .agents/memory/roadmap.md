@@ -15,6 +15,11 @@ doc). **Don't start a deferred item without explicit direction.**
   `LinkFraming.Type.DIGEST` id-diff (`docs/DIGEST_PULL_REATTACH.md`).
 - **Inbound key-request** for a frame received from a not-yet-pinned sender (the inbound complement of
   retransmit-on-key-arrival) — now `KeyExchange`; see `context/store-and-forward.md`.
+- **R8 obfuscation (name mangling)** is enabled on release/staging (was shrink + optimize only, behind
+  `-dontobfuscate`). The wire stays safe by construction — kotlinx.serialization compile-time descriptors +
+  the frozen wire/identity DTOs pinned unrenamed in `keepRules/knit-r8.keep` — and `FileKind`'s file-header
+  token is decoupled from its enum constant name (`FileKind.wire`). See decisions ADR 012. Deferred: tighten
+  the broad library `{ *; }` keeps to minimal targeted keeps (bigger size win, larger test surface).
 
 ## Still deferred (by design)
 

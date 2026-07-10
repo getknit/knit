@@ -71,7 +71,23 @@ data class InboundFrame(
 )
 
 /** What a transferred file is, so the receiver can route an avatar apart from a chat attachment. */
-enum class FileKind { AVATAR, ATTACHMENT }
+enum class FileKind(
+    val wire: String,
+) {
+    AVATAR("AVATAR"),
+    ATTACHMENT("ATTACHMENT"),
+    ;
+
+    companion object {
+        /**
+         * Resolve an on-wire file-header `kind` token to a [FileKind]. The token is an explicit literal
+         * (frozen for peer interop), NOT the enum constant name — so R8 obfuscation may rename the constants
+         * without moving the JSON file-header sidecar. Unknown tokens fall back to [ATTACHMENT] (route as a
+         * chat attachment, never an avatar) — the same safe default the prior `valueOf(...)` read used.
+         */
+        fun fromWire(token: String): FileKind = entries.firstOrNull { it.wire == token } ?: ATTACHMENT
+    }
+}
 
 /**
  * Metadata sent alongside a file so the receiver can identify it: [kind] (avatar vs attachment),

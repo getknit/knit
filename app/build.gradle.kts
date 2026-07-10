@@ -96,16 +96,17 @@ android {
 
     buildTypes {
         release {
-            // R8: shrink + optimize dead code (including the demo/fake classes, now debug-only) and unused
-            // resources. Obfuscation is deliberately OFF for this first enablement (`-dontobfuscate` in
-            // src/main/keepRules/knit-r8.keep) — the app has fail-silent reflection surfaces (Tink, the
-            // tflite moderators) and renaming is the historically risky R8 pass, so it is a scheduled
-            // follow-up once the release build is proven stable on-device. Keep rules are auto-combined
-            // from src/main/keepRules/*.keep (AGP merges them; no proguardFiles wiring needed).
-            // isMinifyEnabled is the standard R8 switch (the previous `optimization { enable }` was AGP 9's
-            // experimental *gradual-R8* toggle, which needs android.r8.gradual.support — not what we want for
-            // a production release). It runs R8's shrink + optimize passes; obfuscation is disabled in the
-            // keep rules. isShrinkResources strips unused res/ (optimized shrinking is automatic in AGP 9).
+            // R8: shrink + optimize + OBFUSCATE (name mangling), plus unused-resource shrinking. Keep rules
+            // are auto-combined from src/main/keepRules/*.keep (AGP merges them; no proguardFiles wiring
+            // needed). The wire protocol survives renaming because it's kotlinx.serialization compiler-plugin
+            // CBOR/JSON — map keys are baked $$serializer descriptor string literals R8 doesn't rewrite — and
+            // the frozen wire/identity DTOs are pinned unrenamed in knit-r8.keep; the fail-silent reflection
+            // surfaces (Tink, the tflite moderators, SQLCipher) are kept there too. isMinifyEnabled is the
+            // standard R8 switch (the previous `optimization { enable }` was AGP 9's experimental *gradual-R8*
+            // toggle, which needs android.r8.gradual.support — not what we want for a production release).
+            // isShrinkResources strips unused res/ (optimized shrinking is automatic in AGP 9). NOTE:
+            // mapping.txt (build/outputs/mapping/<variant>/) is now the deobfuscation map — retain it per
+            // release to symbolicate crashes.
             isMinifyEnabled = true
             isShrinkResources = true
             // Never build a demo-seeded release, even with `-PseedDemo=true` — demo mode is debug-only and

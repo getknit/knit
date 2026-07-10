@@ -1,15 +1,23 @@
 # Knit R8 keep rules. AGP auto-combines every *.keep in this dir (app/src/main/keepRules) into R8's input
 # — there is no proguardFiles wiring in app/build.gradle.kts. Ref: https://d.android.com/r/tools/r8/keep-rules
 #
-# FIRST-CUT POSTURE (see the release buildType in app/build.gradle.kts): R8 shrinks + optimizes but does
-# NOT obfuscate (-dontobfuscate below). So these rules only need to stop the *removal* of reflection-/JNI-
-# reached code; the generous `{ *; }` keeps on the native/reflective libraries are cheap while renaming is
-# off, and are meant to be tightened once the release build is verified on-device. Enabling obfuscation is
-# a scheduled follow-up. If assembleRelease reports missing classes, append the -dontwarn lines AGP writes
-# to app/build/outputs/mapping/release/missing_rules.txt.
+# POSTURE (see the release buildType in app/build.gradle.kts): R8 shrinks + optimizes + OBFUSCATES (name
+# mangling), in full mode (AGP 9 default). The wire is kotlinx.serialization compiler-plugin CBOR/JSON: map
+# keys are the literal property spellings baked into the generated $$serializer descriptors at compile time
+# (no @SerialName / no polymorphism / no reflective lookup), which R8 does NOT rewrite — so renaming is
+# byte-safe as long as the $$serializer infra is kept (below). We also pin the frozen wire/identity DTOs
+# unrenamed as belt-and-suspenders. The one name-coupled path (the FileKind enum on the JSON file-header) is
+# fixed in code (FileKind.wire / FileKind.fromWire), so it needs no keep rule. The generous `{ *; }` keeps on
+# the native/reflective libraries are meant to be tightened once obfuscation is verified on-device. If
+# assembleRelease reports missing classes, append the -dontwarn lines AGP writes to
+# app/build/outputs/mapping/release/missing_rules.txt.
 
-# Shrink + optimize only — do NOT rename. Keeps stack traces readable and every reflection/JNI name intact.
--dontobfuscate
+# Keep just enough attributes to symbolicate crashes (mapping.txt maps the rest). SourceFile+LineNumberTable
+# are the load-bearing pair for readable stack traces once names are mangled; Signature/InnerClasses/
+# EnclosingMethod are insurance for Kotlin/serialization reflection (some also arrive via library rules —
+# harmless to restate). -renamesourcefileattribute hides original filenames while keeping line numbers.
+-keepattributes SourceFile,LineNumberTable,Signature,InnerClasses,EnclosingMethod
+-renamesourcefileattribute SourceFile
 
 # ---- kotlinx-serialization -------------------------------------------------------------------------------
 # The library ships consumer R8 rules (auto-applied), and every @Serializable type here is resolved via
@@ -21,6 +29,19 @@
     *** Companion;
     kotlinx.serialization.KSerializer serializer(...);
 }
+
+# ---- Wire protocol contract: never RENAME (CBOR/JSON keys are the frozen property spellings) --------------
+# Byte-safe even without these (the $$serializer keeps + baked descriptor strings already cover the wire),
+# but the wire is frozen-forever so we pin the DTOs unrenamed too. FileKind is deliberately NOT pinned — it's
+# decoupled from its wire token in code (FileKind.wire), so a keep rule would only mask a regression here.
+-keep class app.getknit.knit.mesh.protocol.** { *; }
+-keep class app.getknit.knit.mesh.crypto.MessageContent { *; }
+-keep class app.getknit.knit.mesh.crypto.PublicKeyBundle$Proto { *; }
+-keep class app.getknit.knit.mesh.link.FileHeaderWire { *; }
+-keep class app.getknit.knit.mesh.link.DigestWire { *; }
+# At-rest device identity (filesDir/identity.key, CBOR): a key-name drift silently re-mints the nodeId and
+# breaks every peer's pinned key. Not wire, same blast radius — pin it too.
+-keep class app.getknit.knit.data.crypto.IdentityKeyStore$Stored { *; }
 
 # ---- Tink (E2E crypto) -----------------------------------------------------------------------------------
 # HIGHEST risk: HybridConfig/SignatureConfig register key managers reflectively (+ protobuf). A stripped
@@ -44,6 +65,17 @@
 -keep class com.android.apksig.** { *; }
 -dontwarn com.reandroid.**
 -dontwarn com.android.apksig.**
+
+# ---- Bundled platform XML types (kxml2 ships org.xmlpull.v1.*, pulled transitively via ARSCLib) -----------
+# org.xmlpull.v1 is a PLATFORM package (bootclasspath), but kxml2 bundles a copy INTO the apk, so R8 full mode
+# treats it as a program class and renames the interface (org.xmlpull.v1.XmlPullParser -> ao3). The framework
+# class android.content.res.XmlBlock$Parser (loaded from the platform, unrenamed) then no longer "implements"
+# the renamed interface, so ANY resource-XML inflation (Compose vector drawables / fonts) throws
+# `IncompatibleClassChangeError: ... does not implement interface 'ao3' in call to 'int ao3.next()'` at the
+# first frame. Pinning the platform names keeps the framework's XmlResourceParser/AttributeSet hierarchy
+# consistent (their cascade renames stop too). Crash reproduced on-device 2026-07-09; see decisions ADR 012.
+-keep class org.xmlpull.v1.** { *; }
+-dontwarn org.xmlpull.v1.**
 
 # ---- Google Play In-App Review (optional GMS; pre-gated + failures swallowed at runtime) ------------------
 -dontwarn com.google.android.gms.**
