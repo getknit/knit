@@ -163,6 +163,7 @@ import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
 import app.getknit.knit.ui.components.GroupAvatar
 import app.getknit.knit.ui.components.KnitStitchIndicator
+import app.getknit.knit.ui.components.RoomAvatar
 import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.openUrl
 import app.getknit.knit.ui.preview.KnitPreview
@@ -459,14 +460,21 @@ internal fun ChatScreenContent(
                 title = {
                     when {
                         state.isRoom -> {
-                            Column {
-                                Text(
-                                    text = stringResource(R.string.nearby_title),
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                                ConnectionStatusRow(state.neighborCount, state.transportHealth)
+                            // Nearby room: the Knit mesh mark (same glyph as the chat-list row) + title +
+                            // live connection status. The avatar is decorative — the visible title names it
+                            // and the room has nothing to open — so it carries no separate label or tap.
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                RoomAvatar(size = 36.dp)
+                                Spacer(Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = stringResource(R.string.nearby_title),
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    ConnectionStatusRow(state.neighborCount, state.transportHealth)
+                                }
                             }
                         }
 

@@ -68,7 +68,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -90,6 +89,7 @@ import app.getknit.knit.R
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
+import app.getknit.knit.ui.components.RoomAvatar
 import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.invite.ShareKnitDialog
 import app.getknit.knit.ui.invite.ShareStorageException
@@ -600,14 +600,7 @@ private fun LeadingVisual(row: ConversationRow) {
     val groupPhoto = row.avatarHash
     when {
         row.isRoom -> {
-            CircleGlyph(size) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_knit_room),
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
+            RoomAvatar(size = size)
         }
 
         row.isGroup && groupPhoto != null -> {
