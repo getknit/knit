@@ -19,6 +19,10 @@ fi
 project_dir="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 cd "$project_dir" || exit 0
 
+# Skip when this turn changed no Gradle input (e.g. Markdown/docs-only) — see the guard header.
+source "$project_dir/.claude/hooks/lib/gradle-input-guard.sh"
+gradle_inputs_changed || exit 0
+
 output=$(./gradlew detekt --console=plain 2>&1)
 status=$?
 
