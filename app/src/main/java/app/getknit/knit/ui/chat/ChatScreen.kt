@@ -1318,6 +1318,10 @@ private fun ReactionChip(
 private val ATTACHMENT_WIDTH = 220.dp
 private val ATTACHMENT_MAX_HEIGHT = 260.dp
 
+// Floor on the first-view (ratio-unknown) slot so the bubble reserves height and can't collapse to a sliver
+// while Coil decodes the just-arrived blob — the loading spinner sits in this reserved area (see AttachmentImage).
+private val ATTACHMENT_MIN_HEIGHT = 120.dp
+
 /** The image inside a bubble: the photo/GIF once fetched (tap to open fullscreen), or a loading placeholder. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1397,28 +1401,42 @@ private fun AttachmentImage(
                 // hash above the list). Coil doesn't memory-cache animated GIFs, so each re-decodes as it
                 // scrolls back into view; without a reserved height the slot collapses to zero mid-decode
                 // and snaps back, making the list "skip" when flinging past several GIFs. First view (ratio
-                // unknown) falls back to the width-anchored slot and records the ratio on load for next time.
+                // unknown) falls back to the width-anchored slot — floored at ATTACHMENT_MIN_HEIGHT so it can't
+                // collapse to a sliver during the decode window — and records the ratio on load for next time.
                 val ratio = hash?.let { imageRatios[it] }
                 val sizeModifier =
                     if (ratio != null && ratio > 0f) {
                         val h = (ATTACHMENT_WIDTH / ratio).coerceAtMost(ATTACHMENT_MAX_HEIGHT)
                         Modifier.size(width = h * ratio, height = h)
                     } else {
-                        Modifier.width(ATTACHMENT_WIDTH).heightIn(max = ATTACHMENT_MAX_HEIGHT)
+                        Modifier
+                            .width(ATTACHMENT_WIDTH)
+                            .heightIn(min = ATTACHMENT_MIN_HEIGHT, max = ATTACHMENT_MAX_HEIGHT)
                     }
-                AsyncImage(
-                    model = image,
-                    contentDescription = stringResource(R.string.chat_attachment_image_desc),
-                    // ContentScale.Fit preserves aspect ratio; the reserved box already matches it.
-                    contentScale = ContentScale.Fit,
-                    onSuccess = { state ->
-                        val measured = state.result.image
-                        if (hash != null && measured.width > 0 && measured.height > 0) {
-                            imageRatios[hash] = measured.width.toFloat() / measured.height.toFloat()
-                        }
-                    },
-                    modifier = sizeModifier,
-                )
+                // `ready` only means the blob bytes are in the DB; Coil still runs an off-thread read → decrypt →
+                // (animated) decode before the first frame paints, and repeats it on every scroll-in since
+                // animated WebP isn't memory-cached. Hold the spinner over the reserved slot until that decode
+                // lands, so the bubble never flashes an empty box or pops in late. Re-arms per hash on scroll-in.
+                var decoded by remember(hash) { mutableStateOf(false) }
+                Box(contentAlignment = Alignment.Center) {
+                    AsyncImage(
+                        model = image,
+                        contentDescription = stringResource(R.string.chat_attachment_image_desc),
+                        // ContentScale.Fit preserves aspect ratio; the reserved box already matches it.
+                        contentScale = ContentScale.Fit,
+                        onSuccess = { state ->
+                            val measured = state.result.image
+                            if (hash != null && measured.width > 0 && measured.height > 0) {
+                                imageRatios[hash] = measured.width.toFloat() / measured.height.toFloat()
+                            }
+                            decoded = true
+                        },
+                        modifier = sizeModifier,
+                    )
+                    if (!decoded) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                    }
+                }
             }
 
             else -> {
