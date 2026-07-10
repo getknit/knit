@@ -188,6 +188,17 @@ android {
                     apiLevel = 33
                     systemImageSource = "aosp-atd"
                 }
+                // Headless emulator for the accessibility suite (app.getknit.knit.a11y): the Compose ATF
+                // checks are @RequiresApi(34), so they need an API-34+ device — pixel7api33 is too old and
+                // just skips them (@SdkSuppress). Run: `./gradlew :app:pixel8api34DebugAndroidTest
+                // -PseedDemo=true -Pandroid.testInstrumentationRunnerArguments.package=app.getknit.knit.a11y`.
+                // aosp-atd (headless, GMS-stripped) is fine — ATF is a pure library; fall back to "aosp" if
+                // the ATD image isn't published for 34.
+                create("pixel8api34") {
+                    device = "Pixel 8"
+                    apiLevel = 34
+                    systemImageSource = "aosp-atd"
+                }
             }
         }
     }
@@ -353,6 +364,10 @@ dependencies {
     testImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    // Accessibility Test Framework (ATF) checks in the Compose suite — the same framework the Play
+    // pre-launch report runs. Pulls ATF + AccessibilityValidator transitively; drives the API-34+
+    // a11y package (app.getknit.knit.a11y, @RequiresApi(34)). See scripts/ftl-a11y.sh.
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4.accessibility)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.room.testing)

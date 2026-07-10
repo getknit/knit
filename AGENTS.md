@@ -23,8 +23,9 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   relevant reference — `.agents/context/mesh-transport.md` (radios / NAN / BLE),
   `.agents/context/wire-format.md` (CBOR wire), `.agents/context/store-and-forward.md` (custody /
   convergence), `.agents/context/e2e-encryption.md` (crypto).
-- **When writing or running tests:** READ `.agents/context/testing.md` (unit + Robolectric Room + seeded
-  UI / FTL + black-box UIAutomator).
+- **When writing or running tests, or checking accessibility:** READ `.agents/context/testing.md` (unit +
+  Robolectric Room + seeded UI / FTL + black-box UIAutomator + the accessibility/ATF suite that mirrors the
+  Play pre-launch report).
 - **When driving the app on a device:** obey `.agents/rules/devices.md` first, then use
   `.agents/context/debug-bridge.md`.
 - **Before an architectural choice:** CONSULT `.agents/memory/decisions.md`; for what's deliberately

@@ -16,6 +16,10 @@ plugins), see `context/toolchain.md`.
 ./gradlew :app:connectedDebugAndroidTest -PseedDemo=true  # seeded UI instrumentation suite on ALL attached adb devices (Orchestrator)
 ./gradlew :app:pixel7api33DebugAndroidTest -PseedDemo=true # same suite on a Gradle-managed emulator ONLY (Pixel 7 @ API 33; ignores adb)
 bash scripts/ftl.sh                 # build seeded APKs + run the suite on Firebase Test Lab physical devices
+bash scripts/ftl-uiauto.sh          # ...only the black-box UIAutomator package on FTL
+# Accessibility (ATF) suite — same checks as the Play pre-launch report; needs API 34+ (@SdkSuppress skips below):
+./gradlew :app:pixel8api34DebugAndroidTest -PseedDemo=true -Pandroid.testInstrumentationRunnerArguments.package=app.getknit.knit.a11y  # headless emulator
+bash scripts/ftl-a11y.sh            # ...on an FTL API-34+ device (defaults to b0q@36)
 ```
 
 - **JDK 21** is required (the Gradle daemon toolchain is pinned to 21).

@@ -11,6 +11,8 @@
    devices/API levels — locally on an emulator (`:app:connectedDebugAndroidTest -PseedDemo=true`) or on
    Firebase Test Lab physical devices (`bash scripts/ftl.sh`). See below. A **black-box UIAutomator** twin
    (`…/uiauto/`) covers the system shade + process lifecycle — see below (`bash scripts/ftl-uiauto.sh`).
+5. **Accessibility (ATF) suite** (`app/src/androidTest/…/a11y/`) runs Google's Accessibility Test Framework —
+   the same checks the Play Console pre-launch report runs — on API 34+ (`bash scripts/ftl-a11y.sh`). See below.
 
 > Wi-Fi Aware needs physical devices — an emulator can't do NAN. Use `FakeLoopTransport` for logic tests
 > and two physical Wi-Fi-Aware-capable phones (e.g. Pixels) for real discovery → data path → relay.
@@ -114,6 +116,39 @@ radio-less build (`-PseedDemo=true`); `SeededUiAutomatorTest` shares `SeededUiTe
   The test grants `POST_NOTIFICATIONS` via `pm grant` (API 33+ only; install-time granted on 29–32), fires
   the seam, then drives the shade → tap → Requests inbox → Accept. The inbox rows carry
   `request_row_<id>` / `request_accept_<id>` tags.
+
+## Accessibility (ATF) suite
+
+`app/src/androidTest/java/app/getknit/knit/a11y/` (`AccessibilityInstrumentedTest`) runs Google's
+**Accessibility Test Framework (ATF)** — the same framework the Play Console **pre-launch report** runs —
+against every seeded screen, so a11y regressions (missing labels, sub-48dp touch targets, low text/image
+contrast, bad traversal order) fail locally before upload. It reuses `SeededUiTest` (deep-link each screen
+via `demo_route`, await the seed, then audit) and adds one dependency, `ui-test-junit4-accessibility`, which
+pulls ATF transitively: `compose.enableAccessibilityChecks(validator)` +
+`compose.onRoot().tryPerformAccessibilityChecks()`.
+
+- **API-34 floor.** The Compose ATF integration is `@RequiresApi(34)`, so the suite is gated with
+  `@SdkSuppress(minSdkVersion = 34)` — it **skips** (not fails) on the API 29/33 matrix devices, and
+  `@SdkSuppress` also satisfies lint's `NewApi`; do **not** add `@RequiresApi` in a test (lint's
+  `UseSdkSuppress` rejects it). The default managed device `pixel7api33` is too old, so a new **`pixel8api34`**
+  managed emulator (`aosp-atd`) runs it headless.
+- **Severity policy: errors fail, warnings logged, all findings reported.** The `AccessibilityValidator`
+  throws (fails the test) only for `AccessibilityCheckResultType.ERROR`; an `addCheckListener` logs every
+  WARNING/INFO to logcat under tag `A11y`, and each test writes its actionable findings to a
+  `a11y-<screen>.txt` file via `TestStorage` (collected by FTL, mirrored locally under
+  `app/build/.../additional_output/` — plus AGP's per-test `logcat-<test>.txt`). Suppress a known-acceptable
+  finding with `setSuppressingResultMatcher(...)`; widen the gate with `setThrowExceptionFor(...)`.
+- **Contrast needs real pixels, so screenshot capture is hardware-gated.** ATF's text/image contrast checks
+  read a screenshot; on the headless emulator `UiAutomation.takeScreenshot()` races the UI thread and
+  returns null → ATF NPEs. So `setCaptureScreenshots(!isEmulator())`: **off on the emulator** (contrast
+  reports NOT_RUN; structural checks — labels, touch targets, traversal, duplicate/redundant descriptions —
+  still fully run) and **on for real hardware**, so contrast actually runs on the `scripts/ftl-a11y.sh`
+  physical-device pass (and Play's pre-launch report covers it too).
+- **Run locally** (headless emulator, no physical device):
+  `./gradlew :app:pixel8api34DebugAndroidTest -PseedDemo=true
+  -Pandroid.testInstrumentationRunnerArguments.package=app.getknit.knit.a11y`.
+- **Run on FTL**: `bash scripts/ftl-a11y.sh` — targets the `a11y` package on an **API-34+** device (defaults
+  to `b0q@36`). The package also rides the default `scripts/ftl.sh` run but *skips* on its API 29/33 devices.
 
 When driving the emulator over `adb`: the soft keyboard overlaps via `adjustResize`, so read element
 coordinates from `uiautomator dump` rather than guessing; seed the photo picker by `screencap`-ing
