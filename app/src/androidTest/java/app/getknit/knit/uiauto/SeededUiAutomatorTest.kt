@@ -3,6 +3,7 @@ package app.getknit.knit.uiauto
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.os.Build
 import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
@@ -19,6 +20,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.rules.TestName
+import java.util.Locale
 import java.util.regex.Pattern
 
 /**
@@ -197,6 +199,22 @@ abstract class SeededUiAutomatorTest {
 
     /** The localized app string for [resId] (assertions match real on-screen copy, not hardcoded English). */
     protected fun str(resId: Int): String = context.getString(resId)
+
+    /**
+     * True on a Gradle-managed / FTL **emulator** (ranchu/goldfish, including the `aosp-atd` images). Some
+     * black-box behaviour can only be validated on real hardware: e.g. the headless ATD emulator's SystemUI
+     * posts a notification correctly (confirmed via `dumpsys notification`) but never exposes its content to
+     * the accessibility tree, so the shade can't be driven. A test that needs such a surface gates with
+     * `Assume.assumeFalse(isEmulator())` and runs on the FTL physical-device pass. Mirrors the a11y suite.
+     */
+    protected fun isEmulator(): Boolean {
+        val hardware = Build.HARDWARE.lowercase(Locale.ROOT)
+        return hardware == "ranchu" ||
+            hardware == "goldfish" ||
+            Build.FINGERPRINT.contains("generic") ||
+            Build.PRODUCT.contains("sdk") ||
+            Build.PRODUCT.contains("atd")
+    }
 
     /**
      * Captures a full-screen screenshot named [name] and writes it as a `.png` through the test-services

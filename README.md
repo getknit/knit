@@ -172,6 +172,21 @@ send→verify loop can be driven over `adb` without screenshots — see [`AGENTS
   (Android Test Orchestrator, per-test isolation), capturing a screenshot per test per device. See
   [`AGENTS.md`](AGENTS.md) for the matrix, env-var overrides, and the free-tier budget.
 
+- **Black-box UIAutomator tests** — a UIAutomator suite (`app/src/androidTest/…/uiauto/`) that drives the
+  *real running app* through the accessibility / resource-id layer, so it reaches what the in-process Compose
+  suite can't: the system **notification shade**, **process lifecycle** (Home / Recents / rotation), and real
+  dropdown-menu / dialog **popups**. It shares the same demo-seeded, radio-less build. Run **all** of them
+  locally on the Gradle-managed emulator (no physical device, no `adb` involvement):
+
+  ```bash
+  ./gradlew :app:pixel7api33DebugAndroidTest -PseedDemo=true \
+    -Pandroid.testInstrumentationRunnerArguments.package=app.getknit.knit.uiauto
+  ```
+
+  Drop the `-P…package` filter to run the seeded Compose suite alongside it, or run `bash scripts/ftl-uiauto.sh`
+  for the isolated Firebase Test Lab physical-device pass. (Run a single class with
+  `…arguments.class=app.getknit.knit.uiauto.OverflowNavigationUiAutomatorTest`.)
+
 ## 📚 Documentation
 
 - [`AGENTS.md`](AGENTS.md) — build/test commands, toolchain constraints, architecture, conventions, and

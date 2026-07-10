@@ -4,6 +4,7 @@ import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.uiautomator.UiObject2
 import app.getknit.knit.R
+import org.junit.Assume.assumeFalse
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -22,6 +23,11 @@ import org.junit.runner.RunWith
 class MessageRequestNotificationUiAutomatorTest : SeededUiAutomatorTest() {
     @Test
     fun messageRequestHeadsUp_opensRequestsInbox_andAccepts() {
+        // The notification posts correctly on an emulator (verified via `dumpsys notification`), but a headless
+        // Gradle-managed / ATD emulator's SystemUI never surfaces its content to the accessibility tree, so the
+        // shade can't be driven here. Skip (not fail) on an emulator; the FTL physical-device pass covers it.
+        assumeFalse("notification shade content isn't reachable on a headless emulator; runs on FTL hardware", isEmulator())
+
         grantNotifications()
         launch() // seeded chat list
 
