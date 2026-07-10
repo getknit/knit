@@ -35,6 +35,16 @@ android {
             }
     }
 
+    // Pinned ONLY to run llvm-objcopy for release native-symbol extraction (see debugSymbolLevel in
+    // buildTypes) — this app compiles no native code, so the exact version is not correctness-sensitive;
+    // any recent NDK extracts the same .dynsym. It's pinned for reproducibility and because a missing NDK
+    // fails SILENTLY (empty symbols, no build error). BUMP POLICY: only in lockstep with an AGP upgrade,
+    // to AGP's new *default* NDK (AGP release notes → "Default NDK version"; a stale/missing pin also shows
+    // up as an `android.ndkVersion …` build warning). Don't chase NDK releases on their own cadence — with
+    // no native build there's nothing to gain. After bumping: `sdkmanager "ndk;<ver>"` on every build
+    // machine + CI, then re-verify the .sym files land in the AAB's BUNDLE-METADATA (the failure is silent).
+    ndkVersion = "28.2.13676358"
+
     defaultConfig {
         applicationId = "app.getknit.knit"
         // minSdk 29 is the shared data-path floor: BLE L2CAP CoC and the Wi-Fi Aware NDP
@@ -109,6 +119,19 @@ android {
             // release to symbolicate crashes.
             isMinifyEnabled = true
             isShrinkResources = true
+            // Native crash/ANR symbolication for the prebuilt .so we ship (tflite/LiteRT jni,
+            // datastore_shared_counter, SQLCipher, graphics-path). AGP extracts the symbols into the AAB's
+            // BUNDLE-METADATA and Play Console picks them up automatically — no manual upload. This is the
+            // *native* counterpart to the mapping.txt R8 map above (which only covers Kotlin/Java frames).
+            // Extraction runs the NDK's llvm-objcopy, so a matching NDK must be installed — if it's absent
+            // strip/extract SILENTLY no-op (empty symbols, no build error), so the warning would persist.
+            // SYMBOL_TABLE, not FULL, is deliberate: these are third-party libs compiled release with NO
+            // DWARF, so FULL (--only-keep-debug) yields near-empty .dbg (.dynsym NOBITS, 0 symbols) while
+            // SYMBOL_TABLE keeps the real .dynsym (function names) — 444 FUNC syms for tflite vs 0. We have
+            // no first-party native code; revisit FULL only if we ever ship our own -g-compiled .so.
+            ndk {
+                debugSymbolLevel = "SYMBOL_TABLE"
+            }
             // Never build a demo-seeded release, even with `-PseedDemo=true` — demo mode is debug-only and
             // its classes ship only in src/debug. Overrides the defaultConfig SEED_DEMO/DEMO_DIRECTOR fields.
             buildConfigField("boolean", "SEED_DEMO", "false")
