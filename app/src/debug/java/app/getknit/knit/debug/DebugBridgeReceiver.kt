@@ -98,6 +98,11 @@ import java.nio.ByteBuffer
  * - [ACTION_REQNOTIF] — posts the coalesced "message request received" heads-up: writes `--ei count N`
  *   (default 1) synthetic unaccepted inbound DMs from unknown peers and calls [Notifier.notifyMessageRequests],
  *   so the UIAutomator suite can drive the real system notification + Requests inbox. Needs POST_NOTIFICATIONS.
+ * - [ACTION_FLAGMSG] — injects one synthetic **inbound message the on-device text moderator flagged** (the UI
+ *   collapses it behind a tap-to-reveal) as the newest row of `--es conv <id>` (default the broadcast room),
+ *   from `--es from <peerNodeId>` (default a synthetic sender, named on upsert) with body `--es text <body>`:
+ *   the seam the UIAutomator moderation-reveal test drives, since the radio-less build never receives a real
+ *   flagged message and the marketing seed deliberately carries none (a hidden bubble would spoil a screenshot).
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  *
  * Each action replies as a one-line JSON object: it is returned via the ordered-broadcast result
@@ -179,6 +184,10 @@ class DebugBridgeReceiver :
 
                         ACTION_REQNOTIF -> {
                             handleReqNotif(intent)
+                        }
+
+                        ACTION_FLAGMSG -> {
+                            handleFlagMsg(intent)
                         }
 
                         ACTION_HEAL -> {
@@ -660,6 +669,46 @@ class DebugBridgeReceiver :
         return reply("ok", "posted $count message request(s)").put("count", count)
     }
 
+    /**
+     * Injects one synthetic **inbound message the on-device text moderator flagged** into a conversation, so
+     * the UIAutomator suite can drive the received-flagged "tap to reveal" collapse (the
+     * [MessageEntity.MODERATION_TEXT_FLAGGED] path in [app.getknit.knit.ui.chat] `ChatScreen`). The radio-less
+     * demo build never receives a real flagged message (no [app.getknit.knit.mesh] `InboundPipeline`), and the
+     * marketing seed deliberately carries none (a hidden bubble would spoil a screenshot), so this writes one
+     * on demand — timestamped `now`, so it's the **newest** row and a `LazyColumn` composes it on screen.
+     * `--es conv <id>` (default the broadcast room), `--es from <peerNodeId>` the sender (default
+     * [FLAGGED_SENDER_ID], upserted with a name if unknown), `--es text <body>` the hidden body (default
+     * [DEFAULT_FLAGGED_BODY]).
+     */
+    private suspend fun handleFlagMsg(intent: Intent): JSONObject {
+        val conv = intent.getStringExtra(EXTRA_CONV) ?: Conversations.NEARBY
+        val body = intent.getStringExtra(EXTRA_TEXT)?.takeIf { it.isNotBlank() } ?: DEFAULT_FLAGGED_BODY
+        val from = intent.getStringExtra(EXTRA_FROM) ?: FLAGGED_SENDER_ID
+        val me = identity.nodeId()
+        val now = System.currentTimeMillis()
+        // Give the sender a name so the row renders like a real peer message (idempotent upsert).
+        if (peers.find(from) == null) {
+            peers.upsert(PeerEntity(nodeId = from, name = FLAGGED_SENDER_NAME, updatedAt = now))
+        }
+        // For a received DM the conversationId is the sender's node id and recipientId is us; the room/group
+        // carries no recipient — mirrors DemoWriter.write / handleReqNotif's routing.
+        val recipient = if (Conversations.kindFor(conv) == ConversationKind.DM) me else null
+        val id = "flagmsg-$now"
+        messages.save(
+            MessageEntity(
+                id = id,
+                senderId = from,
+                recipientId = recipient,
+                conversationId = conv,
+                body = body,
+                sentAt = now,
+                received = false,
+                moderation = MessageEntity.MODERATION_TEXT_FLAGGED,
+            ),
+        )
+        return reply("ok", "flagged inbound message injected into $conv").put("conversation", conv).put("id", id)
+    }
+
     private fun metricsJson(snap: MeshMetrics.Snapshot): JSONObject =
         JSONObject()
             .put("originated", snap.framesOriginated)
@@ -713,6 +762,7 @@ class DebugBridgeReceiver :
         const val ACTION_REVIEW = "app.getknit.knit.debug.REVIEW"
         const val ACTION_HEAL = "app.getknit.knit.debug.HEAL"
         const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
+        const val ACTION_FLAGMSG = "app.getknit.knit.debug.FLAGMSG"
 
         const val EXTRA_TEXT = "text"
         const val EXTRA_CONV = "conv"
@@ -726,6 +776,12 @@ class DebugBridgeReceiver :
         const val EXTRA_RESET = "reset"
         const val EXTRA_ARM = "arm"
         const val EXTRA_COUNT = "count"
+        const val EXTRA_FROM = "from"
+
+        /** Default sender + hidden body for [ACTION_FLAGMSG]'s synthetic flagged inbound message. */
+        const val FLAGGED_SENDER_ID = "flagger0"
+        const val FLAGGED_SENDER_NAME = "Flagged Sender"
+        const val DEFAULT_FLAGGED_BODY = "[flagged demo message]"
 
         /** Cap on the synthetic requests [ACTION_REQNOTIF] injects (keeps each stranger's node-id single-digit). */
         const val MAX_REQNOTIF = 9

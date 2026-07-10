@@ -18,6 +18,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -68,6 +69,7 @@ internal fun ShareTargetScreenContent(
     onPick: (conversationId: String) -> Unit,
 ) {
     Scaffold(
+        modifier = Modifier.testTag("screen_share_target"),
         topBar = {
             TopAppBar(
                 navigationIcon = {

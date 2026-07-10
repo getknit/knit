@@ -161,6 +161,22 @@ abstract class SeededUiAutomatorTest {
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
     ): UiObject2 = requireNotNull(waitDesc(desc, timeoutMs)) { "no view with contentDescription '$desc' within ${timeoutMs}ms" }
 
+    /**
+     * Waits up to [timeoutMs] for a view whose visible text equals [text] **exactly**; returns it or null.
+     * Use where a substring match ([waitText]) is ambiguous — a dialog's confirm button often repeats a word
+     * from its title (e.g. the "Block" button vs. the "Block this person?" title).
+     */
+    protected fun waitExactText(
+        text: String,
+        timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+    ): UiObject2? = device.wait(Until.findObject(By.text(text)), timeoutMs)
+
+    /** Like [waitExactText] but fails the test (not returns null) when the view never appears — a click target. */
+    protected fun requireExactText(
+        text: String,
+        timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+    ): UiObject2 = requireNotNull(waitExactText(text, timeoutMs)) { "no view with exact text '$text' within ${timeoutMs}ms" }
+
     /** Asserts a view with testTag [tag] appears within [timeoutMs]. */
     protected fun assertTag(
         tag: String,

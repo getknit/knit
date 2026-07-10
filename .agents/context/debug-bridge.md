@@ -47,6 +47,11 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
   | sort` per device, then `comm`/`diff` the files. **`liveFingerprint` matching across devices = converged**
   (`allFingerprint` is NOT fleet-comparable at a TTL boundary — soak oracles must compare `liveFingerprint`).
 - `…debug.REACT` — `--es id <messageId> --es emoji <emoji>`. `…debug.HEAL` — nudge rescan/re-advertise.
+- `…debug.FLAGMSG` — injects one inbound message **the text moderator flagged** (the UI collapses it behind a
+  tap-to-reveal) as the newest row of `--es conv <id>` (default `nearby`), from `--es from <peerNodeId>`
+  (default a synthetic sender) with body `--es text <body>`. The radio-less build never receives a real
+  flagged message and the marketing seed carries none, so this is the only way to drive the
+  `moderation_text_hidden` reveal path (used by `uiauto/ModerationRevealUiAutomatorTest`).
 
 ```
 # send on A, then confirm it landed on B — no UI, no screenshots. Outer quotes matter: adb re-parses
@@ -64,8 +69,16 @@ as `resource-id="<tag>"` (the bare tag — some Android/uiautomator versions pre
 `scripts/screenshots.sh`). Tagged so far: `chat_input`, `chat_send`, `chat_row_<conversationId>` (e.g.
 `chat_row_nearby`), `chatlist_fab`, `contacts_fab`, `contact_<nodeId>`, `onboarding_grant`,
 `onboarding_start`, `profile_name`, `profile_status`, `profile_save`, `chat_group_avatar` (opens group
-details). Use these when you must drive the real UI; add more with the same snake_case, screen-prefixed
-convention.
+details), plus screen-root tags on the otherwise-untagged destinations — `screen_diagnostics`,
+`screen_blocked_users`, `screen_verify`, `screen_donate`, `screen_share_target`, `screen_profile_details`.
+Use these when you must drive the real UI; add more with the same snake_case, screen-prefixed convention.
+
+**Popups don't inherit `testTagsAsResourceId`.** A Compose `DropdownMenu` / `AlertDialog` renders in a
+separate window whose semantics root is *not* the `KnitApp` node that sets `testTagsAsResourceId`, so a
+`testTag` inside a menu or dialog does **not** surface as a `resource-id` to `uiautomator dump`. Drive
+popup contents by their **text** (menu items, dialog titles) or **class** (an editable field is
+`android.widget.EditText`) instead — and match a confirm button by *exact* text when its label is a
+substring of the dialog title (e.g. the "Block" button under a "Block this person?" title).
 
 ## Cold-start navigation
 

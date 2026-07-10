@@ -102,6 +102,22 @@ radio-less build (`-PseedDemo=true`); `SeededUiAutomatorTest` shares `SeededUiTe
   (`resource-id="chat_input"`), so `SeededUiAutomatorTest.byTag()` uses a tolerant `By.res(Pattern)` that
   accepts an optional `pkg:id/` prefix. Screens without tags (Diagnostics, request rows' inner text) match
   by `waitText`/`waitDesc`.
+- **Popups don't inherit `testTagsAsResourceId`.** A Compose `DropdownMenu`/`AlertDialog` is a separate
+  window, so a `testTag` inside one does **not** surface as a `resource-id` — drive menu items and dialog
+  buttons by their (localized) **text**, an editable field by its `android.widget.EditText` class, and a
+  confirm button whose label is a substring of the dialog title by *exact* text (`requireExactText`, e.g.
+  "Block" under "Block this person?"). This is why the overflow-nav / group-management / requests-block tests
+  select popups by text, not tag.
+- **`UiDevice.executeShellCommand` word-splits and does not honour quotes** (unlike an `adb shell "…"` that
+  the device re-parses). A `--es text 'two words'` reaches the app as just `'two`, so a debug broadcast fired
+  from within a test must use single-token extras (see `ModerationRevealUiAutomatorTest`).
+- **Coverage today:** the seeded core flows + DM send (`SeededFlowsUiAutomatorTest`), process lifecycle
+  (`LifecycleUiAutomatorTest`), the notification-shade→requests flow (`MessageRequestNotificationUiAutomatorTest`),
+  overflow-menu navigation to the untagged screens (`OverflowNavigationUiAutomatorTest`), contacts→DM/group
+  creation (`ContactsFlowUiAutomatorTest` — note the picker lists only *established* contacts: accepted-DM ∪
+  group co-member ∪ verified, so Nearby-only strangers never appear), group rename/leave
+  (`GroupManagementUiAutomatorTest`), the in-app requests badge + block path (`RequestsInboxUiAutomatorTest`),
+  and the received-flagged tap-to-reveal (`ModerationRevealUiAutomatorTest`, via the `FLAGMSG` debug seam).
 - **Isolated FTL target.** `scripts/ftl-uiauto.sh` runs **only** this package
   (`--test-targets "package app.getknit.knit.uiauto"`); `scripts/ftl.sh` now **excludes** it
   (`TEST_TARGETS` defaults to `notPackage app.getknit.knit.uiauto`) so black-box system-UI flakiness never
