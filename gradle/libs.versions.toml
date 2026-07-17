@@ -1,5 +1,5 @@
 [versions]
-agp = "9.2.1"
+agp = "9.3.0"
 # 1.19.0 exists but its AAR sets minCompileSdk=37; we deliberately stay on compileSdk 36.1, so this is
 # the newest core that still targets API 36 (activity-compose 1.13.0 also pins core-ktx to exactly 1.18.0).
 coreKtx = "1.18.0"

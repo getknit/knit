@@ -33,3 +33,5 @@ app/release/*
 
 # gradle build cache
 .kotlin
+
+.idea/
