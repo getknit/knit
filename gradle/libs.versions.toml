@@ -111,9 +111,15 @@ androidxTestServices = "1.6.0"
 # a resource-id, so By.res(...) matches the same tags the Compose suite asserts on. 2.3.0 is the newest
 # stable line (2.4.x is alpha). androidTest-only, no APK/runtime impact on the app.
 uiautomator = "2.3.0"
+# androidx ExifInterface — reads the orientation tag off user-picked photos (ImageDecode). Preferred over
+# the platform android.media.ExifInterface (which AndroidLintExifInterface flags): the androidx one carries
+# the format support and bug fixes the platform class only gains with each OS release, which matters on
+# minSdk 29 for the HEIC/RAW files a modern camera hands us through the picker.
+exifinterface = "1.4.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
