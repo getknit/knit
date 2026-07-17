@@ -171,9 +171,6 @@ class SettingsStore(
     /** Accepts [conversationId] out of the message-request queue (a DM peer id or a "g-…" group id). */
     suspend fun accept(conversationId: String) = dataStore.edit { it[KEY_ACCEPTED] = (it[KEY_ACCEPTED] ?: emptySet()) + conversationId }
 
-    /** Moves [conversationId] back to the request queue (undo an accept). */
-    suspend fun unaccept(conversationId: String) = dataStore.edit { it[KEY_ACCEPTED] = (it[KEY_ACCEPTED] ?: emptySet()) - conversationId }
-
     suspend fun setContentFilteringEnabled(value: Boolean) = dataStore.edit { it[KEY_CONTENT_FILTERING] = value }
 
     suspend fun setMeshEnabled(value: Boolean) = dataStore.edit { it[KEY_MESH_ENABLED] = value }

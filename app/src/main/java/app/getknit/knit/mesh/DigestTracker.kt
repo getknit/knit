@@ -9,15 +9,15 @@ package app.getknit.knit.mesh
  * The decisive win over the old counter epoch is the **identical-digest skip**: if a peer's digest already
  * equals ours, our stores match and there is nothing to exchange — so we never waste an NDP, *even on first
  * contact* (e.g. two leaves both fed by the same hub converge to the same version and never sync each other).
- * Otherwise a peer is reconcile-wanted when we've never synced it, or either side's digest has moved since we
- * did. Because a content digest is a hash, not an ordered counter, comparisons are **equality** (no
+ * Otherwise a peer is reconcile-wanted whenever the digests differ and it is not on a no-progress cooldown.
+ * Because a content digest is a hash, not an ordered counter, comparisons are **equality** (no
  * monotone-max) — which is what makes it restart-stable: a peer that restarts to the same store re-advertises
  * the same version and correctly reads as "unchanged".
  *
  * ## No-progress throttle
  * Two nodes whose custody policies differ on any frame (per-node `canCarry` gates, DM-recipient exclusion,
- * quota-eviction asymmetry) can complete sync after sync **without ever converging** — and because each sync's
- * ingest legitimately moves both digests, the "either side moved" test re-arms every round: the re-audit's
+ * quota-eviction asymmetry) can complete sync after sync **without ever converging** — and because the digests
+ * still differ afterward, the very next round wants the sync again: the re-audit's
  * ~5 s serve loop (`docs/NAN_CONCURRENCY_REAUDIT.md` §3.2), historically damped only by the after-serve
  * reattach's accidental rate-limiting. The throttle bounds it at the decision layer: [THROTTLE_SYNCS]
  * *completed-but-non-convergent* syncs within [THROTTLE_WINDOW_MS] put the peer on an exponential cooldown
@@ -33,8 +33,8 @@ package app.getknit.knit.mesh
  *
  * Only the **initiator** (larger nodeId, by the transport's tie-break) consults [reconcileWanted]; the
  * responder never initiates, so its per-peer state going stale is harmless. Records [onReconciled] on the
- * initiator's clean (quiescence) teardown, at our *post-sync* version (so a store that gained nothing new
- * afterward stays quiet). [clock] is injectable for tests (defaulted, so production construction sites and
+ * initiator's clean (quiescence) teardown, at our *post-sync* version. [clock] is injectable for tests
+ * (defaulted, so production construction sites and
  * existing tests are unchanged); the transport passes its `SystemClock::elapsedRealtime`. No Android deps ⇒
  * JVM-unit-tested ([DigestTrackerTest]); all methods are guarded for the transport's callback-thread vs.
  * loop-coroutine access.
@@ -43,6 +43,8 @@ class DigestTracker(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val peerVersion = HashMap<String, Long>()
+
+    /** Our version at each peer's last completed sync. Diagnostic only ([debug]) — see [reconcileWanted]. */
     private val syncedVersion = HashMap<String, Long>()
     private val throttle = HashMap<String, Throttle>()
 
@@ -69,8 +71,7 @@ class DigestTracker(
     /**
      * True if a data-path sync with [nodeId] is warranted given our current [localVersion]. Requires having
      * heard a cue from the peer; skips when the digests are identical (nothing to exchange); suppressed while
-     * the peer is on a no-progress cooldown; otherwise wanted on first divergence, or when either side has
-     * moved since our last completed sync.
+     * the peer is on a no-progress cooldown; otherwise wanted whenever the digests differ.
      */
     @Synchronized
     fun reconcileWanted(
@@ -83,15 +84,19 @@ class DigestTracker(
             return false // identical stores → nothing to pull or push
         }
         throttle[nodeId]?.let { if (clock() < it.cooldownUntil) return false } // no-progress cooldown
-        val synced = syncedVersion[nodeId] ?: return true // digests differ and we've never synced → sync
-        return localVersion != synced || theirs != synced // either side moved since we synced
+        // Digests differ and we're off cooldown ⇒ sync. Deliberately no [syncedVersion] test: downstream of
+        // the identical-digest skip above, "either side moved since we synced" is a tautology — were neither
+        // side moved, both would equal syncedVersion and therefore each other, which the skip already
+        // returned on. The no-progress throttle, not this decision, is what bounds the re-sync loop when two
+        // peers complete sync after sync without converging.
+        return true
     }
 
     /**
-     * Record a completed sync with [nodeId] at our [localVersion] as of link-down (after the backfill, so a
-     * store that ingested during the link and gained nothing *new* afterward is considered in sync). A sync
-     * that completed **without converging** (the peer's last-advertised digest still differs from ours) counts
-     * toward the no-progress throttle; a converged one fully resets it.
+     * Record a completed sync with [nodeId] at our [localVersion] as of link-down (after the backfill). The
+     * recorded version is a diagnostic ([debug]); the no-progress throttle is what this method exists for. A
+     * sync that completed **without converging** (the peer's last-advertised digest still differs from ours)
+     * counts toward that throttle; a converged one fully resets it.
      */
     @Synchronized
     fun onReconciled(

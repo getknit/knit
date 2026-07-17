@@ -31,12 +31,6 @@ class MessageRepository(
     /** The DM recipient of message [id], or null for a broadcast/group message or one we don't hold. */
     suspend fun recipientOf(id: String): String? = dao.recipientOf(id)
 
-    /** How many messages in [conversationId] the local user authored ([me]) — nonzero ⇒ they initiated/replied there. */
-    suspend fun countMineIn(
-        conversationId: String,
-        me: String,
-    ): Int = dao.countMineIn(conversationId, me)
-
     suspend fun markReceived(id: String) = dao.markReceived(id)
 
     /** Outgoing DMs to [recipientId] that are still awaiting the recipient's key before they can be sent. */

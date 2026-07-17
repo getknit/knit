@@ -35,12 +35,6 @@ class AvatarStore(
             decodeOrientedBounded(context, uri, MAX_CROP_DIMENSION)?.let { downscale(it, MAX_CROP_DIMENSION) }
         }
 
-    /** Decodes [uri] and center-crops to a square; returns the stored avatar's content hash, or null. */
-    suspend fun saveOwnAvatar(uri: Uri): String? =
-        withContext(Dispatchers.IO) {
-            loadForCrop(uri)?.let { saveOwnAvatar(it) }
-        }
-
     /** Extracts the (already-square) [crop] region from [source], then stores it as the own avatar. */
     suspend fun saveOwnAvatar(
         source: Bitmap,

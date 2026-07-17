@@ -76,8 +76,8 @@ class BlobRepository(
 
     /**
      * Bytes held purely for store-and-forward custody (referenced by a carried frame but no local message).
-     * The eager carrier-pull ([`MeshManager.onCarriedFrame`]) uses this as a pull-time soft cap so altruistic
-     * relay of other peers' images stays bounded; see [BlobDao.carrierOnlyBlobBytes].
+     * The eager carrier-pull ([app.getknit.knit.mesh.InboundPipeline.onCarriedFrame]) uses this as a pull-time
+     * soft cap so altruistic relay of other peers' images stays bounded; see [BlobDao.carrierOnlyBlobBytes].
      */
     suspend fun carrierOnlyBlobBytes(): Long = blobs.carrierOnlyBlobBytes()
 
