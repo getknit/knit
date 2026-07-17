@@ -2,27 +2,63 @@
 
 # Knit
 
-**Offline, serverless messaging between nearby phones — end-to-end encrypted.**
+**An offline, serverless mesh messenger for Android — end-to-end encrypted, no internet, no accounts, no Google Play services.**
 
-No internet. No cell service. No accounts. No servers. No Google Play services.
-Your phones talk directly to each other and relay for one another, hop by hop.
+Your phones talk directly to each other over Wi-Fi Aware and Bluetooth LE, and relay for one another hop by hop.
 
 ![Platform](https://img.shields.io/badge/Android-10%2B%20(API%2029)-3DDC84?logo=android&logoColor=white)
 ![Kotlin](https://img.shields.io/badge/Kotlin-2.4.0-7F52FF?logo=kotlin&logoColor=white)
 ![Compose](https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4?logo=jetpackcompose&logoColor=white)
 ![Transports](https://img.shields.io/badge/radios-Wi--Fi%20Aware%20%2B%20BLE-00BCD4)
 ![Encryption](https://img.shields.io/badge/DMs%20%26%20groups-E2E%20encrypted-2EA043?logo=signal&logoColor=white)
+![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)
 ![Version](https://img.shields.io/badge/version-1.0-FF6F61)
 
 </div>
 
 ---
 
-Knit forms an ad-hoc **mesh** directly over **Wi-Fi Aware (NAN)** and **Bluetooth LE**, running both
-radios at once. When you send a message, it's transmitted to every device in range; each of those
-re-transmits it onward, so messages "leap-frog" across many devices with no infrastructure. Duplicate
-copies are discarded, hop-count and TTL bound the flood, and a store-and-forward layer carries what a
-single flood doesn't reach. The interface is a modern, Signal-style messenger.
+## What is Knit
+
+Knit is an **offline peer-to-peer messaging app for Android** that needs no internet connection, no
+cell service, no accounts, and no servers. It forms an ad-hoc **mesh** directly over **Wi-Fi Aware
+(NAN)** and **Bluetooth LE**, running both radios at once. When you send a message, it's transmitted
+to every device in range; each of those re-transmits it onward, so messages "leap-frog" across many
+phones with **no infrastructure**. Duplicate copies are discarded, hop-count and TTL bound the flood,
+and a store-and-forward layer carries what a single flood doesn't reach. The interface is a modern,
+Signal-style messenger.
+
+It is comparable to apps like Bridgefy, Briar, or Meshtastic, but distinguished by running **two radios
+simultaneously** (Wi-Fi Aware + BLE) behind one transport seam, with **no Google Nearby / GMS
+dependency** and **end-to-end encryption** on direct and group messages.
+
+### At a glance
+
+| | |
+|---|---|
+| **Category** | Offline / off-grid mesh messenger (proximity, peer-to-peer, delay-tolerant) |
+| **Platform** | Android 10+ (API 29), Kotlin + Jetpack Compose (Material 3) |
+| **Radios** | Wi-Fi Aware (NAN) **and** Bluetooth LE, running simultaneously — no Google Play services |
+| **Encryption** | E2E on 1:1 DMs & group chats (Tink HPKE/X25519 + AES-256-GCM + Ed25519); at-rest DB via SQLCipher |
+| **Works without** | Internet, cellular, Wi-Fi routers, accounts, phone numbers, or any server |
+| **License** | GPL-3.0-or-later — free and open source |
+| **Status** | v1.0, feature-complete for launch |
+
+## Contents
+
+- [How it works](#how-it-works)
+- [Use it when](#-use-it-when)
+- [Features](#-features)
+- [Requirements](#-requirements)
+- [Tech stack](#-tech-stack)
+- [Build](#-build)
+- [Running](#-running)
+- [Testing](#-testing)
+- [FAQ](#-faq)
+- [Documentation](#-documentation)
+- [Roadmap](#-roadmap)
+- [Security note](#-security-note)
+- [License](#-license)
 
 > [!NOTE]
 > **Status — v1.0.** Feature-complete for launch: a **"Nearby" public broadcast room**, **1:1 direct
@@ -48,6 +84,17 @@ Every message is a signed CBOR frame that relays forward **byte-for-byte** (they
 TTL/hop-count), so the originator's Ed25519 signature survives every hop. A relay that can't decrypt or
 even recognize a frame still forwards it — an old build is never a black hole. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full protocol.
+
+## 🧭 Use it when
+
+Knit is built for situations where there's **no reliable network but people are physically nearby**:
+
+- **Off-grid & remote** — hiking, camping, festivals, sailing, or anywhere without cell coverage.
+- **Disaster & emergency** — earthquakes, storms, or outages that knock out cell towers and internet.
+- **Crowded venues** — concerts, stadiums, and conferences where the cellular network is saturated.
+- **Privacy-sensitive** — no servers, no accounts, no phone numbers; DMs and groups are end-to-end
+  encrypted and identities are verifiable in person via safety numbers / QR codes.
+- **Censored or shut-down networks** — communication that doesn't depend on any ISP or provider.
 
 ## ✨ Features
 
@@ -186,6 +233,39 @@ send→verify loop can be driven over `adb` without screenshots — see [`AGENTS
   Drop the `-P…package` filter to run the seeded Compose suite alongside it, or run `bash scripts/ftl-uiauto.sh`
   for the isolated Firebase Test Lab physical-device pass. (Run a single class with
   `…arguments.class=app.getknit.knit.uiauto.OverflowNavigationUiAutomatorTest`.)
+
+## ❓ FAQ
+
+**Does Knit need the internet or a cell signal?**
+No. Knit works entirely offline. Nearby phones connect directly over Wi-Fi Aware and Bluetooth LE and
+relay messages for each other, so it needs neither internet, cellular, nor a Wi-Fi router.
+
+**Does it require Google Play services or an account?**
+No. There is no Google Nearby / GMS dependency — the radios are driven through framework APIs — and
+there are no accounts, sign-ups, phone numbers, or servers.
+
+**How far can messages travel?**
+Beyond direct radio range. Each phone relays for the others, so a message hops device-to-device across
+the mesh; a store-and-forward layer also carries messages to recipients who come into range later.
+
+**Are messages encrypted?**
+1:1 direct messages and group chats are **end-to-end encrypted** (only the intended recipients can read
+the body, mentions, and image attachments; relays carry only ciphertext). The public "Nearby" broadcast
+room is plaintext by design, since it has no fixed recipient set. The local database is encrypted at
+rest with SQLCipher.
+
+**What phones does it support?**
+Android 10 (API 29) and newer, with Wi-Fi Aware and/or Bluetooth LE. Almost all phones have BLE; Wi-Fi
+Aware is on Pixel 3+ and many recent devices. A phone with only one of the two radios still meshes over
+it.
+
+**Is it free and open source?**
+Yes — Knit is free software under the **GNU General Public License v3.0 or later**.
+
+**How is it different from Bridgefy / Briar / Meshtastic?**
+Knit runs **two radios at once** (Wi-Fi Aware + Bluetooth LE) behind a single transport seam, has **no
+Google Play services dependency**, end-to-end encrypts DMs and groups, and needs no dedicated hardware
+(unlike Meshtastic's LoRa radios) — just an Android phone.
 
 ## 📚 Documentation
 
