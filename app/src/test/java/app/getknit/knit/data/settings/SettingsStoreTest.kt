@@ -127,28 +127,4 @@ class SettingsStoreTest {
             assertEquals(7L, store.profileVersion.first())
             assertEquals(4242L, store.avatarUpdatedAt.first())
         }
-
-    @Test
-    fun `recordReviewAttempt stamps the time and increments the lifetime count`() =
-        runTest {
-            val store = newStore()
-            store.recordReviewAttempt(now = 1_000L)
-            store.recordReviewAttempt(now = 2_000L)
-            assertEquals(2_000L, store.reviewLastAttemptAt.first())
-            assertEquals(2L, store.reviewAttemptCount.first())
-        }
-
-    @Test
-    fun `clearReviewState resets engagement, attempt time, and count`() =
-        runTest {
-            val store = newStore()
-            store.setReviewEngagementStartedAt(500L)
-            store.recordReviewAttempt(now = 1_000L)
-
-            store.clearReviewState()
-
-            assertEquals(0L, store.reviewEngagementStartedAt.first())
-            assertEquals(0L, store.reviewLastAttemptAt.first())
-            assertEquals(0L, store.reviewAttemptCount.first())
-        }
 }

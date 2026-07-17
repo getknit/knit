@@ -36,8 +36,6 @@ import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.notifications.Notifier
-import app.getknit.knit.review.ReviewPromptPolicy
-import app.getknit.knit.review.ReviewPrompter
 import app.getknit.knit.ui.chat.buildReplySnippet
 import app.getknit.knit.ui.invite.prepareKnitApk
 import kotlinx.coroutines.CoroutineScope
@@ -90,11 +88,6 @@ import java.nio.ByteBuffer
  * - [ACTION_WEBPPROBE] — `--es path <gifFile>` estimates an animated-WebP re-encode's size (sums each
  *   frame's built-in `WEBP_LOSSY` bytes); `--ei dim`/`--ei fps`/`--ei q <quality>` tune it. Feasibility
  *   probe only — reports `webpAnimEstBytes`/`pctSmaller`, writes nothing.
- * - [ACTION_REVIEW] — dumps the Play in-app-review gate state (installer, message counts, engagement
- *   watermark, attempts, `shouldPrompt`) via the same [ReviewPrompter] reads the real prompt uses.
- *   `--ez reset true` clears the persisted review state; `--ez arm true` additionally backdates the
- *   engagement watermark past the age gate and forgets prior attempts, so the next chat-list visit
- *   prompts as soon as the (real) message-count gates hold.
  * - [ACTION_REQNOTIF] — posts the coalesced "message request received" heads-up: writes `--ei count N`
  *   (default 1) synthetic unaccepted inbound DMs from unknown peers and calls [Notifier.notifyMessageRequests],
  *   so the UIAutomator suite can drive the real system notification + Requests inbox. Needs POST_NOTIFICATIONS.
@@ -122,7 +115,6 @@ class DebugBridgeReceiver :
     private val settings: SettingsStore by inject()
     private val forwardDao: ForwardDao by inject()
     private val digest: StoreDigest by inject()
-    private val reviewPrompter: ReviewPrompter by inject()
     private val notifier: Notifier by inject()
     private val scope: CoroutineScope by inject()
 
@@ -176,10 +168,6 @@ class DebugBridgeReceiver :
 
                         ACTION_WEBPCHECK -> {
                             handleWebpCheck(intent)
-                        }
-
-                        ACTION_REVIEW -> {
-                            handleReview(context, intent)
                         }
 
                         ACTION_REQNOTIF -> {
@@ -591,45 +579,6 @@ class DebugBridgeReceiver :
     }
 
     /**
-     * Dumps the in-app-review gate as the real prompt would evaluate it right now — the inputs come from
-     * [ReviewPrompter.gateInputs] / [ReviewPrompter.installedFromPlay], so this can't drift from the
-     * production gate. `--ez reset true` clears the persisted state first; `--ez arm true` additionally
-     * backdates the engagement watermark past the age gate (the message-count gates still need real rows,
-     * e.g. via [ACTION_SEND] from a second device).
-     */
-    private suspend fun handleReview(
-        context: Context,
-        intent: Intent,
-    ): JSONObject {
-        val now = System.currentTimeMillis()
-        if (intent.getBooleanExtra(EXTRA_RESET, false)) settings.clearReviewState()
-        if (intent.getBooleanExtra(EXTRA_ARM, false)) {
-            settings.clearReviewState()
-            settings.setReviewEngagementStartedAt(now - ReviewPromptPolicy.MIN_ENGAGEMENT_AGE_MS - ARM_MARGIN_MS)
-        }
-        @Suppress("DEPRECATION")
-        val installer =
-            runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
-                } else {
-                    context.packageManager.getInstallerPackageName(context.packageName)
-                }
-            }.getOrNull()
-        val inputs = reviewPrompter.gateInputs(now)
-        return JSONObject()
-            .put("status", "ok")
-            .put("installer", installer ?: JSONObject.NULL)
-            .put("playInstall", reviewPrompter.installedFromPlay())
-            .put("peerMessages", inputs.peerMessageCount)
-            .put("sentMessages", inputs.sentMessageCount)
-            .put("engagementStartedAt", inputs.engagementStartedAt)
-            .put("lastAttemptAt", inputs.lastAttemptAt)
-            .put("attemptCount", inputs.attemptCount)
-            .put("shouldPrompt", ReviewPromptPolicy.shouldPrompt(inputs))
-    }
-
-    /**
      * Posts the coalesced "message request received" heads-up on demand — the seam the UIAutomator
      * notification test drives ([app.getknit.knit] `uiauto`). The radio-less demo build never runs
      * [app.getknit.knit.mesh.InboundPipeline] (the sole production caller of
@@ -759,7 +708,6 @@ class DebugBridgeReceiver :
         const val ACTION_WEBPPROBE = "app.getknit.knit.debug.WEBPPROBE"
         const val ACTION_WEBPCONV = "app.getknit.knit.debug.WEBPCONV"
         const val ACTION_WEBPCHECK = "app.getknit.knit.debug.WEBPCHECK"
-        const val ACTION_REVIEW = "app.getknit.knit.debug.REVIEW"
         const val ACTION_HEAL = "app.getknit.knit.debug.HEAL"
         const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
         const val ACTION_FLAGMSG = "app.getknit.knit.debug.FLAGMSG"
@@ -773,8 +721,6 @@ class DebugBridgeReceiver :
         const val EXTRA_LIMIT = "limit"
         const val EXTRA_PATH = "path"
         const val EXTRA_OUT = "out"
-        const val EXTRA_RESET = "reset"
-        const val EXTRA_ARM = "arm"
         const val EXTRA_COUNT = "count"
         const val EXTRA_FROM = "from"
 
@@ -785,9 +731,6 @@ class DebugBridgeReceiver :
 
         /** Cap on the synthetic requests [ACTION_REQNOTIF] injects (keeps each stranger's node-id single-digit). */
         const val MAX_REQNOTIF = 9
-
-        /** How far past the age gate [ACTION_REVIEW]'s arm backdates the watermark (clock-skew slack). */
-        const val ARM_MARGIN_MS = 60_000L
 
         // Mirror AttachmentStore.GIF_MAX_DIMENSION / GIF_MAX_FPS (private there) so this diagnostic
         // shrinks a GIF with the same bounds the real ingest path uses.

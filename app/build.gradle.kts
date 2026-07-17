@@ -343,10 +343,6 @@ dependencies {
     implementation(libs.reandroid.arsclib)
     implementation(libs.apksig)
 
-    // Play In-App Review — optional at runtime: ReviewPrompter pre-gates on the Play installer and
-    // swallows failures, so de-googled/sideloaded devices are unaffected. See gradle/libs.versions.toml.
-    implementation(libs.play.review.ktx)
-
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.koin.test.junit4)

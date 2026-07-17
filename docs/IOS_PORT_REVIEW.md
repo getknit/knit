@@ -236,7 +236,6 @@ re-runs. Extract them into one clearly-marked normative object and cover them in
 | Onboarding / permissions | Rework | `NEARBY_WIFI_DEVICES` etc. → Bluetooth permission + (if NAN ever) `com.apple.developer.wifi-aware` entitlement, `WiFiAwareServices` plist, Local Network prompt |
 | APK-share invite (`ApkMerger`) | **Drop** | No sideloading on iOS; nearest analogue is sharing an App Store link — worthless offline. Accept the gap |
 | Donate screen | **App Store risk** | Payments to the developer inside the app are IAP territory (guideline 3.1.1); donations may need restructuring (external link rules shift; worst case remove on iOS) |
-| Play review prompt | Trivial | `SKStoreReviewController` |
 
 ## 4. Platform / distribution considerations
 

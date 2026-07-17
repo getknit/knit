@@ -130,7 +130,7 @@ These are genuinely excellent and worth protecting through any refactor:
 
 - **The pure-policy extraction pattern** — `NanConnectPolicy`, `NanServePolicy`, `NanSyncPolicy`,
   `NanWatchdogPolicy`, `NanCueCodec`, `ScanDemandPolicy`, `PromotionPolicy`, `ConnectBackoffPolicy`,
-  `PowerPolicy`, `BlePresenceTracker`, `Conversations`, `DigestTracker`, `ReviewPromptPolicy` — pulls the hard
+  `PowerPolicy`, `BlePresenceTracker`, `Conversations`, `DigestTracker` — pulls the hard
   decisions out of Android-bound classes into JVM-tested units. This is the right strategy and pays for
   itself; the last three NAN policies (2026-07-07) applied it to the `WifiAwareTransport` decision logic
   the recommendation below called out.

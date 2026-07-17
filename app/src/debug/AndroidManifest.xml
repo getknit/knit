@@ -21,7 +21,6 @@
                 <action android:name="app.getknit.knit.debug.WEBPPROBE" />
                 <action android:name="app.getknit.knit.debug.WEBPCONV" />
                 <action android:name="app.getknit.knit.debug.WEBPCHECK" />
-                <action android:name="app.getknit.knit.debug.REVIEW" />
                 <action android:name="app.getknit.knit.debug.REQNOTIF" />
                 <action android:name="app.getknit.knit.debug.FLAGMSG" />
             </intent-filter>
