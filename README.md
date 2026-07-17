@@ -231,8 +231,47 @@ flagged. Confirm a contact's key out of band — compare the **safety number** i
 Reactions and delivery receipts travel as **cleartext metadata** (signed, not encrypted). E2E uses
 **static keys — no forward secrecy** (see the roadmap). The at-rest database is encrypted with SQLCipher.
 
+To report a vulnerability, see [`SECURITY.md`](SECURITY.md) — please **do not** open a public issue for
+security problems.
+
+## 📄 License
+
+Knit is free software, licensed under the **GNU General Public License v3.0 or later**
+([`COPYING`](COPYING)).
+
+```
+Copyright (C) 2026 Jeffrey Walter Mixon
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without
+even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with this program. If not,
+see <https://www.gnu.org/licenses/>.
+```
+
+Contributions are welcome under the same license — see [`CONTRIBUTING.md`](CONTRIBUTING.md), which
+also sets out the (deliberately modest) **support expectations**.
+
+### Bundled model attribution
+
+The on-device moderation models bundled under `app/src/main/assets/moderation/` are third-party works,
+redistributed under their own licenses (full notices in
+[`app/src/main/assets/moderation/README.md`](app/src/main/assets/moderation/README.md)):
+
+- **Toxicity text model** — derived from [**Detoxify**](https://github.com/unitaryai/detoxify)
+  (`unbiased-small`, ALBERT `albert-base-v2`), used under the **Apache License 2.0**.
+- **NSFW image model** — [**GantMan `nsfw_model`**](https://github.com/GantMan/nsfw_model)
+  (MobileNetV2), used under the **MIT License**, © 2020 The nsfw_model Developers.
+
+See [`docs/CONTENT_MODERATION.md`](docs/CONTENT_MODERATION.md) for how they are used.
+
 ---
 
 <div align="center">
-<sub>Private project — <code>app.getknit.knit</code></sub>
+<sub>GPL-3.0-or-later — <code>app.getknit.knit</code></sub>
 </div>

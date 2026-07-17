@@ -21,9 +21,9 @@ output. A quantized `.tflite` (~4–5 MB) drops in unchanged. To use a model wit
 layout, adjust `unsafeClasses`/`threshold` in `NsfwImageModerator`. If the file is **absent or fails to
 load, the moderator degrades to allow-all** (hooks + blur UI stay wired).
 
-**Vet the model's license** for redistribution in the APK before release, and tune the threshold
-on-device. `*.tflite` is kept uncompressed in the APK (`androidResources { noCompress }` in
-`app/build.gradle.kts`) so TFLite can mmap it.
+License: **MIT** — GantMan `nsfw_model` (see the Attribution section below); redistributable in the APK.
+Tune the threshold on-device. `*.tflite` is kept uncompressed in the APK
+(`androidResources { noCompress }` in `app/build.gradle.kts`) so TFLite can mmap it.
 
 ## `toxicity.tflite` + `tokenizer.json` + `labels.txt` (bundled — activates text ML moderation)
 
@@ -47,3 +47,38 @@ verified id-for-id against the HuggingFace tokenizer). If any asset is **absent 
 Produced (and re-tunable) by the separate `detoxify-mobile` conversion pipeline; license is Apache-2.0
 (Detoxify weights + albert-base-v2) — retain attribution when shipping. Full design and wiring:
 [`docs/CONTENT_MODERATION.md`](../../../../../docs/CONTENT_MODERATION.md) §4.
+
+## Attribution
+
+These bundled models are third-party works redistributed under their own licenses. Retain these notices
+when shipping.
+
+### `nsfw.tflite` — GantMan `nsfw_model` (MIT)
+
+Source: <https://github.com/GantMan/nsfw_model>
+
+```
+MIT License
+
+Copyright (c) 2020 The nsfw_model Developers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial
+portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### `toxicity.tflite` / `tokenizer.json` — Detoxify (Apache-2.0)
+
+Source: <https://github.com/unitaryai/detoxify> (`unbiased-small`, built on `albert-base-v2`). Licensed
+under the Apache License 2.0; see <https://www.apache.org/licenses/LICENSE-2.0>.
