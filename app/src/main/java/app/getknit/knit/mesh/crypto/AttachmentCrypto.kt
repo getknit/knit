@@ -12,7 +12,14 @@ object AttachmentCrypto {
     data class Sealed(
         val blob: ByteArray,
         val key: ByteArray,
-    )
+    ) {
+        // Neither field is an id, so identity is the bytes themselves — the default data-class
+        // equals/hashCode would compare the ByteArrays by reference (mirrors LinkFraming.Message).
+        override fun equals(other: Any?): Boolean =
+            this === other || (other is Sealed && blob.contentEquals(other.blob) && key.contentEquals(other.key))
+
+        override fun hashCode(): Int = 31 * blob.contentHashCode() + key.contentHashCode()
+    }
 
     /** Encrypts [plain] under a fresh key. */
     fun seal(plain: ByteArray): Sealed {

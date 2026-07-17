@@ -3,6 +3,7 @@ package app.getknit.knit.mesh.crypto
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -55,5 +56,19 @@ class AttachmentCryptoTest {
         val b = AttachmentCrypto.seal(plain)
         assertFalse("fresh random key per seal", a.key.contentEquals(b.key))
         assertFalse("fresh random IV → different blob for identical input", a.blob.contentEquals(b.blob))
+    }
+
+    @Test
+    fun sealedComparesByContentNotReference() {
+        // Sealed holds ByteArrays, so the default data-class equals would compare them by reference and
+        // report two identical seals as different (and hash them apart) — see the equals/hashCode override.
+        val sealed = AttachmentCrypto.seal("bytes".encodeToByteArray())
+        val same = AttachmentCrypto.Sealed(sealed.blob.copyOf(), sealed.key.copyOf())
+        assertEquals(sealed, same)
+        assertEquals(sealed.hashCode(), same.hashCode())
+        assertEquals(setOf(sealed), setOf(sealed, same))
+
+        assertNotEquals(sealed, AttachmentCrypto.Sealed(sealed.blob.copyOf(), AesGcm.randomKey()))
+        assertNotEquals(sealed, AttachmentCrypto.Sealed("other".encodeToByteArray(), sealed.key.copyOf()))
     }
 }
