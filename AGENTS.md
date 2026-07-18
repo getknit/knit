@@ -33,7 +33,10 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
 
 ## Capabilities
 
-- RUN skills in `.agents/skills/` — `kotlin-patterns` (idiomatic Kotlin) and `material-3` (Compose M3).
+- RUN skills in `.agents/skills/` — `kotlin-patterns` (idiomatic Kotlin), `material-3` (Compose M3),
+  and `dotagents-standard` (maintain this AGENTS.md router / `.agents/` layout). Skills are vendored in
+  the repo (real files under `.agents/skills/`, surfaced to Claude Code via `.claude/skills/` symlinks),
+  so cloners get them without any global install.
 - APPEND durable decisions to `.agents/memory/decisions.md`; update `.agents/memory/roadmap.md` as
   deferred scope ships.
 - If a task needs context this router doesn't point to, treat the missing routing as a bug — do the work,
