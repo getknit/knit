@@ -139,7 +139,7 @@ These are genuinely excellent and worth protecting through any refactor:
   conversation shortcuts/LocusId, correct summary-child cancel handling, `clearAndSetSemantics` row
   collapsing with custom actions, consistent state-hoisting, and ~30 `@Preview`s.
 
-- **The bleeding-edge toolchain** (AGP 9.2.1 / Kotlin-2.4.0-override / Koin / KSP2) is a deliberate,
+- **The bleeding-edge toolchain** (AGP 9.3.0 / Kotlin-2.4.0-override / Koin / KSP2) is a deliberate,
   load-bearing set of choices, each documented with its *why* in the version catalog and `AGENTS.md`.
   Dependency locking across all configurations and backup-exclusion of the key/DB files are correctly
   handled.

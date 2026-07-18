@@ -8,10 +8,23 @@
 .cxx
 local.properties
 scripts/soak/logs/
-# Release signing — never commit the upload keystore or its credentials (see keystore.properties.example).
+# Release signing & secrets — never commit signing keys, keystores, or credentials (see
+# keystore.properties.example). The blanket key/cert globs also stop a stray app-signing key or
+# certificate from ever landing in the tree again (e.g. under res/raw); force-add with `git add -f`
+# only if you ever have a genuinely public test fixture in one of these formats.
 keystore.properties
 *.jks
 *.keystore
+*.p12
+*.pfx
+*.bks
+*.pk8
+*.der
+*.pem
+*.key
+google-services.json
+.env
+.env.*
 
 # Marketing captures kept out of the public repo — the generator scripts and finished masters live
 # under .private/ (.private/scripts/, .private/shots/, .private/trailer/, .private/docs/). Run from the

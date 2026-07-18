@@ -18,7 +18,8 @@ If that works for you, read on.
 
 ## Ground rules
 
-- **Be excellent to each other.** Harassment or abuse is not welcome in issues, MRs, or discussions.
+- **Be excellent to each other.** This project has a [Code of Conduct](CODE_OF_CONDUCT.md); by
+  participating you agree to uphold it. Harassment or abuse is not welcome in issues, MRs, or discussions.
 - **License:** by contributing, you agree your contribution is licensed under **GPL-3.0-or-later**, the
   same as the project.
 - **Sign your commits (DCO):** add a `Signed-off-by: Your Name <you@example.com>` trailer to each
@@ -26,7 +27,8 @@ If that works for you, read on.
   Only submit code you have the right to license under the GPL.
 - **Third-party assets:** do not add dependencies or bundled models/data whose license is
   GPL-incompatible or unverified. The shipped dependency graph is intentionally GMS-free and
-  Apache/BSD/MIT-only; keep it that way.
+  Apache/BSD/MIT-only; keep it that way, and update
+  [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) when you add or remove a shipped dependency.
 
 ## Development
 
@@ -47,8 +49,9 @@ surrounding code style.
 
 ## Where to submit
 
-Development happens on the project's self-hosted GitLab. Open issues and merge requests there; keep
-each MR focused on a single change with a clear description of what and why.
+Development happens on the project's self-hosted GitLab at
+<https://source.jeffmixon.com/knit/knit-next>. Open issues and merge requests there; keep each MR
+focused on a single change with a clear description of what and why.
 
 ## Security
 

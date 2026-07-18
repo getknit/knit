@@ -679,13 +679,13 @@ before the first message.
 
 ## 15. Build & tooling decisions
 
-The project runs on intentionally bleeding-edge tooling (AGP 9.2.1, Gradle 9.4.1, Kotlin 2.4.0,
+The project runs on intentionally bleeding-edge tooling (AGP 9.3.0, Gradle 9.5.0, Kotlin 2.4.0,
 Compose BOM 2026.06, compileSdk 36.1). Consequences, all load-bearing:
 
 | Decision | Reason |
 |---|---|
 | **Koin, not Hilt** | Hilt's Gradle plugin is broken on AGP 9.x (dagger#5083/#5099). Koin has no Gradle plugin / no annotation processor → immune. |
-| **Built-in Kotlin overridden to 2.4.0** | AGP 9.2.1 bundles KGP 2.2.10, whose compiler can't read Kotlin-2.4 class metadata. The root `build.gradle.kts` puts KGP 2.4.0 on the buildscript classpath (`classpath(libs.kotlin.gradle.plugin)`) so built-in Kotlin compiles with 2.4.0 (Kotlin 2.4 needs AGP 9.1+). This override — **not** an AGP bump (9.3/9.4 still bundle 2.2.10) — is the lever, and it's why **Coil now tracks latest (3.5.0)**: the old 3.3.0 pin was a Kotlin-2.2-metadata workaround that no longer applies. |
+| **Built-in Kotlin overridden to 2.4.0** | AGP 9.3.0 bundles KGP 2.2.10, whose compiler can't read Kotlin-2.4 class metadata. The root `build.gradle.kts` puts KGP 2.4.0 on the buildscript classpath (`classpath(libs.kotlin.gradle.plugin)`) so built-in Kotlin compiles with 2.4.0 (Kotlin 2.4 needs AGP 9.1+). This override — **not** an AGP bump (9.3/9.4 still bundle 2.2.10) — is the lever, and it's why **Coil now tracks latest (3.5.0)**: the old 3.3.0 pin was a Kotlin-2.2-metadata workaround that no longer applies. |
 | **`android.disallowKotlinSourceSets=false`** | AGP 9 built-in Kotlin otherwise rejects the `kotlin.sourceSets` DSL KSP (Room) uses. |
 | **No `kotlin-android` plugin** | AGP 9's built-in Kotlin compiles Kotlin; only compose / serialization / ksp plugins are applied. |
 | **KSP `2.3.9`** | KSP adopted independent (KSP2) versioning at 2.3.0 — decoupled from the compiler, supports Kotlin 2.2+ — so one version tracks Kotlin 2.4.0 (no more `<kotlin>-<ksp>` scheme). |

@@ -7,7 +7,7 @@ file only when its trigger matches. Full design detail lives in `docs/`.
 
 ## Identity
 
-You are a senior Android/Kotlin engineer on a deliberately bleeding-edge toolchain (AGP 9.2.1 /
+You are a senior Android/Kotlin engineer on a deliberately bleeding-edge toolchain (AGP 9.3.0 /
 Kotlin 2.4.0, Koin DI). Favor correctness, wire/convergence safety, and matching the surrounding style
 over cleverness. Start with `.agents/context/architecture.md` for the subsystem map and data flow.
 

@@ -152,7 +152,7 @@ Knit is built for situations where there's **no reliable network but people are 
 | Area | Choice |
 |------|--------|
 | Language / UI | Kotlin 2.4.0 · Jetpack Compose (Material 3) + Navigation Compose |
-| Build | AGP 9.2.1 / Gradle 9.4.1 · JDK 21 · minSdk 29 / targetSdk 36 / compileSdk 36.1 |
+| Build | AGP 9.3.0 / Gradle 9.5.0 · JDK 21 · minSdk 29 / targetSdk 36 / compileSdk 36.1 |
 | DI | Koin (pure-Kotlin, no Gradle plugin) |
 | Storage | Room + SQLCipher (encrypted at rest) · DataStore |
 | Wire format | kotlinx.serialization **CBOR** (layered `WireEnvelope`) |
@@ -164,13 +164,20 @@ Knit is built for situations where there's **no reliable network but people are 
 | App sharing | ARSCLib + apksig (on-device split-APK merge & re-sign) |
 | Quality | detekt · ktlint · Kover (all pinned; detekt/ktlint run as standalone CLIs) |
 
-> The bleeding-edge toolchain (AGP 9.2.1 / Kotlin 2.4.0) forces several non-obvious choices — Koin over
+> The bleeding-edge toolchain (AGP 9.3.0 / Kotlin 2.4.0) forces several non-obvious choices — Koin over
 > Hilt, a Kotlin override off AGP's bundled compiler, and CLI-based linting. See
 > [`AGENTS.md`](AGENTS.md) before touching build config or dependencies.
 
 ## 🔨 Build
 
+The source lives at **<https://source.jeffmixon.com/knit/knit-next>**. You need **JDK 21** and the
+Android SDK (compileSdk 36.1) — Android Studio is optional. When building from the command line without
+Studio, point Gradle at your SDK first: create a git-ignored `local.properties` containing
+`sdk.dir=/path/to/Android/Sdk`, or export `ANDROID_HOME`.
+
 ```bash
+git clone https://source.jeffmixon.com/knit/knit-next.git
+cd knit-next
 ./gradlew :app:assembleDebug        # build the debug APK (does NOT compile test sources)
 ./gradlew :app:compileDebugKotlin   # fast compile check of main sources
 ./gradlew :app:testDebugUnitTest    # JVM unit tests — mesh router, flood suppression, dedup, CBOR codec,
@@ -243,6 +250,13 @@ relay messages for each other, so it needs neither internet, cellular, nor a Wi-
 **Does it require Google Play services or an account?**
 No. There is no Google Nearby / GMS dependency — the radios are driven through framework APIs — and
 there are no accounts, sign-ups, phone numbers, or servers.
+
+**If it's offline, why does the app declare the `INTERNET` permission?**
+Not to reach the internet. Wi-Fi Aware forms a direct radio link between two phones and runs a TCP
+socket *over that local link* (link-local IPv6, no router or gateway), which Android gates behind the
+`INTERNET` permission even though no traffic ever leaves the mesh. Knit contacts no servers and bundles
+no analytics, telemetry, or crash reporting — you can confirm both from the source and the deliberately
+GMS-free dependency list.
 
 **How far can messages travel?**
 Beyond direct radio range. Each phone relays for the others, so a message hops device-to-device across
@@ -336,6 +350,10 @@ see <https://www.gnu.org/licenses/>.
 
 Contributions are welcome under the same license — see [`CONTRIBUTING.md`](CONTRIBUTING.md), which
 also sets out the (deliberately modest) **support expectations**.
+
+Knit redistributes third-party open-source libraries, all under GPL-compatible licenses (Apache-2.0,
+BSD, MIT) and with no Google Play services; see [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for
+the full component list and their licenses.
 
 ### Bundled model attribution
 

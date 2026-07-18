@@ -1,5 +1,5 @@
 # Knit — GitLab CI. Stages: build -> test -> verify.
-# Bleeding-edge toolchain (AGP 9.2.1 / Kotlin 2.4.0 / JDK 21 / compileSdk 36.1).
+# Bleeding-edge toolchain (AGP 9.3.0 / Kotlin 2.4.0 / JDK 21 / compileSdk 36.1).
 # Static analysis (detekt/ktlint) and coverage (Kover) run as Gradle plugins via `./gradlew` tasks.
 
 stages:

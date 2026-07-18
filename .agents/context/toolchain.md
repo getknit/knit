@@ -1,6 +1,6 @@
 # Toolchain (bleeding-edge — do not "fix" these without reading why)
 
-This project intentionally runs on very new tooling (AGP 9.2.1, Gradle 9.4.1, Kotlin 2.4.0,
+This project intentionally runs on very new tooling (AGP 9.3.0, Gradle 9.5.0, Kotlin 2.4.0,
 Compose BOM 2026.06). That forces several non-obvious choices. **Read this before changing build
 config, dependencies, or the DI graph.**
 
@@ -10,12 +10,12 @@ config, dependencies, or the DI graph.**
   (dagger#5083 / #5099). Koin is pure-Kotlin runtime DI with no Gradle plugin / no annotation
   processor, so it can't be broken by AGP. Koin is started in `KnitApplication`; modules live in
   `app/src/main/java/app/getknit/knit/di/`.
-- **Built-in Kotlin is overridden to 2.4.0, not AGP's bundled 2.2.10.** AGP 9.2.1 ships KGP 2.2.10,
+- **Built-in Kotlin is overridden to 2.4.0, not AGP's bundled 2.2.10.** AGP 9.3.0 ships KGP 2.2.10,
   whose Kotlin-2.2 compiler cannot read class metadata produced by Kotlin 2.4 (this is what used to
   pin Coil to 3.3.0). The root `build.gradle.kts` puts KGP 2.4.0 on the buildscript classpath
   (`classpath(libs.kotlin.gradle.plugin)`) so built-in Kotlin compiles with 2.4.0 — a supported combo
   (Kotlin 2.4 requires AGP 9.1+ per Google's AGP/Kotlin matrix). **Bumping AGP does not move Kotlin**:
-  the 9.3 line (now at RC) and 9.4-alpha still bundle 2.2.10, so the override — not an AGP bump — is
+  the 9.3 line we now build on (and 9.4) still bundle 2.2.10, so the override — not an AGP bump — is
   the lever. Keep KGP and the `ksp` version in lockstep with `kotlin`; KSP adopted independent (KSP2)
   versioning at 2.3.0 (decoupled, Kotlin 2.2+), so it no longer uses the old `<kotlin>-<ksp>` scheme.
 - **`android.disallowKotlinSourceSets=false`** is set in `gradle.properties`. AGP 9's built-in
