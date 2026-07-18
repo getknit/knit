@@ -1,10 +1,13 @@
 {
-  "enabledPlugins": {
-    "vercel@claude-plugins-official": false
-  },
   "permissions": {
     "allow": [
-      "Bash(grep -nE '^#{1,3} ' README.md)"
+      "Bash(grep -nE '^#{1,3} ' README.md)",
+      "Bash(git check-attr *)",
+      "Bash(git lfs *)",
+      "Bash(git log *)"
     ]
+  },
+  "enabledPlugins": {
+    "vercel@claude-plugins-official": false
   }
 }

@@ -37,10 +37,12 @@ notice is incorporated here by reference. The full text of the Apache License 2.
   `app/src/main/assets/moderation/` are third-party works redistributed under their own licenses. The
   full notices, source URLs, and license texts are in
   [`app/src/main/assets/moderation/README.md`](app/src/main/assets/moderation/README.md).
-- **`profanity_en.txt`** — the deterministic profanity wordlist under `app/src/main/assets/moderation/`
-  is original content authored for Knit and is covered by the project's GPL-3.0-or-later license (it is
-  **not** a third-party work). It is a deliberately small starter set intended to be replaced or
-  extended with a vetted, permissively-licensed corpus.
+- **`profanity_en.txt`** — the deterministic profanity word list under `app/src/main/assets/moderation/`
+  is a derived work generated from [dsojevic/profanity-list](https://github.com/dsojevic/profanity-list)
+  (MIT, © 2021 David Sojevic), pinned at commit `c27924319aa9bd6f917e3782b4f4b6604a50b652`, by
+  `scripts/gen-profanity-list.py`. It is redistributed under the MIT License; the full license text,
+  source URL, pinned commit, and transform/curation rules are in
+  [`app/src/main/assets/moderation/README.md`](app/src/main/assets/moderation/README.md).
 
 ## Build- and test-only dependencies (not distributed)
 

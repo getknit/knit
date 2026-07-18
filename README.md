@@ -355,16 +355,18 @@ Knit redistributes third-party open-source libraries, all under GPL-compatible l
 BSD, MIT) and with no Google Play services; see [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for
 the full component list and their licenses.
 
-### Bundled model attribution
+### Bundled model & data attribution
 
-The on-device moderation models bundled under `app/src/main/assets/moderation/` are third-party works,
-redistributed under their own licenses (full notices in
+The on-device moderation models and data bundled under `app/src/main/assets/moderation/` are third-party
+works, redistributed under their own licenses (full notices in
 [`app/src/main/assets/moderation/README.md`](app/src/main/assets/moderation/README.md)):
 
 - **Toxicity text model** — derived from [**Detoxify**](https://github.com/unitaryai/detoxify)
   (`unbiased-small`, ALBERT `albert-base-v2`), used under the **Apache License 2.0**.
 - **NSFW image model** — [**GantMan `nsfw_model`**](https://github.com/GantMan/nsfw_model)
   (MobileNetV2), used under the **MIT License**, © 2020 The nsfw_model Developers.
+- **Profanity word list** — generated from [**dsojevic/profanity-list**](https://github.com/dsojevic/profanity-list),
+  used under the **MIT License**, © 2021 David Sojevic.
 
 See [`docs/CONTENT_MODERATION.md`](docs/CONTENT_MODERATION.md) for how they are used.
 

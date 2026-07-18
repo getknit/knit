@@ -5,8 +5,12 @@ be **bundled**, never downloaded.
 
 ## `profanity_en.txt` (present)
 
-Word list for the deterministic first pass of text moderation (`LexicalTextFilter`). A small starter
-set — replace/extend with a vetted, permissively-licensed corpus (e.g. LDNOOBW) before release.
+Word list for the deterministic first pass of text moderation (`LexicalTextFilter`). **Generated file —
+do not edit by hand**; regenerate with `python3 scripts/gen-profanity-list.py`. Produced from the
+MIT-licensed `dsojevic/profanity-list` corpus (see [Attribution](#attribution) below): one single-token
+base literal per line, curated to severity ≥ 2 with the `lgbtq` identity tag and common innocent words
+excluded. Morphological derivatives and contextual cases are left to the ML toxicity classifier that
+backstops the lexical pass.
 
 ## `nsfw.tflite` (bundled — activates image moderation)
 
@@ -82,3 +86,31 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Source: <https://github.com/unitaryai/detoxify> (`unbiased-small`, built on `albert-base-v2`). Licensed
 under the Apache License 2.0; see <https://www.apache.org/licenses/LICENSE-2.0>.
+
+### `profanity_en.txt` — dsojevic/profanity-list (MIT)
+
+Source: <https://github.com/dsojevic/profanity-list> (`en.json`), pinned at commit
+`c27924319aa9bd6f917e3782b4f4b6604a50b652` (retrieved 2026-07-18). The shipped list is a derived work
+produced by `scripts/gen-profanity-list.py`; the pinned source, its `LICENSE`, and provenance are
+vendored under `third_party/profanity-list/` (not shipped in the APK).
+
+```
+MIT License
+
+Copyright (c) 2021 David Sojevic
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial
+portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
