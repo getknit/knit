@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 # Stop hook: enforce `./gradlew :app:testDebugUnitTest` before Claude finishes a turn.
 #
-# Ordered BEFORE the Kover coverage hook (gradle-kover-stop.sh) on purpose: that hook no-ops when it
-# can't parse a coverage number, which is exactly what happens when the unit tests fail to build or
-# run. Running the tests here first means a red test is reported and blocks (exit 2) instead of being
-# silently swallowed by the coverage guard. When tests pass, Kover reuses the same UP-TO-DATE
-# testDebugUnitTest, so this adds no real cost on a green turn.
-#
 # tests pass  -> exit 0, Claude stops normally.
 # tests fail  -> exit 2 with the failing tests + report path on stderr, which Claude Code feeds back
 #               to the model so it keeps working and fixes them.

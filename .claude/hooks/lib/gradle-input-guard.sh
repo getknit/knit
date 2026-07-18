@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared guard for the `gradle-*-stop.sh` Stop hooks.
 #
-# The Gradle tasks these hooks enforce (lint, detekt, ktlintCheck, testDebugUnitTest, koverLogDebug)
+# The Gradle tasks these hooks enforce (lint, detekt, ktlintCheck, testDebugUnitTest)
 # only consume Android/build inputs: the `app/` module, the `gradle/` version catalog + wrapper, the
 # `config/` tool configs, the root build scripts, `.editorconfig` (ktlint), and the root lockfile.
 # A turn that only touched Markdown, docs, `.agents/`, `.claude/`, or shell scripts can't change their

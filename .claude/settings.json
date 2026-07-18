@@ -12,21 +12,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/gradle-lint-stop.sh\"",
-            "timeout": 300,
-            "statusMessage": "Running ./gradlew lint"
-          },
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/gradle-detekt-stop.sh\"",
-            "timeout": 300,
-            "statusMessage": "Running ./gradlew detekt"
-          },
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/gradle-ktlint-stop.sh\"",
-            "timeout": 300,
-            "statusMessage": "Running ./gradlew ktlint"
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/gradle-checks-stop.sh\"",
+            "timeout": 600,
+            "statusMessage": "Running ./gradlew ktlintCheck detekt lint"
           },
           {
             "type": "command",
@@ -39,12 +27,6 @@
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/gradle-test-stop.sh\"",
             "timeout": 300,
             "statusMessage": "Running ./gradlew testDebugUnitTest"
-          },
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/gradle-kover-stop.sh\"",
-            "timeout": 300,
-            "statusMessage": "Checking Kover coverage"
           }
         ]
       }
