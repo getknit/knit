@@ -1,12 +1,6 @@
 *.iml
 .gradle
 /local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
 .DS_Store
 /build
 /captures
@@ -19,9 +13,12 @@ keystore.properties
 *.jks
 *.keystore
 
-# Trailer pipeline (scripts/record-trailer.sh + scripts/build-trailer.sh): raw captures and ffmpeg
-# stage intermediates are large + regenerable; the finished masters in trailer/out/ are kept. A
-# user-supplied music bed (assets/trailer/*) is not committed (check its license).
+# Marketing captures kept out of the public repo — the generator scripts and finished masters live
+# under .private/ (.private/scripts/, .private/shots/, .private/trailer/, .private/docs/). Run from the
+# repo root those scripts still default their output here, so keep it ignored: screenshots -> /shots/,
+# promo trailer -> /trailer/ (large, regenerable raw captures + ffmpeg-stage intermediates), plus a
+# user-supplied trailer music bed under assets/trailer/ (never committed — check its license).
+/shots/
 /trailer/
 /assets/trailer/
 
@@ -34,4 +31,8 @@ app/release/*
 # gradle build cache
 .kotlin
 
+# JetBrains IDE — local editor config, never shared in the public repo.
 .idea/
+
+# Private working area: marketing masters (see above) + personal files — kept out of the public repo.
+.private/
