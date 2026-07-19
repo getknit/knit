@@ -39,12 +39,12 @@ build config, the mesh layer, or the DI graph. In short:
 - **JDK 21** and the Android SDK (compileSdk 36.1) are required.
 - `./gradlew :app:compileDebugKotlin` — fast compile check of main sources.
 - `./gradlew :app:testDebugUnitTest` — JVM unit tests (mesh/protocol/data, Robolectric Room).
-- `./gradlew detekt ktlint` — static analysis and style (`ktlintFormat` autocorrects).
+- `./gradlew detekt ktlintCheck` — static analysis and style (`ktlintFormat` autocorrects).
 - Real mesh behavior needs **two or more physical devices** — see the README's *Running* section.
 - After any dependency change, regenerate the lockfile with
   `./gradlew :app:dependencies --write-locks` (see `AGENTS.md`).
 
-Please run the unit tests, `detekt`, and `ktlint` before opening a pull request, and match the
+Please run the unit tests, `detekt`, and `ktlintCheck` before opening a pull request, and match the
 surrounding code style.
 
 ## Where to submit

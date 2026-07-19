@@ -162,10 +162,10 @@ Knit is built for situations where there's **no reliable network but people are 
 | Images | Coil 3 |
 | Verification | ZXing (safety-number QR) |
 | App sharing | ARSCLib + apksig (on-device split-APK merge & re-sign) |
-| Quality | detekt · ktlint · Kover (all pinned; detekt/ktlint run as standalone CLIs) |
+| Quality | detekt · ktlint · Kover (all pinned; detekt/ktlint run as Gradle plugins) |
 
 > The bleeding-edge toolchain (AGP 9.3.0 / Kotlin 2.4.0) forces several non-obvious choices — Koin over
-> Hilt, a Kotlin override off AGP's bundled compiler, and CLI-based linting. See
+> Hilt, a Kotlin override off AGP's bundled compiler, and Gradle-plugin linting. See
 > [`AGENTS.md`](AGENTS.md) before touching build config or dependencies.
 
 ## 🔨 Build
@@ -183,7 +183,7 @@ cd knit
 ./gradlew :app:testDebugUnitTest    # JVM unit tests — mesh router, flood suppression, dedup, CBOR codec,
                                      # crypto, store-and-forward, + Robolectric Room/DAO & migration tests
 ./gradlew installDebug              # install on a connected device
-./gradlew detekt ktlint             # static analysis & style (standalone CLIs; ktlint does NOT autoformat)
+./gradlew detekt ktlintCheck        # static analysis & style (Gradle plugins; ktlintFormat autoformats)
 ./gradlew :app:koverHtmlReportDebug # test coverage report
 ```
 

@@ -13,7 +13,7 @@ and that every commit is signed off under the DCO (`git commit -s`).
 <!-- Check what you ran / did. -->
 
 - [ ] `./gradlew :app:testDebugUnitTest` (JVM unit tests)
-- [ ] `./gradlew detekt ktlint` (static analysis and style)
+- [ ] `./gradlew detekt ktlintCheck` (static analysis and style)
 - [ ] Built and installed on a device or emulator
 - [ ] Verified real multi-device mesh behavior (if this touches `mesh/`, `protocol/`, or `data/`)
 
