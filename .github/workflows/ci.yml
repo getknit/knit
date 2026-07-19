@@ -1,0 +1,64 @@
+name: CI
+
+# Public-mirror CI for github.com/getknit/knit. Mirrors the core jobs of the maintainer's internal
+# .gitlab-ci.yml (build -> test -> verify) so pull requests opened on the GitHub mirror get automated
+# checks. Builds are UNSIGNED (no signing credentials in CI). detekt/ktlint are advisory
+# (continue-on-error), matching the GitLab pipeline's allow_failure posture; they are enforced locally
+# by the repo's Git hooks. The *.tflite moderation models are pulled via Git LFS (lfs: true).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true # hydrate the nsfw/toxicity *.tflite models (Git LFS) needed to package the APK
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Assemble debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace --console=plain
+      - name: JVM unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace --console=plain
+      - name: Upload unit-test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+
+  verify:
+    name: detekt & ktlint (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true # advisory, mirroring .gitlab-ci.yml allow_failure; enforced locally by Git hooks
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: detekt
+        run: ./gradlew detekt --stacktrace --console=plain
+      - name: ktlint
+        run: ./gradlew ktlintCheck --stacktrace --console=plain
