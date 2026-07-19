@@ -42,5 +42,8 @@ app/release/*
 # JetBrains IDE — local editor config, never shared in the public repo.
 .idea/
 
+# Personal per-machine Claude Code overrides — the shared .claude/settings.json stays tracked.
+.claude/settings.local.json
+
 # Private working area: marketing masters (see above) + personal files — kept out of the public repo.
 .private/
