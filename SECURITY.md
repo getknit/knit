@@ -5,10 +5,13 @@ project ships **as-is with no warranty or guaranteed response** (see [`CONTRIBUT
 
 ## Reporting a vulnerability
 
-**Please do not open a public issue or merge request for security vulnerabilities.** Public disclosure
+**Please do not open a public issue or pull request for security vulnerabilities.** Public disclosure
 before a fix exists puts users at risk.
 
-Instead, report privately by email to **jeff.mixon@gmail.com** with:
+Instead, report privately through GitHub's [**private vulnerability reporting**][report] — the
+"Report a vulnerability" button on the repository's *Security* tab — which opens a private draft
+advisory visible only to the maintainers. If you'd prefer email, write to **jeff.mixon@gmail.com**.
+Please include:
 
 - a description of the issue and its impact,
 - steps to reproduce (or a proof of concept), and
@@ -16,6 +19,8 @@ Instead, report privately by email to **jeff.mixon@gmail.com** with:
 
 Please allow reasonable time for a fix before any public disclosure. As a best-effort hobby project,
 there is no guaranteed acknowledgement or remediation timeline, but genuine reports will be reviewed.
+
+[report]: https://github.com/getknit/knit/security/advisories/new
 
 ## Scope and known limitations
 

@@ -170,14 +170,14 @@ Knit is built for situations where there's **no reliable network but people are 
 
 ## 🔨 Build
 
-The source lives at **<https://source.jeffmixon.com/knit/knit-next>**. You need **JDK 21** and the
+The source lives at **<https://github.com/getknit/knit>**. You need **JDK 21** and the
 Android SDK (compileSdk 36.1) — Android Studio is optional. When building from the command line without
 Studio, point Gradle at your SDK first: create a git-ignored `local.properties` containing
 `sdk.dir=/path/to/Android/Sdk`, or export `ANDROID_HOME`.
 
 ```bash
-git clone https://source.jeffmixon.com/knit/knit-next.git
-cd knit-next
+git clone https://github.com/getknit/knit.git
+cd knit
 ./gradlew :app:assembleDebug        # build the debug APK (does NOT compile test sources)
 ./gradlew :app:compileDebugKotlin   # fast compile check of main sources
 ./gradlew :app:testDebugUnitTest    # JVM unit tests — mesh router, flood suppression, dedup, CBOR codec,

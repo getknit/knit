@@ -1,0 +1,57 @@
+name: ✨ Feature request
+description: Propose a feature or enhancement for Knit.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an idea. **Please search existing issues before opening a new one.**
+
+        Knit is a **best-effort hobby project** — proposals are welcome but may not be accepted, and
+        some scope is **deliberately deferred** (see the Roadmap in `README.md` and `CONTRIBUTING.md`).
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that Knit doesn't support today?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What you'd like to see happen.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you weighed, and why this one.
+  - type: checkboxes
+    id: mesh-impact
+    attributes:
+      label: Scope and mesh impact
+      description: >-
+        Does this touch a subsystem with a compatibility contract? These carry wire/convergence
+        commitments (see `docs/WIRE_COMPAT.md` and `docs/ARCHITECTURE.md`). Check any that apply.
+      options:
+        - label: Changes the CBOR wire format
+        - label: Changes store-and-forward custody / convergence
+        - label: Changes the end-to-end crypto envelope
+        - label: None of the above / not sure
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else — mockups, links, references.
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I read the support expectations and roadmap, and understand some scope is deliberately deferred.
+          required: true

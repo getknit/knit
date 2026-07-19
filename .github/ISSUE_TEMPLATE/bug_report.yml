@@ -1,0 +1,97 @@
+name: 🐛 Bug report
+description: Report a defect in Knit, the offline Android mesh messenger.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. **Please search existing issues before opening a new one.**
+
+        - Knit is a **best-effort hobby project shipped as-is** — issues are welcome but may not be
+          triaged, answered, or fixed on any timeline (see `CONTRIBUTING.md`).
+        - **Do not report security vulnerabilities here.** See `SECURITY.md` for private disclosure —
+          public disclosure before a fix exists puts users at risk.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A concise description of the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you do, in order? Real mesh behavior usually needs two or more physical devices.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Actual behavior, including any error text or logcat output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: Expected behavior.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Knit version / commit
+      description: The app version, or the commit SHA you built from.
+    validations:
+      required: true
+  - type: textarea
+    id: devices
+    attributes:
+      label: Devices and Android version
+      description: Every device involved, with its Android version and API level (e.g. "Pixel 6, Android 14 / API 34").
+    validations:
+      required: true
+  - type: dropdown
+    id: radios
+    attributes:
+      label: Radios involved
+      description: Which transport(s) were in use? Knit runs Wi-Fi Aware and Bluetooth LE simultaneously.
+      options:
+        - Not sure
+        - Wi-Fi Aware (NAN)
+        - Bluetooth LE
+        - Both
+    validations:
+      required: true
+  - type: input
+    id: mesh-size
+    attributes:
+      label: Number of devices in the mesh
+      placeholder: "2"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: |
+        `adb logcat` excerpts, screenshots, or a mesh-state dump if relevant. Debug builds expose a
+        headless bridge — e.g.
+        `adb shell am broadcast -a app.getknit.knit.debug.STATE -p app.getknit.knit`
+        dumps self id, transport health, and reachable peers (see `.agents/context/debug-bridge.md`).
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go to SECURITY.md privately).
+          required: true
+        - label: I understand Knit is a best-effort hobby project with no support guarantee.
+          required: true
