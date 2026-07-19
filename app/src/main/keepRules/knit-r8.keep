@@ -79,3 +79,13 @@
 
 # ---- Google Play In-App Review (optional GMS; pre-gated + failures swallowed at runtime) ------------------
 -dontwarn com.google.android.gms.**
+
+# ---- Strip debug/verbose/info logging from the release APK ------------------------------------------------
+# R8 elides calls to these (their int return is unused) so Log.d/v/i — including the "TEMP diag" lines that
+# print peer nodeIds / discovery / link up-down events in the radio layer — never ship in release logcat.
+# Log.w/e are kept for crash triage. Narrow this to d/v only if you want to retain release info-level breadcrumbs.
+-assumenosideeffects class android.util.Log {
+    public static int d(...);
+    public static int v(...);
+    public static int i(...);
+}
