@@ -216,13 +216,13 @@ send→verify loop can be driven over `adb` without screenshots — see [`AGENTS
   ```bash
   ./gradlew :app:connectedDebugAndroidTest -PseedDemo=true   # on every attached adb device/emulator
   ./gradlew :app:pixel7api33DebugAndroidTest -PseedDemo=true # on a Gradle-managed emulator only (Pixel 7 @ API 33)
-  bash scripts/ftl.sh                                        # on Firebase Test Lab physical devices
+  bash .private/scripts/ftl.sh                                        # on Firebase Test Lab physical devices
   ```
 
   The `pixel7api33` variant is a **Gradle Managed Device**: Gradle boots a headless emulator, runs the suite,
   and tears it down — it never touches attached physical devices (which the plain `connected…` task would).
 
-  `scripts/ftl.sh` builds the APKs and runs the suite across a 3-device / 3-API matrix on Firebase Test Lab
+  `.private/scripts/ftl.sh` builds the APKs and runs the suite across a 3-device / 3-API matrix on Firebase Test Lab
   (Android Test Orchestrator, per-test isolation), capturing a screenshot per test per device. See
   [`AGENTS.md`](AGENTS.md) for the matrix, env-var overrides, and the free-tier budget.
 
@@ -237,7 +237,7 @@ send→verify loop can be driven over `adb` without screenshots — see [`AGENTS
     -Pandroid.testInstrumentationRunnerArguments.package=app.getknit.knit.uiauto
   ```
 
-  Drop the `-P…package` filter to run the seeded Compose suite alongside it, or run `bash scripts/ftl-uiauto.sh`
+  Drop the `-P…package` filter to run the seeded Compose suite alongside it, or run `bash .private/scripts/ftl-uiauto.sh`
   for the isolated Firebase Test Lab physical-device pass. (Run a single class with
   `…arguments.class=app.getknit.knit.uiauto.OverflowNavigationUiAutomatorTest`.)
 

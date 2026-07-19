@@ -60,7 +60,7 @@ abstract class SeededUiAutomatorTest {
     @Before
     fun requireSeededBuild() {
         check(BuildConfig.SEED_DEMO) {
-            "The androidTest APK must be built with -PseedDemo=true (see scripts/ftl-uiauto.sh)."
+            "The androidTest APK must be built with -PseedDemo=true (see .private/scripts/ftl-uiauto.sh)."
         }
     }
 

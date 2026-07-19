@@ -9,10 +9,10 @@
 3. Two physical phones for discovery → connect → relay and profile/avatar exchange.
 4. **Seeded UI instrumentation suite** (`app/src/androidTest/…/ui/`) for populated-screen rendering across
    devices/API levels — locally on an emulator (`:app:connectedDebugAndroidTest -PseedDemo=true`) or on
-   Firebase Test Lab physical devices (`bash scripts/ftl.sh`). See below. A **black-box UIAutomator** twin
-   (`…/uiauto/`) covers the system shade + process lifecycle — see below (`bash scripts/ftl-uiauto.sh`).
+   Firebase Test Lab physical devices (`bash .private/scripts/ftl.sh`). See below. A **black-box UIAutomator** twin
+   (`…/uiauto/`) covers the system shade + process lifecycle — see below (`bash .private/scripts/ftl-uiauto.sh`).
 5. **Accessibility (ATF) suite** (`app/src/androidTest/…/a11y/`) runs Google's Accessibility Test Framework —
-   the same checks the Play Console pre-launch report runs — on API 34+ (`bash scripts/ftl-a11y.sh`). See below.
+   the same checks the Play Console pre-launch report runs — on API 34+ (`bash .private/scripts/ftl-a11y.sh`). See below.
 
 > Wi-Fi Aware needs physical devices — an emulator can't do NAN. Use `FakeLoopTransport` for logic tests
 > and two physical Wi-Fi-Aware-capable phones (e.g. Pixels) for real discovery → data path → relay.
@@ -64,7 +64,7 @@ the JVM tests (`CompositeMeshTransportTest`, `RadioWarningTest`, `OnboardingScre
 
 - **Run locally** (emulator is fine — no real mesh needed):
   `./gradlew :app:connectedDebugAndroidTest -PseedDemo=true` (target one device with `ANDROID_SERIAL=…`).
-- **Run on FTL**: `bash scripts/ftl.sh` — builds the seeded app + androidTest APKs and runs the default
+- **Run on FTL**: `bash .private/scripts/ftl.sh` — builds the seeded app + androidTest APKs and runs the default
   3-device matrix **a10@29 / cheetah@33 / b0q@36** (API 29/33/36) under `--use-orchestrator`. Override with
   `DEVICES=…`, `PROJECT=…`, `TIMEOUT=…`, or `SKIP_BUILD=1`. gcloud must be authed to the Firebase project
   (`knit-mesh`); the **free tier is 5 physical-device runs/day**, so the default spends 3.
@@ -118,8 +118,8 @@ radio-less build (`-PseedDemo=true`); `SeededUiAutomatorTest` shares `SeededUiTe
   group co-member ∪ verified, so Nearby-only strangers never appear), group rename/leave
   (`GroupManagementUiAutomatorTest`), the in-app requests badge + block path (`RequestsInboxUiAutomatorTest`),
   and the received-flagged tap-to-reveal (`ModerationRevealUiAutomatorTest`, via the `FLAGMSG` debug seam).
-- **Isolated FTL target.** `scripts/ftl-uiauto.sh` runs **only** this package
-  (`--test-targets "package app.getknit.knit.uiauto"`); `scripts/ftl.sh` now **excludes** it
+- **Isolated FTL target.** `.private/scripts/ftl-uiauto.sh` runs **only** this package
+  (`--test-targets "package app.getknit.knit.uiauto"`); `.private/scripts/ftl.sh` now **excludes** it
   (`TEST_TARGETS` defaults to `notPackage app.getknit.knit.uiauto`) so black-box system-UI flakiness never
   reddens the Compose run. Both build the one seeded androidTest APK — the split is a runtime filter.
 - **Run locally**: `./gradlew :app:connectedDebugAndroidTest -PseedDemo=true
@@ -158,13 +158,13 @@ pulls ATF transitively: `compose.enableAccessibilityChecks(validator)` +
   read a screenshot; on the headless emulator `UiAutomation.takeScreenshot()` races the UI thread and
   returns null → ATF NPEs. So `setCaptureScreenshots(!isEmulator())`: **off on the emulator** (contrast
   reports NOT_RUN; structural checks — labels, touch targets, traversal, duplicate/redundant descriptions —
-  still fully run) and **on for real hardware**, so contrast actually runs on the `scripts/ftl-a11y.sh`
+  still fully run) and **on for real hardware**, so contrast actually runs on the `.private/scripts/ftl-a11y.sh`
   physical-device pass (and Play's pre-launch report covers it too).
 - **Run locally** (headless emulator, no physical device):
   `./gradlew :app:pixel8api34DebugAndroidTest -PseedDemo=true
   -Pandroid.testInstrumentationRunnerArguments.package=app.getknit.knit.a11y`.
-- **Run on FTL**: `bash scripts/ftl-a11y.sh` — targets the `a11y` package on an **API-34+** device (defaults
-  to `b0q@36`). The package also rides the default `scripts/ftl.sh` run but *skips* on its API 29/33 devices.
+- **Run on FTL**: `bash .private/scripts/ftl-a11y.sh` — targets the `a11y` package on an **API-34+** device (defaults
+  to `b0q@36`). The package also rides the default `.private/scripts/ftl.sh` run but *skips* on its API 29/33 devices.
 
 When driving the emulator over `adb`: the soft keyboard overlaps via `adjustResize`, so read element
 coordinates from `uiautomator dump` rather than guessing; seed the photo picker by `screencap`-ing

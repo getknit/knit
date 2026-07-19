@@ -21,7 +21,7 @@ import org.junit.Rule
 import org.junit.rules.TestName
 
 /**
- * Base for the Firebase Test Lab seeded UI suite (see scripts/ftl.sh). Every test launches the real
+ * Base for the Firebase Test Lab seeded UI suite (see .private/scripts/ftl.sh). Every test launches the real
  * [MainActivity] against a **demo-seeded, radio-less** build: `-PseedDemo=true` swaps in the no-op
  * `DemoTransport` (so the two mesh radios are inert — exactly the Test Lab reality), seeds a full
  * conversation history into Room through the real repositories, and skips the onboarding permission gate.
@@ -53,7 +53,7 @@ abstract class SeededUiTest {
     @Before
     fun requireSeededBuild() {
         check(BuildConfig.SEED_DEMO) {
-            "The androidTest APK must be built with -PseedDemo=true (see scripts/ftl.sh)."
+            "The androidTest APK must be built with -PseedDemo=true (see .private/scripts/ftl.sh)."
         }
     }
 

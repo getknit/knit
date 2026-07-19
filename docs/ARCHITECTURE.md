@@ -753,7 +753,7 @@ before bumping anything that could pull in a newer Kotlin stdlib.
   FTL). Run locally (emulator OK — no real mesh) with `./gradlew :app:connectedDebugAndroidTest
   -PseedDemo=true` (every attached adb device) or `./gradlew :app:pixel7api33DebugAndroidTest -PseedDemo=true`
   (a Gradle-managed emulator only — Pixel 7 @ API 33, ignores adb), or on FTL physical devices with
-  `bash scripts/ftl.sh` (Android Test Orchestrator +
+  `bash .private/scripts/ftl.sh` (Android Test Orchestrator +
   `clearPackageData`, default matrix API 29/33/36). This is the UI-rendering complement to the radio-absent
   **graceful-degradation** logic, which the JVM tests above already cover (`CompositeMeshTransportTest`,
   `RadioWarningTest`, `OnboardingScreenContentTest`). See `AGENTS.md` for the full setup and gotchas.
