@@ -30,6 +30,10 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `.agents/context/debug-bridge.md`.
 - **Before an architectural choice:** CONSULT `.agents/memory/decisions.md`; for what's deliberately
   deferred, CHECK `.agents/memory/roadmap.md`.
+- **For maintainer-only workflows a public clone doesn't include** (release testing on physical devices,
+  soak/convergence trials, store/marketing capture — and more over time): a local, gitignored **`.private/`
+  overlay** may be present. If `.private/AGENTS.md` exists, load it as a nested router (nearest-wins); it is
+  absent from public clones.
 
 ## Capabilities
 

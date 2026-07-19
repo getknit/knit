@@ -64,7 +64,7 @@ android {
         // Android Test Orchestrator isolation: wipe app data (identity keystore + SQLCipher DB + DataStore)
         // between instrumentation tests so each test re-generates a fresh identity and re-seeds a clean demo
         // DB. Paired with testOptions.execution below; on Firebase Test Lab pass the same via
-        // `--use-orchestrator --environment-variables clearPackageData=true` (see .private/scripts/ftl.sh).
+        // `--use-orchestrator --environment-variables clearPackageData=true` (see .agents/context/testing.md).
         testInstrumentationRunnerArguments["clearPackageData"] = "true"
 
         // Demo-screenshot mode: when built with `-PseedDemo=true`, the app seeds a realistic data set
@@ -363,7 +363,7 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     // Accessibility Test Framework (ATF) checks in the Compose suite — the same framework the Play
     // pre-launch report runs. Pulls ATF + AccessibilityValidator transitively; drives the API-34+
-    // a11y package (app.getknit.knit.a11y, @RequiresApi(34)). See .private/scripts/ftl-a11y.sh.
+    // a11y package (app.getknit.knit.a11y, @RequiresApi(34)). See .agents/context/testing.md.
     androidTestImplementation(libs.androidx.compose.ui.test.junit4.accessibility)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
@@ -371,12 +371,12 @@ dependencies {
     // Firebase Test Lab seeded UI suite (app/src/androidTest/…/ui): explicit runner + rules
     // (ActivityScenario/GrantPermissionRule; runner was only transitive) and the Orchestrator + its
     // test-services APK (androidTestUtil, for local connectedDebugAndroidTest parity). See AGENTS.md /
-    // .private/scripts/ftl.sh.
+    // .agents/context/testing.md.
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.rules)
     androidTestImplementation(libs.androidx.test.services.storage) // TestStorage: FTL-collected screenshots
     // UIAutomator black-box suite (app.getknit.knit.uiauto): drives the real app process via resource-ids
-    // (testTagsAsResourceId) + the system UI (notification shade, Recents). See .private/scripts/ftl-uiauto.sh.
+    // (testTagsAsResourceId) + the system UI (notification shade, Recents). See .agents/context/testing.md.
     androidTestImplementation(libs.androidx.test.uiautomator)
     androidTestUtil(libs.androidx.test.orchestrator)
     androidTestUtil(libs.androidx.test.services)

@@ -37,7 +37,7 @@ import java.util.Locale
  * ./gradlew :app:pixel8api34DebugAndroidTest -PseedDemo=true \
  *     -Pandroid.testInstrumentationRunnerArguments.package=app.getknit.knit.a11y
  * ```
- * or on Firebase Test Lab's API-36 device via `.private/scripts/ftl-a11y.sh`.
+ * or on Firebase Test Lab's API-36 device.
  *
  * **Severity policy: errors fail, warnings logged, all findings reported.** The [AccessibilityValidator]
  * throws (fails the test) only for [AccessibilityCheckResultType.ERROR] — the Play-blocking class. The
@@ -49,7 +49,7 @@ import java.util.Locale
  * **Contrast needs real pixels.** ATF's text/image contrast checks read a screenshot. On the headless
  * emulator `UiAutomation.takeScreenshot()` races the UI thread and returns null → ATF NPEs, so screenshot
  * capture is enabled only on **real hardware** ([isEmulator] gate). On the emulator the contrast checks
- * report NOT_RUN (structural checks still run in full); on an FTL physical device (`.private/scripts/ftl-a11y.sh`)
+ * report NOT_RUN (structural checks still run in full); on an FTL physical device
  * they run for real.
  */
 @RunWith(AndroidJUnit4::class)
@@ -138,7 +138,7 @@ class AccessibilityInstrumentedTest : SeededUiTest() {
                     actionable.forEach { appendLine("- $it") }
                 }
                 appendLine("[$skipped checks NOT_RUN/SUPPRESSED — not applicable to these elements; text/image")
-                appendLine(" contrast is NOT_RUN unless run on real hardware, e.g. .private/scripts/ftl-a11y.sh]")
+                appendLine(" contrast is NOT_RUN unless run on real hardware, e.g. on Firebase Test Lab]")
             }
         runCatching {
             TestStorage().openOutputFile("a11y-${a11yTestName.methodName}.txt").use { it.write(body.toByteArray()) }

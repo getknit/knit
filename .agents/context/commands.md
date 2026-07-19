@@ -15,13 +15,11 @@ plugins), see `context/toolchain.md`.
 ./gradlew :app:koverHtmlReportDebug # test coverage (Kover) — HTML in app/build/reports/kover/htmlDebug/ (XML: koverXmlReportDebug)
 ./gradlew :app:connectedDebugAndroidTest -PseedDemo=true  # seeded UI instrumentation suite on ALL attached adb devices (Orchestrator)
 ./gradlew :app:pixel7api33DebugAndroidTest -PseedDemo=true # same suite on a Gradle-managed emulator ONLY (Pixel 7 @ API 33; ignores adb)
-bash .private/scripts/ftl.sh                 # build seeded APKs + run the suite on Firebase Test Lab physical devices
-bash .private/scripts/ftl-uiauto.sh          # ...only the black-box UIAutomator package on FTL
+# Firebase Test Lab (physical-device) runs live in the maintainer .private/ overlay — absent in public clones
 bash scripts/ide-diagnostics.sh --list          # changed .kt/.kts/.java files — what to iterate for IDE inspections
 bash scripts/ide-diagnostics.sh <file>          # ...focus one in the RUNNING Studio, then read it via getDiagnostics
 # Accessibility (ATF) suite — same checks as the Play pre-launch report; needs API 34+ (@SdkSuppress skips below):
 ./gradlew :app:pixel8api34DebugAndroidTest -PseedDemo=true -Pandroid.testInstrumentationRunnerArguments.package=app.getknit.knit.a11y  # headless emulator
-bash .private/scripts/ftl-a11y.sh            # ...on an FTL API-34+ device (defaults to b0q@36)
 ```
 
 - **JDK 21** is required (the Gradle daemon toolchain is pinned to 21).

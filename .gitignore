@@ -7,7 +7,6 @@
 .externalNativeBuild
 .cxx
 local.properties
-scripts/soak/logs/
 # Release signing & secrets — never commit signing keys, keystores, or credentials (see
 # keystore.properties.example). The blanket key/cert globs also stop a stray app-signing key or
 # certificate from ever landing in the tree again (e.g. under res/raw); force-add with `git add -f`
