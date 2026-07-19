@@ -323,8 +323,7 @@ Beyond the contract bug (#3), the moderation pipeline is solid in design (scoped
 public room, ML-only for private, mesh-neutral so flagged content still relays, receiver-side hiding
 that never drops content) but has several loose ends: it sits on the relay-critical path (an ALBERT pass
 per chat frame behind a mutex during a backfill burst), the `noCompress "tflite"` mmap rationale is
-defeated by `readBytes()` loading ~32 MB resident, the NSFW model's license is explicitly unvetted (a
-release blocker), and the code/doc thresholds disagree (0.9 vs 0.7). The English-only lexical filter is
+defeated by `readBytes()` loading ~32 MB resident, the code/doc thresholds disagree (0.9 vs 0.7). The English-only lexical filter is
 a structural limit, not a bug, but worth stating.
 
 ---
@@ -342,7 +341,7 @@ a structural limit, not a bug, but worth stating.
 | Wi-Fi Aware plane | B+ | Heroic, well-documented; the decision logic (sync-owed folds, watchdog clock, cue codec) is now extracted into pure, JVM-tested policies (#8). |
 | Data / persistence | B+ | Coherent at-rest story; DAO/migration tests now execute (#5); untransacted races (#13) now transactional; atomicity gaps (#12) remain. |
 | Identity | B | Self-certifying model is elegant but under-sized (#2). |
-| Moderation | B | Good design; the load-failure path (#3) and asset/license loose ends. |
+| Moderation | B | Good design; the load-failure path (#3) is the remaining caveat. |
 | UI / Compose | A− | Textbook UDF, strong a11y; concrete-VM coupling now behind `MeshController` (#15); ChatScreen size remains. |
 | Notifications | A | Genuinely well-engineered MessagingStyle integration. |
 | `MeshManager` orchestration | B | The correctness core; inbound half now an injectable, tested `InboundPipeline` (#4/#8), 953 LOC. |

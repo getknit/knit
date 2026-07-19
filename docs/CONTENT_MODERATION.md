@@ -112,8 +112,8 @@ identical bytes are scanned once across send/receive):
 `assets/moderation/nsfw.tflite` is the **GantMan `nsfw_model` MobileNetV2 (140/224)** classifier:
 input `[1,224,224,3]` float32 normalized `÷255`, softmax output `[1,5]` =
 `drawings, hentai, neutral, porn, sexy`; `NsfwImageModerator` defaults flag on
-`hentai+porn+sexy ≥ 0.7`. It is a 17 MB float model (managed via Git LFS — see §5). Vet its license
-before release; tune `threshold`/`unsafeClasses` on-device. A quantized `.tflite` (~4–5 MB) drops in
+`hentai+porn+sexy ≥ 0.7`. It is a 17 MB float model (managed via Git LFS — see §5). Its license is vetted — MIT, © 2020 The nsfw_model Developers (attributed in
+[`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md)); tune `threshold`/`unsafeClasses` on-device. A quantized `.tflite` (~4–5 MB) drops in
 unchanged — `NsfwImageModerator` auto-detects uint8 input.
 
 ## 4. Phase 4 — ML toxicity classifier (implemented)
