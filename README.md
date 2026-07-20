@@ -12,7 +12,7 @@ Your phones talk directly to each other over Wi-Fi Aware and Bluetooth LE, and r
 ![Transports](https://img.shields.io/badge/radios-Wi--Fi%20Aware%20%2B%20BLE-00BCD4)
 ![Encryption](https://img.shields.io/badge/DMs%20%26%20groups-E2E%20encrypted-2EA043?logo=signal&logoColor=white)
 ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)
-![Version](https://img.shields.io/badge/version-1.0-FF6F61)
+![Version](https://img.shields.io/badge/version-2.1-FF6F61)
 
 </div>
 
@@ -42,7 +42,7 @@ dependency** and **end-to-end encryption** on direct and group messages.
 | **Encryption** | E2E on 1:1 DMs & group chats (Tink HPKE/X25519 + AES-256-GCM + Ed25519); at-rest DB via SQLCipher |
 | **Works without** | Internet, cellular, Wi-Fi routers, accounts, phone numbers, or any server |
 | **License** | GPL-3.0-or-later — free and open source |
-| **Status** | v1.0, feature-complete for launch |
+| **Status** | v2.1, feature-complete for launch |
 
 ## Contents
 
@@ -62,7 +62,7 @@ dependency** and **end-to-end encryption** on direct and group messages.
 - [License](#-license)
 
 > [!NOTE]
-> **Status — v1.0.** Feature-complete for launch: a **"Nearby" public broadcast room**, **1:1 direct
+> **Status — v2.1.** Feature-complete for launch: a **"Nearby" public broadcast room**, **1:1 direct
 > messages**, and **multi-member group chats**, with profiles (name / status / avatar), emoji
 > reactions, @-mentions, and image attachments. **Direct and group messages are end-to-end
 > encrypted** — bodies, mentions, and image attachments are readable only by their intended recipients,
