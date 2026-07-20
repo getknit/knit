@@ -22,7 +22,7 @@ project_dir="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 cd "$project_dir" || exit 0
 
 # The linter ships as a published image on Docker Hub; pull it once on first use.
-image="zaventh/lintorama:5"
+image="zaventh/lintorama:6"
 
 # Skip cleanly if docker is missing, or the image isn't cached and can't be pulled (don't block a turn
 # on missing tooling / no network).
