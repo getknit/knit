@@ -1,6 +1,12 @@
 {
   "version": 1,
   "skills": {
+    "dotagents-standard": {
+      "source": "zaventh/dotagents-standard-skill",
+      "sourceType": "github",
+      "skillPath": "skills/dotagents-standard/SKILL.md",
+      "computedHash": "ec2f35f28b416fc16094c9c22b94fc6a4c178a613317daaec53213eb30fc02a8"
+    },
     "kotlin-patterns": {
       "source": "affaan-m/ECC",
       "sourceType": "github",
