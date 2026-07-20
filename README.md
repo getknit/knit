@@ -58,6 +58,7 @@ dependency** and **end-to-end encryption** on direct and group messages.
 - [Documentation](#-documentation)
 - [Roadmap](#-roadmap)
 - [Security note](#-security-note)
+- [Support](#-support)
 - [License](#-license)
 
 > [!NOTE]
@@ -274,7 +275,8 @@ Aware is on Pixel 3+ and many recent devices. A phone with only one of the two r
 it.
 
 **Is it free and open source?**
-Yes — Knit is free software under the **GNU General Public License v3.0 or later**.
+Yes — Knit is free software under the **GNU General Public License v3.0 or later**. There are no ads,
+paid tiers, or subscriptions; development is funded entirely by optional tips (see [Support](#-support)).
 
 **How is it different from Bridgefy / Briar / Meshtastic?**
 Knit runs **two radios at once** (Wi-Fi Aware + Bluetooth LE) behind a single transport seam, has **no
@@ -327,6 +329,16 @@ Reactions and delivery receipts travel as **cleartext metadata** (signed, not en
 
 To report a vulnerability, see [`SECURITY.md`](SECURITY.md) — please **do not** open a public issue for
 security problems.
+
+## 💛 Support
+
+Knit is free and open source, with no ads, no tracking, and nothing to sell you — it's funded entirely
+by tips. If it's useful to you and you'd like to chip in, you can leave a tip on Ko-fi:
+
+[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-leave%20a%20tip-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/zaventh)
+
+Tips are optional and buy no special treatment — Knit is GPLv3 and stays that way. Reporting bugs and
+telling people it exists helps just as much.
 
 ## 📄 License
 
