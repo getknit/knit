@@ -25,7 +25,9 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.notifications.MessageNotifier
 import app.getknit.knit.notifications.Notifier
+import app.getknit.knit.review.ReviewPrompter
 import app.getknit.knit.ui.RouteInbox
+import app.getknit.knit.ui.review.ReviewPromptInbox
 import app.getknit.knit.ui.share.ShareInbox
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
@@ -55,6 +57,10 @@ val appModule =
         single { DemoComposer() }
         // Single-shot handoff for a notification-tap deep-link route (drained by KnitApp).
         single { RouteInbox() }
+        // Single-shot signal that the rate/review prompt should show (drained by KnitApp).
+        single { ReviewPromptInbox() }
+        // Decides when to ask for an app rating and where to route it (installer-aware); no-op in demo builds.
+        single { ReviewPrompter(androidContext(), get(), get(), get(), get()) }
 
         single { DatabaseKey(androidContext()) }
         single { KnitDatabase.build(androidContext(), get<DatabaseKey>().getOrCreate()) }

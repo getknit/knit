@@ -22,6 +22,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,21 +41,26 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
+import app.getknit.knit.ui.PLAY_LISTING_URL
 import app.getknit.knit.ui.openUrl
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.shareText
 
 /**
  * "Support Knit" screen: Knit is funded entirely by tips, so this links out to the maintainer's
- * donation platforms, plus a "Share Knit" row that opens the share sheet with the Play Store link.
- * Reached from the chat-list overflow menu. Purely static — no ViewModel.
+ * donation platforms, plus a "Rate Knit" row (the installer-aware [rateUrl]) and a "Share Knit" row that
+ * opens the share sheet with the Play Store link. Reached from the chat-list overflow menu. Purely static
+ * — no ViewModel.
  *
  * Platforms are data-driven via [DONATION_PLATFORMS]; adding another (Buy Me a Coffee, etc.) is a
  * single list entry with nothing else to change.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DonateScreen(onBack: () -> Unit) {
+fun DonateScreen(
+    onBack: () -> Unit,
+    rateUrl: String = PLAY_LISTING_URL,
+) {
     val context = LocalContext.current
 
     Scaffold(
@@ -100,7 +106,12 @@ fun DonateScreen(onBack: () -> Unit) {
                     onClick = { openUrl(context, platform.url) },
                 )
             }
-            val shareMessage = stringResource(R.string.share_knit_text, PLAY_STORE_URL)
+            PlatformRow(
+                nameRes = R.string.review_menu,
+                icon = Icons.Filled.Star,
+                onClick = { openUrl(context, rateUrl) },
+            )
+            val shareMessage = stringResource(R.string.share_knit_text, PLAY_LISTING_URL)
             val shareChooserTitle = stringResource(R.string.share_knit_chooser_title)
             PlatformRow(
                 nameRes = R.string.share_knit_menu,
@@ -110,8 +121,6 @@ fun DonateScreen(onBack: () -> Unit) {
         }
     }
 }
-
-private const val PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=app.getknit.knit"
 
 private data class DonationPlatform(
     @param:StringRes val nameRes: Int,

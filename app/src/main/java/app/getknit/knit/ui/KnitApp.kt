@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -23,6 +24,7 @@ import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshService
+import app.getknit.knit.review.ReviewPrompter
 import app.getknit.knit.ui.blocked.BlockedUsersScreen
 import app.getknit.knit.ui.chat.ChatScreen
 import app.getknit.knit.ui.chatlist.ChatListScreen
@@ -34,6 +36,8 @@ import app.getknit.knit.ui.onboarding.OnboardingScreen
 import app.getknit.knit.ui.profile.ProfileDetailsScreen
 import app.getknit.knit.ui.profile.ProfileScreen
 import app.getknit.knit.ui.requests.MessageRequestsScreen
+import app.getknit.knit.ui.review.RateReviewDialog
+import app.getknit.knit.ui.review.ReviewPromptInbox
 import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.share.ShareTargetScreen
 import app.getknit.knit.ui.verify.VerifyContactScreen
@@ -77,6 +81,9 @@ fun KnitApp(startRoute: String? = null) {
     val pendingShare by shareInbox.pending.collectAsStateWithLifecycle()
     val routeInbox = koinInject<RouteInbox>()
     val pendingRoute by routeInbox.pending.collectAsStateWithLifecycle()
+    val reviewPrompter = koinInject<ReviewPrompter>()
+    val reviewInbox = koinInject<ReviewPromptInbox>()
+    val showReviewPrompt by reviewInbox.pending.collectAsStateWithLifecycle()
     // Past onboarding once mesh permissions are granted (demo builds skip the gate).
     val onboarded = BuildConfig.SEED_DEMO || hasAllMeshPermissions(context)
     // Demo-screenshot mode skips the permission gate (and an optional [startRoute] jumps straight to a
@@ -154,6 +161,11 @@ fun KnitApp(startRoute: String? = null) {
             )
         }
         composable(Routes.CHAT_LIST) {
+            // Rate/review prompt: evaluated on each landing on the chat list — including returning from a
+            // thread, right after the mesh visibly worked — and never mid-conversation. ReviewPrompter
+            // self-gates (engagement policy, once per process, demo builds) and signals ReviewPromptInbox,
+            // which surfaces RateReviewDialog at the app root below.
+            LaunchedEffect(Unit) { reviewPrompter.maybePrompt() }
             ChatListScreen(
                 onOpenConversation = { id -> navController.navigate(Routes.chat(id)) },
                 onNewMessage = { navController.navigate(Routes.CONTACTS) },
@@ -268,10 +280,30 @@ fun KnitApp(startRoute: String? = null) {
             )
         }
         composable(Routes.DONATE) {
-            DonateScreen(onBack = { navController.popBackStack() })
+            DonateScreen(
+                onBack = { navController.popBackStack() },
+                rateUrl = remember { reviewPrompter.rateUrl() },
+            )
         }
         composable(Routes.VERIFY) {
             VerifyContactScreen(onBack = { navController.popBackStack() })
         }
+    }
+
+    // The rate/review prompt floats over whichever screen is showing (ReviewPrompter offered it from the
+    // chat-list route). Positive → rate (Play listing or repo, per install source); "Not really" → private
+    // feedback on the issue tracker; dismiss → just close. The attempt was already recorded when shown.
+    if (showReviewPrompt) {
+        RateReviewDialog(
+            onPositive = {
+                openUrl(context, reviewPrompter.rateUrl())
+                reviewInbox.consume()
+            },
+            onNegative = {
+                openUrl(context, reviewPrompter.feedbackUrl)
+                reviewInbox.consume()
+            },
+            onDismiss = { reviewInbox.consume() },
+        )
     }
 }

@@ -173,6 +173,13 @@
     <!-- %1$s = Play Store URL -->
     <string name="share_knit_text">Knit is a free, offline mesh messenger — no servers, no accounts, no internet needed. Get it: %1$s</string>
 
+    <!-- Rate / review prompt -->
+    <string name="review_prompt_title">Enjoying Knit?</string>
+    <string name="review_prompt_body">You\'ve been meshing for a while now — how\'s it going?</string>
+    <string name="review_prompt_positive">Yes!</string>
+    <string name="review_prompt_negative">Not really</string>
+    <string name="review_menu">Rate Knit</string>
+
     <!-- Share sheet target picker -->
     <string name="share_target_title">Share to…</string>
 
