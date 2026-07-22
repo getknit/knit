@@ -107,14 +107,52 @@ regress silently.
 
 ## Cutting an off-Play release
 
+`.github/workflows/release.yml` does it: push a `v*` tag and it builds, signs, verifies and drafts the
+GitHub Release. Prepare the commit first —
+
 1. Bump `knit.versionCode` / `knit.versionName` in `gradle.properties`. **Keep the tag equal to
    `v<versionName>`** — fdroiddata's `Binaries:` URL and `AutoUpdateMode: Version v%v` both expand `%v` to
    the *versionName*, so a `2.1` / `v2.1.0` mismatch breaks both.
-2. `./gradlew :app:assembleRelease` with `keystore.properties` pointed at `knit-dist.jks`.
-3. Tag `v<versionName>`, attach the APK to the GitHub Release under the filename the `Binaries:` URL
-   expects, and update `CurrentVersion`/`CurrentVersionCode` + add a `Builds:` entry in fdroiddata.
-4. Add `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` — F-Droid scrapes
+2. Update `CurrentVersion` / `CurrentVersionCode` and add a `Builds:` entry in `.fdroid.yml` (then copy it
+   to fdroiddata), and add `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` — F-Droid scrapes
    `fastlane/metadata/` straight from this repo at the built commit (descriptions, screenshots, changelog).
+3. Tag `v<versionName>` and push it. The `preflight` job re-checks every one of the above and refuses the
+   release if any disagrees, so a mistake costs a re-tag, not a bad artifact.
+
+The workflow ends at a **draft** Release: the `Binaries:` URL stays 404 until you click publish, which is
+the right state while fdroiddata still points at the previous version. Drop `--draft` to go straight out.
+
+**GitHub Actions runs the copy of the workflow that exists at the tag**, so editing `release.yml` only
+affects tags cut afterwards. Fixing a workflow bug for an already-created tag means moving the tag.
+
+Required repo secrets (four; the job that reads them declares `environment: release`, so you can attach
+required-reviewer or tag-only protection rules to exactly that job):
+
+| Secret | Value |
+|---|---|
+| `KNIT_DIST_KEYSTORE_B64` | `base64 -w0 knit-dist.jks` |
+| `KNIT_DIST_STORE_PASSWORD` | keystore password |
+| `KNIT_DIST_KEY_ALIAS` | `knit-dist` |
+| `KNIT_DIST_KEY_PASSWORD` | key password |
+
+They feed `KNIT_SIGNING_*` env vars (`KNIT_UPLOAD_*` still works; the neutral name exists because this
+path must never be confused with the Play upload key). The keystore is decoded to `$RUNNER_TEMP`, shredded
+in an `if: always()` step, and never enters the workspace or an artifact.
+
+Three things the workflow checks that no local build does:
+
+- **The signing certificate equals `AllowedAPKSigningKeys`.** Signing the public APK with the Play upload
+  key is the one unrecoverable mistake here, and it is otherwise invisible until users can't update.
+- **The APK is reproducible.** A parallel job rebuilds the same tag *unsigned* inside
+  `registry.gitlab.com/fdroid/fdroidserver:buildserver` with no secrets and no Gradle cache, and
+  `apksigcopier compare` (the same tool `fdroid verify` uses) proves the signed APK is that build plus a
+  signature. A GitHub runner is a third build environment; reproducibility was only ever proven between
+  the maintainer's machine and F-Droid's container. Nothing publishes if they diverge.
+- **No VCS stamp, all four ABIs.** Cheap regression guards on the two things most likely to silently
+  change what gets shipped.
+
+To build one by hand instead: `./gradlew :app:assembleRelease` with `keystore.properties` pointed at
+`knit-dist.jks`, then attach the APK under the filename the `Binaries:` URL expects.
 
 Play releases additionally pass `-Pknit.nativeSymbols=true` and use `knit-upload.jks`; see
 `.private/` for the maintainer-only store workflow.

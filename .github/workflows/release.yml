@@ -1,0 +1,353 @@
+name: Release
+
+# Builds, signs, verifies and publishes the distribution APK for a v* tag — the exact file F-Droid
+# fetches via `Binaries:` and byte-compares against its own rebuild. Background and the reproducibility
+# contract: .agents/context/distribution.md.
+#
+# IMPORTANT: for tag pushes GitHub runs the copy of this file that exists AT THE TAG. Editing this
+# workflow only affects tags cut afterwards; to apply a change to an existing unpushed tag, move the tag.
+#
+# Three jobs, split by who holds the signing key:
+#
+#   build-signed  ubuntu runner, HAS the distribution key   -> the APK we publish
+#   build-fdroid  F-Droid's own buildserver image, NO secrets -> the same APK, unsigned
+#   publish       proves those two are one APK modulo the signature, then cuts the Release
+#
+# The point of build-fdroid is that a GitHub runner is a *third* build environment. Reproducibility was
+# only ever proven between the maintainer's machine and F-Droid's container; nothing says a runner agrees
+# with either. Rather than find out when F-Droid's verification fails — after the tag and Release are
+# public and the fix costs a re-tag — the divergence is caught here and nothing gets published.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false # never abandon a half-finished release
+
+env:
+  APK_DIR: app/build/outputs/apk/release
+  # apksigner lives in build-tools; AGP 9.3.0 resolves 36.0.0. Only used by jobs that inspect the APK.
+  BUILD_TOOLS: 36.0.0
+
+jobs:
+  preflight:
+    name: Preflight (metadata invariants)
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      version_code: ${{ steps.check.outputs.version_code }}
+      apk_name: ${{ steps.check.outputs.apk_name }}
+    steps:
+      - uses: actions/checkout@v4
+      # Explicit, so `pip install` targets a tool-cache Python rather than the runner's system Python,
+      # which is PEP 668 externally-managed and refuses plain installs.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # Everything here is a contract that only breaks at publish time or, worse, silently in F-Droid's
+      # queue weeks later. All of it is cheap, so fail before spending two builds on a doomed tag.
+      - id: check
+        name: Tag, gradle.properties and .fdroid.yml must agree
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import os, pathlib, re, sys, yaml
+
+          tag = os.environ["TAG"]
+          props = dict(
+              re.match(r"([^=]+)=(.*)", line).groups()
+              for line in pathlib.Path("gradle.properties").read_text().splitlines()
+              if "=" in line and not line.lstrip().startswith("#")
+          )
+          version = props["knit.versionName"]
+          code = int(props["knit.versionCode"])
+          meta = yaml.safe_load(pathlib.Path(".fdroid.yml").read_text())
+          errs = []
+
+          # `%v` in Binaries:/AutoUpdateMode expands to versionName, so the tag MUST be v<versionName>.
+          # A 2.1 / v2.1.0 style mismatch silently breaks both the download URL and update detection.
+          if tag != f"v{version}":
+              errs.append(f"tag {tag} != v{version} (knit.versionName in gradle.properties)")
+
+          # F-Droid scrapes fastlane/ from this repo at the built commit; a missing changelog means the
+          # listing ships with no release notes at all.
+          changelog = pathlib.Path(f"fastlane/metadata/android/en-US/changelogs/{code}.txt")
+          if not changelog.is_file():
+              errs.append(f"missing {changelog}")
+
+          if meta.get("CurrentVersion") != version:
+              errs.append(f".fdroid.yml CurrentVersion {meta.get('CurrentVersion')!r} != {version!r}")
+          if meta.get("CurrentVersionCode") != code:
+              errs.append(f".fdroid.yml CurrentVersionCode {meta.get('CurrentVersionCode')!r} != {code}")
+
+          builds = [b for b in meta.get("Builds", []) if b.get("versionCode") == code]
+          if not builds:
+              errs.append(f".fdroid.yml has no Builds entry for versionCode {code}")
+          else:
+              b = builds[0]
+              if b.get("versionName") != version:
+                  errs.append(f".fdroid.yml Builds versionName {b.get('versionName')!r} != {version!r}")
+              # F-Droid builds whatever `commit:` names — if it isn't this tag they verify a different tree.
+              if b.get("commit") != tag:
+                  errs.append(f".fdroid.yml Builds commit {b.get('commit')!r} != {tag!r}")
+
+          key = meta.get("AllowedAPKSigningKeys")
+          if not key or not re.fullmatch(r"[0-9a-f]{64}", str(key)):
+              errs.append(f".fdroid.yml AllowedAPKSigningKeys is not a lowercase sha256: {key!r}")
+
+          # Derive the asset filename FROM the Binaries: URL rather than hardcoding it, so the published
+          # asset and the URL F-Droid fetches cannot drift apart.
+          url = str(meta.get("Binaries", "")).replace("%v", version)
+          if f"/releases/download/{tag}/" not in url:
+              errs.append(f"Binaries: URL does not point at {tag}: {url}")
+          apk_name = url.rsplit("/", 1)[-1]
+
+          if errs:
+              for e in errs:
+                  print(f"::error::{e}", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"version={version}")
+          print(f"version_code={code}")
+          print(f"apk_name={apk_name}")
+          print(f"OK: {tag} -> {apk_name} (versionCode {code})", file=sys.stderr)
+          PY
+
+  build-signed:
+    name: Build signed APK
+    needs: preflight
+    runs-on: ubuntu-latest
+    # Declaring an environment lets you attach protection rules (required reviewers, tag-only deployment
+    # branches) to the ONE job that can touch the distribution key. Repo-level secrets resolve here either
+    # way, so this costs nothing if you never configure the environment.
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Decode distribution keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KNIT_DIST_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "::error::secret KNIT_DIST_KEYSTORE_B64 is unset or empty"; exit 1
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/knit-dist.jks"
+
+      - name: assembleRelease
+        env:
+          KNIT_SIGNING_STORE_FILE: ${{ runner.temp }}/knit-dist.jks
+          KNIT_SIGNING_STORE_PASSWORD: ${{ secrets.KNIT_DIST_STORE_PASSWORD }}
+          KNIT_SIGNING_KEY_ALIAS: ${{ secrets.KNIT_DIST_KEY_ALIAS }}
+          KNIT_SIGNING_KEY_PASSWORD: ${{ secrets.KNIT_DIST_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease --console=plain --stacktrace
+
+      - name: Destroy keystore
+        if: always()
+        run: shred -u "$RUNNER_TEMP/knit-dist.jks" 2>/dev/null || rm -f "$RUNNER_TEMP/knit-dist.jks"
+
+      - name: Verify the APK before anyone can download it
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          apk="$APK_DIR/app-release.apk"
+          [ -f "$apk" ] || { echo "::error::$apk not produced — did signing credentials resolve?"; exit 1; }
+          # printf over a glob, not `ls` (SC2012). `tail -1` drains its input, so no SIGPIPE here.
+          apksigner=$(printf '%s\n' "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          [ -x "$apksigner" ] \
+            || { echo "::error::no apksigner under $ANDROID_HOME/build-tools"; exit 1; }
+
+          # Read each source ONCE into a variable, then match in-shell. Deliberately no `cmd | grep -q`
+          # below: grep -q exits at its first match, SIGPIPEs the writer, and under `set -o pipefail` that
+          # surfaces as a FAILED check — nondeterministically, depending on whether the writer had already
+          # finished. Measured here: identical checks returning 0 and 141 on consecutive ABIs.
+          entries=$(unzip -Z1 "$apk")
+          certs=$("$apksigner" verify --print-certs "$apk") \
+            || { echo "::error::apksigner could not verify $apk"; exit 1; }
+
+          # 1. Signed with the key fdroiddata pins. AllowedAPKSigningKeys is a permanent public commitment;
+          #    an APK signed with anything else (say the Play upload key) cannot be distributed or update
+          #    an existing install, and the mistake is only visible here.
+          expected=$(sed -n 's/^AllowedAPKSigningKeys:[[:space:]]*//p' .fdroid.yml)
+          actual=$(awk '/certificate SHA-256 digest:/ {print $NF; exit}' <<<"$certs")
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::signed with ${actual:-<no certificate>} but AllowedAPKSigningKeys pins $expected"
+            exit 1
+          fi
+          echo "signing certificate matches AllowedAPKSigningKeys ($actual)"
+
+          # 2. No VCS stamp. This is the exact entry that broke cross-environment reproducibility once
+          #    (buildTypes.release { vcsInfo { include = false } }); AGP would re-add it if that regressed.
+          case $entries in
+            *META-INF/version-control-info.textproto*)
+              echo "::error::APK contains META-INF/version-control-info.textproto — vcsInfo re-enabled?"
+              exit 1 ;;
+          esac
+
+          # 3. Universal APK, all four ABIs. An accidental split would leave most users unable to install
+          #    the single file F-Droid distributes.
+          for abi in armeabi-v7a arm64-v8a x86 x86_64; do
+            case $entries in
+              *"lib/$abi/"*) ;;
+              *) echo "::error::no lib/$abi/ in APK — is this still a universal build?"; exit 1 ;;
+            esac
+          done
+          echo "universal APK, no VCS stamp: OK"
+
+          mkdir -p out
+          cp "$apk" "out/${{ needs.preflight.outputs.apk_name }}"
+          # R8 obfuscates, so this is the only way to symbolicate a crash from this build. Keep it forever.
+          # ~63 MB raw and highly compressible, so ship it gzipped rather than doubling the release size.
+          gzip -9 -c app/build/outputs/mapping/release/mapping.txt > "out/mapping-$VERSION.txt.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-release
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  build-fdroid:
+    name: Reproduce unsigned on F-Droid's buildserver
+    needs: preflight
+    runs-on: ubuntu-latest
+    # F-Droid's actual build image, so this job answers the only question that matters: will their
+    # rebuild of this tag match the bytes we publish? Deliberately has no access to signing secrets.
+    container:
+      image: registry.gitlab.com/fdroid/fdroidserver:buildserver
+    env:
+      ANDROID_HOME: /opt/android-sdk
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install SDK packages
+        run: sdkmanager --install "platforms;android-36.1" "build-tools;$BUILD_TOOLS" > /dev/null
+
+      # No Gradle cache here on purpose. A cached task output could satisfy this build from work done on
+      # the *other* runner, which is precisely the divergence this job exists to detect. It has to be cold.
+      #
+      # No signing credentials -> android.signingConfigs creates no release config -> unsigned output.
+      # That is byte-for-byte what F-Droid's own buildserver produces from this commit.
+      #
+      # Uses ./gradlew rather than the image's gradlew-fdroid shim (which is what fdroidserver itself runs
+      # after deleting the wrapper). Byte-equivalent: both read gradle/wrapper/gradle-wrapper.properties
+      # for the version, so both land on the same Gradle, and the packaged bytes depend on the Gradle/JDK/
+      # SDK versions, not the launcher. Verified in this image: Gradle 9.5.0 on its Debian JDK 21, with the
+      # daemon JVM resolved from gradle/gradle-daemon-jvm.properties and no foojay download.
+      - name: assembleRelease (unsigned)
+        run: ./gradlew :app:assembleRelease --console=plain --stacktrace --no-build-cache
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fdroid-unsigned
+          path: ${{ env.APK_DIR }}/app-release-unsigned.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Verify reproducible & publish Release
+    needs: [preflight, build-signed, build-fdroid]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the Release and upload assets
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: build-tools;${{ env.BUILD_TOOLS }} # apksigcopier shells out to apksigner
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - uses: actions/download-artifact@v4
+        with: { name: signed-release, path: signed }
+      - uses: actions/download-artifact@v4
+        with: { name: fdroid-unsigned, path: unsigned }
+
+      # THE gate. apksigcopier is the same tool fdroidserver's `fdroid verify` uses: it grafts the
+      # signature off our APK onto F-Droid's unsigned rebuild and checks the result still verifies —
+      # which it only can if every other byte is identical. Passing here means F-Droid's verification
+      # of this release will pass too.
+      - name: Signed APK must be F-Droid's rebuild plus a signature
+        run: |
+          set -euo pipefail
+          pip install --quiet apksigcopier
+          # Assign then export, so a failed substitution isn't masked by export's exit status (SC2155).
+          build_tools=$(printf '%s\n' "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)
+          [ -x "$build_tools/apksigner" ] \
+            || { echo "::error::no apksigner under $ANDROID_HOME/build-tools"; exit 1; }
+          export PATH="$build_tools:$PATH"
+          apksigcopier compare \
+            "signed/${{ needs.preflight.outputs.apk_name }}" \
+            unsigned/app-release-unsigned.apk --unsigned
+          echo "reproducible: the published APK is F-Droid's build, signed"
+
+      - name: Compose release notes
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          APK: ${{ needs.preflight.outputs.apk_name }}
+        run: |
+          set -euo pipefail
+          cd signed
+          sha256sum "$APK" > "$APK.sha256"
+          digest=$(cut -d' ' -f1 "$APK.sha256")
+          cert=$(sed -n 's/^AllowedAPKSigningKeys:[[:space:]]*//p' ../.fdroid.yml)
+          {
+            cat "../fastlane/metadata/android/en-US/changelogs/${{ needs.preflight.outputs.version_code }}.txt"
+            cat <<EOF
+
+          ---
+
+          **\`$APK\`** — \`sha256:$digest\`
+
+          Signed with Knit's distribution key (certificate \`$cert\`), the key pinned in F-Droid's
+          \`AllowedAPKSigningKeys\`. CI verified this file is byte-identical, apart from the signature, to
+          an independent unsigned rebuild produced inside F-Droid's own buildserver image — so F-Droid's
+          rebuild-and-compare check resolves to exactly this APK.
+
+          \`mapping-$VERSION.txt\` is the R8 deobfuscation map for symbolicating crash reports from this build.
+          EOF
+          } > notes.md
+
+      # Draft on purpose: publishing is the irreversible step. Everything above is already verified, so
+      # this is a one-click confirmation that the notes read right — and the Binaries: URL stays 404 until
+      # you click, which is the correct state while fdroiddata still points at the previous version.
+      # Drop `--draft` if you'd rather it go straight out.
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd signed
+          gh release create "$TAG" \
+            --draft \
+            --title "Knit ${{ needs.preflight.outputs.version }}" \
+            --notes-file notes.md \
+            "${{ needs.preflight.outputs.apk_name }}" \
+            "${{ needs.preflight.outputs.apk_name }}.sha256" \
+            "mapping-${{ needs.preflight.outputs.version }}.txt.gz"
+          echo "::notice::Draft release created for $TAG — review and publish it to make the Binaries: URL live."

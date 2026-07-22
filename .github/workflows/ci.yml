@@ -2,7 +2,8 @@ name: CI
 
 # Public-mirror CI for github.com/getknit/knit. Mirrors the core jobs of the maintainer's internal
 # .gitlab-ci.yml (build -> test -> verify) so pull requests opened on the GitHub mirror get automated
-# checks. Builds are UNSIGNED (no signing credentials in CI). detekt/ktlint are advisory
+# checks. Builds here are UNSIGNED and never touch a signing key — cutting the signed release APK is
+# release.yml's job, triggered by a v* tag. detekt/ktlint are advisory
 # (continue-on-error), matching the GitLab pipeline's allow_failure posture; they are enforced locally
 # by the repo's Git hooks. The *.tflite moderation models are ordinary Git blobs (NOT LFS — see
 # .gitattributes and .agents/context/distribution.md), so a plain checkout is enough; the build's

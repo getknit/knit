@@ -13,9 +13,9 @@ plugins {
 }
 
 // Release signing credentials. Loaded from a gitignored keystore.properties at the repo root, falling back
-// to env vars (CI: KNIT_UPLOAD_*). Absent creds → the release build is left unsigned (see
-// android.signingConfigs), so assembleRelease still runs without secrets — which is also exactly what
-// F-Droid's buildserver produces. Never commit a key.
+// to env vars (CI). Absent creds → the release build is left unsigned (see android.signingConfigs), so
+// assembleRelease still runs without secrets — which is also exactly what F-Droid's buildserver produces.
+// Never commit a key.
 //
 // This config is credential-GENERIC and serves two distinct signing identities: the Play *upload* key for
 // `bundleRelease`, and the public distribution key for the `assembleRelease` APK that F-Droid verifies and
@@ -27,10 +27,20 @@ val keystoreProps =
         if (f.exists()) f.inputStream().use { load(it) }
     }
 
+// Env fallback accepts KNIT_SIGNING_* (identity-neutral, preferred) before the original KNIT_UPLOAD_*
+// names. Both still work; the rename exists because "UPLOAD" is actively misleading for the identity that
+// matters most — .github/workflows/release.yml feeds this the *distribution* key, whose certificate is
+// pinned forever in fdroiddata. Signing the public APK with the Play upload key by mistake is the one
+// unrecoverable error here, so the variable shouldn't be named after the wrong key.
 fun releaseSigningCred(
     prop: String,
-    env: String,
-): String? = (keystoreProps.getProperty(prop) ?: System.getenv(env))?.takeIf { it.isNotBlank() }
+    envSuffix: String,
+): String? =
+    (
+        keystoreProps.getProperty(prop)
+            ?: System.getenv("KNIT_SIGNING_$envSuffix")
+            ?: System.getenv("KNIT_UPLOAD_$envSuffix")
+    )?.takeIf { it.isNotBlank() }
 
 // Native-symbol extraction for the Play AAB, OFF by default. It is the one part of the release build that
 // depends on a tool outside the Gradle/AGP pin — the NDK's llvm-objcopy/llvm-strip — and AGP degrades
@@ -108,10 +118,10 @@ android {
         // created and the release build stays UNSIGNED, so assembleRelease still runs (and exercises R8)
         // without secrets; a key is only needed to install on a device, upload to Play, or publish a
         // GitHub Release. v1..v4 signing stay at AGP defaults, correct for both identities.
-        val store = releaseSigningCred("storeFile", "KNIT_UPLOAD_STORE_FILE")
-        val storePass = releaseSigningCred("storePassword", "KNIT_UPLOAD_STORE_PASSWORD")
-        val alias = releaseSigningCred("keyAlias", "KNIT_UPLOAD_KEY_ALIAS")
-        val keyPass = releaseSigningCred("keyPassword", "KNIT_UPLOAD_KEY_PASSWORD")
+        val store = releaseSigningCred("storeFile", "STORE_FILE")
+        val storePass = releaseSigningCred("storePassword", "STORE_PASSWORD")
+        val alias = releaseSigningCred("keyAlias", "KEY_ALIAS")
+        val keyPass = releaseSigningCred("keyPassword", "KEY_PASSWORD")
         if (store != null && storePass != null && alias != null && keyPass != null) {
             create("release") {
                 storeFile = file(store)
