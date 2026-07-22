@@ -1,3 +1,5 @@
-# Shows a "Sponsor" button on the repo, linking to https://ko-fi.com/zaventh
+# Shows a "Sponsor" button on the repo, linking to https://ko-fi.com/zaventh and
+# https://liberapay.com/zaventh/
 # https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
 ko_fi: zaventh
+liberapay: zaventh

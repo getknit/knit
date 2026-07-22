@@ -5,4 +5,5 @@ the APK on our GitHub Releases page, then ships ours. The same signed APK works 
 direct download, and from Knit's own offline "share the app" feature — so a phone handed Knit over the
 mesh can still take updates normally.
 
-No user-facing feature changes in this release; the work was all in how Knit is built and distributed.
+Otherwise this release is all plumbing: the only visible change is a Liberapay option alongside Ko-fi on
+the Support Knit screen.

@@ -155,6 +155,7 @@
     <string name="donate_title">Support Knit</string>
     <string name="donate_blurb">Knit is free and funded entirely by tips — no ads, no servers, no tracking. If it\'s useful to you, a small donation helps keep development going.</string>
     <string name="donate_kofi">Ko-fi</string>
+    <string name="donate_liberapay">Liberapay</string>
 
     <!-- Install offline (offline APK share) -->
     <string name="share_app_menu">Install offline</string>

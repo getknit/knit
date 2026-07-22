@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.VolunteerActivism
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -131,6 +132,11 @@ private data class DonationPlatform(
 private val DONATION_PLATFORMS =
     listOf(
         DonationPlatform(R.string.donate_kofi, Icons.Filled.Coffee, "https://ko-fi.com/zaventh"),
+        DonationPlatform(
+            R.string.donate_liberapay,
+            Icons.Filled.VolunteerActivism,
+            "https://liberapay.com/zaventh/",
+        ),
         // Add Buy Me a Coffee etc. here later — nothing else changes.
     )
 

@@ -42,7 +42,7 @@ On-device content filtering screens out abusive text and explicit images, runnin
 BEAUTIFUL & MODERN
 A clean, modern messaging interface built with Material 3, including full dark mode.
 
-Knit is free, open source, and funded entirely by tips — no ads, no servers, no tracking. If it's useful to you, you can leave a tip at ko-fi.com/zaventh.
+Knit is free, open source, and funded entirely by tips — no ads, no servers, no tracking. If it's useful to you, you can leave a one-off tip at ko-fi.com/zaventh or a recurring one at liberapay.com/zaventh.
 
 HOW IT WORKS
 Knit runs two radios at once — Wi-Fi Aware and Bluetooth Low Energy — to form an ad-hoc mesh network directly with other Knit users near you, so it keeps working even on phones that only support one of the two. It works best when allowed to run in the background so the mesh stays connected. Requires Android 10 or newer with Wi-Fi Aware and/or Bluetooth LE support.
