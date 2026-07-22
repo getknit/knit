@@ -4,7 +4,9 @@ name: CI
 # .gitlab-ci.yml (build -> test -> verify) so pull requests opened on the GitHub mirror get automated
 # checks. Builds are UNSIGNED (no signing credentials in CI). detekt/ktlint are advisory
 # (continue-on-error), matching the GitLab pipeline's allow_failure posture; they are enforced locally
-# by the repo's Git hooks. The *.tflite moderation models are pulled via Git LFS (lfs: true).
+# by the repo's Git hooks. The *.tflite moderation models are ordinary Git blobs (NOT LFS — see
+# .gitattributes and .agents/context/distribution.md), so a plain checkout is enough; the build's
+# checkModerationModels task hard-fails if one ever arrives as a pointer stub.
 
 on:
   push:
@@ -24,8 +26,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true # hydrate the nsfw/toxicity *.tflite models (Git LFS) needed to package the APK
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -50,8 +50,6 @@ jobs:
     continue-on-error: true # advisory, mirroring .gitlab-ci.yml allow_failure; enforced locally by Git hooks
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

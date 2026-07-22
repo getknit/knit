@@ -1,0 +1,62 @@
+# In-repo F-Droid metadata. Two jobs:
+#   1. Lets `fdroid build` build Knit straight from a checkout, so the buildserver recipe can be tested
+#      locally in F-Droid's own container before anything is submitted.
+#   2. Source of truth for `metadata/app.getknit.knit.yml` in fdroiddata — edit here, copy there, so the
+#      two cannot drift.
+# Field reference: https://f-droid.org/docs/Build_Metadata_Reference/
+# Background and the reproducibility contract: .agents/context/distribution.md
+#
+# NOTE: `fdroid build` skips `sudo:` blocks when run locally, so a local run needs JDK 21 already present.
+
+Categories:
+  - Connectivity
+  - Internet
+  - Security
+License: GPL-3.0-or-later
+AuthorName: Jeffrey Walter Mixon
+WebSite: https://github.com/getknit/knit
+SourceCode: https://github.com/getknit/knit
+IssueTracker: https://github.com/getknit/knit/issues
+Changelog: https://github.com/getknit/knit/releases
+Donate: https://ko-fi.com/zaventh
+
+AutoName: Knit
+
+RepoType: git
+Repo: https://github.com/getknit/knit.git
+
+# Reproducible-build flow: F-Droid rebuilds the tagged commit, byte-compares against the APK below, and on
+# a match distributes OUR signed APK rather than re-signing with F-Droid's key. See distribution.md for why
+# that matters here (Knit's offline app-share hands peers this same APK).
+Binaries: https://github.com/getknit/knit/releases/download/v%v/knit-%v.apk
+# TODO(release): fill in once knit-dist.jks exists — certificate SHA-256, lowercase, no colons:
+#   keytool -list -v -keystore knit-dist.jks -alias knit-dist \
+#     | awk '/SHA256:/ {gsub(/:/,"",$2); print tolower($2)}'
+# AllowedAPKSigningKeys: <sha256>
+
+Builds:
+  - versionName: 2.2.0
+    versionCode: 9
+    commit: v2.2.0
+    subdir: app
+    # The buildserver's default JDK is not reliably 21. Install it explicitly rather than relying on
+    # Gradle to fetch one — settings.gradle.kts deliberately omits the foojay resolver, so an unsatisfied
+    # JDK 21 requirement fails loudly instead of silently downloading an unpinned compiler.
+    sudo:
+      - apt-get update
+      - apt-get install -y openjdk-21-jdk-headless
+      - update-java-alternatives -a
+    gradle:
+      - yes
+    output: build/outputs/apk/release/app-release-unsigned.apk
+    # No `ndk:` line on purpose — the APK path needs no NDK (see distribution.md). Native-symbol
+    # extraction is gated behind -Pknit.nativeSymbols=true and only runs for the Play AAB.
+
+# versionCode/versionName live in gradle.properties and are read via providers.gradleProperty(), which
+# fdroidserver's build-file parser cannot evaluate. UpdateCheckData points it at the file instead — the
+# same pattern metadata/org.osmdroid.yml uses. Verify with `fdroid checkupdates` before submitting.
+AutoUpdateMode: Version v%v
+UpdateCheckMode: Tags
+UpdateCheckData: gradle.properties|knit\.versionCode=(\d+)|.|knit\.versionName=(.*)
+CurrentVersion: 2.2.0
+CurrentVersionCode: 9

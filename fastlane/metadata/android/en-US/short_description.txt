@@ -1,0 +1,1 @@
+Encrypted mesh chat over Wi-Fi Aware & Bluetooth — no internet, no servers.

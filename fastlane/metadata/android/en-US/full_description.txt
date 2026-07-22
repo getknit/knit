@@ -1,0 +1,50 @@
+Knit is a messenger that works with no internet, no cell service, no accounts, and no servers. It connects directly to the phones around you over Wi-Fi Aware and Bluetooth to pass messages device to device.
+
+When you send a message, nearby phones receive it and relay it onward to the phones around them — so your words can hop across a crowd, a building, or a campsite, reaching people far past your own signal range. The more people using Knit nearby, the further messages travel.
+
+WHY KNIT
+• No internet or mobile data required
+• No account, phone number, or email to sign up
+• No central server — nothing to shut down, monitor, or leak
+• No ads, no tracking, no analytics, no Google Play Services
+• Free software — anyone can read exactly what the app does
+
+PERFECT FOR
+• Festivals, concerts, and crowded venues where signal dies
+• Travel, flights, ships, and remote areas off the grid
+• Camping, hiking, and the backcountry
+• Power outages and emergencies when networks go down
+• Anywhere you just want to reach the people right around you
+
+PRIVATE BY DESIGN
+Direct and group chats are end-to-end encrypted. Each message is sealed so only the people in the conversation can read it — even as it travels hop by hop through other phones, those relays only ever carry scrambled ciphertext. Your keys are generated on your device and protected by hardware-backed Android security. Confirm you're talking to the right person by comparing a safety number or scanning a QR code in person.
+
+ABOUT THE PERMISSIONS
+Knit asks for nearby-devices (and, on Android 12 and older, location) because that is what Android requires to discover peers over Wi-Fi Aware and Bluetooth LE. It also declares the INTERNET permission — not to reach the network, but because Android classes the local socket Knit opens over a direct Wi-Fi Aware link as network access. Knit contacts no server, has no backend, and sends nothing off your device.
+
+FREE SOFTWARE
+Knit is released under the GNU General Public License v3 or later, and the full source code is public at github.com/getknit/knit. You don't have to take our word for how any of it works — you can read the code that runs on your phone, or build the whole app yourself.
+
+FEATURES
+• Public "Nearby" room to broadcast to everyone in range
+• Private 1:1 direct messages (end-to-end encrypted)
+• Multi-member group chats (end-to-end encrypted)
+• Quoted replies, emoji reactions, and @-mentions
+• Profiles with a display name, status, and avatar
+• Image sharing, including GIFs
+• Typing indicators and delivery indicators, and unread badges
+• Store-and-forward — messages wait and deliver when a recipient returns to range
+• Share the Knit app itself to a nearby phone, offline, with no app store needed
+
+SAFER SPACES
+On-device content filtering screens out abusive text and explicit images, running entirely offline with nothing sent to any server. Sensitive content you receive is blurred behind a tap to reveal, and any sender is one tap away from being blocked.
+
+BEAUTIFUL & MODERN
+A clean, modern messaging interface built with Material 3, including full dark mode.
+
+Knit is free, open source, and funded entirely by tips — no ads, no servers, no tracking. If it's useful to you, you can leave a tip at ko-fi.com/zaventh.
+
+HOW IT WORKS
+Knit runs two radios at once — Wi-Fi Aware and Bluetooth Low Energy — to form an ad-hoc mesh network directly with other Knit users near you, so it keeps working even on phones that only support one of the two. It works best when allowed to run in the background so the mesh stays connected. Requires Android 10 or newer with Wi-Fi Aware and/or Bluetooth LE support.
+
+Note: Knit reaches people who are physically nearby, or within relay range of the crowd between you — it is not a replacement for internet messaging across cities. The public Nearby room is unencrypted by design, since it has no fixed set of recipients.

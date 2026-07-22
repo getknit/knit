@@ -12,9 +12,15 @@ plugins {
     alias(libs.plugins.androidx.room) // Room schema export (room { schemaDirectory(…) } below)
 }
 
-// Release signing credentials (Google Play upload key). Loaded from a gitignored keystore.properties at
-// the repo root, falling back to env vars (CI: KNIT_UPLOAD_*). Absent creds → the release build is left
-// unsigned (see android.signingConfigs), so assembleRelease still runs without secrets. Never commit a key.
+// Release signing credentials. Loaded from a gitignored keystore.properties at the repo root, falling back
+// to env vars (CI: KNIT_UPLOAD_*). Absent creds → the release build is left unsigned (see
+// android.signingConfigs), so assembleRelease still runs without secrets — which is also exactly what
+// F-Droid's buildserver produces. Never commit a key.
+//
+// This config is credential-GENERIC and serves two distinct signing identities: the Play *upload* key for
+// `bundleRelease`, and the public distribution key for the `assembleRelease` APK that F-Droid verifies and
+// redistributes. You pick one by which keystore the credentials point at; the build never sees both. See
+// keystore.properties.example and .agents/context/distribution.md.
 val keystoreProps =
     Properties().apply {
         val f = rootProject.file("keystore.properties")
@@ -25,6 +31,16 @@ fun releaseSigningCred(
     prop: String,
     env: String,
 ): String? = (keystoreProps.getProperty(prop) ?: System.getenv(env))?.takeIf { it.isNotBlank() }
+
+// Native-symbol extraction for the Play AAB, OFF by default. It is the one part of the release build that
+// depends on a tool outside the Gradle/AGP pin — the NDK's llvm-objcopy/llvm-strip — and AGP degrades
+// SILENTLY when the NDK is absent (it warns and ships the prebuilt .so unstripped). That makes the output
+// bytes a function of the *build machine*, which breaks the F-Droid reproducible-build contract: F-Droid
+// rebuilds this commit on their buildserver and byte-compares against the APK we publish, so "stripped
+// here, unstripped there" is a verification failure. Default OFF pins the APK to the no-strip path on every
+// machine (see packaging.jniLibs below); the Play release turns it back ON with -Pknit.nativeSymbols=true,
+// which is the only build that needs it (symbols ride in the AAB's BUNDLE-METADATA, not in an APK).
+val nativeSymbols = (project.findProperty("knit.nativeSymbols") as? String)?.toBoolean() == true
 
 android {
     namespace = "app.getknit.knit"
@@ -43,7 +59,9 @@ android {
     // up as an `android.ndkVersion …` build warning). Don't chase NDK releases on their own cadence — with
     // no native build there's nothing to gain. After bumping: `sdkmanager "ndk;<ver>"` on every build
     // machine + CI, then re-verify the .sym files land in the AAB's BUNDLE-METADATA (the failure is silent).
-    ndkVersion = "28.2.13676358"
+    // Set ONLY on the Play path (-Pknit.nativeSymbols=true) so the default build needs no NDK at all —
+    // see the nativeSymbols comment above the android block.
+    if (nativeSymbols) ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "app.getknit.knit"
@@ -85,11 +103,11 @@ android {
     }
 
     signingConfigs {
-        // Release signing for Google Play upload. Creds come from keystore.properties / KNIT_UPLOAD_* env
-        // (see the loader above the android block). Missing creds → no "release" config is created and the
-        // release build stays UNSIGNED, so assembleRelease still runs (and exercises R8) without secrets;
-        // a key is only needed to install on a device or upload to Play. v1..v4 signing stay at AGP
-        // defaults, which are correct for an upload key.
+        // Release signing — Play upload key or the public distribution key, depending on which keystore the
+        // creds point at (see the loader above the android block). Missing creds → no "release" config is
+        // created and the release build stays UNSIGNED, so assembleRelease still runs (and exercises R8)
+        // without secrets; a key is only needed to install on a device, upload to Play, or publish a
+        // GitHub Release. v1..v4 signing stay at AGP defaults, correct for both identities.
         val store = releaseSigningCred("storeFile", "KNIT_UPLOAD_STORE_FILE")
         val storePass = releaseSigningCred("storePassword", "KNIT_UPLOAD_STORE_PASSWORD")
         val alias = releaseSigningCred("keyAlias", "KNIT_UPLOAD_KEY_ALIAS")
@@ -129,8 +147,23 @@ android {
             // DWARF, so FULL (--only-keep-debug) yields near-empty .dbg (.dynsym NOBITS, 0 symbols) while
             // SYMBOL_TABLE keeps the real .dynsym (function names) — 444 FUNC syms for tflite vs 0. We have
             // no first-party native code; revisit FULL only if we ever ship our own -g-compiled .so.
-            ndk {
-                debugSymbolLevel = "SYMBOL_TABLE"
+            // Gated on -Pknit.nativeSymbols=true (the Play bundleRelease invocation); off by default so the
+            // APK build is NDK-free and byte-identical everywhere — see the nativeSymbols comment up top.
+            if (nativeSymbols) {
+                ndk {
+                    debugSymbolLevel = "SYMBOL_TABLE"
+                }
+            }
+            // Don't stamp the build machine's Git state into the APK. AGP otherwise writes
+            // META-INF/version-control-info.textproto containing the local checkout's HEAD revision (or
+            // `NO_SUPPORTED_VCS_FOUND` when built outside a Git work tree), which makes the packaged bytes
+            // a function of *how the builder obtained the source*. It is the one difference that survived
+            // an otherwise byte-identical rebuild of this commit inside F-Droid's buildserver container —
+            // 1 differing entry out of 185 — and it would fail their rebuild-and-compare verification.
+            // The feature only feeds Play Console's "see the code" crash links; mapping.txt still
+            // symbolicates, and the source is public and tagged, so nothing real is lost.
+            vcsInfo {
+                include = false
             }
             // Never build a demo-seeded release, even with `-PseedDemo=true` — demo mode is debug-only and
             // its classes ship only in src/debug. Overrides the defaultConfig SEED_DEMO/DEMO_DIRECTOR fields.
@@ -158,6 +191,18 @@ android {
     androidResources {
         // On-device model files must stay uncompressed so TFLite can mmap them from the APK.
         noCompress += listOf("tflite")
+    }
+
+    packaging {
+        jniLibs {
+            // With nativeSymbols off there is no NDK, and AGP's strip step then degrades SILENTLY (it
+            // warns and packages the .so as-is). Opt out of stripping *explicitly* instead, so the
+            // packaged bytes are identical whether or not the build machine happens to have an NDK —
+            // that determinism is what makes F-Droid's rebuild-and-byte-compare verification possible.
+            // Costs ~nothing in APK size: every .so we ship is a third-party release build (LiteRT,
+            // SQLCipher, datastore-shared-counter, graphics-path) that upstream already stripped.
+            if (!nativeSymbols) keepDebugSymbols += "**/*.so"
+        }
     }
 
     testOptions {
@@ -220,6 +265,57 @@ android {
         }
     }
 }
+
+// Guards against building an APK whose moderation models are Git LFS pointer stubs (or otherwise
+// truncated). This used to be a live hazard: `*.tflite` was tracked in Git LFS, and any checkout without a
+// working LFS client — notably F-Droid's buildserver, which has no LFS support — silently substitutes a
+// ~130-byte pointer file. Both moderators catch an unreadable model and degrade to allow-all *by design*
+// (see NsfwImageModerator/MlTextModerator), so nothing downstream would ever complain; the app would just
+// ship with moderation quietly disabled. The models are plain Git blobs now (see .gitattributes), which
+// makes that impossible from a normal clone — this keeps it impossible from an abnormal one.
+val checkModerationModels =
+    tasks.register("checkModerationModels") {
+        description = "Fails the build if a bundled .tflite moderation model is missing or a stub."
+        // Resolved to plain Files and a Provider HERE, at configuration time, and captured by value below:
+        // a doLast lambda that reached out to a script-level property instead would pull the build-script
+        // object into the configuration cache, which cannot serialize it (org.gradle.configuration-cache
+        // is on — see gradle.properties).
+        val models =
+            listOf("nsfw.tflite", "toxicity.tflite").map {
+                layout.projectDirectory.file("src/main/assets/moderation/$it").asFile
+            }
+        val stamp = layout.buildDirectory.file("tmp/checkModerationModels.stamp")
+        inputs.files(models).withPropertyName("moderationModels")
+        outputs.file(stamp)
+        doLast {
+            models.forEach { model ->
+                if (!model.isFile) {
+                    throw GradleException("Moderation model missing: $model")
+                }
+                val head = model.inputStream().use { String(it.readNBytes(48), Charsets.US_ASCII) }
+                if (head.startsWith("version https://git-lfs")) {
+                    throw GradleException(
+                        "Moderation model $model is a Git LFS pointer, not the real model. " +
+                            "This repo no longer uses LFS for *.tflite — re-checkout the file " +
+                            "(git checkout -- ${model.name}) or fetch it from a full clone.",
+                    )
+                }
+                if (model.length() < 1_000_000L) {
+                    throw GradleException(
+                        "Moderation model $model is only ${model.length()} bytes — expected >= 1 MB. " +
+                            "A truncated model would silently disable content moderation.",
+                    )
+                }
+            }
+            stamp
+                .get()
+                .asFile
+                .apply { parentFile.mkdirs() }
+                .writeText("ok")
+        }
+    }
+
+tasks.named("preBuild") { dependsOn(checkModerationModels) }
 
 room {
     // Export the Room schema JSON via the Room Gradle plugin (replaces the raw ksp `room.schemaLocation`

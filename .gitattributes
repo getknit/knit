@@ -1,1 +1,9 @@
-*.tflite filter=lfs diff=lfs merge=lfs -text
+# Deliberately EMPTY of LFS rules — do not re-add `*.tflite filter=lfs`.
+#
+# The two moderation models (app/src/main/assets/moderation/{nsfw,toxicity}.tflite, ~32 MB total) are
+# stored as ordinary Git blobs because F-Droid's buildserver has no Git LFS support (fdroidserver issue
+# #1190, open since 2024). A checkout without a working LFS client yields 130-byte pointer stubs, and
+# NsfwImageModerator / MlTextModerator both degrade *silently* to allow-all on an unreadable model — so
+# LFS here means F-Droid would ship a quietly unmoderated app that also fails reproducible-build
+# verification. Plain blobs make that impossible; the build additionally hard-fails on a stub model
+# (see the checkModerationModels task in app/build.gradle.kts).

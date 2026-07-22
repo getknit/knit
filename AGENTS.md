@@ -18,6 +18,10 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   plugins) are deliberate; don't "fix" them.
 - **Before / after running Gradle:** obey `.agents/rules/build-and-test.md` (which task when, JDK 21,
   lockfile regen). Command list: `.agents/context/commands.md`.
+- **Before touching release signing, `packaging`/`ndk` config, `.gitattributes`, or anything else that
+  changes release-APK bytes:** READ `.agents/context/distribution.md` — Play and F-Droid ship different
+  artifacts under different keys, and F-Droid byte-compares its own rebuild against ours, so the release
+  build must not depend on the build machine (no NDK on the APK path, no foojay JDK download, no Git LFS).
 - **When editing any Kotlin/Compose/data code:** obey `.agents/rules/coding.md`.
 - **When touching `mesh/`, `protocol/`, or `data/`:** obey `.agents/rules/mesh.md`, then READ the
   relevant reference — `.agents/context/mesh-transport.md` (radios / NAN / BLE),

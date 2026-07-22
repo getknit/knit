@@ -1,0 +1,8 @@
+First release published on F-Droid.
+
+Knit is now built reproducibly: F-Droid rebuilds this release from source and byte-compares it against
+the APK on our GitHub Releases page, then ships ours. The same signed APK works from F-Droid, from a
+direct download, and from Knit's own offline "share the app" feature — so a phone handed Knit over the
+mesh can still take updates normally.
+
+No user-facing feature changes in this release; the work was all in how Knit is built and distributed.
