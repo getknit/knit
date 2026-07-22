@@ -8,9 +8,12 @@
 #
 # NOTE: `fdroid build` skips `sudo:` blocks when run locally, so a local run needs JDK 21 already present.
 
+# Validated against fdroiddata's config/categories.yml (108 categories — the old ~17-category list is long
+# gone). Deliberately NOT "Internet": Knit works without it, and filing an offline mesh messenger under
+# Internet misdescribes it. `fdroid lint` will reject any name not in that file.
 Categories:
+  - Messaging
   - Connectivity
-  - Internet
   - Security
 License: GPL-3.0-or-later
 AuthorName: Jeffrey Walter Mixon
@@ -29,10 +32,7 @@ Repo: https://github.com/getknit/knit.git
 # a match distributes OUR signed APK rather than re-signing with F-Droid's key. See distribution.md for why
 # that matters here (Knit's offline app-share hands peers this same APK).
 Binaries: https://github.com/getknit/knit/releases/download/v%v/knit-%v.apk
-# TODO(release): fill in once knit-dist.jks exists — certificate SHA-256, lowercase, no colons:
-#   keytool -list -v -keystore knit-dist.jks -alias knit-dist \
-#     | awk '/SHA256:/ {gsub(/:/,"",$2); print tolower($2)}'
-# AllowedAPKSigningKeys: <sha256>
+AllowedAPKSigningKeys: b18a283d11797c2a84a008c1fcb9e1b864e7b4c3b301408f7a4a80624b0e631c
 
 Builds:
   - versionName: 2.2.0

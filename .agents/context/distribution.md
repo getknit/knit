@@ -36,11 +36,40 @@ machine, different Android SDK install, F-Droid's own Gradle distribution, fresh
 `.git` present. AGP already normalizes zip entry timestamps to `1981-01-01`, and R8, resource shrinking,
 and baseline-profile generation all proved deterministic.
 
-To re-run that check: snapshot the tree (excluding `.git`, `build/`, `app/build/`, `.gradle`), mount it in
-the image, `sdkmanager "platform-tools" "platforms;android-36.1" "build-tools;36.0.0"`, then build. Notes
-from the first run: the image is **Debian 13 (trixie) with JDK 21 as the default**, `git-lfs` is **not**
-installed (hence the LFS ban below), and the `fdroid` CLI itself is absent — this image is the build
-environment, not the tooling, so `fdroid build`'s orchestration needs a separate setup and a real tag.
+Notes on that image: **Debian 13 (trixie), JDK 21 is the default**, `git-lfs` is **not** installed (hence
+the LFS ban below), and the `fdroid` CLI is absent — it is the build environment, not the tooling.
+
+## Running the real `fdroid build` locally
+
+`fdroid build` needs no merge request and no GitLab account. It also verified byte-identical output
+(`ec688988…`, same hash as above) *after* fdroidserver applied its own source rewrites, which is the
+result that actually matters for `Binaries:`. Recipe, in the buildserver image:
+
+1. `apt-get install -y fdroidserver` (2.4.2 in trixie), then **overwrite
+   `/usr/lib/python3/dist-packages/gradlew-fdroid` with `/usr/local/bin/gradle`**. The Debian package
+   ships an old *shell* shim with a hardcoded hash table that stops well before Gradle 9.5 and dies with
+   `No hash for gradle version 9.5.0`; the image's *Python* shim fetches the live transparency log. This
+   is a packaging skew, not an F-Droid limitation.
+2. `git config --global --add safe.directory '*'` — the container is root and the source mount is not;
+   without it the clone fails with a bare `Git clone failed`.
+3. `fdroid init` in a work dir, **then `git init` + commit the metadata**. `fdroid build` derives
+   `SOURCE_DATE_EPOCH` from the app checkout and falls back to *the metadata repo's* git log; with no git
+   there it crashes in fdroidserver itself (`TypeError: str expected, not NoneType`). Real fdroiddata is a
+   git repo, so this only bites local testing.
+4. Point `Repo:` at the local checkout and `commit:` at a SHA to test unpushed/untagged work.
+5. `fdroid build <appid>:<vercode> -v -t --scan-binary` (local is the default; `--server` opts into the VM).
+
+What fdroidserver does to the source before building — all confirmed harmless here, but worth knowing:
+strips the entire `signingConfigs` block and every `signingConfig =` line from `build.gradle.kts`, removes
+debuggable flags, writes `local.properties`, and **deletes `gradlew`, `gradlew.bat` and
+`gradle-wrapper.jar`** so its own shim is always used. Our output is unaffected because the signing config
+is credential-conditional and contributes nothing without creds — keep it that way.
+
+Also verified: `fdroid scanner` reports **0 problems** (the ~32 MB `.tflite` blobs are not flagged), the
+dexdump non-free-class scan and extra-signing-block scan are clean, and `UpdateCheckData` correctly reads
+`knit.versionCode`/`knit.versionName` out of `gradle.properties`. `Categories` are validated against
+fdroiddata's `config/categories.yml` (108 entries) — a bare local repo has no category config, so
+`fdroid lint` will call *every* category invalid there; that is a local artifact, not a real failure.
 
 Four inputs were deliberately de-machine-ified to keep it that way:
 
