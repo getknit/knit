@@ -1,0 +1,5 @@
+First release available on F-Droid.
+
+This is a build-only change so that F-Droid can distribute Knit: the release APK no longer embeds
+Android's "dependency metadata" signing block, which F-Droid does not permit and which was not
+reproducible. There are no code or feature changes from 2.2.0, and the app behaves identically.

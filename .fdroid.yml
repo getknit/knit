@@ -47,9 +47,9 @@ Binaries: https://github.com/getknit/knit/releases/download/v%v/knit-%v.apk
 AllowedAPKSigningKeys: b18a283d11797c2a84a008c1fcb9e1b864e7b4c3b301408f7a4a80624b0e631c
 
 Builds:
-  - versionName: 2.2.0
-    versionCode: 9
-    commit: v2.2.0
+  - versionName: 2.2.1
+    versionCode: 10
+    commit: v2.2.1
     subdir: app
     # The buildserver's default JDK is not reliably 21. Install it explicitly rather than relying on
     # Gradle to fetch one — settings.gradle.kts deliberately omits the foojay resolver, so an unsatisfied
@@ -82,5 +82,5 @@ Builds:
 AutoUpdateMode: Version
 UpdateCheckMode: Tags
 UpdateCheckData: gradle.properties|knit\.versionCode=(\d+)|.|knit\.versionName=(.*)
-CurrentVersion: 2.2.0
-CurrentVersionCode: 9
+CurrentVersion: 2.2.1
+CurrentVersionCode: 10

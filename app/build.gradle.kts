@@ -203,6 +203,18 @@ android {
         noCompress += listOf("tflite")
     }
 
+    // AGP otherwise embeds a "Dependency metadata" blob (a compressed, signed dependency list, for Play's
+    // use) into the APK signing block at SIGN time — it is absent from the unsigned build, which is why
+    // F-Droid's rebuild + apksigcopier check passes while its `check apk` scan of our *signed* release
+    // rejects the extra signing block. Off for the APK (the F-Droid / off-Play / app-share artifact); the
+    // block is also non-reproducible, so it would fail byte-verification even if the scan allowed it. Left
+    // ON for the Play AAB (includeInBundle) — Play Console reads it for dependency-vulnerability alerts, and
+    // Google never sees the raw AAB signing block the way F-Droid scans the APK.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = true
+    }
+
     packaging {
         jniLibs {
             // With nativeSymbols off there is no NDK, and AGP's strip step then degrades SILENTLY (it
