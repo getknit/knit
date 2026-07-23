@@ -6,14 +6,15 @@
 # Field reference: https://f-droid.org/docs/Build_Metadata_Reference/
 # Background and the reproducibility contract: .agents/context/distribution.md
 #
-# NOTE: `fdroid build` skips `sudo:` blocks when run locally, so a local run needs JDK 21 already present.
+# NOTE: a local `fdroid build` needs JDK 21 already present — settings.gradle.kts omits the foojay resolver,
+# so Gradle won't fetch one (it fails loudly). The F-Droid buildserver already has JDK 21 selected.
 
 # On-device content moderation runs Google's TensorFlow Lite (LiteRT) as a prebuilt native library
 # (com.google.ai.edge.litert). It is freely licensed (Apache-2.0) but not built from F-Droid's source —
-# hence NonFreeDep + the `scanignore` in the build below. The obvious from-source substitute,
-# de.schliweb:tensorflow-lite-fdroid, was tried and REJECTED: it miscomputes our Detoxify/ALBERT model
-# (saturates every output to 0/1 on-device, verified independent of the XNNPACK delegate), so it would
-# make Knit block every message. See .agents/context/distribution.md for the full evidence.
+# hence the NonFreeDep AntiFeature. The obvious from-source substitute, de.schliweb:tensorflow-lite-fdroid,
+# was tried and REJECTED: it miscomputes our Detoxify/ALBERT model (saturates every output to 0/1 on-device,
+# verified independent of the XNNPACK delegate), so it would make Knit block every message. See
+# .agents/context/distribution.md for the full evidence (and the SUSS false-positive on the bare 1.4.x line).
 AntiFeatures:
   NonFreeDep:
     en-US: On-device content filtering uses Google's prebuilt TensorFlow Lite.
@@ -47,35 +48,22 @@ Binaries: https://github.com/getknit/knit/releases/download/v%v/knit-%v.apk
 AllowedAPKSigningKeys: b18a283d11797c2a84a008c1fcb9e1b864e7b4c3b301408f7a4a80624b0e631c
 
 # Durable note for fdroiddata maintainers (survives the MR merge, unlike the MR description).
-MaintainerNotes: litert (com.google.ai.edge.litert) is Google's prebuilt TensorFlow Lite, kept via
-  scanignore + NonFreeDep because the from-source de.schliweb:tensorflow-lite-fdroid miscomputes this app's
-  Detoxify/ALBERT toxicity model (saturates every output to 0/1, verified on-device), which would make it
-  flag every message. scanignore lists only app/build.gradle.kts, where the libs.litert accessor is used;
-  adding gradle/libs.versions.toml would be an unused-path error.
+MaintainerNotes: litert (com.google.ai.edge.litert:litert) is Google's prebuilt TensorFlow Lite, declared
+  NonFreeDep because the from-source de.schliweb:tensorflow-lite-fdroid miscomputes this app's Detoxify/ALBERT
+  toxicity model (saturates every output to 0/1, verified on-device), which would make it flag every message.
+  The 1.4.x line is Apache-2.0 and depends only on litert-api.
 
 Builds:
   - versionName: 2.2.1
     versionCode: 10
-    commit: v2.2.1
+    commit: 4a3a69f2f7088727e1b88513a830d02cd1357395
     subdir: app
-    # The buildserver's default JDK is not reliably 21. Install it explicitly rather than relying on
-    # Gradle to fetch one — settings.gradle.kts deliberately omits the foojay resolver, so an unsatisfied
-    # JDK 21 requirement fails loudly instead of silently downloading an unpinned compiler.
-    sudo:
-      - apt-get update
-      - apt-get install -y openjdk-21-jdk-headless
-      - update-java-alternatives -a
     gradle:
       - yes
-    # The source scanner resolves the `libs.litert` version-catalog alias to
-    # `com.google.ai.edge.litert:litert` (a prebuilt Google-Maven binary) and HARD-FAILS the build. It is a
-    # deliberate, documented dependency (see AntiFeatures above). The scanner reports the suspect ONLY at
-    # the file that *uses* the accessor (app/build.gradle.kts, via `implementation(libs.litert)`), never at
-    # gradle/libs.versions.toml where it is merely defined — so scanignore lists only that one build file.
-    # (Adding libs.versions.toml would trip an "Unused scanignore path" error that itself fails CI; verified
-    # against fdroidserver master's scan_source.) This suppresses only a first-party build file, not app source.
-    scanignore:
-      - app/build.gradle.kts
+    # The source scanner flags litert (com.google.ai.edge.litert) as a prebuilt Google-Maven binary via the
+    # SUSS `litert:(2|1.[34])` signature, which wrongly matches our bare 1.4.x line, so this build hard-fails
+    # the scanner until that signature is narrowed upstream (fdroid-suss). litert is a deliberate, documented
+    # dependency (see AntiFeatures above); the from-source substitute was rejected (see the top comment).
     output: build/outputs/apk/release/app-release-unsigned.apk
     # No `ndk:` line on purpose — the APK path needs no NDK (see distribution.md). Native-symbol
     # extraction is gated behind -Pknit.nativeSymbols=true and only runs for the Play AAB.

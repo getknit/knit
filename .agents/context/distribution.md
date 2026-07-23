@@ -105,7 +105,7 @@ unmoderated app that also fails byte-comparison. The `checkModerationModels` tas
 (`app/build.gradle.kts`, wired into `preBuild`) hard-fails on a stub or a sub-1 MB model so this can never
 regress silently.
 
-## The F-Droid source scanner blocks TensorFlow Lite — and the from-source replacement is broken
+## The F-Droid source scanner flags TensorFlow Lite — and the from-source replacement is broken
 
 F-Droid's source scanner (fdroidserver **master**, which its CI runs — not the older Debian package or a
 tagged release, whose scanner is *not* version-catalog-aware and won't reproduce this) resolves the
@@ -121,20 +121,24 @@ work, ours doesn't. So Knit keeps Google's litert and takes the F-Droid exceptio
 
 - **`AntiFeatures: NonFreeDep`** in fdroiddata — litert is Apache-2.0 but ships as a prebuilt binary
   F-Droid can't rebuild.
-- **`scanignore: [app/build.gradle.kts]`** — and *only* that path. The scanner reports the suspect at the
-  file that *uses* the accessor (`implementation(libs.litert)`), never at `gradle/libs.versions.toml` where
-  it is merely defined; adding the `.toml` trips an `Unused scanignore path` error that itself fails CI.
-  Verified against master's `scan_source`: no scanignore → 1 problem; `[app/build.gradle.kts]` → 0;
-  `+ gradle/libs.versions.toml` → 1 (the unused-path error).
+- **No `scanignore`.** We first suppressed the flag with `scanignore: [app/build.gradle.kts]`, but reviewer
+  linsui asked us to drop it (MR 43609): the `suss` signature itself is the bug. Its `(2|1.[34])` regex
+  over-matches — `litert:1.3.x`/`1.4.x` resolve to `litert-api` alone (Apache-2.0, zero further deps), while
+  only `litert:2.x` pulls `litert-api:2.x → com.google.android.play:ai-delivery`, a real Play dep the group
+  otherwise misses. So the `2` arm is legitimate; the `1.[34]` arm is a false positive on our bare 1.4.2.
+  The fix belongs upstream (narrow the signature to `litert:2` in fdroid-suss); **until that lands the
+  fdroiddata build job stays red on this one scanner hit** by design, every other CI job green.
+- **`commit:` is the full 40-char hash**, not the `v2.2.1` tag (linsui's request — tags are mutable). No
+  `sudo:` block either: the buildserver already has JDK 21 selected, so the manual install was redundant.
 - **`AutoUpdateMode: Version`** (bare, not `Version v%v`). Under `UpdateCheckMode: Tags` the metadata
   schema forbids a format string (`^(None|Version( \+.+)?)$`); `Version v%v` is an `UpdateCheckMode: HTTP`
   construct and fails `check-jsonschema`. The tag itself is the version source.
 
 None of this touches the app or the released APK — the moderation model already runs correctly on Google's
-litert, so 2.2.0 ships unchanged and stays byte-reproducible. This is purely a metadata accommodation. **If
-litert is ever bumped, keep it off the `2.x`/`1.3`/`1.4`-matching `suss` regex or expect the scanner to
-flag it again**; and re-verify any TFLite runtime change on-device against `ToxicityInstrumentedTest`
-(the moderators degrade silently to allow-all / block-all on a bad interpreter).
+litert, so the APK ships unchanged and stays byte-reproducible. This is purely a metadata accommodation. **If
+litert is ever bumped, do not move to `2.x`** — it renames the lib and pulls the ai-delivery graph — and
+re-verify any TFLite runtime change on-device against `ToxicityInstrumentedTest` (the moderators degrade
+silently to allow-all / block-all on a bad interpreter).
 
 ## Cutting an off-Play release
 
