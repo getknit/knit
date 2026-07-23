@@ -16,10 +16,7 @@
 # make Knit block every message. See .agents/context/distribution.md for the full evidence.
 AntiFeatures:
   NonFreeDep:
-    en-US: >-
-      On-device content filtering uses Google's TensorFlow Lite (LiteRT) runtime, shipped as a prebuilt
-      native library from Google's Maven repository rather than built from source. The library itself is
-      free software (Apache-2.0).
+    en-US: On-device content filtering uses Google's prebuilt TensorFlow Lite.
 # Validated against fdroiddata's config/categories.yml (108 categories — the old ~17-category list is long
 # gone). Deliberately NOT "Internet": Knit works without it, and filing an offline mesh messenger under
 # Internet misdescribes it. `fdroid lint` will reject any name not in that file.
