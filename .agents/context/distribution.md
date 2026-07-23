@@ -105,14 +105,46 @@ unmoderated app that also fails byte-comparison. The `checkModerationModels` tas
 (`app/build.gradle.kts`, wired into `preBuild`) hard-fails on a stub or a sub-1 MB model so this can never
 regress silently.
 
+## The F-Droid source scanner blocks TensorFlow Lite — and the from-source replacement is broken
+
+F-Droid's source scanner (fdroidserver **master**, which its CI runs — not the older Debian package or a
+tagged release, whose scanner is *not* version-catalog-aware and won't reproduce this) resolves the
+`libs.litert` version-catalog alias to `com.google.ai.edge.litert:litert` and flags it as a prebuilt
+Google-Maven "usual suspect" (`suss` signature `com.google.ai.edge.litert:litert:(2|1.[34])`), which
+**hard-fails `fdroid build`**. The obvious fix — the from-source `de.schliweb:tensorflow-lite-fdroid`
+(what `org.fairscan.app` uses) — was tried on-device and **REJECTED**: its from-source TFLite 2.18.0
+miscomputes our Detoxify/ALBERT model, saturating every output to a binary `0`/`1` (clean text scores
+`1.0` on `severe_toxicity`) so it would block every message. Verified delegate-independent (identical with
+XNNPACK on, off, and single-thread); Google's litert scores correctly (`0.00004` clean, `0.957` for real
+abuse). It is a fundamental op-level miscompute, not a config knob — `fairscan`'s OCR model happens to
+work, ours doesn't. So Knit keeps Google's litert and takes the F-Droid exception:
+
+- **`AntiFeatures: NonFreeDep`** in fdroiddata — litert is Apache-2.0 but ships as a prebuilt binary
+  F-Droid can't rebuild.
+- **`scanignore: [app/build.gradle.kts]`** — and *only* that path. The scanner reports the suspect at the
+  file that *uses* the accessor (`implementation(libs.litert)`), never at `gradle/libs.versions.toml` where
+  it is merely defined; adding the `.toml` trips an `Unused scanignore path` error that itself fails CI.
+  Verified against master's `scan_source`: no scanignore → 1 problem; `[app/build.gradle.kts]` → 0;
+  `+ gradle/libs.versions.toml` → 1 (the unused-path error).
+- **`AutoUpdateMode: Version`** (bare, not `Version v%v`). Under `UpdateCheckMode: Tags` the metadata
+  schema forbids a format string (`^(None|Version( \+.+)?)$`); `Version v%v` is an `UpdateCheckMode: HTTP`
+  construct and fails `check-jsonschema`. The tag itself is the version source.
+
+None of this touches the app or the released APK — the moderation model already runs correctly on Google's
+litert, so 2.2.0 ships unchanged and stays byte-reproducible. This is purely a metadata accommodation. **If
+litert is ever bumped, keep it off the `2.x`/`1.3`/`1.4`-matching `suss` regex or expect the scanner to
+flag it again**; and re-verify any TFLite runtime change on-device against `ToxicityInstrumentedTest`
+(the moderators degrade silently to allow-all / block-all on a bad interpreter).
+
 ## Cutting an off-Play release
 
 `.github/workflows/release.yml` does it: push a `v*` tag and it builds, signs, verifies and drafts the
 GitHub Release. Prepare the commit first —
 
 1. Bump `knit.versionCode` / `knit.versionName` in `gradle.properties`. **Keep the tag equal to
-   `v<versionName>`** — fdroiddata's `Binaries:` URL and `AutoUpdateMode: Version v%v` both expand `%v` to
-   the *versionName*, so a `2.1` / `v2.1.0` mismatch breaks both.
+   `v<versionName>`** — fdroiddata's `Binaries:` URL expands `%v` to the *versionName*, so a `2.1` /
+   `v2.1.0` mismatch breaks the binary lookup. (`AutoUpdateMode` is bare `Version` under `UpdateCheckMode:
+   Tags` — see the F-Droid-scanner section below for why `Version v%v` is wrong there.)
 2. Update `CurrentVersion` / `CurrentVersionCode` and add a `Builds:` entry in `.fdroid.yml` (then copy it
    to fdroiddata), and add `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` — F-Droid scrapes
    `fastlane/metadata/` straight from this repo at the built commit (descriptions, screenshots, changelog).

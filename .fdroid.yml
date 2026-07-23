@@ -8,6 +8,18 @@
 #
 # NOTE: `fdroid build` skips `sudo:` blocks when run locally, so a local run needs JDK 21 already present.
 
+# On-device content moderation runs Google's TensorFlow Lite (LiteRT) as a prebuilt native library
+# (com.google.ai.edge.litert). It is freely licensed (Apache-2.0) but not built from F-Droid's source —
+# hence NonFreeDep + the `scanignore` in the build below. The obvious from-source substitute,
+# de.schliweb:tensorflow-lite-fdroid, was tried and REJECTED: it miscomputes our Detoxify/ALBERT model
+# (saturates every output to 0/1 on-device, verified independent of the XNNPACK delegate), so it would
+# make Knit block every message. See .agents/context/distribution.md for the full evidence.
+AntiFeatures:
+  NonFreeDep:
+    en-US: >-
+      On-device content filtering uses Google's TensorFlow Lite (LiteRT) runtime, shipped as a prebuilt
+      native library from Google's Maven repository rather than built from source. The library itself is
+      free software (Apache-2.0).
 # Validated against fdroiddata's config/categories.yml (108 categories — the old ~17-category list is long
 # gone). Deliberately NOT "Internet": Knit works without it, and filing an offline mesh messenger under
 # Internet misdescribes it. `fdroid lint` will reject any name not in that file.
@@ -51,6 +63,15 @@ Builds:
       - update-java-alternatives -a
     gradle:
       - yes
+    # The source scanner resolves the `libs.litert` version-catalog alias to
+    # `com.google.ai.edge.litert:litert` (a prebuilt Google-Maven binary) and HARD-FAILS the build. It is a
+    # deliberate, documented dependency (see AntiFeatures above). The scanner reports the suspect ONLY at
+    # the file that *uses* the accessor (app/build.gradle.kts, via `implementation(libs.litert)`), never at
+    # gradle/libs.versions.toml where it is merely defined — so scanignore lists only that one build file.
+    # (Adding libs.versions.toml would trip an "Unused scanignore path" error that itself fails CI; verified
+    # against fdroidserver master's scan_source.) This suppresses only a first-party build file, not app source.
+    scanignore:
+      - app/build.gradle.kts
     output: build/outputs/apk/release/app-release-unsigned.apk
     # No `ndk:` line on purpose — the APK path needs no NDK (see distribution.md). Native-symbol
     # extraction is gated behind -Pknit.nativeSymbols=true and only runs for the Play AAB.
@@ -58,7 +79,10 @@ Builds:
 # versionCode/versionName live in gradle.properties and are read via providers.gradleProperty(), which
 # fdroidserver's build-file parser cannot evaluate. UpdateCheckData points it at the file instead — the
 # same pattern metadata/org.osmdroid.yml uses. Verify with `fdroid checkupdates` before submitting.
-AutoUpdateMode: Version v%v
+# AutoUpdateMode is bare `Version` (NOT `Version v%v`): under UpdateCheckMode: Tags the schema forbids a
+# format string — the tag itself is the version source. `Version v%v` is a UpdateCheckMode: HTTP construct
+# and fails schema validation with Tags.
+AutoUpdateMode: Version
 UpdateCheckMode: Tags
 UpdateCheckData: gradle.properties|knit\.versionCode=(\d+)|.|knit\.versionName=(.*)
 CurrentVersion: 2.2.0
