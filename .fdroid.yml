@@ -46,6 +46,13 @@ Repo: https://github.com/getknit/knit.git
 Binaries: https://github.com/getknit/knit/releases/download/v%v/knit-%v.apk
 AllowedAPKSigningKeys: b18a283d11797c2a84a008c1fcb9e1b864e7b4c3b301408f7a4a80624b0e631c
 
+# Durable note for fdroiddata maintainers (survives the MR merge, unlike the MR description).
+MaintainerNotes: litert (com.google.ai.edge.litert) is Google's prebuilt TensorFlow Lite, kept via
+  scanignore + NonFreeDep because the from-source de.schliweb:tensorflow-lite-fdroid miscomputes this app's
+  Detoxify/ALBERT toxicity model (saturates every output to 0/1, verified on-device), which would make it
+  flag every message. scanignore lists only app/build.gradle.kts, where the libs.litert accessor is used;
+  adding gradle/libs.versions.toml would be an unused-path error.
+
 Builds:
   - versionName: 2.2.1
     versionCode: 10
