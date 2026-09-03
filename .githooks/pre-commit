@@ -1,0 +1,64 @@
+#!/bin/sh
+# Refuse a commit whose ADR router disagrees with the ADR files it is committing.
+#
+# `.agents/memory/decisions.md` is generated from `.agents/memory/decisions/` by
+# `scripts/adr.py index`. Two ways to commit them out of sync, and this catches both:
+#
+#   1. You wrote an ADR and never ran `index`.
+#   2. You ran `index`, then staged only the ADR file and left the regenerated router
+#      behind — the case a working-tree check cannot see.
+#
+# So the check runs against the INDEX, not the working tree: the staged decision files
+# and the staged router are extracted to a temp root and compared there. Editing an ADR
+# *body* changes no router row, so that commits cleanly with the router untouched.
+#
+# Cheap by construction — it exits before doing anything unless the commit actually
+# touches those paths, and it never runs Gradle or a JDK. CI enforces the same check
+# (`adr-index` in .github/workflows/ci.yml); this just moves the failure earlier.
+#
+# Active only while `core.hooksPath` points at this directory (see CONTRIBUTING.md);
+# `git commit --no-verify` bypasses it for one commit. A relative `core.hooksPath`
+# resolves against each working tree, so a linked worktree runs its own checkout of
+# this file rather than the main one.
+
+set -e
+
+repo=$(git rev-parse --show-toplevel)
+paths='.agents/memory/decisions.md .agents/memory/decisions/'
+
+# Nothing staged under either path — not an ADR commit.
+# shellcheck disable=SC2086  # $paths is two pathspecs; the split is what git wants
+if [ -z "$(git diff --cached --name-only -- $paths)" ]; then
+	exit 0
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+	echo "pre-commit: no python3, skipping the ADR router check (CI still runs it)." >&2
+	exit 0
+fi
+
+# Unquoted on purpose, here and above: $paths is two pathspecs, and $staged is a list
+# of filenames that adr.py itself generates as [a-z0-9.-]+\.md — no spaces to split on.
+# shellcheck disable=SC2086
+staged=$(git ls-files --cached -- $paths)
+if [ -z "$staged" ]; then
+	# Every decision file is staged for deletion. Nothing left to index against.
+	exit 0
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# `adr.py` finds its root by walking up to settings.gradle.kts; give the temp tree one
+# so it indexes the extracted copies rather than the working tree it was invoked from.
+: > "$tmp/settings.gradle.kts"
+# shellcheck disable=SC2086
+git checkout-index --prefix="$tmp/" -f -- $staged
+
+if ! (cd "$tmp" && python3 "$repo/scripts/adr.py" index --check); then
+	echo >&2
+	echo "pre-commit: the staged ADR router is out of sync with the staged ADRs." >&2
+	echo "  run:  python3 scripts/adr.py index" >&2
+	echo "  then: git add .agents/memory/decisions.md" >&2
+	exit 1
+fi

@@ -54,5 +54,6 @@ bash scripts/qodana.sh --baseline               # ...accept today's findings as 
 - `adr.py` needs no JDK and no Gradle. `new` writes one file under `.agents/memory/decisions/` and prints
   the citation string; `index` rebuilds the router from those files, so the router is never hand-edited and
   two worktrees adding a decision on the same day cannot conflict on a number. Run `index` before
-  committing — CI runs `index --check`, and the maintainer's local `.git/hooks/pre-commit` runs it
-  against the *staged* tree so a router left unstaged fails before the push, not after.
+  committing — CI runs `index --check`, and `.githooks/pre-commit` runs it against the *staged* tree so a
+  router left unstaged fails before the push, not after (enable the hooks with
+  `git config core.hooksPath .githooks`).

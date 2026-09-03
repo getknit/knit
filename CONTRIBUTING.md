@@ -23,8 +23,11 @@ If that works for you, read on.
 - **License:** by contributing, you agree your contribution is licensed under **GPL-3.0-or-later**, the
   same as the project.
 - **Sign your commits (DCO):** add a `Signed-off-by: Your Name <you@example.com>` trailer to each
-  commit (`git commit -s`), certifying the [Developer Certificate of Origin](https://developercertificate.org/).
-  Only submit code you have the right to license under the GPL.
+  commit (`git commit -s`), certifying the [Developer Certificate of Origin](DCO) — the verbatim 1.1
+  text, also published at [developercertificate.org](https://developercertificate.org/). The
+  trailer's email must match the commit author's, and `git config core.hooksPath .githooks` opts
+  into a repo hook that adds it for you. Only submit code you have the right to license under the
+  GPL.
 - **Third-party assets:** do not add dependencies or bundled models/data whose license is
   GPL-incompatible or unverified. The shipped dependency graph is intentionally GMS-free and
   Apache/BSD/MIT-only; keep it that way, and update
@@ -47,11 +50,22 @@ build config, the mesh layer, or the DI graph. In short:
 Please run the unit tests, `detekt`, and `ktlintCheck` before opening a pull request, and match the
 surrounding code style.
 
+`git config core.hooksPath .githooks` opts into the repo's hooks — a `prepare-commit-msg` that adds
+the DCO sign-off, a `commit-msg` that strips agent session-link trailers, and a `pre-commit` that
+refuses an ADR commit whose generated router is out of sync. That setting replaces `.git/hooks`
+wholesale, so anything you keep there stops running; `git commit --no-verify` skips them for one
+commit.
+
 ## Where to submit
 
 Development and contributions happen on GitHub at <https://github.com/getknit/knit>. Open issues and
 pull requests there; the issue and pull-request templates will guide you through what to include. Keep
 each pull request focused on a single change with a clear description of what and why.
+
+A DCO job checks that every commit in a pull request carries a sign-off whose email matches its
+author; if it fails, `git rebase --signoff origin/main` and a force-push fix the whole branch at
+once. The rest of CI mirrors the maintainer's internal GitLab pipeline (build, unit tests, the ADR
+and generated-asset sync checks); `detekt`/`ktlintCheck` ride along as advisory.
 
 ## Security
 

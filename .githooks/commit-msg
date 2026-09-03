@@ -1,0 +1,19 @@
+#!/bin/sh
+# Strip Claude Code session-link trailers before they can enter history.
+#
+# The agent harness instructs its models to end every commit message with a
+# "Claude-Session: https://claude.ai/code/session_..." line. This repository
+# never wants that line: it is per-session noise that outlives nothing useful
+# and leaks a session handle into a public mirror. Co-Authored-By is kept.
+#
+# Active only while `core.hooksPath` points at this directory (see
+# CONTRIBUTING.md); `git commit --no-verify` skips it for one commit.
+msg="$1"
+tmp="$msg.session-strip"
+grep -v -E '^[[:space:]]*Claude-Session:[[:space:]]*https://claude\.ai/code/session_' "$msg" > "$tmp" 2>/dev/null || true
+if [ -s "$tmp" ]; then
+	mv "$tmp" "$msg"
+else
+	rm -f "$tmp"
+fi
+exit 0

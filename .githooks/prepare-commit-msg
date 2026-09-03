@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# prepare-commit-msg: add the DCO sign-off that CONTRIBUTING.md requires, so a commit carries the
+# trailer whether or not `-s` was remembered. Opt in with:
+#
+#     git config core.hooksPath .githooks
+#
+# That one setting replaces .git/hooks wholesale, which is why the two hooks that used to live there
+# (commit-msg, pre-commit) are in this directory too — opting in must not silently drop them.
+#
+# Signs with the COMMITTER identity, which is exactly what `git commit -s` does. The distinction
+# only shows up on a cherry-pick, where the author is someone else — signing as them would forge a
+# certification they never gave, so the person actually making the commit signs instead. The DCO
+# check in .github/workflows/dco.yml accepts either identity.
+#
+# Never fails a commit. A hook that blocks work to enforce a trailer CI already checks would be a
+# bad trade, so every failure path here exits 0 and leaves the message alone.
+
+set -uo pipefail
+
+# $2 is the message source. A merge commit is generated rather than authored, and dco.yml skips
+# merges for that same reason.
+case "${2-}" in
+	merge) exit 0 ;;
+esac
+
+# GIT_COMMITTER_IDENT is "Name <email> 1700000000 -0800" — drop the trailing timestamp.
+sob=$(git var GIT_COMMITTER_IDENT 2>/dev/null | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+[ -n "$sob" ] || exit 0
+
+# --if-exists doNothing keeps this idempotent: `git commit -s`, an amend, and a rebase replaying an
+# already-signed commit all end up with exactly one trailer.
+git interpret-trailers --if-exists doNothing --trailer "$sob" --in-place "$1" || exit 0
