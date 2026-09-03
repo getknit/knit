@@ -102,6 +102,17 @@ class MessageRepository(
     /** Every distinct conversation with any message — the candidate set for the pending-request count. */
     suspend fun distinctConversations(): List<String> = dao.distinctConversations()
 
+    /**
+     * Node ids [me] has exchanged messages with in both directions — the open-to-chat cue's "we have already
+     * met" set (see [MessageDao.observeAcquaintedPeers] for what counts as an exchange).
+     */
+    fun observeAcquaintedPeers(me: String): Flow<List<String>> =
+        dao.observeAcquaintedPeers(
+            me = me,
+            nearbyId = Conversations.NEARBY,
+            groupPattern = Conversations.GROUP_ID_PREFIX + "%",
+        )
+
     /** Distinct senders who have posted in [conversationId] — a group is accepted once a known peer is among them. */
     suspend fun sendersIn(conversationId: String): List<String> = dao.sendersIn(conversationId)
 

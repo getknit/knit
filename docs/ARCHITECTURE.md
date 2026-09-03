@@ -618,11 +618,14 @@ that budget is a purely local knob that can differ per node without breaking cue
 - **The "open to chat" cue** (`presence/`): a profile flag (`ProfileContent.openToChat`, carried on both
   profile paths, stored as `PeerEntity.openToChat`) plus one standalone notification — "Sam is nearby and open
   to chat" / "3 people nearby are open to chat" — that opens the Nearby room. `OpenToChatWatch` (started by
-  `MeshManager.start`) joins the own flag, the short-range `neighbors` set, the peer rows carrying the flag and
-  the block list; the pure `OpenToChatPolicy` batches newcomers for 20 s, re-cues a person only per encounter
-  (out of range ≥ 15 min, ≥ 2 h since their last cue, ≤ 2 cues a day), and posts at most once an hour overall,
-  holding later arrivals for the next post. Its per-person stamps and the last post time persist in
-  `SettingsStore` so a restart cannot re-buzz.
+  `MeshManager.start`) joins the own flag, the short-range `neighbors` set, the peer rows carrying the flag,
+  the block list and the people already messaged; the pure `OpenToChatPolicy` batches newcomers for 20 s,
+  re-cues a person only per encounter (out of range ≥ 15 min, ≥ 2 h since their last cue, ≤ 2 cues a day),
+  and posts at most once an hour overall, holding later arrivals for the next post. Its per-person stamps and
+  the last post time persist in `SettingsStore` so a restart cannot re-buzz. The cue is an **introduction**,
+  so anyone already met drops out of it entirely (ADR 2026-09.3yje): `MessageDao.observeAcquaintedPeers`
+  reads the two-way exchanges out of `messages` — a DM thread with a message each way, or a group both have
+  posted in — and the Nearby room and status notices never count.
 - **Room/DM notifications** use `NotificationCompat.MessagingStyle` so multiple senders show in one
   grouped notification; `NotificationHistory` keeps the last ~8 `NotifMessage`s for that context, and
   each becomes a `Person`-attributed line with the sender's cached avatar.

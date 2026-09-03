@@ -16,9 +16,11 @@ import kotlinx.coroutines.sync.withLock
  *
  * The inputs are joined here rather than in the transport: [neighborIds] (the short-range reachable set)
  * carries no profile data and a peer can sit in it before its profile row exists, so the trigger has to be
- * the join of all four flows, re-evaluated whenever any of them moves — a row arriving after the sighting
- * still counts. Each input is `distinctUntilChanged` (the mesh re-emits its set on an advert's capability
- * bits, and a DataStore write re-emits every flow in the store) and the fold is idempotent anyway.
+ * the join of all five flows, re-evaluated whenever any of them moves — a row arriving after the sighting
+ * still counts, and a peer we reply to drops out of [acquainted] the moment the message lands. Each input
+ * is `distinctUntilChanged` (the mesh re-emits its set on an advert's capability bits, a DataStore write
+ * re-emits every flow in the store, and the `messages` table re-runs its queries on every insert) and the
+ * fold is idempotent anyway.
  *
  * Persisted state ([Persisted]) is read **once** at start and written through after every post — never
  * collected, since the write would re-emit it and re-fold. Two coroutines touch the state (the collector and
@@ -30,6 +32,8 @@ class OpenToChatWatch(
     private val neighborIds: Flow<Set<String>>,
     private val openIds: Flow<Set<String>>,
     private val blocked: Flow<Set<String>>,
+    /** Peers we have already exchanged messages with — no introduction needed (see [OpenToChatPolicy]). */
+    private val acquainted: Flow<Set<String>>,
     private val loadState: suspend () -> Persisted,
     private val persist: suspend (Persisted) -> Unit,
     /** Resolves names and posts one cue naming [peerIds] (arrival order); runs outside the lock. */
@@ -61,8 +65,9 @@ class OpenToChatWatch(
                 neighborIds.distinctUntilChanged(),
                 openIds.distinctUntilChanged(),
                 blocked.distinctUntilChanged(),
-            ) { own, near, open, blk ->
-                own to OpenToChatPolicy.qualifying(own, near, open, blk)
+                acquainted.distinctUntilChanged(),
+            ) { own, near, open, blk, met ->
+                own to OpenToChatPolicy.qualifying(own, near, open, blk, met)
             }.distinctUntilChanged().collect { (own, qualifying) -> onInputs(session, own, qualifying) }
         }
     }

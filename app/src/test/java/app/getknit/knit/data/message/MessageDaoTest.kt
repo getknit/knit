@@ -262,6 +262,55 @@ class MessageDaoTest : RoomDbTest() {
             assertTrue(dao.hasMessagesIn("quiet"))
         }
 
+    @Test
+    fun `observeAcquaintedPeers needs a message each way in a DM, so a one-sided thread does not count`() =
+        runTest {
+            // A DM thread is keyed by the other party, so "ours" is the row we sent and "theirs" is the row
+            // whose sender is the thread id itself.
+            dao.upsert(msg("d1", conversationId = "bob", sender = ME, recipientId = "bob"))
+            dao.upsert(msg("d2", conversationId = "bob", sender = "bob", recipientId = ME))
+            dao.upsert(msg("d3", conversationId = "carol", sender = ME, recipientId = "carol")) // no reply yet
+            dao.upsert(msg("d4", conversationId = "dave", sender = "dave", recipientId = ME)) // never answered
+
+            assertEquals(listOf("bob"), acquainted())
+        }
+
+    @Test
+    fun `observeAcquaintedPeers counts a group both of us posted in, and never one we stayed quiet in`() =
+        runTest {
+            dao.upsert(msg("g1", conversationId = "g-book", sender = ME))
+            dao.upsert(msg("g2", conversationId = "g-book", sender = "erin"))
+            dao.upsert(msg("g3", conversationId = "g-book", sender = "frank"))
+            // A group we were added to but never spoke in: everyone in it is still a stranger.
+            dao.upsert(msg("g4", conversationId = "g-silent", sender = "gwen"))
+
+            assertEquals(listOf("erin", "frank"), acquainted())
+        }
+
+    @Test
+    fun `observeAcquaintedPeers ignores the Nearby room and status notices`() =
+        runTest {
+            // Posting in the same public room is not a conversation, and a notice's sender is the event's
+            // subject rather than an author — neither may pass for having met someone.
+            dao.upsert(msg("n1", conversationId = Conversations.NEARBY, sender = ME))
+            dao.upsert(msg("n2", conversationId = Conversations.NEARBY, sender = "hal"))
+            dao.upsert(msg("k1", conversationId = "g-book", sender = ME, kind = MessageEntity.KIND_PEER_RENAMED))
+            dao.upsert(msg("k2", conversationId = "g-book", sender = "iris", kind = MessageEntity.KIND_MEMBER_LEFT))
+            dao.upsert(msg("k3", conversationId = "jane", sender = ME, recipientId = "jane"))
+            dao.upsert(msg("k4", conversationId = "jane", sender = "jane", kind = MessageEntity.KIND_PEER_RENAMED))
+
+            assertEquals(emptyList<String>(), acquainted())
+        }
+
+    private suspend fun acquainted(): List<String> =
+        dao
+            .observeAcquaintedPeers(
+                me = ME,
+                nearbyId = Conversations.NEARBY,
+                groupPattern = Conversations.GROUP_ID_PREFIX + "%",
+            ).first()
+            .sorted()
+
     private fun msg(
         id: String,
         recipientId: String? = null,
@@ -284,4 +333,8 @@ class MessageDaoTest : RoomDbTest() {
         pendingKey = pendingKey,
         kind = kind,
     )
+
+    private companion object {
+        const val ME = "me"
+    }
 }

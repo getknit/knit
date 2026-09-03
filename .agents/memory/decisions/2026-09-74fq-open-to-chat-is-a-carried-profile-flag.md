@@ -9,7 +9,8 @@ topics: [profile, wire, notifications, ui]
 # ADR 2026-09.74fq — Open to chat is a carried profile flag, and the nearby cue is batched with per-person and hourly cooldowns
 
 Status: Accepted (2026-09-03; `ProfileContent.openToChat` / `ProfilePayload.openToChat` / `ProfileV2` label 5,
-`peers.openToChat` at DB v9, `presence/OpenToChatPolicy` + `OpenToChatWatch`, the `knit_open_to_chat` channel)
+`peers.openToChat` at DB v9, `presence/OpenToChatPolicy` + `OpenToChatWatch`, the `knit_open_to_chat` channel;
+amended 2026-09-03 by ADR 2026-09.3yje, which drops anyone already messaged out of the qualifying set)
 
 **What was asked for.** A way for a user to say "I'm up for a conversation", so that two people who both say it
 and end up in **direct radio range** get a nudge to post in the Nearby room, and so that anyone looking at a

@@ -170,6 +170,44 @@ interface MessageDao {
         me: String,
     ): Boolean
 
+    /**
+     * Node ids the local user ([me]) has **exchanged** ordinary messages with: someone we have both sent
+     * something to and heard something back from, which is what the open-to-chat cue treats as already
+     * knowing a person (`presence/OpenToChatPolicy.qualifying`). Observed, so a first reply drops its
+     * author out of the cue's candidate set without waiting for a mesh restart.
+     *
+     * Two shapes, unioned. A **DM** counts when the thread holds a message of ours *and* one of theirs — a
+     * DM's [MessageEntity.conversationId] is the other party's node id, so "one of theirs" is the row whose
+     * sender *is* that id. A **group** counts when both of us have posted in the same thread; posting into a
+     * shared room is the send and their post is the receipt, so the mixed cases ("I DM'd them, they replied
+     * in the group") already reduce to this. Mere membership is not enough — a stranger who adds us to a
+     * group, or one who posts in a group we have never spoken in, stays someone we do not know, the same
+     * sender-keyed rule [sendersIn] uses.
+     *
+     * Status notices are excluded (`kind = 0` is [MessageEntity.KIND_NORMAL]; Room's `@Query` can't
+     * reference the constant): a notice's sender is the event's *subject*, so counting one would let a peer
+     * who only ever renamed themselves pass for a conversation. [nearbyId] and [groupPattern] keep the
+     * broadcast room and the group ids out of the DM half — pass [Conversations.NEARBY] and
+     * [Conversations.GROUP_ID_PREFIX] + `%`, which [app.getknit.knit.data.MessageRepository] does.
+     */
+    @Query(
+        "SELECT m.conversationId AS peerId FROM messages AS m " +
+            "WHERE m.kind = 0 AND m.senderId = :me " +
+            "AND m.conversationId <> :nearbyId AND m.conversationId NOT LIKE :groupPattern " +
+            "AND EXISTS (SELECT 1 FROM messages AS theirs WHERE theirs.kind = 0 " +
+            "AND theirs.conversationId = m.conversationId AND theirs.senderId = m.conversationId) " +
+            "UNION " +
+            "SELECT g.senderId AS peerId FROM messages AS g " +
+            "WHERE g.kind = 0 AND g.senderId <> :me AND g.conversationId LIKE :groupPattern " +
+            "AND EXISTS (SELECT 1 FROM messages AS mine WHERE mine.kind = 0 " +
+            "AND mine.conversationId = g.conversationId AND mine.senderId = :me)",
+    )
+    fun observeAcquaintedPeers(
+        me: String,
+        nearbyId: String,
+        groupPattern: String,
+    ): Flow<List<String>>
+
     /** Distinct conversations the local user ([me]) has authored a message in — the "threads I started" signal. */
     @Query("SELECT DISTINCT conversationId FROM messages WHERE senderId = :me")
     suspend fun conversationsIAuthoredIn(me: String): List<String>

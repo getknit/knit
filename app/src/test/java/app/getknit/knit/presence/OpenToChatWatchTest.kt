@@ -11,13 +11,14 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The collector on a virtual clock: the join of the four inputs, one hold timer per batch, write-through persistence. */
+/** The collector on a virtual clock: the join of the five inputs, one hold timer per batch, write-through persistence. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class OpenToChatWatchTest {
     private val own = MutableStateFlow(false)
     private val near = MutableStateFlow(emptySet<String>())
     private val open = MutableStateFlow(emptySet<String>())
     private val blocked = MutableStateFlow(emptySet<String>())
+    private val acquainted = MutableStateFlow(emptySet<String>())
     private val posts = mutableListOf<List<String>>()
     private val persisted = mutableListOf<OpenToChatWatch.Persisted>()
     private var clears = 0
@@ -28,6 +29,7 @@ class OpenToChatWatchTest {
             neighborIds = near,
             openIds = open,
             blocked = blocked,
+            acquainted = acquainted,
             loadState = { loaded },
             persist = { persisted += it },
             post = { posts += it },
@@ -100,6 +102,33 @@ class OpenToChatWatchTest {
             blocked.value = setOf("a")
             near.value = setOf("a", "b")
             open.value = setOf("a", "b")
+            settle()
+            assertEquals(listOf(listOf("b")), posts)
+        }
+
+    @Test
+    fun aPeerWeHaveAlreadyMessagedWithIsNeverNamed() =
+        runTest {
+            watch()
+            own.value = true
+            acquainted.value = setOf("a")
+            near.value = setOf("a", "b")
+            open.value = setOf("a", "b")
+            settle()
+            assertEquals(listOf(listOf("b")), posts)
+        }
+
+    @Test
+    fun replyingToSomeoneMidHoldDropsThemFromTheBatch() =
+        runTest {
+            // The messages table re-runs its queries on the insert, so the reply lands in `acquainted`
+            // before the hold expires — and naming someone we just answered would be absurd.
+            watch()
+            own.value = true
+            near.value = setOf("a", "b")
+            open.value = setOf("a", "b")
+            runCurrent()
+            acquainted.value = setOf("a")
             settle()
             assertEquals(listOf(listOf("b")), posts)
         }

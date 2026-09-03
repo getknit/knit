@@ -8,7 +8,14 @@ package app.getknit.knit.presence
  * The cue is a nudge to post in the Nearby room when somebody who declared themselves open to chat is in
  * **direct radio range** while the local user has declared the same. The inputs are joined by the watch:
  * the qualifying set is [qualifying] (own flag on, a short-range neighbor, a peer row carrying the flag, not
- * blocked), and everything below is about *newcomers* to that set.
+ * blocked, and **not someone we have already met**), and everything below is about *newcomers* to that set.
+ *
+ * The cue introduces strangers, so anyone the user has already exchanged messages with is out of scope
+ * entirely — two people who live together would otherwise be re-introduced to each other for as long as
+ * they both leave the flag on. "Already met" is a two-way exchange, not mere contact: a DM thread with a
+ * message each way, or a group both have posted in
+ * ([app.getknit.knit.data.message.MessageDao.observeAcquaintedPeers]). A stranger who has only posted once
+ * in a shared room, or one we have DM'd with no reply yet, is still someone worth being introduced to.
  *
  * Five rules, one constant each, chosen against the transports' own numbers (a BLE sighting lingers 90 s, a
  * Wi-Fi Aware one 150 s):
@@ -65,13 +72,18 @@ object OpenToChatPolicy {
         val show: List<String>,
     )
 
-    /** The peers the cue may name right now: direct neighbors with the flag, minus blocked, only while ours is on. */
+    /**
+     * The peers the cue may name right now: direct neighbors carrying the flag, minus the blocked and minus
+     * the [acquainted] (anyone we have already exchanged messages with, who needs no introduction), and only
+     * while our own flag is on.
+     */
     fun qualifying(
         ownFlag: Boolean,
         neighborIds: Set<String>,
         openIds: Set<String>,
         blocked: Set<String>,
-    ): Set<String> = if (!ownFlag) emptySet() else (neighborIds intersect openIds) - blocked
+        acquainted: Set<String>,
+    ): Set<String> = if (!ownFlag) emptySet() else (neighborIds intersect openIds) - blocked - acquainted
 
     /**
      * Applies the current [qualifying] set: a peer that left it is stamped in [State.leftAt] and dropped from

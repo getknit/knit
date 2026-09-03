@@ -22,8 +22,9 @@ document:
 
 ### Added
 
-- Tell people nearby you're open to chat, from Settings. When someone in radio range has said the same, you
-  both get one nudge to say hi in the Nearby room, and their profile shows the flag.
+- Tell people nearby you're open to chat, from Settings. When someone in radio range has said the same and
+  you two have never messaged each other, you both get one nudge to say hi in the Nearby room, and their
+  profile shows the flag.
 - Send any kind of file in a direct message or group chat, under the same 8 MB limit photos already
   have. A received file shows its name and size, and saves wherever you point Android's file picker;
   the Nearby room stays photos only.

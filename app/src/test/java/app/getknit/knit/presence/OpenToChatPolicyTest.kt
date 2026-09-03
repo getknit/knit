@@ -26,9 +26,17 @@ class OpenToChatPolicyTest {
 
     @Test
     fun qualifyingNeedsTheOwnFlagIntersectsTheTwoSetsAndDropsTheBlocked() {
-        assertEquals(emptySet<String>(), qualifying(false, s("a", "b"), s("a", "b"), emptySet()))
-        assertEquals(s("a"), qualifying(true, s("a", "b"), s("a", "c"), emptySet()))
-        assertEquals(emptySet<String>(), qualifying(true, s("a"), s("a"), s("a")))
+        assertEquals(emptySet<String>(), qualifying(false, s("a", "b"), s("a", "b"), emptySet(), emptySet()))
+        assertEquals(s("a"), qualifying(true, s("a", "b"), s("a", "c"), emptySet(), emptySet()))
+        assertEquals(emptySet<String>(), qualifying(true, s("a"), s("a"), s("a"), emptySet()))
+    }
+
+    @Test
+    fun qualifyingDropsAnyoneWeHaveAlreadyExchangedMessagesWith() {
+        // The cue introduces strangers. Two people who already message each other — a couple, say — would
+        // otherwise be re-introduced every day for as long as they both left the flag on.
+        assertEquals(s("b"), qualifying(true, s("a", "b"), s("a", "b"), emptySet(), s("a")))
+        assertEquals(emptySet<String>(), qualifying(true, s("a"), s("a"), emptySet(), s("a")))
     }
 
     @Test

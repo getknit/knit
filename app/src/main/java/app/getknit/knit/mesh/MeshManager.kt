@@ -90,7 +90,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -250,14 +252,17 @@ class MeshManager(
         )
 
     // The "someone nearby is open to chat" cue: the join of our own flag, the short-range reachable set, the
-    // peer rows carrying the flag and the block list, batched and cooled down by OpenToChatPolicy. Started
-    // on the session scope in start(); its durable half (who was named when, the last post) lives in settings.
+    // peer rows carrying the flag, the block list and everyone we've already exchanged messages with,
+    // batched and cooled down by OpenToChatPolicy. Started on the session scope in start(); its durable half
+    // (who was named when, the last post) lives in settings. The acquainted query needs our node id, which
+    // only a suspend call can give, so it hangs off a `flow {}` rather than running in this initializer.
     internal val openToChatWatch =
         OpenToChatWatch(
             ownFlag = settings.openToChat,
             neighborIds = nearbyPeers.map { nearby -> nearby.mapTo(HashSet()) { it.nodeId } },
             openIds = peers.observePeers().map { rows -> rows.filter { it.openToChat }.mapTo(HashSet()) { it.nodeId } },
             blocked = settings.blockedNodeIds,
+            acquainted = flow { emitAll(messages.observeAcquaintedPeers(identity.nodeId()).map { it.toHashSet() }) },
             loadState = {
                 OpenToChatWatch.Persisted(
                     named = OpenToChatPolicy.decodeNamed(settings.openToChatNamed.first()),

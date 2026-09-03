@@ -66,7 +66,8 @@ notifications/ Notifier + MessageNotifier (per-context channels: nearby, groups,
                standalone "open to chat nearby" cue on its own channel)
 presence/      OpenToChatPolicy (pure: the cue's batching, per-person and hourly cooldowns) + OpenToChatWatch
                (the collector MeshManager starts per session: own flag × short-range neighbors × peer rows
-               carrying the flag × block list → one Notifier cue)
+               carrying the flag × block list × people already messaged → one Notifier cue; the cue
+               introduces strangers only — MessageDao.observeAcquaintedPeers, ADR 2026-09.3yje)
 di/            Koin modules: appModule, meshModule, moderationModule, uiModule
 ```
 
