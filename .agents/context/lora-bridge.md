@@ -121,8 +121,21 @@ Golden byte vectors pin every field number; malformed input decodes to null, nev
   five of the six repeated. The same board's NodeDB shows 110/110 stock nodes sending `hop_start = 3`. So
   2.8's `LOCAL_ONLY` **does** relay a secondary-channel packet, and the only thing stopping ours is a hop
   limit of zero — ADR 045's borrowed hops have never happened, and ADR 044's bridge has only ever worked
-  board-to-board **direct**. Fixing it is one field, but the value is an airtime decision, not a default:
-  every relaying board in range roughly doubles a packet's air, and `LoraAirtime` cannot see any of it. NAKs: portnum ROUTING_APP(5), `request_id` = our id, `error_reason` (NO_CHANNEL 6,
+  board-to-board **direct**. Fixing it is one field, but the value is an airtime decision, not a default.
+  **Measured, 8 x 200 B from one board with the other in range and originating nothing:**
+
+  | | originator | neighbour |
+  |---|---|---|
+  | hop omitted | +0.365 % (13.1 s) | **-0.042 %** — decay, nothing relayed |
+  | `hop = 3`   | +0.389 % (14.0 s) | **+0.443 % (15.9 s)** — pure relay |
+
+  The originator's own cost is the same in both arms; the whole difference is the neighbour. So **one**
+  relaying board doubles a packet's air — and `LoraAirtime`'s ledger did not move by a millisecond in
+  either arm. That matters against the ceiling it enforces: in a 100 %-duty region the only cap is the
+  10 % politeness figure, halved by `SAFETY` to the 5 % it budgets, so **the safety factor is worth
+  exactly one relaying neighbour**. Turn hops on and a two-board pocket sits at the nominal 10 % rather
+  than half of it; every stock node that repeats us is on top of that, and none of it is visible here.
+- NAKs: portnum ROUTING_APP(5), `request_id` = our id, `error_reason` (NO_CHANNEL 6,
   TOO_LARGE 7, DUTY_CYCLE_LIMIT 9, RATE_LIMIT_EXCEEDED 38) — counted per reason as `loraNakByReason`.
 - The router transmits at most a **237-byte `Data`** (`MeshtasticProto.LORA_DATA_MAX`, measured 2026-08-29 on a
   Heltec V4 / 2.7.26 with `…debug.LORATX`: a 231-byte payload queues, 232 and 233 NAK `TOO_LARGE`). The
