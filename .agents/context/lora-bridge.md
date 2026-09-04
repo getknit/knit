@@ -112,29 +112,33 @@ Golden byte vectors pin every field number; malformed input decodes to null, nev
   before that); then FromNum notify → drain until empty. `ToRadio{heartbeat}` every 180 s keeps the phone
   API alive; the node answers `queueStatus{free,maxlen,mesh_packet_id}` (also after each packet) — flow
   control. `rebooted`/unsolicited `my_info` → re-handshake.
-- Send `MeshPacket{to=0xFFFFFFFF, channel=idx, id=client nonzero, hop_limit omitted, want_ack=false}`.
-  **The omission does not mean the node's default — it means zero** (measured 2026-09-04, fw
+- Send `MeshPacket{to=0xFFFFFFFF, channel=idx, id=client nonzero, hop_limit=3
+  (`LoraMeshTransport.HOP_LIMIT`, **stated**), want_ack=false}`.
+  **Omitting it does not mean the node's default — it means zero** (measured 2026-09-04, fw
   `2.8.0.47db0e3`, `lora.hop_limit = 3`). A/B from one board to another, 6 x 200 B each arm, watching the
   receiving board's own `airUtilTx` over serial: with the field omitted every packet arrived
   `hop_limit = 0 / hop_start = 0` and the neighbour relayed **nothing** (0.7348611 % flat across the arm);
   with `--ei hop 3` every packet arrived `3/3` and the neighbour's airtime rose **+0.2646 % = 9.5 s**, about
   five of the six repeated. The same board's NodeDB shows 110/110 stock nodes sending `hop_start = 3`. So
   2.8's `LOCAL_ONLY` **does** relay a secondary-channel packet, and the only thing stopping ours is a hop
-  limit of zero — ADR 045's borrowed hops have never happened, and ADR 044's bridge has only ever worked
-  board-to-board **direct**. Fixing it is one field, but the value is an airtime decision, not a default.
-  **Measured, 8 x 200 B from one board with the other in range and originating nothing:**
+  limit of zero: until this was stated, ADR 045's borrowed hops had never happened and ADR 044's bridge had
+  only ever worked board-to-board **direct**. `everyPacketLeavesWithHopsToSpend` is what stops it
+  regressing — a missing hop limit is invisible in the payload, so only the send records catch it. Reading
+  the board's own `lora.hop_limit` instead is deliberately not done: absent decodes as 0, which is the bug.
+
+  **The airtime this buys is not yet budgeted.** Measured, 8 x 200 B from one board with the other in range
+  and originating nothing:
 
   | | originator | neighbour |
   |---|---|---|
   | hop omitted | +0.365 % (13.1 s) | **-0.042 %** — decay, nothing relayed |
   | `hop = 3`   | +0.389 % (14.0 s) | **+0.443 % (15.9 s)** — pure relay |
 
-  The originator's own cost is the same in both arms; the whole difference is the neighbour. So **one**
-  relaying board doubles a packet's air — and `LoraAirtime`'s ledger did not move by a millisecond in
-  either arm. That matters against the ceiling it enforces: in a 100 %-duty region the only cap is the
-  10 % politeness figure, halved by `SAFETY` to the 5 % it budgets, so **the safety factor is worth
-  exactly one relaying neighbour**. Turn hops on and a two-board pocket sits at the nominal 10 % rather
-  than half of it; every stock node that repeats us is on top of that, and none of it is visible here.
+  The originator's own cost is the same in both arms, so the whole difference is the neighbour: **one
+  relaying board doubles a packet's air**, and `LoraAirtime`'s ledger did not move by a millisecond in
+  either arm. In a 100 %-duty region the only ceiling is the 10 % politeness figure, halved by `SAFETY` to
+  the 5 % it budgets — so **the safety factor is worth exactly one relaying neighbour**, before any stock
+  node repeats us. Owed a follow-up.
 - NAKs: portnum ROUTING_APP(5), `request_id` = our id, `error_reason` (NO_CHANNEL 6,
   TOO_LARGE 7, DUTY_CYCLE_LIMIT 9, RATE_LIMIT_EXCEEDED 38) — counted per reason as `loraNakByReason`.
 - The router transmits at most a **237-byte `Data`** (`MeshtasticProto.LORA_DATA_MAX`, measured 2026-08-29 on a

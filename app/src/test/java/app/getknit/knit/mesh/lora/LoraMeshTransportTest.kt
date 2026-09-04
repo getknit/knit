@@ -135,6 +135,27 @@ class LoraMeshTransportTest {
         return WireEnvelope(relay = true, sig = sig, signed = WireCodec.encodeEnvelope(env))
     }
 
+    @Test
+    fun everyPacketLeavesWithHopsToSpend() =
+        runTest {
+            // Measured on a 2.8 board: omitting `hop_limit` does not ride the node's configured default, it
+            // rides zero, and a packet born with no hops left is repeated by nobody — so ADR 045's borrowed
+            // hops never happened and ADR 044's bridge only ever worked board-to-board direct. The field has
+            // to be stated, and nothing that reaches the air may leave it out.
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate, ten minutes"))
+            runCurrent()
+
+            assertTrue("something was sent", a.link.sentHopLimits.isNotEmpty())
+            assertTrue(
+                "every packet — beacon, offer and chat alike — carries ${LoraMeshTransport.HOP_LIMIT} hops",
+                a.link.sentHopLimits.all { it == LoraMeshTransport.HOP_LIMIT },
+            )
+        }
+
     /** ADR 060: on this plane every frame the transcoder reproduces rides `0x05` (the flag-day), and lands. */
     @Test
     fun aTranscodableFrameLeavesTranscodedAndLandsOnTheOtherBoard() =

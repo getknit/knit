@@ -75,6 +75,13 @@ internal class FakeMeshtasticLink(
     private var nextId = 1u
     val sent = mutableListOf<ByteArray>()
 
+    /**
+     * The `hop_limit` each send asked for, positionally alongside [sent]. Recorded because the field being
+     * **absent** is a bug the payload cannot show: a packet born with zero hops is on the air, decodes, and
+     * is simply never repeated by anyone.
+     */
+    val sentHopLimits = mutableListOf<Int?>()
+
     override suspend fun send(
         payload: ByteArray,
         channelIndex: Int,
@@ -83,6 +90,7 @@ internal class FakeMeshtasticLink(
     ): SendResult {
         if (free == 0) return SendResult.Busy
         sent += payload
+        sentHopLimits += hopLimit
         val id = nextId++
         if (queueFills) free--
         air.broadcast(nodeNum, channelIndex, portnum, payload)

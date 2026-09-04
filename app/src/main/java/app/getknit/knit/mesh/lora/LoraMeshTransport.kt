@@ -786,7 +786,7 @@ internal class LoraMeshTransport(
         channelIndex: Int,
         frame: OutboundFrame,
     ): Boolean =
-        when (val result = link.send(message, channelIndex)) {
+        when (val result = link.send(message, channelIndex, hopLimit = HOP_LIMIT)) {
             is SendResult.Queued -> {
                 pace.onQueueStatus(result.queue.free)
                 pace.airtime.record(frame.bucket, message.size, clock())
@@ -1072,6 +1072,20 @@ internal class LoraMeshTransport(
 
     /** Tuning constants; not private so the JVM tests can assert against the numbers rather than restate them. */
     companion object {
+        /**
+         * Hops a Knit packet is born with. It has to be **stated**: omitting `hop_limit` was documented as
+         * riding the node's configured default and does not — 2.8 leaves the field at zero, so every frame
+         * reached the air already spent and nothing has ever repeated one (measured 2026-09-04; both the
+         * evidence and the airtime it costs are in `context/lora-bridge.md`). Three is the Meshtastic
+         * default and what every stock node around us sends, which is the point: ADR 045 buys its reach by
+         * being ordinary traffic to the neighbours it borrows hops from.
+         *
+         * Reading the board's own `lora.hop_limit` instead is the obvious refinement and is deliberately not
+         * done here: the field is absent on a board that never set it, which decodes as 0 — the exact value
+         * that caused this, and a silent regression the moment a board reports it.
+         */
+        const val HOP_LIMIT = 3
+
         const val INBOUND_BUFFER = 64
         const val SIG_TTL_MS = 10 * 60_000L // = SeenSet.DEFAULT_TTL_MS
         const val SIG_KEY_BYTES = 8
