@@ -10,6 +10,11 @@ internal data class LoraStatus(
     val boardName: String? = null,
     val boardAddress: String? = null,
     val boardNodeNum: UInt? = null,
+    /**
+     * The freshest signal reading among the radios in [boardsHeard] — a link this plane actually has, never
+     * the last packet the board happened to overhear (which on a stock public primary is mostly strangers
+     * three to seven hops out at the noise floor). Null once every radio has aged out of the linger.
+     */
     val lastSnr: Float? = null,
     val lastRssi: Int? = null,
     val queueFree: Int? = null,

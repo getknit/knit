@@ -77,8 +77,9 @@ custody / relay all run unchanged.
 ```
 LoraMeshTransport (pure)      fastFanout/longRangeFanout/fastSend · LoraFramePolicy (+ isFresh) · LoraFrameCodec ·
                               LoraPacePolicy (class shedding + LoraAirtime budget) · reachable(isPresenceEvidence, 45min linger) ·
+                              boardsHeard + its RxQuality (the signal row, same 45min linger) ·
                               beacon + reofferTo on first hearing · LoraGatewayPolicy/LoraGossipPolicy/LoraCtl (the bridge)
-  └─ MeshtasticLink (seam)    state / packets / outcomes / queue / rxQuality · suspend send()
+  └─ MeshtasticLink (seam)    state / packets / outcomes / queue · suspend send()
        └─ MeshtasticSession   pure actor: want_config handshake · drain-until-empty on FromNum · 180s heartbeat ·
           (pure)              client packet ids ↔ queueStatus/NAK · reconnect-with-backoff (ConnectBackoffPolicy)
             └─ MeshtasticGattDialer (seam)   dial() → connect · requestMtu(512, gate ≥263) · discover · resolve chars
@@ -564,6 +565,16 @@ where no other Knit board is listening. Set the Meshtastic app's device to **Non
   `my_info !… pio=heltec-v4` → `config complete` → `ready`.
 - Battery: the status row shows the reading with `ready` (the handshake's `node_info`) and refreshes within a
   minute; unplug USB and "Plugged in" becomes a percentage on the next telemetry, replug and it flips back.
+- Signal: the row reads the freshest `RxQuality` in `boardsHeardAt` — **only radios that sent a Knit frame on
+  the bound channel**, keyed per radio, aged out with the radio at the 45-minute linger and dropped on `stop()`.
+  It must never be taken in `MeshtasticSession`: that runs ahead of the portnum/channel filter, and the board
+  hands the phone the whole air. On a stock board (primary left at the public default, ADR 045) that is mostly
+  strangers three to seven hops out at the noise floor, plus a synthetic POSITION/TELEMETRY per NodeDB entry
+  replayed at **every** handshake carrying a stale per-node SNR and no RSSI at all. Reading the last of those
+  decayed a real +6 dB / -7 dBm board-to-board link to -17 dB / -105 dBm within minutes and latched it there,
+  which looked exactly like a radio going deaf and cleared on a board reboot. Field oracle: `…debug.LORATX`
+  from the other phone snaps the row back within a second, while `meshtastic --listen` on the board shows the
+  two populations side by side.
 - Set the boards up (ADR 045): `…debug.LORAPROV` (or the screen's "Set up this board for Knit") on **both**
   phones → log `lora provision set up chN 'Knit'`, the board reboots, and the link returns. Then, over USB
   with the Meshtastic app disconnected: (1) `meshtastic --info` on both boards reports the **same, unchanged**

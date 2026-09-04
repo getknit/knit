@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -97,6 +98,19 @@ class LoraBridgeTest {
         val received: MutableList<InboundFrame>,
     ) {
         fun status() = transport.status.value
+
+        /**
+         * One packet straight off the air onto this rig's board, bypassing the frame codec — what the
+         * portnum/channel filter and [LoraMeshTransport.noteBoard] see. The defaults are a healthy
+         * board-to-board reception on the bound channel.
+         */
+        fun hear(
+            from: UInt,
+            channelIndex: Int = 0,
+            portnum: Int = MeshtasticProto.PORT_PRIVATE_APP,
+            snr: Float? = 6.5f,
+            rssi: Int? = -85,
+        ) = link.deliver(from, channelIndex, portnum, byteArrayOf(1), snr, rssi)
     }
 
     private fun rig(
@@ -636,6 +650,87 @@ class LoraBridgeTest {
             assertTrue("bob offered", b.metrics.snapshot().loraOfferSent > 0)
             assertEquals("the offer alone proves a radio is there", 1, a.status().boardsHeard)
             assertEquals("but nobody has spoken, so no person is reachable yet", 0, a.status().heard)
+        }
+
+    @Test
+    fun theSignalRowIgnoresEverythingTheBoardMerelyOverhears() =
+        runTest {
+            // Field report: the row decayed to -17 dB / -105 dBm over hours and looked healthy again only
+            // after a board reboot, while the real board-to-board link measured +6 dB / -7 dBm throughout.
+            // The reading was taken in the session, ahead of every filter, so a stock board's public primary
+            // channel — strangers four to seven hops out, plus the NodeDB replay the firmware sends at each
+            // handshake — pinned it at the noise floor and it stuck there.
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            a.hear(2u)
+            runCurrent()
+
+            // A stranger relayed off another channel, and the handshake replay's shape: an SNR, no RSSI.
+            a.hear(3u, channelIndex = 1, snr = -17.25f, rssi = -105)
+            a.hear(4u, portnum = MeshtasticProto.PORT_TELEMETRY, snr = -12.25f, rssi = null)
+            runCurrent()
+
+            assertEquals("the reading is still the radio we actually talk to", 6.5f, a.status().lastSnr!!, 0.001f)
+            assertEquals(-85, a.status().lastRssi)
+            assertEquals("and neither stranger invented a radio", 1, a.status().boardsHeard)
+        }
+
+    @Test
+    fun aReceptionMissingAnRssiKeepsTheOneThatRadioLastGave() =
+        runTest {
+            // Every reception proves the radio is there and when; not all of them carry both numbers. Taking
+            // the newer packet wholesale would blank half the row rather than refresh it.
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            a.hear(2u)
+            a.hear(2u, snr = 7.5f, rssi = null)
+            runCurrent()
+
+            assertEquals("the fresher SNR", 7.5f, a.status().lastSnr!!, 0.001f)
+            assertEquals("the RSSI it came with last", -85, a.status().lastRssi)
+        }
+
+    @Test
+    fun theSignalReadingAgesOutWithTheRadioItBelongsTo() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            a.hear(2u)
+            runCurrent()
+            assertEquals(6.5f, a.status().lastSnr!!, 0.001f)
+
+            advanceTimeBy(LoraMeshTransport.REACHABLE_LINGER_MS + LoraMeshTransport.LINGER_SWEEP_MS + 1_000)
+            runCurrent()
+
+            assertEquals("the radio aged out", 0, a.status().boardsHeard)
+            assertNull("so there is no link left to report a reading for", a.status().lastSnr)
+            assertNull(a.status().lastRssi)
+        }
+
+    @Test
+    fun restartingThePlaneDropsTheSignalReading() =
+        runTest {
+            // It used to live in the link and survive `stop()`, so a stale number read as the state of a link
+            // that had not been re-established yet — which is exactly what a board reboot looks like.
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+            a.hear(2u)
+            runCurrent()
+            assertEquals(6.5f, a.status().lastSnr!!, 0.001f)
+
+            a.transport.stop()
+            runCurrent()
+
+            assertNull(a.status().lastSnr)
+            assertNull(a.status().lastRssi)
         }
 
     @Test

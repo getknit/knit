@@ -52,9 +52,6 @@ internal class FakeMeshtasticLink(
     private val _queue = MutableStateFlow<QueueInfo?>(QueueInfo(free = 16, maxlen = 16, atMs = 0))
     override val queue = _queue
 
-    private val _rxQuality = MutableStateFlow<RxQuality?>(null)
-    override val rxQuality = _rxQuality
-
     override val battery = MutableStateFlow<BoardBattery?>(null)
 
     /** The board's free-slot count. Assigning it also publishes a [queue] update, as a real QueueStatus does. */
@@ -120,6 +117,8 @@ internal class FakeMeshtasticLink(
         channelIndex: Int,
         portnum: Int,
         payload: ByteArray,
+        rxSnr: Float? = 6.5f,
+        rxRssi: Int? = -85,
     ) {
         _packets.tryEmit(
             ReceivedPacket(
@@ -129,8 +128,8 @@ internal class FakeMeshtasticLink(
                 channelIndex = channelIndex,
                 portnum = portnum,
                 payload = payload,
-                rxSnr = 6.5f,
-                rxRssi = -85,
+                rxSnr = rxSnr,
+                rxRssi = rxRssi,
                 hopsAway = 0,
             ),
         )

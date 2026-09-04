@@ -62,9 +62,6 @@ internal class MeshtasticSession(
     private val _queue = MutableStateFlow<QueueInfo?>(null)
     override val queue = _queue.asStateFlow()
 
-    private val _rxQuality = MutableStateFlow<RxQuality?>(null)
-    override val rxQuality = _rxQuality.asStateFlow()
-
     private val _battery = MutableStateFlow<BoardBattery?>(null)
     override val battery = _battery.asStateFlow()
 
@@ -379,7 +376,12 @@ internal class MeshtasticSession(
         }
 
     private suspend fun onPacket(packet: MeshPacket) {
-        packet.rxSnr?.let { _rxQuality.value = RxQuality(it, packet.rxRssi, now()) }
+        // `rx_snr`/`rx_rssi` are deliberately NOT recorded here. This runs ahead of every filter below, and
+        // the board hands the phone the whole air: strangers relayed off its public primary channel, and a
+        // synthetic POSITION/TELEMETRY per NodeDB entry replayed at each handshake (a stale per-node SNR and
+        // no RSSI at all). Keeping the last of those as "the signal" read a healthy +6 dB board-to-board link
+        // as -17 dB within minutes and stuck there. Only `LoraMeshTransport.noteBoard` — past the portnum and
+        // bound-channel filter, keyed per radio and aged — may record a reading.
         val data = packet.decoded ?: return // an encrypted packet on a foreign channel — not for us
         // Routing NAKs originate from our OWN board's node (it generates the error), so they must be
         // handled before the self-echo guard below — otherwise `from == myNodeNum` would swallow them.

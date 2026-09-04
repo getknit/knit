@@ -24,13 +24,10 @@ internal interface MeshtasticLink {
     /** The board's transmit-queue headroom from the latest `queueStatus`; null until first reported. */
     val queue: StateFlow<QueueInfo?>
 
-    /** Last received signal quality — separate from [state] so it doesn't churn the state on every packet. */
-    val rxQuality: StateFlow<RxQuality?>
-
     /**
      * The board's own battery, from its `NodeInfo` in the handshake and the device telemetry it sends the
      * phone about once a minute; null until reported and again once the link is stopped. Kept out of [state]
-     * for the same reason as [rxQuality].
+     * so it doesn't churn the state on every packet.
      */
     val battery: StateFlow<BoardBattery?>
 
@@ -220,12 +217,24 @@ internal data class QueueInfo(
     val atMs: Long,
 )
 
-/** Last-received signal quality, surfaced for the diagnostics/settings row. */
+/**
+ * One radio's last-heard signal quality, surfaced for the diagnostics/settings row. Owned by
+ * [LoraMeshTransport] and keyed per radio, **not** by the link: the link sees the whole air — strangers on
+ * the board's public primary channel, and the NodeDB replay the firmware sends at every handshake — and only
+ * the transport knows which channel this plane is bound to. [atMs] is what ages a reading out with its radio.
+ */
 internal data class RxQuality(
     val snr: Float?,
     val rssi: Int?,
     val atMs: Long,
-)
+) {
+    /**
+     * This reading refreshed by a newer packet from the same radio. A field absent from [next] keeps the
+     * value it had rather than blanking the row: a reception always proves the radio is there and when, and
+     * usually — but not always — carries both numbers.
+     */
+    fun refreshedBy(next: RxQuality) = RxQuality(next.snr ?: snr, next.rssi ?: rssi, next.atMs)
+}
 
 /** The synchronous outcome of a [MeshtasticLink.send]. */
 internal sealed interface SendResult {

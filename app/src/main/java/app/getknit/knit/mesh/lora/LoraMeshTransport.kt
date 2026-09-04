@@ -150,8 +150,10 @@ internal class LoraMeshTransport(
 
     // Meshtastic node numbers we have heard transmit on our channel: one entry per **radio**, which is what
     // the settings row is actually asking. Counted for every Knit packet including control packets and
-    // incomplete fragments — a board that only publishes offers is still a board in range.
-    private val boardsHeardAt = ConcurrentHashMap<UInt, Long>()
+    // incomplete fragments — a board that only publishes offers is still a board in range. The value is that
+    // radio's last signal reading, so the row reports a link we actually have rather than the last thing the
+    // board overheard, and one linger rule ages the reading out with the radio it belongs to.
+    private val boardsHeardAt = ConcurrentHashMap<UInt, RxQuality>()
     private val heardPeers = ConcurrentHashMap<String, Peer>()
     private val lastSelfProfileAt = AtomicLong(NEVER)
 
@@ -261,6 +263,8 @@ internal class LoraMeshTransport(
         link.stop()
         lastHeardAt.clear()
         heardPeers.clear()
+        // Takes the signal readings with it: they belong to radios this session heard, and a stale one used
+        // to survive a restart and read as the state of a link that had not been re-established yet.
         boardsHeardAt.clear()
         gateway.forget()
         servedTo.clear()
@@ -269,6 +273,9 @@ internal class LoraMeshTransport(
         lastOfferPrefixes = IntArray(0)
         _reachable.value = emptySet()
         _health.value = TransportHealth.Unavailable
+        // Republish, or the row keeps serving the snapshot taken while the plane was up — a signal reading,
+        // a board count and a role for a plane that is no longer running.
+        publishStatus()
     }
 
     override fun heal() {
@@ -817,7 +824,7 @@ internal class LoraMeshTransport(
         // Knit traffic on it used to ingest both. Ignore anything off the channel this plane is bound to.
         val bound = currentConfig?.channelIndex
         if (bound != null && packet.channelIndex != bound) return
-        noteBoard(packet.from)
+        noteBoard(packet)
         if (LoraCtl.isCtl(packet.payload)) onCtlPacket(packet) else onFramePacket(packet)
     }
 
@@ -873,10 +880,12 @@ internal class LoraMeshTransport(
      * two diverge the moment a gateway relays or backfills somebody else's frame, which is the whole point of
      * the bridge. Reporting the second as the first read as a phantom radio in the field.
      */
-    private fun noteBoard(from: UInt) {
+    private fun noteBoard(packet: ReceivedPacket) {
+        val from = packet.from
         if (from == 0u) return // undecoded `from`; counting it would invent a radio
         if (from == (link.state.value as? LinkState.Ready)?.board?.myNodeNum) return // our own board's echo
-        boardsHeardAt[from] = clock()
+        val heard = RxQuality(packet.rxSnr, packet.rxRssi, clock())
+        boardsHeardAt.compute(from) { _, previous -> previous?.refreshedBy(heard) ?: heard }
         publishStatus()
     }
 
@@ -895,7 +904,7 @@ internal class LoraMeshTransport(
 
     private fun recomputeReachable(now: Long) {
         lastHeardAt.entries.removeAll { now - it.value > REACHABLE_LINGER_MS }
-        boardsHeardAt.entries.removeAll { now - it.value > REACHABLE_LINGER_MS }
+        boardsHeardAt.entries.removeAll { now - it.value.atMs > REACHABLE_LINGER_MS }
         heardPeers.keys.retainAll(lastHeardAt.keys)
         _reachable.value = heardPeers.values.toSet()
         publishStatus()
@@ -956,13 +965,16 @@ internal class LoraMeshTransport(
 
     private fun publishStatus() {
         val board = (link.state.value as? LinkState.Ready)?.board
+        // The freshest reading among the radios still within the linger — the row's "last heard", now bounded
+        // to radios this plane actually talks to. Empty once they all age out, which is the honest answer.
+        val lastRx = boardsHeardAt.values.maxByOrNull { it.atMs }
         _status.value =
             LoraStatus(
                 state = link.state.value,
                 boardAddress = currentConfig?.address,
                 boardNodeNum = board?.myNodeNum,
-                lastSnr = link.rxQuality.value?.snr,
-                lastRssi = link.rxQuality.value?.rssi,
+                lastSnr = lastRx?.snr,
+                lastRssi = lastRx?.rssi,
                 queueFree = link.queue.value?.free,
                 heard = _reachable.value.size,
                 boardsHeard = boardsHeardAt.size,
