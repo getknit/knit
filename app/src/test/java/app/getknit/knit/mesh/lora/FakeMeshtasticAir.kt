@@ -54,6 +54,8 @@ internal class FakeMeshtasticLink(
 
     override val battery = MutableStateFlow<BoardBattery?>(null)
 
+    override val boardAir = MutableStateFlow<BoardAir?>(null)
+
     /** The mesh's NodeDB as the board reports it — what puts a name on a bridged LongFast post. */
     override val nodes = MutableStateFlow<Map<UInt, BoardOwner>>(emptyMap())
 

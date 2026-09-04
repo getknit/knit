@@ -520,19 +520,23 @@ internal object MeshtasticProto {
         return FromRadio.NodeInfo(num, metrics, owner)
     }
 
-    /** `DeviceMetrics { battery_level, voltage }` — both proto3-`optional`, so an absent field stays null. */
+    /** `DeviceMetrics { … }` — every field proto3-`optional`, so an absent one stays null. */
     private fun decodeDeviceMetrics(reader: ProtoReader): DeviceMetrics {
         var level: Int? = null
         var voltage: Float? = null
+        var channelUtil: Float? = null
+        var airUtilTx: Float? = null
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
                 DM_BATTERY_LEVEL -> level = reader.readVarint32()
                 DM_VOLTAGE -> voltage = reader.readFloat()
+                DM_CHANNEL_UTILIZATION -> channelUtil = reader.readFloat()
+                DM_AIR_UTIL_TX -> airUtilTx = reader.readFloat()
                 else -> reader.skip(tag and WireType.MASK)
             }
         }
-        return DeviceMetrics(level, voltage)
+        return DeviceMetrics(level, voltage, channelUtil, airUtilTx)
     }
 
     private fun decodeQueueStatus(reader: ProtoReader): FromRadio.QueueStatus {
@@ -754,6 +758,8 @@ internal object MeshtasticProto {
     private const val TELEMETRY_DEVICE_METRICS = 2
     private const val DM_BATTERY_LEVEL = 1
     private const val DM_VOLTAGE = 2
+    private const val DM_CHANNEL_UTILIZATION = 3
+    private const val DM_AIR_UTIL_TX = 4
 }
 
 /** A `MeshPacket` we send: broadcast, one `Data` sub-message, a client-assigned [id] for NAK correlation. */
@@ -880,6 +886,16 @@ internal class MeshPacket(
 internal data class DeviceMetrics(
     val batteryLevel: Int?,
     val voltage: Float?,
+    /** How much of the last hour the board heard the channel busy, as a percentage. */
+    val channelUtilPercent: Float? = null,
+    /**
+     * How much of the last hour the board spent **transmitting**, as a percentage — its own measurement of
+     * the thing [app.getknit.knit.mesh.lora.LoraAirtime] estimates. The two are not the same quantity and
+     * must not be read as if they were: this counts every packet the radio sent, relays of other people's
+     * traffic included, over an hour; the governor counts what Knit handed the board over fifteen minutes.
+     * Surfaced so the gap between them is visible rather than inferred.
+     */
+    val airUtilTxPercent: Float? = null,
 )
 
 /** A decoded `Data` sub-message. */

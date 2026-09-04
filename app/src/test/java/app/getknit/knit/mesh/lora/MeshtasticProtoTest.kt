@@ -532,6 +532,28 @@ class MeshtasticProtoTest {
     }
 
     @Test
+    fun decodeTelemetryReadsTheBoardsOwnDutyCycle() {
+        // Telemetry { time, device_metrics { battery_level = 101, voltage = 3.92, channel_utilization =
+        // 3.7733335, air_util_tx = 0.60725 } }, encoded by the real protobuf. air_util_tx is the board's own
+        // measurement of what LoraAirtime estimates, so the field numbers under it are worth pinning: read
+        // channel_utilization as air_util_tx and a quiet plane reports six times the duty it is using.
+        val metrics = MeshtasticProto.decodeTelemetry(hex("0D 15 DD B9 66 12 11 08 65 15 48 E1 7A 40 1D 4C 7E 71 40 25 BC 74 1B 3F"))
+        assertEquals(101, metrics?.batteryLevel)
+        assertEquals(3.92f, metrics?.voltage!!, 0.0001f)
+        assertEquals(3.7733335f, metrics.channelUtilPercent!!, 0.0001f)
+        assertEquals(0.60725f, metrics.airUtilTxPercent!!, 0.0001f)
+    }
+
+    @Test
+    fun aBoardThatReportsNoDutyCycleLeavesThePairNull() {
+        // The existing vector: battery and voltage only. Both must stay null rather than read as zero — a
+        // NodeInfo carries battery without the pair, and a reported 0 % is a real answer that means idle.
+        val metrics = MeshtasticProto.decodeTelemetry(hex("0D C3 B2 A1 66 12 0A 08 65 15 48 E1 7A 40 28 E8 07"))
+        assertNull(metrics?.channelUtilPercent)
+        assertNull(metrics?.airUtilTxPercent)
+    }
+
+    @Test
     fun decodeTelemetryOfAnotherVariantIsNull() {
         // Telemetry { environment_metrics (field 3) { temperature = 20.0f } } — says nothing about the battery.
         assertNull(MeshtasticProto.decodeTelemetry(hex("1A 05 0D 00 00 A0 41")))

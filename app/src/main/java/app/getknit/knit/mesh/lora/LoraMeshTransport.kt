@@ -1043,6 +1043,7 @@ internal class LoraMeshTransport(
                 heard = _reachable.value.size,
                 boardsHeard = boardsHeardAt.size,
                 battery = link.battery.value,
+                boardAir = link.boardAir.value,
                 airtime = pace.airtime.snapshot(clock()),
                 role = role,
                 pocketLinks = linkedPeers.size,

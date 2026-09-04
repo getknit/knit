@@ -24,6 +24,8 @@ internal data class LoraStatus(
     val boardsHeard: Int = 0,
     /** The board's own power reading, once its handshake or telemetry has reported one. */
     val battery: BoardBattery? = null,
+    /** The board's own duty-cycle measurement, beside [airtime]'s estimate of Knit's share of it. */
+    val boardAir: BoardAir? = null,
     /** The airtime ledger: what the plane has spent this window against what it allows itself (ADR 044/054). */
     val airtime: AirtimeSnapshot? = null,
     /** Whether this phone speaks for its pocket on the hop, or another board here does (ADR 044). */

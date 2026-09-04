@@ -66,6 +66,9 @@ internal class MeshtasticSession(
     private val _battery = MutableStateFlow<BoardBattery?>(null)
     override val battery = _battery.asStateFlow()
 
+    private val _boardAir = MutableStateFlow<BoardAir?>(null)
+    override val boardAir = _boardAir.asStateFlow()
+
     private val _nodes = MutableStateFlow<Map<UInt, BoardOwner>>(emptyMap())
     override val nodes = _nodes.asStateFlow()
 
@@ -100,6 +103,7 @@ internal class MeshtasticSession(
         address = null
         failAllPending(SendResult.NotReady(LinkState.Idle))
         _battery.value = null
+        _boardAir.value = null
         _nodes.value = emptyMap()
         _state.value = LinkState.Idle
     }
@@ -248,6 +252,7 @@ internal class MeshtasticSession(
         board = null
         channels = emptyList()
         _battery.value = null
+        _boardAir.value = null
         classify(address, channel.subscribeFromNum(SUBSCRIBE_TIMEOUT_MS))?.let { return it }
         // Drain any stale queue from a previous phone session before our want_config nonce.
         drainQuietly(channel)
@@ -468,6 +473,11 @@ internal class MeshtasticSession(
 
     private fun onSelfMetrics(metrics: DeviceMetrics) {
         _battery.value = BoardBattery.of(metrics.batteryLevel, metrics.voltage)
+        // Only overwrite when the board actually reported one: a NodeInfo carries battery without the
+        // duty-cycle pair, and blanking the reading on every handshake would lose it for a minute each time.
+        if (metrics.channelUtilPercent != null || metrics.airUtilTxPercent != null) {
+            _boardAir.value = BoardAir(metrics.channelUtilPercent, metrics.airUtilTxPercent)
+        }
     }
 
     private fun routeNak(data: MeshData) {

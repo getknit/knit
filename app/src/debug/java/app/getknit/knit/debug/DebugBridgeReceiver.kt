@@ -1166,6 +1166,11 @@ class DebugBridgeReceiver :
                 "airtime",
                 status.airtime?.let { air ->
                     JSONObject()
+                        // The board's own measurement beside the governor's estimate. Different quantities on
+                        // purpose — an hour of everything this radio sent, against fifteen minutes of what
+                        // Knit handed it — so the gap is readable instead of being mistaken for a leak.
+                        .put("boardAirUtilTxPercent", status.boardAir?.airUtilTxPercent?.toDouble() ?: JSONObject.NULL)
+                        .put("boardChannelUtilPercent", status.boardAir?.channelUtilPercent?.toDouble() ?: JSONObject.NULL)
                         .put("liveMs", air.liveUsedMs)
                         .put("liveBudgetMs", air.liveBudgetMs)
                         .put("bridgeMs", air.bridgeUsedMs)

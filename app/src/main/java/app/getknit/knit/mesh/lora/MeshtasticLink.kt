@@ -32,6 +32,12 @@ internal interface MeshtasticLink {
     val battery: StateFlow<BoardBattery?>
 
     /**
+     * The board's own duty-cycle measurement, from the same telemetry as [battery]; null until reported and
+     * again once the link is stopped. It is the ground truth `LoraAirtime` only estimates — see [BoardAir].
+     */
+    val boardAir: StateFlow<BoardAir?>
+
+    /**
      * What the mesh's other nodes call themselves, keyed by node number — the board's NodeDB as it streams in
      * the handshake and stays current through `NODEINFO_APP` broadcasts. Only the LongFast bridge reads it, to
      * put a name on a bridged post instead of a bare node number.
@@ -222,6 +228,18 @@ internal class ReceivedPacket(
     val hopsAway: Int?,
     /** `MeshPacket.via_mqtt` — the packet came off an MQTT uplink rather than the air. Read by the bridge only. */
     val viaMqtt: Boolean = false,
+)
+
+/**
+ * What the board says about the air, off its own `DeviceMetrics`. **Not comparable to `LoraAirtime`'s ledger
+ * without saying so**, and the pair is worth keeping straight: [airUtilTxPercent] is every packet this radio
+ * sent over the last **hour**, relays of other people's traffic included, while the governor tracks what Knit
+ * handed the board over the last **fifteen minutes**. Reading one as the other is what made a quiet plane look
+ * like it had leaked airtime. [channelUtilPercent] is the band around it, which Knit never controls at all.
+ */
+internal data class BoardAir(
+    val channelUtilPercent: Float?,
+    val airUtilTxPercent: Float?,
 )
 
 /** The board's transmit-queue headroom. */
