@@ -130,6 +130,17 @@ class SettingsStoreTest {
         }
 
     @Test
+    fun `link previews default off and round-trip on`() =
+        runTest {
+            val store = newStore()
+            assertFalse(store.linkPreviewsEnabled.first())
+            store.setLinkPreviewsEnabled(true)
+            assertTrue(store.linkPreviewsEnabled.first())
+            store.setLinkPreviewsEnabled(false)
+            assertFalse(store.linkPreviewsEnabled.first())
+        }
+
+    @Test
     fun `open to chat defaults off and round-trips on`() =
         runTest {
             val store = newStore()

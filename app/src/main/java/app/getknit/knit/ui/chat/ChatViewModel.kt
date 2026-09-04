@@ -10,6 +10,7 @@ import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GallerySaver
 import app.getknit.knit.data.GroupRepository
+import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -40,6 +41,8 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.displayNameFor
+import app.getknit.knit.linkpreview.LinkPreviewPolicy
+import app.getknit.knit.linkpreview.LinkPreviewService
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
@@ -48,6 +51,8 @@ import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.meshNodeLabel
+import app.getknit.knit.mesh.protocol.LinkCard
+import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.ReplyRef
@@ -67,7 +72,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -128,6 +135,11 @@ data class ChatRow(
     // about delivery, which the ✓/✓✓ tick keeps to itself. Set only for our own sends; see the mapping
     // in [ChatViewModel].
     val attachmentRelay: AttachmentRelay = AttachmentRelay.Silent,
+    // The decoded link-preview card when this attachment is one ([attachmentMime] is the card MIME), its blob
+    // is here, it decoded, and — the receiver's guard against a card attached to a link it does not describe —
+    // its link is one the body actually contains. Null until then: the bubble draws nothing for a card that
+    // has not arrived, never a spinner, since the body's own link is already tappable.
+    val linkCard: LinkCard? = null,
     // A voice note's playing time and waveform bars, both derived locally from the audio (never carried on
     // the wire — see [app.getknit.knit.data.VoiceAudio]). Null until the blob has arrived and been
     // described, which is why the bubble can render a length-less placeholder in the meantime.
@@ -294,6 +306,12 @@ class ChatViewModel(
     // App-scoped on purpose: any number of voice-note bubbles can be on screen and only one may sound, so
     // arbitration can't live in a per-screen ViewModel.
     private val voicePlayer: VoicePlayer,
+    // The decoded link-preview cards, app-scoped like the blobs they come from: a card decoded for one thread
+    // is the same card in another, and the image loader reads the same store for its picture.
+    private val linkCards: LinkCardStore,
+    // Fetches the card for a link in this composer's draft — the sender-side half of link previews, the only
+    // half that ever touches the Internet, gated on the setting, the validated-Internet route and the audience.
+    private val linkPreviews: LinkPreviewService,
     // The facts flow, not the repository that produces it. Narrow on purpose: this ViewModel needs a
     // Flow<RelayFacts> and nothing else, and the production flow is an infinite poller — under a test's
     // virtual clock its `delay` is instant, so a test that drives this VM with `advanceUntilIdle()` could
@@ -324,6 +342,21 @@ class ChatViewModel(
      */
     private val _confirmAttachment = MutableStateFlow<AttachmentStore.Ingested?>(null)
     val confirmAttachment: StateFlow<AttachmentStore.Ingested?> = _confirmAttachment.asStateFlow()
+
+    /** The composer's text as typed, fed by the screen so a link in it can grow a card. Never persisted. */
+    private val draft = MutableStateFlow("")
+
+    /** Bumped when the draft is sent or a card dismissed, so a fetch still in flight cannot stage into the next draft. */
+    private val draftEpoch = MutableStateFlow(0)
+
+    /** Per-draft memory, main-thread-confined: the link whose card the user removed, and links that yielded none. */
+    private var dismissedUrl: String? = null
+    private val failedUrls = HashSet<String>()
+
+    private val _linkPreviewLoading = MutableStateFlow(false)
+
+    /** True while a card is being fetched for the draft; the composer shows a transient "Loading preview…" line. */
+    val linkPreviewLoading: StateFlow<Boolean> = _linkPreviewLoading.asStateFlow()
 
     /**
      * Live state of an in-progress recording, or null when the mic is idle. [elapsedMs] drives the counter,
@@ -367,6 +400,19 @@ class ChatViewModel(
 
     init {
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
+        watchDraftForLinks()
+        // Decode every link-preview card in this thread whose blob has landed, once; the store dedups and the
+        // rows pick the result up through blobState. The pair list is distinct so a size change elsewhere in
+        // the table does not re-walk the thread.
+        viewModelScope.launch {
+            combine(messages.observeMessages(conversationId), blobs.observeSizes()) { msgs, sizes ->
+                msgs
+                    .filter { it.attachmentMime == LinkPreviewBlob.MIME && it.attachmentHash != null && it.attachmentHash in sizes }
+                    .map { it.attachmentHash!! to it.attachmentKey }
+            }.distinctUntilChanged().collect { held ->
+                held.forEach { (hash, key) -> linkCards.ensure(hash, key) }
+            }
+        }
         // Advance this conversation's read watermark while the chat is on screen: on every stream
         // emission (so messages arriving while you read don't reappear as unread), stamp newest sentAt.
         viewModelScope.launch {
@@ -390,22 +436,35 @@ class ChatViewModel(
         val blobSizes: Map<String, Int>,
         val flaggedHashes: Set<String>,
         val hideSensitiveContent: Boolean,
+        // blob hash -> the decoded link-preview card, for every card this process has opened so far.
+        val linkCards: Map<String, LinkCard>,
         val group: GroupEntity?,
         // messageId -> how many current roster members have acked it. Empty outside a group.
         val deliveredCounts: Map<String, Int>,
     )
 
-    // Held blob sizes + moderation-flagged hashes plus the content-filtering setting, combined upstream
-    // so the main bundle stays at the typed 5-flow combine overload. The setting only gates receive-side
-    // *hiding* (the chat blur + toxic-text collapse below), so toggling it reactively reveals/hides
-    // already-received content without re-screening; what you can send is enforced elsewhere regardless.
+    // What the blob table and the moderation cache say about every attachment, folded into one arm of the
+    // message bundle so it stays at the typed 5-flow combine overload.
+    private data class BlobState(
+        val sizes: Map<String, Int>,
+        val flagged: Set<String>,
+        val hideSensitive: Boolean,
+        val linkCards: Map<String, LinkCard>,
+    )
+
+    // Held blob sizes + moderation-flagged hashes plus the content-filtering setting, and the decoded
+    // link-preview cards, combined upstream so the main bundle stays at the typed 5-flow combine overload.
+    // The setting only gates receive-side *hiding* (the chat blur + toxic-text collapse below), so toggling
+    // it reactively reveals/hides already-received content without re-screening; what you can send is
+    // enforced elsewhere regardless.
     private val blobState =
         combine(
             blobs.observeSizes(),
             imageScreening.observeFlaggedHashes(),
             settings.contentFilteringEnabled,
-        ) { sizes, flagged, hideSensitive ->
-            Triple(sizes, flagged.toSet(), hideSensitive)
+            linkCards.cards,
+        ) { sizes, flagged, hideSensitive, cards ->
+            BlobState(sizes, flagged.toSet(), hideSensitive, cards)
         }
 
     // The group row paired with "how many members have acked each message", re-subscribed whenever the
@@ -432,14 +491,15 @@ class ChatViewModel(
             settings.blockedNodeIds,
             blobState,
             groupDelivery,
-        ) { msgs, reacts, blocked, (sizes, flagged, hideSensitive), (group, delivered) ->
+        ) { msgs, reacts, blocked, blob, (group, delivered) ->
             MessagesBundle(
                 msgs.filter { it.senderId !in blocked },
                 reacts,
                 blocked,
-                sizes,
-                flagged,
-                hideSensitive,
+                blob.sizes,
+                blob.flagged,
+                blob.hideSensitive,
+                blob.linkCards,
                 group,
                 delivered,
             )
@@ -547,6 +607,7 @@ class ChatViewModel(
             val blobSizes = bundle.blobSizes
             val flaggedHashes = bundle.flaggedHashes
             val hideSensitive = bundle.hideSensitiveContent
+            val cards = bundle.linkCards
             val group = bundle.group
             val deliveredCounts = bundle.deliveredCounts
             val isGroup = group != null
@@ -612,13 +673,16 @@ class ChatViewModel(
                         attachmentFlagged = hideSensitive && m.attachmentHash != null && m.attachmentHash in flaggedHashes,
                         // Outbound reach only: a received attachment has already arrived, so telling its
                         // reader it is "nearby only" would describe a journey that is over. Unknown size
-                        // (bytes reclaimed by retention) falls through to Silent rather than guessing.
+                        // (bytes reclaimed by retention) falls through to Silent rather than guessing. A
+                        // link-preview card stays Silent too: a card that does not make the Internet
+                        // shortcut is no loss worth a marker.
                         attachmentRelay =
-                            if (mine && heldBytes != null) {
+                            if (mine && heldBytes != null && m.attachmentMime != LinkPreviewBlob.MIME) {
                                 attachmentReach(conversationId, heldBytes, relay)
                             } else {
                                 AttachmentRelay.Silent
                             },
+                        linkCard = linkCardFor(m, cards),
                         mentions = MentionStore.decode(m.mentions),
                         reactions = tallies,
                         replyTo = m.replyRef(),
@@ -780,9 +844,130 @@ class ChatViewModel(
             blobs.observeSizes(),
             relayFacts,
         ) { staged, sizes, relay ->
+            if (staged?.link != null) return@combine AttachmentRelay.Silent // a card's reach is never a marker
             val bytes = staged?.hash?.let { sizes[it] } ?: return@combine AttachmentRelay.Silent
             attachmentReach(conversationId, bytes, relay)
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AttachmentRelay.Silent)
+
+    /**
+     * The card for [m] when it carries one that has been decoded ([cards]) **and** whose link the body
+     * actually contains — a sender cannot attach one page's card to another page's link. The compare is on
+     * normalized links, so a typed `http://` and the card's `https://` form still match.
+     */
+    private fun linkCardFor(
+        m: MessageEntity,
+        cards: Map<String, LinkCard>,
+    ): LinkCard? {
+        if (m.attachmentMime != LinkPreviewBlob.MIME) return null
+        val card = m.attachmentHash?.let { cards[it] } ?: return null
+        return card.takeIf { c -> findUrls(m.body).any { LinkPreviewPolicy.sameUrl(it.url, c.url) } }
+    }
+
+    /** The screen reports every edit of the draft here; a blank draft resets the per-draft memory. */
+    fun onDraftChanged(text: String) {
+        draft.value = text
+        if (text.isBlank()) {
+            dismissedUrl = null
+            failedUrls.clear()
+        }
+    }
+
+    /**
+     * Whether every recipient of this thread can render a card, or null when the room is the audience: a DM or
+     * group message carries a card only toward pinned profiles carrying [Protocol.CAP_LINK_PREVIEW], since a
+     * build without it shows a spinner where the card should be. Silent, unlike [refusalForFile] — an implicit
+     * action has no affordance to explain itself through, and the message goes as plain text either way.
+     */
+    private suspend fun audienceCannotRenderCards(): Boolean {
+        if (isRoom) return false
+        val members = groups.find(conversationId)?.let { GroupMembersStore.decode(it.members) }.orEmpty()
+        val me = identity.nodeId()
+        val audience = if (members.isEmpty()) listOf(conversationId) else members.filter { it != me }
+        return audience.isEmpty() || audience.any { (peers.find(it)?.capabilities ?: 0L) and Protocol.CAP_LINK_PREVIEW == 0L }
+    }
+
+    /**
+     * The composer's link-preview loop: the first eligible link in the draft, debounced, becomes a staged card
+     * when every gate agrees — the setting is on, a validated route exists, nothing else is staged, the link
+     * was not dismissed or found empty in this draft, the thread does not ride LoRa (a card's reference costs
+     * body budget there and its bytes never cross), and the audience can render one. `collectLatest` cancels a
+     * fetch the moment the link or the epoch changes, so a card can only ever land on the draft it was
+     * fetched for.
+     */
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    private fun watchDraftForLinks() {
+        viewModelScope.launch {
+            combine(
+                draft.map(LinkPreviewPolicy::firstEligible),
+                draftEpoch,
+                linkPreviews.online,
+                // Whether the one attachment slot is free: clearing a staged photo re-arms the link under it.
+                _pendingAttachment.map { it == null },
+            ) { url, epoch, online, free -> DraftKey(url, epoch, online, free) }
+                .distinctUntilChanged()
+                .debounce(PREVIEW_DEBOUNCE_MS)
+                .collectLatest { key -> considerCard(key.url, key.online) }
+        }
+    }
+
+    /** Everything the link loop reacts to; a change in any field re-runs [considerCard] after the debounce. */
+    private data class DraftKey(
+        val url: String?,
+        val epoch: Int,
+        val online: Boolean,
+        val free: Boolean,
+    )
+
+    private suspend fun considerCard(
+        url: String?,
+        online: Boolean,
+    ) {
+        val staged = _pendingAttachment.value
+        if (url == null) {
+            if (staged?.link != null) clearAttachment()
+            return
+        }
+        if (!cardWanted(url, staged, online)) return
+        _linkPreviewLoading.value = true
+        try {
+            stageCard(url)
+        } finally {
+            _linkPreviewLoading.value = false
+        }
+    }
+
+    /** Every gate a fetch for [url] has to pass, cheapest first; the audience read comes last because it hits the DB. */
+    private suspend fun cardWanted(
+        url: String,
+        staged: AttachmentStore.Ingested?,
+        online: Boolean,
+    ): Boolean =
+        staged == null &&
+            url != dismissedUrl &&
+            url !in failedUrls &&
+            online &&
+            settings.linkPreviewsEnabled.first() &&
+            state.value.loraCarry == LoraCarry.None &&
+            !audienceCannotRenderCards()
+
+    private suspend fun stageCard(url: String) {
+        when (val result = linkPreviews.fetchCard(url, isRoom)) {
+            is LinkPreviewService.CardResult.Card -> {
+                // Re-check: a photo may have been staged, or the draft edited or sent, while the fetch ran.
+                if (_pendingAttachment.value == null && LinkPreviewPolicy.firstEligible(draft.value) == url) {
+                    stage(attachments.ingestLinkPreview(result.blob), notifyFailure = false)
+                }
+            }
+
+            LinkPreviewService.CardResult.NoCard -> {
+                failedUrls += url
+            }
+
+            LinkPreviewService.CardResult.Offline, LinkPreviewService.CardResult.Restricted -> {
+                // Not an answer about the link: retried when the route returns.
+            }
+        }
+    }
 
     /**
      * Double-submit guard: true from the moment a send is accepted until its input is cleared (success)
@@ -848,6 +1033,11 @@ class ChatViewModel(
                     // hash, so writing it here against the plaintext hash staged above would silently
                     // update no rows at all.
                     _pendingAttachment.value = null
+                    // The next draft starts clean: no dismissed link, no failed ones, and a card fetch still in
+                    // flight for this one can no longer stage into it.
+                    dismissedUrl = null
+                    failedUrls.clear()
+                    draftEpoch.value++
                     // Guard stays held until the screen reports the field cleared (onInputCleared), so no
                     // duplicate can slip through the tryEmit -> collect -> clearText hop.
                     _clearInput.tryEmit(Unit)
@@ -1028,6 +1218,10 @@ class ChatViewModel(
             is AttachmentStore.IngestResult.Success -> {
                 when {
                     !result.flagged -> {
+                        // A staged card gives way to whatever the user attached on purpose (one slot).
+                        _pendingAttachment.value?.takeIf { it.link != null && result.ingested.link == null }?.let { card ->
+                            blobs.deleteIfUnreferenced(card.hash)
+                        }
                         _pendingAttachment.value = result.ingested
                     }
 
@@ -1180,6 +1374,12 @@ class ChatViewModel(
     fun clearAttachment() {
         val pending = _pendingAttachment.value ?: return
         _pendingAttachment.value = null
+        // Removing a card is a decision about this draft: the same link is not fetched again until the draft
+        // is emptied or sent, and a fetch still running for it is cancelled by the epoch bump.
+        pending.link?.let { card ->
+            dismissedUrl = card.url
+            draftEpoch.value++
+        }
         viewModelScope.launch { blobs.deleteIfUnreferenced(pending.hash) }
     }
 
@@ -1288,6 +1488,9 @@ class ChatViewModel(
     }
 
     private companion object {
+        /** How long the draft must rest on a link before its card is fetched. */
+        const val PREVIEW_DEBOUNCE_MS = 600L
+
         /** Send a typing cue at most this often while actively editing (< the receiver's ~12 s hold, so a peer
          *  who keeps typing re-cues before their indicator would expire). */
         const val TYPING_SEND_INTERVAL_MS = 8_000L

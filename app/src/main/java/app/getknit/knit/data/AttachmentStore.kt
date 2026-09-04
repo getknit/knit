@@ -3,10 +3,11 @@ package app.getknit.knit.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
-import android.os.Build
 import android.provider.OpenableColumns
 import app.getknit.knit.data.webp.WebpTranscode
 import app.getknit.knit.mesh.protocol.AttachmentName
+import app.getknit.knit.mesh.protocol.LinkCard
+import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.moderation.ImageScreeningService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -58,6 +59,10 @@ class AttachmentStore(
      * [name] and [sizeBytes] travel the same way and for the same reason, and are set only by [ingestFile].
      * [sizeBytes] is the **plaintext** length deliberately: it is what the recipient will save, whereas the
      * blob stored under [hash] in a DM or group is that plaintext plus its seal.
+     *
+     * [link] is the same idea for a link-preview card ([ingestLinkPreview]): what the composer draws for the
+     * staged card and the link its dismissal is remembered by, carried on the one staged object rather than
+     * kept beside it.
      */
     data class Ingested(
         val hash: String,
@@ -65,6 +70,7 @@ class AttachmentStore(
         val voice: VoiceAudio.Description? = null,
         val name: String? = null,
         val sizeBytes: Int = 0,
+        val link: LinkCard? = null,
     )
 
     /**
@@ -254,6 +260,24 @@ class AttachmentStore(
         }
     }
 
+    /**
+     * Stores a link-preview card the sender fetched for a link in its draft, as the blob its message will
+     * reference — the third door, beside images and files, and the narrowest: the container is already built
+     * and already moderated (`LinkPreviewService` screened the picture and the text on the way in), so nothing
+     * here decodes or classifies. Never flagged, for that reason; the card rides a DM or group sealed like any
+     * other attachment, and the Nearby room in the clear.
+     */
+    suspend fun ingestLinkPreview(blob: LinkPreviewBlob): IngestResult =
+        withContext(Dispatchers.IO) {
+            val bytes = blob.encode()
+            if (bytes.isEmpty() || bytes.size > LinkPreviewBlob.MAX_BYTES) {
+                return@withContext IngestResult.Failed(IngestResult.Reason.TooLarge)
+            }
+            val hash = sha256(bytes)
+            blobs.insert(hash, LinkPreviewBlob.MIME, bytes)
+            IngestResult.Success(Ingested(hash, LinkPreviewBlob.MIME, link = blob.toCard()), flagged = false)
+        }
+
     /** The failure [bytes] earn on the shared size/emptiness gate, or null when they are fine to store. */
     private fun failureFor(bytes: ByteArray): IngestResult.Failed? =
         when {
@@ -287,17 +311,9 @@ class AttachmentStore(
                 // black. When the source carries transparency, re-encode as lossy WebP instead — it keeps
                 // the alpha channel and still compresses well; opaque photos stay JPEG (smallest).
                 if (scaled.hasAlpha()) {
-                    // WEBP (deprecated at API 30) is the API-29 lossy WebP format; WEBP_LOSSY is API 30.
-                    @Suppress("DEPRECATION")
-                    val webpFormat =
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            Bitmap.CompressFormat.WEBP_LOSSY
-                        } else {
-                            Bitmap.CompressFormat.WEBP
-                        }
                     val webp =
                         ByteArrayOutputStream().use { out ->
-                            scaled.compress(webpFormat, WEBP_QUALITY, out)
+                            scaled.compress(lossyWebpFormat(), WEBP_QUALITY, out)
                             out.toByteArray()
                         }
                     "image/webp" to webp

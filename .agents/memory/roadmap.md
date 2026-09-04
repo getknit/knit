@@ -168,9 +168,12 @@ doc). **Don't start a deferred item without explicit direction.**
   - ~~a switch per relay~~ (**done 2026-08-30** — ADR 063. `SettingsStore.spool_urls_disabled` holds
     the parked subset, and the composed `activeSpoolUrls` is the single seam every consumer reads,
     the way `spoolEnabled` already gated the plane. No wire, DB or protocol change.)
-  - a validated-Internet `ConnectivityManager` seam (the MVP reconnects on backoff instead, which
-    is why `rules/mesh.md` still reads NAN-only and `ACCESS_NETWORK_STATE` is still undeclared);
-    the Tor SOCKS toggle; per-**conversation** opt-out (deliberately **not** built — which
+  - ~~a validated-Internet `ConnectivityManager` seam~~ (**shipped 2026-09-03** as `net/InternetGate`
+    for link previews, ADR 2026-09.n752 — `ACCESS_NETWORK_STATE` is declared and `rules/mesh.md` names
+    the second `ConnectivityManager` user; **`ScopeSync` does not consume it yet** and still reconnects
+    on backoff, so wiring the plane onto the gate is the remaining half); the Tor SOCKS toggle (the
+    preview fetcher's `OkHttpPreviewFetcher.bound` is the second place a proxy would go);
+    per-**conversation** opt-out (deliberately **not** built — which
     conversations ride the plane is all-or-nothing by product decision, 2026-08-16, and the consent
     sheet says so. Note the axis: ADR 063 ships a per-**relay** switch, which chooses *which third
     party* carries, not *which conversations* do — that decision is untouched).

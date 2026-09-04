@@ -1,5 +1,6 @@
 package app.getknit.knit.data
 
+import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.sha256Hex
 import app.getknit.knit.moderation.ImageScreeningService
 import io.mockk.coEvery
@@ -161,4 +162,39 @@ class MeshBlobStoreTest {
         }
 
     private fun assertFileGone(file: File) = assertFalse("staging copy must be deleted", file.exists())
+
+    @Test
+    fun `a room card is opened and screened as a card, not decoded as an image`() =
+        runTest {
+            row(LinkPreviewBlob.MIME, key = null)
+
+            store().saveIncoming(hash, "image/jpeg", staged().absolutePath)
+
+            coVerify(exactly = 1) { imageScreening.screenAttachment(hash, bytes, LinkPreviewBlob.MIME, isRoom = true) }
+            coVerify(exactly = 0) { imageScreening.screenImage(any(), any()) }
+        }
+
+    @Test
+    fun `a sealed card skips the screen here like any sealed non-image`() =
+        runTest {
+            // Ciphertext: the container is opened and screened after decryption, in InboundPipeline.onObtained.
+            row(LinkPreviewBlob.MIME, key = "a2V5")
+
+            store().saveIncoming(hash, "image/jpeg", staged().absolutePath)
+
+            coVerify(exactly = 0) { imageScreening.screenAttachment(any(), any(), any(), any()) }
+            coVerify(exactly = 0) { imageScreening.screenImage(any(), any()) }
+        }
+
+    @Test
+    fun `a peer claiming the card mime for a blob no row names is still screened as an image`() =
+        runTest {
+            // The header is the asker's choice; only our own row can route a blob into the card screen.
+            row(mime = null)
+
+            store().saveIncoming(hash, LinkPreviewBlob.MIME, staged().absolutePath)
+
+            coVerify(exactly = 1) { imageScreening.screenImage(hash, bytes) }
+            coVerify(exactly = 0) { imageScreening.screenAttachment(any(), any(), any(), any()) }
+        }
 }

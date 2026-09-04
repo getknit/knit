@@ -1,6 +1,8 @@
 package app.getknit.knit.di
 
+import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.relay.RelayStatusRepository
+import app.getknit.knit.linkpreview.LinkPreviewService
 import app.getknit.knit.mesh.lora.LoraStatusRepository
 import app.getknit.knit.ui.addcontact.AddContactViewModel
 import app.getknit.knit.ui.blocked.BlockedUsersViewModel
@@ -41,6 +43,8 @@ val uiModule =
                 get(),
                 get(),
                 get(),
+                get<LinkCardStore>(),
+                get<LinkPreviewService>(),
                 get<RelayStatusRepository>().facts,
                 get<LoraStatusRepository>().facts,
                 androidContext(),

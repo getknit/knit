@@ -37,6 +37,7 @@ import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupInfo
+import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.Protocol
@@ -723,6 +724,46 @@ class MeshManagerTest {
             assertNull("a room attachment is not re-sealed, so the plaintext hash rides as-is", content.enc)
             assertEquals("plain-hash", content.attachmentHash)
             assertEquals("and its mime stays in the clear with the rest of the room's content", "image/webp", content.attachmentMime)
+        }
+
+    @Test
+    fun aLinkPreviewCardRidesADmSealedLikeAPhotoAndTheRoomInTheClear() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A card is an ordinary attachment under its own MIME (ADR 2026-09.n752): in a DM the container is
+            // re-sealed under its ciphertext hash with the MIME and key inside the seal, and the cleartext frame
+            // names the hash alone; in the room the plaintext container and its MIME ride as-is.
+            val rig = Rig(backgroundScope)
+            rig.pin(rig.bob)
+            val container = LinkPreviewBlob(LinkPreviewBlob.VERSION, "https://example.com/a", "Title").encode()
+            val card = LinkPreviewBlob.decodeOrNull(container)!!.toCard()
+            coEvery { rig.blobs.bytes("card-plain") } returns container
+            val staged = AttachmentStore.Ingested(hash = "card-plain", mime = LinkPreviewBlob.MIME, link = card)
+
+            assertTrue(rig.manager.sendChat("see https://example.com/a", attachment = staged, recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+            val dm = WireCodec.decodePayload<ChatContent>(rig.sentChatFrames().single().payload)!!
+            val ctHash = dm.attachmentHash!!
+            assertNotEquals("card-plain", ctHash)
+            assertNull("the card's type never rides the cleartext frame", dm.attachmentMime)
+            coVerify { rig.blobs.insert(ctHash, LinkPreviewBlob.MIME, any()) }
+            val header =
+                MessageCrypto.header(
+                    rig.sentChatFrames().single().id,
+                    rig.me.nodeId,
+                    rig.sentChatFrames().single().sentAt,
+                    rig.bob.nodeId,
+                )
+            val opened = rig.bob.crypto.open(dm.enc!!, header, rig.bob.nodeId)!!
+            assertEquals(LinkPreviewBlob.MIME, opened.attachmentMime)
+            assertNotNull(opened.attachmentKey)
+            assertNull("a card has no name and no declared size", opened.attachmentName)
+
+            assertTrue(rig.manager.sendChat("see https://example.com/a", attachment = staged))
+            advanceUntilIdle()
+            val room = WireCodec.decodePayload<ChatContent>(rig.sentChatFrames().last().payload)!!
+            assertNull(room.enc)
+            assertEquals("card-plain", room.attachmentHash)
+            assertEquals(LinkPreviewBlob.MIME, room.attachmentMime)
         }
 
     @Test

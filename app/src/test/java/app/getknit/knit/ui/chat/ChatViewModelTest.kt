@@ -9,6 +9,7 @@ import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GallerySaver
 import app.getknit.knit.data.GroupRepository
+import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -25,12 +26,15 @@ import app.getknit.knit.data.relay.RelayReach
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.linkpreview.LinkPreviewService
 import app.getknit.knit.mesh.FakeMeshController
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
+import app.getknit.knit.mesh.protocol.LinkCard
+import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.notifications.Notifier
@@ -86,6 +90,8 @@ class ChatViewModelTest {
     private val imageScreening = mockk<ImageScreeningService>(relaxed = true)
     private val gallerySaver = mockk<GallerySaver>(relaxed = true)
     private val voicePlayer = mockk<VoicePlayer>(relaxed = true)
+    private val linkCards = mockk<LinkCardStore>(relaxed = true)
+    private val linkPreviews = mockk<LinkPreviewService>(relaxed = true)
 
     private val messagesFlow = MutableStateFlow(emptyList<MessageEntity>())
     private val reactionsFlow = MutableStateFlow(emptyList<ReactionEntity>())
@@ -104,6 +110,9 @@ class ChatViewModelTest {
     private val relayRoomNoticeDismissedFlow = MutableStateFlow(false)
     private val loraFactsFlow = MutableStateFlow(LoraFacts())
     private val deliveredCountsFlow = MutableStateFlow(emptyMap<String, Int>())
+    private val cardsFlow = MutableStateFlow(emptyMap<String, LinkCard>())
+    private val onlineFlow = MutableStateFlow(true)
+    private val linkPreviewsEnabledFlow = MutableStateFlow(false)
 
     @Before
     fun setUp() {
@@ -130,6 +139,10 @@ class ChatViewModelTest {
         every { settings.activeSpoolUrls } returns activeSpoolUrlsFlow
         every { settings.relayRoomNoticeDismissed } returns relayRoomNoticeDismissedFlow
         every { receipts.observeDeliveredCounts(any(), any()) } returns deliveredCountsFlow
+        // Same trap: the decoded-card map is an arm of the blob-state combine.
+        every { linkCards.cards } returns cardsFlow
+        every { linkPreviews.online } returns onlineFlow
+        every { settings.linkPreviewsEnabled } returns linkPreviewsEnabledFlow
     }
 
     @After
@@ -171,6 +184,8 @@ class ChatViewModelTest {
             imageScreening,
             gallerySaver,
             voicePlayer,
+            linkCards,
+            linkPreviews,
             // A finite flow, not the production poller: RelayStatusRepository emits on an infinite
             // `while(true) { emit; delay }`, and under runTest's virtual clock that delay is instant, so
             // `advanceUntilIdle()` below would never reach idle.
@@ -1143,5 +1158,176 @@ class ChatViewModelTest {
             assertEquals("report.pdf", row.attachmentName)
             assertEquals(1_400_000L, row.attachmentSize)
             assertEquals("the measured length supersedes the declared one once we hold the bytes", 1_398_101, row.attachmentBytes)
+        }
+
+    // ---- Link previews: the composer's card loop and the received card's row ----
+
+    private val cardUrl = "https://example.com/a"
+    private val cardBlob = LinkPreviewBlob(LinkPreviewBlob.VERSION, cardUrl, "Mesh networking", "How phones find each other")
+    private val staged = AttachmentStore.Ingested("h-card", LinkPreviewBlob.MIME, link = cardBlob.toCard())
+
+    private fun aCardIsAvailable() {
+        linkPreviewsEnabledFlow.value = true
+        coEvery { linkPreviews.fetchCard(cardUrl, any()) } returns LinkPreviewService.CardResult.Card(cardBlob)
+        coEvery { attachments.ingestLinkPreview(cardBlob) } returns AttachmentStore.IngestResult.Success(staged, flagged = false)
+    }
+
+    @Test
+    fun aLinkInTheDraftStagesItsCardOnceTheDraftRests() =
+        runTest {
+            aCardIsAvailable()
+            val vm = vm()
+            vm.onDraftChanged("look https://example.com/a")
+            advanceUntilIdle()
+            assertEquals(staged, vm.pendingAttachment.value)
+            assertFalse(vm.linkPreviewLoading.value)
+            coVerify(exactly = 1) { linkPreviews.fetchCard(cardUrl, isRoom = true) }
+            // The card rides the send exactly like a photo: the whole Ingested, MIME and all.
+            vm.send("look https://example.com/a")
+            advanceUntilIdle()
+            assertEquals(staged, mesh.sentChats.single().attachment)
+            assertEquals(
+                LinkPreviewBlob.MIME,
+                mesh.sentChats
+                    .single()
+                    .attachment
+                    ?.mime,
+            )
+        }
+
+    @Test
+    fun noCardIsFetchedWhileTheSettingIsOffOrThePhoneIsOffline() =
+        runTest {
+            aCardIsAvailable()
+            linkPreviewsEnabledFlow.value = false
+            val vm = vm()
+            vm.onDraftChanged("look https://example.com/a")
+            advanceUntilIdle()
+            coVerify(exactly = 0) { linkPreviews.fetchCard(any(), any()) }
+
+            linkPreviewsEnabledFlow.value = true
+            onlineFlow.value = false
+            vm.onDraftChanged("look https://example.com/a now")
+            advanceUntilIdle()
+            coVerify(exactly = 0) { linkPreviews.fetchCard(any(), any()) }
+
+            // A route appearing re-arms the same draft.
+            onlineFlow.value = true
+            advanceUntilIdle()
+            coVerify(exactly = 1) { linkPreviews.fetchCard(cardUrl, isRoom = true) }
+            assertEquals(staged, vm.pendingAttachment.value)
+        }
+
+    @Test
+    fun aStagedPhotoWinsOverALinkAndALinkLeavingTheDraftClearsItsCard() =
+        runTest {
+            aCardIsAvailable()
+            val photo = AttachmentStore.Ingested("h-photo", "image/jpeg")
+            coEvery { attachments.ingest(any<ByteArray>(), any()) } returns AttachmentStore.IngestResult.Success(photo, flagged = false)
+            val vm = vm()
+            vm.attachCaptured(byteArrayOf(1))
+            advanceUntilIdle()
+            vm.onDraftChanged("look https://example.com/a")
+            advanceUntilIdle()
+            coVerify(exactly = 0) { linkPreviews.fetchCard(any(), any()) }
+            assertEquals(photo, vm.pendingAttachment.value)
+
+            vm.clearAttachment()
+            vm.onDraftChanged("look https://example.com/a !")
+            advanceUntilIdle()
+            assertEquals(staged, vm.pendingAttachment.value)
+
+            vm.onDraftChanged("no link any more")
+            advanceUntilIdle()
+            assertNull(vm.pendingAttachment.value)
+            coVerify { blobs.deleteIfUnreferenced("h-card") }
+        }
+
+    @Test
+    fun aDismissedCardStaysDismissedUntilTheDraftIsEmptiedAndAnEmptyLinkIsNotRetried() =
+        runTest {
+            aCardIsAvailable()
+            val vm = vm()
+            vm.onDraftChanged("look https://example.com/a")
+            advanceUntilIdle()
+            assertEquals(staged, vm.pendingAttachment.value)
+            vm.clearAttachment()
+            vm.onDraftChanged("look https://example.com/a again")
+            advanceUntilIdle()
+            assertNull("the removed card does not come back while the draft lives", vm.pendingAttachment.value)
+            coVerify(exactly = 1) { linkPreviews.fetchCard(cardUrl, any()) }
+
+            vm.onDraftChanged("")
+            vm.onDraftChanged("https://example.com/a")
+            advanceUntilIdle()
+            coVerify(exactly = 2) { linkPreviews.fetchCard(cardUrl, any()) }
+
+            coEvery { linkPreviews.fetchCard("https://example.com/none", any()) } returns LinkPreviewService.CardResult.NoCard
+            vm.clearAttachment()
+            vm.onDraftChanged("")
+            vm.onDraftChanged("see https://example.com/none")
+            advanceUntilIdle()
+            vm.onDraftChanged("see https://example.com/none please")
+            advanceUntilIdle()
+            coVerify(exactly = 1) { linkPreviews.fetchCard("https://example.com/none", any()) }
+        }
+
+    @Test
+    fun aGroupCarriesACardOnlyWhenEveryOtherMemberCanRenderOne() =
+        runTest {
+            aCardIsAvailable()
+            coEvery { groups.find(GROUP) } returns group(GROUP, listOf("me", "sam", "priya"))
+            coEvery { peers.find("sam") } returns peer("sam", "Sam", capabilities = Protocol.LOCAL_CAPABILITIES)
+            coEvery { peers.find("priya") } returns peer("priya", "Priya", capabilities = Protocol.CAP_FILES)
+            val vm = vm(GROUP)
+            vm.onDraftChanged("look https://example.com/a")
+            advanceUntilIdle()
+            coVerify(exactly = 0) { linkPreviews.fetchCard(any(), any()) }
+
+            // The loop reacts to the draft, not to a peer's profile arriving: the next draft picks the bit up.
+            coEvery { peers.find("priya") } returns peer("priya", "Priya", capabilities = Protocol.LOCAL_CAPABILITIES)
+            vm.onDraftChanged("")
+            vm.onDraftChanged("look https://example.com/a")
+            advanceUntilIdle()
+            coVerify(exactly = 1) { linkPreviews.fetchCard(cardUrl, isRoom = false) }
+        }
+
+    @Test
+    fun aReceivedCardReachesItsRowOnlyWhenTheBodyHoldsItsLink() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value =
+                listOf(
+                    msg(senderId = "bob", id = "m1", body = "see https://example.com/a", attachmentHash = "hc")
+                        .copy(attachmentMime = LinkPreviewBlob.MIME),
+                )
+            sizesFlow.value = mapOf("hc" to 100)
+            advanceUntilIdle()
+            assertNull(
+                "no card until the container has decoded",
+                vm.state.value.rows
+                    .single()
+                    .linkCard,
+            )
+            coVerify { linkCards.ensure("hc", null) }
+
+            cardsFlow.value = mapOf("hc" to cardBlob.toCard())
+            advanceUntilIdle()
+            assertEquals(
+                cardBlob.toCard(),
+                vm.state.value.rows
+                    .single()
+                    .linkCard,
+            )
+
+            // A card for a link that is not in the body is never shown, however it got there.
+            cardsFlow.value = mapOf("hc" to cardBlob.toCard().copy(url = "https://evil.example/x", host = "evil.example"))
+            advanceUntilIdle()
+            assertNull(
+                vm.state.value.rows
+                    .single()
+                    .linkCard,
+            )
         }
 }

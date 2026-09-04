@@ -530,6 +530,24 @@ construction — it re-publishes something that was already broadcast unencrypte
 discloses to a carrier only what a radio in that neighbourhood could already hear, plus which Knit node was
 listening.
 
+**Precedent — a new attachment *kind* that spends no field (link-preview cards, ADR 2026-09.n752).** A
+card the sender fetched rides as a content-addressed blob under one new MIME value,
+`application/vnd.knit.link-preview`, inside the existing `attachmentMime` — sealed in `MessageContent`
+(compact label 4, a plain string either way) for a DM or group, in the clear on `ChatContent` in the Nearby
+room — plus one capability bit, `CAP_LINK_PREVIEW = 0x400`, gating whether a DM/group send attaches one.
+The container (`mesh/protocol/LinkPreviewBlob`) has its own golden vectors (`linkPreviewBlob`,
+`linkPreviewBlobTextOnly`) and follows rule 1 itself — every field after `url` nullable or defaulted, the
+one `@ByteString` nullable — with `v` **required and always emitted**, because an elided version cannot
+gate and a decoder must refuse a layout it does not know rather than mis-read it (a new form mints a new
+MIME). No field, no `type`, no ctl, no version bump on any layer, no DB change; every prior golden vector
+unmoved. One assumption is withdrawn rather than a rule added: the Nearby room now originates a second
+attachment kind, so "a room attachment is an image" no longer holds (`docs/NEXT_WIRE_BREAK.md` item 1 keeps
+the field it wanted to drop load-bearing) and `MeshBlobStore.saveIncoming` opens a card instead of skipping
+it. *Metadata cost:* a room card is cleartext to every carrier — title, description and picture — exactly as
+the room body beside it already is; a DM card is "~N opaque bytes" like a photo, its type sealed; and the
+sender's own IP reaches the linked site before the send, which is the setting's disclosure and the reason it
+defaults off.
+
 **When you bump a version layer:** add a round-trip test plus an "unknown higher version drops locally
 but is counted" test. New crypto scheme ⇒ bump `EncEnvelope.MAX_SUPPORTED_VERSION` + every branch that
 tests the version (`InboundPipeline.decryptAndDeliver`, `MeshManager`'s inline-ack give-back,

@@ -3,6 +3,7 @@ package app.getknit.knit.data
 import android.util.Log
 import app.getknit.knit.mesh.BlobStore
 import app.getknit.knit.mesh.isValidBlobHash
+import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.sha256Hex
 import app.getknit.knit.mesh.transferExtForMime
 import app.getknit.knit.moderation.ImageScreeningService
@@ -90,12 +91,27 @@ class MeshBlobStore(
             // serves a blob to any neighbour that asks, so that header is the asker's choice. Requiring a
             // key on top of it is what keeps the row's own mime trustworthy: a Nearby-room attachment is not
             // re-sealed, so *its* mime rides in the clear and lands in the row verbatim, which would move
-            // the spoof from any neighbour to the message's author. That costs nothing legitimate only
-            // because the room offers neither the mic nor the file picker, so a room attachment is always an
-            // image. A **key-less** blob — a pulled avatar, a group photo, a relayed blob with no row at all
-            // — is always screened, whatever it calls itself; this is the sole screen those get.
-            val isSealedOpaque = !isImage(localMime) && messages.attachmentKeyForHash(hash) != null
-            if (!isSealedOpaque) imageScreening.screenImage(hash, bytes)
+            // the spoof from any neighbour to the message's author. That costs nothing legitimate because the
+            // room offers neither the mic nor the file picker, so a room attachment is an image or — the one
+            // other kind the room originates — a link-preview card, and a card is not skipped but *opened*:
+            // `screenAttachment` screens its picture and its text into one verdict, so the mime a room author
+            // claims can only route its blob into the stricter screen, never around one. A **key-less** blob —
+            // a pulled avatar, a group photo, a relayed blob with no row at all — is always screened, whatever
+            // it calls itself; this is the sole screen those get.
+            val key = messages.attachmentKeyForHash(hash)
+            when {
+                localMime == LinkPreviewBlob.MIME && key == null -> {
+                    imageScreening.screenAttachment(hash, bytes, localMime, isRoom = true)
+                }
+
+                !isImage(localMime) && key != null -> {
+                    // A sealed non-image: ciphertext here, screened after decryption in InboundPipeline.onObtained.
+                }
+
+                else -> {
+                    imageScreening.screenImage(hash, bytes)
+                }
+            }
             src.delete() // drop the plaintext staging copy now that the bytes are encrypted
             fileFor(hash)
         }

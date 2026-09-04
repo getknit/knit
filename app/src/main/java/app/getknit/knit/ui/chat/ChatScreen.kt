@@ -74,6 +74,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ContentCopy
@@ -194,6 +195,7 @@ import app.getknit.knit.demo.DemoComposer
 import app.getknit.knit.identity.PeerLabel
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.lora.LoraSizeHint
+import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.ui.camera.PhotoCapture
@@ -258,6 +260,7 @@ fun ChatScreen(
     val pendingAttachment by viewModel.pendingAttachment.collectAsStateWithLifecycle()
     val confirmAttachment by viewModel.confirmAttachment.collectAsStateWithLifecycle()
     val stagedAttachmentRelay by viewModel.stagedAttachmentRelay.collectAsStateWithLifecycle()
+    val linkPreviewLoading by viewModel.linkPreviewLoading.collectAsStateWithLifecycle()
     val voiceRecording by viewModel.voiceRecording.collectAsStateWithLifecycle()
     val voicePlayback by viewModel.voicePlayback.collectAsStateWithLifecycle()
     val recentReactions by viewModel.recentReactions.collectAsStateWithLifecycle()
@@ -453,6 +456,8 @@ fun ChatScreen(
         onClearAttachment = viewModel::clearAttachment,
         onReceiveImage = viewModel::attach,
         onTyping = viewModel::onUserTyping,
+        onDraftChanged = viewModel::onDraftChanged,
+        linkPreviewLoading = linkPreviewLoading,
         onMentionAdded = { m -> if (pendingMentions.none { it == m }) pendingMentions.add(m) },
         onStartReply = { replyingTo = it },
         onCancelReply = { replyingTo = null },
@@ -569,6 +574,10 @@ internal fun ChatScreenContent(
     onClearAttachment: () -> Unit,
     onReceiveImage: (Uri) -> Unit,
     onTyping: () -> Unit,
+    // Every edit of the draft, so a link in it can grow a preview card; defaulted for the @Preview and test call sites.
+    onDraftChanged: (String) -> Unit = {},
+    // True while that card is being fetched; the input bar shows a transient "Loading preview…" line.
+    linkPreviewLoading: Boolean = false,
     onMentionAdded: (Mention) -> Unit,
     onStartReply: (ReplyRef) -> Unit,
     onCancelReply: () -> Unit,
@@ -875,6 +884,8 @@ internal fun ChatScreenContent(
                     onReceiveImage = onReceiveImage,
                     onSend = onSend,
                     onTyping = onTyping,
+                    onDraftChanged = onDraftChanged,
+                    linkPreviewLoading = linkPreviewLoading,
                     loraBudget =
                         loraBudgetFor(state.loraCarry, replying = replyingTo != null, attached = pendingAttachment != null),
                     // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
@@ -1005,7 +1016,8 @@ internal fun ChatScreenContent(
                                                             }
                                                         },
                                                 ),
-                                            hasAttachment = msg.attachmentHash != null,
+                                            // A quoted card message shows its link text, not an attachment glyph.
+                                            hasAttachment = msg.attachmentHash != null && msg.attachmentMime != LinkPreviewBlob.MIME,
                                         ),
                                     )
                                 },
@@ -1589,6 +1601,21 @@ private fun MessageBubble(
                                     },
                                     onLongClick = { showPicker = true },
                                 )
+                            } else if (row.attachmentMime == LinkPreviewBlob.MIME) {
+                                // A link-preview card the sender fetched (ADR: link previews). Keyed on the
+                                // MIME, before the image arm, since a card is a nameless non-image by design.
+                                // Nothing draws until the container has decoded and its link was found in the
+                                // body — never a spinner: the body's own link is tappable meanwhile.
+                                row.linkCard?.let { card ->
+                                    LinkPreviewCard(
+                                        card = card,
+                                        hash = row.attachmentHash,
+                                        key = row.attachmentKey,
+                                        flagged = row.attachmentFlagged,
+                                        onOpen = { openUrl(context, card.url) },
+                                        onLongClick = { showPicker = true },
+                                    )
+                                }
                             } else {
                                 AttachmentImage(
                                     row.attachmentHash,
@@ -1605,7 +1632,8 @@ private fun MessageBubble(
                                     onLongClick = { showPicker = true },
                                 )
                             }
-                            if (row.body.isNotBlank()) Spacer(Modifier.height(4.dp))
+                            val drewAttachment = row.attachmentMime != LinkPreviewBlob.MIME || row.linkCard != null
+                            if (row.body.isNotBlank() && drewAttachment) Spacer(Modifier.height(4.dp))
                         }
                         if (row.body.isNotBlank()) {
                             if (row.moderationFlagged && !revealed) {
@@ -2196,7 +2224,10 @@ private fun AttachmentImage(
     // A flagged image stays hidden behind a placeholder until the user taps to view it.
     var revealed by remember(hash) { mutableStateOf(false) }
     val hidden = flagged && !revealed
-    val image = if (ready && hash != null) BlobImage(hash, mime, key) else null
+    // Bytes Coil could not decode: a wrong key, a corrupt blob, or an attachment kind this build does not
+    // know (a newer peer's). Say so instead of spinning forever over the slot.
+    var failed by remember(hash) { mutableStateOf(false) }
+    val image = if (ready && hash != null && !failed) BlobImage(hash, mime, key) else null
     Box(
         modifier =
             Modifier
@@ -2289,11 +2320,38 @@ private fun AttachmentImage(
                             }
                             decoded = true
                         },
+                        onError = { failed = true },
                         modifier = sizeModifier,
                     )
                     if (!decoded) {
                         CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                     }
+                }
+            }
+
+            failed -> {
+                Column(
+                    modifier =
+                        Modifier
+                            .size(160.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .testTag("chat_attachment_unavailable"),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.BrokenImage,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = stringResource(R.string.chat_attachment_unavailable),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                    )
                 }
             }
 
@@ -2639,6 +2697,8 @@ private fun MessageInput(
     onReceiveImage: (Uri) -> Unit,
     onSend: () -> Unit,
     onTyping: () -> Unit = {},
+    onDraftChanged: (String) -> Unit = {},
+    linkPreviewLoading: Boolean = false,
     // The LoRa body budget for this draft ([loraBudgetFor]), or null when it would not ride the board. Above
     // it the composer shows the "long message" hint — a hedge, since the true ceiling is a little higher.
     loraBudget: Int? = null,
@@ -2710,6 +2770,11 @@ private fun MessageInput(
         snapshotFlow { state.text.toString() }
             .drop(1)
             .collect { text -> if (text.isNotBlank()) onTyping() }
+    }
+    // The draft itself, for the link-preview loop — including the initial snapshot, so a draft that already
+    // holds a link when the input composes can grow its card.
+    LaunchedEffect(state) {
+        snapshotFlow { state.text.toString() }.collect(onDraftChanged)
     }
     val filtered =
         remember(activeQuery, candidates) {
@@ -2806,6 +2871,9 @@ private fun MessageInput(
                     )
                 }
                 Spacer(Modifier.height(8.dp))
+            }
+            if (linkPreviewLoading && pendingAttachment == null) {
+                LinkPreviewLoadingRow()
             }
             if (replyingTo != null) {
                 ReplyPreview(replyTo = replyingTo, myNodeId = myNodeId, onCancel = onCancelReply)
@@ -3326,6 +3394,9 @@ private fun AttachmentPreview(
             // rather than a staged one. It gets the same icon/name/size tile the sent bubble will draw.
             if (attachment.name != null) {
                 StagedFileTile(attachment)
+            } else if (attachment.link != null) {
+                // A link-preview card: the title and host the bubble will draw, beside the same ✕.
+                StagedLinkTile(card = attachment.link, hash = attachment.hash)
             } else {
                 AsyncImage(
                     model = BlobImage(attachment.hash, attachment.mime),

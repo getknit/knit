@@ -22,6 +22,8 @@ document:
 
 ### Added
 
+- Paste a link into a message and, when your phone is online, a small card with the page's title and picture
+  goes along with it. Off by default in Settings, since fetching the card shows the website your IP address.
 - Tell people nearby you're open to chat, from Settings. When someone in radio range has said the same and
   you two have never messaged each other, you both get one nudge to say hi in the Nearby room, and their
   profile shows the flag.

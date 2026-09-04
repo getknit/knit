@@ -4,6 +4,7 @@ import android.app.Application
 import app.getknit.knit.crash.CrashHandler
 import app.getknit.knit.crash.crashStore
 import app.getknit.knit.crash.currentCrashEnvironment
+import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.appModule
@@ -16,6 +17,8 @@ import app.getknit.knit.moderation.MlTextModerator
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.ui.image.BlobFetcher
 import app.getknit.knit.ui.image.BlobKeyer
+import app.getknit.knit.ui.image.LinkCardFetcher
+import app.getknit.knit.ui.image.LinkCardKeyer
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
@@ -33,6 +36,7 @@ class KnitApplication :
     SingletonImageLoader.Factory {
     // Resolved lazily — first touched in newImageLoader(), which Coil calls well after startKoin().
     private val blobDao: BlobDao by inject()
+    private val linkCards: LinkCardStore by inject()
 
     override fun onCreate() {
         super.onCreate()
@@ -94,8 +98,10 @@ class KnitApplication :
 
     /**
      * App-wide Coil loader. Images come exclusively from the encrypted `blobs` table via
-     * [BlobFetcher]/[BlobKeyer]; the disk cache is disabled so decrypted bytes are never persisted to
-     * disk (only the in-memory bitmap cache is used). The animated decoder keeps GIFs/WebP animating.
+     * [BlobFetcher]/[BlobKeyer] — and, for the picture inside a link-preview card, through the card store via
+     * [LinkCardFetcher]/[LinkCardKeyer]; there is deliberately no network fetcher, so nothing in the app can
+     * load a URL. The disk cache is disabled so decrypted bytes are never persisted to disk (only the
+     * in-memory bitmap cache is used). The animated decoder keeps GIFs/WebP animating.
      */
     override fun newImageLoader(context: PlatformContext): ImageLoader =
         ImageLoader
@@ -104,6 +110,8 @@ class KnitApplication :
             .components {
                 add(BlobKeyer())
                 add(BlobFetcher.Factory(blobDao))
+                add(LinkCardKeyer())
+                add(LinkCardFetcher.Factory(linkCards))
                 add(AnimatedImageDecoder.Factory())
             }.build()
 

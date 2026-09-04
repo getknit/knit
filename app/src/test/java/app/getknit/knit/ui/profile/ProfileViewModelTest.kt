@@ -56,6 +56,7 @@ class ProfileViewModelTest {
         every { settings.status } returns statusFlow
         every { settings.ownAvatarHash } returns avatarHashFlow
         every { settings.contentFilteringEnabled } returns filteringFlow
+        every { settings.linkPreviewsEnabled } returns linkPreviewsFlow
         every { settings.openToChat } returns openToChatFlow
         every { settings.spoolEnabled } returns spoolEnabledFlow
         every { settings.spoolUrls } returns spoolUrlsFlow
@@ -66,6 +67,21 @@ class ProfileViewModelTest {
     fun tearDown() {
         Dispatchers.resetMain()
     }
+
+    private val linkPreviewsFlow = MutableStateFlow(false)
+
+    /** Off until the user says otherwise, and a toggle writes straight through to the store. */
+    @Test
+    fun linkPreviewsMirrorTheStoreAndPersistOnToggle() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.linkPreviewsEnabled.collect {} }
+            assertFalse(vm.linkPreviewsEnabled.value)
+            linkPreviewsFlow.value = true
+            assertTrue(vm.linkPreviewsEnabled.value)
+            vm.setLinkPreviewsEnabled(false)
+            coVerify { settings.setLinkPreviewsEnabled(false) }
+        }
 
     private fun vm() = ProfileViewModel(settings, identity, avatars, blobs, MutableStateFlow(RelayFacts()), MutableStateFlow(LoraFacts()))
 

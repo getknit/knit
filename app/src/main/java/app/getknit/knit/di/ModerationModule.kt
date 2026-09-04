@@ -18,8 +18,10 @@ import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
 
 /**
- * On-device content moderation. Everything runs locally against bundled assets/models — the app has no
- * network. Text moderation is scoped by conversation ([ScopedTextModerator]): the public Nearby
+ * On-device content moderation. Everything runs locally against bundled assets/models — moderation never
+ * talks to a server; the app's only Internet users are the opt-in relay plane and opt-in link previews,
+ * both off by default, and a preview card's picture and text pass through these same classifiers on both
+ * ends. Text moderation is scoped by conversation ([ScopedTextModerator]): the public Nearby
  * broadcast room runs the deterministic lexical profanity filter first, then the on-device ML toxicity
  * classifier ([MlTextModerator], Detoxify/ALBERT) on anything it clears; private DMs and groups run the
  * toxicity classifier only (profanity is limited to the public room). Each moderator degrades to
@@ -51,7 +53,8 @@ val moderationModule =
             )
         }
         single<ImageModerator> { NsfwImageModerator(androidContext(), guard = get()) }
-        // Screens image blobs against the classifier and caches the NSFW verdict by content hash
-        // (blobVerdictDao). Extracted from BlobRepository so the data layer no longer invokes the classifier.
-        single { ImageScreeningService(get(), get()) }
+        // Screens attachment blobs — images against the classifier, a link-preview card's picture and text
+        // against both — and caches the verdict by content hash (blobVerdictDao). Extracted from BlobRepository
+        // so the data layer no longer invokes the classifier.
+        single { ImageScreeningService(get(), get(), get()) }
     }

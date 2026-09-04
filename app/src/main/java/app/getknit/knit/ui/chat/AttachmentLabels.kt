@@ -45,6 +45,10 @@ fun attachmentLabel(
                     name ?: context.getString(R.string.chat_file_unnamed),
                 )
             }
+
+            AttachmentKind.Link -> {
+                context.getString(R.string.chat_list_preview_link)
+            }
         }
     return if (size == null) label else context.getString(R.string.chat_attachment_with_size, label, formatShortFileSize(context, size))
 }

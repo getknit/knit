@@ -113,6 +113,11 @@ class ProfileViewModel(
         settings.contentFilteringEnabled
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
+    /** Whether links this device sends carry a preview card (off by default — see the store's KDoc). Bound like the switch above. */
+    val linkPreviewsEnabled: StateFlow<Boolean> =
+        settings.linkPreviewsEnabled
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
     /**
      * The "open to chat" profile flag. Bound to the DataStore flow like [contentFilteringEnabled] and
      * persisted on toggle rather than on Save: a switch has no keystroke lag to absorb, and the write is what
@@ -197,6 +202,10 @@ class ProfileViewModel(
 
     fun setContentFilteringEnabled(value: Boolean) {
         viewModelScope.launch { settings.setContentFilteringEnabled(value) }
+    }
+
+    fun setLinkPreviewsEnabled(value: Boolean) {
+        viewModelScope.launch { settings.setLinkPreviewsEnabled(value) }
     }
 
     fun setOpenToChat(value: Boolean) {

@@ -113,6 +113,12 @@
     <string name="chat_loading_photo">Photo appears once a device that has it is reachable</string>
     <string name="chat_sending">Sending…</string>
     <string name="chat_attachment_image_desc">Photo attachment</string>
+    <string name="chat_attachment_unavailable">Can\'t show this attachment</string>
+    <!-- Link previews: the card a sender's phone fetched for a link and sent with the message -->
+    <string name="chat_link_card_desc">Link preview: %1$s, %2$s</string>
+    <string name="chat_open_link">Open link</string>
+    <string name="chat_link_preview_loading">Loading preview…</string>
+    <string name="chat_link_staged_desc">Link preview: %1$s, %2$s. Tap the cross to send without it</string>
     <string name="chat_view_photo">View photo</string>
     <string name="chat_image_viewer_desc">Photo</string>
     <string name="chat_image_saved">Saved to Pictures/Knit</string>
@@ -307,6 +313,7 @@
     <string name="chat_list_preview_photo">📷 Photo</string>
     <string name="chat_list_preview_voice">🎤 Voice message</string>
     <string name="chat_list_preview_file">📎 %1$s</string>
+    <string name="chat_list_preview_link">🔗 Link</string>
     <string name="chat_attachment_with_size">%1$s · %2$s</string>
     <string name="chat_list_preview_with_sender">%1$s: %2$s</string>
     <plurals name="chat_list_unread_count">
@@ -331,6 +338,8 @@
     <string name="settings_open_to_chat_subtitle">Let people nearby know you\'re up for a conversation. You\'ll both get a nudge when you\'re near each other.</string>
     <string name="settings_content_filtering_title">Content filtering</string>
     <string name="settings_content_filtering_subtitle">Hide explicit images and abusive messages you receive from others</string>
+    <string name="settings_link_previews_title">Link previews</string>
+    <string name="settings_link_previews_subtitle">When you type a link, Knit fetches the page\'s title and picture over the Internet and sends them with your message. The site sees your IP address; the people you send to never contact it.</string>
 
     <!-- Profile details (another peer) -->
     <string name="profile_details_title">Profile</string>
@@ -542,6 +551,7 @@
     <string name="moderation_image_confirm_body">This image may contain explicit content. Pleasure ensure the recipient wants to receive this kind of content.</string>
     <string name="moderation_image_confirm_send">Send anyway</string>
     <string name="moderation_image_hidden">Sensitive image — tap to view</string>
+    <string name="moderation_link_hidden">Sensitive preview — tap to view</string>
 
     <!--
       Internet relays (the spool plane, docs/SPOOL_PROTOCOL.md).

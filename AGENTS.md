@@ -41,6 +41,12 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   DMs** over LoRa as a fast-plane-only `MeshTransport` child, off by default behind `BuildConfig.LORA_PLANE`
   (ADR 038 + 039). `mesh/lora/` is pure/JVM-tested; the only `android.bluetooth.*` importer is
   `mesh/bluetooth/meshtastic/MeshtasticGatt`.
+- **When touching `linkpreview/`, `net/`, `mesh/protocol/LinkPreviewBlob`, or anything that opens an
+  Internet socket outside the spool plane:** READ ADR 2026-09.n752. A link preview is a card the **sender**
+  fetches and sends as an ordinary attachment under its own MIME (no wire field, no DB change); the receiver
+  never fetches, both ends screen the card's picture and text into one verdict, and the fetch is gated on
+  `net/InternetGate` (a validated route, never the NAN link), bound to that `Network`, https-only, with a
+  private-address DNS guard. `okhttp3` stays confined to the two files `rules/mesh.md` names.
 - **When touching contact cards, the Add-by-link / share-link flow, deep links (`getknit.app/c`,
   `knit://`), or `mesh/IntroSync`:** READ `docs/CONTACT_CARD.md` (the card layout + golden vectors, the
   intro driver's rules, the assetlinks prerequisite) and `docs/SPOOL_PROTOCOL.md` §3.5 (the pair scope);

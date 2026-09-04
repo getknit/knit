@@ -91,6 +91,7 @@ internal data class ProfileFormState(
     val aliasMore: String = "",
     val avatarHash: String?,
     val contentFilteringEnabled: Boolean,
+    val linkPreviewsEnabled: Boolean = false,
     val openToChat: Boolean = false,
     val relay: RelaySummary,
     val lora: LoraSummary,
@@ -112,6 +113,7 @@ fun ProfileScreen(
     val avatarHash by viewModel.avatarHash.collectAsStateWithLifecycle()
     val cropTarget by viewModel.cropTarget.collectAsStateWithLifecycle()
     val contentFilteringEnabled by viewModel.contentFilteringEnabled.collectAsStateWithLifecycle()
+    val linkPreviewsEnabled by viewModel.linkPreviewsEnabled.collectAsStateWithLifecycle()
     val openToChat by viewModel.openToChat.collectAsStateWithLifecycle()
     val relay by viewModel.relaySummary.collectAsStateWithLifecycle()
     val lora by viewModel.loraSummary.collectAsStateWithLifecycle()
@@ -148,6 +150,7 @@ fun ProfileScreen(
                 aliasMore = aliasMore,
                 avatarHash = avatarHash,
                 contentFilteringEnabled = contentFilteringEnabled,
+                linkPreviewsEnabled = linkPreviewsEnabled,
                 openToChat = openToChat,
                 relay = relay,
                 lora = lora,
@@ -160,6 +163,7 @@ fun ProfileScreen(
         onStatusChange = viewModel::setStatus,
         onStatusCommit = viewModel::commitStatus,
         onToggleContentFiltering = viewModel::setContentFilteringEnabled,
+        onToggleLinkPreviews = viewModel::setLinkPreviewsEnabled,
         onToggleOpenToChat = viewModel::setOpenToChat,
         onOpenRelays = onOpenRelays,
         onOpenLora = onOpenLora,
@@ -185,6 +189,7 @@ internal fun ProfileScreenContent(
     onStatusChange: (String) -> Unit,
     onStatusCommit: () -> Unit,
     onToggleContentFiltering: (Boolean) -> Unit,
+    onToggleLinkPreviews: (Boolean) -> Unit = {},
     onToggleOpenToChat: (Boolean) -> Unit = {},
     onOpenRelays: () -> Unit,
     onOpenLora: () -> Unit = {},
@@ -295,6 +300,18 @@ internal fun ProfileScreenContent(
                 enabled = form.contentFilteringEnabled,
                 onToggle = onToggleContentFiltering,
             )
+
+            // Link previews are the one other thing that uses the Internet, so they ship under the same build
+            // switch as the relay plane; the subtitle carries the disclosure that would otherwise need a sheet.
+            if (showInternetRelays) {
+                ToggleRow(
+                    title = stringResource(R.string.settings_link_previews_title),
+                    subtitle = stringResource(R.string.settings_link_previews_subtitle),
+                    enabled = form.linkPreviewsEnabled,
+                    onToggle = onToggleLinkPreviews,
+                    modifier = Modifier.testTag("profile_link_previews"),
+                )
+            }
 
             if (showInternetRelays) InternetRelayRow(summary = form.relay, onClick = onOpenRelays)
 

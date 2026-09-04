@@ -613,15 +613,17 @@ dependencies {
     implementation(libs.reandroid.arsclib)
     implementation(libs.apksig)
 
-    // The spool (Internet-relay) plane's WebSocket client — see docs/SPOOL_PROTOCOL.md and the version
-    // catalog. The mesh itself never touches it: only mesh/spool/OkHttpSpoolDialer.kt may import okhttp3,
-    // and the plane is off unless the user turns it on.
+    // The spool (Internet-relay) plane's WebSocket client and the link-preview fetch — see
+    // docs/SPOOL_PROTOCOL.md, ADR 2026-09.n752 and the version catalog. The mesh itself never touches it:
+    // only mesh/spool/OkHttpSpoolDialer.kt and linkpreview/OkHttpPreviewFetcher.kt may import okhttp3, and
+    // both features are off unless the user turns them on.
     implementation(libs.okhttp)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.koin.test.junit4)
     testImplementation(libs.mockk) // relaxed mocks of the concrete Room-backed repos in InboundPipelineTest
+    testImplementation(libs.okhttp.mockwebserver) // a socket for OkHttpPreviewFetcherTest's caps and redirect policy
     // JVM Room/DAO + migration tests (finding #5): Robolectric supplies a Context + framework SQLite so
     // in-memory Room runs the real eviction/GC SQL, and room-testing's MigrationTestHelper rebuilds the
     // exported schema on that same shadowed SQLite (via androidx.sqlite's AndroidSQLiteDriver, already pulled

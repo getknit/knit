@@ -6,15 +6,22 @@ behind each lives in `context/mesh-transport.md`, `context/wire-format.md`, and
 
 ## Keep each radio behind `MeshTransport`
 
-- Nothing outside `mesh/wifiaware/` may import `android.net.wifi.aware.*` (or
-  `ConnectivityManager`/`NetworkRequest` for the NAN data path).
+- Nothing outside `mesh/wifiaware/` may import `android.net.wifi.aware.*`. `ConnectivityManager` /
+  `NetworkRequest` / `NetworkCapabilities` have exactly two importers: `mesh/wifiaware/` for the NAN data
+  path, and `net/AndroidInternetGate.kt`, the validated-Internet seam (ADR: link previews) that answers "is
+  the *default* network a route to the Internet right now" and hands that `Network` out for a fetch to bind
+  to. Nothing may call `bindProcessToNetwork`: it is process-global and would move the mesh sockets onto the
+  default network.
 - Nothing outside `mesh/bluetooth/` may import `android.bluetooth.*` (the Meshtastic GATT client lives at
   `mesh/bluetooth/meshtastic/MeshtasticGatt` under that boundary; its pure session/codec sit in `mesh/lora/`,
   which imports no Android at all — ADR 038).
-- Nothing outside `mesh/spool/OkHttpSpoolDialer.kt` may import `okhttp3.*`. The Internet plane's socket
-  sits behind the `SpoolLink`/`SpoolSocket` seam for the same reason the radios sit behind
-  `MeshTransport`: everything protocol-shaped above it (`SpoolConnection`, `ScopeSync`) stays pure and
-  runs against an in-process fake spool in unit tests.
+- Nothing outside `mesh/spool/OkHttpSpoolDialer.kt` and `linkpreview/OkHttpPreviewFetcher.kt` may import
+  `okhttp3.*` (detekt's `ForbiddenImport` enforces it). Each sits behind a pure seam — `SpoolLink`/`SpoolSocket`
+  for the Internet plane's socket, `PreviewFetcher` for the link-preview fetch — for the same reason the radios
+  sit behind `MeshTransport`: everything protocol- or policy-shaped above it (`SpoolConnection`, `ScopeSync`,
+  `LinkPreviewService`) stays pure and runs against an in-process fake in unit tests. The preview fetcher
+  additionally binds every socket and DNS lookup to the `Network` the gate handed it, so preview bytes can
+  never ride the Wi-Fi Aware NDI, and refuses any address `PublicAddressPolicy` calls private on every hop.
 - Everything above the transport talks only to the `MeshTransport` interface; `CompositeMeshTransport`
   runs every radio at once behind that seam (Bluetooth preferred, Wi-Fi Aware second, LoRa last), so
   orchestration (`MeshManager`/`MeshRouter`) is unchanged and another sibling transport drops in the same

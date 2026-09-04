@@ -30,6 +30,7 @@ import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.IdentitySource
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.identity.PeerLabels
+import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
@@ -52,6 +53,7 @@ import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.GroupRatchetHeader
 import app.getknit.knit.mesh.protocol.GroupSeed
 import app.getknit.knit.mesh.protocol.KeyReqContent
+import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.MeshPostContent
 import app.getknit.knit.mesh.protocol.PrekeyInfo
@@ -2513,6 +2515,7 @@ class InboundPipelineTest {
 
             coVerify { rig.messages.attachmentKeyForHash("somehash") }
             coVerify(exactly = 0) { rig.imageScreening.screenImage(any(), any()) }
+            coVerify(exactly = 0) { rig.imageScreening.screenAttachment(any(), any(), any(), any()) }
         }
 
     @Test
@@ -2526,6 +2529,57 @@ class InboundPipelineTest {
 
             coVerify { rig.blobs.bytes("h2") }
             coVerify(exactly = 0) { rig.imageScreening.screenImage(any(), any()) }
+            coVerify(exactly = 0) { rig.imageScreening.screenAttachment(any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aSealedCardIsDecryptedAndScreenedAsACardOnceItsBytesLand() =
+        runTest {
+            // A link-preview card in a DM is sealed like any attachment; the container is opened after decryption
+            // and screened as a card (picture and text), under the ciphertext hash the row and the UI both use.
+            val rig = Rig(backgroundScope)
+            val plain = LinkPreviewBlob(LinkPreviewBlob.VERSION, "https://example.com/", "Title").encode()
+            val sealed = AttachmentCrypto.seal(plain)
+            coEvery { rig.messages.attachmentKeyForHash("card-ct") } returns b64(sealed.key)
+            coEvery { rig.messages.attachmentMimeForHash("card-ct") } returns LinkPreviewBlob.MIME
+            coEvery { rig.blobs.bytes("card-ct") } returns sealed.blob
+
+            rig.pipeline.onObtained("card-ct")
+
+            coVerify { rig.imageScreening.screenAttachment("card-ct", plain, LinkPreviewBlob.MIME, isRoom = false) }
+        }
+
+    @Test
+    fun aRoomCardHeldBeforeItsRowArrivedIsScreenedAsACardAtDelivery() =
+        runTest {
+            // The blob was relayed first (so saveIncoming saw no row and could only try it as an image, a no-op on
+            // a container); when the room message arrives naming it, the delivery screens it as a card, room scope.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val container = LinkPreviewBlob(LinkPreviewBlob.VERSION, "https://example.com/", "Title").encode()
+            coEvery { rig.blobStore.has("card-plain") } returns true
+            coEvery { rig.blobs.bytes("card-plain") } returns container
+            val env =
+                RelayEnvelope(
+                    type = FrameType.CHAT,
+                    id = "room-card",
+                    senderId = alice.nodeId,
+                    sentAt = 5L,
+                    recipientId = null,
+                    payload =
+                        WireCodec.encodePayload(
+                            ChatContent(
+                                body = "see https://example.com/",
+                                attachmentHash = "card-plain",
+                                attachmentMime = LinkPreviewBlob.MIME,
+                            ),
+                        ),
+                )
+
+            rig.pipeline.onDeliver(alice.sign(env), env, alice.nodeId)
+
+            coVerify { rig.imageScreening.screenAttachment("card-plain", container, LinkPreviewBlob.MIME, isRoom = true) }
         }
 
     @Test

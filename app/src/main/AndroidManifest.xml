@@ -21,6 +21,12 @@
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Link previews (sender-side, off by default): ask the platform whether the *default* network is a
+         validated route to the Internet before a card is fetched, and bind that fetch to that network so it can
+         never ride the Wi-Fi Aware link. A normal permission with no prompt; read only by net/AndroidInternetGate,
+         never by the mesh, and never used to bind the process. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <!-- Wi-Fi Aware is a hardware feature; required=false so the app still installs on devices without
          it (they surface an "unsupported" state at runtime rather than being filtered off the store). -->
     <uses-feature android:name="android.hardware.wifi.aware" android:required="false" />

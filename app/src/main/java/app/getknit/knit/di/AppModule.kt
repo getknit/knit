@@ -1,5 +1,6 @@
 package app.getknit.knit.di
 
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
@@ -16,6 +17,7 @@ import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GallerySaver
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.KnitDatabase
+import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -34,11 +36,19 @@ import app.getknit.knit.demo.DemoComposer
 import app.getknit.knit.identity.AndroidDeviceIdSource
 import app.getknit.knit.identity.DeviceIdSource
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.linkpreview.LinkPreviewService
+import app.getknit.knit.linkpreview.OkHttpPreviewFetcher
+import app.getknit.knit.linkpreview.PreviewFetcher
+import app.getknit.knit.linkpreview.PreviewImage
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetStore
 import app.getknit.knit.mesh.crypto.ratchet.RatchetStore
 import app.getknit.knit.mesh.spool.GroupRootStore
+import app.getknit.knit.moderation.ImageScreeningService
+import app.getknit.knit.moderation.ScopedTextModerator
+import app.getknit.knit.net.AndroidInternetGate
+import app.getknit.knit.net.InternetGate
 import app.getknit.knit.notifications.MessageNotifier
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.review.ReviewPrompter
@@ -47,6 +57,7 @@ import app.getknit.knit.ui.addcontact.ContactCardInbox
 import app.getknit.knit.ui.review.ReviewPromptInbox
 import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.voice.VoicePlayer
+import kotlinx.coroutines.CoroutineScope
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
 
@@ -69,6 +80,27 @@ val appModule =
         single { Identity(get(), get()) }
         single { AvatarStore(androidContext(), get()) }
         single { AttachmentStore(androidContext(), get(), get()) }
+        // Link previews (sender-fetched cards, off by default). The decoded-card store is app-scoped like the
+        // blobs it opens; the gate is the one ConnectivityManager user outside the NAN data path; the fetcher
+        // is the one place besides the spool dialer that speaks OkHttp, bound to the gate's validated network.
+        single { LinkCardStore(get()) }
+        single { AndroidInternetGate(androidContext(), get<CoroutineScope>()) }
+        single<InternetGate> { get<AndroidInternetGate>() }
+        single<PreviewFetcher> {
+            val gate = get<AndroidInternetGate>()
+            val base = OkHttpPreviewFetcher.baseClient()
+            OkHttpPreviewFetcher(clientFor = { gate.currentNetwork()?.let { OkHttpPreviewFetcher.bound(base, it) } })
+        }
+        single {
+            LinkPreviewService(
+                gate = get(),
+                fetcher = get(),
+                screenImage = get<ImageScreeningService>()::isImageExplicit,
+                textFlagged = { text, isRoom -> get<ScopedTextModerator>().classify(text, isRoom).flagged },
+                shrink = PreviewImage::shrink,
+                log = { Log.i(OkHttpPreviewFetcher.TAG, it) },
+            )
+        }
         single { GallerySaver(androidContext()) }
         // One voice player for the whole app: any number of voice-note bubbles can be on screen, and
         // starting one note has to stop whichever was playing. Owns its own scope (see VoicePlayer).

@@ -107,10 +107,22 @@ object Protocol {
      */
     const val CAP_FILES = 0x200L
 
+    /**
+     * Link-preview cards: this build renders an attachment typed [LinkPreviewBlob.MIME] as the card its sender
+     * fetched (title, description, picture) rather than handing the container to the image loader.
+     *
+     * A send-time input like [CAP_FILES] — a card is attached to a DM or group message only when every
+     * recipient's pinned profile carries this bit, since a build without it shows the message with a
+     * spinner where the card should be, which is worse than the plain link. The Nearby room is the deliberate
+     * exception: its listeners cannot be enumerated, so a room message carries its card regardless, and a
+     * pre-card build degrades there (ADR: link previews). Not a privacy control, for [CAP_FILES]'s reason.
+     */
+    const val CAP_LINK_PREVIEW = 0x400L
+
     /** This build's advertised capability bitfield. */
     const val LOCAL_CAPABILITIES: Long =
         CAP_E2E or CAP_GROUPS or CAP_REACTIONS or CAP_STORE_FORWARD or CAP_RATCHET or CAP_FAST_COMPACT or
-            CAP_INLINE_ACK or CAP_FRAME_TRANSCODE or CAP_CRYPTO_V3 or CAP_FILES
+            CAP_INLINE_ACK or CAP_FRAME_TRANSCODE or CAP_CRYPTO_V3 or CAP_FILES or CAP_LINK_PREVIEW
 
     private const val SEP = '|'
 

@@ -48,13 +48,23 @@ style:
     active: true                           # not in detekt's default-on set; we want dead imports caught in CI
   ForbiddenImport:
     active: true                           # also off by default; ADR 051 — see the header note
-    excludes: ['**/data/ImageDecode.kt']   # the one file allowed to decode
+    # One excludes list serves every pattern below, so the two OkHttp files are also exempt from the
+    # BitmapFactory ban here; scripts/dex-bitmap-gate.sh still enforces that one on the release dex.
+    excludes:
+      - '**/data/ImageDecode.kt'                 # the one file allowed to decode
+      - '**/mesh/spool/OkHttpSpoolDialer.kt'     # the spool plane's socket (rules/mesh.md)
+      - '**/linkpreview/OkHttpPreviewFetcher.kt' # the link-preview fetch (rules/mesh.md)
     forbiddenImports:
       - value: 'android.graphics.BitmapFactory'
         reason: >-
           Decode through data/ImageDecode.kt (decodeOrientedBounded / decodeBoundedFromBytes) so every
           decode is inSampleSize-bounded. A bare BitmapFactory.decode* call trusts the image's own pixel
           dimensions, which for anything off the mesh is attacker-chosen. ADR 051.
+      - value: 'okhttp3.*'
+        reason: >-
+          OkHttp is confined to mesh/spool/OkHttpSpoolDialer.kt and linkpreview/OkHttpPreviewFetcher.kt
+          (rules/mesh.md): each sits behind a pure seam (SpoolLink/SpoolSocket; PreviewFetcher) so everything
+          above it runs against an in-process fake, and the app's whole Internet surface stays two files.
   MagicNumber:
     ignorePropertyDeclaration: true        # theme/Color.kt + Type.kt literals
     ignoreLocalVariableDeclaration: true

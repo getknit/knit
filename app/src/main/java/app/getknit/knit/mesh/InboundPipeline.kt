@@ -54,6 +54,7 @@ import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.GroupKeyPayload
 import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.KeyReqContent
+import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.MeshPostContent
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
@@ -2152,7 +2153,7 @@ class InboundPipeline(
         // otherwise it's screened on arrival ([screenObtainedAttachment]) once the key has been stored.
         if (hash != null) {
             if (blobStore.has(hash)) {
-                screenEncryptedAttachment(hash, sealed?.attachmentKey)
+                screenHeldAttachment(hash, sealed?.attachmentKey, content.attachmentMime)
             } else {
                 blobExchange.want(hash)
                 // Arm the fast plane toward the author — the guaranteed holder — so the pull can ride a NAN
@@ -2374,6 +2375,7 @@ class InboundPipeline(
             content.attachmentHash == null -> content.body
             fileName != null -> "📎 $fileName"
             VoiceAudio.isVoice(content.attachmentMime) -> "🎤 Voice message"
+            content.attachmentMime == LinkPreviewBlob.MIME -> "🔗 Link"
             else -> "📷 Photo"
         }
 
@@ -2742,26 +2744,34 @@ class InboundPipeline(
      * skipping; a key-less blob is plaintext and is screened there whatever mime claims it is.
      */
     private suspend fun screenObtainedAttachment(hash: String) {
-        screenEncryptedAttachment(hash, messages.attachmentKeyForHash(hash))
+        screenHeldAttachment(hash, messages.attachmentKeyForHash(hash), messages.attachmentMimeForHash(hash))
     }
 
     /**
-     * Decrypts the stored ciphertext blob for [hash] with its base64 [key] and screens the plaintext
-     * image, caching the verdict under the ciphertext [hash] — the same key the chat UI's flagged set
-     * uses, so a flagged attachment blurs behind a tap-to-reveal. A no-op when there's no [key] (a
-     * plaintext/broadcast attachment, already screened on arrival in [MeshBlobStore.saveIncoming]), the
-     * blob isn't stored yet, or decryption fails. [BlobRepository.screenImage] is idempotent per hash, so
-     * a repeat call (or a prior ciphertext screen) is harmless; it always caches a verdict (the
-     * content-filtering setting gates only the receive-side blur at display time, not the scan).
+     * Screens a held attachment whose row we now have, caching the verdict under the stored [hash] — the same
+     * key the chat UI's flagged set uses, so a flagged attachment hides behind a tap-to-reveal. With a base64
+     * [key] the stored blob is ciphertext: it is decrypted here and the plaintext screened by [mime] (a picture
+     * as an image; a link-preview card as a card, picture and text). Without a key only one shape needs this
+     * path: a **room card** whose blob was relayed before its row arrived, which [MeshBlobStore.saveIncoming]
+     * could only screen as an image (a no-op on a container) — a plaintext image was screened there on arrival
+     * and is left alone. A no-op when the blob isn't stored yet or decryption fails; the screening service is
+     * idempotent per hash, so a repeat call is harmless, and it always caches a verdict (the content-filtering
+     * setting gates only the receive-side hiding at display time, not the scan).
      */
-    private suspend fun screenEncryptedAttachment(
+    private suspend fun screenHeldAttachment(
         hash: String?,
         key: String?,
+        mime: String?,
     ) {
-        if (hash == null || key == null) return
-        val cipher = blobs.bytes(hash) ?: return
-        val plain = AttachmentCrypto.open(cipher, b64d(key)) ?: return
-        imageScreening.screenImage(hash, plain)
+        if (hash == null) return
+        val stored = blobs.bytes(hash) ?: return
+        val plain =
+            when {
+                key != null -> AttachmentCrypto.open(stored, b64d(key)) ?: return
+                mime == LinkPreviewBlob.MIME -> stored
+                else -> return
+            }
+        imageScreening.screenAttachment(hash, plain, mime, isRoom = key == null)
     }
 
     /**
@@ -2771,7 +2781,7 @@ class InboundPipeline(
      * same [VoiceAudio] implementation, so the two ends agree by construction and neither value ever has to
      * ride the wire (see `docs/WIRE_COMPAT.md`).
      *
-     * Decrypts exactly as [screenEncryptedAttachment] does when the attachment is E2E; a plaintext blob is
+     * Decrypts exactly as [screenHeldAttachment] does when the attachment is E2E; a plaintext blob is
      * described as-is. A no-op for anything that isn't audio, and for a blob no message row claims (a relayed
      * attachment, or an avatar). Never throws — a waveform we couldn't compute is a flat bubble, not a
      * dropped delivery, and `rules/mesh.md` requires inbound handlers to stay silent on failure.

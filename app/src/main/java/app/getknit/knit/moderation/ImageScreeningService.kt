@@ -4,22 +4,30 @@ import android.util.Log
 import app.getknit.knit.data.blob.BlobVerdictDao
 import app.getknit.knit.data.blob.BlobVerdictEntity
 import app.getknit.knit.data.decodeBoundedFromBytes
+import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import kotlinx.coroutines.flow.Flow
 
 /**
- * On-device image-moderation service: screens images against [imageModerator] and caches the NSFW verdict
+ * On-device attachment-moderation service: screens images against [imageModerator] and caches the NSFW verdict
  * by content hash in [verdicts]. Extracted from `BlobRepository` so the data layer no longer invokes the
  * classifier (`docs/ARCHITECTURE_REVIEW.md` #16). Screening always runs; the content-filtering setting only
  * gates receive-side *hiding* (the chat blur and the avatar-adoption decision), not the scan.
  *
+ * The name predates link-preview cards. A card ([LinkPreviewBlob]) is an attachment whose bytes are a container
+ * rather than a picture, so [screenAttachment] opens it and screens what is inside — its picture against
+ * [imageModerator], its title and description against [textModeration], the way the message body is — into
+ * **one** verdict under the blob's hash. One verdict because the UI has one question ("hide this
+ * attachment?") and one place to ask it; a card whose text or picture trips either classifier hides whole.
+ *
  * The send side screens to gate a confirm/block ([isImageExplicit], cached nowhere); the receive side caches
- * the verdict for a stored blob ([screenImage]) so each received image is scanned at most once. For an E2E
- * attachment the stored bytes are ciphertext, so the caller decrypts first and passes the plaintext to
- * [screenImage] under the ciphertext hash (see `InboundPipeline.screenEncryptedAttachment`).
+ * the verdict for a stored blob ([screenImage] / [screenAttachment]) so each received attachment is scanned at
+ * most once. For an E2E attachment the stored bytes are ciphertext, so the caller decrypts first and passes
+ * the plaintext under the ciphertext hash (see `InboundPipeline.screenHeldAttachment`).
  */
 class ImageScreeningService(
     private val imageModerator: ImageModerator,
     private val verdicts: BlobVerdictDao,
+    private val textModeration: ScopedTextModerator,
 ) {
     /** Hashes flagged as explicit by on-device screening; the chat UI blurs these attachments. */
     fun observeFlaggedHashes(): Flow<List<String>> = verdicts.observeFlaggedHashes()
@@ -47,6 +55,21 @@ class ImageScreeningService(
     }
 
     /**
+     * Receive-side screening for any held plaintext attachment, routed by what **our own row** says it is:
+     * a link-preview card is opened and screened as a card ([screenLinkPreview]); everything else is screened
+     * as an image ([screenImage]) — which is also what an attachment with no row at all gets, on the safe side.
+     * [isRoom] selects the text classifier for a card: the Nearby room's, or the one DMs and groups use.
+     */
+    suspend fun screenAttachment(
+        hash: String,
+        bytes: ByteArray,
+        mime: String?,
+        isRoom: Boolean,
+    ) {
+        if (mime == LinkPreviewBlob.MIME) screenLinkPreview(hash, bytes, isRoom) else screenImage(hash, bytes)
+    }
+
+    /**
      * Receive-side screening for a stored blob: when no verdict is cached yet for [hash], decode [bytes]
      * (first frame for a GIF), classify, and cache the verdict under [hash]. Always runs (not gated by
      * the content-filtering setting): the cached verdict drives the avatar-adoption decision and the
@@ -55,7 +78,7 @@ class ImageScreeningService(
      * multiple messages/hops is scanned once. No-op when the bytes can't be decoded. For a plaintext
      * image (avatar / broadcast attachment) [bytes] are the stored blob's bytes; for an E2E attachment
      * the caller decrypts the ciphertext blob first and passes the plaintext while still keying by the
-     * ciphertext [hash] (see `InboundPipeline.screenEncryptedAttachment`).
+     * ciphertext [hash] (see `InboundPipeline.screenHeldAttachment`).
      */
     suspend fun screenImage(
         hash: String,
@@ -70,6 +93,26 @@ class ImageScreeningService(
                 "size=${bitmap.width}x${bitmap.height}",
         )
         verdicts.upsert(BlobVerdictEntity(hash, verdict.flagged, verdict.score))
+    }
+
+    /**
+     * A card's receive-side screen: its picture (if any) through the image classifier and its title and
+     * description through the text classifier for this scope, folded into one verdict under [hash]. A container
+     * that does not decode gets no verdict, like an image that does not decode — it renders nothing anyway.
+     * Idempotent per hash, like [screenImage].
+     */
+    private suspend fun screenLinkPreview(
+        hash: String,
+        bytes: ByteArray,
+        isRoom: Boolean,
+    ) {
+        if (verdicts.find(hash) != null) return
+        val card = LinkPreviewBlob.decodeOrNull(bytes) ?: return
+        val picture = card.image?.let { decodeBoundedFromBytes(it, SCREEN_MAX_DIM) }?.let { imageModerator.classify(it) }
+        val text = textModeration.classify(card.moderationText(), isRoom)
+        val flagged = picture?.flagged == true || text.flagged
+        Log.d(TAG, "incoming card hash=$hash picture=${picture?.flagged} text=${text.flagged} flagged=$flagged")
+        verdicts.upsert(BlobVerdictEntity(hash, flagged, maxOf(picture?.score ?: 0f, text.score)))
     }
 
     /** Whether [hash] has a cached verdict marking it explicit (used to refuse adopting a flagged avatar). */

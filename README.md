@@ -303,13 +303,17 @@ No. There is no Google Nearby / GMS dependency — the radios are driven through
 there are no accounts, sign-ups, phone numbers, or servers.
 
 **If it's offline, why does the app declare the `INTERNET` permission?**
-For two reasons. Wi-Fi Aware forms a direct radio link between two phones and runs a TCP socket *over
+For three reasons. Wi-Fi Aware forms a direct radio link between two phones and runs a TCP socket *over
 that local link* (link-local IPv6, no router or gateway), which Android gates behind the `INTERNET`
 permission even though no traffic leaves the mesh — that alone would require it. The optional
-[Internet relay plane](#-roadmap) also uses it, once you switch it on; it is off on a fresh install,
-which therefore makes no network calls at all. Knit bundles no analytics, telemetry, or crash
-reporting either way — you can confirm all of it from the source and the deliberately GMS-free
-dependency list.
+[Internet relay plane](#-roadmap) also uses it, once you switch it on. And so do link previews, once
+you switch *those* on: your own phone fetches a page's title and picture for a link you type and sends
+them with the message, so the people you send to never contact the site. Both are off on a fresh
+install, which therefore makes no network calls at all. (`ACCESS_NETWORK_STATE` is declared for the
+preview fetch alone — it is how the app checks that the default network actually reaches the Internet
+before opening a socket, so a phone that is only on the mesh never tries.) Knit bundles no analytics,
+telemetry, or crash reporting either way — you can confirm all of it from the source and the
+deliberately GMS-free dependency list.
 
 **How far can messages travel?**
 Beyond direct radio range. Each phone relays for the others, so a message hops device-to-device across
@@ -383,8 +387,8 @@ learning whose they are or what is in them. The protocol is specified in [`docs/
 executable test vectors; the client implements it, and the reference spool daemon lives in
 [`getknit/knit-spool`](https://github.com/getknit/knit-spool). **It stays off until you switch it on** —
 enabling it takes an explicit consent sheet in the relay settings screen that spells out what a spool
-can and cannot see, so a fresh install still makes no network calls. Knit is built around proximity
-meshing either way.
+can and cannot see, so a fresh install still makes no network calls (link previews, the other opt-in
+that uses the Internet, are off by default too). Knit is built around proximity meshing either way.
 
 ## 🔐 Security note
 

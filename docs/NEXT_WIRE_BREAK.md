@@ -88,6 +88,16 @@ one, and the room floods unencrypted to strangers). The composer's file item is 
 justification goes with it — and so does `MeshBlobStore.saveIncoming`'s screening skip, which relies on the
 identical assumption.
 
+**No longer true after link-preview cards (ADR 2026-09.n752), so the justification is withdrawn.** The
+room now originates a second attachment kind on purpose: a link-preview card is a container blob typed
+`LinkPreviewBlob.MIME`, and in the room that type rides `ChatContent.attachmentMime` — the field is
+load-bearing again, since a receiver keys the card bubble (and the card-aware screen in
+`MeshBlobStore.saveIncoming`, which *opens* a card rather than skipping it) on that value. Removing the
+field at a break therefore needs a replacement discriminator for the room, such as a one-byte attachment
+`kind`, before the room could tell a card from a photo. The item stays parked; only its "the room needs no
+type" argument is gone. The cleanup of `plaintextContent`'s substitution and `refFor`'s fallback still
+stands as written.
+
 **Watch out.** `MessageContent.attachmentMime` (inside the ciphertext) is a *different* field and stays —
 it is where the real value has lived since ADR 035. Do not let a mechanical rename or a broad grep take
 both. `FastFrameCodec`'s `DICT_V1` contains the literal string `"attachmentMime"`; the dictionary is frozen

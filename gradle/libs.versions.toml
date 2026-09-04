@@ -44,8 +44,9 @@ datastore = "1.2.1"
 # 16 KB-align and nothing that can make the F-Droid rebuild machine-dependent; its only non-stdlib
 # dependency is okio, already on the classpath via DataStore. Chosen over a Ktor client because its
 # WebSocket support is first-class on Android (it answers the daemon's 30 s pings automatically) and its
-# SOCKS Proxy support is the path to the deferred Tor toggle. Confined by rules/mesh.md to
-# mesh/spool/OkHttpSpoolDialer.kt — nothing else in the app may import okhttp3.
+# SOCKS Proxy support is the path to the deferred Tor toggle. Confined by rules/mesh.md (and detekt's
+# ForbiddenImport) to mesh/spool/OkHttpSpoolDialer.kt and linkpreview/OkHttpPreviewFetcher.kt — nothing
+# else in the app may import okhttp3.
 # NOTE the `okhttp` coordinate looks like a plain JVM jar but its Gradle module redirects an Android
 # consumer (`available-at`) to the okhttp-android AAR, so it is subject to that AAR's minCompileSdk —
 # 37 as of 5.5.0, which compileSdk 37.1 clears. Check okhttp-android, not okhttp, when bumping.
@@ -63,7 +64,8 @@ coil = "3.6.0"
 # line stays bare: depends only on litert-api (Java + native .so, no Kotlin metadata), pulls NO telemetry
 # (datatransport), NO Play model delivery (ai-delivery), declares no manifest permissions — so it can't
 # perturb the pinned Kotlin-2.4 graph or the app's offline-first, phones-home-never design. (The one
-# network dependency is okhttp below, and it only ever talks to spools the user configures themselves.)
+# network dependency is okhttp below, and it only ever talks to spools the user configures themselves
+# and — with link previews switched on — to the sites behind links in the user's own messages.)
 # Do NOT jump to litert 2.x
 # (renames the lib to libLiteRt.so, drops x86, pulls ai-delivery + lifecycle + guava + coroutines +
 # FOREGROUND_SERVICE). Still deliberately chosen over com.google.mediapipe:tasks-vision.
@@ -217,6 +219,9 @@ androidx-datastore-preferences = { group = "androidx.datastore", name = "datasto
 sqlcipher-android = { group = "net.zetetic", name = "sqlcipher-android", version.ref = "sqlcipher" }
 
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+# Test-only: a local HTTP server for OkHttpPreviewFetcherTest — the byte caps, redirect policy and header
+# hygiene of the link-preview fetch are only observable on a socket. Same version line as okhttp, never ships.
+okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver3", version.ref = "okhttp" }
 
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }

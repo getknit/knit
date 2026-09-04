@@ -46,6 +46,13 @@ mesh/bluetooth/ BluetoothMeshTransport (BLE advertise/scan + persistent L2CAP li
 mesh/lora/     LoraMeshTransport — fast-plane-only child carrying the Nearby-room broadcast subset over a
                Meshtastic board (off by default, BuildConfig.LORA_PLANE, ADR 038) · pure JVM-tested
                MeshtasticSession/MeshtasticProto/LoraFramePolicy/LoraPacePolicy over the MeshtasticLink seam
+linkpreview/   sender-side link previews (ADR 2026-09.n752): LinkPreviewService (gates → fetch → parse →
+               moderate) · OkHttpPreviewFetcher (the only okhttp3 importer besides the spool dialer; bound
+               to the validated network, private-address DNS guard) · OpenGraphParser / LinkPreviewPolicy /
+               PublicAddressPolicy (pure) · PreviewImage; the card itself is protocol/LinkPreviewBlob, an
+               attachment kind under its own MIME, decoded on receive by data/LinkCardStore
+net/           InternetGate + AndroidInternetGate — "is the default network a validated route to the
+               Internet?", the one ConnectivityManager user outside the NAN data path
 moderation/    on-device TextModerator (LexicalTextFilter + MlTextModerator) + ImageModerator
                (NsfwImageModerator) + ImageScreeningService (screens image blobs, caches NSFW
                verdicts — pulled out of BlobRepository) · ModelLoadGuard/ModelLoadPolicy (poison-pill:

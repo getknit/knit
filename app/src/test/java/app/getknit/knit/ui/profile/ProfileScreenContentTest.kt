@@ -3,6 +3,8 @@ package app.getknit.knit.ui.profile
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -34,6 +36,7 @@ class ProfileScreenContentTest {
         relay: RelaySummary = RelaySummary(),
         lora: LoraSummary = LoraSummary(),
         openToChat: Boolean = false,
+        linkPreviewsEnabled: Boolean = false,
     ) = ProfileFormState(
         name = "Alice",
         status = "Hiking",
@@ -42,6 +45,7 @@ class ProfileScreenContentTest {
         aliasMore = "Warm Owl",
         avatarHash = null,
         contentFilteringEnabled = true,
+        linkPreviewsEnabled = linkPreviewsEnabled,
         openToChat = openToChat,
         relay = relay,
         lora = lora,
@@ -57,11 +61,13 @@ class ProfileScreenContentTest {
         lora: LoraSummary = LoraSummary(),
         openToChat: Boolean = false,
         onToggleOpenToChat: (Boolean) -> Unit = {},
+        linkPreviewsEnabled: Boolean = false,
+        onToggleLinkPreviews: (Boolean) -> Unit = {},
     ) {
         compose.setContent {
             KnitTheme {
                 ProfileScreenContent(
-                    form = form(isDirty, relay, lora, openToChat),
+                    form = form(isDirty, relay, lora, openToChat, linkPreviewsEnabled),
                     batteryExempt = true,
                     onBack = {},
                     onNameChange = {},
@@ -70,6 +76,7 @@ class ProfileScreenContentTest {
                     onStatusCommit = {},
                     onToggleContentFiltering = {},
                     onToggleOpenToChat = onToggleOpenToChat,
+                    onToggleLinkPreviews = onToggleLinkPreviews,
                     onOpenRelays = onOpenRelays,
                     showInternetRelays = showInternetRelays,
                     onPickPhoto = {},
@@ -179,5 +186,29 @@ class ProfileScreenContentTest {
             lora = LoraSummary(enabled = true, boardName = "Meshtastic_1a2b", plane = LoraPlane.Live, battery = battery),
         )
         compose.onNodeWithText("On · Meshtastic_1a2b · connected · battery 78%").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun theLinkPreviewsRowIsOffByDefaultAndTogglesOn() {
+        var toggled: Boolean? = null
+        render(isDirty = false, onToggleLinkPreviews = { toggled = it })
+        compose.onNodeWithTag("profile_link_previews").performScrollTo().assertIsOff()
+        compose.onNodeWithTag("profile_link_previews").performClick()
+        assertEquals(true, toggled)
+    }
+
+    @Test
+    fun theLinkPreviewsRowTogglesOff() {
+        var toggled: Boolean? = null
+        render(isDirty = false, linkPreviewsEnabled = true, onToggleLinkPreviews = { toggled = it })
+        compose.onNodeWithTag("profile_link_previews").performScrollTo().assertIsOn()
+        compose.onNodeWithTag("profile_link_previews").performClick()
+        assertEquals(false, toggled)
+    }
+
+    @Test
+    fun theLinkPreviewsRowFollowsTheInternetPlaneSwitch() {
+        render(isDirty = false, showInternetRelays = false)
+        compose.onNodeWithTag("profile_link_previews").assertDoesNotExist()
     }
 }

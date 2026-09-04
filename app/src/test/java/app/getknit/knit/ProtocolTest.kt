@@ -52,6 +52,16 @@ class ProtocolTest {
     }
 
     @Test
+    fun linkPreviewCardsRideTheProfileLikeFiles() {
+        // A send-time input read from the pinned profile, the next bit after files, above the BLE advert's
+        // eight bits; every local build claims it.
+        assertEquals(0x400L, Protocol.CAP_LINK_PREVIEW)
+        assertTrue(Protocol.LOCAL_CAPABILITIES and Protocol.CAP_LINK_PREVIEW != 0L)
+        assertTrue(Protocol.CAP_LINK_PREVIEW > 0xFFL)
+        assertEquals(Protocol.CAP_FILES shl 1, Protocol.CAP_LINK_PREVIEW)
+    }
+
+    @Test
     fun nodeIdIsAlwaysTheFirstSegment() {
         // Robust to any future suffix appended after the capabilities field.
         assertEquals("abcd1234", Protocol.parse("abcd1234|1|f|future|stuff").nodeId)

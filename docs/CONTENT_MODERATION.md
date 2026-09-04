@@ -1,7 +1,8 @@
 # Knit — On-device Content Moderation
 
 How Knit limits abusive content — vulgar/abusive **text** and explicit/inappropriate **images** —
-entirely **on-device**. The app has no `INTERNET` permission and never talks to a server, so every
+entirely **on-device**. Moderation never talks to a server (the app's only Internet users are the opt-in
+relay plane and opt-in link previews, both off by default, and neither is a moderation channel), so every
 check runs locally against bundled assets/models; no cloud moderation API (Perspective, Cloud Vision
 SafeSearch, ML Kit cloud) is usable.
 
@@ -221,11 +222,12 @@ gating on it let a hostile server switch screening off for its own blob (knit/kn
 matter. The mime alone would not be enough: a Nearby-room attachment is not re-sealed, so *its*
 `attachmentMime` rides in the clear and lands in the row verbatim, which would merely move the spoof from
 any neighbour to the message's author. Requiring a key costs nothing legitimate — neither the mic nor the
-file picker is offered in the room (below), so a room attachment is always an image — and it states the
-real reason for the skip: a sealed attachment's stored bytes are ciphertext the image decoder cannot read
-either way, which is why the real screen for one happens after decryption in `InboundPipeline.onObtained`.
-A blob with **no** row (a pulled avatar, a group photo, a relayed blob) reads as `null`, is therefore not
-an image by this test, and is screened — the safe default, and the only screen those blobs get.
+file picker is offered in the room (below), so a room attachment is an image or, since ADR 2026-09.n752, a
+link-preview card, and a card is not skipped but *opened* (§7.1) — and it states the real reason for the
+skip: a sealed attachment's stored bytes are ciphertext the image decoder cannot read either way, which is
+why the real screen for one happens after decryption in `InboundPipeline.onObtained`. A blob with **no**
+row (a pulled avatar, a group photo, a relayed blob) reads as `null`, is therefore not an image by this
+test, and is screened — the safe default, and the only screen those blobs get.
 
 What protects a recipient instead:
 
@@ -235,9 +237,10 @@ What protects a recipient instead:
   The room is the one surface that
   floods unencrypted to strangers in range, and it is where this document's own threat model is weakest —
   it is also where the image classifier *hard-blocks* rather than merely confirming. Unscreenable content
-  broadcast to everyone nearby is the combination worth refusing, so it is refused. That refusal is load
-  bearing twice over: the receive-side skip above and `docs/NEXT_WIRE_BREAK.md`'s first parked item both
-  assume a room attachment is an image.
+  broadcast to everyone nearby is the combination worth refusing, so it is refused. That refusal was load
+  bearing twice over — the receive-side skip above and `docs/NEXT_WIRE_BREAK.md`'s first parked item both
+  assumed a room attachment is an image — until link-preview cards (§7.1) became the one other kind the
+  room originates; both now say *image or card*, and a card is screenable where audio and files are not.
 - **App packages are never sent, and archives ask before they are saved.** `FileTypes.isInstallable`
   refuses an `.apk` at ingest — a mesh that moves app packages between strangers is a sideloading channel —
   and `FileTypes.isRisky` puts a confirmation in front of saving an archive or an executable, saying plainly
@@ -255,6 +258,31 @@ kind exists for one. If a small on-device speech classifier ever becomes practic
 exists: `InboundPipeline.onObtained` decrypts a landed attachment and is where the waveform
 derivation runs today, so a verdict could be cached under the same content hash the image path uses, and
 the bubble's tap-to-reveal collapse would need no new UI. Tracked in `.agents/memory/roadmap.md`.
+
+### 7.1 Link-preview cards are screened on both ends, one verdict per card
+
+A link-preview card (ADR 2026-09.n752) is an attachment whose bytes are a container rather than a picture:
+the title, description and a small picture the **sender's** phone fetched for a link in its own message.
+Both halves are text or image, so both classifiers apply, and they apply twice:
+
+- **On the sender**, before the card is staged: `LinkPreviewService` runs the picture through
+  `ImageScreeningService.isImageExplicit` (flagged ⇒ the card is sent without it) and the title and
+  description through the same `ScopedTextModerator` gate the message body faces, scoped to the thread
+  (flagged ⇒ no card at all). A modified client can skip this, exactly as it can skip the body's gate.
+- **On the recipient**, when the blob lands: `ImageScreeningService.screenAttachment` opens the container
+  (`LinkPreviewBlob.decodeOrNull`, which is also where a peer-supplied card is normalized and refused),
+  classifies the picture at the usual 512 px bound and the text in the receiving thread's scope, and caches
+  **one** verdict under the blob's hash — flagged if either half is. The chat has one question of an
+  attachment ("hide it?") and one place to ask it, so a flagged card hides whole behind the same tap-to-view
+  a flagged photo gets, under the same content-filter toggle. A container that does not decode gets no
+  verdict, like an image that does not decode; it renders nothing anyway.
+
+Routing is by **our own row's MIME**, never the serving peer's header: a key-less blob whose row names the
+card MIME goes to the card screen in room scope (`MeshBlobStore.saveIncoming`), a sealed one is opened after
+decryption in `InboundPipeline.screenHeldAttachment` in DM scope, and a room card whose blob was relayed
+*before* its row arrived — which `saveIncoming` could only try as an image, a no-op on a container — is
+screened by the same `screenHeldAttachment` when the message names it. A MIME an author claims can
+therefore route a blob *into* the stricter screen, never around one.
 
 ## 8. When a model crashes the process: the poison-pill
 

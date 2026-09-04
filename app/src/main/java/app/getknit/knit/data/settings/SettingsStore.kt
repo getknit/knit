@@ -119,6 +119,18 @@ class SettingsStore(
         dataStore.data.map { it[KEY_CONTENT_FILTERING] ?: true }
 
     /**
+     * Whether a link in a message this device sends grows a preview card — the page's title and picture,
+     * fetched by **this** phone over the Internet and sent with the message, so the people it reaches never
+     * contact the site (ADR: link previews). **Off by default**: each fetch is a socket toward a site somebody
+     * chose by typing a link, from this phone's IP address, and that is the user's call to make. Folded with
+     * `BuildConfig.INTERNET_PLANE` the way [spoolEnabled] is, so a build with no Internet plane has no
+     * Internet feature at all, and gated once here so no consumer can forget it. The receive side needs no
+     * setting: a card is an ordinary attachment, hidden by the content filter like any other when flagged.
+     */
+    val linkPreviewsEnabled: Flow<Boolean> =
+        dataStore.data.map { BuildConfig.INTERNET_PLANE && (it[KEY_LINK_PREVIEWS] ?: false) }
+
+    /**
      * Whether this device's profile declares its user "open to chat". Defaults to off. A profile field like
      * [displayName]/[status]: a change bumps [profileVersion] and republishes the profile on both paths
      * (`MeshManager.watchProfileChanges`), and while on, the presence cue (`presence/OpenToChatWatch`) nudges
@@ -389,6 +401,8 @@ class SettingsStore(
 
     suspend fun setContentFilteringEnabled(value: Boolean) = dataStore.edit { it[KEY_CONTENT_FILTERING] = value }
 
+    suspend fun setLinkPreviewsEnabled(value: Boolean) = dataStore.edit { it[KEY_LINK_PREVIEWS] = value }
+
     suspend fun setOpenToChat(value: Boolean) = dataStore.edit { it[KEY_OPEN_TO_CHAT] = value }
 
     /** Replaces the cue's named set and last-post stamp in one write (see [openToChatNamed]). */
@@ -603,6 +617,7 @@ class SettingsStore(
         val KEY_PENDING_INTROS = stringSetPreferencesKey("pending_intros")
         val KEY_INTRO_GRACE = stringSetPreferencesKey("intro_grace")
         val KEY_CONTENT_FILTERING = booleanPreferencesKey("content_filtering_enabled")
+        val KEY_LINK_PREVIEWS = booleanPreferencesKey("link_previews_enabled")
         val KEY_OPEN_TO_CHAT = booleanPreferencesKey("open_to_chat")
         val KEY_OPEN_TO_CHAT_NAMED = stringSetPreferencesKey("open_to_chat_named")
         val KEY_OPEN_TO_CHAT_LAST_POST_AT = longPreferencesKey("open_to_chat_last_post_at")

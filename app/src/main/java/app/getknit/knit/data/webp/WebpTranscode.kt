@@ -4,10 +4,10 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Movie
-import android.os.Build
 import android.util.Log
 import androidx.core.graphics.createBitmap
 import app.getknit.knit.data.downscale
+import app.getknit.knit.data.lossyWebpFormat
 import java.io.ByteArrayOutputStream
 
 /**
@@ -153,15 +153,7 @@ object WebpTranscode {
             outH = scaled.height
             val fo = ByteArrayOutputStream()
 
-            // WEBP (deprecated at API 30) is the API-29 lossy WebP format; WEBP_LOSSY is API 30.
-            @Suppress("DEPRECATION")
-            val webpFormat =
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    Bitmap.CompressFormat.WEBP_LOSSY
-                } else {
-                    Bitmap.CompressFormat.WEBP
-                }
-            val ok = scaled.compress(webpFormat, quality, fo)
+            val ok = scaled.compress(lossyWebpFormat(), quality, fo)
             if (scaled !== frameBuffer) scaled.recycle()
             if (!ok) {
                 aborted = true

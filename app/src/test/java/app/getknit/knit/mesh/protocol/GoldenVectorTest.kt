@@ -343,6 +343,20 @@ class GoldenVectorTest {
                         attachmentSize = 1_400_000L,
                     ),
                 ),
+            // Link-preview cards: the container a card attachment's blob holds. Its own type under its own MIME,
+            // so no fixture above moves; `v` is required and always emitted (an elided version cannot gate), and
+            // the text-only shape pins that an absent picture costs no bytes at all.
+            "linkPreviewBlob" to
+                LinkPreviewBlob(
+                    v = LinkPreviewBlob.VERSION,
+                    url = "https://example.com/a?b=1",
+                    title = "Title",
+                    description = "Desc",
+                    image = bytes(8, 12),
+                    imageMime = "image/webp",
+                ).encode(),
+            "linkPreviewBlobTextOnly" to
+                LinkPreviewBlob(v = LinkPreviewBlob.VERSION, url = "https://example.com/", title = "Title").encode(),
         )
 
     private fun compact(content: MessageContent): ByteArray =
@@ -530,6 +544,10 @@ class GoldenVectorTest {
                     "a5035820040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dd046f6170706c69636174696f6e2f" +
                     "706466055820050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7de0e6a7265706f72742e706466" +
                     "0f1a00155cc0",
+                "linkPreviewBlob" to
+                    "a66176016375726c781968747470733a2f2f6578616d706c652e636f6d2f613f623d31657469746c65655469746c656b646573" +
+                    "6372697074696f6e644465736365696d616765480c131a21282f363d69696d6167654d696d656a696d6167652f77656270",
+                "linkPreviewBlobTextOnly" to "a36176016375726c7468747470733a2f2f6578616d706c652e636f6d2f657469746c65655469746c65",
             )
 
         const val BUNDLE_ENCODED =

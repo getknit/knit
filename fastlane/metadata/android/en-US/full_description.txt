@@ -19,7 +19,7 @@ PRIVATE BY DESIGN
 Direct and group chats are end-to-end encrypted. Each message is sealed so only the people in the conversation can read it — every phone that carries it onward, and every relay, sees only ciphertext. Your keys are generated on your device, protected by hardware-backed Android security. Confirm who you're talking to with a safety number or a QR scan.
 
 ABOUT THE PERMISSIONS
-Knit asks for nearby-devices (and, on Android 12 and older, location) because that is what Android requires to discover peers over Wi-Fi Aware and Bluetooth LE. It declares INTERNET for two reasons: Android classes the local socket over a direct Wi-Fi Aware link as network access, and Internet relays use it once you switch them on. There is no account and no backend — a fresh install makes no network calls at all.
+Knit asks for nearby-devices (and, on Android 12 and older, location) because that is what Android requires to discover peers over Wi-Fi Aware and Bluetooth LE. It declares INTERNET because Android classes the local socket over a direct Wi-Fi Aware link as network access, and because Internet relays and link previews use it once you switch them on. No account, no backend — a fresh install makes no network calls at all.
 
 FREE SOFTWARE
 Knit is released under the GNU General Public License v3 or later, and the full source is public at github.com/getknit/knit. Read the code that runs on your phone, or build the app yourself.

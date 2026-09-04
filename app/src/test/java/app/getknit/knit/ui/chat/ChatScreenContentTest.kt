@@ -1,6 +1,7 @@
 package app.getknit.knit.ui.chat
 
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -13,6 +14,8 @@ import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.mesh.protocol.LinkCard
+import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.ui.theme.KnitTheme
 import org.junit.Assert.assertEquals
@@ -43,6 +46,8 @@ class ChatScreenContentTest {
         replyingTo: ReplyRef? = null,
         state: ChatUiState = ChatUiState(isRoom = true, myNodeId = "me"),
         pendingAttachment: AttachmentStore.Ingested? = null,
+        linkPreviewLoading: Boolean = false,
+        onDraftChanged: (String) -> Unit = {},
     ): @androidx.compose.runtime.Composable () -> Unit =
         {
             KnitTheme {
@@ -51,6 +56,8 @@ class ChatScreenContentTest {
                     state = state,
                     inputState = TextFieldState(input),
                     pendingAttachment = pendingAttachment,
+                    linkPreviewLoading = linkPreviewLoading,
+                    onDraftChanged = onDraftChanged,
                     replyingTo = replyingTo,
                     now = 1_700_000_000_000L,
                     onBack = {},
@@ -207,5 +214,88 @@ class ChatScreenContentTest {
         compose.onNodeWithTag("reply_preview").assertIsDisplayed()
         compose.onNodeWithTag("reply_cancel").performClick()
         assertEquals(1, cancelledReply)
+    }
+
+    private val card =
+        LinkCard(
+            url = "https://example.com/a",
+            host = "example.com",
+            title = "Mesh networking",
+            description = "How phones find each other",
+            hasImage = false,
+        )
+
+    private fun cardRow(
+        linkCard: LinkCard?,
+        flagged: Boolean = false,
+    ) = ChatRow(
+        id = "m-card",
+        body = "see https://example.com/a",
+        mine = false,
+        senderName = "Bob",
+        senderNodeId = "bob",
+        avatarHash = null,
+        sentAt = 1_700_000_000_000L,
+        received = false,
+        attachmentHash = "h-card",
+        attachmentMime = LinkPreviewBlob.MIME,
+        attachmentReady = true,
+        attachmentFlagged = flagged,
+        linkCard = linkCard,
+    )
+
+    @Test
+    fun aDecodedCardDrawsAsOneLabelledNodeWithItsTitleAndHost() {
+        compose.setContent(content(input = "", state = ChatUiState(isRoom = true, myNodeId = "me", rows = listOf(cardRow(card)))))
+        compose.onNodeWithTag("chat_link_card").assertIsDisplayed()
+        compose.onNodeWithTag("chat_link_card").assertContentDescriptionEquals("Link preview: Mesh networking, example.com")
+        compose.onNodeWithTag("chat_link_card_hidden").assertDoesNotExist()
+    }
+
+    @Test
+    fun aCardThatHasNotDecodedDrawsNeitherACardNorAPhotoSpinner() {
+        compose.setContent(
+            content(input = "", state = ChatUiState(isRoom = true, myNodeId = "me", rows = listOf(cardRow(linkCard = null)))),
+        )
+        compose.onNodeWithTag("chat_link_card").assertDoesNotExist()
+        compose.onNodeWithText("Photo appears once a device that has it is reachable").assertDoesNotExist()
+        compose.onNodeWithText("see https://example.com/a", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun aFlaggedCardHidesWholeUntilTapped() {
+        compose.setContent(
+            content(input = "", state = ChatUiState(isRoom = true, myNodeId = "me", rows = listOf(cardRow(card, flagged = true)))),
+        )
+        compose.onNodeWithTag("chat_link_card_hidden").assertIsDisplayed()
+        compose.onNodeWithTag("chat_link_card").assertDoesNotExist()
+        compose.onNodeWithTag("chat_link_card_hidden").performClick()
+        compose.onNodeWithTag("chat_link_card").assertIsDisplayed()
+    }
+
+    @Test
+    fun aStagedCardShowsItsTitleAndHostBesideTheClearBadge() {
+        val staged = AttachmentStore.Ingested(hash = "h-card", mime = LinkPreviewBlob.MIME, link = card)
+        compose.setContent(content(input = "see https://example.com/a", pendingAttachment = staged))
+        compose.onNodeWithTag("chat_link_staged").assertIsDisplayed()
+        compose
+            .onNodeWithTag("chat_link_staged")
+            .assertContentDescriptionEquals("Link preview: Mesh networking, example.com. Tap the cross to send without it")
+    }
+
+    @Test
+    fun theLoadingLineShowsWhileNothingIsStagedAndTheDraftReachesTheCallback() {
+        val drafts = ArrayList<String>()
+        compose.setContent(content(input = "https://example.com/a", linkPreviewLoading = true, onDraftChanged = { drafts += it }))
+        compose.onNodeWithTag("chat_link_preview_loading").assertIsDisplayed()
+        assertEquals(listOf("https://example.com/a"), drafts)
+    }
+
+    @Test
+    fun theLoadingLineYieldsToAStagedAttachment() {
+        val staged = AttachmentStore.Ingested(hash = "h-card", mime = LinkPreviewBlob.MIME, link = card)
+        compose.setContent(content(input = "x", linkPreviewLoading = true, pendingAttachment = staged))
+        compose.onNodeWithTag("chat_link_preview_loading").assertDoesNotExist()
+        compose.onNodeWithTag("chat_link_staged").assertIsDisplayed()
     }
 }
