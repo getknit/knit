@@ -197,7 +197,13 @@ a live message).
 drops it as `UNKNOWN_TAG`, which is what makes this additive) carries an OFFER: publisher key + ≤ 48 4-byte id
 prefixes (`StoreDigest.hash64` truncated), never fragmented, one packet. `LoraGossipPolicy` is Trickle —
 5 → 15 min doubling, transmit in the interval's second half, snap to the floor on news, suppress only on **set
-equality** (a superset has not said what we needed to say). On a far gateway's OFFER: `BridgeFrameSource`
+equality** (a superset has not said what we needed to say). "News" includes a *heard* OFFER announcing a set
+that is not ours (ADR 2026-09.qsj6), which `onCtlPacket` follows with a `gossipWake` poke like the other two
+reset sites — without it the loop sleeps on the old due time, wakes past the reset interval's end and doubles.
+It snaps only a **backed-off** interval, so a divergence that cannot converge (serve cap spent, permanent
+superset) settles at the floor cadence instead of two gateways resetting each other into the BRIDGE budget;
+and a reset never moves an unspent transmit point *later* than the one its interval already picked.
+On a far gateway's OFFER: `BridgeFrameSource`
 (`MeshManager` over `ForwardStore.liveFrames`, already TTL- and quota-bounded, so no extra age gate) returns
 what the prefixes don't name, ranked profile → room → DM newest-first (ADR 2026-09.rre4 — the reverse of the
 pacing queue's `FrameClass` order, on purpose: the queue asks who transmits first, the rank asks which frames

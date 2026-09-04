@@ -80,6 +80,58 @@ class LoraGossipPolicyTest {
     }
 
     @Test
+    fun anOfferAnnouncingADifferentSetSnapsABackedOffIntervalToTheFloor() {
+        // The other half of Trickle: an inconsistent transmission resets the timer whether or not we act on
+        // it. Hearing a set that is not ours is the first sign a divergent pocket is on the channel.
+        val p = armed()
+        p.nextDueAt(5 * 60_000)
+        val backedOff = p.nextDueAt(15 * 60_000) // interval 3 is 15..30 min, transmit at 22.5 min
+        assertEquals(15 * 60_000L, p.interval)
+
+        p.onOffer(sameSet = false, now = 16 * 60_000)
+
+        assertEquals(5 * 60_000L, p.interval)
+        val due = p.nextDueAt(16 * 60_000)
+        assertTrue("and the transmit point moves up", due < backedOff)
+        assertEquals(16 * 60_000L + 150_000, due)
+    }
+
+    @Test
+    fun aResetDoesNotPushAnAlreadyPendingTransmitLater() {
+        // A reset draws a fresh transmit point, which can land after one this interval already picked and has
+        // not spent. News must never delay the very transmission it asks for, so the earlier slot stands.
+        val p = armed()
+        p.nextDueAt(5 * 60_000)
+        p.nextDueAt(15 * 60_000)
+        assertEquals("interval 3 runs 15..30 min", 22 * 60_000L + 30_000, p.nextDueAt(15 * 60_000))
+
+        // A fresh floor interval opened at 21 min would transmit at 23.5 min, which is later than that.
+        p.onOffer(sameSet = false, now = 21 * 60_000)
+
+        assertEquals(5 * 60_000L, p.interval)
+        assertEquals("the earlier pending point stands", 22 * 60_000L + 30_000, p.nextDueAt(21 * 60_000))
+    }
+
+    @Test
+    fun aResetDoesNotCancelATransmitThatIsAlreadyDue() {
+        val p = armed()
+        p.reset(200_000) // past this interval's 150_000 transmit point, which the loop has not woken for yet
+        assertTrue("still due, not pushed to the new interval's own point", p.takeTransmitSlot(200_000))
+    }
+
+    @Test
+    fun sustainedDivergenceDoesNotBeatTheFloorCadence() {
+        // Two gateways that cannot converge — the serve cap spent, or a permanent superset — would otherwise
+        // reset each other on every offer forever, spending the bridge budget on gossip rather than backfill.
+        val p = armed()
+        assertTrue(p.takeTransmitSlot(150_000))
+        p.onOffer(sameSet = false, now = 160_000)
+        p.onOffer(sameSet = false, now = 200_000)
+        assertFalse("the slot stays spent", p.takeTransmitSlot(250_000))
+        assertEquals("and this interval still ends where it did", 300_000L, p.nextDueAt(250_000))
+    }
+
+    @Test
     fun aSuppressedIntervalStillConsumesItsSlotRatherThanRetryingEveryWakeUp() {
         val p = armed()
         p.onOffer(sameSet = true, now = 100_000)

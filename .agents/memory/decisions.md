@@ -17,7 +17,7 @@ minted at random, because the sequence number was itself the merge conflict: par
 worktrees all read the same "next number" and all took it. Cite whichever form an ADR
 carries; never renumber an old one.
 
-81 decisions.
+82 decisions.
 
 | ADR | Decision | Topics |
 | --- | --- | --- |
@@ -95,6 +95,7 @@ carries; never renumber an old one.
 | [2026-09.emd7](decisions/2026-09-emd7-a-knit-board-tells-the-mesh-it-is-unmonitored.md) | A Knit board tells the mesh it is unmonitored | lora, meshtastic, provisioning |
 | [2026-09.mhs5](decisions/2026-09-mhs5-a-lora-packet-is-padded-past-the-firmware-s-signature-cliff.md) | A LoRa packet is padded past the firmware's signature cliff | lora, airtime, link |
 | [2026-09.qq2r](decisions/2026-09-qq2r-a-file-is-an-ordinary-attachment-with-an-arbitrary-mime-and-a-sealed-name.md) | A file is an ordinary attachment with an arbitrary MIME and a sealed name | attachments, ui, wire, moderation |
+| [2026-09.qsj6](decisions/2026-09-qsj6-a-heard-inconsistent-offer-is-news.md) | A heard inconsistent OFFER is news | lora, airtime, reliability |
 | [2026-09.rre4](decisions/2026-09-rre4-the-lora-backfill-serves-the-room-before-dms.md) | The LoRa backfill serves the room before DMs | lora, airtime, custody |
 | [2026-09.un9n](decisions/2026-09-un9n-a-never-drawn-window-is-recovered-by-recreating-it.md) | A never-drawn window is recovered by recreating it | ui, android, resilience, back |
 | [2026-09.ursc](decisions/2026-09-ursc-the-nearby-room-says-when-lora-airtime-is-spent.md) | The Nearby room says when LoRa airtime is spent | lora, ui |

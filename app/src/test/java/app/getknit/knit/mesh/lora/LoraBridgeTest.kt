@@ -241,6 +241,59 @@ class LoraBridgeTest {
         }
 
     /**
+     * The other half of Trickle, end to end: hearing an OFFER that announces a set which is not ours snaps
+     * our own backed-off timer to the floor, so the second half of the exchange happens inside a short
+     * reunion instead of waiting out up to fifteen minutes of somebody else's silence.
+     *
+     * Bob holds a **superset** of alice's set on purpose, and the one frame she lacks is a DM for a peer on
+     * his own live link — which ADR 054 stops him serving. So nothing crosses the air in either direction:
+     * neither `serveBackfill`'s reset nor the inbound-frame reset can explain the acceleration, only the
+     * offer she heard. Bob is muted so his board's arrival is silent until that first OFFER.
+     *
+     * It pins the wake as much as the policy. Bob's offer lands early in alice's fifteen-minute interval, so
+     * her sleeping gossip loop is parked *past* the end of the floor interval the reset opens: without
+     * `gossipWake` she does not merely miss the acceleration, she wakes to an expired interval and doubles.
+     */
+    @Test
+    fun hearingAnOfferForADifferentSetSnapsABackedOffTimerToTheFloor() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+
+            // Alice's timer, undisturbed: intervals [0,5) [5,15) [15,30) [30,45) min, transmitting at each
+            // midpoint — 2.5, 10, 22.5 and 37.5. Bob's board arrives at 28.3 min, so his first offer lands
+            // at 30.8 — just inside her fourth interval, whose own transmit point is 37.5.
+            advanceTimeBy(28 * 60_000 + 20_000)
+            runCurrent()
+            val offersBefore = a.metrics.snapshot().loraOfferSent
+            assertEquals("three intervals, three offers", 3L, offersBefore)
+
+            val b = rig(air, 2u, "bob", backgroundScope, mute = true) { testScheduler.currentTime }
+            b.custody.held += a.custody.held // everything alice has...
+            b.custody.held += frame("b3", body = "and one she lacks", recipientId = "b2")
+            b.transport.start()
+            b.transport.suppressDataPath(setOf("b2")) // ...which his own link covers, so he never serves it
+            runCurrent()
+
+            advanceTimeBy(toFirstOffer) // bob's first interval midpoint, at 30.8 min
+            runCurrent()
+            assertEquals("alice heard bob", 1L, a.metrics.snapshot().loraOfferReceived)
+            assertEquals("and has nothing to serve him", 0L, a.metrics.snapshot().loraBridged)
+            assertEquals("nor has she spoken yet", offersBefore, a.metrics.snapshot().loraOfferSent)
+
+            // On her own schedule the next one was 6.7 minutes out, and 21.7 if she woke to a lapsed reset.
+            advanceTimeBy(LoraGossipPolicy.MIN_INTERVAL_MS)
+            runCurrent()
+            assertEquals(
+                "alice answers inside a floor interval rather than waiting out her backoff",
+                offersBefore + 1,
+                a.metrics.snapshot().loraOfferSent,
+            )
+            assertEquals("and no frame crossed to explain it", 0L, b.metrics.snapshot().loraBridged)
+        }
+
+    /**
      * The recipient gate on the bridge (ADR 054): a DM-form frame addressed to a peer this gateway holds a
      * live link to — or to the gateway itself — is never served across, however the far offer reads. The far
      * pocket would only ever be a carrier for it, and the link (or our own inbox) already has it.

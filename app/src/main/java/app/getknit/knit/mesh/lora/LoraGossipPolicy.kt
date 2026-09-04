@@ -43,23 +43,47 @@ internal class LoraGossipPolicy(
     /**
      * Records an OFFER we heard. [sameSet] is whether it announced exactly the set ours would — see the class
      * doc for why nothing weaker counts.
+     *
+     * Both halves of Trickle live here. A same-set OFFER is redundancy, and counts toward suppressing ours.
+     * A **different**-set OFFER is news — RFC 6206 resets on an inconsistent transmission whether or not we
+     * act on it, and here it is the first sign a divergent pocket is on the channel, which is precisely when
+     * our own OFFER (the one that says what we *lack*) is worth putting on the air soon rather than at
+     * whatever backoff the silence had earned.
+     *
+     * It snaps only a **backed-off** timer, and that guard is load-bearing rather than an optimisation. Two
+     * gateways whose sets cannot converge — the hourly serve cap spent, or a far pocket holding a permanent
+     * superset — would otherwise reset each other on every offer forever, beating the floor cadence and
+     * spending the BRIDGE budget on offers instead of on the backfill those offers exist to drive. A timer
+     * already at [minIntervalMs] is already as fast as this policy goes; there is nothing to accelerate.
      */
     fun onOffer(
         sameSet: Boolean,
         now: Long,
     ) {
         ensureInterval(now)
-        if (sameSet) consistent++
+        if (sameSet) {
+            consistent++
+        } else if (intervalMs > minIntervalMs) {
+            reset(now)
+        }
     }
 
     /**
      * Snaps the interval back to the floor: something changed that a far gateway needs to know about soon —
-     * a gateway we had not heard from, or a frame that crossed the bridge in either direction.
+     * a gateway we had not heard from, an OFFER announcing a set that is not ours, or a frame that crossed
+     * the bridge in either direction.
+     *
+     * A reset means **sooner, never later**. The fresh interval draws a fresh transmit point, which on its
+     * own can land after one this interval had already picked and not yet spent — so an unspent point still
+     * ahead of us keeps its slot, and one already due stays due. Without that, news arriving just before our
+     * own transmit point would push it back by up to a floor interval, which is the opposite of the intent.
      */
     fun reset(now: Long) {
+        val pending = if (intervalStart != NEVER && !spent) transmitAt else Long.MAX_VALUE
         intervalMs = minIntervalMs
         intervalStart = NEVER
         ensureInterval(now)
+        if (pending < transmitAt) transmitAt = maxOf(pending, now)
     }
 
     /** When the caller should next wake: this interval's transmit point, or its end once we are past that. */

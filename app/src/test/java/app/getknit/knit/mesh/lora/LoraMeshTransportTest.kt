@@ -512,7 +512,11 @@ class LoraMeshTransportTest {
     fun aFirstHearingBeaconsAfterASixtySecondGapWhileSessionUpKeepsTheFloor() =
         runTest {
             val air = FakeMeshtasticAir()
-            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            // This counts every packet alice sends, and the assertions are about beacons — so put her first
+            // gossip OFFER (a floor interval's midpoint, 2.5 min in) beyond the whole timeline rather than
+            // relying on the inbound-frame resets to keep shifting it out of the way.
+            val quiet = LoraGossipPolicy(minIntervalMs = 30 * 60_000, random = { 0 })
+            val a = rig(air, 1u, "alice", backgroundScope, gossip = quiet) { testScheduler.currentTime }
             a.transport.start()
             runCurrent()
             assertEquals("session-up beacon", 1, a.link.sent.size)

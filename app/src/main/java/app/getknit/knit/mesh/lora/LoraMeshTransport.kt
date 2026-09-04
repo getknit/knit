@@ -620,7 +620,13 @@ internal class LoraMeshTransport(
         val now = clock()
         metrics.onLoraOfferReceived()
         gateway.onOffer(offer.publisher, now)
-        gossip.onOffer(sameSet = offer.prefixes.contentEquals(lastOfferPrefixes), now = now)
+        val sameSet = offer.prefixes.contentEquals(lastOfferPrefixes)
+        gossip.onOffer(sameSet = sameSet, now = now)
+        // An offer announcing a set that is not ours may have snapped the timer to its floor, and the gossip
+        // loop is asleep on a wait computed from the *old*, longer due time. Without the poke it would sleep
+        // through the acceleration and wake past the reset interval's end — doubling instead of snapping.
+        // A spurious wake costs nothing: the loop re-reads nextDueAt, declines the slot, and sleeps again.
+        if (!sameSet) gossipWake.trySend(Unit)
         recomputeRole()
         // Note an OFFER does NOT mark its publisher `reachable`: the packet carries a hash, not a node id,
         // so there is no Peer to record. The first actual frame from that node does it, which is the right
