@@ -1180,12 +1180,22 @@ class DebugBridgeReceiver :
      * Sends a raw UTF-8 payload straight to the board on the configured channel (bypassing the frame
      * codec), so a board's LoRa transmission can be confirmed from the other end (`meshtastic --noproto`)
      * without the whole mesh. Requires the plane enabled and the board Ready.
+     *
+     * `--ei hop <n>` sets `MeshPacket.hop_limit` explicitly instead of leaving it out. The production path
+     * omits the field, on the documented assumption that the firmware fills in the node's configured
+     * default; on 2.8 it does not, and every Knit packet reaches the air with `hop_limit = 0` — unrelayable
+     * by the stock nodes ADR 045 borrows hops from. This is the knob that tells a firmware that will not
+     * relay a secondary-channel packet apart from a packet that was never relayable to begin with.
      */
     private suspend fun handleLoraTx(intent: Intent): JSONObject {
         val text = intent.getStringExtra(EXTRA_TEXT) ?: return reply("error", "missing --es text")
         val channel = settings.loraChannelIndex.first()
-        val result = loraLink.send(text.encodeToByteArray(), channel)
-        return reply("ok", "sent").put("result", result::class.simpleName).put("channel", channel)
+        val hop = if (intent.hasExtra("hop")) intent.getIntExtra("hop", 0) else null
+        val result = loraLink.send(text.encodeToByteArray(), channel, hopLimit = hop)
+        return reply("ok", "sent")
+            .put("result", result::class.simpleName)
+            .put("channel", channel)
+            .put("hopLimit", hop ?: JSONObject.NULL)
     }
 
     /**

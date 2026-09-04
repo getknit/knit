@@ -83,7 +83,9 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
   `DUTY_CYCLE_LIMIT`/`RATE_LIMIT_EXCEEDED` mean airtime pressure — and every NAK is also logged as
   `lora nak id=… reason=…` under `LoraMeshTransport`. `…debug.LORATX --es text <s>`
   sends a raw payload straight to the board (bypassing the frame codec) to confirm the board transmits via
-  `meshtastic --noproto`. `--es mode dedicated` runs ADR 067's debug-only dedicated-frequency setup instead
+  `meshtastic --noproto`; `--ei hop <n>` sets `MeshPacket.hop_limit` explicitly, which the production path
+  omits — the A/B that proved 2.8 does **not** substitute the node's configured default, so every Knit
+  packet reaches the air unrelayable (`context/lora-bridge.md`, *Hops*). `--es mode dedicated` runs ADR 067's debug-only dedicated-frequency setup instead
   (the radio is pinned off the shared public slot; the `airtime.dedicated` flag in the `LORA` dump says so).
   `…debug.LORAPROV` writes the derived **Knit channel** onto the board over the
   Meshtastic admin API (the headless "Set up Knit channel") and binds the plane to the slot it lands in —

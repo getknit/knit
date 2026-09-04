@@ -112,8 +112,17 @@ Golden byte vectors pin every field number; malformed input decodes to null, nev
   before that); then FromNum notify → drain until empty. `ToRadio{heartbeat}` every 180 s keeps the phone
   API alive; the node answers `queueStatus{free,maxlen,mesh_packet_id}` (also after each packet) — flow
   control. `rebooted`/unsolicited `my_info` → re-handshake.
-- Send `MeshPacket{to=0xFFFFFFFF, channel=idx, id=client nonzero, hop_limit omitted(=default 3),
-  want_ack=false}`. NAKs: portnum ROUTING_APP(5), `request_id` = our id, `error_reason` (NO_CHANNEL 6,
+- Send `MeshPacket{to=0xFFFFFFFF, channel=idx, id=client nonzero, hop_limit omitted, want_ack=false}`.
+  **The omission does not mean the node's default — it means zero** (measured 2026-09-04, fw
+  `2.8.0.47db0e3`, `lora.hop_limit = 3`). A/B from one board to another, 6 x 200 B each arm, watching the
+  receiving board's own `airUtilTx` over serial: with the field omitted every packet arrived
+  `hop_limit = 0 / hop_start = 0` and the neighbour relayed **nothing** (0.7348611 % flat across the arm);
+  with `--ei hop 3` every packet arrived `3/3` and the neighbour's airtime rose **+0.2646 % = 9.5 s**, about
+  five of the six repeated. The same board's NodeDB shows 110/110 stock nodes sending `hop_start = 3`. So
+  2.8's `LOCAL_ONLY` **does** relay a secondary-channel packet, and the only thing stopping ours is a hop
+  limit of zero — ADR 045's borrowed hops have never happened, and ADR 044's bridge has only ever worked
+  board-to-board **direct**. Fixing it is one field, but the value is an airtime decision, not a default:
+  every relaying board in range roughly doubles a packet's air, and `LoraAirtime` cannot see any of it. NAKs: portnum ROUTING_APP(5), `request_id` = our id, `error_reason` (NO_CHANNEL 6,
   TOO_LARGE 7, DUTY_CYCLE_LIMIT 9, RATE_LIMIT_EXCEEDED 38) — counted per reason as `loraNakByReason`.
 - The router transmits at most a **237-byte `Data`** (`MeshtasticProto.LORA_DATA_MAX`, measured 2026-08-29 on a
   Heltec V4 / 2.7.26 with `…debug.LORATX`: a 231-byte payload queues, 232 and 233 NAK `TOO_LARGE`). The
