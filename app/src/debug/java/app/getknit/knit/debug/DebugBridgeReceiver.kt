@@ -337,6 +337,11 @@ class DebugBridgeReceiver :
                 ConversationKind.GROUP -> {
                     groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo(), replyTo = replyTo) }
                 }
+
+                // The bridged Meshtastic room is read-only — nothing this device sends could reach it.
+                ConversationKind.MESHTASTIC -> {
+                    return reply("error", "the bridged Meshtastic room is receive-only: $conv")
+                }
             }
         return when (sent) {
             null -> reply("error", "unknown group (not joined on this device): $conv")
@@ -380,6 +385,11 @@ class DebugBridgeReceiver :
 
                 ConversationKind.GROUP -> {
                     groups.find(conv)?.let { mesh.sendChat(text, attachment = ingested, group = it.toGroupInfo()) }
+                }
+
+                // Read-only, and it would carry no attachment even if it were not.
+                ConversationKind.MESHTASTIC -> {
+                    return reply("error", "the bridged Meshtastic room is receive-only: $conv")
                 }
             }
         return when (sent) {
@@ -940,6 +950,15 @@ class DebugBridgeReceiver :
             .put("loraPassive", snap.loraPassive)
             .put("loraSkippedLinked", snap.loraSkippedLinked)
             .put("loraTickDeferred", snap.loraTickDeferred)
+            // The LongFast bridge's inbound half — the receive-only trial's whole output. `heard` is every
+            // chat packet on the public channel, `ingested` what survived the filters, and the difference is
+            // itemised in `refusedByReason`; `viaMqtt` is the share that came off somebody's uplink rather
+            // than off the air, which is what decides whether hiding those is a setting or the default.
+            .put("meshPostHeard", snap.meshPostHeard)
+            .put("meshPostIngested", snap.meshPostIngested)
+            .put("meshPostViaMqtt", snap.meshPostViaMqtt)
+            .put("meshPostPassive", snap.meshPostPassive)
+            .put("meshPostRefusedByReason", JSONObject(snap.meshPostRefusedByReason))
 
     /**
      * Dumps the DM ratchet's per-peer state and, with `--es reset <peerNodeId>`, forces a session reset

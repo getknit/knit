@@ -226,6 +226,25 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v10 — the bridged Meshtastic post's attribution: six `messages` columns naming who said it on the
+     * foreign mesh and how it reached this pocket's board. Null (and `0` for the flag) on every existing row,
+     * which is exactly right — no message written before this version can be a bridged post, so there is
+     * nothing to backfill and no ambiguity about what a null means. Additive only; the SQL must stay
+     * byte-equivalent to what Room generates for `app/schemas/**/10.json`.
+     */
+    val MIGRATION_9_10 =
+        object : Migration(9, 10) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originNode` INTEGER DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originName` TEXT DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originChannel` TEXT DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originHops` INTEGER DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originSnrDeci` INTEGER DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originViaMqtt` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -237,5 +256,6 @@ object KnitMigrations {
             MIGRATION_6_7,
             MIGRATION_7_8,
             MIGRATION_8_9,
+            MIGRATION_9_10,
         )
 }

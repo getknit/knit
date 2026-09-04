@@ -54,6 +54,9 @@ internal class FakeMeshtasticLink(
 
     override val battery = MutableStateFlow<BoardBattery?>(null)
 
+    /** The mesh's NodeDB as the board reports it — what puts a name on a bridged LongFast post. */
+    override val nodes = MutableStateFlow<Map<UInt, BoardOwner>>(emptyMap())
+
     /** The board's free-slot count. Assigning it also publishes a [queue] update, as a real QueueStatus does. */
     var free: Int = 16
         set(value) {
@@ -106,6 +109,37 @@ internal class FakeMeshtasticLink(
         _state.value = LinkState.Ready(BoardInfo(nodeNum, "heltec-v4", firmware), listOf(ChannelInfo(0, channelName, 1)), 512)
     }
 
+    /**
+     * The handshake as a **provisioned** board reports it: the stock public primary at index 0 and the Knit
+     * channel in a secondary slot, plus the radio settings. The shape ADR 045 actually produces, and the only
+     * one the LongFast bridge can read — [ready]'s single Knit channel at index 0 is a lab binding, and on
+     * such a board there is no public primary at all.
+     */
+    fun readyProvisioned(
+        knitIndex: Int = 1,
+        primaryName: String = "",
+        primaryPsk: ByteArray = ByteArray(0),
+        radio: LoraRadioConfig? =
+            LoraRadioConfig(
+                usePreset = true,
+                modemPreset = ModemPreset.LONG_FAST,
+                region = LoraRegion.US,
+                hopLimit = 3,
+                overrideDutyCycle = false,
+            ),
+    ) {
+        _state.value =
+            LinkState.Ready(
+                BoardInfo(nodeNum, "heltec-v4", firmware),
+                listOf(
+                    ChannelInfo(0, primaryName, role = 1, psk = primaryPsk),
+                    ChannelInfo(knitIndex, KnitChannel.NAME, role = 2, psk = KnitChannel.PSK),
+                ),
+                512,
+                radio,
+            )
+    }
+
     override fun stop() {
         air.unregister(this)
         _state.value = LinkState.Idle
@@ -131,6 +165,34 @@ internal class FakeMeshtasticLink(
                 rxSnr = rxSnr,
                 rxRssi = rxRssi,
                 hopsAway = 0,
+            ),
+        )
+    }
+
+    /**
+     * A stock Meshtastic node's chat on the public primary — what the LongFast bridge reads. Not routed
+     * through [air], which only carries Knit's own channel: a stock neighbour is not a registered board and
+     * its packets reach exactly the phones whose radios heard them.
+     */
+    fun deliverPublicText(
+        from: UInt,
+        body: String,
+        id: UInt = nextId++,
+        viaMqtt: Boolean = false,
+        to: UInt = MeshtasticProto.BROADCAST,
+    ) {
+        _packets.tryEmit(
+            ReceivedPacket(
+                from = from,
+                to = to,
+                id = id,
+                channelIndex = LongFastPolicy.PRIMARY_INDEX,
+                portnum = MeshtasticProto.PORT_TEXT_MESSAGE,
+                payload = body.encodeToByteArray(),
+                rxSnr = -6.5f,
+                rxRssi = -110,
+                hopsAway = 1,
+                viaMqtt = viaMqtt,
             ),
         )
     }

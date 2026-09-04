@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
@@ -65,6 +66,9 @@ internal class MeshtasticSession(
     private val _battery = MutableStateFlow<BoardBattery?>(null)
     override val battery = _battery.asStateFlow()
 
+    private val _nodes = MutableStateFlow<Map<UInt, BoardOwner>>(emptyMap())
+    override val nodes = _nodes.asStateFlow()
+
     private val inbox = Channel<Cmd>(Channel.BUFFERED)
     private var loopJob: Job? = null
 
@@ -96,6 +100,7 @@ internal class MeshtasticSession(
         address = null
         failAllPending(SendResult.NotReady(LinkState.Idle))
         _battery.value = null
+        _nodes.value = emptyMap()
         _state.value = LinkState.Idle
     }
 
@@ -383,39 +388,82 @@ internal class MeshtasticSession(
         // as -17 dB within minutes and stuck there. Only `LoraMeshTransport.noteBoard` — past the portnum and
         // bound-channel filter, keyed per radio and aged — may record a reading.
         val data = packet.decoded ?: return // an encrypted packet on a foreign channel — not for us
-        // Routing NAKs originate from our OWN board's node (it generates the error), so they must be
-        // handled before the self-echo guard below — otherwise `from == myNodeNum` would swallow them.
-        if (data.portnum == MeshtasticProto.PORT_ROUTING) {
-            routeNak(data)
-            return
+        val self = board?.myNodeNum == packet.from
+        when {
+            // Routing NAKs originate from our OWN board's node (it generates the error), so they are matched
+            // before the self-echo arm below — otherwise `from == myNodeNum` would swallow them.
+            data.portnum == MeshtasticProto.PORT_ROUTING -> {
+                routeNak(data)
+            }
+
+            // The board's own device telemetry (its battery) is addressed from itself too: read, never surfaced.
+            data.portnum == MeshtasticProto.PORT_TELEMETRY && self -> {
+                MeshtasticProto.decodeTelemetry(data.payload)?.let(::onSelfMetrics)
+            }
+
+            self -> {
+                Unit
+            }
+
+            // our own broadcast echoed back (belt-and-suspenders)
+
+            // A node broadcasting its own `User` feeds the name directory a bridged post reads, and is not
+            // itself worth surfacing — the transport has no use for the raw NODEINFO bytes.
+            data.portnum == MeshtasticProto.PORT_NODEINFO -> {
+                noteNodeName(packet.from, BoardOwnerRaw(data.payload).owner)
+            }
+
+            else -> {
+                _packets.tryEmit(
+                    ReceivedPacket(
+                        from = packet.from,
+                        to = packet.to,
+                        id = packet.id,
+                        channelIndex = packet.channel,
+                        portnum = data.portnum,
+                        payload = data.payload,
+                        rxSnr = packet.rxSnr,
+                        rxRssi = packet.rxRssi,
+                        hopsAway = packet.hopsAway,
+                        viaMqtt = packet.viaMqtt,
+                    ),
+                )
+            }
         }
-        // The board's own device telemetry (its battery) is addressed from itself too: read, never surfaced.
-        if (data.portnum == MeshtasticProto.PORT_TELEMETRY && packet.from == board?.myNodeNum) {
-            MeshtasticProto.decodeTelemetry(data.payload)?.let(::onSelfMetrics)
-            return
-        }
-        if (board?.myNodeNum == packet.from) return // our own broadcast echoed back (belt-and-suspenders)
-        _packets.tryEmit(
-            ReceivedPacket(
-                from = packet.from,
-                to = packet.to,
-                id = packet.id,
-                channelIndex = packet.channel,
-                portnum = data.portnum,
-                payload = data.payload,
-                rxSnr = packet.rxSnr,
-                rxRssi = packet.rxRssi,
-                hopsAway = packet.hopsAway,
-            ),
-        )
     }
 
-    /** The handshake streams the whole NodeDB; only the board's own entry carries *its* battery. */
+    /**
+     * The handshake streams the whole NodeDB, and the firmware pushes an entry whenever one changes. Only the
+     * board's own entry carries *its* battery; every entry feeds the name directory the LongFast bridge reads.
+     */
     private fun onNodeInfo(info: FromRadio.NodeInfo) {
+        info.owner?.let { noteNodeName(info.num, it) }
         if (info.num != board?.myNodeNum) return
         info.metrics?.let(::onSelfMetrics)
         // The board's own name, so the setup screen can tell a board that still needs renaming (ADR 049).
         info.owner?.let { owner -> board = board?.copy(owner = owner) }
+    }
+
+    /**
+     * Records what node [num] calls itself. Bounded at [MAX_NODE_NAMES] with the oldest entry evicted — a
+     * dense mesh has thousands of nodes and the phone only needs the ones it is currently hearing. Re-inserted
+     * on every update so a node that keeps talking keeps its place. Deliberately **not** cleared by a
+     * re-handshake: node numbers are mesh-global, the same board re-streams the same NodeDB, and holding the
+     * names across a reconnect is what stops every bridged post reading as a bare `!hex` id for a few seconds.
+     */
+    private fun noteNodeName(
+        num: UInt,
+        owner: BoardOwner,
+    ) {
+        if (num == 0u || owner.longName.isEmpty()) return
+        _nodes.update { current ->
+            val next = LinkedHashMap<UInt, BoardOwner>(current.size + 1)
+            next.putAll(current)
+            next.remove(num)
+            next[num] = owner
+            while (next.size > MAX_NODE_NAMES) next.remove(next.keys.first())
+            next
+        }
     }
 
     private fun onSelfMetrics(metrics: DeviceMetrics) {
@@ -1178,6 +1226,13 @@ internal class MeshtasticSession(
         const val MALFORMED_OWNER = "board sent a name this build cannot read"
         const val PACKET_BUFFER = 256
         const val OUTCOME_BUFFER = 64
+
+        /**
+         * How many other nodes' names the directory holds. A dense urban mesh runs to thousands and the phone
+         * only needs whoever it is currently hearing on the public channel, so this is a working set, not a
+         * copy of the NodeDB.
+         */
+        const val MAX_NODE_NAMES = 256
 
         // Android BluetoothGatt status codes classified as a bond problem (values match the platform).
         const val GATT_INSUFFICIENT_AUTH = 5

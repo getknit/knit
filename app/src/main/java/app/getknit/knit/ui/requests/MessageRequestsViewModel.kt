@@ -182,8 +182,12 @@ class MessageRequestsViewModel(
         viewModelScope.launch {
             when (Conversations.kindFor(conversationId)) {
                 ConversationKind.GROUP -> groups.delete(conversationId)
+
                 ConversationKind.DM -> messages.deleteByConversation(conversationId)
-                ConversationKind.NEARBY -> Unit
+
+                // Neither public room is ever a request (Conversations.isAccepted), so neither can be
+                // declined here; the arms exist so the compiler keeps saying so.
+                ConversationKind.NEARBY, ConversationKind.MESHTASTIC -> Unit
             }
         }
     }

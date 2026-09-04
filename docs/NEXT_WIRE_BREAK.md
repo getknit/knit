@@ -44,7 +44,7 @@ Current values, for the diff you will write:
 | Wi-Fi Aware service name | `WifiAwareTransport.SERVICE_NAME` | `_knitmesh1._tcp` |
 | BLE service UUID | `BleConstants.SERVICE_UUID` | `0xFE30` |
 | Protocol version | `Protocol.VERSION` | `1` |
-| DB version | `KnitDatabase` `version` | `8` (migrate forward, never wipe) |
+| DB version | `KnitDatabase` `version` | `10` (migrate forward, never wipe) |
 
 Plus, every time: regenerate `GoldenVectorTest` fixtures; check whether `ScopeVectorTest` /
 `SpoolRecordsTest` move (and if so, regenerate `knit-spool`'s in the same commit); update

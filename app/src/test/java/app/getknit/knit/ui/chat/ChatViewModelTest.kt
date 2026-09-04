@@ -119,6 +119,8 @@ class ChatViewModelTest {
         every { groups.observeGroup(Conversations.NEARBY) } returns groupFlow
         every { messages.observeMessages(GROUP) } returns messagesFlow
         every { groups.observeGroup(GROUP) } returns groupFlow
+        every { messages.observeMessages(Conversations.MESHTASTIC) } returns messagesFlow
+        every { groups.observeGroup(Conversations.MESHTASTIC) } returns groupFlow
         every { peers.observeDirectory() } returns peersFlow.map { directoryOf(it) }
         every { settings.displayName } returns nameFlow
         // A relaxed mock would hand back a Flow that never emits, and RelayStatusRepository
@@ -176,6 +178,112 @@ class ChatViewModelTest {
             loraFactsFlow,
             context,
         )
+
+    @Test
+    fun aBridgedPostIsAttributedToItsSpeakerNotToTheGatewayThatSignedIt() =
+        runTest {
+            // The frame's senderId is the gateway — the only authenticated party in the row — but the person
+            // who *spoke* is a Meshtastic node the directory knows nothing about. Rendering the gateway's
+            // name and avatar here would put a Knit contact's face on somebody else's words.
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            peersFlow.value = listOf(peer("sam", name = "Sam", avatarHash = "sam-avatar"))
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "sam",
+                        body = "anyone around?",
+                        id = "mp1",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0x1234abcd,
+                        originName = "Bob",
+                        originChannel = "LongFast",
+                        originHops = 2,
+                        originSnrDeci = -73,
+                        originViaMqtt = true,
+                    ),
+                )
+            advanceUntilIdle()
+
+            val row =
+                vm.state.value.rows
+                    .first { it.id == "mp1" }
+            assertEquals("Bob", row.senderName)
+            assertNull("never the gateway's avatar", row.avatarHash)
+            assertEquals("!1234abcd", row.origin?.nodeLabel)
+            assertEquals("Sam", row.origin?.gateway)
+            assertEquals(true, row.origin?.viaMqtt)
+        }
+
+    @Test
+    fun aBridgedPostWithNoKnownNameFallsBackToItsNodeId() =
+        runTest {
+            // What every Meshtastic client shows for a node it has no NODEINFO for — so a stranger reads the
+            // same here as there, rather than borrowing a name from somewhere.
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "sam",
+                        id = "mp2",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0x1234abcd,
+                    ),
+                )
+            advanceUntilIdle()
+
+            assertEquals(
+                "!1234abcd",
+                vm.state.value.rows
+                    .first { it.id == "mp2" }
+                    .senderName,
+            )
+        }
+
+    @Test
+    fun theBridgedRoomIsReadOnlyAndTakesItsTitleFromTheChannel() =
+        runTest {
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "sam",
+                        id = "mp3",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 1,
+                        originChannel = "LongTurbo",
+                    ),
+                )
+            advanceUntilIdle()
+
+            val state = vm.state.value
+            assertTrue(state.isBridged)
+            assertFalse("reading a channel and speaking on it are separate decisions", state.canSend)
+            assertFalse(state.canSendFile)
+            assertFalse("never a verified badge — nothing here is verified", state.verified)
+            assertNull("and no alias suffix: this id is not a peer", state.titleDiscriminator)
+            assertEquals("the channel names itself", "LongTurbo", state.title)
+        }
+
+    @Test
+    fun aBridgedPostNeverShowsALoRaCongestionNotice() =
+        runTest {
+            // Nothing leaves this thread, so no notice about delayed delivery could be true — however spent
+            // the board's airtime window is.
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, airtimeSpent = true)
+            messagesFlow.value =
+                listOf(msg(senderId = "sam", id = "mp4", sentAt = 100, conversationId = Conversations.MESHTASTIC, originNode = 1))
+            advanceUntilIdle()
+
+            assertEquals(LoraReach.Silent, vm.state.value.loraReach)
+        }
 
     @Test
     fun groupRowsCarryDeliveredCountsExcludingSelf() =

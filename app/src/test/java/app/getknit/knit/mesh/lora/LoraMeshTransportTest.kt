@@ -3,7 +3,9 @@ package app.getknit.knit.mesh.lora
 import app.getknit.knit.mesh.FanoutHint
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.MeshPost
 import app.getknit.knit.mesh.Peer
+import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.protocol.ChatContent
@@ -20,6 +22,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -321,6 +324,7 @@ class LoraMeshTransportTest {
         // the offer goes out at exactly the midpoint, as it already does in LoraBridgeTest.
         gossip: LoraGossipPolicy = LoraGossipPolicy(random = { 0 }),
         firmware: String = "2.5.0",
+        publishMeshPost: suspend (MeshPost) -> Unit = {},
         now: () -> Long,
     ): Rig {
         val link = FakeMeshtasticLink(nodeNum, air, channelName, firmware)
@@ -332,6 +336,7 @@ class LoraMeshTransportTest {
                 config = config,
                 selfProfile = profileSource(selfNode),
                 farFrames = farFrames,
+                publishMeshPost = publishMeshPost,
                 scope = scope,
                 metrics = metrics,
                 clock = now,
@@ -381,6 +386,175 @@ class LoraMeshTransportTest {
                     .any { it.nodeId == "alice" },
             )
             assertTrue("bob received at least the chat", b.metrics.snapshot().loraReceived >= 1)
+            a.transport.stop()
+            b.transport.stop()
+        }
+
+    // --- The LongFast bridge: reading the foreign mesh's public primary (receive-only). ---
+
+    /**
+     * A rig on a **provisioned** board — the stock public primary at index 0, Knit in a secondary — which is
+     * the only shape the bridge can read. The default rig binds the Knit channel to index 0, and on such a
+     * board there is no public primary at all.
+     */
+    private fun TestScope.bridgeRig(
+        air: FakeMeshtasticAir,
+        posts: MutableList<MeshPost>,
+        primaryName: String = "",
+        primaryPsk: ByteArray = ByteArray(0),
+    ): Rig {
+        val r =
+            rig(
+                air,
+                1u,
+                "alice",
+                backgroundScope,
+                config = MutableStateFlow(LoraConfig("AA:1", 1)),
+                publishMeshPost = { posts += it },
+            ) { testScheduler.currentTime }
+        r.transport.start()
+        // After runCurrent, not before: start() only *queues* the transport's jobs, and the link's own
+        // start() then publishes the default single-Knit-channel Ready — which would overwrite this.
+        runCurrent()
+        r.link.readyProvisioned(knitIndex = 1, primaryName = primaryName, primaryPsk = primaryPsk)
+        runCurrent()
+        return r
+    }
+
+    @Test
+    fun aPublicChatOnThePrimaryIsPublishedIntoKnitWithItsNodeDbName() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = bridgeRig(air, posts)
+            r.link.nodes.value = mapOf(0xdeadbeefu to BoardOwner(longName = "Bob", shortName = "Bob"))
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "anyone around?", id = 77u)
+            runCurrent()
+
+            val post = posts.single()
+            assertEquals(0xdeadbeefL, post.node)
+            assertEquals(77L, post.packetId)
+            assertEquals("anyone around?", post.body)
+            assertEquals("the NodeDB puts a name on the speaker", "Bob", post.name)
+            assertEquals("LongFast", post.channel)
+            assertEquals(1L, r.metrics.snapshot().meshPostIngested)
+            r.transport.stop()
+        }
+
+    @Test
+    fun readingThePublicChannelCostsNoAirtimeAtAll() =
+        runTest {
+            // The whole premise of the receive-only phase. Nothing is transmitted, so nothing may touch the
+            // pacer, the queue or the airtime ledger — hearing a neighbourhood's chat must be free.
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = bridgeRig(air, posts)
+            val before = r.link.sent.size
+
+            repeat(5) { i -> r.link.deliverPublicText(from = 0xdeadbeefu, body = "post $i", id = (100 + i).toUInt()) }
+            runCurrent()
+
+            assertEquals(5, posts.size)
+            assertEquals("not one packet went out", before, r.link.sent.size)
+            assertEquals(0L, r.metrics.snapshot().loraSent)
+            r.transport.stop()
+        }
+
+    @Test
+    fun aStockNeighbourIsNotCountedAsARadioInRange() =
+        runTest {
+            // `boardsHeard` means "radios that sent a *Knit* frame" — which is what makes "heard nobody" the
+            // ordinary state of a solo user, and why the preset-mismatch notice cannot be gated on evidence.
+            // Counting the whole neighbourhood's stock radios here would quietly change all of that.
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = bridgeRig(air, posts)
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 5u)
+            runCurrent()
+
+            assertEquals(1, posts.size)
+            assertEquals(0, r.transport.status.value.boardsHeard)
+            assertTrue(
+                "nor is its author a reachable Knit peer",
+                r.transport.reachable.value
+                    .isEmpty(),
+            )
+            r.transport.stop()
+        }
+
+    @Test
+    fun aRenamedPrimaryIsNeverIngested() =
+        runTest {
+            // A renamed primary is somebody's own channel — and on another frequency besides. The existing
+            // `lora_custom_primary` warning already says so; this is the ingest half of the same rule.
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = bridgeRig(air, posts, primaryName = "BookClub")
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "private business", id = 5u)
+            runCurrent()
+
+            assertTrue(posts.isEmpty())
+            assertEquals(
+                1L,
+                r.metrics
+                    .snapshot()
+                    .meshPostRefusedByReason[LongFastPolicy.Refusal.NOT_STOCK_PRIMARY.name],
+            )
+            r.transport.stop()
+        }
+
+    @Test
+    fun onlyTheActiveGatewayMintsAPublicPost() =
+        runTest {
+            // Every board in a pocket hears the same packet. The derived frame id makes the duplicates
+            // converge, but minting on each still doubles the BLE flood and leaves two byte-different copies
+            // of one post in the mesh — so the pocket's elected speaker is the one that publishes (ADR 044).
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = bridgeRig(air, posts)
+            // A co-pocket rival with a lower publisher key takes the ACTIVE role; we stand down.
+            r.transport.suppressDataPath(setOf("bob"))
+            val bobKey = StoreDigest.hash64("bob")
+            r.link.deliver(
+                from = 9u,
+                channelIndex = 1,
+                portnum = MeshtasticProto.PORT_PRIVATE_APP,
+                payload = LoraCtl.encodeOffer(bobKey, IntArray(0), 200),
+            )
+            runCurrent()
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 5u)
+            runCurrent()
+
+            assertTrue("a passive board publishes nothing", posts.isEmpty())
+            assertEquals("but it still heard it", 1L, r.metrics.snapshot().meshPostHeard)
+            assertEquals(1L, r.metrics.snapshot().meshPostPassive)
+            r.transport.stop()
+        }
+
+    @Test
+    fun aBoardWithKnitBoundToIndexZeroReadsNoPublicPrimary() =
+        runTest {
+            // The debug bridge can bind any index by hand. On such a board index 0 IS Knit's own traffic, so
+            // the bridge must not treat it as somebody else's public channel — which is why the branch is
+            // decided off the bound slot rather than off ADR 045's provisioning rule.
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val a = rig(air, 1u, "alice", backgroundScope, publishMeshPost = { posts += it }) { testScheduler.currentTime }
+            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+
+            b.transport.fastFanout(frame(FrameType.CHAT, "bob", body = "still a Knit room post"))
+            runCurrent()
+
+            assertTrue("nothing was mistaken for a public post", posts.isEmpty())
+            assertEquals(0L, a.metrics.snapshot().meshPostHeard)
+            assertTrue("and the Knit frame still arrived", a.received.any { it.envelope.senderId == "bob" })
             a.transport.stop()
             b.transport.stop()
         }

@@ -97,6 +97,16 @@ internal object MeshtasticProto {
     /** `PortNum.PRIVATE_APP` — the 256..511 private range Knit's frames ride so they never collide with app data. */
     const val PORT_PRIVATE_APP = 256
 
+    /**
+     * `PortNum.TEXT_MESSAGE_APP` — ordinary Meshtastic chat. Knit **reads** it on the public primary only, and
+     * only broadcast (the LongFast bridge); a unicast one addressed to the board stays unread, which is what
+     * `User.is_unmessagable` says out loud (ADR 2026-09.emd7).
+     */
+    const val PORT_TEXT_MESSAGE = 1
+
+    /** `PortNum.NODEINFO_APP` — a node broadcasting its own `User`; the name directory behind a bridged post. */
+    const val PORT_NODEINFO = 4
+
     /** `PortNum.ROUTING_APP` — how the mesh delivers a NAK (an `error_reason`) back to the sender. */
     const val PORT_ROUTING = 5
 
@@ -406,6 +416,7 @@ internal object MeshtasticProto {
         var rxRssi: Int? = null
         var hopLimit = 0
         var hopStart = 0
+        var viaMqtt = false
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (val field = tag ushr WireType.FIELD_SHIFT) {
@@ -446,6 +457,10 @@ internal object MeshtasticProto {
                     rxRssi = reader.readVarint32()
                 }
 
+                MP_VIA_MQTT -> {
+                    viaMqtt = reader.readVarint32() != 0
+                }
+
                 MP_HOP_START -> {
                     hopStart = reader.readVarint32()
                 }
@@ -455,7 +470,7 @@ internal object MeshtasticProto {
                 }
             }
         }
-        return MeshPacket(from, to, channel, id, decoded, encrypted, rxSnr, rxRssi, hopLimit, hopStart)
+        return MeshPacket(from, to, channel, id, decoded, encrypted, rxSnr, rxRssi, hopLimit, hopStart, viaMqtt)
     }
 
     private fun decodeData(reader: ProtoReader): MeshData {
@@ -580,21 +595,21 @@ internal object MeshtasticProto {
 
     private fun decodeChannel(reader: ProtoReader): FromRadio.Channel = FromRadio.Channel(decodeChannelInfo(reader))
 
-    /** Decodes a `Channel { index, settings { name }, role }` — shared by the config handshake and admin reads. */
+    /** Decodes a `Channel { index, settings { psk, name }, role }` — shared by the config handshake and admin reads. */
     private fun decodeChannelInfo(reader: ProtoReader): ChannelInfo {
         var index = 0
-        var name = ""
+        var settings = ChannelSettings()
         var role = 0
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
                 CHANNEL_INDEX -> index = reader.readVarint32()
-                CHANNEL_SETTINGS -> name = decodeChannelName(reader.sub())
+                CHANNEL_SETTINGS -> settings = decodeChannelSettings(reader.sub())
                 CHANNEL_ROLE -> role = reader.readVarint32()
                 else -> reader.skip(tag and WireType.MASK)
             }
         }
-        return ChannelInfo(index, name, role)
+        return ChannelInfo(index, settings.name, role, settings.psk)
     }
 
     /**
@@ -619,17 +634,25 @@ internal object MeshtasticProto {
         return null
     }
 
-    private fun decodeChannelName(reader: ProtoReader): String {
+    private fun decodeChannelSettings(reader: ProtoReader): ChannelSettings {
         var name = ""
+        var psk = ByteArray(0)
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
+                CHANNEL_SETTINGS_PSK -> psk = reader.readBytes()
                 CHANNEL_SETTINGS_NAME -> name = reader.readString()
                 else -> reader.skip(tag and WireType.MASK)
             }
         }
-        return name
+        return ChannelSettings(name, psk)
     }
+
+    /** The two `ChannelSettings` fields the decoder keeps, carried together so [decodeChannelInfo] reads once. */
+    private class ChannelSettings(
+        val name: String = "",
+        val psk: ByteArray = ByteArray(0),
+    )
 
     private fun decodeMetadata(reader: ProtoReader): FromRadio.Metadata {
         var firmware: String? = null
@@ -671,6 +694,7 @@ internal object MeshtasticProto {
     private const val MP_RX_SNR = 8
     private const val MP_HOP_LIMIT = 9
     private const val MP_RX_RSSI = 12
+    private const val MP_VIA_MQTT = 14
     private const val MP_HOP_START = 15
 
     // Data field numbers.
@@ -838,6 +862,12 @@ internal class MeshPacket(
     val rxRssi: Int?,
     val hopLimit: Int,
     val hopStart: Int,
+    /**
+     * `MeshPacket.via_mqtt` — the packet reached this mesh through somebody's MQTT uplink rather than over the
+     * air. Load-bearing only for the LongFast bridge, where it is the difference between "somebody near you
+     * said this" and "this came off the internet".
+     */
+    val viaMqtt: Boolean = false,
 ) {
     /** How many hops away the origin is (`hop_start - hop_limit`), or null when the board didn't report a start. */
     val hopsAway: Int? get() = if (hopStart > 0) (hopStart - hopLimit).coerceAtLeast(0) else null
@@ -864,7 +894,39 @@ internal data class ChannelInfo(
     val index: Int,
     val name: String,
     val role: Int,
-)
+    /**
+     * `ChannelSettings.psk`, verbatim. Empty means the field was absent, which the firmware reads as the
+     * default key — so [isDefaultKey] treats both alike. Only the LongFast bridge reads it: a primary that
+     * kept the stock *name* but carries somebody's own key is a private group, and must never be ingested
+     * into a public room.
+     */
+    val psk: ByteArray = ByteArray(0),
+) {
+    /**
+     * Whether this channel is on Meshtastic's well-known default key — an absent PSK, or the one-byte `0x01`
+     * shorthand the firmware expands into it. Anything longer is a key somebody chose.
+     */
+    val isDefaultKey: Boolean get() = psk.isEmpty() || (psk.size == 1 && psk[0] == DEFAULT_PSK_BYTE)
+
+    /** A `ByteArray` member makes the generated `equals`/`hashCode` identity-based; compare the bytes instead. */
+    override fun equals(other: Any?): Boolean =
+        this === other ||
+            (
+                other is ChannelInfo &&
+                    index == other.index &&
+                    name == other.name &&
+                    role == other.role &&
+                    psk.contentEquals(other.psk)
+            )
+
+    override fun hashCode(): Int = (((index * PRIME) + name.hashCode()) * PRIME + role) * PRIME + psk.contentHashCode()
+
+    private companion object {
+        /** `ChannelSettings.psk = { 0x01 }` — "the default key", the only PSK a stock board's primary carries. */
+        const val DEFAULT_PSK_BYTE: Byte = 1
+        const val PRIME = 31
+    }
+}
 
 /** The `FromRadio` variants the bridge acts on; everything else decodes to [Other] and is ignored. */
 internal sealed interface FromRadio {

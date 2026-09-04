@@ -31,6 +31,18 @@ internal interface MeshtasticLink {
      */
     val battery: StateFlow<BoardBattery?>
 
+    /**
+     * What the mesh's other nodes call themselves, keyed by node number — the board's NodeDB as it streams in
+     * the handshake and stays current through `NODEINFO_APP` broadcasts. Only the LongFast bridge reads it, to
+     * put a name on a bridged post instead of a bare node number.
+     *
+     * Its own flow rather than a field on [LinkState.Ready], because a busy mesh pushes NODEINFO constantly and
+     * folding it into the link state would re-emit the whole state — and every collector of it — each time.
+     * Bounded and lossy by design: a fixed working set, oldest evicted, cleared with the link. A post whose
+     * author is not in it renders as its `!hex` id, which is what a stock client shows too.
+     */
+    val nodes: StateFlow<Map<UInt, BoardOwner>>
+
     /** Enqueues one packet on the board. Returns synchronously once the board acknowledges (or refuses) it. */
     suspend fun send(
         payload: ByteArray,
@@ -208,6 +220,8 @@ internal class ReceivedPacket(
     val rxSnr: Float?,
     val rxRssi: Int?,
     val hopsAway: Int?,
+    /** `MeshPacket.via_mqtt` — the packet came off an MQTT uplink rather than the air. Read by the bridge only. */
+    val viaMqtt: Boolean = false,
 )
 
 /** The board's transmit-queue headroom. */

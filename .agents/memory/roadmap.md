@@ -308,7 +308,12 @@ doc). **Don't start a deferred item without explicit direction.**
   `CAP_FRAME_TRANSCODE` through the profile frame it beacons here, newest-`sentAt`-wins, closed when no one is
   heard" (~20 lines in `LoraMeshTransport.onFramePacket`/`recomputeReachable`/`encodeOrNull`), or a capability
   byte on a new `LoraCtl` kind; residuals either way: an unheard far-pocket old build on a rebroadcasting
-  channel, a downgraded peer until its older profile arrives. The gate also owns a budget: `LoraSizeHint`'s
+  channel, a downgraded peer until its older profile arrives. **The same gate now owns a second flag-day**
+  (2026-09-03, ADR 2026-09.cf7a): the LongFast bridge's `meshpost` is the first entry on `FrameType.isCustodial`
+  since the v1 baseline, and that list is fixed on every fielded build — so a build without it holds none of
+  those rows while a debug build holds them all, and their custody digests differ for the whole TTL (the ADR 006
+  divergence, against anything in radio range). Nothing shipped mints one while `LORA_PLANE` is debug-only;
+  before release the plane needs either that gate or the type kept off the air. The gate also owns a budget: `LoraSizeHint`'s
   `DM_BODY_BYTES` (320) is honest only in the `0x05` form — a budget DM carrying its four inline acks is 596 B
   against the 681-B ceiling there, but **675–683 B untranscoded** — so whatever falls back to `0x03` for an
   ungated peer must drop that budget ~20 B or accept a `loraTooBig` on a tenth of the DMs the composer just

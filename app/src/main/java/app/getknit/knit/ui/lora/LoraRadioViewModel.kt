@@ -15,6 +15,7 @@ import app.getknit.knit.mesh.lora.BoardRef
 import app.getknit.knit.mesh.lora.BoardSettings
 import app.getknit.knit.mesh.lora.KnitChannel
 import app.getknit.knit.mesh.lora.LinkState
+import app.getknit.knit.mesh.lora.LongFastPolicy
 import app.getknit.knit.mesh.lora.LoraGatewayPolicy
 import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.LoraSlot
@@ -254,9 +255,12 @@ internal class LoraRadioViewModel(
      * which reads as "fine": a spurious warning is worse than a late one.
      */
     private fun isCustomPrimary(ready: LinkState.Ready): Boolean {
-        val preset = ready.radio?.modemPreset ?: return false
-        val primary = ready.channels.firstOrNull { it.index == 0 } ?: return false
-        return primary.name.isNotEmpty() && primary.name != preset.defaultChannelName
+        // A board that has not reported its preset cannot be judged, and the warning's failure direction is
+        // the opposite of the bridge's: crying "renamed" at a board that is fine is worse than staying quiet,
+        // so the unknown case is handled here rather than read off [LongFastPolicy.hasStockName]'s false.
+        if (ready.radio == null) return false
+        val primary = ready.channels.firstOrNull { it.index == LongFastPolicy.PRIMARY_INDEX } ?: return false
+        return !LongFastPolicy.hasStockName(primary, ready.radio)
     }
 
     /**

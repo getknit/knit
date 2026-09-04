@@ -112,6 +112,34 @@ class ForwardDaoTest : RoomDbTest() {
         }
 
     @Test
+    fun `a bridged post has its own bucket and is outside the sender's`() =
+        runTest {
+            // Every bridged post is signed by the one phone whose board heard it, so without the exclusion a
+            // busy public channel would fill that phone's own sender bucket and evict its user's chat,
+            // reactions, receipts and profile — traffic it wrote, in favour of traffic it overheard.
+            dao.insert(fwd("chat", recipientId = null))
+            dao.insert(fwd("mp1", recipientId = null).copy(type = "meshpost"))
+            dao.insert(fwd("mp2", recipientId = null).copy(type = "meshpost"))
+
+            assertEquals("bridged posts are their own class", 2, dao.countMeshPost(now = 0L))
+            assertEquals("and are not broadcast-room chat", 1, dao.countBroadcast(now = 0L))
+            assertEquals("nor do they count against their signer", 1, dao.countBySender("peer", now = 0L))
+        }
+
+    @Test
+    fun `bridged posts evict oldest-by-sentAt within their own bucket only`() =
+        runTest {
+            dao.insert(fwd("mp_old", recipientId = null, sentAt = 1L).copy(type = "meshpost"))
+            dao.insert(fwd("mp_new", recipientId = null, sentAt = 9L).copy(type = "meshpost"))
+            dao.insert(fwd("room", recipientId = null, sentAt = 2L)) // older, and must survive
+
+            dao.evictOldestMeshPost(1, now = 0L)
+            assertFalse(dao.exists("mp_old"))
+            assertTrue(dao.exists("mp_new"))
+            assertTrue("a Nearby post is never collateral of the bridge's quota", dao.exists("room"))
+        }
+
+    @Test
     fun `attachmentHashesNeedingFetch excludes held blobs and nulls and dedupes (the anti-join)`() =
         runTest {
             dao.insert(fwd("f1", attachmentHash = "H1"))

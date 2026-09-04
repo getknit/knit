@@ -44,9 +44,9 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v9) creates and opens from the exported JSON`() =
+    fun `the current schema (v10) creates and opens from the exported JSON`() =
         runTest {
-            val version = 9 // KnitDatabase @Database(version = 9) — bump alongside the DB (its retention is CLASS,
+            val version = 10 // KnitDatabase @Database(version = 10) — bump alongside the DB (its retention is CLASS,
             // so the version can't be read reflectively). A missing schemas/<db>/<version>.json fails here.
             helper.createDatabase(version).close()
         }
@@ -317,6 +317,48 @@ class KnitDatabaseMigrationTest {
                     assertTrue(s.step())
                     assertEquals(1L, s.getLong(0))
                 }
+            }
+        }
+
+    @Test
+    fun `migrate 9 to 10 keeps messages and leaves their bridged-post attribution empty`() =
+        runTest {
+            // No message written before v10 can be a bridged Meshtastic post, so there is nothing to backfill
+            // and no ambiguity about what a null means here — unlike a column added to describe existing rows.
+            helper.createDatabase(9).use { c ->
+                c.execSQL(
+                    "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
+                        "mentions, replyToHasAttachment, moderation, pendingKey, kind) " +
+                        "VALUES ('m1','n1','nearby','hello',1,1,0,'[]',0,0,0,0)",
+                )
+            }
+            helper.runMigrationsAndValidate(10, listOf(KnitMigrations.MIGRATION_9_10)).use { c ->
+                c.prepare("SELECT body, originNode, originName, originViaMqtt FROM messages WHERE id = 'm1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("hello", s.getText(0))
+                    assertTrue("an existing message is not a bridged post", s.isNull(1))
+                    assertTrue(s.isNull(2))
+                    assertEquals("the flag defaults off, never null", 0L, s.getLong(3))
+                }
+                c.execSQL(
+                    "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
+                        "mentions, replyToHasAttachment, moderation, pendingKey, kind, " +
+                        "originNode, originName, originChannel, originHops, originSnrDeci, originViaMqtt) " +
+                        "VALUES ('m2','gw','m-public','hi',2,0,5,'[]',0,0,0,0, 305441741,'Bob','LongFast',2,-73,1)",
+                )
+                c
+                    .prepare(
+                        "SELECT originNode, originName, originChannel, originHops, originSnrDeci, originViaMqtt " +
+                            "FROM messages WHERE id = 'm2'",
+                    ).use { s ->
+                        assertTrue(s.step())
+                        assertEquals(305441741L, s.getLong(0))
+                        assertEquals("Bob", s.getText(1))
+                        assertEquals("LongFast", s.getText(2))
+                        assertEquals(2L, s.getLong(3))
+                        assertEquals(-73L, s.getLong(4))
+                        assertEquals(1L, s.getLong(5))
+                    }
             }
         }
 }

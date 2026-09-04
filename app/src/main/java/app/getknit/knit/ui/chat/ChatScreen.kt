@@ -89,6 +89,7 @@ import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.outlined.AddReaction
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Sensors
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -605,6 +606,7 @@ internal fun ChatScreenContent(
     var showEncryptionInfo by remember { mutableStateOf(false) }
     var showRelayInfo by remember { mutableStateOf(false) }
     var showLoraInfo by remember { mutableStateOf(false) }
+    var showMeshInfo by remember { mutableStateOf(false) }
     // The message whose "nearby only" marker was tapped, so the explanation can name its actual cause
     // (too big vs. relays that carry no photos). Null when no explanation is open.
     var relayMarkerExplained by remember { mutableStateOf<AttachmentRelay?>(null) }
@@ -683,6 +685,31 @@ internal fun ChatScreenContent(
                                         health = state.transportHealth,
                                         relay = state.relayPlane,
                                         lora = state.loraPlane,
+                                    )
+                                }
+                            }
+                        }
+
+                        state.isBridged -> {
+                            // The bridged Meshtastic channel: the same room glyph, its channel name as the
+                            // title, and a subtitle saying whose channel it is. No ConnectionStatusRow —
+                            // Knit's own radios say nothing about whether a foreign mesh is talking.
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                RoomAvatar(size = 36.dp)
+                                Spacer(Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f, fill = false)) {
+                                    Text(
+                                        text = state.title,
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = stringResource(R.string.chat_mesh_subtitle),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
                             }
@@ -767,7 +794,9 @@ internal fun ChatScreenContent(
                     // The overflow lives on DM and group threads (the broadcast room has no actions).
                     // A DM offers Block/Unblock; a group offers Settings, which opens the same
                     // group-details screen as tapping the group avatar (the avatar tap stays too).
-                    if (!state.isRoom) {
+                    // Neither room offers anything: the bridged one has no peer to block — its authors are
+                    // not peers, and blocking the gateway would silence a contact over somebody else's post.
+                    if (!state.isRoom && !state.isBridged) {
                         Box {
                             IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(48.dp)) {
                                 Icon(
@@ -820,40 +849,48 @@ internal fun ChatScreenContent(
             )
         },
         bottomBar = {
-            MessageInput(
-                state = inputState,
-                isSending = isSending,
-                pendingAttachment = pendingAttachment,
-                stagedAttachmentRelay = stagedAttachmentRelay,
-                candidates = state.mentionCandidates,
-                replyingTo = replyingTo,
-                myNodeId = state.myNodeId,
-                onCancelReply = onCancelReply,
-                onMentionAdded = onMentionAdded,
-                onAttachClick = onAttachClick,
-                onCameraClick = onCameraClick,
-                // Files are DM/group only, for the reason voice notes are: nothing on the device can screen
-                // one, and the room floods unencrypted to everyone in range. See docs/CONTENT_MODERATION.md §7.
-                fileEnabled = state.canSendFile,
-                onFileClick = onFileClick,
-                onClearAttachment = onClearAttachment,
-                onReceiveImage = onReceiveImage,
-                onSend = onSend,
-                onTyping = onTyping,
-                loraBudget = loraBudgetFor(state.loraCarry, replying = replyingTo != null, attached = pendingAttachment != null),
-                // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
-                // no on-device model can screen speech, so it is the one place unscreenable audio is not
-                // offered. See docs/CONTENT_MODERATION.md.
-                voiceEnabled = !state.isRoom,
-                voiceRecording = voiceRecording,
-                voicePlayback = voicePlayback,
-                onStartVoice = onStartVoice,
-                onLockVoice = onLockVoice,
-                onStopVoice = onStopVoice,
-                onCancelVoice = onCancelVoice,
-                onVoicePlay = onVoicePlay,
-                onVoiceSeek = onVoiceSeek,
-            )
+            // The bridged room takes no composer at all rather than a disabled one. A greyed-out input
+            // invites the user to work out why it will not take their message; a line saying Knit does not
+            // post to this channel answers that before they try.
+            if (!state.canSend) {
+                ReadOnlyFooter()
+            } else {
+                MessageInput(
+                    state = inputState,
+                    isSending = isSending,
+                    pendingAttachment = pendingAttachment,
+                    stagedAttachmentRelay = stagedAttachmentRelay,
+                    candidates = state.mentionCandidates,
+                    replyingTo = replyingTo,
+                    myNodeId = state.myNodeId,
+                    onCancelReply = onCancelReply,
+                    onMentionAdded = onMentionAdded,
+                    onAttachClick = onAttachClick,
+                    onCameraClick = onCameraClick,
+                    // Files are DM/group only, for the reason voice notes are: nothing on the device can screen
+                    // one, and the room floods unencrypted to everyone in range. See docs/CONTENT_MODERATION.md §7.
+                    fileEnabled = state.canSendFile,
+                    onFileClick = onFileClick,
+                    onClearAttachment = onClearAttachment,
+                    onReceiveImage = onReceiveImage,
+                    onSend = onSend,
+                    onTyping = onTyping,
+                    loraBudget =
+                        loraBudgetFor(state.loraCarry, replying = replyingTo != null, attached = pendingAttachment != null),
+                    // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
+                    // no on-device model can screen speech, so it is the one place unscreenable audio is not
+                    // offered. See docs/CONTENT_MODERATION.md.
+                    voiceEnabled = !state.isRoom,
+                    voiceRecording = voiceRecording,
+                    voicePlayback = voicePlayback,
+                    onStartVoice = onStartVoice,
+                    onLockVoice = onLockVoice,
+                    onStopVoice = onStopVoice,
+                    onCancelVoice = onCancelVoice,
+                    onVoicePlay = onVoicePlay,
+                    onVoiceSeek = onVoiceSeek,
+                )
+            }
         },
     ) { padding ->
         // Column rather than a list item so the relay notice stays pinned: it states a standing fact
@@ -871,6 +908,7 @@ internal fun ChatScreenContent(
                     onDismiss = onDismissRelayNotice.takeIf { dismissable(state.relayReach) },
                 )
                 LoraNotice(reach = state.loraReach, onClick = { showLoraInfo = true })
+                if (state.isBridged) MeshRoomNotice(onClick = { showMeshInfo = true })
             }
             // weight(1f), not fillMaxSize(): the notice above is an unweighted sibling, so the list must
             // take the space that is left rather than ask for the whole column.
@@ -929,7 +967,10 @@ internal fun ChatScreenContent(
                                 now = now,
                                 // In a 1:1 DM the peer's name is in the top bar, so don't repeat it on every
                                 // received bubble; show it only where multiple people can speak.
-                                showSenderName = state.isRoom || state.isGroup,
+                                // Every room and group names its authors; a DM does not (the header already
+                                // does). The bridged room needs it most of all — its posts come from
+                                // strangers, and an unattributed one would read as if Knit knew who sent it.
+                                showSenderName = state.isRoom || state.isBridged || state.isGroup,
                                 myNodeId = state.myNodeId,
                                 imageRatios = imageRatios,
                                 highlighted = row.id == highlightedMessageId,
@@ -1064,6 +1105,20 @@ internal fun ChatScreenContent(
             text = { Text(if (loraNamesPeer) stringResource(loraBody, state.title) else stringResource(loraBody)) },
             confirmButton = {
                 TextButton(onClick = { showLoraInfo = false }) {
+                    Text(stringResource(R.string.action_close))
+                }
+            },
+        )
+    }
+
+    if (showMeshInfo) {
+        AlertDialog(
+            onDismissRequest = { showMeshInfo = false },
+            icon = { Icon(Icons.Outlined.Public, contentDescription = null) },
+            title = { Text(stringResource(R.string.chat_mesh_room_title)) },
+            text = { Text(stringResource(R.string.chat_mesh_room_body)) },
+            confirmButton = {
+                TextButton(onClick = { showMeshInfo = false }) {
                     Text(stringResource(R.string.action_close))
                 }
             },
@@ -1226,6 +1281,66 @@ private fun LoraNotice(
 }
 
 /**
+ * What stands in for the composer in a read-only thread: a line saying so, in the same slot the input would
+ * occupy. Its own footer rather than a disabled [MessageInput] because a greyed-out text field is a puzzle —
+ * the user taps it, nothing happens, and nothing explains why.
+ */
+@Composable
+private fun ReadOnlyFooter() {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.fillMaxWidth().testTag("chat_read_only"),
+    ) {
+        Text(
+            text = stringResource(R.string.chat_mesh_read_only),
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+        )
+    }
+}
+
+/**
+ * The bridged Meshtastic room's standing notice: this is somebody else's public channel, the names on it are
+ * unverified, and Knit only listens.
+ *
+ * Unlike its two neighbours this one is not a *reach* state — nothing about it comes and goes with the
+ * radios, and there is no condition under which it stops being true — so it takes no state and never
+ * animates away. It is also not dismissable, for the reason the relay room notice is dismissable and this one
+ * cannot be: dismissing that one hides a fact about *Knit*, while this hides a warning about strangers.
+ */
+@Composable
+private fun MeshRoomNotice(onClick: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.fillMaxWidth().testTag("chat_mesh_notice"),
+    ) {
+        Row(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onClick, role = Role.Button)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Public,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+            Text(text = stringResource(R.string.chat_mesh_room_notice), style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+/**
  * Lock badge shown in the header of encrypted threads (1:1 DMs and groups, never the plaintext Nearby
  * room). Tapping it explains that the conversation is end-to-end encrypted. Neutral-tinted so it reads
  * distinctly from the green verified shield it sits to the left of.
@@ -1349,12 +1464,21 @@ private fun MessageBubble(
         verticalAlignment = Alignment.Bottom,
     ) {
         if (!row.mine && showSenderName) {
+            // A bridged Meshtastic author gets a plain, unclickable avatar. There is nothing to open: they
+            // have no Knit identity, no profile and no DM thread, and the name beside it is an
+            // unauthenticated claim off an open channel. Routing this tap to `profileDetails` would land on
+            // the *gateway* — a real peer, offering to message somebody who never said any of this.
             Avatar(
                 avatarHash = row.avatarHash,
                 name = row.senderName,
                 size = 40.dp,
-                contentDescription = stringResource(R.string.chat_view_profile, row.senderName),
-                onClick = { onOpenProfile(row.senderNodeId) },
+                contentDescription =
+                    if (row.origin != null) {
+                        stringResource(R.string.chat_mesh_author, row.senderName)
+                    } else {
+                        stringResource(R.string.chat_view_profile, row.senderName)
+                    },
+                onClick = if (row.origin != null) null else ({ onOpenProfile(row.senderNodeId) }),
             )
             Spacer(Modifier.width(8.dp))
         }
@@ -1398,9 +1522,18 @@ private fun MessageBubble(
                                 text = row.senderName,
                                 discriminator = row.senderDiscriminator,
                                 style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary,
+                                // Not the primary colour a Knit author's name takes: that colour is what the
+                                // eye reads as "a person this app knows", and a bridged author is the one
+                                // case where it would be a lie.
+                                color =
+                                    if (row.origin != null) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
                             )
                         }
+                        row.origin?.let { MeshOriginLine(it) }
                         row.replyTo?.let { reply ->
                             QuotedMessage(
                                 replyTo = reply,
@@ -2455,6 +2588,31 @@ private fun SystemNotice(
         textAlign = TextAlign.Center,
         style = MaterialTheme.typography.labelMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/**
+ * The provenance line under a bridged Meshtastic author's name: their `!hex` id, the Knit peer whose radio
+ * heard them, and — when the post came off somebody's MQTT uplink — that it may not be from anywhere nearby.
+ *
+ * It is deliberately plain text rather than a badge or a chip. A badge is a mark of standing, and the whole
+ * point of this line is the opposite: nothing here is verified, the name above it is a claim, and the only
+ * authenticated fact in the row is which radio relayed it. Always shown, never dismissable — an author whose
+ * provenance the reader has scrolled past is exactly the one they would misread.
+ */
+@Composable
+private fun MeshOriginLine(origin: MeshOrigin) {
+    val parts =
+        buildList {
+            add(origin.nodeLabel)
+            add(stringResource(R.string.chat_mesh_via, origin.gateway))
+            if (origin.viaMqtt) add(stringResource(R.string.chat_mesh_mqtt))
+        }
+    Text(
+        text = parts.joinToString(" · "),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.testTag("chat_mesh_origin"),
     )
 }
 

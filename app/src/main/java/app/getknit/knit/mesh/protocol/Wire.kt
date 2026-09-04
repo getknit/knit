@@ -43,6 +43,20 @@ object FrameType {
     const val TYPING = "typing"
 
     /**
+     * A post overheard on a **foreign** mesh's public channel and re-published into Knit by the phone whose
+     * board heard it (the Meshtastic LongFast bridge). Its author is not a Knit peer and has no node id: the
+     * gateway signs the frame, and everything about the original speaker rides inside [MeshPostContent] as an
+     * attribution, never as an identity.
+     *
+     * It is a type of its own rather than a [CHAT] with an extra field for two reasons, both about what an
+     * *older* build would do with it. It would attribute the text to the gateway's own user; and it would
+     * render it, which earns a sealed `CTL_RECEIPT` from every recipient — ticks that then ride the LoRa
+     * plane from far pockets for a message nobody is waiting on. A new type is invisible to those paths
+     * instead: `dispatchByType` never reaches `acknowledge`, so no receipt is ever owed.
+     */
+    const val MESH_POST = "meshpost"
+
+    /**
      * Whether a frame of [type] is worth parking for replay when it's dropped for a missing sender key
      * (see `app.getknit.knit.mesh.PendingInbound`): the locally-delivered types only. PROFILE and KEY_REQ
      * are excluded (they bootstrap keys, never wait on one), as are the point-to-point BLOB_REQ and any
@@ -50,7 +64,12 @@ object FrameType {
      * just occupy a slot.
      */
     fun isReplayable(type: String): Boolean =
-        type == CHAT || type == REACTION || type == RECEIPT || type == GROUP_UPDATE || type == GROUP_LEAVE
+        type == CHAT ||
+            type == REACTION ||
+            type == RECEIPT ||
+            type == GROUP_UPDATE ||
+            type == GROUP_LEAVE ||
+            type == MESH_POST
 
     /**
      * Whether a frame of [type] is carried for store-and-forward custody and eligible for the
@@ -61,6 +80,14 @@ object FrameType {
      * the best-effort [TYPING] cue (single-hop, fire-and-forget presence — worthless a moment later, so it
      * is never carried, parked, or re-served), and any unknown future type (a carrier can't authenticate
      * what it can't place).
+     *
+     * **[MESH_POST] is the first type added to this list since the v1 baseline, and that has a cost worth
+     * knowing.** This list is fixed on every build already in the field, so a build without it holds none of
+     * these rows while we hold them all — two nodes with continuously different live sets, which is exactly
+     * the custody-digest divergence ADR 006 exists to prevent. It is accepted only because the whole LoRa
+     * plane is `BuildConfig.LORA_PLANE`-gated (debug on, release off), so no shipped build ever mints one;
+     * it rides the same release gate the `0x05` transcoder flag-day already owes. Do not widen this list
+     * again on the same reasoning without re-reading `docs/WIRE_COMPAT.md`.
      */
     fun isCustodial(type: String): Boolean = isReplayable(type) || type == PROFILE
 }
@@ -245,6 +272,43 @@ data class KeyReqContent(
 @Serializable
 data class TypingContent(
     val groupId: String? = null,
+)
+
+/**
+ * Content of a [FrameType.MESH_POST] frame — one post overheard on a foreign mesh's public channel and
+ * re-published into Knit by the gateway phone whose board heard it.
+ *
+ * **Everything here is an attribution, not an identity.** The frame's [RelayEnvelope.senderId] is the
+ * gateway, which is who signed it and the only party any of this is authenticated against; [node] and [name]
+ * are what an unauthenticated public channel said about itself, are trivially spoofable, and must never be
+ * rendered as a Knit peer. Nothing in this payload creates a peer row, counts toward presence, or is
+ * addressable.
+ *
+ * The fields split three ways. [body], [node] and [packetId] are the post itself — [packetId] rides because
+ * the frame id is derived from it, so a receiver can check that derivation rather than take the id on trust.
+ * [name] and [channel] are snapshots taken at mint, because the receiver has no way to look either up: it has
+ * no NodeDB and no sight of the gateway board's channel table. [hops], [snrDeci] and [viaMqtt] describe how
+ * the post reached *this pocket's* board — a property of the crossing, which is why they are carried rather
+ * than derived, and the raw material of the volume measurement the receive-only phase exists to produce.
+ *
+ * [snrDeci] is deci-dB rather than the radio's own float so the encoding pins byte-exactly in
+ * `GoldenVectorTest`; a tenth of a dB is well inside what the measurement can use.
+ */
+@Serializable
+data class MeshPostContent(
+    val body: String,
+    /** The speaker's Meshtastic node number, widened from its unsigned 32 bits. Also renders its `!hex` id. */
+    val node: Long,
+    /** The Meshtastic packet id the frame id derives from, widened the same way. */
+    val packetId: Long,
+    /** `User.long_name` as the gateway's NodeDB had it at mint; null when the gateway had never heard one. */
+    val name: String? = null,
+    /** The public channel's name as the gateway's board reported it — `LongFast`, `LongTurbo`, `MediumFast`. */
+    val channel: String? = null,
+    val hops: Int? = null,
+    val snrDeci: Int? = null,
+    /** The post reached the gateway's mesh through somebody's MQTT uplink, so it may come from anywhere. */
+    val viaMqtt: Boolean = false,
 )
 
 /**

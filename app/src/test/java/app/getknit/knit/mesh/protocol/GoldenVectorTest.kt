@@ -104,6 +104,24 @@ class GoldenVectorTest {
             "keyReqContent" to WireCodec.encodePayload(KeyReqContent(nodeIds = listOf("a", "b"))),
             "blobReqContent" to WireCodec.encodePayload(BlobReqContent(hash = "h1")),
             "typingContent" to WireCodec.encodePayload(TypingContent(groupId = "g-1")),
+            // The bridged Meshtastic post (the LongFast bridge). Two fixtures: the full shape, and the
+            // minimum a gateway can honestly mint — a board that has never heard the speaker's NODEINFO
+            // knows neither their name nor, on unreported radio settings, the channel's.
+            "meshPostContent" to
+                WireCodec.encodePayload(
+                    MeshPostContent(
+                        body = "anyone around?",
+                        node = 0x1234abcd,
+                        packetId = 9911,
+                        name = "Bob",
+                        channel = "LongFast",
+                        hops = 2,
+                        snrDeci = -73,
+                        viaMqtt = true,
+                    ),
+                ),
+            "meshPostContentBare" to
+                WireCodec.encodePayload(MeshPostContent(body = "hi", node = 1, packetId = 2)),
             "mention" to WireCodec.encodePayload(Mention("node1", "Ann")),
             "replyRef" to WireCodec.encodePayload(ReplyRef("m0", "a", "Ann", "see you", hasAttachment = true)),
             "wrappedKey" to WireCodec.encodePayload(WrappedKey(to = "bob", wk = bytes(80, 4))),
@@ -403,6 +421,15 @@ class GoldenVectorTest {
                 "keyReqContent" to "a1676e6f64654964738261616162",
                 "blobReqContent" to "a16468617368626831",
                 "typingContent" to "a16767726f7570496463672d31",
+                // The bridged Meshtastic post. `a8` = map(8): every field set. Note `f5` for viaMqtt and the
+                // negative snrDeci as `3848` — the SNR is an Int in tenths precisely so it pins like this;
+                // a float would not.
+                "meshPostContent" to
+                    "a864626f64796e616e796f6e652061726f756e643f646e6f64651a1234abcd687061636b657449641926b7646e616d6563426f62" +
+                    "676368616e6e656c684c6f6e674661737464686f70730267736e72446563693848677669614d717474f5",
+                // `a3` = map(3): the three required fields alone. Every optional one is elided while unset,
+                // which is what makes them additive — and what keeps a name-less post small.
+                "meshPostContentBare" to "a364626f6479626869646e6f646501687061636b6574496402",
                 "mention" to "a2666e6f64654964656e6f646531646e616d6563416e6e",
                 "replyRef" to
                     "a5696d6573736167654964626d3068617574686f724964616166617574686f7263416e6e67736e69707065746773656520796f756d68" +

@@ -490,8 +490,10 @@ internal fun ConversationListItem(
     modifier: Modifier = Modifier,
     onDelete: (conversationId: String) -> Unit = {},
 ) {
-    // The Nearby broadcast room can't be deleted, so it gets a plain tap with no long-press menu.
-    val deletable = !row.isRoom
+    // The Nearby broadcast room can't be deleted, so it gets a plain tap with no long-press menu. The
+    // bridged Meshtastic room is a room too but *can* be cleared — it is somebody else's channel, arriving
+    // unasked, and clearing it takes the row away until the next post.
+    val deletable = !row.isRoom || row.isBridged
     var menuOpen by remember { mutableStateOf(false) }
     var showConfirm by remember { mutableStateOf(false) }
     val clickModifier =

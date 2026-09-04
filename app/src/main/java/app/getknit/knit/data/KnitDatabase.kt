@@ -79,7 +79,13 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
     //     carried it (`ProfileContent.openToChat`, and the sealed `ProfilePayload.openToChat`). Off the wire,
     //     under the presentation LWW watermark; 0 on every existing row, which is correct (nobody has asserted
     //     it, and the wire elides the flag while off); migrated by KnitMigrations.MIGRATION_8_9.
-    version = 9,
+    // v10: six `messages` columns attributing a **bridged Meshtastic post** — `originNode`, `originName`,
+    //     `originChannel`, `originHops`, `originSnrDeci`, `originViaMqtt` (the LongFast bridge). A denormalized
+    //     snapshot in the replyTo* mould, and for a stronger reason than that one: the speaker has no Knit
+    //     identity and no peer row, so there is nothing on this device to resolve the name against, now or
+    //     ever. Off the wire (MeshPostContent), null/0 on every existing row — no message before this could be
+    //     a bridged post; migrated by KnitMigrations.MIGRATION_9_10.
+    version = 10,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
     // the migration test's MigrationTestHelper. Room also errors at compile time if an entity changes without

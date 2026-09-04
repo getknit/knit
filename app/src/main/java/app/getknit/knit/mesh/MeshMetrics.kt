@@ -245,6 +245,15 @@ class MeshMetrics {
     private val loraSkippedLinked = AtomicLong()
     private val loraTickDeferred = AtomicLong()
 
+    // The LongFast bridge's inbound half. These five ARE the receive-only trial's output: how much public
+    // Meshtastic chat a neighbourhood actually carries, how much of it arrives off an MQTT uplink, and what
+    // the filters turn away. Nothing here transmits, so none of it touches the airtime ledger.
+    private val meshPostHeard = AtomicLong()
+    private val meshPostIngested = AtomicLong()
+    private val meshPostViaMqtt = AtomicLong()
+    private val meshPostPassive = AtomicLong()
+    private val meshPostRefusedByReason = ConcurrentHashMap<String, AtomicLong>()
+
     /** A frame this device authored and injected into the mesh. */
     fun onOriginated() {
         framesOriginated.incrementAndGet()
@@ -699,6 +708,27 @@ class MeshMetrics {
         loraTickDeferred.incrementAndGet()
     }
 
+    /** A chat packet on the board's public primary — every post in earshot, before any filter runs. */
+    fun onMeshPostHeard() {
+        meshPostHeard.incrementAndGet()
+    }
+
+    /** A public post accepted and re-published into Knit; [viaMqtt] counts the ones off somebody's uplink. */
+    fun onMeshPostIngested(viaMqtt: Boolean) {
+        meshPostIngested.incrementAndGet()
+        if (viaMqtt) meshPostViaMqtt.incrementAndGet()
+    }
+
+    /** A public post another board in this pocket is minting instead. Expected on a spare board. */
+    fun onMeshPostPassive() {
+        meshPostPassive.incrementAndGet()
+    }
+
+    /** A public-channel packet the filters turned away, by `LongFastPolicy.Refusal`. */
+    fun onMeshPostRefused(reason: String) {
+        meshPostRefusedByReason.computeIfAbsent(reason) { AtomicLong() }.incrementAndGet()
+    }
+
     @Suppress("LongMethod") // a flat field-by-field copy — one line per counter; splitting it would only scatter it
     fun snapshot(): Snapshot {
         val byReason = drops.mapValues { it.value.get() }
@@ -787,6 +817,11 @@ class MeshMetrics {
             loraPassive = loraPassive.get(),
             loraSkippedLinked = loraSkippedLinked.get(),
             loraTickDeferred = loraTickDeferred.get(),
+            meshPostHeard = meshPostHeard.get(),
+            meshPostIngested = meshPostIngested.get(),
+            meshPostViaMqtt = meshPostViaMqtt.get(),
+            meshPostPassive = meshPostPassive.get(),
+            meshPostRefusedByReason = meshPostRefusedByReason.mapValues { it.value.get() },
         )
     }
 
@@ -874,5 +909,10 @@ class MeshMetrics {
         val loraPassive: Long = 0,
         val loraSkippedLinked: Long = 0,
         val loraTickDeferred: Long = 0,
+        val meshPostHeard: Long = 0,
+        val meshPostIngested: Long = 0,
+        val meshPostViaMqtt: Long = 0,
+        val meshPostPassive: Long = 0,
+        val meshPostRefusedByReason: Map<String, Long> = emptyMap(),
     )
 }

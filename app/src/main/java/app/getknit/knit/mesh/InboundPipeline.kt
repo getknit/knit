@@ -54,6 +54,7 @@ import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.GroupKeyPayload
 import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.KeyReqContent
+import app.getknit.knit.mesh.protocol.MeshPostContent
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.Protocol
@@ -294,6 +295,10 @@ class InboundPipeline(
 
             FrameType.TYPING -> {
                 handleTyping(env)
+            }
+
+            FrameType.MESH_POST -> {
+                handleMeshPost(env, plane)
             }
 
             else -> {
@@ -583,6 +588,64 @@ class InboundPipeline(
         if (!Conversations.isForMe(env.recipientId, me)) return
         decryptAndDeliver(env, content, me, Conversations.idFor(env.senderId, env.recipientId, me), plane, signed)
     }
+
+    /**
+     * A post overheard on a foreign mesh's public channel and re-published by the phone whose board heard it
+     * (the LongFast bridge, [FrameType.MESH_POST]). It lands in its own public room
+     * ([Conversations.MESHTASTIC]) through the ordinary chat delivery path, so moderation, notification, the
+     * unread count and store-and-forward all work exactly as they already do.
+     *
+     * Three things it deliberately does **not** do, each of which would be wrong in a different way:
+     *
+     * - **No receipt.** [deliverChat] is called with `ack = false`. There is nobody to tick: the speaker has
+     *   no Knit identity, and the frame's `senderId` is the gateway, which would otherwise collect one sealed
+     *   receipt per recipient for a message it did not write — receipts that then ride the LoRa plane home
+     *   from far pockets.
+     * - **No peer row, ever.** The attribution rides on the message row and nowhere else. Nothing here
+     *   touches `peers`, presence, `reachable`, open-to-chat or the contacts picker, and the frame's real
+     *   author — the gateway — is a peer already.
+     * - **No blocklist check on the speaker.** Blocking is keyed on Knit node ids; a Meshtastic node number is
+     *   not one and is trivially spoofable, so a per-speaker block would be a promise the wire cannot keep.
+     *   Blocking the *gateway* does work, and is checked here, because that is a real pinned identity.
+     */
+    private suspend fun handleMeshPost(
+        env: RelayEnvelope,
+        plane: DeliveryPlane,
+    ) {
+        if (env.senderId in settings.blockedNodeIds.first()) return
+        val content = WireCodec.decodePayload<MeshPostContent>(env.payload) ?: return
+        if (content.body.isEmpty()) return
+        val me = identity.nodeId()
+        deliverChat(
+            env = env,
+            // The room's own content shape is a plain body: a bridged post carries no attachment, no mention,
+            // no reply and no encryption, so the chat shell it is delivered through is exactly that much.
+            content = ChatContent(body = content.body),
+            me = me,
+            conversationId = Conversations.MESHTASTIC,
+            plane = plane,
+            origin =
+                MeshPostOrigin(
+                    node = content.node,
+                    name = content.name,
+                    channel = content.channel,
+                    hops = content.hops,
+                    snrDeci = content.snrDeci,
+                    viaMqtt = content.viaMqtt,
+                ),
+            ack = false,
+        )
+    }
+
+    /**
+     * The local half of minting a bridged post ([MeshPostSink.publishMeshPost]): the gateway delivers its own
+     * frame here so the row it writes is the one every other phone in the pocket will write from the same
+     * bytes, rather than a second, drifting copy of that logic.
+     *
+     * Stamped [DeliveryPlane.LoRa] because that is literally true — it reached this device over the board's
+     * radio, which is exactly what the plane records (ADR 040).
+     */
+    internal suspend fun deliverOwnMeshPost(env: RelayEnvelope) = handleMeshPost(env, DeliveryPlane.LoRa)
 
     /**
      * The one thing [handleChat] still does for a *blocked* sender: send the best-effort broadcast/group
@@ -2018,6 +2081,14 @@ class InboundPipeline(
         // OUR room posts looping back after the SeenSet lapsed — reset its ✓✓ to ✓. The v2 ratchet path
         // substitutes a hook that commits the ratchet delta + the row in one transaction (exists-gated first).
         persist: suspend (MessageEntity) -> Unit = { messages.saveIfAbsent(it) },
+        // Who said it on a foreign mesh, when this is a bridged public post — carried straight onto the row.
+        // Null on every ordinary delivery, and the discriminator the whole bridged shape hangs off.
+        origin: MeshPostOrigin? = null,
+        // Whether a delivery receipt is owed. False for exactly one caller: a bridged post has no author to
+        // send one to. Its Meshtastic speaker has no Knit identity, and the frame's senderId is the gateway,
+        // which would then collect a tick per recipient for a message it only relayed — ticks that ride the
+        // LoRa plane from far pockets. Never widen this; a Knit message always earns its ✓✓.
+        ack: Boolean = true,
     ) {
         // A real message from this sender supersedes any "typing" indicator for them in this thread — clear it
         // now (idempotent, and a no-op if they weren't shown as typing). Runs on re-delivery too, harmlessly.
@@ -2057,12 +2128,22 @@ class InboundPipeline(
                 attachmentSize = sealed?.attachmentSize,
                 moderation =
                     if (
-                        classifyText(content.body, "incoming", conversationId == Conversations.NEARBY)
+                        // Both public rooms take the room moderator (the lexical profanity pass on top of the
+                        // ML one), and for one reason: a room is read by strangers. The bridged room needs it
+                        // at least as much — its authors are strangers by definition, and nothing screens
+                        // them before they reach the air.
+                        classifyText(content.body, "incoming", Conversations.isPublicRoom(conversationId))
                     ) {
                         MessageEntity.MODERATION_TEXT_FLAGGED
                     } else {
                         MessageEntity.MODERATION_NONE
                     },
+                originNode = origin?.node,
+                originName = origin?.name,
+                originChannel = origin?.channel,
+                originHops = origin?.hops,
+                originSnrDeci = origin?.snrDeci,
+                originViaMqtt = origin?.viaMqtt == true,
             ).withReply(content.replyTo),
         )
         // Start pulling the referenced blob unless we already hold it (the UI observes the blobs table
@@ -2093,7 +2174,7 @@ class InboundPipeline(
                 if (env.senderId != me && content.mentions.mention(me)) {
                     notifyMention(env, content, conversationId, sealed?.attachmentName)
                 } else {
-                    notifyIncoming(env, content, conversationId, sealed?.attachmentName)
+                    notifyIncoming(env, content, conversationId, sealed?.attachmentName, origin)
                 }
             } else if (env.senderId != me) {
                 // A stranger's first DM/group: no per-message alert — just refresh the coalesced
@@ -2103,7 +2184,7 @@ class InboundPipeline(
         }
         // Ack unconditionally (even on a re-delivery): the receipt floods back to the sender and, for a
         // DM, doubles as the vaccine that purges this message from any carrier that missed the first ack.
-        acknowledge(env, me, plane)
+        if (ack) acknowledge(env, me, plane)
     }
 
     /**
@@ -2241,6 +2322,7 @@ class InboundPipeline(
         content: ChatContent,
         conversationId: String,
         fileName: String?,
+        origin: MeshPostOrigin? = null,
     ) {
         val me = identity.nodeId()
         val peer = peers.find(env.senderId)
@@ -2250,14 +2332,22 @@ class InboundPipeline(
         val peerAvatar = peer?.avatarHash?.let { blobs.bytes(it) }
         // Attachment-only messages have a blank body; show a placeholder so they still notify.
         val body = content.body.ifBlank { attachmentPreview(content, fileName) }
+        // A bridged Meshtastic post is authored by its speaker, not by the gateway whose signature it
+        // carries. Two things follow, and both are wrong without this. The notification must name the
+        // speaker (and show no avatar — the gateway's face over somebody else's words is the whole failure
+        // the room's UI exists to prevent); and the sender id it is keyed on must not be ours, or the
+        // one device that actually hears the channel — the gateway — is the one device that never notifies,
+        // because `incomingNotification` suppresses our own messages.
+        val senderId = origin?.let { meshNodeLabel(it.node) } ?: env.senderId
+        val senderName = origin?.let { it.name?.takeIf(String::isNotBlank) ?: meshNodeLabel(it.node) } ?: senderLabel.text
         val incoming =
             incomingNotification(
-                senderId = env.senderId,
+                senderId = senderId,
                 body = body,
                 sentAt = env.sentAt,
                 selfId = me,
-                peerName = senderLabel.text,
-                peerAvatarBytes = peerAvatar,
+                peerName = senderName,
+                peerAvatarBytes = if (origin == null) peerAvatar else null,
                 conversationId = conversationId,
             ) ?: return
         val conversation = resolveConversation(conversationId, env.senderId, senderLabel.text, peerAvatar, me, labels)
@@ -2334,6 +2424,14 @@ class InboundPipeline(
         when (Conversations.kindFor(conversationId)) {
             ConversationKind.NEARBY -> {
                 NotifConversation(conversationId, null, null, ConversationKind.NEARBY)
+            }
+
+            // Like the Nearby room: both null, so the notifier substitutes the room's own title and glyph.
+            // Deliberately NOT the speaker's name and avatar — a bridged author has neither an avatar nor an
+            // authenticated name, and putting an unverified one in a notification title is the one place it
+            // would read as a person Knit vouches for.
+            ConversationKind.MESHTASTIC -> {
+                NotifConversation(conversationId, null, null, ConversationKind.MESHTASTIC)
             }
 
             ConversationKind.DM -> {

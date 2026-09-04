@@ -5,6 +5,7 @@ import app.getknit.knit.mesh.FanoutHint
 import app.getknit.knit.mesh.FastPathDrop
 import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.MeshPost
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.ReceivedFile
@@ -15,6 +16,7 @@ import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.isPresenceEvidence
 import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.link.FragReassembler
+import app.getknit.knit.mesh.meshNodeLabel
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -86,6 +88,8 @@ internal class LoraMeshTransport(
     private val offerPrefixes: suspend (limit: Int) -> IntArray = { IntArray(0) },
     private val framesMissing: suspend (prefixes: IntArray, limit: Int, dms: Boolean) -> List<WireEnvelope> =
         { _, _, _ -> emptyList() },
+    /** Publishes a post overheard on the board's public primary as a signed Knit frame — [app.getknit.knit.mesh.MeshPostSink]. */
+    private val publishMeshPost: suspend (MeshPost) -> Unit = {},
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
     private val clock: () -> Long,
@@ -589,6 +593,13 @@ internal class LoraMeshTransport(
     }
 
     /**
+     * Whether this board is the one that speaks for its pocket (ADR 044's ACTIVE role), asked *without*
+     * [mayTransmit]'s `loraPassive` counter — that counter means "a frame we would have transmitted was
+     * suppressed", and minting a bridged post transmits nothing at all.
+     */
+    private fun isPocketGateway(): Boolean = role == LoraGatewayPolicy.Role.ACTIVE
+
+    /**
      * Publishes a [LoraCtl] OFFER on the gossip policy's schedule. One packet says what we hold, so a far
      * gateway can serve exactly what we lack — no request round trip, and no blind re-transmission of history
      * the other pocket already has.
@@ -819,13 +830,66 @@ internal class LoraMeshTransport(
     // --- inbound ---
 
     private fun onLoraPacket(packet: ReceivedPacket) {
-        if (packet.portnum != MeshtasticProto.PORT_PRIVATE_APP || packet.payload.isEmpty()) return
+        if (packet.payload.isEmpty()) return
+        val bound = currentConfig?.channelIndex
+        // The board's public primary carries the *foreign* mesh's chat, which the LongFast bridge ingests into
+        // a separate public room. Judged before the Knit guards below, because it is the one thing off the
+        // bound channel that Knit reads at all.
+        //
+        // Unless Knit itself is bound there. ADR 045 always writes Knit into a **secondary** slot and never
+        // touches index 0, so in the field the two can never be the same channel — but the debug bridge can
+        // still bind any index by hand, and on such a board index 0 is Knit's own traffic with no public
+        // primary to read. Deciding it off the bound slot rather than off the provisioning rule keeps that
+        // honest without this path having to know how the board was set up.
+        if (packet.channelIndex == LongFastPolicy.PRIMARY_INDEX && bound != LongFastPolicy.PRIMARY_INDEX) {
+            onPrimaryPacket(packet)
+            return
+        }
+        if (packet.portnum != MeshtasticProto.PORT_PRIVATE_APP) return
         // Outbound is pinned to the bound channel; inbound was not, so a board carrying a second channel with
         // Knit traffic on it used to ingest both. Ignore anything off the channel this plane is bound to.
-        val bound = currentConfig?.channelIndex
         if (bound != null && packet.channelIndex != bound) return
         noteBoard(packet)
         if (LoraCtl.isCtl(packet.payload)) onCtlPacket(packet) else onFramePacket(packet)
+    }
+
+    /**
+     * One packet off the board's **primary** channel — the public Meshtastic one, which Knit only ever listens
+     * to (the LongFast bridge). [LongFastPolicy] decides whether it is a public post; a refusal is counted and
+     * dropped.
+     *
+     * Two rules that are easy to get wrong here:
+     *
+     * - **[noteBoard] is not called.** `boardsHeard` means "radios that have sent a *Knit* frame", which is
+     *   what makes "heard nobody" the ordinary state of a solo user and is why the preset-mismatch notice
+     *   cannot be gated on evidence. Counting stock neighbours here would quietly change all of that.
+     * - **Only the ACTIVE gateway mints.** Every board in a pocket hears the same packet, and while the
+     *   derived frame id makes duplicates converge, minting on each of them still doubles the BLE flood and
+     *   leaves two byte-different copies of one post in the mesh. A PASSIVE board still *receives* the post
+     *   over BLE/NAN like everyone else — it just is not the one that speaks for the pocket (ADR 044).
+     */
+    private fun onPrimaryPacket(packet: ReceivedPacket) {
+        if (packet.portnum != MeshtasticProto.PORT_TEXT_MESSAGE) return // never a post; not worth a counter
+        metrics.onMeshPostHeard()
+        val ready = link.state.value as? LinkState.Ready ?: return
+        when (val verdict = LongFastPolicy.judge(packet, ready.channels, ready.radio, link.nodes.value[packet.from]?.longName)) {
+            is LongFastPolicy.Verdict.Refused -> {
+                metrics.onMeshPostRefused(verdict.reason.name)
+            }
+
+            is LongFastPolicy.Verdict.Post -> {
+                if (!isPocketGateway()) {
+                    metrics.onMeshPostPassive()
+                    return
+                }
+                metrics.onMeshPostIngested(verdict.post.viaMqtt)
+                log(
+                    "lora meshpost from ${meshNodeLabel(packet.from.toLong())} " +
+                        "${verdict.post.body.length}ch viaMqtt=${verdict.post.viaMqtt}",
+                )
+                scope.launch { publishMeshPost(verdict.post) }
+            }
+        }
     }
 
     /** One inbound mesh frame off the air: reassemble, decode, dedup, and hand it to the router. */

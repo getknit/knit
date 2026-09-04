@@ -73,6 +73,19 @@ class LoraFramePolicyTest {
     }
 
     @Test
+    fun aBridgedMeshPostNeverRidesLoRaOnAnyPath() {
+        // It came off this band. Every radio in range already heard the original, so re-transmitting the Knit
+        // copy spends an airslot on an echo — and the backfill would go on doing it for the frame's whole
+        // custody life. Refused by construction (the allow-list names three shapes and this is none of them),
+        // and pinned on every path so a future widening of any one of them is a deliberate choice.
+        val post = env(FrameType.MESH_POST)
+        assertFalse("never fanned out", fanout(post))
+        assertFalse("never backfilled", LoraFramePolicy.eligible(post, wire(), LoraFramePolicy.Path.BACKFILL))
+        assertFalse("never targeted", targeted(post, wire(relay = false), to = "alice"))
+        assertFalse("and not DM-form, so the re-offer skips it too", LoraFramePolicy.isDmForm(post))
+    }
+
+    @Test
     fun aCleartextReceiptRidesTheTargetedPath() {
         assertTrue(targeted(env(FrameType.RECEIPT), wire(), to = "alice"))
     }

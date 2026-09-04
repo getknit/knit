@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.protocol
 
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 
@@ -46,4 +47,31 @@ object FrameId {
         require(bytes.size == ID_BYTES) { "a frame id is $ID_BYTES bytes, got ${bytes.size}" }
         return encoder.encodeToString(bytes)
     }
+
+    /**
+     * The id every gateway mints for the **same** bridged Meshtastic post ([FrameType.MESH_POST]): the first
+     * [ID_BYTES] of `SHA-256` over the speaker's node number and the packet id it assigned.
+     *
+     * Derived rather than random because every board in range hears the same packet and would otherwise mint a
+     * different id for each copy. With one id the duplicates collapse on machinery that already exists: the
+     * router's `SeenSet` and `MessageDao.insertIfAbsent` both key on it, and `StoreDigest` XORs over ids, so
+     * two gateways custodying byte-different copies of one post still hold the same digest instead of churning
+     * against each other forever.
+     *
+     * `(node, packetId)` is exactly the pair Meshtastic's own firmware dedups on, so this inherits its
+     * uniqueness rather than inventing any. The output is canonical base64url, so it round-trips
+     * [toBytesOrNull] and the `0x05` transcoder compacts it like any other id.
+     */
+    fun forMeshPost(
+        node: Long,
+        packetId: Long,
+    ): String =
+        fromBytes(
+            MessageDigest
+                .getInstance("SHA-256")
+                .digest("$MESH_POST_SALT$node:$packetId".encodeToByteArray())
+                .copyOf(ID_BYTES),
+        )
+
+    private const val MESH_POST_SALT = "knit-meshpost-id-v1:"
 }

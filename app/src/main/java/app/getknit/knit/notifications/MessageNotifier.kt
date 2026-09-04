@@ -538,6 +538,7 @@ class MessageNotifier(
     ): String =
         title?.takeIf { it.isNotBlank() } ?: when (kind) {
             ConversationKind.NEARBY -> context.getString(R.string.notif_title_nearby)
+            ConversationKind.MESHTASTIC -> context.getString(R.string.notif_title_meshtastic)
             ConversationKind.GROUP -> context.getString(R.string.group_unnamed)
             ConversationKind.DM -> "?"
         }
@@ -559,15 +560,20 @@ class MessageNotifier(
     }
 
     /**
-     * The photoless avatar for a conversation: the Nearby/broadcast room gets the Knit mesh mark (matching
-     * the chat list's room glyph), everything else gets a [letterAvatar] on its title initial, colored by
+     * The photoless avatar for a conversation: a public room gets the Knit mesh mark (matching the chat
+     * list's room glyph), everything else gets a [letterAvatar] on its title initial, colored by
      * the conversation [key].
      */
     private fun fallbackAvatar(
         kind: ConversationKind,
         title: String,
         key: String,
-    ): Bitmap = if (kind == ConversationKind.NEARBY) roomAvatar() else letterAvatar(title, key)
+    ): Bitmap =
+        if (kind == ConversationKind.NEARBY || kind == ConversationKind.MESHTASTIC) {
+            roomAvatar()
+        } else {
+            letterAvatar(title, key)
+        }
 
     /**
      * The Nearby/broadcast room's icon: the Knit mesh mark ([R.drawable.ic_knit_room], the circular variant)

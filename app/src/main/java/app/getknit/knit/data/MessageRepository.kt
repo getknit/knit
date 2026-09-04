@@ -124,22 +124,29 @@ class MessageRepository(
      * `forward_store`, `messages` is pure local state (no content digest), so this is plain GC — no mutex, no
      * transaction, a partial sweep is harmless. [protected] holds the conversation ids exempt from wholesale
      * eviction (accepted / verified / user-authored — the same set the notify gate treats as "not a request").
-     *  - the public **Nearby** room (ambient, highest-volume) is capped by count and age;
+     *  - a public **room** — Nearby, and the bridged Meshtastic channel — is capped by count and age;
      *  - a **protected** thread keeps a generous per-thread cap only, never wholesale-deleted;
      *  - a **stranger's request** thread keeps only its newest few and is dropped once stale; and the number of
      *    live request threads is itself capped (a DM-flood is many one-message threads), oldest-by-activity first.
+     *
+     * The bridged room must take the room rule and not the default one: it is nobody's request thread, so the
+     * stale-drop branch below would delete a whole neighbourhood's history a week after the board came off,
+     * and the newest-few cap would leave it fifty posts deep. It is also the higher-volume of the two rooms —
+     * its authors are a whole region rather than whoever is in radio range.
      */
     suspend fun sweepRetention(
         now: Long,
         protected: Set<String>,
     ) {
-        dao.deleteOlderThan(Conversations.NEARBY, now - nearbyMaxAgeMs)
-        dao.deleteOldestInConversation(Conversations.NEARBY, nearbyMaxMessages)
+        for (room in ROOMS) {
+            dao.deleteOlderThan(room, now - nearbyMaxAgeMs)
+            dao.deleteOldestInConversation(room, nearbyMaxMessages)
+        }
 
         val pending = mutableListOf<ConversationActivity>()
         for (conv in dao.conversationActivity()) {
             val id = conv.conversationId
-            if (id == Conversations.NEARBY) continue // trimmed above
+            if (id in ROOMS) continue // trimmed above
 
             when {
                 id in protected -> {
@@ -169,6 +176,9 @@ class MessageRepository(
     }
 
     private companion object {
+        /** The public rooms, which take the count-and-age cap rather than the per-thread request rules. */
+        val ROOMS = setOf(Conversations.NEARBY, Conversations.MESHTASTIC)
+
         /** Newest broadcast-room messages retained locally (ambient chatter — the primary unbounded vector). */
         const val DEFAULT_NEARBY_MAX_MESSAGES = 2_000
 

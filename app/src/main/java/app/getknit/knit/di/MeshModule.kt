@@ -16,6 +16,7 @@ import app.getknit.knit.mesh.FarPeerFrameSource
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.MeshPostSink
 import app.getknit.knit.mesh.MeshStartGate
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.ProfileFrameSource
@@ -151,6 +152,7 @@ val meshModule =
         single<ProfileFrameSource> { get<MeshManager>() }
         single<FarPeerFrameSource> { get<MeshManager>() }
         single<BridgeFrameSource> { get<MeshManager>() }
+        single<MeshPostSink> { get<MeshManager>() }
         single {
             val settings = get<SettingsStore>()
             LoraMeshTransport(
@@ -168,6 +170,7 @@ val meshModule =
                 farFrames = { get<FarPeerFrameSource>().framesFor(it) },
                 offerPrefixes = { get<BridgeFrameSource>().offerPrefixes(it) },
                 framesMissing = { prefixes, limit, dms -> get<BridgeFrameSource>().framesMissing(prefixes, limit, dms) },
+                publishMeshPost = { get<MeshPostSink>().publishMeshPost(it) },
                 scope = get(),
                 metrics = get(),
                 clock = SystemClock::elapsedRealtime,

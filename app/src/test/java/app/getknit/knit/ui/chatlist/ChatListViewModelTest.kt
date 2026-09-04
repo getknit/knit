@@ -90,6 +90,78 @@ class ChatListViewModelTest {
     private fun vm() = ChatListViewModel(messages, peers, settings, identity, mesh, groups, relayFlow, loraFlow, context)
 
     @Test
+    fun theBridgedMeshtasticRoomAppearsOnlyOnceAPostArrives() =
+        runTest {
+            // Unlike Nearby it is not synthesized: it is somebody else's channel and needs a paired radio to
+            // exist at all, so a standing empty row would offer what most installs cannot have.
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+            assertTrue(
+                vm.state.value.conversations
+                    .none { it.id == Conversations.MESHTASTIC },
+            )
+
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "gw",
+                        body = "anyone around?",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0x1234abcd,
+                        originName = "Bob",
+                        originChannel = "LongFast",
+                    ),
+                )
+            advanceUntilIdle()
+
+            val row =
+                vm.state.value.conversations
+                    .first { it.id == Conversations.MESHTASTIC }
+            assertTrue("it draws the room glyph", row.isRoom)
+            assertTrue("but it can be cleared, unlike Nearby", row.isBridged)
+            assertEquals("the channel names itself", "LongFast", row.title)
+        }
+
+    @Test
+    fun aBridgedPreviewNamesTheSpeakerEvenOnTheGatewayThatSignedIt() =
+        runTest {
+            // The row's senderId is the gateway, and on the gateway itself that is `me` — so without the
+            // origin the preview would read "You: …" over a stranger's words on the one device that actually
+            // hears the channel, and the gateway's own name on every other phone in the pocket.
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "me",
+                        body = "anyone around?",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0x1234abcd,
+                        originName = "Bob",
+                    ),
+                    msg(
+                        senderId = "me",
+                        body = "still here",
+                        sentAt = 200,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0xdeadbeef,
+                    ),
+                )
+            advanceUntilIdle()
+
+            val row =
+                vm.state.value.conversations
+                    .first { it.id == Conversations.MESHTASTIC }
+            // No NODEINFO name for the newest speaker, so its `!hex` id stands in — as in every Meshtastic client.
+            assertEquals("!deadbeef: still here", row.lastPreview)
+            assertNull("nor does a post we merely relayed grow a delivery tick", row.lastStatus)
+            assertEquals("and both count as unread — we wrote neither", 2, row.unreadCount)
+        }
+
+    @Test
     fun nearbyRoomIsAlwaysPresentEvenWithNoMessages() =
         runTest {
             val vm = vm()

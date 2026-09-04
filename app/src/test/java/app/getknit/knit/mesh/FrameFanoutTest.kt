@@ -37,6 +37,16 @@ class FrameFanoutTest {
     }
 
     @Test
+    fun aBridgedMeshPostRidesTheCoordinationPlaneAndNeverGoesBackOverLoRa() {
+        // It rides fastFanout for free (the `else` arm is isCustodial), which is what gives a whole pocket
+        // the window one board opened. It must never ride the long-range plane: it was born on that band and
+        // every radio in range already heard it, so putting it back on the air is airtime spent on an echo.
+        val post = env(FrameType.MESH_POST)
+        assertTrue(shouldFastFanout(post))
+        assertFalse(shouldLongRangeFanout(post))
+    }
+
+    @Test
     fun groupFormChatRidesNeither() {
         val g = env(FrameType.CHAT, group = group)
         assertFalse(shouldFastFanout(g))

@@ -88,8 +88,16 @@ class NotificationActionReceiver :
             // Route exactly as ChatViewModel.send / DebugBridgeReceiver.handleSend, by the conversation kind.
             when (Conversations.kindFor(conv)) {
                 ConversationKind.NEARBY -> mesh.sendChat(text, recipientId = null, group = null)
+
                 ConversationKind.DM -> mesh.sendChat(text, recipientId = conv)
+
                 ConversationKind.GROUP -> groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo()) }
+
+                // The bridged Meshtastic room is read-only: there is no Knit frame that would reach its
+                // audience, and putting a reply on the public channel is a separate, deliberate act that has
+                // not been built. The notification carries no reply action for it either — this is the
+                // backstop, not the gate.
+                ConversationKind.MESHTASTIC -> Unit
             }
         }
         val me = identity.nodeId()

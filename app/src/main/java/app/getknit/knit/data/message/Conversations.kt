@@ -3,7 +3,19 @@ package app.getknit.knit.data.message
 import java.security.MessageDigest
 
 /** The kind of conversation a thread belongs to — drives per-context notification channel routing. */
-enum class ConversationKind { NEARBY, GROUP, DM }
+enum class ConversationKind {
+    NEARBY,
+    GROUP,
+    DM,
+
+    /**
+     * The bridged Meshtastic public channel ([Conversations.MESHTASTIC]) — a second public room, and the only
+     * kind whose authors are not Knit peers at all. Separate from [NEARBY] because almost nothing Nearby means
+     * is true here: no presence, no open-to-chat, no receipts, no verified key, and a stranger's name on every
+     * post. Keeping the two apart is what stops any of that leaking either way.
+     */
+    MESHTASTIC,
+}
 
 /**
  * Conversation identity helpers. A "conversation" groups messages into one thread: the public
@@ -16,6 +28,16 @@ enum class ConversationKind { NEARBY, GROUP, DM }
 object Conversations {
     /** Stable id of the public broadcast room, surfaced in the chat list as "Nearby". */
     const val NEARBY: String = "nearby"
+
+    /**
+     * Stable id of the **bridged Meshtastic public channel** — the posts a paired board overhears on its
+     * primary, re-published into Knit by whichever phone is its pocket's gateway (the LongFast bridge).
+     *
+     * The hyphen is the same disjointness trick [GROUP_ID_PREFIX] uses: a node id is 26 characters of base32
+     * and can contain neither, so this can never collide with a DM thread. The `m-` shape leaves room for a
+     * second bridged channel later without re-litigating the namespace.
+     */
+    const val MESHTASTIC: String = "m-public"
 
     /**
      * The conversation a message belongs to, from [selfId]'s perspective. A group message ([groupId]
@@ -63,16 +85,25 @@ object Conversations {
     fun kindFor(conversationId: String): ConversationKind =
         when {
             conversationId == NEARBY -> ConversationKind.NEARBY
+            conversationId == MESHTASTIC -> ConversationKind.MESHTASTIC
             conversationId.startsWith(GROUP_ID_PREFIX) -> ConversationKind.GROUP
             else -> ConversationKind.DM
         }
 
     /**
+     * Whether [conversationId] is a **public room** — open to whoever is in range, addressed to nobody, and
+     * never encrypted. The two rooms differ in almost everything else, so this exists for the handful of rules
+     * that genuinely turn on publicness: profanity screening (a room is read by strangers, so the lexical pass
+     * runs there and only there), retention by volume rather than by thread, and never being a message request.
+     */
+    fun isPublicRoom(conversationId: String): Boolean = conversationId == NEARBY || conversationId == MESHTASTIC
+
+    /**
      * Whether [conversationId] is an accepted/known chat rather than a stranger's **message request** —
      * the single source of truth for the notify gate (`InboundPipeline`), the local retention sweep
      * (`MeshManager`), and the Message Requests UI. Pure: the caller supplies the signals as sets so
-     * a per-conversation check and a whole-list partition share one rule. The broadcast room ([NEARBY]) is
-     * always accepted (public, bounded by retention, never a request); a DM is accepted if it was explicitly
+     * a per-conversation check and a whole-list partition share one rule. A public room ([isPublicRoom]) is
+     * always accepted (bounded by retention, never a request); a DM is accepted if it was explicitly
      * accepted, if its peer is out-of-band verified (a DM's [conversationId] *is* the peer node id, so this
      * is a set lookup), or if the user has authored a message in it.
      *
@@ -94,7 +125,7 @@ object Conversations {
         authoredConversationIds: Set<String>,
         groupSenders: Set<String> = emptySet(),
     ): Boolean =
-        conversationId == NEARBY ||
+        isPublicRoom(conversationId) ||
             conversationId in accepted ||
             conversationId in verifiedNodeIds ||
             conversationId in authoredConversationIds ||

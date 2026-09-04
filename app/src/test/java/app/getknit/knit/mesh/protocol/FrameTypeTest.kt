@@ -8,7 +8,14 @@ import org.junit.Test
 
 class FrameTypeTest {
     private val replayable =
-        listOf(FrameType.CHAT, FrameType.REACTION, FrameType.RECEIPT, FrameType.GROUP_UPDATE, FrameType.GROUP_LEAVE)
+        listOf(
+            FrameType.CHAT,
+            FrameType.REACTION,
+            FrameType.RECEIPT,
+            FrameType.GROUP_UPDATE,
+            FrameType.GROUP_LEAVE,
+            FrameType.MESH_POST,
+        )
 
     @Test
     fun `isReplayable is exactly the locally-delivered family`() {
@@ -36,6 +43,17 @@ class FrameTypeTest {
         assertTrue(envelope(FrameType.PROFILE).isStorable())
         assertFalse(envelope(FrameType.TYPING).isStorable())
         assertFalse(envelope("something-new").isStorable())
+    }
+
+    @Test
+    fun `a bridged Meshtastic post is custodied and parkable like any delivered frame`() {
+        // It is the first type added to either list since the v1 baseline, and the cost is real: a build
+        // without this change holds none of these rows, so its custody digest differs from ours for the whole
+        // TTL. Accepted only because the LoRa plane is debug-gated — see FrameType.isCustodial's note and the
+        // WIRE_COMPAT precedent. This test is here so a future widening is a decision rather than a reflex.
+        assertTrue(FrameType.isReplayable(FrameType.MESH_POST))
+        assertTrue(FrameType.isCustodial(FrameType.MESH_POST))
+        assertTrue(envelope(FrameType.MESH_POST).isStorable())
     }
 
     @Test

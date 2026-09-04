@@ -50,6 +50,7 @@ import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.GroupRootPayload
 import app.getknit.knit.mesh.protocol.GroupSeed
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.mesh.protocol.MeshPostContent
 import app.getknit.knit.mesh.protocol.PrekeyInfo
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
@@ -151,7 +152,8 @@ class MeshManager(
 ) : MeshController,
     ProfileFrameSource,
     FarPeerFrameSource,
-    BridgeFrameSource {
+    BridgeFrameSource,
+    MeshPostSink {
     // Per-session scope for the collectors + metrics loop + router; cancelled in stop() so they don't
     // accumulate across start/stop cycles (e.g. a Diagnostics-triggered restart()).
     private var sessionScope: CoroutineScope? = null
@@ -2156,6 +2158,55 @@ class MeshManager(
      * beacon never floods the mesh a second time.
      */
     override suspend fun signedProfile(): WireEnvelope = sign(currentProfileEnvelope())
+
+    /**
+     * [MeshPostSink]: re-publishes one post the board overheard on the foreign mesh's public channel as a
+     * signed Knit frame, then delivers it here (the LongFast bridge).
+     *
+     * The frame is **ours**: our node id is its `senderId` and our key signs it, because a Meshtastic speaker
+     * has no Knit identity to sign with and nothing on an open channel could be held to one anyway. What the
+     * speaker said about itself rides in the payload as an attribution the UI must render as exactly that.
+     *
+     * `sentAt` is our clock at hearing, because a Meshtastic text packet carries no author timestamp of its
+     * own. Two pockets that hear the same post therefore stamp it seconds apart and so expire their copies
+     * seconds apart — a bounded divergence, and the price of the derived id below being the only thing the two
+     * copies agree on byte-for-byte.
+     *
+     * The id is derived from `(node, packetId)` rather than minted, so every board that heard the packet
+     * produces the same one and the copies collapse on machinery that already exists: `MeshRouter`'s SeenSet
+     * dedups the flood, `MessageDao.insertIfAbsent` keeps the first row, and `StoreDigest` folds ids, so two
+     * gateways holding byte-different copies still converge. Publishing the same post twice is therefore a
+     * no-op that cost one signature.
+     *
+     * Local delivery goes through the ordinary inbound path rather than writing a row here, so this post is
+     * moderated, notified, counted and stored by exactly the code every other device in the pocket will run
+     * on it — there is no second delivery body to keep in step.
+     */
+    override suspend fun publishMeshPost(post: MeshPost) {
+        val me = identity.nodeId()
+        val env =
+            RelayEnvelope(
+                type = FrameType.MESH_POST,
+                id = FrameId.forMeshPost(post.node, post.packetId),
+                senderId = me,
+                sentAt = clock(),
+                payload =
+                    WireCodec.encodePayload(
+                        MeshPostContent(
+                            body = post.body,
+                            node = post.node,
+                            packetId = post.packetId,
+                            name = post.name,
+                            channel = post.channel,
+                            hops = post.hops,
+                            snrDeci = post.snrDeci,
+                            viaMqtt = post.viaMqtt,
+                        ),
+                    ),
+            )
+        originateSigned(env)
+        pipeline.deliverOwnMeshPost(env)
+    }
 
     /**
      * [FarPeerFrameSource]: the carried DM-form frames worth re-offering to [nodeId] when a long-range plane

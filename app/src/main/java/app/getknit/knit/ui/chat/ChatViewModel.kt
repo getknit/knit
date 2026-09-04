@@ -47,6 +47,7 @@ import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
+import app.getknit.knit.mesh.meshNodeLabel
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.ReplyRef
@@ -141,6 +142,33 @@ data class ChatRow(
     // The message this row quotes (Signal-style reply), or null when it isn't a reply. Denormalized so the
     // quote renders even if the quoted original isn't in this thread. See [MessageEntity.replyRef].
     val replyTo: ReplyRef? = null,
+    // Set only on a bridged Meshtastic post, and the flag the bubble reads to render one differently: an
+    // unverified badge, no tappable avatar, and the gateway named as the radio that carried it. Null on every
+    // ordinary row, including our own.
+    val origin: MeshOrigin? = null,
+)
+
+/**
+ * Who said a bridged post on the foreign mesh, and how it reached us — the render-time shape of
+ * [MessageEntity]'s `origin*` columns.
+ *
+ * Everything here is **unauthenticated**. A Meshtastic node number and name are self-asserted on an open,
+ * unsigned channel and are trivially spoofable, so [name] is a claim rather than an identity and the UI must
+ * never let it look like a Knit peer. [gateway] is the one part anybody vouched for: the Knit peer whose
+ * board heard the post and whose signature the frame carries.
+ */
+data class MeshOrigin(
+    /** The speaker's `!hex` id, always shown — it is the only stable handle a bridged author has. */
+    val nodeLabel: String,
+    /** `User.long_name` if the gateway's board knew one, else null and the id stands alone. */
+    val name: String?,
+    /** The Knit peer whose radio carried it, already resolved to a display label. */
+    val gateway: String,
+    val hops: Int?,
+    /** Signal-to-noise at the gateway's board, in tenths of a dB. */
+    val snrDeci: Int?,
+    /** The post entered the foreign mesh over an MQTT uplink, so it may have come from anywhere. */
+    val viaMqtt: Boolean,
 )
 
 /**
@@ -225,6 +253,16 @@ data class ChatUiState(
     // one side has updated. The capability is enforced where it can explain itself instead, in
     // [ChatViewModel.attachFile].
     val canSendFile: Boolean = false,
+    // True when this thread is the **bridged Meshtastic public channel** — posts a paired board overheard on
+    // the foreign mesh's primary. It is a public room like Nearby, and shares its glyph and its "no
+    // attachments" refusal, but its authors are not Knit peers at all: no avatar, no verified badge, and
+    // nothing to tap through to. Distinct from [isRoom] because almost every rule that reads that flag is
+    // really asking "is this Nearby", and answering yes here would put a stranger's unauthenticated name
+    // wherever Knit shows a person it vouches for.
+    val isBridged: Boolean = false,
+    // Whether the composer accepts input at all. False only for [isBridged]: reading a foreign public
+    // channel and speaking on it are separate decisions, and only the first has been made.
+    val canSend: Boolean = true,
 )
 
 /**
@@ -267,6 +305,9 @@ class ChatViewModel(
 ) : ViewModel() {
     /** This thread is the broadcast room (vs a 1:1 DM keyed by the peer's node id). */
     private val isRoom = conversationId == Conversations.NEARBY
+
+    /** This thread is the bridged Meshtastic public channel — read-only, and its authors are not peers. */
+    private val isBridged = conversationId == Conversations.MESHTASTIC
 
     private val myNodeId = MutableStateFlow<String?>(null)
 
@@ -429,6 +470,14 @@ class ChatViewModel(
         data class Group(
             val loraOnly: Set<String>,
         ) : LoraAudience
+
+        /**
+         * The bridged Meshtastic room, which has no LoRa audience to speak of — nothing here is ever sent, so
+         * no congestion notice about delayed delivery could be true. Its own object rather than reusing
+         * [Room]: the room's saturated notice reads the airtime *this* device would spend, and this thread
+         * spends none.
+         */
+        data object Bridged : LoraAudience
     }
 
     private val loraAudience: Flow<LoraAudience> =
@@ -438,6 +487,7 @@ class ChatViewModel(
                     ConversationKind.NEARBY -> LoraAudience.Room(transports.values.any(::isLoraOnly))
                     ConversationKind.GROUP -> LoraAudience.Group(transports.filterValues(::isLoraOnly).keys)
                     ConversationKind.DM -> LoraAudience.Peer(transports[conversationId])
+                    ConversationKind.MESHTASTIC -> LoraAudience.Bridged
                 }
             }.distinctUntilChanged()
 
@@ -507,9 +557,16 @@ class ChatViewModel(
             val reactionsByMessage = reacts.groupBy { it.messageId }
             val rows =
                 msgs.map { m ->
-                    val mine = m.senderId == me
-                    val senderLabel = if (mine) null else directory.label(m.senderId)
-                    val name = senderLabel?.text ?: myName.ifBlank { context.getString(R.string.chat_self_name) }
+                    // A bridged post's author is the Meshtastic speaker, NOT the frame's signer — the gateway
+                    // whose board heard it, which the directory would otherwise name here. Resolve the origin
+                    // first so the name, avatar and tap target below all follow from the same answer.
+                    val origin = m.originNode?.let { node -> meshOriginFor(m, node, directory.label(m.senderId).text) }
+                    val mine = m.senderId == me && origin == null
+                    val senderLabel = if (mine || origin != null) null else directory.label(m.senderId)
+                    val name =
+                        origin?.let { it.name ?: it.nodeLabel }
+                            ?: senderLabel?.text
+                            ?: myName.ifBlank { context.getString(R.string.chat_self_name) }
                     val tallies =
                         reactionsByMessage[m.id]
                             .orEmpty()
@@ -532,7 +589,9 @@ class ChatViewModel(
                         senderDiscriminator = senderLabel?.discriminator,
                         senderPlainName = senderLabel?.name ?: name,
                         kind = m.kind,
-                        avatarHash = peersByNode[m.senderId]?.avatarHash,
+                        // Never the gateway's avatar on a bridged post: it would put a Knit peer's face on
+                        // somebody else's words. A bridged author draws the letter avatar instead.
+                        avatarHash = if (origin == null) peersByNode[m.senderId]?.avatarHash else null,
                         sentAt = m.sentAt,
                         received = m.received,
                         deliveredVia = m.receivedPlane,
@@ -563,6 +622,7 @@ class ChatViewModel(
                         mentions = MentionStore.decode(m.mentions),
                         reactions = tallies,
                         replyTo = m.replyRef(),
+                        origin = origin,
                     )
                 }
             // Autocomplete candidates: everyone we've received a message from, plus a group's roster (so
@@ -615,20 +675,31 @@ class ChatViewModel(
                             context.getString(R.string.nearby_title)
                         }
 
+                        // The channel's own name where a post has told us one (`LongFast`, `MediumFast` — it
+                        // varies with the board's preset), else the generic label. Read off the newest post
+                        // rather than the board, because a phone with no board of its own still shows this
+                        // room and has only the frames to go on.
+                        isBridged -> {
+                            msgs.lastOrNull { !it.originChannel.isNullOrBlank() }?.originChannel
+                                ?: context.getString(R.string.meshtastic_title)
+                        }
+
                         else -> {
                             directory.label(conversationId).text
                         }
                     },
-                titleDiscriminator = if (isRoom || isGroup) null else directory.label(conversationId).discriminator,
-                // The room uses a glyph; a group shows its photo (or the glyph when unset); a DM the peer avatar.
+                titleDiscriminator = if (isRoom || isBridged || isGroup) null else directory.label(conversationId).discriminator,
+                // A room uses a glyph; a group shows its photo (or the glyph when unset); a DM the peer avatar.
                 avatarHash =
                     when {
-                        isRoom -> null
+                        isRoom || isBridged -> null
                         else -> group?.photoHash ?: peersByNode[conversationId]?.avatarHash
                     },
-                canSendFile = !isRoom,
-                isBlocked = !isRoom && !isGroup && conversationId in blocked,
-                verified = !isRoom && !isGroup && peersByNode[conversationId]?.verified == true,
+                canSendFile = !isRoom && !isBridged,
+                isBridged = isBridged,
+                canSend = !isBridged,
+                isBlocked = !isRoom && !isBridged && !isGroup && conversationId in blocked,
+                verified = !isRoom && !isBridged && !isGroup && peersByNode[conversationId]?.verified == true,
                 isGroup = isGroup,
                 memberCount = members.size,
                 typingPeers = typingPeers,
@@ -659,10 +730,34 @@ class ChatViewModel(
                                 reachFor(conversationId, relay),
                             )
                         }
+
+                        // Nothing leaves this thread, so no congestion notice about it could be true. What
+                        // the room does say about itself is a static strip in the screen, not a reach state.
+                        LoraAudience.Bridged -> {
+                            LoraReach.Silent
+                        }
                     },
                 loraCarry = loraCarryFor(conversationId, isGroup, mesh.lora.facts),
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom))
+
+    /**
+     * The render shape of a bridged post's attribution. [gatewayLabel] is the frame signer resolved through
+     * the peer directory — the one identity in this row anybody vouched for, which is why the bubble names it
+     * ("via Sam's radio") rather than leaving an unauthenticated Meshtastic name standing alone.
+     */
+    private fun meshOriginFor(
+        m: MessageEntity,
+        node: Long,
+        gatewayLabel: String,
+    ) = MeshOrigin(
+        nodeLabel = meshNodeLabel(node),
+        name = m.originName?.takeIf { it.isNotBlank() },
+        gateway = gatewayLabel,
+        hops = m.originHops,
+        snrDeci = m.originSnrDeci,
+        viaMqtt = m.originViaMqtt,
+    )
 
     /** The long-press quick-reaction row: the [RecentReactions.SHOWN] most recent picks, newest first. */
     val recentReactions: StateFlow<List<String>> =

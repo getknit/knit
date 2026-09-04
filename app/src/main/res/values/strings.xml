@@ -42,11 +42,14 @@
     <string name="channel_groups_desc">Messages in your group chats</string>
     <string name="channel_dms_name">Direct messages</string>
     <string name="channel_dms_desc">Private 1:1 messages</string>
+    <string name="channel_meshtastic_name">Meshtastic public channel</string>
+    <string name="channel_meshtastic_desc">Posts your radio overhears on the public Meshtastic channel</string>
     <string name="mention_channel_name">Mentions</string>
     <string name="mention_channel_description">Notifications when someone @-mentions you</string>
 
     <!-- Notification conversation titles (per channel) -->
     <string name="notif_title_nearby">Nearby</string>
+    <string name="notif_title_meshtastic">Meshtastic</string>
     <string name="notif_self_name">You</string>
 
     <!-- Notification quick actions + group summary (Signal-style) -->
@@ -295,6 +298,7 @@
 
     <!-- Chat list -->
     <string name="nearby_title">Nearby</string>
+    <string name="meshtastic_title">Meshtastic</string>
     <string name="chat_list_empty_preview">No messages yet</string>
     <string name="chat_list_hint_title">Get started</string>
     <string name="chat_list_hint_body">Messages hop from phone to phone — no internet needed. Say hello in Nearby to reach everyone in range, or add a contact to message one person directly.</string>
@@ -708,6 +712,16 @@
     <string name="chat_lora_group_title">Group chats don\'t travel over LoRa</string>
     <string name="chat_lora_group_body">The LoRa radio carries the Nearby room and private messages, not group chats. Someone here was last heard over LoRa, so they won\'t see these messages until they are back in Wi-Fi or Bluetooth range, or reachable through an Internet relay. Nothing is lost — the messages wait for them.</string>
     <string name="chat_lora_long_message">Long message — it may not reach people over LoRa</string>
+
+    <!-- The bridged Meshtastic public channel: posts a paired board overheard, and who to believe about them -->
+    <string name="chat_mesh_author">%1$s, on the Meshtastic public channel</string>
+    <string name="chat_mesh_via">via %1$s\'s radio</string>
+    <string name="chat_mesh_mqtt">from the Internet</string>
+    <string name="chat_mesh_room_notice">Public channel — names here are not verified</string>
+    <string name="chat_mesh_room_title">A public Meshtastic channel</string>
+    <string name="chat_mesh_room_body">These posts were overheard by a paired Meshtastic radio on its public channel. Anyone with a radio can send them and anyone can claim any name, so treat both the names and the messages as unverified. Some arrive from the Internet rather than from anyone nearby. Knit reads this channel and does not post to it.</string>
+    <string name="chat_mesh_read_only">Knit does not post to this channel</string>
+    <string name="chat_mesh_subtitle">Meshtastic public channel</string>
 
     <!-- Message details ("Message info", from a message's long-press menu) -->
     <string name="message_details_title">Message info</string>
