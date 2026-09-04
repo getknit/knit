@@ -87,11 +87,12 @@ import kotlinx.serialization.json.Json
  * excluded from unread counts, delivery ticks, the chat-list preview, and the "who has spoken here"
  * signal that decides whether a conversation is an accepted chat or a message request.
  *
- * Its [body] carries the **one name the localized string needs that live state cannot supply**, and is
- * empty when the string needs none. The rule is deliberately asymmetric: a peer rename stores the
- * *old* name (the new one is the live directory label), while a group rename stores the *new* name (the
- * old one is gone from live state, and "Alice renamed the group to Book Club" then stays a correct
- * historical record after a later rename).
+ * Its [body] carries the **name or names the localized string needs that live state cannot supply**, and
+ * is empty when the string needs none. A peer rename stores both the old name and the new one (a
+ * [PeerRename]), so the line stays a record of that one step after a later rename instead of re-ending
+ * in whatever the peer is called now; a group rename stores only the *new* name (the old one is gone from
+ * live state, and "Alice renamed the group to Book Club" then stays a correct historical record after a
+ * later rename).
  *
  * The row's [id] is always **deterministic** for its event, so a custody replay or a re-served frame
  * upserts the same row instead of duplicating the notice, and its [sentAt] comes from the frame (or the
@@ -143,7 +144,7 @@ data class MessageEntity(
         /** [kind]: a "member left the group" status notice, shown as a centered line. */
         const val KIND_MEMBER_LEFT = 1
 
-        /** [kind]: a contact changed their display name. [body] holds their **previous** name. */
+        /** [kind]: a contact changed their display name. [body] holds a [PeerRename]: the previous name and the new one. */
         const val KIND_PEER_RENAMED = 2
 
         /** [kind]: a contact changed their avatar. [body] is empty. */

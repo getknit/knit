@@ -955,8 +955,8 @@ class InboundPipeline(
     }
 
     /**
-     * Writes the status notices a profile update earns: a rename (carrying the **previous** name, since
-     * the new one is the live directory label at render time) and an avatar change. Shared by both
+     * Writes the status notices a profile update earns: a rename (carrying both the previous name and the
+     * new one, so the line stays a record of that step after a later rename) and an avatar change. Shared by both
      * profile writers — the cleartext frame and the sealed `CTL_PROFILE` — because two writers with two
      * conventions is exactly how these would start disagreeing about what counts as a change.
      *
@@ -979,7 +979,7 @@ class InboundPipeline(
     ) {
         if (previous == null) return
         if (previous.name.isNotEmpty() && previous.name != newName) {
-            savePeerNotice(peerId, StatusNotices.peerRenamed(peerId, previous.name, version))
+            savePeerNotice(peerId, StatusNotices.peerRenamed(peerId, previous.name, newName, version))
         }
         // A cleared avatar is a change too, but there is no "removed their photo" line to draw and the
         // reclaim path already handles the bytes, so only an actual new avatar is announced.

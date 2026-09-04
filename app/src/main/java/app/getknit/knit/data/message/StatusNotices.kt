@@ -1,5 +1,8 @@
 package app.getknit.knit.data.message
 
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+
 /**
  * Builders for the status-notice rows described on [MessageEntity.kind] — the centered, muted lines a
  * thread shows for an event rather than a message ("Alice left the chat", "Alice is now Bob").
@@ -15,8 +18,9 @@ package app.getknit.knit.data.message
  * No notice costs a wire field. Each is a pure function of a change both ends can already see in state
  * they both hold, which is the same argument `docs/WIRE_COMPAT.md` records for voice notes and for
  * attachments over spools: when a value is derivable from bytes both ends have, deriving beats
- * carrying. That is also why the rendered *text* is never stored — only a kind, a subject and at most
- * one name ([MessageEntity.body]) — so the line is localized per device and a later rename fixes it.
+ * carrying. That is also why the rendered *text* is never stored — only a kind, a subject and the name
+ * or names the localized string cannot get from live state ([MessageEntity.body]) — so the line is
+ * localized per device.
  */
 object StatusNotices {
     /** [MessageEntity.KIND_MEMBER_LEFT] — [leaverId] left [groupId] at [leftAt] (their frame's `sentAt`). */
@@ -34,8 +38,12 @@ object StatusNotices {
         )
 
     /**
-     * [MessageEntity.KIND_PEER_RENAMED] — [peerId] changed their display name from [previousName].
-     * The new name is deliberately not stored: it is the live directory label at render time.
+     * [MessageEntity.KIND_PEER_RENAMED] — [peerId] changed their display name from [previousName] to
+     * [newName]. Both names are stored (a [PeerRename] in the body) so the row stays a record of that one
+     * step. Rendering the new half from the live directory label read fine after a single rename, but a
+     * second rename rewrote the first line into "Old is now Newest", and the two lines then looked like a
+     * duplicate (ADR 2026-09.995c). A row written before the new name was stored still renders its new
+     * half from the live label.
      *
      * Keyed on [version] (the sender's profile version, which is also the row's `sentAt`) rather than on
      * the name, so a re-served or republished profile carrying the same version upserts this row.
@@ -43,6 +51,7 @@ object StatusNotices {
     fun peerRenamed(
         peerId: String,
         previousName: String,
+        newName: String,
         version: Long,
     ): MessageEntity =
         notice(
@@ -51,7 +60,7 @@ object StatusNotices {
             conversationId = peerId,
             sentAt = version,
             kind = MessageEntity.KIND_PEER_RENAMED,
-            body = previousName,
+            body = PeerRename.encode(previousName, newName),
         )
 
     /**
@@ -176,4 +185,36 @@ object StatusNotices {
             received = true,
             kind = kind,
         )
+}
+
+/**
+ * What a [MessageEntity.KIND_PEER_RENAMED] row's [MessageEntity.body] records: the name the peer changed
+ * [from] and the one they changed [to]. Stored as a small JSON object (`{"from":"Old","to":"New"}`), the
+ * [MessageEntity.mentions] convention, so the second name rides in the TEXT column the row already has and
+ * the schema is untouched.
+ *
+ * [to] is null when the row cannot say: a body written before the new name was stored is the bare
+ * previous name, and a peer who cleared their name has nothing to be called by yet. The renderer falls
+ * back to the live directory label for those, which is what every rename row rendered with before.
+ */
+@Serializable
+data class PeerRename(
+    val from: String,
+    val to: String? = null,
+) {
+    companion object {
+        private val json = Json { ignoreUnknownKeys = true }
+
+        /** The body for a rename from [from] to [to]; a blank [to] is stored as "unknown" rather than as "". */
+        fun encode(
+            from: String,
+            to: String,
+        ): String = json.encodeToString(PeerRename(from, to.takeIf { it.isNotBlank() }))
+
+        /** Reads [body], taking anything that is not an encoded pair as a legacy bare previous name. */
+        fun decode(body: String): PeerRename {
+            val decoded = runCatching { json.decodeFromString<PeerRename>(body) }.getOrNull() ?: PeerRename(from = body)
+            return decoded.copy(to = decoded.to?.takeIf { it.isNotBlank() })
+        }
+    }
 }

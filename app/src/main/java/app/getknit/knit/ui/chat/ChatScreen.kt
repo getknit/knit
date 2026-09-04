@@ -184,6 +184,7 @@ import app.getknit.knit.data.emoji.RecentReactions
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.PeerRename
 import app.getknit.knit.data.relay.AttachmentRelay
 import app.getknit.knit.data.relay.RelayReach
 import app.getknit.knit.data.relay.dismissable
@@ -2387,9 +2388,11 @@ private fun TypingIndicatorRow(
  * bubble (see [MessageEntity.kind]).
  *
  * The text is composed here rather than stored, so a notice is localized per device, costs no wire
- * bytes, and re-renders against live state — a peer who renames themselves again fixes the second half
- * of every line about them. [ChatRow.senderName] is the resolved peer label, so a colliding name
- * arrives already disambiguated as "Alice (JoyfulFerret)" with no work here.
+ * bytes, and re-renders against live state. [ChatRow.senderName] is the resolved peer label, so a
+ * colliding name arrives already disambiguated as "Alice (JoyfulFerret)" with no work here. A peer rename
+ * is the one line that prefers its own snapshot: it stores both names ([PeerRename]) so a second rename
+ * reads as a progression ("Old is now Mid", then "Mid is now New") instead of two lines that both end in
+ * the newest name; only a row from before the new name was stored still ends in the live label.
  *
  * A kind this build doesn't know falls through to null and draws as a bubble. That is the deliberate
  * degradation: a row written by a newer build shows up looking odd rather than disappearing, which is
@@ -2403,9 +2406,11 @@ private fun statusNoticeText(row: ChatRow): String? =
             stringResource(R.string.chat_notice_member_left, row.senderName)
         }
 
-        // body is the PREVIOUS name; the current one is the live label (see MessageEntity.kind).
+        // body is the rename pair (PeerRename); the live label stands in for a new name the row lacks —
+        // a row written before the new name was stored, or a peer who cleared theirs.
         MessageEntity.KIND_PEER_RENAMED -> {
-            stringResource(R.string.chat_notice_peer_renamed, row.body, row.senderName)
+            val rename = remember(row.body) { PeerRename.decode(row.body) }
+            stringResource(R.string.chat_notice_peer_renamed, rename.from, rename.to ?: row.senderName)
         }
 
         MessageEntity.KIND_PEER_AVATAR -> {

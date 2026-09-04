@@ -58,7 +58,9 @@ and costs nothing to translate. The one stored name follows an asymmetric rule w
 looks like an inconsistency: a **peer** rename stores the *old* name (the new one is the live label),
 while a **group** rename stores the *new* one (the old is gone from live state, and "Alice renamed the
 group to Book Club" then stays a correct record after a *later* rename). The accepted cost of the peer
-form: a second rename retroactively rewrites the first line's second half.
+form: a second rename retroactively rewrites the first line's second half. *The peer half of this
+paragraph is superseded by ADR 2026-09.995c: that cost turned out to read as a duplicate line, so a peer
+rename now stores both names.*
 
 **Two honest limits, recorded rather than papered over.** `KIND_KEY_PIN_REFUSED` is effectively
 unreachable — a profile whose key does not derive back to its sender's nodeId is dropped before the pin

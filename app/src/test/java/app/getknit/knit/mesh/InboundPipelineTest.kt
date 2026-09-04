@@ -17,6 +17,7 @@ import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.PeerRename
 import app.getknit.knit.data.message.isStatusNotice
 import app.getknit.knit.data.message.receivedPlane
 import app.getknit.knit.data.peer.PeerEntity
@@ -845,7 +846,7 @@ class InboundPipelineTest {
     // it has no business creating.
 
     @Test
-    fun aRenamedContactGetsOneNoticeCarryingTheirPreviousName() =
+    fun aRenamedContactGetsOneNoticeCarryingBothNames() =
         runTest {
             val rig = Rig(backgroundScope)
             val alice = party()
@@ -860,9 +861,39 @@ class InboundPipelineTest {
             val notice = rig.msgMap.values.single { it.kind == MessageEntity.KIND_PEER_RENAMED }
             assertEquals("the notice belongs in the DM thread with them", alice.nodeId, notice.conversationId)
             assertEquals("its subject is the peer, not an author", alice.nodeId, notice.senderId)
-            // The PREVIOUS name is what's stored; the new one is the live label at render time.
-            assertEquals("Old", notice.body)
+            // Both names are stored, so the line stays a record of this one step after a later rename.
+            assertEquals(PeerRename(from = "Old", to = "New"), PeerRename.decode(notice.body))
             assertEquals("New", rig.peerMap[alice.nodeId]?.name)
+        }
+
+    @Test
+    fun aSecondRenameReadsAsAProgressionRatherThanTwoLinesEndingInTheNewestName() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.peerMap[alice.nodeId] =
+                PeerEntity(nodeId = alice.nodeId, pubKey = alice.bundle.encoded, name = "I am a songwriter", updatedAt = 1L)
+            rig.msgMap["m1"] = MessageEntity(id = "m1", senderId = alice.nodeId, conversationId = alice.nodeId, body = "hi", sentAt = 1L)
+
+            // The bug this pins: with only the old name stored, each line's second half was the live label,
+            // so once "Kai" arrived both lines read "… is now Kai" and the first looked like a duplicate.
+            val first = rig.profile(alice, name = "Bushybramblepatch", sentAt = 7L)
+            rig.pipeline.onDeliver(alice.sign(first), first, alice.nodeId)
+            val second = rig.profile(alice, name = "Kai", sentAt = 9L)
+            rig.pipeline.onDeliver(alice.sign(second), second, alice.nodeId)
+
+            val renames =
+                rig.msgMap.values
+                    .filter { it.kind == MessageEntity.KIND_PEER_RENAMED }
+                    .sortedBy { it.sentAt }
+                    .map { PeerRename.decode(it.body) }
+            assertEquals(
+                listOf(
+                    PeerRename(from = "I am a songwriter", to = "Bushybramblepatch"),
+                    PeerRename(from = "Bushybramblepatch", to = "Kai"),
+                ),
+                renames,
+            )
         }
 
     @Test
