@@ -632,6 +632,9 @@ internal fun ChatScreenContent(
     // The message whose "nearby only" marker was tapped, so the explanation can name its actual cause
     // (too big vs. relays that carry no photos). Null when no explanation is open.
     var relayMarkerExplained by remember { mutableStateOf<AttachmentRelay?>(null) }
+    // The contact a tapped heard-author avatar resolved to, held until the caveat is dismissed or followed
+    // through to their profile. Null when no explanation is open.
+    var heardAuthorExplained by remember { mutableStateOf<HeardAuthor?>(null) }
     val listState = rememberLazyListState()
     // Aspect ratios of already-decoded image attachments, keyed by content hash, kept above the
     // LazyColumn so they survive item disposal. Coil doesn't memory-cache animated GIFs, so each one
@@ -1084,6 +1087,9 @@ internal fun ChatScreenContent(
                                 onCopy = onCopy,
                                 onOpenMessageDetails = onOpenMessageDetails,
                                 onExplainRelay = { relayMarkerExplained = it },
+                                onExplainHeardAuthor = { peerId, name ->
+                                    heardAuthorExplained = HeardAuthor(peerId, name)
+                                },
                                 voicePlayback = voicePlayback,
                                 onVoicePlay = onVoicePlay,
                                 onVoiceSeek = onVoiceSeek,
@@ -1234,7 +1240,44 @@ internal fun ChatScreenContent(
             },
         )
     }
+
+    heardAuthorExplained?.let { author ->
+        // Dismiss is the plain button and "Open profile" the confirm, because the point of the dialog is the
+        // caveat, not the errand: someone who taps a face on this channel should be able to read why the name
+        // is a guess and stop there. Following through opens the *contact's* profile by peer id — the row's
+        // sender is this phone on a heard post, so `senderNodeId` would open our own.
+        AlertDialog(
+            onDismissRequest = { heardAuthorExplained = null },
+            icon = { Icon(Icons.Outlined.Public, contentDescription = null) },
+            title = { Text(stringResource(R.string.chat_mesh_match_title, author.name)) },
+            text = { Text(stringResource(R.string.chat_mesh_match_body, author.name)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        heardAuthorExplained = null
+                        onOpenProfile(author.peerId)
+                    },
+                ) {
+                    Text(stringResource(R.string.chat_mesh_match_open))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { heardAuthorExplained = null }) {
+                    Text(stringResource(R.string.action_close))
+                }
+            },
+        )
+    }
 }
+
+/**
+ * A tapped heard-author avatar that resolved to a contact: who to name in the caveat, and whose profile
+ * the confirm button opens.
+ */
+private data class HeardAuthor(
+    val peerId: String,
+    val name: String,
+)
 
 /**
  * The standing statement about a thread's Internet reach, pinned under the header.
@@ -1565,6 +1608,9 @@ private fun MessageBubble(
     onOpenMessageDetails: (messageId: String) -> Unit = {},
     // Tapping the "nearby only" marker; defaulted no-op for previews and for bubbles that never show it.
     onExplainRelay: (AttachmentRelay) -> Unit = {},
+    // Tapping the avatar of a heard author who resolved to a contact: the caveat, then the way through to
+    // that contact's profile. Defaulted no-op for previews and for every bubble outside the bridged room.
+    onExplainHeardAuthor: (peerId: String, name: String) -> Unit = { _, _ -> },
     // App-wide voice playback state, and this bubble's play/seek actions. The state is app-wide because only
     // one voice note may sound at a time; a bubble compares its own hash against it to know whether the
     // controls it draws are the live ones. Defaulted for the @Preview call sites.
@@ -1600,22 +1646,31 @@ private fun MessageBubble(
         verticalAlignment = Alignment.Bottom,
     ) {
         if (!row.mine && showSenderName) {
-            // A heard Meshtastic author gets an unclickable avatar — the resolved contact's face where there
-            // is one, else a letter — because the name beside it is an unauthenticated claim off an open
-            // channel: a stranger has no profile to open, and a contact matched by node number has not been
-            // verified to have said this. Routing the tap to `profileDetails` would offer to message somebody
-            // who may never have said any of it.
+            // Three cases, because the name beside a heard Meshtastic author is an unauthenticated claim off
+            // an open channel. A Knit author's avatar opens their profile, as everywhere. A heard *stranger*
+            // has no profile to open, so the avatar stays inert. A heard author whose node number matched a
+            // contact's profile wears that contact's face and does take a tap — but it opens the caveat
+            // first, never `profileDetails` directly, because the match is a self-asserted profile field
+            // rather than a signature, and a straight-through tap would offer to message somebody who may
+            // never have said any of it.
+            val matchedPeer = row.origin?.peerId
             Avatar(
                 avatarHash = row.avatarHash,
                 name = row.senderName,
                 size = 40.dp,
                 contentDescription =
-                    if (row.origin != null) {
-                        stringResource(R.string.chat_mesh_author, row.senderName)
-                    } else {
-                        stringResource(R.string.chat_view_profile, row.senderName)
+                    when {
+                        matchedPeer != null -> stringResource(R.string.chat_mesh_author_contact, row.senderName)
+                        row.origin != null -> stringResource(R.string.chat_mesh_author, row.senderName)
+                        else -> stringResource(R.string.chat_view_profile, row.senderName)
                     },
-                onClick = if (row.origin != null) null else ({ onOpenProfile(row.senderNodeId) }),
+                onClick =
+                    when {
+                        matchedPeer != null -> ({ onExplainHeardAuthor(matchedPeer, row.senderPlainName) })
+                        row.origin != null -> null
+                        else -> ({ onOpenProfile(row.senderNodeId) })
+                    },
+                onClickLabel = if (matchedPeer != null) stringResource(R.string.chat_mesh_author_action) else null,
             )
             Spacer(Modifier.width(8.dp))
         }

@@ -227,17 +227,35 @@ class ChatMeshRoomTest {
     }
 
     @Test
-    fun aResolvedContactWearsTheirAvatarButIsStillNotTappable() {
+    fun aResolvedContactWearsTheirAvatarAndTapsThroughToTheCaveatFirst() {
         // Lined up with a contact by node number — a self-asserted profile field, not a signature — so the
-        // bubble wears their name and face and still offers nothing to tap through to.
+        // bubble wears their name and face, and its avatar reaches the profile only past the caveat. The
+        // separate content description is what stops the tap target announcing a verified identity.
         render(listOf(row(origin = origin.copy(name = "Knit 1a2b", peerId = "sam"), senderName = "Sam", avatarHash = "sam-avatar")))
         compose.onNodeWithText("Sam").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Sam, on the Meshtastic channel").assertHasNoClickAction()
-        assertTrue(profileOpened == null)
+        compose
+            .onNodeWithContentDescription("Sam, on the Meshtastic channel — identity not verified")
+            .assertHasClickAction()
+        compose.onNodeWithContentDescription("Sam, on the Meshtastic channel").assertDoesNotExist()
         // The board's own name for the speaker moves down to the provenance line, beside the id.
         compose
             .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
             .assertTextEquals("!1234abcd · Knit 1a2b · 2 hops away · SNR -7.3 dB")
+    }
+
+    @Test
+    fun theTapOpensTheCaveatAndOnlyItsOwnButtonOpensTheProfile() {
+        // The whole point of routing the tap through a dialog: dismissing it must leave the reader where a
+        // straight-through tap would have taken them nowhere, and only a deliberate second tap opens the
+        // contact — by peer id, since a heard post's sender column is this phone.
+        render(listOf(row(origin = origin.copy(name = "Knit 1a2b", peerId = "sam"), senderName = "Sam", avatarHash = "sam-avatar")))
+        compose.onNodeWithContentDescription("Sam, on the Meshtastic channel — identity not verified").performClick()
+        compose.onNodeWithText("Might not be Sam").assertIsDisplayed()
+        compose.onNodeWithText("no way to check that Sam wrote this", substring = true).assertIsDisplayed()
+        assertTrue("the caveat alone must not open a profile", profileOpened == null)
+
+        compose.onNodeWithText("Open profile").performClick()
+        assertEquals("sam", profileOpened)
     }
 
     @Test

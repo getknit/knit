@@ -11,6 +11,8 @@ topics: [lora, meshtastic, mesh]
 Status: Accepted (2026-09-05) — supersedes ADR 2026-09.cf7a and ADR 2026-09.7r4d; the `meshpost` type is
 withdrawn and burned (`docs/WIRE_COMPAT.md`). Amended the same day by ADR 2026-09.9469: a post goes out as
 the words alone, so the `Alice: hello` line and `PublicPostPolicy.displayBody` named below are both gone.
+Amended the same day by ADR 2026-09.sre4: the "untappable avatar" below holds for a heard *stranger*; a
+resolved contact's avatar takes a tap that opens the caveat, and only its button opens the profile.
 
 **What was observed.** The first design read the paired board's stock public primary into a room by having
 the pocket's ACTIVE gateway mint every heard post as a signed, custodied `meshpost` frame and flood it over
@@ -63,7 +65,8 @@ that one sentence:
   claiming one node resolve newest-`updatedAt`-first; and resolving at render time was rejected because it
   would put old words under whoever holds the board now (`aLaterProfileChangeNeverReattributesHistory`). A
   resolved contact wears their name and avatar with the **unverified** styling kept — muted name, untappable
-  avatar, the room strip — because the match rests on a self-asserted node number, and
+  avatar (ADR 2026-09.sre4 later makes that one tappable *through the caveat*), the room strip — because the
+  match rests on a self-asserted node number, and
   `PublicPostPolicy.displayBody` drops their own `Name: ` prefix for display only.
 
 The UI follows the radio rather than the pocket: the room row exists while a board is bound or history

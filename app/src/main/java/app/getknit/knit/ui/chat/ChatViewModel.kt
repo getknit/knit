@@ -159,8 +159,9 @@ data class ChatRow(
     // quote renders even if the quoted original isn't in this thread. See [MessageEntity.replyRef].
     val replyTo: ReplyRef? = null,
     // Set only on a post heard on the paired radio's channel, and the flag the bubble reads to render one
-    // differently: a muted name, no tappable avatar, and the provenance line. Null on every ordinary row,
-    // including our own.
+    // differently: a muted name, the provenance line, and an avatar that never opens a profile directly —
+    // inert for a stranger, and for a resolved contact ([MeshOrigin.peerId]) a tap that opens the caveat
+    // about the match first. Null on every ordinary row, including our own.
     val origin: MeshOrigin? = null,
 )
 
@@ -172,7 +173,7 @@ data class ChatRow(
  * unsigned channel and are trivially spoofable, so [name] is a claim rather than an identity and the UI must
  * never let it look like a Knit peer — and that includes [peerId]: a contact resolved by node number is a
  * match against a self-asserted profile field, not a signature, so the bubble wears their name and face
- * but keeps the unverified styling.
+ * but keeps the unverified styling, and their avatar reaches that profile only through the caveat.
  */
 data class MeshOrigin(
     /** The speaker's `!hex` id — the only stable handle a heard author has. */

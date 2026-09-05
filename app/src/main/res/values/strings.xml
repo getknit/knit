@@ -726,6 +726,13 @@
 
     <!-- The Meshtastic room: the paired radio's primary channel, and who to believe about the names on it -->
     <string name="chat_mesh_author">%1$s, on the Meshtastic channel</string>
+    <!-- A heard author whose node number matches a contact's profile: the avatar is tappable, but it opens
+         the caveat first rather than the profile, because the match is a self-asserted field, not a signature. -->
+    <string name="chat_mesh_author_contact">%1$s, on the Meshtastic channel \u2014 identity not verified</string>
+    <string name="chat_mesh_author_action">Show why this name isn\'t verified</string>
+    <string name="chat_mesh_match_title">Might not be %1$s</string>
+    <string name="chat_mesh_match_body">%1$s\'s profile says they use this radio, and this post came from that radio\'s number. That is the whole match. The Meshtastic channel is unsigned, so any radio can announce that number and any name, and Knit has no way to check that %1$s wrote this. Open their profile if it helps, but read it as a guess about who spoke, not a fact.</string>
+    <string name="chat_mesh_match_open">Open profile</string>
     <string name="chat_mesh_direct">heard directly</string>
     <plurals name="chat_mesh_hops">
         <item quantity="one">%d hop away</item>
