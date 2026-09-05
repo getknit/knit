@@ -157,7 +157,7 @@ fun publicPostGateFor(
  *
  * The **Meshtastic** room is [LoraCarry.None] whatever the plane is doing, because its length rule is not
  * this one: a post there is capped hard in the composer at what a Meshtastic frame carries
- * ([PublicPostPolicy.bodyBudget]). Left as a DM it would take the DM's larger hint and hang a soft "may not
+ * ([PublicPostPolicy.MAX_ON_AIR_BYTES]). Left as a DM it would take the DM's larger hint and hang a soft "may not
  * reach people over LoRa" under a field that has already refused the 201st byte — and it would follow the
  * private-messages-over-LoRa switch, which governs nothing in that room.
  */

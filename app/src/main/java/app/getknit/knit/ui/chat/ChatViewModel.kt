@@ -281,15 +281,11 @@ data class ChatUiState(
     // that reads that flag is really asking "is this Nearby", and answering yes here would put a stranger's
     // unauthenticated name wherever Knit shows a person it vouches for.
     val isBridged: Boolean = false,
-    // The name that will ride on the front of a post to the radio channel — the user's own display name, or
-    // null when they have not set one. Shown in the composer hint so the one place ADR 049's rule is
-    // suspended says so before the user types, rather than after the words have left.
-    val publicPostName: String? = null,
     // The UTF-8 bytes a post's words may occupy here, or null in every thread that is not the Meshtastic
     // room. A hard cap rather than the soft LoRa length hint: a Meshtastic frame carries one short line and
     // the transmit path trims a longer one without asking, so the field refuses the overflow while the
-    // author can still choose what to cut. Falls with the display name, since that rides on the front of
-    // every post.
+    // author can still choose what to cut. The whole line is the author's, since no name rides in front of
+    // it (ADR 2026-09.9469).
     val publicPostBudget: Int? = null,
     // Whether a post here still needs the first-use disclosure. Read only by [isBridged] threads.
     val needsPublicConsent: Boolean = false,
@@ -671,10 +667,7 @@ class ChatViewModel(
                     val heldBytes = m.attachmentHash?.let { blobSizes[it] }
                     ChatRow(
                         id = m.id,
-                        // A contact's own "Name: " prefix — what their board puts on the line so stock
-                        // clients can tell who spoke — is dropped for display once the row is lined up with
-                        // them; the row itself keeps what went on the air.
-                        body = if (contact != null) PublicPostPolicy.displayBody(contact.name, m.body) else m.body,
+                        body = m.body,
                         mine = mine,
                         senderName = name,
                         senderNodeId = m.senderId,
@@ -795,9 +788,7 @@ class ChatViewModel(
                     },
                 canSendFile = !isRoom && !isBridged,
                 isBridged = isBridged,
-                publicPostName = myName.takeIf { isBridged && it.isNotBlank() },
-                publicPostBudget =
-                    if (isBridged) PublicPostPolicy.bodyBudget(myName.takeIf { it.isNotBlank() }) else null,
+                publicPostBudget = if (isBridged) PublicPostPolicy.MAX_ON_AIR_BYTES else null,
                 needsPublicConsent = isBridged && !publicConsented,
                 isBlocked = !isRoom && !isBridged && !isGroup && conversationId in blocked,
                 verified = !isRoom && !isBridged && !isGroup && peersByNode[conversationId]?.verified == true,

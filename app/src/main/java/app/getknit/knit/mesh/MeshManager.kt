@@ -153,7 +153,7 @@ class MeshManager(
     // [PublicChannelSink]. A lambda rather than the interface for the reason [MeshPostSink] is a seam in the
     // other direction: the two ends construct each other, so one of them has to be late-bound. The default
     // refuses with NO_BOARD, which is what every test and every board-less build wants.
-    private val publicChannel: suspend (name: String?, body: String) -> PublicPostRefusal? = { _, _ -> PublicPostRefusal.NO_BOARD },
+    private val publicChannel: suspend (body: String) -> PublicPostRefusal? = { PublicPostRefusal.NO_BOARD },
 ) : MeshController,
     ProfileFrameSource,
     FarPeerFrameSource,
@@ -2198,8 +2198,7 @@ class MeshManager(
      */
     override suspend fun sendPublicPost(text: String): PublicPostOutcome {
         if (isTextFlagged(text, "outgoing", isRoom = true)) return PublicPostOutcome.Blocked
-        val name = settings.displayName.first().takeIf { it.isNotBlank() }
-        publicChannel(name, text)?.let { return PublicPostOutcome.Refused(it) }
+        publicChannel(text)?.let { return PublicPostOutcome.Refused(it) }
         messages.save(
             MessageEntity(
                 id = FrameId.new(),

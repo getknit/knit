@@ -735,9 +735,8 @@
     <string name="chat_mesh_mqtt">from the Internet</string>
     <string name="chat_mesh_room_notice">Radio channel — names here are not verified</string>
     <string name="chat_mesh_room_title">Your radio\'s primary channel</string>
-    <string name="chat_mesh_room_body">This room shows the primary channel of the Meshtastic radio paired to this phone. Anyone with a radio in range can post and anyone can claim any name, so treat both as unverified, even a name that matches one of your contacts. Some posts arrive from the Internet rather than from anyone nearby. What you post here leaves through your own radio, in the clear, under your Knit name.</string>
-    <string name="chat_mesh_hint">Post as %1$s</string>
-    <string name="chat_mesh_hint_anon">Post to the radio channel</string>
+    <string name="chat_mesh_room_body">This room shows the primary channel of the Meshtastic radio paired to this phone. Anyone with a radio in range can post and anyone can claim any name, so treat both as unverified, even a name that matches one of your contacts. Some posts arrive from the Internet rather than from anyone nearby. What you post here leaves through your own radio, in the clear, under the radio\'s name rather than yours.</string>
+    <string name="chat_mesh_hint">Post to the radio channel</string>
     <!-- The composer when the room has no radio to post through, or the radio is down. The first two replace
          the field; the third is only a hint, because a link that flaps on every Bluetooth reconnect must not
          take the keyboard away mid-sentence. -->
@@ -764,7 +763,7 @@
     <string name="chat_mesh_consent_can_body">Anyone with a Meshtastic radio in range. Many radios also pass this channel on to a public Internet server, where it is stored by people you will never meet.</string>
     <string name="chat_mesh_consent_cannot_title">What does not go out</string>
     <string name="chat_mesh_consent_cannot_body">Your picture, your contacts, and everything in your other conversations. Those stay on Knit\'s own channel.</string>
-    <string name="chat_mesh_consent_scope">Your Knit name goes on the front of each post, so people can answer you. Everywhere else on the radio you are just “Knit”. This room only.</string>
+    <string name="chat_mesh_consent_scope">Your Knit name stays off the air — a post goes out under your radio\'s name, “Knit” and four characters. A contact whose phone already knows that radio still sees the post as yours.</string>
     <string name="chat_mesh_consent_accept">Post</string>
     <string name="chat_mesh_consent_decline">Not now</string>
     <string name="chat_mesh_subtitle">Your radio\'s primary channel</string>

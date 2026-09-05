@@ -539,14 +539,14 @@ class LoraMeshTransportTest {
 
             r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 5u)
             runCurrent()
-            assertNull(r.transport.postToPublicChannel("Alice", "hello mesh"))
+            assertNull(r.transport.postToPublicChannel("hello mesh"))
             runCurrent()
 
             assertEquals("hi", posts.single().body)
             assertEquals(
-                "Alice: hello mesh",
+                "hello mesh",
                 r.link.sent
-                    .single { it.decodeToString().startsWith("Alice") }
+                    .single { it.decodeToString() == "hello mesh" }
                     .decodeToString(),
             )
             assertEquals(1L, r.metrics.snapshot().publicPostSent)
@@ -641,11 +641,11 @@ class LoraMeshTransportTest {
             val air = FakeMeshtasticAir()
             val r = bridgeRig(air, mutableListOf())
 
-            assertNull(r.transport.postToPublicChannel("Alice", "meet at the trailhead"))
+            assertNull(r.transport.postToPublicChannel("meet at the trailhead"))
             runCurrent()
 
             assertEquals(
-                "Alice: meet at the trailhead",
+                "meet at the trailhead",
                 r.link.sent
                     .single()
                     .decodeToString(),
@@ -664,7 +664,7 @@ class LoraMeshTransportTest {
             val air = FakeMeshtasticAir()
             val r = bridgeRig(air, mutableListOf())
 
-            r.transport.postToPublicChannel("Alice", "hello mesh")
+            r.transport.postToPublicChannel("hello mesh")
             runCurrent()
             r.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "a Knit room post"))
             advanceTimeBy(4_000)
@@ -696,11 +696,11 @@ class LoraMeshTransportTest {
             )
             runCurrent()
 
-            assertNull(r.transport.postToPublicChannel("Alice", "hello mesh"))
+            assertNull(r.transport.postToPublicChannel("hello mesh"))
             runCurrent()
 
             assertEquals(
-                "Alice: hello mesh",
+                "hello mesh",
                 r.link.sent
                     .single()
                     .decodeToString(),
@@ -718,12 +718,12 @@ class LoraMeshTransportTest {
             val air = FakeMeshtasticAir()
             val r = bridgeRig(air, mutableListOf())
 
-            assertNull(r.transport.postToPublicChannel("Alice", "first"))
-            assertEquals(PublicPostRefusal.TOO_SOON, r.transport.postToPublicChannel("Alice", "second"))
+            assertNull(r.transport.postToPublicChannel("first"))
+            assertEquals(PublicPostRefusal.TOO_SOON, r.transport.postToPublicChannel("second"))
             advanceTimeBy(LoraMeshTransport.PUBLIC_POST_FLOOR_MS)
             runCurrent()
 
-            assertEquals(listOf("Alice: first"), r.link.sent.map { it.decodeToString() })
+            assertEquals(listOf("first"), r.link.sent.map { it.decodeToString() })
             assertEquals(
                 1L,
                 r.metrics.snapshot().publicPostRefusedByReason[PublicPostRefusal.TOO_SOON.name],
@@ -738,11 +738,11 @@ class LoraMeshTransportTest {
             val air = FakeMeshtasticAir()
             val r = bridgeRig(air, mutableListOf(), primaryName = "Book club")
 
-            assertNull(r.transport.postToPublicChannel("Alice", "hello mesh"))
+            assertNull(r.transport.postToPublicChannel("hello mesh"))
             runCurrent()
 
             assertEquals(
-                "Alice: hello mesh",
+                "hello mesh",
                 r.link.sent
                     .single()
                     .decodeToString(),
@@ -761,7 +761,7 @@ class LoraMeshTransportTest {
             r.transport.start()
             runCurrent()
 
-            assertEquals(PublicPostRefusal.KNIT_ON_PRIMARY, r.transport.postToPublicChannel("Alice", "hello mesh"))
+            assertEquals(PublicPostRefusal.KNIT_ON_PRIMARY, r.transport.postToPublicChannel("hello mesh"))
             runCurrent()
 
             // Not "nothing was sent" and not "nothing went to index 0" — this rig beacons its own profile
@@ -784,7 +784,7 @@ class LoraMeshTransportTest {
             val posts = mutableListOf<MeshPost>()
             val r = bridgeRig(air, posts)
 
-            r.link.deliverPublicText(from = 1u, body = "Alice: hello mesh", id = 42u)
+            r.link.deliverPublicText(from = 1u, body = "hello mesh", id = 42u)
             runCurrent()
 
             assertTrue(posts.isEmpty())

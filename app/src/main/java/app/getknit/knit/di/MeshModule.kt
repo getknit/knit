@@ -217,7 +217,7 @@ val meshModule =
                 get(),
                 get(),
                 get(),
-                publicChannel = { name, body -> get<PublicChannelSink>().postToPublicChannel(name, body) },
+                publicChannel = { body -> get<PublicChannelSink>().postToPublicChannel(body) },
             )
         }
         // UI ViewModels, MeshService, and the notification/debug entry points bind this narrow facade (not

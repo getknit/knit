@@ -637,10 +637,7 @@ internal class LoraMeshTransport(
      * consented path *to* that channel. Same shape, opposite safe answer, so sharing code between them would
      * make one of the two wrong.
      */
-    override suspend fun postToPublicChannel(
-        name: String?,
-        body: String,
-    ): PublicPostRefusal? {
+    override suspend fun postToPublicChannel(body: String): PublicPostRefusal? {
         val ready = link.state.value as? LinkState.Ready ?: return refusePublicPost(PublicPostRefusal.NOT_READY)
         // A board whose slot 0 is the Knit channel has no primary to post on — the debug-bridge shape the
         // receive half refuses to read for the same reason, decided off the same table.
@@ -648,7 +645,7 @@ internal class LoraMeshTransport(
         val now = clock()
         val last = lastPublicPostAt.get()
         if (last != NEVER && now - last < PUBLIC_POST_FLOOR_MS) return refusePublicPost(PublicPostRefusal.TOO_SOON)
-        val message = PublicPostPolicy.onAirText(name, body).encodeToByteArray()
+        val message = PublicPostPolicy.onAirText(body).encodeToByteArray()
         if (message.size > maxPayload) return refusePublicPost(PublicPostRefusal.TOO_LARGE)
         // Asked before queueing rather than left to the pacer: a post the budget will not carry should be
         // counted as refused now, not sit in the queue looking sent until the window rolls over.

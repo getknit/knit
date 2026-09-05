@@ -246,13 +246,13 @@ class MeshManagerTest {
 
         /**
          * The user's display name, live so a test can set it before a send reads it. Stubbed for every rig
-         * rather than only the profile ones: a relaxed mock hands back a Flow that never emits, and
-         * `sendPublicPost` reads this with `.first()` — which would hang rather than fail.
+         * rather than only the profile ones, since a relaxed mock hands back a Flow that never emits and a
+         * `.first()` on one hangs rather than failing.
          */
         val displayName = MutableStateFlow("")
 
         /** What the board was handed by [MeshManager.sendPublicPost], and what it answers. */
-        val publicPosts = mutableListOf<Pair<String?, String>>()
+        val publicPosts = mutableListOf<String>()
         var publicChannelRefusal: PublicPostRefusal? = null
         val manager: MeshManager
 
@@ -297,8 +297,8 @@ class MeshManagerTest {
                     metrics = metrics,
                     db = db,
                     clock = { clockNow },
-                    publicChannel = { name, body ->
-                        publicPosts += name to body
+                    publicChannel = { body ->
+                        publicPosts += body
                         publicChannelRefusal
                     },
                 )
@@ -444,17 +444,18 @@ class MeshManagerTest {
         }
 
     @Test
-    fun aQueuedPublicPostIsHandedToTheBoardWithTheAuthorsNameAndStoredAsOurOwnRow() =
+    fun aQueuedPublicPostIsHandedToTheBoardAsTypedAndStoredAsOurOwnRow() =
         runTest(UnconfinedTestDispatcher()) {
-            // The name rides beside the body so the line a stock client reads is composed behind the seam;
-            // the row is ours (no origin), on the LoRa plane, and nothing of it crosses Knit's mesh.
+            // The board is handed the words and nothing else — the author's name never leaves this phone
+            // (ADR 2026-09.9469) even when they have one — and the row is ours (no origin), on the LoRa
+            // plane, with nothing of it crossing Knit's mesh.
             val rig = Rig(backgroundScope)
             rig.displayName.value = "Alice"
 
             assertEquals(PublicPostOutcome.Queued, rig.manager.sendPublicPost("hello mesh"))
             advanceUntilIdle()
 
-            assertEquals(listOf("Alice" to "hello mesh"), rig.publicPosts)
+            assertEquals(listOf("hello mesh"), rig.publicPosts)
             val row = rig.saved.single()
             assertEquals(Conversations.MESHTASTIC, row.conversationId)
             assertEquals("hello mesh", row.body)
@@ -475,7 +476,7 @@ class MeshManagerTest {
             assertEquals(PublicPostOutcome.Refused(PublicPostRefusal.TOO_SOON), rig.manager.sendPublicPost("hello mesh"))
             advanceUntilIdle()
 
-            assertEquals(listOf(null to "hello mesh"), rig.publicPosts)
+            assertEquals(listOf("hello mesh"), rig.publicPosts)
             assertTrue(rig.saved.isEmpty())
             assertTrue(rig.transport.sent.isEmpty())
         }

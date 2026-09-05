@@ -86,8 +86,7 @@ class ChatMeshRoomTest {
             isRoom = false,
             isBridged = true,
             canSendFile = false,
-            publicPostName = "Alice",
-            publicPostBudget = PublicPostPolicy.bodyBudget("Alice"),
+            publicPostBudget = PublicPostPolicy.MAX_ON_AIR_BYTES,
             publicPostGate = gate,
             myNodeId = "me",
             title = "LongFast",
@@ -251,14 +250,14 @@ class ChatMeshRoomTest {
     }
 
     @Test
-    fun theRoomOffersAComposerThatNamesTheAuthorItWillPutOnTheAir() {
-        // Everywhere else on this band the user is "Knit abcd" (ADR 049). The hint is the whole visible
-        // surface of that exception, so it has to name them before they type rather than after they send.
+    fun theRoomOffersAComposerThatSaysWhereAPostGoes() {
+        // The composer's hint names the destination rather than the author: nothing about the user goes on
+        // the air with a post (ADR 2026-09.9469), so a hint promising otherwise would be the wrong promise.
         render(listOf(row()))
         // The visible hint is marked decorative so TalkBack does not read it twice; the field carries it as
         // its own accessibility label instead, which is the node that has to say the right thing.
         compose.onNodeWithTag("chat_input").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Post as Alice").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Post to the radio channel").assertIsDisplayed()
     }
 
     @Test
@@ -276,9 +275,9 @@ class ChatMeshRoomTest {
     @Test
     fun aPostIsCappedAtWhatOneMeshtasticFrameCarries() {
         // The cap is hard rather than a warning: the transmit path trims a long post silently, so a sentence
-        // cut in half would go out under this author's name with nothing on their screen to say so. Refusing
-        // the byte keeps that decision here.
-        val budget = PublicPostPolicy.bodyBudget("Alice")
+        // cut in half would go out with nothing on the author's screen to say so. Refusing the byte keeps
+        // that decision here.
+        val budget = PublicPostPolicy.MAX_ON_AIR_BYTES
         render(listOf(row()))
         compose.onNodeWithTag("chat_input").performTextInput("x".repeat(budget))
         compose.onNodeWithTag("chat_input").performTextInput("y")
@@ -300,7 +299,7 @@ class ChatMeshRoomTest {
         // Only the last stretch: a permanent counter over a field almost nobody fills is chrome, and a field
         // that stops accepting input with no warning at all reads as a bug. Both halves are shown because the
         // cap here is short and surprising — a bare remainder would never say what the room was.
-        val budget = PublicPostPolicy.bodyBudget("Alice")
+        val budget = PublicPostPolicy.MAX_ON_AIR_BYTES
         render(listOf(row()))
         compose.onNodeWithTag("chat_public_post_length").assertDoesNotExist()
 
@@ -319,12 +318,13 @@ class ChatMeshRoomTest {
 
     @Test
     fun theDisclosureSaysWhatLeavesTheDeviceAndWhatDoesNot() {
-        // The scope line is the one this sheet exists for: a name that stays off the radio everywhere else
-        // rides on the front of every post here. A sheet that only reassured would be the dishonest version.
+        // The scope line is the one this sheet exists for: the name stays off the air, but the radio's own
+        // name does not, and anyone holding the user's contact card reads that back as them. A sheet that
+        // only reassured would be the dishonest version.
         render(listOf(row()), showConsent = true)
         compose.onNodeWithText("Who can see this").assertIsDisplayed()
         compose.onNodeWithText("What does not go out").assertIsDisplayed()
-        compose.onNodeWithText("Your Knit name goes on the front", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Your Knit name stays off the air", substring = true).assertIsDisplayed()
 
         compose.onNodeWithTag("chat_mesh_consent_accept").performClick()
         assertTrue("accepting has to reach the ViewModel", consentAccepted)

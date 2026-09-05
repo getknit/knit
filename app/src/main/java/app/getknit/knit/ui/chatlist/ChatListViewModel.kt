@@ -27,7 +27,6 @@ import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
-import app.getknit.knit.mesh.lora.PublicPostPolicy
 import app.getknit.knit.mesh.meshNodeLabel
 import app.getknit.knit.ui.chat.DeliveryStatus
 import app.getknit.knit.ui.chat.attachmentPreview
@@ -424,14 +423,12 @@ class ChatListViewModel(
             }
         // A heard Meshtastic post's author is the speaker, never us — the row sits in our sender column by
         // convention, so without this the preview would read "You: …" over somebody else's words. A speaker
-        // whose board a contact's profile claims is named as that contact, without the "Name: " their board
-        // put on the line; a stranger is the NodeDB name the board had for them, else the `!hex` id every
-        // Meshtastic client would show.
+        // whose board a contact's profile claims is named as that contact; a stranger is the NodeDB name the
+        // board had for them, else the `!hex` id every Meshtastic client would show.
         message.originNode?.let { node ->
             val contact = message.originPeerId?.let { directory.label(it) }
             val speaker = contact?.text ?: message.originName?.takeIf { it.isNotBlank() } ?: meshNodeLabel(node)
-            val line = if (contact != null) PublicPostPolicy.displayBody(contact.name, body) else body
-            return context.getString(R.string.chat_list_preview_with_sender, speaker, line)
+            return context.getString(R.string.chat_list_preview_with_sender, speaker, body)
         }
         val isOwn = message.senderId == me
         if (isDm && !isOwn) return body

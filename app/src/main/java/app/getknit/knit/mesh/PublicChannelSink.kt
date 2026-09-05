@@ -21,14 +21,11 @@ interface PublicChannelSink {
      * back so the composer can show it: the board is not ready, slot 0 is the Knit channel, the 30 s floor
      * has not elapsed, the line does not fit one packet, or the airtime bucket is spent.
      *
-     * [name] and [body] are passed apart, and the line a stock client reads is composed behind this seam
-     * (`mesh/lora/PublicPostPolicy.onAirText`), so the caller does not have to know what a Meshtastic
-     * client's 200-byte convention is.
+     * The line a stock client reads is composed behind this seam (`mesh/lora/PublicPostPolicy.onAirText`),
+     * so the caller does not have to know what a Meshtastic client's 200-byte convention is. It is the
+     * author's [body] and nothing else: no name rides out with it (ADR 2026-09.9469).
      */
-    suspend fun postToPublicChannel(
-        name: String?,
-        body: String,
-    ): PublicPostRefusal?
+    suspend fun postToPublicChannel(body: String): PublicPostRefusal?
 }
 
 /**

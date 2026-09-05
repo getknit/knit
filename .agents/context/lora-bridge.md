@@ -603,8 +603,11 @@ each hear the channel for themselves.
 - **Outbound.** `MeshManager.sendPublicPost` → room moderation → `PublicChannelSink.postToPublicChannel`
   (`NOT_READY`, `KNIT_ON_PRIMARY`, the 30 s `PUBLIC_POST_FLOOR_MS` claimed at the decision, `TOO_LARGE`,
   `AirBucket.PUBLIC` at 15 % of the window) → `Destination.Public` on the shared pacer → channel 0,
-  `TEXT_MESSAGE_APP`, `HOP_LIMIT`, the line composed by `PublicPostPolicy.onAirText` as `Alice: hello` (ADR
-  049's one exception, behind `SettingsStore.meshtasticPostConsented`). The own row is stored **only** once the
+  `TEXT_MESSAGE_APP`, `HOP_LIMIT`, the line composed by `PublicPostPolicy.onAirText` — the user's words
+  alone, **with no author name in front of them** (ADR 2026-09.9469 withdrew ADR 049's one exception: the
+  board is the identity now that each phone posts through its own). Still behind
+  `SettingsStore.meshtasticPostConsented`, whose sheet says what does travel — the board's own `Knit abcd`,
+  which anyone holding the user's contact card reads back as them. The own row is stored **only** once the
   board queued it (`DeliveryPlane.LoRa`, never a ✓✓); a `PublicPostOutcome.Refused` reaches the composer as a
   toast with the draft kept, so a post never silently goes nowhere. `…debug.SEND --es conv m-public` drives it.
 - **Contacts.** The profile carries the bound board's node number (`ProfileContent.loraNode`, persisted as
@@ -613,9 +616,11 @@ each hear the channel for themselves.
   `PeerRepository.findByLoraNode` (newest `updatedAt` wins — a board that changed hands is claimed twice until
   the old holder's next profile drops it) **once, at ingest**, and freezes it as `messages.originPeerId`, so
   history is never re-attributed. A resolved contact wears their name and avatar with the **unverified**
-  styling (muted name, untappable avatar, the room strip), and `PublicPostPolicy.displayBody` drops their own
-  `Name: ` prefix for display only; a blocked contact's board is dropped (`BLOCKED_CONTACT`). The match rests
-  on a self-asserted node number — 2.8's XEdDSA signature is not decoded — see the roadmap.
+  styling (muted name, untappable avatar, the room strip); a blocked contact's board is dropped
+  (`BLOCKED_CONTACT`). A row's body is shown word for word, since ADR 2026-09.9469 left nothing on the line
+  but the words — a heard `"Sam: hi"` is a stranger's content, not a prefix to strip. The match rests on a
+  self-asserted node number, and now with no name on the line to corroborate it — 2.8's XEdDSA signature is
+  not decoded — see the roadmap.
 - **UI.** `LoraFacts.primaryChannel` / `canPost` (only while Live) title the room and the chat-list row
   (`meshRoomChannel`: live board → newest post's channel → "Meshtastic"), the row exists while a board is
   bound or history remains, and `PublicPostGate` swaps the composer for a footer with no radio bound (or a

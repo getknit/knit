@@ -45,7 +45,6 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.readsCryptoV3
 import app.getknit.knit.mesh.crypto.sealBytes
-import app.getknit.knit.mesh.lora.PublicPostPolicy
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.EncEnvelope
@@ -2350,8 +2349,7 @@ class InboundPipeline(
         val incoming =
             incomingNotification(
                 senderId = speaker?.id ?: env.senderId,
-                // A contact's own "Name: " prefix is dropped the way the bubble drops it; a stranger's stays.
-                body = speaker?.let { PublicPostPolicy.displayBody(it.plainName, body) } ?: body,
+                body = body,
                 sentAt = env.sentAt,
                 selfId = me,
                 peerName = speaker?.name ?: senderLabel.text,

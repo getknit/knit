@@ -18,76 +18,29 @@ internal object PublicPostPolicy {
      * phone API a 231-byte payload ([MeshtasticProto.MAX_PAYLOAD]); every stock client nonetheless composes
      * against 200, so a post that stays under it is one every reader's app can quote, forward and reply to
      * without truncating it themselves.
+     *
+     * The composer caps the draft at this figure too, and not only here, because [onAirText] trims
+     * *silently*: a sentence cut in half would go out with nothing on the author's screen to say so.
      */
     const val MAX_ON_AIR_BYTES = 200
 
     /**
-     * The line as it will appear on a stock client: `"Alex: hello"`, or the bare body when the author has no
-     * display name.
+     * The line as a stock client will read it: the words that were typed, and nothing else.
      *
-     * **The prefix is why this room needed a consent sheet.** ADR 049 keeps the user's name off the public
-     * band — the board is `Knit abcd` to everyone listening, never the person — and this is the single,
-     * deliberate exception to that, made per-room and per-user rather than by the board's standing broadcast.
-     * Without it every Knit user behind one board is indistinguishable from every other, which on a channel
-     * whose whole content is conversation makes the bridge useless in the direction that matters.
+     * **No author name goes on the air** (ADR 2026-09.9469). The line used to open `"Alice: "` — ADR 049's
+     * one deliberate exception to keeping the user's name off the public band — because the bridged design
+     * put a whole pocket's posts on air through one gateway board, where nothing else told two Knit speakers
+     * apart. Since ADR 2026-09.26q3 the room is a local mirror and each user posts through their **own**
+     * board, so the board is the identity: a Knit reader lines the node number up with a contact
+     * (`PeerRepository.findByLoraNode`) and a stock client shows the board's own `Knit abcd`. The name bought
+     * nothing the node number does not, and cost a human name in cleartext on a frequency whose traffic
+     * public MQTT servers archive.
      *
      * Trimmed to [MAX_ON_AIR_BYTES] **on a codepoint boundary**: a byte-count cut through the middle of a
-     * multi-byte character would put a replacement glyph on somebody else's screen, and an emoji is four bytes
-     * of a 200-byte budget. The name is never what gets cut — a post trimmed to nothing but its author's name
-     * says less than a truncated sentence does.
+     * multi-byte character would put a replacement glyph on somebody else's screen, and an emoji is four
+     * bytes of a 200-byte budget.
      */
-    fun onAirText(
-        name: String?,
-        body: String,
-    ): String {
-        val prefix = prefixFor(name)
-        val room = bodyBudget(name)
-        // A name long enough to leave no room for the body is not a post; drop the prefix rather than the words,
-        // which is exactly the case where the budget and the prefix no longer share one line.
-        val prefixFits = LoraSizeHint.utf8Length(prefix) + room <= MAX_ON_AIR_BYTES
-        return (if (prefixFits) prefix else "") + trimToUtf8(body, room)
-    }
-
-    /**
-     * The `"Alex: "` this author's line opens with, or empty where there is no name to put on it. Stated once
-     * so [onAirText] and [bodyBudget] cannot come to different answers about what the words are competing with.
-     */
-    fun prefixFor(name: String?): String =
-        name
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { "$it: " }
-            .orEmpty()
-
-    /**
-     * The UTF-8 bytes this author's **words** may occupy — what the composer caps the draft at, so that what a
-     * person typed is what a stranger's radio shows.
-     *
-     * The cap belongs in the composer and not only here because [onAirText] trims *silently*: a sentence cut
-     * in half would go out under the author's name with nothing on the author's screen to say so. Same
-     * arithmetic as [onAirText], including its answer for a name too long to leave any room at all — the
-     * prefix goes rather than the words, so the whole line is the budget.
-     */
-    fun bodyBudget(name: String?): Int {
-        val room = MAX_ON_AIR_BYTES - LoraSizeHint.utf8Length(prefixFor(name))
-        return if (room <= 0) MAX_ON_AIR_BYTES else room
-    }
-
-    /**
-     * [body] with this author's own `"Name: "` removed, for display — the inverse of [onAirText]. A contact's
-     * board puts their name on the front of every line so stock clients can tell who spoke; once the row has
-     * been lined up with that contact, showing the name twice says nothing. Verbatim when the prefix is not
-     * theirs (a stranger's `"Bob: hi"` is content), when there is no name to match, or when stripping would
-     * leave nothing. Display only: the row's body stays exactly what went on the air.
-     */
-    fun displayBody(
-        name: String?,
-        body: String,
-    ): String {
-        val prefix = prefixFor(name)
-        if (prefix.isEmpty() || !body.startsWith(prefix)) return body
-        return body.removePrefix(prefix).takeIf { it.isNotBlank() } ?: body
-    }
+    fun onAirText(body: String): String = trimToUtf8(body, MAX_ON_AIR_BYTES)
 
     /**
      * [text] cut to at most [maxBytes] of UTF-8, never mid-character.

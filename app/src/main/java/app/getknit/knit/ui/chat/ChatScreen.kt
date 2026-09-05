@@ -915,8 +915,7 @@ internal fun ChatScreenContent(
                                 }
 
                                 else -> {
-                                    state.publicPostName?.let { stringResource(R.string.chat_mesh_hint, it) }
-                                        ?: stringResource(R.string.chat_mesh_hint_anon)
+                                    stringResource(R.string.chat_mesh_hint)
                                 }
                             },
                         onFileClick = onFileClick,
@@ -1348,10 +1347,10 @@ private fun LoraNotice(
  * The disclosure shown once, before the first post a user sends to the radio channel.
  *
  * Split can/cannot rather than a paragraph, the way the Internet plane's sheet is (`ui/relay/`), because the
- * two halves are what a person actually has to weigh. The third line is the one this sheet exists for: ADR 049
- * keeps the user's name off the public band everywhere else, and a post here puts it on the front of every
- * message in the clear. Burying that mid-sentence would be the kind of technically-true disclosure nobody
- * reads.
+ * two halves are what a person actually has to weigh. The third line is the linkability the first two do not
+ * cover: no name rides out with a post any more (ADR 2026-09.9469), but the board's own `Knit abcd` does, and
+ * anyone already holding the user's contact card can read that back as them. Burying that mid-sentence would
+ * be the kind of technically-true disclosure nobody reads.
  *
  * Decline first, accept second — the destructive-ish choice should not be the one under the thumb.
  */
@@ -2834,8 +2833,8 @@ private fun MessageInput(
     // frame — the opposite kind of limit from [loraBudget]: that one hedges about a frame the message might
     // still reach people without, this one is the frame, so the field refuses the byte that would not fit.
     maxBytes: Int? = null,
-    // Replaces the field's "Knit Message" hint. The Meshtastic room passes "Post as Alex", so the one place
-    // the user's name leaves Knit for a public band says whose name that is before a word is typed.
+    // Replaces the field's "Knit Message" hint. The Meshtastic room passes the destination, so a field that
+    // sends somewhere other than Knit says where before a word is typed.
     hint: String? = null,
     // Whether the trailing button falls back to Attach on an empty draft, and whether its long-press opens
     // the camera. Off in the bridged room: a photo has no way onto a foreign mesh's text channel, so it

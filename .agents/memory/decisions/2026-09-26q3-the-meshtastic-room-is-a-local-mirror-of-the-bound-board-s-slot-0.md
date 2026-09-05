@@ -9,7 +9,8 @@ topics: [lora, meshtastic, mesh]
 # ADR 2026-09.26q3 — The Meshtastic room is a local mirror of the bound board's slot 0
 
 Status: Accepted (2026-09-05) — supersedes ADR 2026-09.cf7a and ADR 2026-09.7r4d; the `meshpost` type is
-withdrawn and burned (`docs/WIRE_COMPAT.md`).
+withdrawn and burned (`docs/WIRE_COMPAT.md`). Amended the same day by ADR 2026-09.9469: a post goes out as
+the words alone, so the `Alice: hello` line and `PublicPostPolicy.displayBody` named below are both gone.
 
 **What was observed.** The first design read the paired board's stock public primary into a room by having
 the pocket's ACTIVE gateway mint every heard post as a signed, custodied `meshpost` frame and flood it over

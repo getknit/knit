@@ -149,7 +149,7 @@ class ChatListViewModelTest {
         }
 
     @Test
-    fun aHeardPreviewNamesTheContactOnceAndDropsTheirOwnPrefix() =
+    fun aHeardPreviewNamesTheContactWhoseBoardItCameFrom() =
         runTest {
             val vm = vm()
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
@@ -158,7 +158,7 @@ class ChatListViewModelTest {
                 listOf(
                     msg(
                         senderId = "me",
-                        body = "Sam: hi",
+                        body = "hi",
                         sentAt = 100,
                         conversationId = Conversations.MESHTASTIC,
                         originNode = 0x1234abcd,

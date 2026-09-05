@@ -35,6 +35,7 @@ import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
+import app.getknit.knit.mesh.lora.PublicPostPolicy
 import app.getknit.knit.mesh.protocol.LinkCard
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Protocol
@@ -238,11 +239,10 @@ class ChatViewModelTest {
         }
 
     @Test
-    fun aHeardPostFromAContactWearsTheirNameAndAvatarAndDropsTheirOwnPrefix() =
+    fun aHeardPostFromAContactWearsTheirNameAndAvatar() =
         runTest {
-            // Lined up at ingest with the contact whose profile claimed the speaker's board. Their board put
-            // "Sam: " on the line for stock clients; shown under Sam's own name that prefix says nothing, so
-            // the bubble drops it while the row keeps what went on the air.
+            // Lined up at ingest with the contact whose profile claimed the speaker's board, and shown
+            // exactly as it came off the air.
             val vm = vm(Conversations.MESHTASTIC)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
             peersFlow.value = listOf(peer("sam", name = "Sam", avatarHash = "sam-avatar"))
@@ -250,7 +250,7 @@ class ChatViewModelTest {
                 listOf(
                     msg(
                         senderId = "me",
-                        body = "Sam: hi",
+                        body = "hi",
                         id = "mp-sam",
                         sentAt = 100,
                         conversationId = Conversations.MESHTASTIC,
@@ -273,8 +273,11 @@ class ChatViewModelTest {
         }
 
     @Test
-    fun aContactsPrefixIsStrippedOnlyWhenItIsTheirs() =
+    fun aHeardPostIsShownWordForWord() =
         runTest {
+            // Knit rewrites nothing it heard on somebody else's channel. A line that happens to open with a
+            // contact's name was typed that way by whoever sent it, and guessing otherwise would edit a
+            // stranger's words on their behalf.
             val vm = vm(Conversations.MESHTASTIC)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
             peersFlow.value = listOf(peer("sam", name = "Sam"))
@@ -282,7 +285,7 @@ class ChatViewModelTest {
                 listOf(
                     msg(
                         senderId = "me",
-                        body = "Samuel: hi",
+                        body = "Sam: hi",
                         id = "a",
                         sentAt = 100,
                         conversationId = Conversations.MESHTASTIC,
@@ -291,17 +294,8 @@ class ChatViewModelTest {
                     ),
                     msg(
                         senderId = "me",
-                        body = "Sam: ",
-                        id = "b",
-                        sentAt = 200,
-                        conversationId = Conversations.MESHTASTIC,
-                        originNode = 1,
-                        originPeerId = "sam",
-                    ),
-                    msg(
-                        senderId = "me",
                         body = "Sam: hi",
-                        id = "c",
+                        id = "b",
                         sentAt = 300,
                         conversationId = Conversations.MESHTASTIC,
                         originNode = 2,
@@ -312,9 +306,8 @@ class ChatViewModelTest {
             val rows =
                 vm.state.value.rows
                     .associateBy { it.id }
-            assertEquals("a longer name is not a match", "Samuel: hi", rows.getValue("a").body)
-            assertEquals("stripping to nothing keeps the line", "Sam: ", rows.getValue("b").body)
-            assertEquals("a stranger's line is content", "Sam: hi", rows.getValue("c").body)
+            assertEquals("the contact's own line is content", "Sam: hi", rows.getValue("a").body)
+            assertEquals("and so is a stranger's", "Sam: hi", rows.getValue("b").body)
         }
 
     @Test
@@ -472,15 +465,16 @@ class ChatViewModelTest {
         }
 
     @Test
-    fun theBridgedComposerNamesTheAuthorItIsAboutToPutOnAPublicBand() =
+    fun theBridgedComposerCapsTheDraftAndStillOwesTheDisclosure() =
         runTest {
-            // ADR 049 keeps this name off the radio everywhere else. The composer hint is where that
-            // exception is stated, so it has to be there before a word is typed rather than after.
+            // The room's own two composer rules, both settled before a word is typed: the hard byte cap a
+            // Meshtastic frame imposes, and the first-use sheet. No author name is among them any more
+            // (ADR 2026-09.9469) — the words are the whole line, so the whole line is the budget.
             val vm = vm(Conversations.MESHTASTIC)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
             advanceUntilIdle()
 
-            assertEquals("Alice", vm.state.value.publicPostName)
+            assertEquals(PublicPostPolicy.MAX_ON_AIR_BYTES, vm.state.value.publicPostBudget)
             assertTrue("the disclosure has not been accepted yet", vm.state.value.needsPublicConsent)
         }
 

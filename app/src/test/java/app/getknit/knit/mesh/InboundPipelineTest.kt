@@ -2326,16 +2326,16 @@ class InboundPipelineTest {
             val notification = slot<NotifMessage>()
             coEvery { rig.notifier.notify(capture(notification), any(), any(), any(), any()) } returns Unit
 
-            rig.pipeline.deliverMeshPost(heardPost("Alice: hi", node = 0x1234abcdL, name = "Knit abcd"))
+            rig.pipeline.deliverMeshPost(heardPost("hi", node = 0x1234abcdL, name = "Knit abcd"))
             advanceUntilIdle()
 
             val row = rig.msgMap.values.single()
             assertEquals(alice.nodeId, row.originPeerId)
-            assertEquals("the row keeps what went on the air", "Alice: hi", row.body)
+            assertEquals("the row keeps what went on the air", "hi", row.body)
             assertEquals("Knit abcd", row.originName)
             assertEquals("the notification is the contact's, keyed like their DM", alice.nodeId, notification.captured.senderId)
             assertEquals("Alice", notification.captured.senderName)
-            assertEquals("without the contact's own prefix", "hi", notification.captured.body)
+            assertEquals("the words are the whole post", "hi", notification.captured.body)
             assertEquals(1L, rig.metrics.snapshot().meshPostMatched)
         }
 

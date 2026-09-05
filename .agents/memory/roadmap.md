@@ -64,8 +64,9 @@ doc). **Don't start a deferred item without explicit direction.**
   **The Meshtastic room is a local mirror of the paired board's slot 0** (2026-09-05, ADR 2026-09.26q3,
   superseding 2026-09.cf7a and 2026-09.7r4d): whatever the user set slot 0 to — preset, name or key — is read
   into `Conversations.MESHTASTIC` as rows on this phone and this phone only, and a post typed there leaves
-  through this phone's own board on channel 0 as `TEXT_MESSAGE_APP` prefixed with the author's display name
-  (ADR 049's single exception, behind the first-use consent sheet). Nothing crosses Knit's mesh: no frame,
+  through this phone's own board on channel 0 as `TEXT_MESSAGE_APP` carrying the words alone — no author
+  name (2026-09-05, ADR 2026-09.9469, which withdrew ADR 049's single exception once the board became the
+  identity), still behind the first-use consent sheet. Nothing crosses Knit's mesh: no frame,
   no custody, no fan-out, no gateway election on either direction; the `meshpost` type is withdrawn and
   burned. A heard post is lined up with a contact through the bound board's node number the profile now
   carries (`ProfileContent.loraNode` → `peers.loraNode`), resolved once at ingest and frozen on the row
@@ -73,7 +74,8 @@ doc). **Don't start a deferred item without explicit direction.**
   rendered as such. Metered by `AirBucket.PUBLIC` (15 % of the window) plus a 30 s per-board floor, and every
   refusal is shown at the composer with the draft kept. **Still owed:** the on-hardware trial in
   `context/lora-bridge.md` (two boards, one board-less phone: the board-less phone sees nothing, a contact's
-  post wears their name, a second post inside 30 s is refused, the title follows a preset change), and
+  post wears their name off the node number alone, a second post inside 30 s is refused, the title follows a
+  preset change), and
   **signature-backed confidence** — Meshtastic 2.8 signs broadcasts with the board's XEdDSA key, but Knit
   does not decode `Data.xeddsa_signature` (field 10) and the firmware hands the phone no verdict, so using it
   means advertising the board's public key in the profile beside the node number and verifying on the phone
