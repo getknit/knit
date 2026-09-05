@@ -46,9 +46,6 @@ enum class PublicPostRefusal {
     /** Slot 0 on this board *is* the Knit channel (the lab shape), so there is no primary to post on. */
     KNIT_ON_PRIMARY,
 
-    /** The primary is renamed or re-keyed — somebody's private group, and never ours to write into. */
-    NOT_STOCK_PRIMARY,
-
     /** Inside the per-board floor: one post per 30 s, so a room cannot become a transmitter. */
     TOO_SOON,
 

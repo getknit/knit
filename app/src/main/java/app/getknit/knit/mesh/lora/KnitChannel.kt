@@ -5,7 +5,7 @@ package app.getknit.knit.mesh.lora
  * with zero coordination. Its [PSK] is *derived* (see `KnitChannelTest`) — deliberately not secret — from
  * Knit's public constants via HKDF-SHA256. Because the Nearby room is itself cleartext (frames are
  * Ed25519-signed, not encrypted), a public, reproducible key is the honest choice: this channel is a
- * *rendezvous* — it keeps Knit's LoRa traffic off the stock LongFast channel and lets any two Knit boards
+ * *rendezvous* — it keeps Knit's LoRa traffic off the board's own primary channel and lets any two Knit boards
  * interoperate — never a confidentiality boundary. Knit's per-frame signatures remain the integrity boundary.
  *
  * Knit writes it as a SECONDARY channel, so the board's primary channel and its radio config (region, modem

@@ -6,7 +6,7 @@ package app.getknit.knit.mesh
  *
  * It is a seam for the same reason [BridgeFrameSource] and [FarPeerFrameSource] are: `mesh/lora/` is pure and
  * imports neither Android nor the data layer, while delivering a post means writing a Room row. The transport
- * decides *whether* a packet is a post ([app.getknit.knit.mesh.lora.LongFastPolicy]); this decides what a
+ * decides *whether* a packet is a post ([app.getknit.knit.mesh.lora.PublicChannelPolicy]); this decides what a
  * message row made of one looks like.
  *
  * Nothing that passes through here is signed, originated, custodied or fanned out. The room is this phone's
@@ -29,7 +29,7 @@ interface MeshPostSink {
 }
 
 /**
- * One post heard on the board's primary channel, as the board heard it — what `mesh/lora/LongFastPolicy`
+ * One post heard on the board's primary channel, as the board heard it — what `mesh/lora/PublicChannelPolicy`
  * produces out of a raw packet and [MeshPostSink] turns into a message row.
  *
  * Node numbers are Meshtastic's unsigned 32 bits, widened to `Long` here at the boundary where they stop

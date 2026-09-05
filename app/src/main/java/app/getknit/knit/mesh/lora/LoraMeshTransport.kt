@@ -92,6 +92,12 @@ internal class LoraMeshTransport(
         { _, _, _ -> emptyList() },
     /** Delivers a post heard on the board's primary channel into the Meshtastic room — [app.getknit.knit.mesh.MeshPostSink]. */
     private val onPublicPost: suspend (MeshPost) -> Unit = {},
+    /**
+     * The bound board's node number, reported each time its session comes up. What the profile advertises
+     * so a contact's phone can line a heard post up with this one (`SettingsStore.loraBoardNode`); persisted
+     * by the caller, so a link drop does not unsay it and only a different board changes it.
+     */
+    private val onBoardBound: suspend (UInt) -> Unit = {},
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
     private val clock: () -> Long,
@@ -636,14 +642,9 @@ internal class LoraMeshTransport(
         body: String,
     ): PublicPostRefusal? {
         val ready = link.state.value as? LinkState.Ready ?: return refusePublicPost(PublicPostRefusal.NOT_READY)
-        // A board with Knit bound to index 0 has no public primary to post on — the debug-bridge shape the
-        // receive half refuses to read for the same reason (`aBoardWithKnitBoundToIndexZeroReadsNoPublicPrimary`).
-        if (currentConfig?.channelIndex == LongFastPolicy.PRIMARY_INDEX) {
-            return refusePublicPost(PublicPostRefusal.KNIT_ON_PRIMARY)
-        }
-        if (!LongFastPolicy.isStockPrimary(ready.channels, ready.radio)) {
-            return refusePublicPost(PublicPostRefusal.NOT_STOCK_PRIMARY)
-        }
+        // A board whose slot 0 is the Knit channel has no primary to post on — the debug-bridge shape the
+        // receive half refuses to read for the same reason, decided off the same table.
+        if (PublicChannelPolicy.isKnitPrimary(ready.channels)) return refusePublicPost(PublicPostRefusal.KNIT_ON_PRIMARY)
         val now = clock()
         val last = lastPublicPostAt.get()
         if (last != NEVER && now - last < PUBLIC_POST_FLOOR_MS) return refusePublicPost(PublicPostRefusal.TOO_SOON)
@@ -910,7 +911,7 @@ internal class LoraMeshTransport(
      */
     private suspend fun sendPublicFrame(frame: OutboundFrame) {
         val message = frame.messages.firstOrNull() ?: return
-        if (!sendMessage(message, LongFastPolicy.PRIMARY_INDEX, frame, MeshtasticProto.PORT_TEXT_MESSAGE)) {
+        if (!sendMessage(message, PublicChannelPolicy.PRIMARY_INDEX, frame, MeshtasticProto.PORT_TEXT_MESSAGE)) {
             metrics.onPublicPostRefused(PublicPostRefusal.NAK.name)
             return
         }
@@ -971,16 +972,13 @@ internal class LoraMeshTransport(
     private fun onLoraPacket(packet: ReceivedPacket) {
         if (packet.payload.isEmpty()) return
         val bound = currentConfig?.channelIndex
-        // The board's public primary carries the *foreign* mesh's chat, which the LongFast bridge ingests into
-        // a separate public room. Judged before the Knit guards below, because it is the one thing off the
-        // bound channel that Knit reads at all.
-        //
-        // Unless Knit itself is bound there. ADR 045 always writes Knit into a **secondary** slot and never
-        // touches index 0, so in the field the two can never be the same channel — but the debug bridge can
-        // still bind any index by hand, and on such a board index 0 is Knit's own traffic with no public
-        // primary to read. Deciding it off the bound slot rather than off the provisioning rule keeps that
-        // honest without this path having to know how the board was set up.
-        if (packet.channelIndex == LongFastPolicy.PRIMARY_INDEX && bound != LongFastPolicy.PRIMARY_INDEX) {
+        // Slot 0 is the Meshtastic room's channel, mirrored as the user configured it. The room reads only
+        // chat, so only `TEXT_MESSAGE_APP` turns off here; everything else on the slot falls through to the
+        // Knit path, which keeps its own portnum filter. Decided off the portnum rather than off the bound
+        // index, because the index defaults to 0 on a board that never ran Knit's setup and such a board
+        // still has a primary to mirror — the one shape with nothing to mirror (Knit itself at slot 0, the
+        // debug bridge's lab binding) is refused inside, off the channel table.
+        if (packet.channelIndex == PublicChannelPolicy.PRIMARY_INDEX && packet.portnum == MeshtasticProto.PORT_TEXT_MESSAGE) {
             onPrimaryPacket(packet)
             return
         }
@@ -993,7 +991,7 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * One packet off the board's **primary** channel — what the Meshtastic room mirrors. [LongFastPolicy]
+     * One chat packet off the board's **primary** channel — what the Meshtastic room mirrors. [PublicChannelPolicy]
      * decides whether it is a post; a refusal is counted and dropped, and an accepted post is delivered into
      * this phone's room and nowhere else. Every board reads its own slot 0: there is no election and no
      * minting, because nothing about a heard post leaves the phone.
@@ -1004,11 +1002,10 @@ internal class LoraMeshTransport(
      * quietly change all of that.
      */
     private fun onPrimaryPacket(packet: ReceivedPacket) {
-        if (packet.portnum != MeshtasticProto.PORT_TEXT_MESSAGE) return // never a post; not worth a counter
         metrics.onMeshPostHeard()
         val ready = link.state.value as? LinkState.Ready ?: return
         val verdict =
-            LongFastPolicy.judge(
+            PublicChannelPolicy.judge(
                 packet = packet,
                 channels = ready.channels,
                 radio = ready.radio,
@@ -1018,11 +1015,11 @@ internal class LoraMeshTransport(
                 ownNode = ready.board.myNodeNum,
             )
         when (verdict) {
-            is LongFastPolicy.Verdict.Refused -> {
+            is PublicChannelPolicy.Verdict.Refused -> {
                 metrics.onMeshPostRefused(verdict.reason.name)
             }
 
-            is LongFastPolicy.Verdict.Post -> {
+            is PublicChannelPolicy.Verdict.Post -> {
                 metrics.onMeshPostIngested(verdict.post.viaMqtt)
                 log(
                     "lora public post from ${meshNodeLabel(packet.from.toLong())} " +
@@ -1164,6 +1161,7 @@ internal class LoraMeshTransport(
                     "fw=${state.board.firmwareVersion} signing=${pace.airtime.signing}",
             )
             scope.launch { beaconProfile(PROFILE_FLOOR_MS) }
+            scope.launch { onBoardBound(state.board.myNodeNum) }
         }
         publishStatus()
     }

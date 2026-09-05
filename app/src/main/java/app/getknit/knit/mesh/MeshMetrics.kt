@@ -746,7 +746,7 @@ class MeshMetrics {
         if (viaMqtt) meshPostViaMqtt.incrementAndGet()
     }
 
-    /** A public-channel packet the filters turned away, by `LongFastPolicy.Refusal`. */
+    /** A primary-channel packet the filters turned away, by `PublicChannelPolicy.Refusal`. */
     fun onMeshPostRefused(reason: String) {
         meshPostRefusedByReason.computeIfAbsent(reason) { AtomicLong() }.incrementAndGet()
     }

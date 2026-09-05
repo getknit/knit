@@ -98,9 +98,9 @@ internal object MeshtasticProto {
     const val PORT_PRIVATE_APP = 256
 
     /**
-     * `PortNum.TEXT_MESSAGE_APP` — ordinary Meshtastic chat. Knit **reads** it on the public primary only, and
-     * only broadcast (the LongFast bridge); a unicast one addressed to the board stays unread, which is what
-     * `User.is_unmessagable` says out loud (ADR 2026-09.emd7).
+     * `PortNum.TEXT_MESSAGE_APP` — ordinary Meshtastic chat. Knit **reads** it on the board's primary only,
+     * and only broadcast (the Meshtastic room); a unicast one addressed to the board stays unread, which is
+     * what `User.is_unmessagable` says out loud (ADR 2026-09.emd7).
      */
     const val PORT_TEXT_MESSAGE = 1
 
@@ -870,7 +870,7 @@ internal class MeshPacket(
     val hopStart: Int,
     /**
      * `MeshPacket.via_mqtt` — the packet reached this mesh through somebody's MQTT uplink rather than over the
-     * air. Load-bearing only for the LongFast bridge, where it is the difference between "somebody near you
+     * air. Load-bearing only for the Meshtastic room, where it is the difference between "somebody near you
      * said this" and "this came off the internet".
      */
     val viaMqtt: Boolean = false,
@@ -912,18 +912,11 @@ internal data class ChannelInfo(
     val role: Int,
     /**
      * `ChannelSettings.psk`, verbatim. Empty means the field was absent, which the firmware reads as the
-     * default key — so [isDefaultKey] treats both alike. Only the LongFast bridge reads it: a primary that
-     * kept the stock *name* but carries somebody's own key is a private group, and must never be ingested
-     * into a public room.
+     * default key. Decoded so the table round-trips whole; nothing in Knit judges a channel by its key any
+     * more — the Meshtastic room mirrors slot 0 as the user keyed it.
      */
     val psk: ByteArray = ByteArray(0),
 ) {
-    /**
-     * Whether this channel is on Meshtastic's well-known default key — an absent PSK, or the one-byte `0x01`
-     * shorthand the firmware expands into it. Anything longer is a key somebody chose.
-     */
-    val isDefaultKey: Boolean get() = psk.isEmpty() || (psk.size == 1 && psk[0] == DEFAULT_PSK_BYTE)
-
     /** A `ByteArray` member makes the generated `equals`/`hashCode` identity-based; compare the bytes instead. */
     override fun equals(other: Any?): Boolean =
         this === other ||
@@ -938,8 +931,6 @@ internal data class ChannelInfo(
     override fun hashCode(): Int = (((index * PRIME) + name.hashCode()) * PRIME + role) * PRIME + psk.contentHashCode()
 
     private companion object {
-        /** `ChannelSettings.psk = { 0x01 }` — "the default key", the only PSK a stock board's primary carries. */
-        const val DEFAULT_PSK_BYTE: Byte = 1
         const val PRIME = 31
     }
 }

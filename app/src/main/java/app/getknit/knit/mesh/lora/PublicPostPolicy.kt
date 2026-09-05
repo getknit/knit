@@ -1,19 +1,14 @@
 package app.getknit.knit.mesh.lora
 
 /**
- * Turns a Knit user's post into the line of text that goes on the foreign mesh's public channel — the
- * LongFast bridge's outbound half, and the mirror of [LongFastPolicy]. Pure, so the whole rule is JVM-testable
+ * Turns a Knit user's post into the line of text that goes on the board's primary channel — the Meshtastic
+ * room's outbound half, and the mirror of [PublicChannelPolicy]. Pure, so the whole rule is JVM-testable
  * against fabricated posts ([app.getknit.knit.mesh.lora.PublicPostPolicyTest]).
  *
- * **Deliberately not a filter.** [LongFastPolicy] exists to decide what may come *in*; everything that may go
- * *out* was typed by a person into a room labelled public, behind a consent sheet, and screened by the room
- * moderator on the way. What is left is a formatting question, and the two questions are kept apart because
- * conflating them is how a guard on one direction quietly starts governing the other.
- *
- * There is no `isStockPrimary` here on purpose: the transmit side calls [LongFastPolicy.isStockPrimary]
- * unchanged. Writing a Knit user's cleartext words into a renamed or re-keyed primary would put them in
- * somebody's private group, which is the same wrong as reading one — one rule, stated once, so the two cannot
- * drift apart.
+ * **Deliberately not a filter.** [PublicChannelPolicy] exists to decide what may come *in*; everything that
+ * may go *out* was typed by a person into a room labelled as a radio channel, behind a consent sheet, and
+ * screened by the room moderator on the way. What is left is a formatting question, and the two questions
+ * are kept apart because conflating them is how a guard on one direction quietly starts governing the other.
  */
 internal object PublicPostPolicy {
     /**

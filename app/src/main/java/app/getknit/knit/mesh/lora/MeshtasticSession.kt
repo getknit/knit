@@ -439,7 +439,7 @@ internal class MeshtasticSession(
 
     /**
      * The handshake streams the whole NodeDB, and the firmware pushes an entry whenever one changes. Only the
-     * board's own entry carries *its* battery; every entry feeds the name directory the LongFast bridge reads.
+     * board's own entry carries *its* battery; every entry feeds the name directory the Meshtastic room reads.
      */
     private fun onNodeInfo(info: FromRadio.NodeInfo) {
         info.owner?.let { noteNodeName(info.num, it) }

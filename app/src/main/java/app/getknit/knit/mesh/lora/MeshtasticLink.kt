@@ -39,8 +39,8 @@ internal interface MeshtasticLink {
 
     /**
      * What the mesh's other nodes call themselves, keyed by node number — the board's NodeDB as it streams in
-     * the handshake and stays current through `NODEINFO_APP` broadcasts. Only the LongFast bridge reads it, to
-     * put a name on a bridged post instead of a bare node number.
+     * the handshake and stays current through `NODEINFO_APP` broadcasts. Only the Meshtastic room reads it, to
+     * put a name on a heard post instead of a bare node number.
      *
      * Its own flow rather than a field on [LinkState.Ready], because a busy mesh pushes NODEINFO constantly and
      * folding it into the link state would re-emit the whole state — and every collector of it — each time.

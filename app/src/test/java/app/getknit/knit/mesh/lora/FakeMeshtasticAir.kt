@@ -130,10 +130,10 @@ internal class FakeMeshtasticLink(
     }
 
     /**
-     * The handshake as a **provisioned** board reports it: the stock public primary at index 0 and the Knit
-     * channel in a secondary slot, plus the radio settings. The shape ADR 045 actually produces, and the only
-     * one the LongFast bridge can read — [ready]'s single Knit channel at index 0 is a lab binding, and on
-     * such a board there is no public primary at all.
+     * The handshake as a **provisioned** board reports it: the primary at index 0 and the Knit channel in a
+     * secondary slot, plus the radio settings. The shape ADR 045 actually produces — [ready]'s single Knit
+     * channel at index 0 is a lab binding, and on such a board there is no primary for the Meshtastic room
+     * to mirror.
      */
     fun readyProvisioned(
         knitIndex: Int = 1,
@@ -190,9 +190,9 @@ internal class FakeMeshtasticLink(
     }
 
     /**
-     * A stock Meshtastic node's chat on the public primary — what the LongFast bridge reads. Not routed
-     * through [air], which only carries Knit's own channel: a stock neighbour is not a registered board and
-     * its packets reach exactly the phones whose radios heard them.
+     * A Meshtastic node's chat on the primary channel — what the Meshtastic room reads. Not routed through
+     * [air], which only carries Knit's own channel: a stock neighbour is not a registered board and its
+     * packets reach exactly the phones whose radios heard them.
      */
     fun deliverPublicText(
         from: UInt,
@@ -206,7 +206,7 @@ internal class FakeMeshtasticLink(
                 from = from,
                 to = to,
                 id = id,
-                channelIndex = LongFastPolicy.PRIMARY_INDEX,
+                channelIndex = PublicChannelPolicy.PRIMARY_INDEX,
                 portnum = MeshtasticProto.PORT_TEXT_MESSAGE,
                 payload = body.encodeToByteArray(),
                 rxSnr = -6.5f,

@@ -239,7 +239,7 @@ internal enum class Destination {
     /** Knit's own secondary channel — the bound slot, guarded by `boundSlotIsKnit`. */
     Knit,
 
-    /** The foreign mesh's public primary — index 0, `TEXT_MESSAGE_APP`, guarded by `LongFastPolicy`. */
+    /** The board's own primary — index 0, `TEXT_MESSAGE_APP`, guarded by `PublicChannelPolicy`. */
     Public,
 }
 

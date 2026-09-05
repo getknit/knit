@@ -15,12 +15,12 @@ import app.getknit.knit.mesh.lora.BoardRef
 import app.getknit.knit.mesh.lora.BoardSettings
 import app.getknit.knit.mesh.lora.KnitChannel
 import app.getknit.knit.mesh.lora.LinkState
-import app.getknit.knit.mesh.lora.LongFastPolicy
 import app.getknit.knit.mesh.lora.LoraGatewayPolicy
 import app.getknit.knit.mesh.lora.LoraPlaneStatus
 import app.getknit.knit.mesh.lora.LoraSlot
 import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.lora.ProvisionResult
+import app.getknit.knit.mesh.lora.PublicChannelPolicy
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -255,12 +255,12 @@ internal class LoraRadioViewModel(
      * which reads as "fine": a spurious warning is worse than a late one.
      */
     private fun isCustomPrimary(ready: LinkState.Ready): Boolean {
-        // A board that has not reported its preset cannot be judged, and the warning's failure direction is
-        // the opposite of the bridge's: crying "renamed" at a board that is fine is worse than staying quiet,
-        // so the unknown case is handled here rather than read off [LongFastPolicy.hasStockName]'s false.
+        // A board that has not reported its preset cannot be judged: crying "renamed" at a board that is fine
+        // is worse than staying quiet, so the unknown case is handled here rather than read off
+        // [PublicChannelPolicy.hasStockName]'s false.
         if (ready.radio == null) return false
-        val primary = ready.channels.firstOrNull { it.index == LongFastPolicy.PRIMARY_INDEX } ?: return false
-        return !LongFastPolicy.hasStockName(primary, ready.radio)
+        val primary = ready.channels.firstOrNull { it.index == PublicChannelPolicy.PRIMARY_INDEX } ?: return false
+        return !PublicChannelPolicy.hasStockName(primary, ready.radio)
     }
 
     /**

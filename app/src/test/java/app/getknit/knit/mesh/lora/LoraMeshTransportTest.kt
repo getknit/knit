@@ -347,6 +347,7 @@ class LoraMeshTransportTest {
         gossip: LoraGossipPolicy = LoraGossipPolicy(random = { 0 }),
         firmware: String = "2.5.0",
         onPublicPost: suspend (MeshPost) -> Unit = {},
+        onBoardBound: suspend (UInt) -> Unit = {},
         now: () -> Long,
     ): Rig {
         val link = FakeMeshtasticLink(nodeNum, air, channelName, firmware)
@@ -359,6 +360,7 @@ class LoraMeshTransportTest {
                 selfProfile = profileSource(selfNode),
                 farFrames = farFrames,
                 onPublicPost = onPublicPost,
+                onBoardBound = onBoardBound,
                 scope = scope,
                 metrics = metrics,
                 clock = now,
@@ -412,12 +414,11 @@ class LoraMeshTransportTest {
             b.transport.stop()
         }
 
-    // --- The LongFast bridge: reading the foreign mesh's public primary (receive-only). ---
+    // --- The Meshtastic room: reading the board's own primary channel into a local room. ---
 
     /**
-     * A rig on a **provisioned** board — the stock public primary at index 0, Knit in a secondary — which is
-     * the only shape the bridge can read. The default rig binds the Knit channel to index 0, and on such a
-     * board there is no public primary at all.
+     * A rig on a **provisioned** board — the primary at index 0, Knit in a secondary. The default rig binds
+     * the Knit channel to index 0 (the lab shape), and on such a board there is no primary to mirror.
      */
     private fun TestScope.bridgeRig(
         air: FakeMeshtasticAir,
@@ -507,24 +508,62 @@ class LoraMeshTransportTest {
         }
 
     @Test
-    fun aRenamedPrimaryIsNeverIngested() =
+    fun aRenamedOrRekeyedPrimaryIsMirroredAsConfigured() =
         runTest {
-            // A renamed primary is somebody's own channel — and on another frequency besides. The existing
-            // `lora_custom_primary` warning already says so; this is the ingest half of the same rule.
+            // The user's own channel on the user's own board, shown to the user under the name they gave it.
+            // Nothing heard here leaves the phone, so there is no room a private channel could leak into; the
+            // `lora_custom_primary` warning is about Knit's own RF slot, and still shows.
             val air = FakeMeshtasticAir()
             val posts = mutableListOf<MeshPost>()
-            val r = bridgeRig(air, posts, primaryName = "BookClub")
+            val r = bridgeRig(air, posts, primaryName = "Crew", primaryPsk = ByteArray(16) { 7 })
 
-            r.link.deliverPublicText(from = 0xdeadbeefu, body = "private business", id = 5u)
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "our own business", id = 5u)
             runCurrent()
 
-            assertTrue(posts.isEmpty())
+            assertEquals("Crew", posts.single().channel)
+            assertEquals(1L, r.metrics.snapshot().meshPostIngested)
+            r.transport.stop()
+        }
+
+    @Test
+    fun anUnprovisionedBoardStillMirrorsItsPrimary() =
+        runTest {
+            // A board that was paired but never ran Knit's setup: the bound index is the settings default, 0,
+            // and slot 0 is the stock primary. Knit's own frames stay off it (boundSlotIsKnit), but the room
+            // must still read it and post to it — the rule is decided off the table, never off the index.
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = rig(air, 1u, "alice", backgroundScope, channelName = "", onPublicPost = { posts += it }) { testScheduler.currentTime }
+            r.transport.start()
+            runCurrent()
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 5u)
+            runCurrent()
+            assertNull(r.transport.postToPublicChannel("Alice", "hello mesh"))
+            runCurrent()
+
+            assertEquals("hi", posts.single().body)
             assertEquals(
-                1L,
-                r.metrics
-                    .snapshot()
-                    .meshPostRefusedByReason[LongFastPolicy.Refusal.NOT_STOCK_PRIMARY.name],
+                "Alice: hello mesh",
+                r.link.sent
+                    .single { it.decodeToString().startsWith("Alice") }
+                    .decodeToString(),
             )
+            assertEquals(1L, r.metrics.snapshot().publicPostSent)
+            r.transport.stop()
+        }
+
+    @Test
+    fun aReadyBoardReportsItsNodeNumberUpward() =
+        runTest {
+            // What the profile advertises so a contact can line a heard post up with this phone.
+            val air = FakeMeshtasticAir()
+            val bound = mutableListOf<UInt>()
+            val r = rig(air, 7u, "alice", backgroundScope, onBoardBound = { bound += it }) { testScheduler.currentTime }
+            r.transport.start()
+            runCurrent()
+
+            assertEquals(listOf(7u), bound)
             r.transport.stop()
         }
 
@@ -577,6 +616,16 @@ class LoraMeshTransportTest {
             assertTrue("nothing was mistaken for a public post", posts.isEmpty())
             assertEquals(0L, a.metrics.snapshot().meshPostHeard)
             assertTrue("and the Knit frame still arrived", a.received.any { it.envelope.senderId == "bob" })
+
+            // A chat packet on that slot is heard, judged, and refused off the table: Knit sits at index 0.
+            a.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 5u)
+            runCurrent()
+            assertTrue(posts.isEmpty())
+            assertEquals(1L, a.metrics.snapshot().meshPostHeard)
+            assertEquals(
+                1L,
+                a.metrics.snapshot().meshPostRefusedByReason[PublicChannelPolicy.Refusal.KNIT_ON_PRIMARY.name],
+            )
             a.transport.stop()
             b.transport.stop()
         }
@@ -601,7 +650,7 @@ class LoraMeshTransportTest {
                     .single()
                     .decodeToString(),
             )
-            assertEquals(LongFastPolicy.PRIMARY_INDEX, r.link.sentChannels.single())
+            assertEquals(PublicChannelPolicy.PRIMARY_INDEX, r.link.sentChannels.single())
             assertEquals(MeshtasticProto.PORT_TEXT_MESSAGE, r.link.sentPortnums.single())
             assertEquals(LoraMeshTransport.HOP_LIMIT, r.link.sentHopLimits.single())
             assertEquals(1L, r.metrics.snapshot().publicPostSent)
@@ -621,7 +670,7 @@ class LoraMeshTransportTest {
             advanceTimeBy(4_000)
             runCurrent()
 
-            assertEquals(listOf(LongFastPolicy.PRIMARY_INDEX, 1), r.link.sentChannels)
+            assertEquals(listOf(PublicChannelPolicy.PRIMARY_INDEX, 1), r.link.sentChannels)
             assertEquals(
                 listOf(MeshtasticProto.PORT_TEXT_MESSAGE, MeshtasticProto.PORT_PRIVATE_APP),
                 r.link.sentPortnums,
@@ -683,21 +732,22 @@ class LoraMeshTransportTest {
         }
 
     @Test
-    fun aRenamedPrimaryIsNeverPostedTo() =
+    fun aRenamedPrimaryIsPostedToAsConfigured() =
         runTest {
-            // The same rule that refuses to *read* a renamed primary refuses to write one: a board whose
-            // index 0 is somebody's private group must not receive a Knit user's cleartext words either.
+            // The write half of the same rule: slot 0 is whatever the user made it, and their words go there.
             val air = FakeMeshtasticAir()
             val r = bridgeRig(air, mutableListOf(), primaryName = "Book club")
 
-            assertEquals(PublicPostRefusal.NOT_STOCK_PRIMARY, r.transport.postToPublicChannel("Alice", "hello mesh"))
+            assertNull(r.transport.postToPublicChannel("Alice", "hello mesh"))
             runCurrent()
 
-            assertTrue(r.link.sent.isEmpty())
             assertEquals(
-                1L,
-                r.metrics.snapshot().publicPostRefusedByReason[PublicPostRefusal.NOT_STOCK_PRIMARY.name],
+                "Alice: hello mesh",
+                r.link.sent
+                    .single()
+                    .decodeToString(),
             )
+            assertEquals(PublicChannelPolicy.PRIMARY_INDEX, r.link.sentChannels.single())
             r.transport.stop()
         }
 
@@ -740,7 +790,7 @@ class LoraMeshTransportTest {
             assertTrue(posts.isEmpty())
             assertEquals(
                 1L,
-                r.metrics.snapshot().meshPostRefusedByReason[LongFastPolicy.Refusal.OWN_BOARD.name],
+                r.metrics.snapshot().meshPostRefusedByReason[PublicChannelPolicy.Refusal.OWN_BOARD.name],
             )
             r.transport.stop()
         }
