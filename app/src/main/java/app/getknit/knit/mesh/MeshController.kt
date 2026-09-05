@@ -134,15 +134,16 @@ interface MeshController {
     ): Boolean
 
     /**
-     * Composes a post for the **bridged public room** ([app.getknit.knit.data.message.Conversations.MESHTASTIC]),
-     * stores it locally, and floods it. The pocket's ACTIVE gateway then also puts it on the foreign mesh's
-     * public channel — which may be a different phone from this one, or none at all.
+     * Puts a post typed in the **Meshtastic room** ([app.getknit.knit.data.message.Conversations.MESHTASTIC])
+     * on this phone's own board's primary channel, and stores it locally once the board has queued it. Nothing
+     * crosses Knit's mesh: the post is not flooded, not custodied, and never handed to another phone.
      *
      * Separate from [sendChat] rather than a conversation id passed to it: `sendChat` reads the destination
      * off `recipientId`/`group`, so a room id handed to it would be taken for a peer node id and minted as a
-     * DM addressed to nobody. Returns false without sending if on-device filtering flags [text].
+     * DM addressed to nobody. The default refuses with [PublicPostRefusal.NO_BOARD], which is what a fake and
+     * a build without the LoRa plane both want.
      */
-    suspend fun sendPublicPost(text: String): Boolean = false
+    suspend fun sendPublicPost(text: String): PublicPostOutcome = PublicPostOutcome.Refused(PublicPostRefusal.NO_BOARD)
 
     /** Floods a group metadata update (e.g. a rename) immediately, independent of any chat message. */
     suspend fun sendGroupUpdate(group: GroupInfo)

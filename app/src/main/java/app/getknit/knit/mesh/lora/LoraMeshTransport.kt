@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.MeshPost
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
 import app.getknit.knit.mesh.PublicChannelSink
+import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.StoreDigest
@@ -89,8 +90,8 @@ internal class LoraMeshTransport(
     private val offerPrefixes: suspend (limit: Int) -> IntArray = { IntArray(0) },
     private val framesMissing: suspend (prefixes: IntArray, limit: Int, dms: Boolean) -> List<WireEnvelope> =
         { _, _, _ -> emptyList() },
-    /** Publishes a post overheard on the board's public primary as a signed Knit frame — [app.getknit.knit.mesh.MeshPostSink]. */
-    private val publishMeshPost: suspend (MeshPost) -> Unit = {},
+    /** Delivers a post heard on the board's primary channel into the Meshtastic room — [app.getknit.knit.mesh.MeshPostSink]. */
+    private val onPublicPost: suspend (MeshPost) -> Unit = {},
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
     private val clock: () -> Long,
@@ -619,32 +620,21 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * Whether this board is the one that speaks for its pocket (ADR 044's ACTIVE role), asked *without*
-     * [mayTransmit]'s `loraPassive` counter — that counter means "a frame we would have transmitted was
-     * suppressed", and minting a bridged post transmits nothing at all.
-     */
-    private fun isPocketGateway(): Boolean = role == LoraGatewayPolicy.Role.ACTIVE
-
-    /**
-     * Puts one Knit user's post on the foreign mesh's public channel — [PublicChannelSink], the bridge's
-     * outbound half. Called by the delivery path for every post it sees arrive, so a refusal is the ordinary
-     * answer: on a two-board pocket exactly one device returns true.
+     * Puts this phone's user's post on the board's primary channel — [PublicChannelSink], the Meshtastic
+     * room's outbound half. Called by [app.getknit.knit.mesh.MeshManager.sendPublicPost] for a post typed on
+     * this phone and no other: the room posts through its own board, never through a pocket-mate's, so the
+     * ADR 044 election plays no part here and a refusal is something the composer shows the user.
      *
      * The guards are all here rather than at the write, so each one can be counted and named. They are
      * deliberately **not** [boundSlotIsKnit]'s: that guard exists to keep Knit's cleartext frames off the
      * public channel by accident and reads an unknown channel table as "stay silent", while this is a
-     * consented path *to* that channel and reads an unknown table as "not the stock primary". Same shape,
-     * opposite safe answer, so sharing code between them would make one of the two wrong.
+     * consented path *to* that channel. Same shape, opposite safe answer, so sharing code between them would
+     * make one of the two wrong.
      */
     override suspend fun postToPublicChannel(
         name: String?,
         body: String,
-    ): Boolean {
-        // Not a refusal reason: the passive board is not failing at anything, its pocket-mate is transmitting.
-        if (!isPocketGateway()) {
-            metrics.onPublicPostPassive()
-            return false
-        }
+    ): PublicPostRefusal? {
         val ready = link.state.value as? LinkState.Ready ?: return refusePublicPost(PublicPostRefusal.NOT_READY)
         // A board with Knit bound to index 0 has no public primary to post on — the debug-bridge shape the
         // receive half refuses to read for the same reason (`aBoardWithKnitBoundToIndexZeroReadsNoPublicPrimary`).
@@ -664,17 +654,17 @@ internal class LoraMeshTransport(
         if (!pace.airtime.admits(AirBucket.PUBLIC, FrameClass.ROOM, listOf(message.size), now)) {
             return refusePublicPost(PublicPostRefusal.NO_AIR)
         }
-        // Claimed at enqueue, not at write: the floor is about how often this gateway *decides* to speak, and
+        // Claimed at enqueue, not at write: the floor is about how often this phone *decides* to speak, and
         // charging it only once the pacer drains would let a burst queue up behind one 3 s gap.
         lastPublicPostAt.set(now)
         enqueue(listOf(message), "public", FrameClass.ROOM, AirBucket.PUBLIC, Destination.Public)
-        return true
+        return null
     }
 
-    private fun refusePublicPost(reason: PublicPostRefusal): Boolean {
+    private fun refusePublicPost(reason: PublicPostRefusal): PublicPostRefusal {
         metrics.onPublicPostRefused(reason.name)
         log("lora public post refused: $reason")
-        return false
+        return reason
     }
 
     /**
@@ -1003,19 +993,15 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * One packet off the board's **primary** channel — the public Meshtastic one, which Knit only ever listens
-     * to (the LongFast bridge). [LongFastPolicy] decides whether it is a public post; a refusal is counted and
-     * dropped.
+     * One packet off the board's **primary** channel — what the Meshtastic room mirrors. [LongFastPolicy]
+     * decides whether it is a post; a refusal is counted and dropped, and an accepted post is delivered into
+     * this phone's room and nowhere else. Every board reads its own slot 0: there is no election and no
+     * minting, because nothing about a heard post leaves the phone.
      *
-     * Two rules that are easy to get wrong here:
-     *
-     * - **[noteBoard] is not called.** `boardsHeard` means "radios that have sent a *Knit* frame", which is
-     *   what makes "heard nobody" the ordinary state of a solo user and is why the preset-mismatch notice
-     *   cannot be gated on evidence. Counting stock neighbours here would quietly change all of that.
-     * - **Only the ACTIVE gateway mints.** Every board in a pocket hears the same packet, and while the
-     *   derived frame id makes duplicates converge, minting on each of them still doubles the BLE flood and
-     *   leaves two byte-different copies of one post in the mesh. A PASSIVE board still *receives* the post
-     *   over BLE/NAN like everyone else — it just is not the one that speaks for the pocket (ADR 044).
+     * One rule that is easy to get wrong here: **[noteBoard] is not called.** `boardsHeard` means "radios
+     * that have sent a *Knit* frame", which is what makes "heard nobody" the ordinary state of a solo user
+     * and is why the preset-mismatch notice cannot be gated on evidence. Counting stock neighbours here would
+     * quietly change all of that.
      */
     private fun onPrimaryPacket(packet: ReceivedPacket) {
         if (packet.portnum != MeshtasticProto.PORT_TEXT_MESSAGE) return // never a post; not worth a counter
@@ -1027,9 +1013,8 @@ internal class LoraMeshTransport(
                 channels = ready.channels,
                 radio = ready.radio,
                 name = link.nodes.value[packet.from]?.longName,
-                // Our own board's transmissions are never read back in: the outbound half puts this pocket's
-                // posts on this channel, and a pocket-mate's board that briefly also thought it was ACTIVE
-                // would otherwise mint a second, un-collapsible copy of one we already have.
+                // Our own board's transmissions are never read back in: the outbound half puts this phone's
+                // posts on this channel, and they are already in the room as our own rows.
                 ownNode = ready.board.myNodeNum,
             )
         when (verdict) {
@@ -1038,16 +1023,12 @@ internal class LoraMeshTransport(
             }
 
             is LongFastPolicy.Verdict.Post -> {
-                if (!isPocketGateway()) {
-                    metrics.onMeshPostPassive()
-                    return
-                }
                 metrics.onMeshPostIngested(verdict.post.viaMqtt)
                 log(
-                    "lora meshpost from ${meshNodeLabel(packet.from.toLong())} " +
+                    "lora public post from ${meshNodeLabel(packet.from.toLong())} " +
                         "${verdict.post.body.length}ch viaMqtt=${verdict.post.viaMqtt}",
                 )
-                scope.launch { publishMeshPost(verdict.post) }
+                scope.launch { onPublicPost(verdict.post) }
             }
         }
     }

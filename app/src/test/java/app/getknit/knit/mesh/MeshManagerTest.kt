@@ -15,6 +15,8 @@ import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.crypto.SignedPrekey
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
+import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
@@ -39,7 +41,6 @@ import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
-import app.getknit.knit.mesh.protocol.MeshPostContent
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.ReactionContent
@@ -246,6 +247,10 @@ class MeshManagerTest {
          * `sendPublicPost` reads this with `.first()` — which would hang rather than fail.
          */
         val displayName = MutableStateFlow("")
+
+        /** What the board was handed by [MeshManager.sendPublicPost], and what it answers. */
+        val publicPosts = mutableListOf<Pair<String?, String>>()
+        var publicChannelRefusal: PublicPostRefusal? = null
         val manager: MeshManager
 
         init {
@@ -288,6 +293,10 @@ class MeshManagerTest {
                     metrics = metrics,
                     db = db,
                     clock = { clockNow },
+                    publicChannel = { name, body ->
+                        publicPosts += name to body
+                        publicChannelRefusal
+                    },
                 )
         }
 
@@ -395,11 +404,12 @@ class MeshManagerTest {
         }
 
     @Test
-    fun aPublicPostIsScreenedByTheRoomModeratorNotTheDirectOne() =
+    fun aPublicPostIsScreenedByTheRoomModeratorOnce() =
         runTest(UnconfinedTestDispatcher()) {
-            // `sendChat` infers the scope from the addressing shape, which for this frame — addressed to
-            // nobody — would say "not a room". A cleartext public radio channel deserves the room moderator
-            // (profanity as well as toxicity) at least as much as Nearby does.
+            // `sendChat` infers the scope from the addressing shape, which for a post addressed to nobody
+            // would say "not a room". A cleartext radio channel deserves the room moderator (profanity as well
+            // as toxicity) at least as much as Nearby does. Once: the row is written directly, never
+            // re-delivered through the inbound path.
             val rig = Rig(backgroundScope)
             val scopes = mutableListOf<Boolean>()
             coEvery { rig.textModeration.classify(any(), any()) } answers {
@@ -407,46 +417,62 @@ class MeshManagerTest {
                 TextVerdict.ALLOWED
             }
 
-            assertTrue(rig.manager.sendPublicPost("hello mesh"))
+            assertEquals(PublicPostOutcome.Queued, rig.manager.sendPublicPost("hello mesh"))
             advanceUntilIdle()
 
-            // Twice: once on the way out, once again when the local delivery runs the same inbound path
-            // every other phone in the pocket will. Both under the room scope — that is the claim.
-            assertEquals(listOf(true, true), scopes)
+            assertEquals(listOf(true), scopes)
         }
 
     @Test
-    fun aFlaggedPublicPostIsBlockedBeforeItCanReachTheAir() =
+    fun aFlaggedPublicPostIsBlockedBeforeItReachesTheBoard() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)
             coEvery { rig.textModeration.classify(any(), any()) } returns
                 TextVerdict(allowed = false, category = TextVerdict.Category.TOXICITY)
 
-            val ok = rig.manager.sendPublicPost("something abusive")
+            assertEquals(PublicPostOutcome.Blocked, rig.manager.sendPublicPost("something abusive"))
             advanceUntilIdle()
 
-            assertFalse(ok)
             assertTrue("nothing is persisted locally", rig.saved.isEmpty())
-            assertTrue("and nothing hits the wire, so no gateway ever sees it", rig.transport.sent.isEmpty())
+            assertTrue("the board never sees it", rig.publicPosts.isEmpty())
+            assertTrue("and nothing hits the wire", rig.transport.sent.isEmpty())
         }
 
     @Test
-    fun aPublicPostCarriesItsAuthorsNameSoTheGatewayNeedNotResolveIt() =
+    fun aQueuedPublicPostIsHandedToTheBoardWithTheAuthorsNameAndStoredAsOurOwnRow() =
         runTest(UnconfinedTestDispatcher()) {
-            // A gateway that has never seen this author's profile would otherwise put a node id on the air,
-            // and two gateways with different views of the directory would put different text there.
+            // The name rides beside the body so the line a stock client reads is composed behind the seam;
+            // the row is ours (no origin), on the LoRa plane, and nothing of it crosses Knit's mesh.
             val rig = Rig(backgroundScope)
             rig.displayName.value = "Alice"
 
-            assertTrue(rig.manager.sendPublicPost("hello mesh"))
+            assertEquals(PublicPostOutcome.Queued, rig.manager.sendPublicPost("hello mesh"))
             advanceUntilIdle()
 
-            val env = rig.sentFrames().single { it.type == FrameType.MESH_POST }
-            val content = WireCodec.decodePayload<MeshPostContent>(env.payload)!!
-            assertEquals("hello mesh", content.body)
-            assertEquals("Alice", content.name)
-            assertNull("no Meshtastic identity: the author has none", content.node)
-            assertNull(content.packetId)
+            assertEquals(listOf("Alice" to "hello mesh"), rig.publicPosts)
+            val row = rig.saved.single()
+            assertEquals(Conversations.MESHTASTIC, row.conversationId)
+            assertEquals("hello mesh", row.body)
+            assertEquals(rig.me.nodeId, row.senderId)
+            assertNull("our own post, so no origin", row.originNode)
+            assertEquals(DeliveryPlane.LoRa.code, row.receivedVia)
+            assertTrue("nothing crosses Knit's mesh", rig.transport.sent.isEmpty())
+            assertTrue("and nothing is custodied", rig.forwardStore.frames().isEmpty())
+        }
+
+    @Test
+    fun aRefusedPublicPostStoresNothing() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The composer keeps the draft and says why; a row that never reached the air would lie.
+            val rig = Rig(backgroundScope)
+            rig.publicChannelRefusal = PublicPostRefusal.TOO_SOON
+
+            assertEquals(PublicPostOutcome.Refused(PublicPostRefusal.TOO_SOON), rig.manager.sendPublicPost("hello mesh"))
+            advanceUntilIdle()
+
+            assertEquals(listOf(null to "hello mesh"), rig.publicPosts)
+            assertTrue(rig.saved.isEmpty())
+            assertTrue(rig.transport.sent.isEmpty())
         }
 
     // --- broadcast room (plaintext) ---

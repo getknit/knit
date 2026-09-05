@@ -83,7 +83,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
     //     `originChannel`, `originHops`, `originSnrDeci`, `originViaMqtt` (the LongFast bridge). A denormalized
     //     snapshot in the replyTo* mould, and for a stronger reason than that one: the speaker has no Knit
     //     identity and no peer row, so there is nothing on this device to resolve the name against, now or
-    //     ever. Off the wire (MeshPostContent), null/0 on every existing row — no message before this could be
+    //     ever. Local only (a heard post is never framed), null/0 on every existing row — no message before this could be
     //     a bridged post; migrated by KnitMigrations.MIGRATION_9_10.
     version = 10,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's

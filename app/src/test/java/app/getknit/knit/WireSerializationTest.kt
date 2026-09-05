@@ -9,7 +9,6 @@ import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.GroupRatchetHeader
 import app.getknit.knit.mesh.protocol.Mention
-import app.getknit.knit.mesh.protocol.MeshPostContent
 import app.getknit.knit.mesh.protocol.PrekeyInfo
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
@@ -469,66 +468,9 @@ class WireSerializationTest {
         assertTrue("group leaves are now custodied", envelope(type = FrameType.GROUP_LEAVE).isStorable())
         assertFalse("a point-to-point key request is never carried", envelope(type = FrameType.KEY_REQ).isStorable())
         assertFalse("a point-to-point blob request is never carried", envelope(type = FrameType.BLOB_REQ).isStorable())
-        assertTrue("a bridged Meshtastic post is carried", envelope(type = FrameType.MESH_POST).isStorable())
         assertFalse("a point-to-point key request is never carried", envelope(type = FrameType.KEY_REQ).isStorable())
         assertFalse("a point-to-point blob request is never carried", envelope(type = FrameType.BLOB_REQ).isStorable())
         assertFalse("a best-effort typing cue is never carried", envelope(type = FrameType.TYPING).isStorable())
-    }
-
-    @Test
-    fun `a mesh post round-trips and elides every field a gateway could not fill`() {
-        val full =
-            MeshPostContent(
-                body = "anyone around?",
-                node = 0x1234abcd,
-                packetId = 9911,
-                name = "Bob",
-                channel = "LongFast",
-                hops = 2,
-                snrDeci = -73,
-                viaMqtt = true,
-            )
-        assertEquals(full, WireCodec.decodePayload<MeshPostContent>(WireCodec.encodePayload(full)))
-
-        // A board that has never heard the speaker's NODEINFO knows no name, and one on hand-rolled radio
-        // settings reports no preset to name the channel from. Both ride absent rather than as empty strings,
-        // so the post stays small and "not known" reads differently from "known to be blank".
-        val bare = MeshPostContent(body = "hi", node = 1, packetId = 2)
-        val encoded = WireCodec.encodePayload(bare)
-        assertEquals(bare, WireCodec.decodePayload<MeshPostContent>(encoded))
-        assertFalse("an unset name must not ride", encoded.decodeToString().contains("name"))
-        assertFalse("an unset viaMqtt must not ride", encoded.decodeToString().contains("viaMqtt"))
-    }
-
-    @Test
-    fun `a post written in Knit carries no Meshtastic identity, because its author has none`() {
-        // The two shapes of one type, and the discriminator between them. An author's phone may hold no radio
-        // at all, and which gateway transmits this — under which node number, with which packet id — is
-        // decided later and elsewhere, so both ride absent rather than as zero.
-        val authored = MeshPostContent(body = "meet at the trailhead", name = "Alice")
-        val encoded = WireCodec.encodePayload(authored)
-        assertEquals(authored, WireCodec.decodePayload<MeshPostContent>(encoded))
-        assertNull("no speaker means no origin, and no origin means it renders as ours", authored.node)
-        assertFalse("an absent node must not ride", encoded.decodeToString().contains("node"))
-        assertFalse("nor an absent packet id", encoded.decodeToString().contains("packetId"))
-    }
-
-    @Test
-    fun `a build that predates the bridge decodes a mesh post, relays it, and renders nothing`() {
-        // The whole additive argument in one test. `type` is a plain String, so the decode does not throw and
-        // the router keeps its id to dedup and forward by; nothing about the payload is required for that.
-        val env =
-            envelope(
-                type = FrameType.MESH_POST,
-                id = "mp1",
-                senderId = "a",
-                payload = WireCodec.encodePayload(MeshPostContent(body = "hi", node = 1, packetId = 2)),
-            )
-        val decoded = WireCodec.decodeEnvelope(WireCodec.encodeEnvelope(env))!!
-        assertEquals(FrameType.MESH_POST, decoded.type)
-        assertEquals("mp1", decoded.id)
-        // An older decoder has no MeshPostContent at all; it sees an opaque payload and forwards it verbatim.
-        assertArrayEquals(env.payload, decoded.payload)
     }
 
     // --- signature binding (the bytes the wrapper signature covers) ---

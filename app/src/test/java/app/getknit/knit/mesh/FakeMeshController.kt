@@ -62,7 +62,7 @@ class FakeMeshController : MeshController {
     var sendChatResult = true
 
     /** The same, for [sendPublicPost]: the room moderator screens a public-channel post too. */
-    var sendPublicPostResult = true
+    var publicPostOutcome: PublicPostOutcome = PublicPostOutcome.Queued
 
     /** What [spoolStatus] answers — the Internet plane, as Diagnostics and the relay screen read it. */
     var spools: List<SpoolStatus> = emptyList()
@@ -101,9 +101,9 @@ class FakeMeshController : MeshController {
         return sendChatResult
     }
 
-    override suspend fun sendPublicPost(text: String): Boolean {
+    override suspend fun sendPublicPost(text: String): PublicPostOutcome {
         sentPublicPosts += text
-        return sendPublicPostResult
+        return publicPostOutcome
     }
 
     override suspend fun sendGroupUpdate(group: GroupInfo) {

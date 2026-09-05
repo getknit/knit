@@ -5,6 +5,7 @@ import app.getknit.knit.mesh.InboundFrame
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshPost
 import app.getknit.knit.mesh.Peer
+import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.link.FastFrameCodec
@@ -345,7 +346,7 @@ class LoraMeshTransportTest {
         // the offer goes out at exactly the midpoint, as it already does in LoraBridgeTest.
         gossip: LoraGossipPolicy = LoraGossipPolicy(random = { 0 }),
         firmware: String = "2.5.0",
-        publishMeshPost: suspend (MeshPost) -> Unit = {},
+        onPublicPost: suspend (MeshPost) -> Unit = {},
         now: () -> Long,
     ): Rig {
         val link = FakeMeshtasticLink(nodeNum, air, channelName, firmware)
@@ -357,7 +358,7 @@ class LoraMeshTransportTest {
                 config = config,
                 selfProfile = profileSource(selfNode),
                 farFrames = farFrames,
-                publishMeshPost = publishMeshPost,
+                onPublicPost = onPublicPost,
                 scope = scope,
                 metrics = metrics,
                 clock = now,
@@ -431,7 +432,7 @@ class LoraMeshTransportTest {
                 "alice",
                 backgroundScope,
                 config = MutableStateFlow(LoraConfig("AA:1", 1)),
-                publishMeshPost = { posts += it },
+                onPublicPost = { posts += it },
             ) { testScheduler.currentTime }
         r.transport.start()
         // After runCurrent, not before: start() only *queues* the transport's jobs, and the link's own
@@ -528,11 +529,11 @@ class LoraMeshTransportTest {
         }
 
     @Test
-    fun onlyTheActiveGatewayMintsAPublicPost() =
+    fun aPassiveGatewayStillReadsItsOwnBoardsChannel() =
         runTest {
-            // Every board in a pocket hears the same packet. The derived frame id makes the duplicates
-            // converge, but minting on each still doubles the BLE flood and leaves two byte-different copies
-            // of one post in the mesh — so the pocket's elected speaker is the one that publishes (ADR 044).
+            // ADR 044's election decides who speaks for the pocket on Knit's channel. It has no say here: the
+            // room is this phone's own window onto its own board, nothing heard leaves the phone, and a
+            // board-holder standing down on the Knit hop must not go blind on the channel it paid for.
             val air = FakeMeshtasticAir()
             val posts = mutableListOf<MeshPost>()
             val r = bridgeRig(air, posts)
@@ -550,9 +551,9 @@ class LoraMeshTransportTest {
             r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 5u)
             runCurrent()
 
-            assertTrue("a passive board publishes nothing", posts.isEmpty())
-            assertEquals("but it still heard it", 1L, r.metrics.snapshot().meshPostHeard)
-            assertEquals(1L, r.metrics.snapshot().meshPostPassive)
+            assertEquals("the passive board still reads its own channel", 1, posts.size)
+            assertEquals(1L, r.metrics.snapshot().meshPostHeard)
+            assertEquals(1L, r.metrics.snapshot().meshPostIngested)
             r.transport.stop()
         }
 
@@ -564,7 +565,7 @@ class LoraMeshTransportTest {
             // decided off the bound slot rather than off ADR 045's provisioning rule.
             val air = FakeMeshtasticAir()
             val posts = mutableListOf<MeshPost>()
-            val a = rig(air, 1u, "alice", backgroundScope, publishMeshPost = { posts += it }) { testScheduler.currentTime }
+            val a = rig(air, 1u, "alice", backgroundScope, onPublicPost = { posts += it }) { testScheduler.currentTime }
             val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
             a.transport.start()
             b.transport.start()
@@ -591,7 +592,7 @@ class LoraMeshTransportTest {
             val air = FakeMeshtasticAir()
             val r = bridgeRig(air, mutableListOf())
 
-            assertTrue(r.transport.postToPublicChannel("Alice", "meet at the trailhead"))
+            assertNull(r.transport.postToPublicChannel("Alice", "meet at the trailhead"))
             runCurrent()
 
             assertEquals(
@@ -629,10 +630,11 @@ class LoraMeshTransportTest {
         }
 
     @Test
-    fun onlyTheActiveGatewayPutsAPostOnTheAir() =
+    fun aPassiveGatewayStillPostsThroughItsOwnBoard() =
         runTest {
-            // Every phone in a pocket sees every post; exactly one transmits it. A passive board refusing is
-            // the ordinary shape here, not a fault, so it gets its own counter rather than a refusal reason.
+            // Each user posts through their own board. Standing down on Knit's hop (ADR 044) says nothing
+            // about the user's own channel, and a post that silently went nowhere is the failure this room's
+            // whole design exists to avoid.
             val air = FakeMeshtasticAir()
             val r = bridgeRig(air, mutableListOf())
             // A co-pocket rival with a lower publisher key takes the ACTIVE role; we stand down (ADR 044).
@@ -645,11 +647,16 @@ class LoraMeshTransportTest {
             )
             runCurrent()
 
-            assertFalse(r.transport.postToPublicChannel("Alice", "hello mesh"))
+            assertNull(r.transport.postToPublicChannel("Alice", "hello mesh"))
             runCurrent()
 
-            assertTrue(r.link.sent.isEmpty())
-            assertEquals(1L, r.metrics.snapshot().publicPostPassive)
+            assertEquals(
+                "Alice: hello mesh",
+                r.link.sent
+                    .single()
+                    .decodeToString(),
+            )
+            assertEquals(1L, r.metrics.snapshot().publicPostSent)
             r.transport.stop()
         }
 
@@ -662,8 +669,8 @@ class LoraMeshTransportTest {
             val air = FakeMeshtasticAir()
             val r = bridgeRig(air, mutableListOf())
 
-            assertTrue(r.transport.postToPublicChannel("Alice", "first"))
-            assertFalse(r.transport.postToPublicChannel("Alice", "second"))
+            assertNull(r.transport.postToPublicChannel("Alice", "first"))
+            assertEquals(PublicPostRefusal.TOO_SOON, r.transport.postToPublicChannel("Alice", "second"))
             advanceTimeBy(LoraMeshTransport.PUBLIC_POST_FLOOR_MS)
             runCurrent()
 
@@ -683,7 +690,7 @@ class LoraMeshTransportTest {
             val air = FakeMeshtasticAir()
             val r = bridgeRig(air, mutableListOf(), primaryName = "Book club")
 
-            assertFalse(r.transport.postToPublicChannel("Alice", "hello mesh"))
+            assertEquals(PublicPostRefusal.NOT_STOCK_PRIMARY, r.transport.postToPublicChannel("Alice", "hello mesh"))
             runCurrent()
 
             assertTrue(r.link.sent.isEmpty())
@@ -704,7 +711,7 @@ class LoraMeshTransportTest {
             r.transport.start()
             runCurrent()
 
-            assertFalse(r.transport.postToPublicChannel("Alice", "hello mesh"))
+            assertEquals(PublicPostRefusal.KNIT_ON_PRIMARY, r.transport.postToPublicChannel("Alice", "hello mesh"))
             runCurrent()
 
             // Not "nothing was sent" and not "nothing went to index 0" — this rig beacons its own profile

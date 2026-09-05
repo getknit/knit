@@ -1,39 +1,39 @@
 package app.getknit.knit.mesh
 
 /**
- * Publishes a post overheard on the foreign mesh's public channel into Knit as a signed
- * [app.getknit.knit.mesh.protocol.FrameType.MESH_POST] frame (the LongFast bridge's inbound half).
+ * Delivers a post the bound board heard on its own primary (slot 0) channel into the Meshtastic room —
+ * locally, and nowhere else.
  *
  * It is a seam for the same reason [BridgeFrameSource] and [FarPeerFrameSource] are: `mesh/lora/` is pure and
- * imports neither Android nor the crypto stack, while minting a frame means signing it and delivering it means
- * writing a Room row. The transport decides *whether* a packet is a public post ([app.getknit.knit.mesh.lora.LongFastPolicy]);
- * this decides what a Knit frame made of one looks like.
+ * imports neither Android nor the data layer, while delivering a post means writing a Room row. The transport
+ * decides *whether* a packet is a post ([app.getknit.knit.mesh.lora.LongFastPolicy]); this decides what a
+ * message row made of one looks like.
+ *
+ * Nothing that passes through here is signed, originated, custodied or fanned out. The room is this phone's
+ * own window onto its own radio's channel: a phone with no board never sees these posts, and two phones with
+ * boards each hear the channel for themselves. That is what makes the room a mirror rather than a bridge, and
+ * what keeps a foreign mesh's traffic off Knit's custody digests entirely.
  *
  * Implemented by [MeshManager]. Late-bound, like the two seams above — the transport is constructed first.
  */
 interface MeshPostSink {
     /**
-     * Mints, signs and floods one bridged post, and delivers it locally.
+     * Delivers one heard post into the room.
      *
-     * The frame is ours: we sign it, and our node id is its `senderId`, because the Meshtastic speaker has no
-     * Knit identity and nothing on an unauthenticated public channel could be held to one. What the speaker
-     * said about itself rides inside the payload as an attribution.
-     *
-     * Idempotent by construction rather than by bookkeeping. The frame id is derived from the post
-     * ([app.getknit.knit.mesh.protocol.FrameId.forMeshPost]), so a second board hearing the same packet mints
-     * the same id, and the router's `SeenSet` plus `MessageDao.insertIfAbsent` collapse the copies. Calling it
-     * twice for one packet costs a signature and changes nothing.
+     * Idempotent by construction rather than by bookkeeping. The row id is derived from the post
+     * ([app.getknit.knit.mesh.protocol.FrameId.forMeshPost]), so the board replaying a packet it queued while
+     * the phone was away lands on the row it already wrote (`MessageDao.insertIfAbsent`). Calling it twice
+     * for one packet changes nothing.
      */
-    suspend fun publishMeshPost(post: MeshPost)
+    suspend fun onPublicPostHeard(post: MeshPost)
 }
 
 /**
- * One post overheard on the foreign mesh's public channel, as the gateway's board heard it — what
- * `mesh/lora/LongFastPolicy` produces out of a raw packet and [MeshPostSink] turns into a signed Knit frame.
+ * One post heard on the board's primary channel, as the board heard it — what `mesh/lora/LongFastPolicy`
+ * produces out of a raw packet and [MeshPostSink] turns into a message row.
  *
  * Node numbers are Meshtastic's unsigned 32 bits, widened to `Long` here at the boundary where they stop
- * being the radio's and start being the wire's — CBOR has no unsigned 32-bit form worth spending, and this is
- * the type both sides of that encoding are written against.
+ * being the radio's and start being the row's — the type the origin columns are written against.
  *
  * It lives beside the sink rather than in `mesh/lora/`, where it is produced, because the sink is the seam:
  * the whole point of that package being internal is that nothing above it needs to know a Meshtastic board
@@ -51,13 +51,13 @@ data class MeshPost(
 )
 
 /**
- * The bridged-post attribution as it reaches storage: what the foreign mesh said about the speaker, and how
- * the post got to this pocket. [MeshPost] once it has crossed a frame, so the packet id — which has already
- * done its one job, deriving the frame id — is gone, and what is left is exactly what the row keeps.
+ * The heard-post attribution as it reaches storage: what the channel said about the speaker, and how the post
+ * reached this board. [MeshPost] once the packet id has done its one job — deriving the row id — and what is
+ * left is exactly what the row keeps.
  *
  * Passed to `InboundPipeline.deliverChat` as one value rather than six loose parameters, for the reason the
  * sealed [app.getknit.knit.mesh.crypto.MessageContent] is: it keeps the ordinary delivery path one shape,
- * with the bridged case as a nullable beside it rather than a second body.
+ * with the heard case as a nullable beside it rather than a second body.
  */
 data class MeshPostOrigin(
     val node: Long,
@@ -66,16 +66,22 @@ data class MeshPostOrigin(
     val hops: Int?,
     val snrDeci: Int?,
     val viaMqtt: Boolean,
+    /**
+     * The Knit contact whose profile claims [node] as its bound board, resolved once at ingest and frozen on
+     * the row — null for a stranger. A node-number match against a self-asserted profile field, never a
+     * signature, so the UI keeps the unverified styling for it.
+     */
+    val peerId: String? = null,
 )
 
 /**
  * How Meshtastic writes a node number: `!` and eight lowercase hex digits, zero-padded (`NodeInfo`'s
  * `User.id`). What every Meshtastic client shows for a node it has no name for, so it is what Knit shows too —
- * a bridged post from a stranger reads the same here as it does there.
+ * a post from a stranger reads the same here as it does there.
  *
- * It lives beside the bridged-post types rather than in `mesh/lora/`, where the packets are, because its
- * callers are all on the far side of a frame — the chat list, the bubble, the notification — and none of them
- * may depend on the radio package.
+ * It lives beside the heard-post types rather than in `mesh/lora/`, where the packets are, because its callers
+ * are all on the far side of the seam — the chat list, the bubble, the notification — and none of them may
+ * depend on the radio package.
  */
 fun meshNodeLabel(node: Long): String = "!%08x".format(node and MESH_NODE_MASK)
 

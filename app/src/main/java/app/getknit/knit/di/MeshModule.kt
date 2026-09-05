@@ -154,9 +154,9 @@ val meshModule =
         single<FarPeerFrameSource> { get<MeshManager>() }
         single<BridgeFrameSource> { get<MeshManager>() }
         single<MeshPostSink> { get<MeshManager>() }
-        // The bridge's outbound half. Bound to the LoRa transport, and reached from MeshManager through a
-        // lambda for the same reason MeshPostSink is reached from the transport through one: the two ends
-        // construct each other, so exactly one of the two edges has to resolve late.
+        // The Meshtastic room's outbound half. Bound to the LoRa transport, and reached from MeshManager
+        // through a lambda for the same reason MeshPostSink is reached from the transport through one: the
+        // two ends construct each other, so exactly one of the two edges has to resolve late.
         single<PublicChannelSink> { get<LoraMeshTransport>() }
         single {
             val settings = get<SettingsStore>()
@@ -175,7 +175,7 @@ val meshModule =
                 farFrames = { get<FarPeerFrameSource>().framesFor(it) },
                 offerPrefixes = { get<BridgeFrameSource>().offerPrefixes(it) },
                 framesMissing = { prefixes, limit, dms -> get<BridgeFrameSource>().framesMissing(prefixes, limit, dms) },
-                publishMeshPost = { get<MeshPostSink>().publishMeshPost(it) },
+                onPublicPost = { get<MeshPostSink>().onPublicPostHeard(it) },
                 scope = get(),
                 metrics = get(),
                 clock = SystemClock::elapsedRealtime,

@@ -97,16 +97,8 @@ interface ForwardDao {
     @Query("SELECT id, expiresAt FROM forward_store WHERE expiresAt >= :now")
     suspend fun liveIdExpiries(now: Long): List<ForwardIdExpiry>
 
-    /**
-     * How many live carried frames a single [senderId] accounts for — enforces the per-sender quota.
-     *
-     * Bridged Meshtastic posts are excluded, and have their own bucket instead. They are all signed by the one
-     * phone whose board heard them, so on that gateway a busy public channel would otherwise fill its own
-     * sender bucket and evict its user's chat, reactions, receipts and profile out of custody — traffic it
-     * originated, in favour of traffic it merely overheard. Convergent despite being a per-type rule: the
-     * clause names a type no build without it ever stores, so it counts identically everywhere.
-     */
-    @Query("SELECT COUNT(*) FROM forward_store WHERE senderId = :senderId AND type != 'meshpost' AND expiresAt >= :now")
+    /** How many live carried frames a single [senderId] accounts for — enforces the per-sender quota. */
+    @Query("SELECT COUNT(*) FROM forward_store WHERE senderId = :senderId AND expiresAt >= :now")
     suspend fun countBySender(
         senderId: String,
         now: Long,
@@ -129,14 +121,6 @@ interface ForwardDao {
             "WHERE type = 'chat' AND recipientId IS NULL AND groupId IS NULL AND expiresAt >= :now",
     )
     suspend fun countBroadcast(now: Long): Int
-
-    /**
-     * How many live carried **bridged Meshtastic posts** are held — enforces their own quota. A separate bucket
-     * from the broadcast room's on purpose: a busy public LongFast must not be able to evict Nearby's history,
-     * and Nearby must not be able to evict the bridge's.
-     */
-    @Query("SELECT COUNT(*) FROM forward_store WHERE type = 'meshpost' AND expiresAt >= :now")
-    suspend fun countMeshPost(now: Long): Int
 
     /**
      * Drops the [n] oldest **live** rows (by [ForwardEntity.sentAt], id as tie-break) under global-cap pressure.
@@ -186,17 +170,6 @@ interface ForwardDao {
             "AND expiresAt >= :now ORDER BY sentAt ASC, id ASC LIMIT :n)",
     )
     suspend fun evictOldestBroadcast(
-        n: Int,
-        now: Long,
-    )
-
-    /** Evicts the [n] oldest-by-sentAt **live** bridged Meshtastic posts (keeps the newest per the quota). */
-    @Query(
-        "DELETE FROM forward_store WHERE id IN " +
-            "(SELECT id FROM forward_store WHERE type = 'meshpost' AND expiresAt >= :now " +
-            "ORDER BY sentAt ASC, id ASC LIMIT :n)",
-    )
-    suspend fun evictOldestMeshPost(
         n: Int,
         now: Long,
     )

@@ -9,7 +9,7 @@ enum class ConversationKind {
     DM,
 
     /**
-     * The bridged Meshtastic public channel ([Conversations.MESHTASTIC]) — a second public room, and the only
+     * The Meshtastic room ([Conversations.MESHTASTIC]) — the paired board's primary channel, and the only
      * kind whose authors are not Knit peers at all. Separate from [NEARBY] because almost nothing Nearby means
      * is true here: no presence, no open-to-chat, no receipts, no verified key, and a stranger's name on every
      * post. Keeping the two apart is what stops any of that leaking either way.
@@ -30,8 +30,9 @@ object Conversations {
     const val NEARBY: String = "nearby"
 
     /**
-     * Stable id of the **bridged Meshtastic public channel** — the posts a paired board overhears on its
-     * primary, re-published into Knit by whichever phone is its pocket's gateway (the LongFast bridge).
+     * Stable id of the **Meshtastic room** — the paired board's own primary (slot 0) channel, mirrored into a
+     * room on this phone and this phone only: what the board hears lands here, and what is typed here leaves
+     * through the board. Nothing in it ever crosses Knit's mesh.
      *
      * The hyphen is the same disjointness trick [GROUP_ID_PREFIX] uses: a node id is 26 characters of base32
      * and can contain neither, so this can never collide with a DM thread. The `m-` shape leaves room for a

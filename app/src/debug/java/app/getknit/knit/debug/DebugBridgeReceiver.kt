@@ -41,6 +41,7 @@ import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshStartGate
+import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.lora.BoardOwner
 import app.getknit.knit.mesh.lora.BoardSettings
@@ -338,9 +339,21 @@ class DebugBridgeReceiver :
                     groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo(), replyTo = replyTo) }
                 }
 
-                // The bridged Meshtastic room is read-only — nothing this device sends could reach it.
+                // The Meshtastic room posts through this phone's own board, and the outcome says why not.
                 ConversationKind.MESHTASTIC -> {
-                    return reply("error", "the bridged Meshtastic room is receive-only: $conv")
+                    return when (val outcome = mesh.sendPublicPost(text)) {
+                        PublicPostOutcome.Queued -> {
+                            reply("ok", "queued on the board for $conv")
+                        }
+
+                        PublicPostOutcome.Blocked -> {
+                            reply("blocked", "blocked by on-device content filter")
+                        }
+
+                        is PublicPostOutcome.Refused -> {
+                            reply("refused", "the board refused it: ${outcome.reason}").put("reason", outcome.reason.name)
+                        }
+                    }.put("conversation", conv)
                 }
             }
         return when (sent) {
@@ -387,9 +400,9 @@ class DebugBridgeReceiver :
                     groups.find(conv)?.let { mesh.sendChat(text, attachment = ingested, group = it.toGroupInfo()) }
                 }
 
-                // Read-only, and it would carry no attachment even if it were not.
+                // The radio channel carries text only.
                 ConversationKind.MESHTASTIC -> {
-                    return reply("error", "the bridged Meshtastic room is receive-only: $conv")
+                    return reply("error", "the Meshtastic room carries text only: $conv")
                 }
             }
         return when (sent) {
@@ -952,21 +965,17 @@ class DebugBridgeReceiver :
             .put("loraPassive", snap.loraPassive)
             .put("loraSkippedLinked", snap.loraSkippedLinked)
             .put("loraTickDeferred", snap.loraTickDeferred)
-            // The LongFast bridge's inbound half — the receive-only trial's whole output. `heard` is every
-            // chat packet on the public channel, `ingested` what survived the filters, and the difference is
-            // itemised in `refusedByReason`; `viaMqtt` is the share that came off somebody's uplink rather
-            // than off the air, which is what decides whether hiding those is a setting or the default.
+            // The Meshtastic room's inbound half. `heard` is every chat packet on the board's primary channel,
+            // `ingested` what survived the filters, and the difference is itemised in `refusedByReason`;
+            // `viaMqtt` is the share that came off somebody's uplink rather than off the air.
             .put("meshPostHeard", snap.meshPostHeard)
             .put("meshPostIngested", snap.meshPostIngested)
             .put("meshPostViaMqtt", snap.meshPostViaMqtt)
-            .put("meshPostPassive", snap.meshPostPassive)
             .put("meshPostRefusedByReason", JSONObject(snap.meshPostRefusedByReason))
-            // The outbound half. Unlike the five above these cost airtime, so read `publicPostSent` against
-            // `airtime.publicMs`/`publicBudgetMs` to say whether the quota is set right. A high refusal count
-            // is the ordinary shape rather than a fault: every phone in a pocket sees every post, and only
-            // the ACTIVE gateway transmits one.
+            // The outbound half. Unlike the four above these cost airtime, so read `publicPostSent` against
+            // `airtime.publicMs`/`publicBudgetMs` to say whether the quota is set right. Every refusal here
+            // was shown to the user at the composer.
             .put("publicPostSent", snap.publicPostSent)
-            .put("publicPostPassive", snap.publicPostPassive)
             .put("publicPostRefusedByReason", JSONObject(snap.publicPostRefusedByReason))
 
     /**

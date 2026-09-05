@@ -38,12 +38,10 @@ class ForwardRepository(
     private val db: KnitDatabase,
     private val ttlMs: Long = DEFAULT_TTL_MS,
     private val broadcastTtlMs: Long = DEFAULT_BROADCAST_TTL_MS,
-    private val meshPostTtlMs: Long = DEFAULT_MESHPOST_TTL_MS,
     private val maxRows: Int = DEFAULT_MAX_ROWS,
     private val maxPerSender: Int = DEFAULT_MAX_PER_SENDER,
     private val maxPerGroup: Int = DEFAULT_MAX_PER_GROUP,
     private val maxBroadcast: Int = DEFAULT_MAX_BROADCAST,
-    private val maxMeshPost: Int = DEFAULT_MAX_MESHPOST,
 ) : ForwardStore {
     // Serializes store/remove/sweepExpired so each in-memory [digest] update commits atomically with its
     // forward_store row write: a Room transaction can't enroll the in-memory digest, and a concurrent sweep's
@@ -66,10 +64,6 @@ class ForwardRepository(
         // and profiles share its null recipient/group shape but are higher-value metadata, so they must be
         // bucketed apart (by type) — else they'd inherit the broadcast quota/TTL and be starved or expire early.
         val isBroadcastChat = env.type == FrameType.CHAT && env.recipientId == null && groupId == null
-        // A bridged Meshtastic post is the *other* ambient class, and gets its own bucket and TTL for the same
-        // reason broadcast chat has its own: it is high-volume, no-ack, no-addressee chatter — and neither room
-        // may starve the other. Keyed on the type alone, so every node classifies a frame identically.
-        val isMeshPost = env.type == FrameType.MESH_POST
         // Broadcast-room chat is ambient, higher-volume, no-ack chatter, so it gets a shorter TTL than an
         // addressed DM/group message or a carried metadata frame (reaction/receipt/profile keep the full
         // TTL, so they never expire before the message/peer they describe). Expiry is keyed off the
@@ -79,13 +73,7 @@ class ForwardRepository(
         // peer then re-served it via the id-diff and it re-stored with a fresh full TTL, so broadcast/group
         // frames (bounded only by TTL — no ack) never died mesh-wide and the digests churned. Same
         // convergence rule as the sentAt-ordered quota eviction below.
-        val expiresAt =
-            env.sentAt +
-                when {
-                    isBroadcastChat -> broadcastTtlMs
-                    isMeshPost -> meshPostTtlMs
-                    else -> ttlMs
-                }
+        val expiresAt = env.sentAt + if (isBroadcastChat) broadcastTtlMs else ttlMs
         // Dead on arrival: a frame past its frame-global expiry is one every node has already dropped (or never
         // held). Persisting it would plant an expired row that the live-only content digest refuses to fold, so
         // it would be pure invisible residue — and the refusal is also what stops a skewed-clock peer's re-serve
@@ -128,7 +116,7 @@ class ForwardRepository(
         // transaction never leaves the digest ahead of the table and no concurrent store/sweep interleaves between
         // the commit and the update.
         mutex.withLock {
-            val didEvict = db.withWriteTransaction { insertAndTrim(row, isBroadcastChat, isMeshPost, now) }
+            val didEvict = db.withWriteTransaction { insertAndTrim(row, isBroadcastChat, now) }
             // Eviction removed ids we don't track individually here, so rebuild the fingerprint wholesale;
             // otherwise fold the single new id in incrementally (the hot path when no bucket is over quota).
             if (didEvict) rebuildDigest(now) else digest.add(row.id, row.expiresAt, now)
@@ -138,7 +126,7 @@ class ForwardRepository(
 
     /**
      * Inserts [row] and trims each over-quota bucket to its newest-N by the frame-global sentAt, in the fixed
-     * order (sender, group, broadcast, meshpost, global) so every node keeps the identical set; returns whether
+     * order (sender, group, broadcast, global) so every node keeps the identical set; returns whether
      * any eviction ran. Runs inside the caller's [db] transaction.
      *
      * Evict a bucket's *oldest-by-sentAt* rows rather than refusing the new one, and apply the quotas to our own
@@ -156,28 +144,17 @@ class ForwardRepository(
     private suspend fun insertAndTrim(
         row: ForwardEntity,
         isBroadcastChat: Boolean,
-        isMeshPost: Boolean,
         now: Long,
     ): Boolean {
         dao.insert(row)
         val senderId = row.senderId
         val groupId = row.groupId
-        // The per-sender bucket deliberately does not count bridged posts (see ForwardDao.countBySender), so
-        // the gateway's own traffic keeps its full quota however loud the public channel gets.
-        var evicted =
-            if (isMeshPost) {
-                false
-            } else {
-                trim(dao.countBySender(senderId, now) - maxPerSender) { dao.evictOldestBySender(senderId, it, now) }
-            }
+        var evicted = trim(dao.countBySender(senderId, now) - maxPerSender) { dao.evictOldestBySender(senderId, it, now) }
         if (groupId != null) {
             evicted = trim(dao.countByGroup(groupId, now) - maxPerGroup) { dao.evictOldestByGroup(groupId, it, now) } || evicted
         }
         if (isBroadcastChat) {
             evicted = trim(dao.countBroadcast(now) - maxBroadcast) { dao.evictOldestBroadcast(it, now) } || evicted
-        }
-        if (isMeshPost) {
-            evicted = trim(dao.countMeshPost(now) - maxMeshPost) { dao.evictOldestMeshPost(it, now) } || evicted
         }
         return trim(dao.count(now) - maxRows) { dao.evictOldest(it, now) } || evicted
     }
@@ -260,21 +237,5 @@ class ForwardRepository(
 
         /** Cap carried broadcast-room frames, so ambient chatter can't crowd out addressed messages. */
         const val DEFAULT_MAX_BROADCAST = 200
-
-        /**
-         * Carry a bridged Meshtastic post for the same window as a Nearby-room post: the two are the same kind
-         * of thing — ambient, unaddressed, unackable public chatter whose only bound is time and volume.
-         *
-         * **Convergence-critical, exactly like [DEFAULT_BROADCAST_TTL_MS].** Two builds that disagree about
-         * this number hold different live sets continuously and churn the cue plane against each other for the
-         * whole difference; change it like a wire change, not like a tuning knob.
-         */
-        const val DEFAULT_MESHPOST_TTL_MS = 6 * 60 * 60_000L
-
-        /**
-         * Cap carried bridged posts. Its own bucket rather than a share of [DEFAULT_MAX_BROADCAST], so a busy
-         * public LongFast cannot evict Nearby's history and a busy Nearby cannot evict the bridge's.
-         */
-        const val DEFAULT_MAX_MESHPOST = 200
     }
 }

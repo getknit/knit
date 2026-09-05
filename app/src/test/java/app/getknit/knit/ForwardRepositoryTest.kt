@@ -10,7 +10,6 @@ import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
-import app.getknit.knit.mesh.protocol.MeshPostContent
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -103,40 +102,6 @@ class ForwardRepositoryTest : RoomDbTest() {
                 sentAt = sentAt,
                 recipientId = recipientId,
                 payload = WireCodec.encodePayload(content),
-            )
-        return CarriedFrame(env, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
-    }
-
-    /** A bridged Meshtastic post: the gateway signs it, so its senderId is a Knit node like any other frame. */
-    private fun meshPost(
-        id: String,
-        sender: String,
-        sentAt: Long,
-    ): CarriedFrame {
-        val env =
-            RelayEnvelope(
-                type = FrameType.MESH_POST,
-                id = id,
-                senderId = sender,
-                sentAt = sentAt,
-                payload = WireCodec.encodePayload(MeshPostContent(body = "hi", node = 1, packetId = 2)),
-            )
-        return CarriedFrame(env, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
-    }
-
-    /** A post written in Knit for the bridged room — the same type, with no Meshtastic identity on it. */
-    private fun publicPost(
-        id: String,
-        sender: String,
-        sentAt: Long,
-    ): CarriedFrame {
-        val env =
-            RelayEnvelope(
-                type = FrameType.MESH_POST,
-                id = id,
-                senderId = sender,
-                sentAt = sentAt,
-                payload = WireCodec.encodePayload(MeshPostContent(body = "hi", name = "Alice")),
             )
         return CarriedFrame(env, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
     }
@@ -291,68 +256,6 @@ class ForwardRepositoryTest : RoomDbTest() {
                     now = 1_000L,
                 ),
             )
-        }
-
-    @Test
-    fun `a busy public channel cannot evict the gateway's own traffic`() =
-        runTest {
-            // The gateway signs every bridged post, so on that one phone they all land in its own sender
-            // bucket unless the classification keeps them out. Three posts against a per-sender quota of two
-            // must cost the gateway's own DMs nothing.
-            val dao = db.forwardDao()
-            val repo = ForwardRepository(dao, StoreDigest { 0L }, db, maxPerSender = 2, maxMeshPost = 10)
-            repo.store(dm("mine_1", sender = "gw", sentAt = 100L), ForwardStore.ORIGIN_SELF, now = 0L)
-            repo.store(dm("mine_2", sender = "gw", sentAt = 200L), ForwardStore.ORIGIN_SELF, now = 0L)
-            repeat(3) { i ->
-                repo.store(meshPost("mp_$i", sender = "gw", sentAt = 300L + i), ForwardStore.ORIGIN_SELF, now = 0L)
-            }
-
-            assertTrue("the gateway's own DMs survive", dao.exists("mine_1") && dao.exists("mine_2"))
-            assertEquals(3, dao.countMeshPost(now = 0L))
-        }
-
-    @Test
-    fun `bridged posts trim to their own quota, newest-by-sentAt, leaving the room alone`() =
-        runTest {
-            val dao = db.forwardDao()
-            val repo = ForwardRepository(dao, StoreDigest { 0L }, db, maxMeshPost = 2)
-            repo.store(chat("room", "S", 1L, null, ChatContent(body = "x")), ForwardStore.ORIGIN_RELAY, now = 0L)
-            listOf(10L, 20L, 30L).forEach { at ->
-                repo.store(meshPost("mp_$at", sender = "gw", sentAt = at), ForwardStore.ORIGIN_RELAY, now = 0L)
-            }
-
-            // Oldest-by-sentAt goes, on every node alike — the same frame-global key every other bucket uses,
-            // which is what keeps two nodes' live sets (and so their digests) identical.
-            assertFalse(dao.exists("mp_10"))
-            assertTrue(dao.exists("mp_20") && dao.exists("mp_30"))
-            assertTrue("Nearby history is never collateral of the bridge's quota", dao.exists("room"))
-        }
-
-    @Test
-    fun `a bridged post takes the ambient TTL, not the addressed one`() =
-        runTest {
-            val dao = db.forwardDao()
-            val repo = ForwardRepository(dao, StoreDigest { 0L }, db, ttlMs = 10_000L, meshPostTtlMs = 1_000L)
-            repo.store(meshPost("mp", sender = "gw", sentAt = 0L), ForwardStore.ORIGIN_RELAY, now = 0L)
-            repo.store(dm("dm", sender = "gw", sentAt = 0L), ForwardStore.ORIGIN_RELAY, now = 0L)
-
-            assertEquals(setOf("mp", "dm"), dao.liveIds(now = 500L).toSet())
-            assertEquals("the bridged post lapses first", setOf("dm"), dao.liveIds(now = 2_000L).toSet())
-        }
-
-    @Test
-    fun `a post written in Knit is custodied exactly like an overheard one`() =
-        runTest {
-            // Both shapes are one type, and every custody rule keys on the type alone — which is what makes
-            // the classification convergent: two nodes decide identically without decoding the payload.
-            val dao = db.forwardDao()
-            val repo = ForwardRepository(dao, StoreDigest { 0L }, db, ttlMs = 10_000L, meshPostTtlMs = 1_000L, maxMeshPost = 2)
-            repo.store(publicPost("pp10", sender = "me", sentAt = 10L), ForwardStore.ORIGIN_SELF, now = 0L)
-            repo.store(meshPost("mp20", sender = "gw", sentAt = 20L), ForwardStore.ORIGIN_RELAY, now = 0L)
-            repo.store(publicPost("pp30", sender = "me", sentAt = 30L), ForwardStore.ORIGIN_SELF, now = 0L)
-
-            assertEquals("one quota, oldest out", setOf("mp20", "pp30"), dao.liveIds(now = 0L).toSet())
-            assertEquals("and one TTL", emptySet<String>(), dao.liveIds(now = 2_000L).toSet())
         }
 
     @Test

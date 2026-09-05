@@ -55,7 +55,6 @@ import app.getknit.knit.mesh.protocol.GroupSeed
 import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
-import app.getknit.knit.mesh.protocol.MeshPostContent
 import app.getknit.knit.mesh.protocol.PrekeyInfo
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
@@ -293,7 +292,6 @@ class InboundPipelineTest {
         var classifyScopes: MutableList<Boolean>? = null
 
         /** `(name, body)` for every post the pipeline handed to the foreign public channel. */
-        val publicPosts = mutableListOf<Pair<String?, String>>()
         val pipeline: InboundPipeline
 
         init {
@@ -377,10 +375,6 @@ class InboundPipelineTest {
                     redistributeGroupKey = { groupId, requester -> redistributed += groupId to requester },
                     flushGroupKeys = { member, force -> groupKeysFlushed += member to force },
                     replayGroupCustody = { groupId, senderId -> custodyReplays += groupId to senderId },
-                    publicChannel = { name, body ->
-                        publicPosts += name to body
-                        true
-                    },
                 )
         }
 
@@ -433,50 +427,6 @@ class InboundPipelineTest {
                 senderId = author.nodeId,
                 sentAt = 5L,
                 payload = WireCodec.encodePayload(ChatContent(body = body)),
-            )
-
-        /** A bridged Meshtastic post: [author] is the *gateway* that heard it, never the speaker. */
-        fun meshPost(
-            author: Party,
-            id: String,
-            body: String,
-            node: Long = 0x1234abcd,
-            name: String? = "Bob",
-            viaMqtt: Boolean = false,
-        ): RelayEnvelope =
-            RelayEnvelope(
-                type = FrameType.MESH_POST,
-                id = id,
-                senderId = author.nodeId,
-                sentAt = 5L,
-                payload =
-                    WireCodec.encodePayload(
-                        MeshPostContent(
-                            body = body,
-                            node = node,
-                            packetId = 9911,
-                            name = name,
-                            channel = "LongFast",
-                            hops = 2,
-                            snrDeci = -73,
-                            viaMqtt = viaMqtt,
-                        ),
-                    ),
-            )
-
-        /** A post written in Knit for the bridged room: no Meshtastic identity, because its author has none. */
-        fun publicPost(
-            author: Party,
-            id: String,
-            body: String,
-            name: String? = "Alice",
-        ): RelayEnvelope =
-            RelayEnvelope(
-                type = FrameType.MESH_POST,
-                id = id,
-                senderId = author.nodeId,
-                sentAt = 5L,
-                payload = WireCodec.encodePayload(MeshPostContent(body = body, name = name)),
             )
 
         /** An E2E DM chat frame from [author] addressed to [to], sealed to [to]'s bundle. */
@@ -2223,188 +2173,144 @@ class InboundPipelineTest {
         return received
     }
 
-    // --- The LongFast bridge: a post overheard on a foreign mesh's public channel, re-published by the
-    //     gateway whose board heard it. Its author is an attribution, never an identity. ---
+    // --- The Meshtastic room: a post the bound board heard on its primary channel, delivered locally. Its
+    //     author is an attribution, never an identity, and nothing about it ever leaves this phone. ---
+
+    private fun heardPost(
+        body: String,
+        node: Long = 0x1234abcd,
+        packetId: Long = 9911,
+        name: String? = "Bob",
+        viaMqtt: Boolean = false,
+    ) = MeshPost(
+        node = node,
+        packetId = packetId,
+        body = body,
+        name = name,
+        channel = "LongFast",
+        hops = 2,
+        snrDeci = -73,
+        viaMqtt = viaMqtt,
+    )
 
     @Test
-    fun aBridgedMeshPostLandsInItsOwnRoomWithItsSpeakerAttributed() =
+    fun aHeardPostLandsInItsOwnRoomWithItsSpeakerAttributed() =
         runTest {
             val rig = Rig(backgroundScope)
-            val gateway = party()
-            rig.pin(gateway)
 
-            rig.deliver(gateway, rig.meshPost(gateway, id = "mp1", body = "anyone around?", viaMqtt = true))
+            rig.pipeline.deliverMeshPost(heardPost("anyone around?", viaMqtt = true))
             advanceUntilIdle()
 
-            val row = rig.msgMap.getValue("mp1")
+            val row = rig.msgMap.values.single()
+            assertEquals("one packet, one row, whoever hears it", FrameId.forMeshPost(0x1234abcd, 9911), row.id)
             assertEquals(Conversations.MESHTASTIC, row.conversationId)
             assertEquals("anyone around?", row.body)
-            // The signer stays the gateway — that is who the signature belongs to and the only authenticated
-            // party in the row. Everything about the speaker rides beside it as an attribution.
-            assertEquals(gateway.nodeId, row.senderId)
+            // The sender column is ours by convention — there is no frame and no signer — and the origin
+            // beside it is what says the words are somebody else's.
+            assertEquals(rig.self.nodeId, row.senderId)
             assertEquals(0x1234abcdL, row.originNode)
             assertEquals("Bob", row.originName)
             assertEquals("LongFast", row.originChannel)
             assertEquals(2, row.originHops)
             assertEquals(-73, row.originSnrDeci)
             assertTrue(row.originViaMqtt)
+            assertEquals("it reached us over the board", DeliveryPlane.LoRa.code, row.receivedVia)
         }
 
     @Test
-    fun aBridgedMeshPostIsNeverAcked() =
+    fun aHeardPostIsNeverAckedAndNeverLeavesThePhone() =
         runTest {
-            // There is nobody to tick. The speaker has no Knit identity, and the frame's senderId is the
-            // gateway — which would otherwise collect a receipt per recipient for a message it did not write,
-            // receipts that then ride the LoRa plane home from far pockets. A new frame type gets this for
-            // free (dispatchByType never reaches `acknowledge`); this pins that it stays free.
+            // There is nobody to tick — the speaker has no Knit identity — and, more than that, nothing about
+            // a heard post is originated at all: no frame of any type may leave for it.
             val rig = Rig(backgroundScope)
-            val gateway = party()
-            rig.pin(gateway)
-            val framesToGateway = recordFramesSentTo(rig, gateway)
 
-            rig.deliver(gateway, rig.meshPost(gateway, id = "mp-ack", body = "hi"))
+            rig.pipeline.deliverMeshPost(heardPost("hi"))
             advanceUntilIdle()
 
-            assertTrue("the post is delivered", rig.msgMap.containsKey("mp-ack"))
-            assertTrue("no receipt is owed for a bridged post", framesToGateway.none { it.type == FrameType.RECEIPT })
+            assertEquals(1, rig.msgMap.size)
+            assertTrue("nothing is originated for a heard post", rig.originated.isEmpty())
             assertEquals(0, rig.metrics.snapshot().receiptsResent)
         }
 
     @Test
-    fun aBridgedMeshPostCreatesNoPeerRowForItsSpeaker() =
+    fun aHeardPostCreatesNoPeerRowForItsSpeaker() =
         runTest {
             // A Meshtastic node number is not a Knit identity and is trivially spoofable, so nothing about the
             // speaker may reach `peers` — no presence, no contacts entry, no DM target.
             val rig = Rig(backgroundScope)
-            val gateway = party()
-            rig.pin(gateway)
 
-            rig.deliver(gateway, rig.meshPost(gateway, id = "mp-peer", body = "hi", name = "Bob"))
+            rig.pipeline.deliverMeshPost(heardPost("hi", name = "Bob"))
             advanceUntilIdle()
 
-            assertEquals("only the gateway is a peer", setOf(gateway.nodeId), rig.peerMap.keys)
+            assertTrue(rig.peerMap.isEmpty())
         }
 
     @Test
-    fun aBridgedMeshPostNotifiesUnderItsSpeakersNameEvenOnTheGatewayThatSignedIt() =
+    fun aHeardPostNotifiesUnderItsSpeakersNameEvenThoughThisPhoneIsItsSender() =
         runTest {
-            // Two failures in one, both from the frame's senderId being the gateway. On any other phone the
-            // notification would name a Knit contact over a stranger's words; on the gateway itself
-            // `senderId == me`, and `incomingNotification` suppresses our own messages — so the one device
-            // that actually hears the channel would be the one device that never notifies.
+            // The row's senderId is ours by convention, and `incomingNotification` suppresses our own messages
+            // — so the notification must be keyed on the speaker, or the one device that hears the channel is
+            // the one device that never notifies.
             val rig = Rig(backgroundScope)
-            val gateway = party()
-            rig.pin(gateway)
             val notification = slot<NotifMessage>()
             coEvery { rig.notifier.notify(capture(notification), any(), any(), any(), any()) } returns Unit
 
-            // Delivered as OUR own frame — the gateway case, which is the harder half.
-            rig.deliver(rig.self, rig.meshPost(rig.self, id = "mp-notif", body = "anyone around?", name = "Bob"))
+            rig.pipeline.deliverMeshPost(heardPost("anyone around?", name = "Bob"))
             advanceUntilIdle()
 
             assertEquals("Bob", notification.captured.senderName)
-            assertEquals("the notification is keyed on the speaker, not on us", "!1234abcd", notification.captured.senderId)
-            assertNull("and never carries the gateway's avatar", notification.captured.avatarBytes)
+            assertEquals("keyed on the speaker, not on us", "!1234abcd", notification.captured.senderId)
+            assertNull("a stranger wears no face", notification.captured.avatarBytes)
         }
 
     @Test
-    fun aBridgedMeshPostIsModeratedAsAPublicRoom() =
+    fun aHeardPostIsModeratedAsAPublicRoom() =
         runTest {
             // Its authors are strangers by definition and nothing screens them before they reach the air, so
             // it takes the room moderator (the lexical profanity pass on top of the ML one) — the same
             // `isRoom = true` Nearby gets, which is what `Conversations.isPublicRoom` is for.
             val rig = Rig(backgroundScope)
-            val gateway = party()
-            rig.pin(gateway)
             val scopes = mutableListOf<Boolean>()
             rig.classifyScopes = scopes
 
-            rig.deliver(gateway, rig.meshPost(gateway, id = "mp-mod", body = "hi"))
+            rig.pipeline.deliverMeshPost(heardPost("hi"))
             advanceUntilIdle()
 
             assertEquals(listOf(true), scopes)
         }
 
     @Test
-    fun aPostWrittenInKnitLandsInTheRoomAsAnOrdinaryMessageWithNoOrigin() =
+    fun theBoardReplayingAPacketWritesOneRowAndNotifiesOnce() =
         runTest {
-            // No origin columns is the whole of the authored shape's UI: every rule that asks whether a row
-            // is a bridged one reads `originNode == null` — `mine`, the avatar, the chat list's "is this
-            // ours", the preview — so this renders as an ordinary outgoing message with no branch anywhere.
+            // The firmware replays the packets it queued while the phone was away. The derived row id makes
+            // the second hearing a no-op on the exists-gate, and `isNew` keeps the notification to the first.
             val rig = Rig(backgroundScope)
-            val alice = party()
-            rig.pin(alice)
+            var notified = 0
+            coEvery { rig.notifier.notify(any(), any(), any(), any(), any()) } answers { notified += 1 }
 
-            rig.deliver(alice, rig.publicPost(alice, id = "pp1", body = "meet at the trailhead"))
+            rig.pipeline.deliverMeshPost(heardPost("hi"))
+            rig.pipeline.deliverMeshPost(heardPost("hi"))
             advanceUntilIdle()
 
-            val row = rig.msgMap.getValue("pp1")
-            assertEquals(Conversations.MESHTASTIC, row.conversationId)
-            assertEquals("meet at the trailhead", row.body)
-            assertEquals("its author is a real pinned identity, unlike a speaker's", alice.nodeId, row.senderId)
-            assertNull("no speaker, so no attribution to render", row.originNode)
-            assertNull(row.originName)
-            assertNull(row.originChannel)
+            assertEquals(1, rig.msgMap.size)
+            assertEquals(1, notified)
         }
 
     @Test
-    fun aPostWrittenInKnitIsNeverAckedEither() =
+    fun aHeardPostStampsWhenItArrived() =
         runTest {
-            // A ✓✓ here would mean another phone in this pocket holds it, never that it reached the air —
-            // and the air is the one thing its author wants to know about.
+            // Our own room posts looping back get no arrivedAt (we sent them); a heard post sits in our sender
+            // column by convention yet did arrive, off the board, so the origin overrides the sender test.
             val rig = Rig(backgroundScope)
-            val alice = party()
-            rig.pin(alice)
-            val acksToAlice = recordFramesSentTo(rig, alice)
 
-            rig.deliver(alice, rig.publicPost(alice, id = "pp-ack", body = "hi"))
+            rig.pipeline.deliverMeshPost(heardPost("hi"))
             advanceUntilIdle()
 
-            assertTrue(acksToAlice.none { it.type == FrameType.RECEIPT })
-        }
-
-    @Test
-    fun aPostHeardOverAShortRangePlaneIsHandedToTheRadio() =
-        runTest {
-            // §5: the gateway is not asked, it transmits what it sees arrive. That is what lets a phone with
-            // no board of its own post at all.
-            val rig = Rig(backgroundScope)
-            val alice = party()
-            rig.pin(alice)
-
-            rig.deliver(alice, rig.publicPost(alice, id = "pp-air", body = "hello mesh"), kind = TransportKind.WifiAware)
-            advanceUntilIdle()
-
-            assertEquals(listOf("Alice" to "hello mesh"), rig.publicPosts)
-        }
-
-    @Test
-    fun aPostThatArrivedOverLoRaOrASpoolIsNeverPutBackOnTheAir() =
-        runTest {
-            // One that arrived over LoRa was already on that band; one off a spool came from outside the
-            // neighbourhood entirely. Re-posting either turns every far pocket into a repeater.
-            val rig = Rig(backgroundScope)
-            val alice = party()
-            rig.pin(alice)
-
-            rig.deliver(alice, rig.publicPost(alice, id = "pp-lora", body = "over the band"), kind = TransportKind.LoRa)
-            advanceUntilIdle()
-
-            assertTrue(rig.msgMap.containsKey("pp-lora"))
-            assertTrue("delivered, but never re-transmitted", rig.publicPosts.isEmpty())
-        }
-
-    @Test
-    fun anOverheardPostIsNeverPutBackOnTheChannelItCameFrom() =
-        runTest {
-            val rig = Rig(backgroundScope)
-            val gateway = party()
-            rig.pin(gateway)
-
-            rig.deliver(gateway, rig.meshPost(gateway, id = "mp-echo", body = "hi"), kind = TransportKind.WifiAware)
-            advanceUntilIdle()
-
-            assertTrue(rig.publicPosts.isEmpty())
+            assertNotNull(
+                rig.msgMap.values
+                    .single()
+                    .arrivedAt,
+            )
         }
 
     @Test

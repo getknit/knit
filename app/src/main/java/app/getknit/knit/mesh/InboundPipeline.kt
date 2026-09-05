@@ -55,7 +55,6 @@ import app.getknit.knit.mesh.protocol.GroupKeyPayload
 import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.KeyReqContent
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
-import app.getknit.knit.mesh.protocol.MeshPostContent
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.Protocol
@@ -136,10 +135,6 @@ class InboundPipeline(
     private val dmAcks: DmAckCoalescer? = null,
     private val flushPending: suspend (String) -> Unit,
     private val classifyText: suspend (String, String, Boolean) -> Boolean,
-    // Puts a post written in the bridged room on the foreign mesh's public channel — [PublicChannelSink],
-    // implemented by the LoRa transport. A no-op by default, so a build with no board and every test that
-    // does not care need no wiring; a refusal is ordinary (only the pocket's ACTIVE gateway returns true).
-    private val publicChannel: suspend (name: String?, body: String) -> Boolean = { _, _ -> false },
     // Re-seals our recent unacked DMs to a peer whose ratchet session was just replaced (the recovery
     // half of an inbound reset) — MeshManager.resealRecentDmsTo, lambda-mediated like originate.
     private val resealUnacked: suspend (String) -> Unit = {},
@@ -300,10 +295,6 @@ class InboundPipeline(
 
             FrameType.TYPING -> {
                 handleTyping(env)
-            }
-
-            FrameType.MESH_POST -> {
-                handleMeshPost(env, plane)
             }
 
             else -> {
@@ -595,91 +586,54 @@ class InboundPipeline(
     }
 
     /**
-     * One post in the bridged public room ([FrameType.MESH_POST]) — either overheard on a foreign mesh's
-     * public channel and re-published by the phone whose board heard it, or typed by a Knit user here.
-     * [MeshPostContent.node] tells the two apart, and it lands in [Conversations.MESHTASTIC] through the
-     * ordinary chat delivery path either way, so moderation, notification, the unread count and
-     * store-and-forward all work exactly as they already do.
+     * One post the bound board heard on its primary (slot 0) channel — [MeshPostSink.onPublicPostHeard] —
+     * delivered into [Conversations.MESHTASTIC] here and nowhere else. There is no frame: nothing about a
+     * heard post is signed, originated, custodied or fanned out, so the [RelayEnvelope] built below is a local
+     * carrier for [deliverChat]'s four envelope reads (id, sender, recipient, sentAt) and must never reach
+     * [originate]. Its id is derived from the packet ([FrameId.forMeshPost]), so the board replaying a queued
+     * packet on reconnect lands on the row it already wrote and notifies nobody twice.
      *
-     * **The overheard shape** does three things it would be wrong to do, each in a different way:
+     * Three things this deliberately does, each for a reason that is easy to lose:
      *
-     * - **No receipt.** [deliverChat] is called with `ack = false`. There is nobody to tick: the speaker has
-     *   no Knit identity, and the frame's `senderId` is the gateway, which would otherwise collect one sealed
-     *   receipt per recipient for a message it did not write — receipts that then ride the LoRa plane home
-     *   from far pockets.
+     * - **No receipt.** [deliverChat] runs with `ack = false`. There is nobody to tick: the speaker has no
+     *   Knit identity, and the row's `senderId` is this phone by convention — a heard post is "ours" in the
+     *   sender column and somebody else's in the origin, and `originNode` is what tells the two apart
+     *   everywhere a row is read.
      * - **No peer row, ever.** The attribution rides on the message row and nowhere else. Nothing here
-     *   touches `peers`, presence, `reachable`, open-to-chat or the contacts picker, and the frame's real
-     *   author — the gateway — is a peer already.
+     *   touches `peers`, presence, `reachable`, open-to-chat or the contacts picker.
      * - **No blocklist check on the speaker.** Blocking is keyed on Knit node ids; a Meshtastic node number is
-     *   not one and is trivially spoofable, so a per-speaker block would be a promise the wire cannot keep.
-     *   Blocking the *gateway* does work, and is checked here, because that is a real pinned identity.
-     *
-     * **The authored shape** writes no origin at all, which is the whole of its UI: every rule that asks
-     * whether a row is a bridged one reads `originNode == null` — `mine`, the avatar, the chat list's
-     * "is this ours", the preview — so an authored post renders as an ordinary outgoing message with no
-     * branch anywhere. It keeps `ack = false` too, deliberately: a ✓✓ here would mean another phone in this
-     * pocket holds it, never that it reached the air, and that is the one thing its author wants to know.
-     *
-     * It is also where the post reaches a radio. The gateway is not asked — it transmits what it sees
-     * arrive, which is what lets a phone with no board of its own post at all. The condition is §5 of work
-     * item #37: **written here, or heard over a short-range plane.** A post that arrived over LoRa was
-     * already on that band, and one off a spool came from outside the neighbourhood entirely — re-posting
-     * either would turn every far pocket into a repeater for the same words.
+     *   not one and is trivially spoofable, so a per-speaker block would be a promise the radio cannot keep.
      */
-    private suspend fun handleMeshPost(
-        env: RelayEnvelope,
-        plane: DeliveryPlane,
-    ) {
-        if (env.senderId in settings.blockedNodeIds.first()) return
-        val content = WireCodec.decodePayload<MeshPostContent>(env.payload) ?: return
-        if (content.body.isEmpty()) return
+    internal suspend fun deliverMeshPost(post: MeshPost) {
         val me = identity.nodeId()
-        val origin =
-            content.node?.let { node ->
-                MeshPostOrigin(
-                    node = node,
-                    name = content.name,
-                    channel = content.channel,
-                    hops = content.hops,
-                    snrDeci = content.snrDeci,
-                    viaMqtt = content.viaMqtt,
-                )
-            }
+        val env =
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = FrameId.forMeshPost(post.node, post.packetId),
+                senderId = me,
+                sentAt = clock(),
+                payload = ByteArray(0),
+            )
         deliverChat(
             env = env,
             // The room's own content shape is a plain body: a post here carries no attachment, no mention,
             // no reply and no encryption, so the chat shell it is delivered through is exactly that much.
-            content = ChatContent(body = content.body),
+            content = ChatContent(body = post.body),
             me = me,
             conversationId = Conversations.MESHTASTIC,
-            plane = plane,
-            origin = origin,
+            plane = DeliveryPlane.LoRa,
+            origin =
+                MeshPostOrigin(
+                    node = post.node,
+                    name = post.name,
+                    channel = post.channel,
+                    hops = post.hops,
+                    snrDeci = post.snrDeci,
+                    viaMqtt = post.viaMqtt,
+                ),
             ack = false,
         )
-        if (origin == null && (env.senderId == me || plane == DeliveryPlane.Nearby)) {
-            publicChannel(content.name, content.body)
-        }
     }
-
-    /**
-     * The local half of minting a bridged post ([MeshPostSink.publishMeshPost]): the gateway delivers its own
-     * frame here so the row it writes is the one every other phone in the pocket will write from the same
-     * bytes, rather than a second, drifting copy of that logic.
-     *
-     * Stamped [DeliveryPlane.LoRa] because that is literally true — it reached this device over the board's
-     * radio, which is exactly what the plane records (ADR 040).
-     */
-    internal suspend fun deliverOwnMeshPost(env: RelayEnvelope) = handleMeshPost(env, DeliveryPlane.LoRa)
-
-    /**
-     * The local half of a post written here ([MeshController.sendPublicPost]) — the same delivery body every
-     * other phone in the pocket will run on the same bytes.
-     *
-     * Stamped [DeliveryPlane.Nearby] because that is what it is: the frame was authored on this device and
-     * floods over the short-range planes. The stamp is presentation only (ADR 040) and this row is our own,
-     * so nothing reads it; the plane [handleMeshPost] tests is not this one but the sender being us.
-     */
-    internal suspend fun deliverOwnPublicPost(env: RelayEnvelope) = handleMeshPost(env, DeliveryPlane.Nearby)
 
     /**
      * The one thing [handleChat] still does for a *blocked* sender: send the best-effort broadcast/group
@@ -2115,13 +2069,12 @@ class InboundPipeline(
         // OUR room posts looping back after the SeenSet lapsed — reset its ✓✓ to ✓. The v2 ratchet path
         // substitutes a hook that commits the ratchet delta + the row in one transaction (exists-gated first).
         persist: suspend (MessageEntity) -> Unit = { messages.saveIfAbsent(it) },
-        // Who said it on a foreign mesh, when this is a bridged public post — carried straight onto the row.
-        // Null on every ordinary delivery, and the discriminator the whole bridged shape hangs off.
+        // Who said it on the radio channel, when this is a heard Meshtastic post — carried straight onto the
+        // row. Null on every ordinary delivery, and the discriminator the whole heard shape hangs off.
         origin: MeshPostOrigin? = null,
-        // Whether a delivery receipt is owed. False for exactly one caller: a bridged post has no author to
-        // send one to. Its Meshtastic speaker has no Knit identity, and the frame's senderId is the gateway,
-        // which would then collect a tick per recipient for a message it only relayed — ticks that ride the
-        // LoRa plane from far pockets. Never widen this; a Knit message always earns its ✓✓.
+        // Whether a delivery receipt is owed. False for exactly one caller: a heard post has no author to
+        // send one to — its Meshtastic speaker has no Knit identity, and the row's senderId is this phone by
+        // convention. Never widen this; a Knit message always earns its ✓✓.
         ack: Boolean = true,
     ) {
         // A real message from this sender supersedes any "typing" indicator for them in this thread — clear it
@@ -2149,9 +2102,11 @@ class InboundPipeline(
                 // Our own clock, unlike the sender's sentAt just above: the one honest answer to "when did
                 // this get here", and the gap between the two is the store-and-forward latency. Null when the
                 // frame is one of OUR room posts looping back after the SeenSet lapsed — we did not receive
-                // that, we sent it. Stamped once: the default persist below is exists-gated, so a re-serve
-                // keeps the first crossing, exactly like receivedVia's plane.
-                arrivedAt = if (env.senderId != me) clock() else null,
+                // that, we sent it. A heard Meshtastic post sits in our sender column by convention yet did
+                // arrive, off the board, so the origin overrides the sender test. Stamped once: the default
+                // persist below is exists-gated, so a re-serve keeps the first crossing, exactly like
+                // receivedVia's plane.
+                arrivedAt = if (env.senderId != me || origin != null) clock() else null,
                 received = false,
                 receivedVia = plane.code,
                 mentions = MentionStore.encode(content.mentions),
@@ -2366,27 +2321,52 @@ class InboundPipeline(
         val peerAvatar = peer?.avatarHash?.let { blobs.bytes(it) }
         // Attachment-only messages have a blank body; show a placeholder so they still notify.
         val body = content.body.ifBlank { attachmentPreview(content, fileName) }
-        // A bridged Meshtastic post is authored by its speaker, not by the gateway whose signature it
-        // carries. Two things follow, and both are wrong without this. The notification must name the
-        // speaker (and show no avatar — the gateway's face over somebody else's words is the whole failure
-        // the room's UI exists to prevent); and the sender id it is keyed on must not be ours, or the
-        // one device that actually hears the channel — the gateway — is the one device that never notifies,
-        // because `incomingNotification` suppresses our own messages.
-        val senderId = origin?.let { meshNodeLabel(it.node) } ?: env.senderId
-        val senderName = origin?.let { it.name?.takeIf(String::isNotBlank) ?: meshNodeLabel(it.node) } ?: senderLabel.text
+        // A heard Meshtastic post is authored by its speaker, not by this phone, whose id sits in the row's
+        // sender column by convention. Two things follow, and both are wrong without this. The notification
+        // must name the speaker — the contact their board resolved to, else the board's NodeDB name, else the
+        // `!hex` id — and the sender id it is keyed on must not be ours, or the one device that hears the
+        // channel is the one device that never notifies, because `incomingNotification` suppresses our own
+        // messages. A resolved contact keys and wears exactly what their DM notification would, so Android
+        // groups the two; a stranger wears no face at all.
+        val speaker = origin?.let { heardSpeaker(it) { id, name -> labels.labelFor(id, name).text } }
         val incoming =
             incomingNotification(
-                senderId = senderId,
+                senderId = speaker?.id ?: env.senderId,
                 body = body,
                 sentAt = env.sentAt,
                 selfId = me,
-                peerName = senderName,
-                peerAvatarBytes = if (origin == null) peerAvatar else null,
+                peerName = speaker?.name ?: senderLabel.text,
+                peerAvatarBytes = if (speaker != null) speaker.avatar else peerAvatar,
                 conversationId = conversationId,
             ) ?: return
         val conversation = resolveConversation(conversationId, env.senderId, senderLabel.text, peerAvatar, me, labels)
         val selfAvatar = settings.ownAvatarHash.first()?.let { blobs.bytes(it) }
         notifier.notify(incoming, conversation, me, settings.displayName.first(), selfAvatar)
+    }
+
+    /** Who a heard Meshtastic post's notification is keyed on, named after and wears — see [notifyIncoming]. */
+    private class HeardSpeaker(
+        val id: String,
+        val name: String,
+        val avatar: ByteArray?,
+    )
+
+    /**
+     * The speaker of a heard post as a notification shows them: the contact their board resolved to (keyed,
+     * named and pictured exactly as that contact's DM notification would be, so Android groups the two), else
+     * the board's NodeDB name over the `!hex` id, with no face at all — a stranger wears none.
+     */
+    private suspend fun heardSpeaker(
+        origin: MeshPostOrigin,
+        label: (id: String, name: String?) -> String,
+    ): HeardSpeaker {
+        val contact = origin.peerId?.let { peers.find(it) }
+        val id = origin.peerId ?: meshNodeLabel(origin.node)
+        val name =
+            origin.peerId?.let { label(it, contact?.name) }
+                ?: origin.name?.takeIf(String::isNotBlank)
+                ?: meshNodeLabel(origin.node)
+        return HeardSpeaker(id, name, contact?.avatarHash?.let { blobs.bytes(it) })
     }
 
     /**

@@ -126,27 +126,27 @@ data class MessageEntity(
     val pendingKey: Boolean = false,
     val kind: Int = KIND_NORMAL,
     /**
-     * The speaker's Meshtastic node number when this row is a bridged public post, else null — which is also
-     * the flag for "this is a bridged post" everywhere that reads it.
+     * The speaker's Meshtastic node number when this row is a post heard on the paired board's primary
+     * channel, else null — which is also the flag for "this is a heard post" everywhere that reads it.
      *
-     * This and the five `origin*` columns below are the bridged-post attribution: who said it on the foreign
-     * mesh, and how it reached this pocket. Denormalized onto the message for the same reason the `replyTo*`
-     * snapshot is, and for a stronger one: the values come off a public channel this device may never hear
-     * again, and there is no peer row to resolve them against — nor will there ever be, since a Meshtastic
-     * speaker has no Knit identity.
+     * This and the `origin*` columns below are the heard-post attribution: who said it on the radio channel,
+     * and how it reached this board. Denormalized onto the message for the same reason the `replyTo*`
+     * snapshot is, and for a stronger one: the values come off a channel this device may never hear again,
+     * and a Meshtastic speaker has no Knit identity to resolve them against.
      *
-     * [senderId] stays the **gateway** whose board heard it and whose signature the frame carries; this is an
-     * attribution beside it, and the UI must render the difference (a bridged author is never tappable, never
-     * verified, never a DM target). Its `!hex` id is derived for display, never stored.
+     * [senderId] is **this phone** by convention — there is no frame and no signer, the row is written by the
+     * phone whose board heard it — and this attribution beside it is what says the words are somebody else's.
+     * The UI must render the difference (a heard author is never tappable, never verified, never a DM target).
+     * Its `!hex` id is derived for display, never stored.
      */
     val originNode: Long? = null,
-    /** `User.long_name` as the gateway's board knew it at mint; null when it had never heard the speaker's name. */
+    /** `User.long_name` as the board's NodeDB had it when heard; null when it had never heard the speaker's name. */
     val originName: String? = null,
-    /** The public channel the post was heard on — `LongFast`, `LongTurbo`, `MediumFast`. */
+    /** The channel the post was heard on, as the board names it — `LongFast`, `LongTurbo`, `MediumFast`, or its own name. */
     val originChannel: String? = null,
-    /** Hops from the speaker to the gateway's board. */
+    /** Hops from the speaker to this board. */
     val originHops: Int? = null,
-    /** Signal-to-noise at the gateway's board, in tenths of a dB. */
+    /** Signal-to-noise at this board, in tenths of a dB. */
     val originSnrDeci: Int? = null,
     /** The post entered the foreign mesh through an MQTT uplink, so it may have come from anywhere. */
     val originViaMqtt: Boolean = false,

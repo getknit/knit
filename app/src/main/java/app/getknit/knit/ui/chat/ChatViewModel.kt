@@ -44,6 +44,7 @@ import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.linkpreview.LinkPreviewPolicy
 import app.getknit.knit.linkpreview.LinkPreviewService
 import app.getknit.knit.mesh.MeshController
+import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
@@ -1061,10 +1062,10 @@ class ChatViewModel(
                 val group = if (isRoom || isBridged) null else groups.find(conversationId)
                 val sent =
                     if (isBridged) {
-                        // The bridged room is not addressed to anybody: no recipient, no group, no
+                        // The Meshtastic room is not addressed to anybody: no recipient, no group, no
                         // attachment, no reply. `sendChat` would read that shape as the Nearby room and put
-                        // the post there, so this room has its own origination path (see MeshController).
-                        meshManager.sendPublicPost(trimmed)
+                        // the post there, so this room has its own path to the board (see MeshController).
+                        meshManager.sendPublicPost(trimmed) == PublicPostOutcome.Queued
                     } else if (group != null) {
                         meshManager.sendChat(
                             trimmed,

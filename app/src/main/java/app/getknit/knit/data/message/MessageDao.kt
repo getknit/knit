@@ -208,8 +208,12 @@ interface MessageDao {
         groupPattern: String,
     ): Flow<List<String>>
 
-    /** Distinct conversations the local user ([me]) has authored a message in — the "threads I started" signal. */
-    @Query("SELECT DISTINCT conversationId FROM messages WHERE senderId = :me")
+    /**
+     * Distinct conversations the local user ([me]) has authored a message in — the "threads I started" signal.
+     * A post heard on the Meshtastic radio sits in our sender column by convention (`originNode` is what says
+     * whose words they are), so it is excluded: overhearing a channel is not starting a thread in it.
+     */
+    @Query("SELECT DISTINCT conversationId FROM messages WHERE senderId = :me AND originNode IS NULL")
     suspend fun conversationsIAuthoredIn(me: String): List<String>
 
     /** Every distinct conversation id with any message — the candidate set for counting pending requests. */

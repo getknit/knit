@@ -247,21 +247,18 @@ class MeshMetrics {
     private val loraSkippedLinked = AtomicLong()
     private val loraTickDeferred = AtomicLong()
 
-    // The LongFast bridge's inbound half. These five ARE the receive-only trial's output: how much public
-    // Meshtastic chat a neighbourhood actually carries, how much of it arrives off an MQTT uplink, and what
-    // the filters turn away. Nothing here transmits, so none of it touches the airtime ledger.
+    // The Meshtastic room's inbound half: how much chat the board's primary channel actually carries, how
+    // much of it arrives off an MQTT uplink, and what the filters turn away. Nothing here transmits, so none
+    // of it touches the airtime ledger.
     private val meshPostHeard = AtomicLong()
     private val meshPostIngested = AtomicLong()
     private val meshPostViaMqtt = AtomicLong()
-    private val meshPostPassive = AtomicLong()
     private val meshPostRefusedByReason = ConcurrentHashMap<String, AtomicLong>()
 
-    // The LongFast bridge's outbound half. Unlike the five above these DO spend airtime, so `publicPostSent`
-    // read against the PUBLIC bucket in `…debug.LORA` is what says whether the quota is set right. The
-    // refusals are the other half of that: on a two-board pocket exactly one device sends any given post and
-    // the other refuses, so a high refusal count is the ordinary shape rather than a fault.
+    // The Meshtastic room's outbound half. Unlike the four above these DO spend airtime, so `publicPostSent`
+    // read against the PUBLIC bucket in `…debug.LORA` is what says whether the quota is set right; a
+    // refusal is one the composer showed the user.
     private val publicPostSent = AtomicLong()
-    private val publicPostPassive = AtomicLong()
     private val publicPostRefusedByReason = ConcurrentHashMap<String, AtomicLong>()
 
     /** A frame this device authored and injected into the mesh. */
@@ -743,15 +740,10 @@ class MeshMetrics {
         meshPostHeard.incrementAndGet()
     }
 
-    /** A public post accepted and re-published into Knit; [viaMqtt] counts the ones off somebody's uplink. */
+    /** A post accepted into the Meshtastic room; [viaMqtt] counts the ones off somebody's uplink. */
     fun onMeshPostIngested(viaMqtt: Boolean) {
         meshPostIngested.incrementAndGet()
         if (viaMqtt) meshPostViaMqtt.incrementAndGet()
-    }
-
-    /** A public post another board in this pocket is minting instead. Expected on a spare board. */
-    fun onMeshPostPassive() {
-        meshPostPassive.incrementAndGet()
     }
 
     /** A public-channel packet the filters turned away, by `LongFastPolicy.Refusal`. */
@@ -759,14 +751,9 @@ class MeshMetrics {
         meshPostRefusedByReason.computeIfAbsent(reason) { AtomicLong() }.incrementAndGet()
     }
 
-    /** One post this pocket put on the foreign public channel. The only counter here that cost airtime. */
+    /** One post this phone put on its board's primary channel. The only counter here that cost airtime. */
     fun onPublicPostSent() {
         publicPostSent.incrementAndGet()
-    }
-
-    /** A post another board in this pocket is transmitting instead. Expected on a spare board. */
-    fun onPublicPostPassive() {
-        publicPostPassive.incrementAndGet()
     }
 
     /** A post this device did not put on the air, by `PublicPostRefusal`. */
@@ -867,10 +854,8 @@ class MeshMetrics {
             meshPostHeard = meshPostHeard.get(),
             meshPostIngested = meshPostIngested.get(),
             meshPostViaMqtt = meshPostViaMqtt.get(),
-            meshPostPassive = meshPostPassive.get(),
             meshPostRefusedByReason = meshPostRefusedByReason.mapValues { it.value.get() },
             publicPostSent = publicPostSent.get(),
-            publicPostPassive = publicPostPassive.get(),
             publicPostRefusedByReason = publicPostRefusedByReason.mapValues { it.value.get() },
         )
     }
@@ -964,10 +949,8 @@ class MeshMetrics {
         val meshPostHeard: Long = 0,
         val meshPostIngested: Long = 0,
         val meshPostViaMqtt: Long = 0,
-        val meshPostPassive: Long = 0,
         val meshPostRefusedByReason: Map<String, Long> = emptyMap(),
         val publicPostSent: Long = 0,
-        val publicPostPassive: Long = 0,
         val publicPostRefusedByReason: Map<String, Long> = emptyMap(),
     )
 }

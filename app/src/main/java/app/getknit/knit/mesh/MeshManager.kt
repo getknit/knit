@@ -16,6 +16,7 @@ import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.replyRef
@@ -50,7 +51,6 @@ import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.GroupRootPayload
 import app.getknit.knit.mesh.protocol.GroupSeed
 import app.getknit.knit.mesh.protocol.Mention
-import app.getknit.knit.mesh.protocol.MeshPostContent
 import app.getknit.knit.mesh.protocol.PrekeyInfo
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
@@ -149,11 +149,11 @@ class MeshManager(
     // sentAt) are deterministic under test. Defaults to the real clock, so production wiring (the Koin
     // module) is unchanged; mirrors the house convention — ForwardSync(clock = …), AckSync, KeyExchange.
     private val clock: () -> Long = { System.currentTimeMillis() },
-    // Puts a post written in the bridged public room on the foreign mesh's public channel — the LoRa
-    // transport's [PublicChannelSink]. A lambda rather than the interface for the reason [MeshPostSink] is a
-    // seam in the other direction: the two ends construct each other, so one of them has to be late-bound.
-    // The default refuses everything, which is what every test and every board-less build wants.
-    private val publicChannel: suspend (name: String?, body: String) -> Boolean = { _, _ -> false },
+    // Puts a post typed in the Meshtastic room on this phone's own board — the LoRa transport's
+    // [PublicChannelSink]. A lambda rather than the interface for the reason [MeshPostSink] is a seam in the
+    // other direction: the two ends construct each other, so one of them has to be late-bound. The default
+    // refuses with NO_BOARD, which is what every test and every board-less build wants.
+    private val publicChannel: suspend (name: String?, body: String) -> PublicPostRefusal? = { _, _ -> PublicPostRefusal.NO_BOARD },
 ) : MeshController,
     ProfileFrameSource,
     FarPeerFrameSource,
@@ -334,7 +334,6 @@ class MeshManager(
             dmAcks = dmAcks,
             flushPending = ::flushPendingFor,
             classifyText = ::isTextFlagged,
-            publicChannel = publicChannel,
             resealUnacked = ::resealRecentDmsTo,
             redistributeGroupKey = ::redistributeGroupKey,
             flushGroupKeys = ::flushPendingGroupKeysFor,
@@ -2171,97 +2170,44 @@ class MeshManager(
     override suspend fun signedProfile(): WireEnvelope = sign(currentProfileEnvelope())
 
     /**
-     * [MeshPostSink]: re-publishes one post the board overheard on the foreign mesh's public channel as a
-     * signed Knit frame, then delivers it here (the LongFast bridge).
-     *
-     * The frame is **ours**: our node id is its `senderId` and our key signs it, because a Meshtastic speaker
-     * has no Knit identity to sign with and nothing on an open channel could be held to one anyway. What the
-     * speaker said about itself rides in the payload as an attribution the UI must render as exactly that.
-     *
-     * `sentAt` is our clock at hearing, because a Meshtastic text packet carries no author timestamp of its
-     * own. Two pockets that hear the same post therefore stamp it seconds apart and so expire their copies
-     * seconds apart — a bounded divergence, and the price of the derived id below being the only thing the two
-     * copies agree on byte-for-byte.
-     *
-     * The id is derived from `(node, packetId)` rather than minted, so every board that heard the packet
-     * produces the same one and the copies collapse on machinery that already exists: `MeshRouter`'s SeenSet
-     * dedups the flood, `MessageDao.insertIfAbsent` keeps the first row, and `StoreDigest` folds ids, so two
-     * gateways holding byte-different copies still converge. Publishing the same post twice is therefore a
-     * no-op that cost one signature.
-     *
-     * Local delivery goes through the ordinary inbound path rather than writing a row here, so this post is
-     * moderated, notified, counted and stored by exactly the code every other device in the pocket will run
-     * on it — there is no second delivery body to keep in step.
+     * [MeshPostSink]: one post the bound board heard on its primary channel, delivered into the Meshtastic
+     * room here and nowhere else — no frame, no signature, no custody, no fan-out. The pipeline owns the
+     * delivery so the row is moderated, notified, counted and stored by the same code every other chat
+     * delivery runs.
      */
-    override suspend fun publishMeshPost(post: MeshPost) {
-        val me = identity.nodeId()
-        val env =
-            RelayEnvelope(
-                type = FrameType.MESH_POST,
-                id = FrameId.forMeshPost(post.node, post.packetId),
-                senderId = me,
-                sentAt = clock(),
-                payload =
-                    WireCodec.encodePayload(
-                        MeshPostContent(
-                            body = post.body,
-                            node = post.node,
-                            packetId = post.packetId,
-                            name = post.name,
-                            channel = post.channel,
-                            hops = post.hops,
-                            snrDeci = post.snrDeci,
-                            viaMqtt = post.viaMqtt,
-                        ),
-                    ),
-            )
-        originateSigned(env)
-        pipeline.deliverOwnMeshPost(env)
-    }
+    override suspend fun onPublicPostHeard(post: MeshPost) = pipeline.deliverMeshPost(post)
 
     /**
-     * A post a Knit user typed in the bridged public room — the outbound half of the same bridge, and the
-     * only thing in Knit that is written for an audience outside it.
-     *
-     * It is the **same frame type** as an overheard post, with `node`/`packetId` absent. That is what buys
-     * the whole feature for one nullable field: the room routing, the custody bucket and its 6 h TTL, the
-     * "never back on the LoRa band" exclusions on all three paths, and the no-receipt rule all already hold
-     * for `meshpost`, and none of them would have held for a `chat` frame with a room field on it. Absent
-     * rather than zero because the author genuinely does not know them: their phone may hold no radio, and
-     * which gateway transmits this — under which node number, with which packet id — is decided later and
-     * elsewhere. Nothing derives the frame id from them, so it is minted like any other.
+     * A post a Knit user typed in the Meshtastic room — the only thing in Knit written for an audience outside
+     * it, and the one send that never touches Knit's mesh: it goes to this phone's own board ([publicChannel])
+     * and, once the board has queued it, into the local room as our own row. A refusal stores nothing, so the
+     * composer keeps the draft and can say why.
      *
      * Moderated with `isRoom = true`, which [sendChat] would not do: it infers the scope from the addressing
-     * shape, and this frame is addressed to nobody. A public radio channel deserves the room moderator —
-     * profanity as well as toxicity — at least as much as Nearby does.
+     * shape, and this post is addressed to nobody. A public radio channel deserves the room moderator —
+     * profanity as well as toxicity — at least as much as Nearby does. Once, here: the row is written directly
+     * rather than through the inbound path, so nothing screens it a second time.
      *
-     * Delivered locally through the inbound path like the overheard case, and for the same reason: the row
-     * this device writes must be the row every other phone in the pocket writes from the same bytes. That
-     * path is also what hands the post to the gateway, so nothing here knows a radio exists.
+     * The row is stamped [DeliveryPlane.LoRa] because that is the plane it left on. It never earns a ✓✓ —
+     * nothing on the channel acks — so the bubble keeps the single "sent" tick, and the details screen can
+     * name the plane.
      */
-    override suspend fun sendPublicPost(text: String): Boolean {
-        if (isTextFlagged(text, "outgoing", isRoom = true)) return false
-        val me = identity.nodeId()
-        val env =
-            RelayEnvelope(
-                type = FrameType.MESH_POST,
+    override suspend fun sendPublicPost(text: String): PublicPostOutcome {
+        if (isTextFlagged(text, "outgoing", isRoom = true)) return PublicPostOutcome.Blocked
+        val name = settings.displayName.first().takeIf { it.isNotBlank() }
+        publicChannel(name, text)?.let { return PublicPostOutcome.Refused(it) }
+        messages.save(
+            MessageEntity(
                 id = FrameId.new(),
-                senderId = me,
+                senderId = identity.nodeId(),
+                conversationId = Conversations.MESHTASTIC,
+                body = text,
                 sentAt = clock(),
-                payload =
-                    WireCodec.encodePayload(
-                        MeshPostContent(
-                            body = text,
-                            // Carried rather than resolved by the gateway: a gateway that has never seen this
-                            // author's profile would otherwise put a node id on the air, and two gateways with
-                            // different views of the directory would put different text there.
-                            name = settings.displayName.first().takeIf { it.isNotBlank() },
-                        ),
-                    ),
-            )
-        originateSigned(env)
-        pipeline.deliverOwnPublicPost(env)
-        return true
+                received = false,
+                receivedVia = DeliveryPlane.LoRa.code,
+            ),
+        )
+        return PublicPostOutcome.Queued
     }
 
     /**

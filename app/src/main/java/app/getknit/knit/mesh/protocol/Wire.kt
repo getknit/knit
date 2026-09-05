@@ -43,20 +43,6 @@ object FrameType {
     const val TYPING = "typing"
 
     /**
-     * A post overheard on a **foreign** mesh's public channel and re-published into Knit by the phone whose
-     * board heard it (the Meshtastic LongFast bridge). Its author is not a Knit peer and has no node id: the
-     * gateway signs the frame, and everything about the original speaker rides inside [MeshPostContent] as an
-     * attribution, never as an identity.
-     *
-     * It is a type of its own rather than a [CHAT] with an extra field for two reasons, both about what an
-     * *older* build would do with it. It would attribute the text to the gateway's own user; and it would
-     * render it, which earns a sealed `CTL_RECEIPT` from every recipient — ticks that then ride the LoRa
-     * plane from far pockets for a message nobody is waiting on. A new type is invisible to those paths
-     * instead: `dispatchByType` never reaches `acknowledge`, so no receipt is ever owed.
-     */
-    const val MESH_POST = "meshpost"
-
-    /**
      * Whether a frame of [type] is worth parking for replay when it's dropped for a missing sender key
      * (see `app.getknit.knit.mesh.PendingInbound`): the locally-delivered types only. PROFILE and KEY_REQ
      * are excluded (they bootstrap keys, never wait on one), as are the point-to-point BLOB_REQ and any
@@ -68,8 +54,7 @@ object FrameType {
             type == REACTION ||
             type == RECEIPT ||
             type == GROUP_UPDATE ||
-            type == GROUP_LEAVE ||
-            type == MESH_POST
+            type == GROUP_LEAVE
 
     /**
      * Whether a frame of [type] is carried for store-and-forward custody and eligible for the
@@ -81,13 +66,12 @@ object FrameType {
      * is never carried, parked, or re-served), and any unknown future type (a carrier can't authenticate
      * what it can't place).
      *
-     * **[MESH_POST] is the first type added to this list since the v1 baseline, and that has a cost worth
-     * knowing.** This list is fixed on every build already in the field, so a build without it holds none of
-     * these rows while we hold them all — two nodes with continuously different live sets, which is exactly
-     * the custody-digest divergence ADR 006 exists to prevent. It is accepted only because the whole LoRa
-     * plane is `BuildConfig.LORA_PLANE`-gated (debug on, release off), so no shipped build ever mints one;
-     * it rides the same release gate the `0x05` transcoder flag-day already owes. Do not widen this list
-     * again on the same reasoning without re-reading `docs/WIRE_COMPAT.md`.
+     * **A new custodial type is a flag-day, not an additive change.** This list is fixed on every build
+     * already in the field, so a build without the new type holds none of those rows while a build with it
+     * holds them all — two nodes with continuously different live sets, which is exactly the custody-digest
+     * divergence ADR 006 exists to prevent. Nothing has been added here since the v1 baseline; the one
+     * attempt (`meshpost`, the Meshtastic room's first design) was withdrawn before it shipped for this
+     * reason. Do not widen this list without re-reading `docs/WIRE_COMPAT.md`.
      */
     fun isCustodial(type: String): Boolean = isReplayable(type) || type == PROFILE
 }
@@ -272,58 +256,6 @@ data class KeyReqContent(
 @Serializable
 data class TypingContent(
     val groupId: String? = null,
-)
-
-/**
- * Content of a [FrameType.MESH_POST] frame — one post in the bridged public room. It carries **two** shapes,
- * and [node] is the discriminator between them:
- *
- * - **[node] non-null — overheard.** A post the gateway phone's board heard on a foreign mesh's public
- *   channel and re-published into Knit. **Everything about its author is an attribution, not an identity.**
- *   The frame's [RelayEnvelope.senderId] is the gateway, which is who signed it and the only party any of
- *   this is authenticated against; [node] and [name] are what an unauthenticated public channel said about
- *   itself, are trivially spoofable, and must never be rendered as a Knit peer. Nothing in this payload
- *   creates a peer row, counts toward presence, or is addressable.
- * - **[node] null — written here.** A post a Knit user typed in the room, signed by that user, which the
- *   pocket's ACTIVE gateway also puts on the foreign channel. Its author *is* [RelayEnvelope.senderId], a
- *   real pinned identity, so it renders as an ordinary Knit message. It cannot carry [node] or [packetId]:
- *   the author's phone may hold no radio at all, and does not know which gateway will transmit it, under
- *   which node number, or with which packet id.
- *
- * The fields split three ways. [body], [node] and [packetId] are the post itself — [packetId] rides because
- * an overheard post's frame id is derived from it, so a receiver can check that derivation rather than take
- * the id on trust. [name] and [channel] are snapshots taken at mint, because the receiver has no way to look
- * either up: it has no NodeDB and no sight of the gateway board's channel table. [hops], [snrDeci] and
- * [viaMqtt] describe how the post reached *this pocket's* board — a property of the crossing, which is why
- * they are carried rather than derived, and the raw material of the volume measurement phase 1 produced.
- *
- * [snrDeci] is deci-dB rather than the radio's own float so the encoding pins byte-exactly in
- * `GoldenVectorTest`; a tenth of a dB is well inside what the measurement can use.
- */
-@Serializable
-data class MeshPostContent(
-    val body: String,
-    /**
-     * The speaker's Meshtastic node number, widened from its unsigned 32 bits; also renders its `!hex` id.
-     * **Null means the post was written in Knit rather than overheard** — the discriminator the whole
-     * two-shape reading above hangs off, and the one thing that decides whether a row gets an origin.
-     */
-    val node: Long? = null,
-    /** The Meshtastic packet id an overheard post's frame id derives from, widened the same way. */
-    val packetId: Long? = null,
-    /**
-     * The name this post's author goes by: `User.long_name` as the gateway's NodeDB had it for an overheard
-     * post, the author's own display name for one written here. One field because it answers one question,
-     * and carrying it rather than resolving it means the text that reaches the air is identical whichever
-     * gateway transmits it — including one that has never seen the author's profile.
-     */
-    val name: String? = null,
-    /** The public channel's name as the gateway's board reported it — `LongFast`, `LongTurbo`, `MediumFast`. */
-    val channel: String? = null,
-    val hops: Int? = null,
-    val snrDeci: Int? = null,
-    /** The post reached the gateway's mesh through somebody's MQTT uplink, so it may come from anywhere. */
-    val viaMqtt: Boolean = false,
 )
 
 /**

@@ -68,11 +68,10 @@ internal object PublicPostPolicy {
      * The UTF-8 bytes this author's **words** may occupy — what the composer caps the draft at, so that what a
      * person typed is what a stranger's radio shows.
      *
-     * The cap belongs in the composer and not only here because [onAirText] trims *silently*, on a device that
-     * may not even be the one that typed the post: a phone with no board of its own hands its post to whichever
-     * gateway is in the pocket, so a sentence cut in half would go out under the author's name with nothing on
-     * the author's screen to say so. Same arithmetic as [onAirText], including its answer for a name too long
-     * to leave any room at all — the prefix goes rather than the words, so the whole line is the budget.
+     * The cap belongs in the composer and not only here because [onAirText] trims *silently*: a sentence cut
+     * in half would go out under the author's name with nothing on the author's screen to say so. Same
+     * arithmetic as [onAirText], including its answer for a name too long to leave any room at all — the
+     * prefix goes rather than the words, so the whole line is the budget.
      */
     fun bodyBudget(name: String?): Int {
         val room = MAX_ON_AIR_BYTES - LoraSizeHint.utf8Length(prefixFor(name))
@@ -101,34 +100,4 @@ internal object PublicPostPolicy {
         }
         return text.substring(0, i)
     }
-}
-
-/**
- * Why a post typed in the bridged room did not reach the air from **this** device.
- *
- * A refusal is ordinary rather than an error: on a two-board pocket exactly one device transmits any given
- * post and the other refuses, and a boardless phone refuses every one. The counters exist so that "my post
- * went nowhere" has an answer on the device that was supposed to carry it.
- */
-internal enum class PublicPostRefusal {
-    /** No board, or its session is not up. */
-    NOT_READY,
-
-    /** Knit is bound to index 0 on this board, so there is no public primary here to post on. */
-    KNIT_ON_PRIMARY,
-
-    /** The primary is renamed or re-keyed — somebody's private group, and never ours to write into. */
-    NOT_STOCK_PRIMARY,
-
-    /** Inside the per-gateway floor: one post per 30 s, so a room cannot become a transmitter. */
-    TOO_SOON,
-
-    /** Longer than one packet carries even after trimming — should be unreachable, kept so it is visible. */
-    TOO_LARGE,
-
-    /** The public bucket's share of the rolling window is spent. */
-    NO_AIR,
-
-    /** The board or the mesh refused the packet. */
-    NAK,
 }
