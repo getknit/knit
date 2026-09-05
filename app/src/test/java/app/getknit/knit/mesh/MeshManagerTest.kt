@@ -237,6 +237,9 @@ class MeshManagerTest {
         /** The own open-to-chat flag, the fourth input of the profile watcher's combine. */
         val openToChat = MutableStateFlow(false)
 
+        /** The bound LoRa board's node number, the fifth input — null until a board reports in. */
+        val loraBoardNode = MutableStateFlow<Long?>(null)
+
         // Hoisted so a test can pre-shape group-ratchet state (e.g. a stale outbox ack) around the
         // manager's own send/flush paths — same instance the manager is wired with below.
         val groupRatchet = GroupRatchetSessions(store = GroupRatchetRepository(db.groupRatchetDao()))
@@ -256,6 +259,7 @@ class MeshManagerTest {
         init {
             coEvery { identity.nodeId() } returns me.nodeId
             coEvery { settings.displayName } returns displayName
+            coEvery { settings.loraBoardNode } returns loraBoardNode
             // The local delivery of anything we originate runs the inbound path, whose first act is a
             // blocklist read with `.first()`. A relaxed mock's empty flow throws there rather than hanging.
             coEvery { settings.blockedNodeIds } returns MutableStateFlow(emptySet())
@@ -317,6 +321,7 @@ class MeshManagerTest {
             coEvery { settings.status } returns MutableStateFlow("")
             coEvery { settings.avatarUpdatedAt } returns avatarUpdatedAt
             coEvery { settings.openToChat } returns openToChat
+            coEvery { settings.loraBoardNode } returns loraBoardNode
             // start() also reads the open-to-chat cue's persisted state once, with .first().
             coEvery { settings.openToChatNamed } returns MutableStateFlow(emptySet())
             coEvery { settings.openToChatLastPostAt } returns MutableStateFlow(0L)
@@ -1605,6 +1610,33 @@ class MeshManagerTest {
                 "Alex",
                 WireCodec.decodePayload<ProfileContent>(custodied.last().payload)?.name,
             )
+        }
+
+    @Test
+    fun theProfileAdvertisesTheBoundBoardAndRepublishesWhenItChangesOrClears() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val publishedAt = MutableStateFlow(0L)
+            rig.stubProfileState(publishedAt)
+
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size } // the startup custody seed, no board
+            assertNull(WireCodec.decodePayload<ProfileContent>(rig.custodiedProfiles().single().payload)!!.loraNode)
+
+            rig.awaitProfileWatcher()
+            rig.clockNow = rig.now + 26_000
+            rig.loraBoardNode.value = 0xdeadbeefL // the board's session came up and the transport reported it
+            rig.await(1) { rig.floodedProfiles().size }
+            assertEquals(
+                "the profile now names the board",
+                0xdeadbeefL,
+                WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().single().payload)!!.loraNode,
+            )
+
+            rig.clockNow = rig.now + 52_000
+            rig.loraBoardNode.value = null // unbound: the next profile omits it, which is how a clear arrives
+            rig.await(2) { rig.floodedProfiles().size }
+            assertNull(WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().last().payload)!!.loraNode)
         }
 
     @Test

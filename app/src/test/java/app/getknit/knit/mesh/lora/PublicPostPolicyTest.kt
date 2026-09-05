@@ -12,6 +12,15 @@ import org.junit.Test
  */
 class PublicPostPolicyTest {
     @Test
+    fun `displayBody is the inverse of onAirText for the author's own line and nothing else`() {
+        assertEquals("hello mesh", PublicPostPolicy.displayBody("Alice", PublicPostPolicy.onAirText("Alice", "hello mesh")))
+        assertEquals("a stranger's line is content", "Bob: hi", PublicPostPolicy.displayBody("Alice", "Bob: hi"))
+        assertEquals("no name, nothing to strip", "Alice: hi", PublicPostPolicy.displayBody(null, "Alice: hi"))
+        assertEquals("a longer name is not a match", "Alice B: hi", PublicPostPolicy.displayBody("Alice", "Alice B: hi"))
+        assertEquals("stripping to nothing keeps the line", "Alice: ", PublicPostPolicy.displayBody("Alice", "Alice: "))
+    }
+
+    @Test
     fun `a post carries its author's name so somebody can answer it`() {
         assertEquals("Alice: hello mesh", PublicPostPolicy.onAirText("Alice", "hello mesh"))
     }

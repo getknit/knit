@@ -473,6 +473,18 @@ class WireSerializationTest {
         assertFalse("a best-effort typing cue is never carried", envelope(type = FrameType.TYPING).isStorable())
     }
 
+    @Test
+    fun `a profile carries its bound board's node and omits it while unbound`() {
+        // Nullable rather than defaulted: 0 is not a node number, and absence on a newer profile is how an
+        // unpaired or handed-on board is unsaid.
+        val bound = ProfileContent(name = "Ann", status = "", loraNode = 0xdeadbeefL)
+        assertEquals(bound, WireCodec.decodePayload<ProfileContent>(WireCodec.encodePayload(bound)))
+        val unbound = WireCodec.encodePayload(ProfileContent(name = "Ann", status = ""))
+        assertFalse("an unbound phone says nothing about a board", unbound.decodeToString().contains("loraNode"))
+        val sealed = ProfilePayload(name = "Ann", status = "", version = 1L, loraNode = 0xdeadbeefL)
+        assertEquals(sealed, WireCodec.decodePayload<ProfilePayload>(WireCodec.encodePayload(sealed)))
+    }
+
     // --- signature binding (the bytes the wrapper signature covers) ---
 
     @Test

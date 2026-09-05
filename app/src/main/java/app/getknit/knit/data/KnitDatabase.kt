@@ -85,7 +85,12 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
     //     identity and no peer row, so there is nothing on this device to resolve the name against, now or
     //     ever. Local only (a heard post is never framed), null/0 on every existing row — no message before this could be
     //     a bridged post; migrated by KnitMigrations.MIGRATION_9_10.
-    version = 10,
+    // v11: `peers.loraNode` — the Meshtastic board a peer's latest profile says they hold (off the wire,
+    //     `ProfileContent.loraNode`, under the presentation LWW watermark) — and `messages.originPeerId`, the
+    //     contact a heard radio post resolved to at ingest, frozen on the row so a board changing hands never
+    //     re-attributes history. Both null on every existing row: nobody had claimed a board and no post had
+    //     been matched; migrated by KnitMigrations.MIGRATION_10_11.
+    version = 11,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
     // the migration test's MigrationTestHelper. Room also errors at compile time if an entity changes without

@@ -971,6 +971,7 @@ class DebugBridgeReceiver :
             .put("meshPostHeard", snap.meshPostHeard)
             .put("meshPostIngested", snap.meshPostIngested)
             .put("meshPostViaMqtt", snap.meshPostViaMqtt)
+            .put("meshPostMatched", snap.meshPostMatched)
             .put("meshPostRefusedByReason", JSONObject(snap.meshPostRefusedByReason))
             // The outbound half. Unlike the four above these cost airtime, so read `publicPostSent` against
             // `airtime.publicMs`/`publicBudgetMs` to say whether the quota is set right. Every refusal here

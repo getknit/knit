@@ -342,6 +342,17 @@ class FrameTranscoderTest {
         assertTrue("the pubKey still went raw beside it", compact.size < signed.size - 40)
     }
 
+    /** The bound-board node is outside the frozen label map too: it rides as its text key plus a CBOR uint, exact on rebuild. */
+    @Test
+    fun aBoundBoardProfileRidesAsTextKeyPlusUintAndRebuildsExact() {
+        val content = ProfileContent(name = "A", status = "S", pubKey = bundle, version = SENT_AT, loraNode = 0xdeadbeefL)
+        val signed = envelope(FrameType.PROFILE, WireCodec.encodePayload(content))
+        val compact = checkNotNull(FrameTranscoder.transcode(signed))
+        assertArrayEquals(signed, FrameTranscoder.rebuild(compact))
+        val uint = byteArrayOf(0x1a, 0xde.toByte(), 0xad.toByte(), 0xbe.toByte(), 0xef.toByte())
+        assertTrue("the node travels as text key + uint", contains(compact, tstr("loraNode") + uint))
+    }
+
     @Test
     fun unknownKeysRideAsTextAndSwitchElisionOff() {
         val futureChat =

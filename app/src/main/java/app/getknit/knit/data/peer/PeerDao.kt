@@ -16,6 +16,13 @@ interface PeerDao {
     @Query("SELECT * FROM peers WHERE nodeId = :nodeId")
     fun observeByNodeId(nodeId: String): Flow<PeerEntity?>
 
+    /**
+     * The peer whose latest profile claims LoRa board [node] — the newest claim wins, since a board that
+     * changed hands is named by two profiles until the old holder's next one drops it.
+     */
+    @Query("SELECT * FROM peers WHERE loraNode = :node ORDER BY updatedAt DESC LIMIT 1")
+    suspend fun findByLoraNode(node: Long): PeerEntity?
+
     /** Every peer's `(nodeId, name)` — the light projection the name-collision index is built from. */
     @Query("SELECT nodeId, name FROM peers")
     suspend fun namesAll(): List<PeerName>

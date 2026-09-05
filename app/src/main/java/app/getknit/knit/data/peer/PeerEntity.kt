@@ -52,4 +52,11 @@ data class PeerEntity(
     val prekeySig: String? = null,
     val prekeyProfileAt: Long? = null,
     val openToChat: Boolean = false,
+    /**
+     * The Meshtastic node number of the board this peer's latest profile says they hold
+     * (`ProfileContent.loraNode` / `ProfilePayload.loraNode`), or null when it named none. A presentation
+     * field under the same [updatedAt] watermark; a self-asserted claim, so several peers may name one node
+     * (a board that changed hands) and ingest picks the newest — see `PeerDao.findByLoraNode`.
+     */
+    val loraNode: Long? = null,
 )

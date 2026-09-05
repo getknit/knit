@@ -253,6 +253,7 @@ class MeshMetrics {
     private val meshPostHeard = AtomicLong()
     private val meshPostIngested = AtomicLong()
     private val meshPostViaMqtt = AtomicLong()
+    private val meshPostMatched = AtomicLong()
     private val meshPostRefusedByReason = ConcurrentHashMap<String, AtomicLong>()
 
     // The Meshtastic room's outbound half. Unlike the four above these DO spend airtime, so `publicPostSent`
@@ -746,6 +747,11 @@ class MeshMetrics {
         if (viaMqtt) meshPostViaMqtt.incrementAndGet()
     }
 
+    /** A heard post whose speaker's board a contact's profile claims — attributed to that contact at ingest. */
+    fun onMeshPostMatched() {
+        meshPostMatched.incrementAndGet()
+    }
+
     /** A primary-channel packet the filters turned away, by `PublicChannelPolicy.Refusal`. */
     fun onMeshPostRefused(reason: String) {
         meshPostRefusedByReason.computeIfAbsent(reason) { AtomicLong() }.incrementAndGet()
@@ -854,6 +860,7 @@ class MeshMetrics {
             meshPostHeard = meshPostHeard.get(),
             meshPostIngested = meshPostIngested.get(),
             meshPostViaMqtt = meshPostViaMqtt.get(),
+            meshPostMatched = meshPostMatched.get(),
             meshPostRefusedByReason = meshPostRefusedByReason.mapValues { it.value.get() },
             publicPostSent = publicPostSent.get(),
             publicPostRefusedByReason = publicPostRefusedByReason.mapValues { it.value.get() },
@@ -949,6 +956,7 @@ class MeshMetrics {
         val meshPostHeard: Long = 0,
         val meshPostIngested: Long = 0,
         val meshPostViaMqtt: Long = 0,
+        val meshPostMatched: Long = 0,
         val meshPostRefusedByReason: Map<String, Long> = emptyMap(),
         val publicPostSent: Long = 0,
         val publicPostRefusedByReason: Map<String, Long> = emptyMap(),

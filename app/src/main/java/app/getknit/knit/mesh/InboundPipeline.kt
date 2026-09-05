@@ -45,6 +45,7 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.readsCryptoV3
 import app.getknit.knit.mesh.crypto.sealBytes
+import app.getknit.knit.mesh.lora.PublicPostPolicy
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.EncEnvelope
@@ -599,13 +600,27 @@ class InboundPipeline(
      *   Knit identity, and the row's `senderId` is this phone by convention — a heard post is "ours" in the
      *   sender column and somebody else's in the origin, and `originNode` is what tells the two apart
      *   everywhere a row is read.
-     * - **No peer row, ever.** The attribution rides on the message row and nowhere else. Nothing here
+     * - **A contact, resolved once.** The speaker's node number is looked up against the profiles that claim
+     *   it ([PeerRepository.findByLoraNode], newest wins) at ingest, and the answer is frozen on the row as
+     *   [MeshPostOrigin.peerId]. Boards change hands; resolving at render time would re-attribute history to
+     *   whoever holds the board now. Still an attribution, not an identity: a node number is self-asserted
+     *   and unsigned, so the UI keeps the unverified styling. No peer row is ever created here — nothing
      *   touches `peers`, presence, `reachable`, open-to-chat or the contacts picker.
-     * - **No blocklist check on the speaker.** Blocking is keyed on Knit node ids; a Meshtastic node number is
-     *   not one and is trivially spoofable, so a per-speaker block would be a promise the radio cannot keep.
+     * - **The blocklist is read on the resolved contact only.** Blocking is keyed on Knit node ids; a
+     *   Meshtastic node number is not one and is trivially spoofable, so a per-speaker block would be a promise
+     *   the radio cannot keep — but a post from a blocked contact's own board is dropped like their chat is.
      */
     internal suspend fun deliverMeshPost(post: MeshPost) {
         val me = identity.nodeId()
+        val contact = peers.findByLoraNode(post.node)
+        if (contact != null) {
+            // A DataStore read, hoisted ahead of the write like every other blocklist check here.
+            if (contact.nodeId in settings.blockedNodeIds.first()) {
+                metrics.onMeshPostRefused(MESH_POST_BLOCKED_CONTACT)
+                return
+            }
+            metrics.onMeshPostMatched()
+        }
         val env =
             RelayEnvelope(
                 type = FrameType.CHAT,
@@ -630,6 +645,7 @@ class InboundPipeline(
                     hops = post.hops,
                     snrDeci = post.snrDeci,
                     viaMqtt = post.viaMqtt,
+                    peerId = contact?.nodeId,
                 ),
             ack = false,
         )
@@ -1103,6 +1119,7 @@ class InboundPipeline(
                 // The whole presentation set moves together (see ProfilePayload): a field this path did not
                 // copy would be reverted by every sealed update after the cleartext frame that set it.
                 openToChat = payload.openToChat,
+                loraNode = payload.loraNode,
             ),
         )
         // Status notices for what actually moved. Compared against the pre-write row, and written here
@@ -2133,6 +2150,7 @@ class InboundPipeline(
                 originHops = origin?.hops,
                 originSnrDeci = origin?.snrDeci,
                 originViaMqtt = origin?.viaMqtt == true,
+                originPeerId = origin?.peerId,
             ).withReply(content.replyTo),
         )
         // Start pulling the referenced blob unless we already hold it (the UI observes the blobs table
@@ -2332,7 +2350,8 @@ class InboundPipeline(
         val incoming =
             incomingNotification(
                 senderId = speaker?.id ?: env.senderId,
-                body = body,
+                // A contact's own "Name: " prefix is dropped the way the bubble drops it; a stranger's stays.
+                body = speaker?.let { PublicPostPolicy.displayBody(it.plainName, body) } ?: body,
                 sentAt = env.sentAt,
                 selfId = me,
                 peerName = speaker?.name ?: senderLabel.text,
@@ -2349,6 +2368,8 @@ class InboundPipeline(
         val id: String,
         val name: String,
         val avatar: ByteArray?,
+        /** The contact's stored display name, for the prefix their board put on the line; null for a stranger. */
+        val plainName: String?,
     )
 
     /**
@@ -2366,7 +2387,7 @@ class InboundPipeline(
             origin.peerId?.let { label(it, contact?.name) }
                 ?: origin.name?.takeIf(String::isNotBlank)
                 ?: meshNodeLabel(origin.node)
-        return HeardSpeaker(id, name, contact?.avatarHash?.let { blobs.bytes(it) })
+        return HeardSpeaker(id, name, contact?.avatarHash?.let { blobs.bytes(it) }, contact?.name)
     }
 
     /**
@@ -2568,6 +2589,8 @@ class InboundPipeline(
                 // A presentation field: gated with name/status, never with the prekey. Absent on the wire
                 // reads false, which is how a flip back to off arrives.
                 openToChat = if (stalePresentation) base.openToChat else content.openToChat,
+                // The same, for the bound LoRa board: absent means unbound (or handed on), and clears.
+                loraNode = if (stalePresentation) base.loraNode else content.loraNode,
             ),
         )
         applyPresentationFollowUps(env.senderId, existing, name, advertised, haveAvatar, version, stalePresentation)
@@ -2837,3 +2860,9 @@ class InboundPipeline(
             )
     }
 }
+
+/**
+ * `meshPostRefusedByReason` key for a heard radio post whose resolved contact is blocked — the pipeline's own
+ * reason, beside the transport's `PublicChannelPolicy.Refusal` names.
+ */
+internal const val MESH_POST_BLOCKED_CONTACT = "BLOCKED_CONTACT"

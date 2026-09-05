@@ -148,8 +148,15 @@ data class MessageEntity(
     val originHops: Int? = null,
     /** Signal-to-noise at this board, in tenths of a dB. */
     val originSnrDeci: Int? = null,
-    /** The post entered the foreign mesh through an MQTT uplink, so it may have come from anywhere. */
+    /** The post entered the mesh through an MQTT uplink, so it may have come from anywhere. */
     val originViaMqtt: Boolean = false,
+    /**
+     * The Knit contact whose profile claimed [originNode] as their board when this post was heard, resolved
+     * **once, at ingest**, and never again: boards change hands, and re-resolving at render time would put
+     * old words under whoever holds the board now. Null for a stranger's radio. An attribution, not a verified
+     * identity — the UI keeps the unverified styling for it.
+     */
+    val originPeerId: String? = null,
 ) {
     companion object {
         /** [moderation]: text passed (or was not checked). */

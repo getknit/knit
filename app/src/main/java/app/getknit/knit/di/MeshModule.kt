@@ -176,6 +176,8 @@ val meshModule =
                 offerPrefixes = { get<BridgeFrameSource>().offerPrefixes(it) },
                 framesMissing = { prefixes, limit, dms -> get<BridgeFrameSource>().framesMissing(prefixes, limit, dms) },
                 onPublicPost = { get<MeshPostSink>().onPublicPostHeard(it) },
+                // The bound board's node number, persisted so the profile can advertise it (ProfileContent.loraNode).
+                onBoardBound = { settings.setLoraBoardNode(it.toLong()) },
                 scope = get(),
                 metrics = get(),
                 clock = SystemClock::elapsedRealtime,

@@ -51,6 +51,9 @@ class PeerRepository(
 
     suspend fun find(nodeId: String): PeerEntity? = dao.findByNodeId(nodeId)
 
+    /** The contact whose latest profile names LoRa board [node], newest claim first; null for a stranger's radio. */
+    suspend fun findByLoraNode(node: Long): PeerEntity? = dao.findByLoraNode(node)
+
     suspend fun upsert(peer: PeerEntity) = dao.upsert(peer)
 
     /** Marks (or clears) the user's out-of-band verification of this peer's pinned key. */

@@ -245,6 +245,21 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v11 — the bound-board claim and the heard-post match: `peers.loraNode`, the Meshtastic node number a
+     * peer's latest profile says they hold, and `messages.originPeerId`, the contact a heard radio post
+     * resolved to at ingest. Null on every existing row — no profile before this version claimed a board, and
+     * no post could have been matched. Additive only; the SQL must stay byte-equivalent to what Room generates
+     * for `app/schemas/**/11.json`.
+     */
+    val MIGRATION_10_11 =
+        object : Migration(10, 11) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `peers` ADD COLUMN `loraNode` INTEGER DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originPeerId` TEXT DEFAULT NULL")
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -257,5 +272,6 @@ object KnitMigrations {
             MIGRATION_7_8,
             MIGRATION_8_9,
             MIGRATION_9_10,
+            MIGRATION_10_11,
         )
 }

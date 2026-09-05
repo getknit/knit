@@ -297,6 +297,11 @@ class InboundPipelineTest {
         init {
             coEvery { peers.find(any()) } answers { peerMap[firstArg()] }
             coEvery { peers.upsert(any()) } answers { peerMap[firstArg<PeerEntity>().nodeId] = firstArg() }
+            // The real query orders claimants by updatedAt DESC and takes the first; the fake does the same.
+            coEvery { peers.findByLoraNode(any()) } answers {
+                val node = firstArg<Long>()
+                peerMap.values.filter { it.loraNode == node }.maxByOrNull { it.updatedAt }
+            }
             // isAccepted now reads the batch "verified" signal; derive it from the same fake map the repo backs.
             coEvery { peers.verifiedNodeIds() } answers { peerMap.values.filter { it.verified }.map { it.nodeId } }
             coEvery { peers.labelIndex() } answers { PeerLabels.index(peerMap.values.map { it.nodeId to it.name }) }
@@ -454,6 +459,7 @@ class InboundPipelineTest {
             sentAt: Long = 6L,
             name: String = "Peer",
             openToChat: Boolean = false,
+            loraNode: Long? = null,
         ): RelayEnvelope =
             RelayEnvelope(
                 type = FrameType.PROFILE,
@@ -468,6 +474,7 @@ class InboundPipelineTest {
                             pubKey = author.bundle.encoded,
                             avatarHash = avatarHash,
                             openToChat = openToChat,
+                            loraNode = loraNode,
                         ),
                     ),
             )
@@ -2294,6 +2301,99 @@ class InboundPipelineTest {
 
             assertEquals(1, rig.msgMap.size)
             assertEquals(1, notified)
+        }
+
+    @Test
+    fun aProfileCarryingABoardNodeStoresItOnThePeerAndAClearedOneRemovesIt() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, loraNode = 0x1234abcdL))
+            assertEquals(0x1234abcdL, checkNotNull(rig.peerMap[alice.nodeId]).loraNode)
+
+            // Absent on a newer profile clears it — an unpaired or handed-on board is unsaid by omission.
+            rig.deliver(alice, rig.profile(alice, sentAt = 11L))
+            assertNull(checkNotNull(rig.peerMap[alice.nodeId]).loraNode)
+        }
+
+    @Test
+    fun aHeardPostFromAContactsBoardIsAttributedToThatContactAtIngest() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, name = "Alice", loraNode = 0x1234abcdL))
+            val notification = slot<NotifMessage>()
+            coEvery { rig.notifier.notify(capture(notification), any(), any(), any(), any()) } returns Unit
+
+            rig.pipeline.deliverMeshPost(heardPost("Alice: hi", node = 0x1234abcdL, name = "Knit abcd"))
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertEquals(alice.nodeId, row.originPeerId)
+            assertEquals("the row keeps what went on the air", "Alice: hi", row.body)
+            assertEquals("Knit abcd", row.originName)
+            assertEquals("the notification is the contact's, keyed like their DM", alice.nodeId, notification.captured.senderId)
+            assertEquals("Alice", notification.captured.senderName)
+            assertEquals("without the contact's own prefix", "hi", notification.captured.body)
+            assertEquals(1L, rig.metrics.snapshot().meshPostMatched)
+        }
+
+    @Test
+    fun aHeardPostFromABlockedContactsBoardIsDropped() =
+        runTest {
+            // A stranger cannot be blocked (a node number is spoofable), but a contact can, and their board is
+            // their board.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, loraNode = 0x1234abcdL))
+            rig.settings.blocked.value = setOf(alice.nodeId)
+
+            rig.pipeline.deliverMeshPost(heardPost("hi", node = 0x1234abcdL))
+            advanceUntilIdle()
+
+            assertTrue(rig.msgMap.isEmpty())
+            assertEquals(1L, rig.metrics.snapshot().meshPostRefusedByReason[MESH_POST_BLOCKED_CONTACT])
+        }
+
+    @Test
+    fun whenTwoPeersClaimOneNodeTheNewerProfileWins() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bob = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, loraNode = 0x1234abcdL))
+            rig.deliver(bob, rig.profile(bob, sentAt = 20L, loraNode = 0x1234abcdL)) // the board changed hands
+
+            rig.pipeline.deliverMeshPost(heardPost("hi", node = 0x1234abcdL))
+            advanceUntilIdle()
+
+            assertEquals(
+                bob.nodeId,
+                rig.msgMap.values
+                    .single()
+                    .originPeerId,
+            )
+        }
+
+    @Test
+    fun aLaterProfileChangeNeverReattributesHistory() =
+        runTest {
+            // Resolved once, at ingest, and frozen on the row: what Alice said while she held the board stays
+            // hers after Bob takes it over.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bob = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, loraNode = 0x1234abcdL))
+            rig.pipeline.deliverMeshPost(heardPost("first", node = 0x1234abcdL, packetId = 1))
+            advanceUntilIdle()
+            rig.deliver(bob, rig.profile(bob, sentAt = 20L, loraNode = 0x1234abcdL))
+            rig.pipeline.deliverMeshPost(heardPost("second", node = 0x1234abcdL, packetId = 2))
+            advanceUntilIdle()
+
+            val byBody = rig.msgMap.values.associateBy { it.body }
+            assertEquals(alice.nodeId, byBody.getValue("first").originPeerId)
+            assertEquals(bob.nodeId, byBody.getValue("second").originPeerId)
         }
 
     @Test

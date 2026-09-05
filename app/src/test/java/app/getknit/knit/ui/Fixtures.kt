@@ -31,14 +31,15 @@ fun msg(
     receivedVia: Int = DeliveryPlane.Unknown.code,
     pendingKey: Boolean = false,
     id: String = "$conversationId#$senderId#$sentAt",
-    // A bridged Meshtastic post's attribution. Set [originNode] and the row IS one — [senderId] then names
-    // the gateway that heard it rather than its author, exactly as on a real bridged row.
+    // A heard Meshtastic post's attribution. Set [originNode] and the row IS one — [senderId] is then the
+    // phone whose board heard it rather than its author, exactly as on a real heard row.
     originNode: Long? = null,
     originName: String? = null,
     originChannel: String? = null,
     originHops: Int? = null,
     originSnrDeci: Int? = null,
     originViaMqtt: Boolean = false,
+    originPeerId: String? = null,
 ): MessageEntity =
     MessageEntity(
         id = id,
@@ -59,6 +60,7 @@ fun msg(
         originHops = originHops,
         originSnrDeci = originSnrDeci,
         originViaMqtt = originViaMqtt,
+        originPeerId = originPeerId,
     )
 
 fun peer(

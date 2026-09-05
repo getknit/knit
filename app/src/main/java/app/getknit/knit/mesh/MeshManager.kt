@@ -1849,8 +1849,9 @@ class MeshManager(
                 settings.status,
                 settings.avatarUpdatedAt,
                 settings.openToChat,
-            ) { name, status, avatarAt, openToChat ->
-                OwnPresentation(name, status, avatarAt, openToChat)
+                settings.loraBoardNode,
+            ) { name, status, avatarAt, openToChat, loraNode ->
+                OwnPresentation(name, status, avatarAt, openToChat, loraNode)
             }.drop(1) // skip the initial stored value; only react to real edits
                 // A Save writes name+status in one transaction; without this the duplicate flow
                 // re-emits would broadcast more than once. Also drops no-op saves.
@@ -1998,6 +1999,7 @@ class MeshManager(
                     avatarHash = avatarHash,
                     version = version,
                     openToChat = settings.openToChat.first(),
+                    loraNode = settings.loraBoardNode.first(),
                 ),
         )
 
@@ -2089,6 +2091,8 @@ class MeshManager(
                 prekey = PrekeyInfo(id = spk.id, pub = spk.pub, sig = spk.sig),
                 version = version,
                 openToChat = settings.openToChat.first(),
+                // The bound board's node number, so a contact's phone can line a heard radio post up with us.
+                loraNode = settings.loraBoardNode.first(),
             )
         return RelayEnvelope(
             type = FrameType.PROFILE,
@@ -2459,6 +2463,7 @@ private data class OwnPresentation(
     val status: String,
     val avatarUpdatedAt: Long,
     val openToChat: Boolean,
+    val loraNode: Long?,
 )
 
 /** `"<peerId>|<millis>"` entries ↔ a peer→stamp map, the intro driver's two settings sets. */

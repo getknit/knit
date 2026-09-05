@@ -39,6 +39,20 @@ class PeerDaoTest : RoomDbTest() {
         }
 
     @Test
+    fun `findByLoraNode picks the newest claimant and ignores peers with none`() =
+        runTest {
+            // A board that changed hands is named by two profiles until the old holder's next one drops it;
+            // the newer claim is the one a heard post is lined up with.
+            dao.upsert(PeerEntity(nodeId = "old", loraNode = 0xdeadbeefL, updatedAt = 5L))
+            dao.upsert(PeerEntity(nodeId = "new", loraNode = 0xdeadbeefL, updatedAt = 9L))
+            dao.upsert(PeerEntity(nodeId = "other", loraNode = 1L, updatedAt = 99L))
+            dao.upsert(PeerEntity(nodeId = "none", updatedAt = 100L))
+            assertEquals("new", dao.findByLoraNode(0xdeadbeefL)!!.nodeId)
+            assertEquals("other", dao.findByLoraNode(1L)!!.nodeId)
+            assertNull(dao.findByLoraNode(2L))
+        }
+
+    @Test
     fun `setVerified flips only the verified flag`() =
         runTest {
             dao.upsert(PeerEntity(nodeId = "a", pubKey = "KEY", verified = false))

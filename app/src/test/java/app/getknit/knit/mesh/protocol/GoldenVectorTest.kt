@@ -198,7 +198,8 @@ class GoldenVectorTest {
                 ),
             // The additive ProfileContent.openToChat flag: defaulted, so it is elided while off (every fixture
             // above is byte-identical) and rides as one text key + `f5` while on. The same field on the sealed
-            // ProfilePayload and its compact ProfileV2 mirror (label 5) follow below.
+            // ProfilePayload and its compact ProfileV2 mirror (label 5) follow below, each followed by the
+            // bound-board node (`loraNode`, a text key + uint on the two wire layouts, label 6 on the compact one).
             "profileContentOpenToChat" to
                 WireCodec.encodePayload(
                     ProfileContent(
@@ -212,6 +213,21 @@ class GoldenVectorTest {
                         prekey = PrekeyInfo(id = 7, pub = bytes(32, 9), sig = bytes(64, 11)),
                         version = 1_700_000_000_000L,
                         openToChat = true,
+                    ),
+                ),
+            "profileContentLoraNode" to
+                WireCodec.encodePayload(
+                    ProfileContent(
+                        "Ann",
+                        "hiking",
+                        avatarHash = "av1",
+                        pubKey = "pk1",
+                        deviceTag = "dt1",
+                        protoVersion = 1,
+                        capabilities = 31L,
+                        prekey = PrekeyInfo(id = 7, pub = bytes(32, 9), sig = bytes(64, 11)),
+                        version = 1_700_000_000_000L,
+                        loraNode = 0xdeadbeefL,
                     ),
                 ),
             // The spool plane's shared group root (docs/SPOOL_PROTOCOL.md §3.2), gossiped as the additive
@@ -228,6 +244,10 @@ class GoldenVectorTest {
             "profilePayloadOpenToChat" to
                 WireCodec.encodePayload(
                     ProfilePayload(name = "Ann", status = "hiking", avatarHash = "av1", version = 1700L, openToChat = true),
+                ),
+            "profilePayloadLoraNode" to
+                WireCodec.encodePayload(
+                    ProfilePayload(name = "Ann", status = "hiking", avatarHash = "av1", version = 1700L, loraNode = 0xdeadbeefL),
                 ),
             "groupRootPayload" to WireCodec.encodePayload(GroupRootPayload(root = bytes(32, 13), version = 2, minter = "aa")),
             "groupKeyPayloadRoot" to
@@ -299,6 +319,21 @@ class GoldenVectorTest {
                                 avatarHash = hex(bytes(32, 7)),
                                 version = 1700L,
                                 openToChat = true,
+                            ),
+                    ),
+                ),
+            "messageContentV2ProfileLoraNode" to
+                compact(
+                    MessageContent(
+                        body = "",
+                        ctl = MessageContent.CTL_PROFILE,
+                        pr =
+                            ProfilePayload(
+                                name = "Ann",
+                                status = "hiking",
+                                avatarHash = hex(bytes(32, 7)),
+                                version = 1700L,
+                                loraNode = 0xdeadbeefL,
                             ),
                     ),
                 ),
@@ -471,6 +506,13 @@ class GoldenVectorTest {
                     "666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4" +
                     "6776657273696f6e1b0000018bcfe56800" +
                     "6a6f70656e546f43686174f5",
+                "profileContentLoraNode" to
+                    "aa646e616d6563416e6e667374617475736668696b696e676a6176617461724861736863617631667075624b657963706b3169646576" +
+                    "696365546167636474316c70726f746f56657273696f6e016c6361706162696c6974696573181f667072656b6579a362696407637075" +
+                    "6258200910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe26373696758400b121920272e353c434a51585f" +
+                    "666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4" +
+                    "6776657273696f6e1b0000018bcfe56800" +
+                    "686c6f72614e6f64651adeadbeef",
                 "profilePayload" to
                     "a4646e616d6563416e6e667374617475736668696b696e676a617661746172486173" +
                     "6863617631" +
@@ -481,6 +523,11 @@ class GoldenVectorTest {
                     "6863617631" +
                     "6776657273696f6e1906a4" +
                     "6a6f70656e546f43686174f5",
+                "profilePayloadLoraNode" to
+                    "a5646e616d6563416e6e667374617475736668696b696e676a617661746172486173" +
+                    "6863617631" +
+                    "6776657273696f6e1906a4" +
+                    "686c6f72614e6f64651adeadbeef",
                 "groupRootPayload" to
                     "a364726f6f7458200d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6" +
                     "6776657273696f6e02666d696e746572626161",
@@ -507,6 +554,9 @@ class GoldenVectorTest {
                 "messageContentV2ProfileOpenToChat" to
                     "a207080ba50163416e6e026668696b696e67035820070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0" +
                     "041906a405f5",
+                "messageContentV2ProfileLoraNode" to
+                    "a207080ba50163416e6e026668696b696e67035820070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0" +
+                    "041906a4061adeadbeef",
                 "messageContentFile" to
                     "a664626f6479606e6174746163686d656e744861736878403034306231323139323032373265333533633433346135313538" +
                     "35663636366437343762383238393930393739656135616362336261633163386366643664646e6174746163686d656e744d" +

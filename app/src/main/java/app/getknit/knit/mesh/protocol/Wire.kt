@@ -191,6 +191,13 @@ data class ChatContent(
  * same shape as a newer profile carrying no [prekey] clearing the pin). Carried, not derived: nothing on
  * either end can compute it. Every presentation field rides **both** profile paths — this frame and the
  * sealed [ProfilePayload] — or a sealed update would silently revert it.
+ *
+ * [loraNode] is the Meshtastic node number of the board this phone currently holds (unsigned 32 bits,
+ * widened), so a contact's phone can line a post its own board heard on the radio channel up with this
+ * one. Nullable rather than defaulted because 0 is not a node number; elided while unbound, and absent on a
+ * newer profile it **clears** — a board handed on or unpaired is unsaid by omission, the prekey's shape. A
+ * presentation field: it rides all three layouts and moves under the same LWW watermark. Self-asserted and
+ * unsigned by the board, so a receiver treats a match as an attribution, never a verified identity.
  */
 @Serializable
 data class ProfileContent(
@@ -204,6 +211,7 @@ data class ProfileContent(
     val prekey: PrekeyInfo? = null,
     val version: Long? = null,
     val openToChat: Boolean = false,
+    val loraNode: Long? = null,
 )
 
 /** Content of a [FrameType.GROUP_LEAVE] frame: the group the (self-asserted) sender is leaving. */
@@ -508,7 +516,8 @@ data class ReactionPayload(
  *
  * [openToChat] mirrors [ProfileContent.openToChat] — a presentation field, so it rides here too (defaulted,
  * elided while off): the sealed path overwrites the whole presentation set under a newer version, and a
- * field carried by the cleartext frame alone would be reverted by the next sealed update.
+ * field carried by the cleartext frame alone would be reverted by the next sealed update. [loraNode]
+ * mirrors [ProfileContent.loraNode] for the same reason (nullable, elided while unbound, absent clears).
  */
 @Serializable
 data class ProfilePayload(
@@ -517,6 +526,7 @@ data class ProfilePayload(
     val avatarHash: String? = null,
     val version: Long = 0L,
     val openToChat: Boolean = false,
+    val loraNode: Long? = null,
 )
 
 /**

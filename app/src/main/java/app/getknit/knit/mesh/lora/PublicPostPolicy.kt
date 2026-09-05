@@ -74,6 +74,22 @@ internal object PublicPostPolicy {
     }
 
     /**
+     * [body] with this author's own `"Name: "` removed, for display — the inverse of [onAirText]. A contact's
+     * board puts their name on the front of every line so stock clients can tell who spoke; once the row has
+     * been lined up with that contact, showing the name twice says nothing. Verbatim when the prefix is not
+     * theirs (a stranger's `"Bob: hi"` is content), when there is no name to match, or when stripping would
+     * leave nothing. Display only: the row's body stays exactly what went on the air.
+     */
+    fun displayBody(
+        name: String?,
+        body: String,
+    ): String {
+        val prefix = prefixFor(name)
+        if (prefix.isEmpty() || !body.startsWith(prefix)) return body
+        return body.removePrefix(prefix).takeIf { it.isNotBlank() } ?: body
+    }
+
+    /**
      * [text] cut to at most [maxBytes] of UTF-8, never mid-character.
      *
      * Walks the string rather than encoding it and slicing the bytes back, so a surrogate pair is one

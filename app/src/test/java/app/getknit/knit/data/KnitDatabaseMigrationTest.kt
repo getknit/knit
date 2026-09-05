@@ -44,9 +44,9 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v10) creates and opens from the exported JSON`() =
+    fun `the current schema (v11) creates and opens from the exported JSON`() =
         runTest {
-            val version = 10 // KnitDatabase @Database(version = 10) — bump alongside the DB (its retention is CLASS,
+            val version = 11 // KnitDatabase @Database(version = 11) — bump alongside the DB (its retention is CLASS,
             // so the version can't be read reflectively). A missing schemas/<db>/<version>.json fails here.
             helper.createDatabase(version).close()
         }
@@ -316,6 +316,43 @@ class KnitDatabaseMigrationTest {
                 c.prepare("SELECT openToChat FROM peers WHERE nodeId = 'n1'").use { s ->
                     assertTrue(s.step())
                     assertEquals(1L, s.getLong(0))
+                }
+            }
+        }
+
+    @Test
+    fun `migrate 10 to 11 keeps peers and messages and leaves both new columns null`() =
+        runTest {
+            // No profile before v11 claimed a board and no heard post could have been matched to a contact,
+            // so null is the one honest value on every existing row of both tables.
+            helper.createDatabase(10).use { c ->
+                c.execSQL("INSERT INTO peers (nodeId, name, status, verified, updatedAt, openToChat) VALUES ('n1','Ann','around',1,7,0)")
+                c.execSQL(
+                    "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
+                        "mentions, replyToHasAttachment, moderation, pendingKey, kind, originViaMqtt) " +
+                        "VALUES ('m1','n1','m-public','hello',1,0,5,'[]',0,0,0,0,0)",
+                )
+            }
+            helper.runMigrationsAndValidate(11, listOf(KnitMigrations.MIGRATION_10_11)).use { c ->
+                c.prepare("SELECT name, loraNode FROM peers WHERE nodeId = 'n1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("Ann", s.getText(0))
+                    assertTrue("nobody had claimed a board", s.isNull(1))
+                }
+                c.prepare("SELECT body, originPeerId FROM messages WHERE id = 'm1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("hello", s.getText(0))
+                    assertTrue("and no post had been matched", s.isNull(1))
+                }
+                c.execSQL("UPDATE peers SET loraNode = 3735928559 WHERE nodeId = 'n1'")
+                c.execSQL("UPDATE messages SET originPeerId = 'n1' WHERE id = 'm1'")
+                c.prepare("SELECT loraNode FROM peers WHERE nodeId = 'n1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("a full 32-bit node number fits", 3735928559L, s.getLong(0))
+                }
+                c.prepare("SELECT originPeerId FROM messages WHERE id = 'm1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("n1", s.getText(0))
                 }
             }
         }
