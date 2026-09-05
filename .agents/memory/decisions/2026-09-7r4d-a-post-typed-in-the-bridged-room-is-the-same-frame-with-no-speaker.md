@@ -8,7 +8,7 @@ topics: [lora, meshtastic, mesh]
 
 # ADR 2026-09.7r4d — A post typed in the bridged room is the same frame with no speaker
 
-Status: Accepted (2026-09-04) — phase 2 (outbound) of work item #37, on ADR 2026-09.cf7a's phase 1.
+Status: Superseded by ADR 2026-09.26q3 (2026-09-05) — a post leaves through the author's own board only; the `meshpost` frame is withdrawn. Was: Accepted (2026-09-04) — phase 2 (outbound) of work item #37, on ADR 2026-09.cf7a's phase 1.
 
 **What was observed.** Phase 1 read the foreign mesh's public primary into its own room and stopped there,
 with the composer replaced by a line saying Knit does not post to this channel — "reading a foreign public

@@ -583,6 +583,46 @@ false are two encodings — both read as messagable); `Channel{ index=1, setting
 - **Seam.** UI code reaches the transport only through `LoraPlaneStatus` (`status`, `provisionKnitChannel`),
   bound to `LoraMeshTransport` under `BuildConfig.LORA_PLANE` and to `LoraPlaneStatus.Dark` otherwise.
 
+## The Meshtastic room (slot 0 mirror, ADR 2026-09.26q3)
+
+The paired board's **primary (slot 0) channel**, mirrored into `Conversations.MESHTASTIC` on this phone and
+this phone only. It is a simple interface to the board's own broadcast chat — whatever preset, name or key the
+user gave slot 0 — and **nothing in it ever crosses Knit's mesh**: no frame, no custody, no fan-out, no
+gateway election on either direction. A phone with no board never sees these posts; two phones with boards
+each hear the channel for themselves.
+
+- **Inbound.** `LoraMeshTransport.onLoraPacket` routes a channel-0 `TEXT_MESSAGE_APP` packet — by portnum,
+  never by the bound index, which defaults to 0 on a board that never ran the setup — to `onPrimaryPacket` →
+  `PublicChannelPolicy.judge` (broadcast, text, a packet id, a body; `OWN_BOARD` refuses our own board's echo
+  and `KNIT_ON_PRIMARY` the lab shape where slot 0 *is* the Knit channel, decided off the channel table) →
+  `MeshPostSink.onPublicPostHeard` → `InboundPipeline.deliverMeshPost`, which writes the row through the
+  ordinary `deliverChat` (room moderation, one notification, `ack = false`). The row's `senderId` is **this
+  phone** by convention and `originNode != null` is what says the words are somebody else's; its id is
+  `FrameId.forMeshPost(node, packetId)` so the board replaying its queue on reconnect is a no-op. Counters:
+  `meshPostHeard` / `Ingested` / `ViaMqtt` / `Matched` / `RefusedByReason`.
+- **Outbound.** `MeshManager.sendPublicPost` → room moderation → `PublicChannelSink.postToPublicChannel`
+  (`NOT_READY`, `KNIT_ON_PRIMARY`, the 30 s `PUBLIC_POST_FLOOR_MS` claimed at the decision, `TOO_LARGE`,
+  `AirBucket.PUBLIC` at 15 % of the window) → `Destination.Public` on the shared pacer → channel 0,
+  `TEXT_MESSAGE_APP`, `HOP_LIMIT`, the line composed by `PublicPostPolicy.onAirText` as `Alice: hello` (ADR
+  049's one exception, behind `SettingsStore.meshtasticPostConsented`). The own row is stored **only** once the
+  board queued it (`DeliveryPlane.LoRa`, never a ✓✓); a `PublicPostOutcome.Refused` reaches the composer as a
+  toast with the draft kept, so a post never silently goes nowhere. `…debug.SEND --es conv m-public` drives it.
+- **Contacts.** The profile carries the bound board's node number (`ProfileContent.loraNode`, persisted as
+  `SettingsStore.loraBoardNode` when the board reports `Ready`, cleared on unbind, republished on change);
+  `PeerEntity.loraNode` stores a peer's claim; `deliverMeshPost` resolves `packet.from` through
+  `PeerRepository.findByLoraNode` (newest `updatedAt` wins — a board that changed hands is claimed twice until
+  the old holder's next profile drops it) **once, at ingest**, and freezes it as `messages.originPeerId`, so
+  history is never re-attributed. A resolved contact wears their name and avatar with the **unverified**
+  styling (muted name, untappable avatar, the room strip), and `PublicPostPolicy.displayBody` drops their own
+  `Name: ` prefix for display only; a blocked contact's board is dropped (`BLOCKED_CONTACT`). The match rests
+  on a self-asserted node number — 2.8's XEdDSA signature is not decoded — see the roadmap.
+- **UI.** `LoraFacts.primaryChannel` / `canPost` (only while Live) title the room and the chat-list row
+  (`meshRoomChannel`: live board → newest post's channel → "Meshtastic"), the row exists while a board is
+  bound or history remains, and `PublicPostGate` swaps the composer for a footer with no radio bound (or a
+  Knit-at-0 board) and only changes the hint while the link is down, so the keyboard survives a BLE flap.
+  Notifications key on the resolved contact (or the `!hex` id, never `me`), stay `IMPORTANCE_LOW`, and carry
+  no inline reply.
+
 ## Board setup (once, Meshtastic CLI or app)
 
 Flash `firmware-heltec-v4-<ver>`; `--set lora.region <US|EU_868|…>`; `--set network.wifi_enabled false`;

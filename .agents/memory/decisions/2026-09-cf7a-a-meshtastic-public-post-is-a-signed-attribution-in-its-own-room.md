@@ -8,7 +8,7 @@ topics: [lora, meshtastic, mesh]
 
 # ADR 2026-09.cf7a — A Meshtastic public post is a signed attribution in its own room
 
-Status: Accepted (2026-09-03) — phase 1 (receive-only) of work item #37.
+Status: Superseded by ADR 2026-09.26q3 (2026-09-05) — the room is now a local mirror of the paired board's slot 0: no minting, no custody, no fan-out. Was: Accepted (2026-09-03) — phase 1 (receive-only) of work item #37.
 
 **What was observed.** The board Knit holds already hears Meshtastic's public primary channel. ADR 045 never
 touches index 0, the firmware decrypts the default-key primary itself, and `MeshtasticSession.onPacket` hands

@@ -61,21 +61,24 @@ doc). **Don't start a deferred item without explicit direction.**
   was reverted before shipping. **Still owed:** the on-hardware trial in `context/lora-bridge.md` — the
   frequency must be *unchanged*, the battery row must survive the telemetry stretch, and a stock node between
   two boards should extend the range.
-  **The LongFast bridge carries the foreign mesh's public channel both ways** (2026-09-03/04, ADR
-  2026-09.cf7a then 2026-09.7r4d): the board's stock public primary is read into a second public room
-  (`Conversations.MESHTASTIC`) as a signed `meshpost` frame the ACTIVE gateway mints, and a post typed in that
-  room is the **same** frame with `node`/`packetId` absent, which the pocket's ACTIVE gateway puts on channel 0
-  as `TEXT_MESSAGE_APP` prefixed with the author's display name — ADR 049's single exception, behind a
-  first-use consent sheet (`SettingsStore.meshtasticPostConsented`). One transmission serves the
-  neighbourhood: the type stays off the Knit LoRa plane, so a far pocket hears the packet itself. Metered by
-  `AirBucket.PUBLIC` (15 % of the window) plus a 30 s per-gateway floor. **Device-verified 2026-09-04** for the
-  consent gate, the composer, the room row on all four devices and the airtime bucket — and it is what found
-  the gossip-offer starvation that had stopped the ADR 044 election settling at all (ADR 2026-09.xdm2), since
-  two ACTIVE gateways transmit every post twice. **Still owed:** a re-run of the on-hardware
-  outbound trial (post from the gateway's phone, a PASSIVE phone and the board-less one; confirm exactly one
-  packet leaves, `publicMs` climbs while `liveMs` does not, and a second post inside 30 s is refused), and a
-  **per-post air receipt** — today a phone with no gateway in its pocket posts into Knit and nothing goes out,
-  silently.
+  **The Meshtastic room is a local mirror of the paired board's slot 0** (2026-09-05, ADR 2026-09.26q3,
+  superseding 2026-09.cf7a and 2026-09.7r4d): whatever the user set slot 0 to — preset, name or key — is read
+  into `Conversations.MESHTASTIC` as rows on this phone and this phone only, and a post typed there leaves
+  through this phone's own board on channel 0 as `TEXT_MESSAGE_APP` prefixed with the author's display name
+  (ADR 049's single exception, behind the first-use consent sheet). Nothing crosses Knit's mesh: no frame,
+  no custody, no fan-out, no gateway election on either direction; the `meshpost` type is withdrawn and
+  burned. A heard post is lined up with a contact through the bound board's node number the profile now
+  carries (`ProfileContent.loraNode` → `peers.loraNode`), resolved once at ingest and frozen on the row
+  (`messages.originPeerId`) so a board changing hands never re-attributes history; still an unverified match,
+  rendered as such. Metered by `AirBucket.PUBLIC` (15 % of the window) plus a 30 s per-board floor, and every
+  refusal is shown at the composer with the draft kept. **Still owed:** the on-hardware trial in
+  `context/lora-bridge.md` (two boards, one board-less phone: the board-less phone sees nothing, a contact's
+  post wears their name, a second post inside 30 s is refused, the title follows a preset change), and
+  **signature-backed confidence** — Meshtastic 2.8 signs broadcasts with the board's XEdDSA key, but Knit
+  does not decode `Data.xeddsa_signature` (field 10) and the firmware hands the phone no verdict, so using it
+  means advertising the board's public key in the profile beside the node number and verifying on the phone
+  against the exact signing input `Router::perhapsEncode` uses; until then a resolved contact stays
+  unverified and a spoofed node number puts words under a contact's name.
   **The setup also marks the board unmonitored** (2026-09-01, ADR 2026-09.emd7): `User.is_unmessagable`
   rides the same `set_owner` as the rename, so other people's clients stop offering a board whose inbound
   path keeps only `PRIVATE_APP` as a message target; Restore clears it, and firmware older than 2.6.9 is
@@ -326,16 +329,9 @@ doc). **Don't start a deferred item without explicit direction.**
   `CAP_FRAME_TRANSCODE` through the profile frame it beacons here, newest-`sentAt`-wins, closed when no one is
   heard" (~20 lines in `LoraMeshTransport.onFramePacket`/`recomputeReachable`/`encodeOrNull`), or a capability
   byte on a new `LoraCtl` kind; residuals either way: an unheard far-pocket old build on a rebroadcasting
-  channel, a downgraded peer until its older profile arrives. **The same gate now owns a second flag-day**
-  (2026-09-03, ADR 2026-09.cf7a): the LongFast bridge's `meshpost` is the first entry on `FrameType.isCustodial`
-  since the v1 baseline, and that list is fixed on every fielded build — so a build without it holds none of
-  those rows while a debug build holds them all, and their custody digests differ for the whole TTL (the ADR 006
-  divergence, against anything in radio range). Nothing shipped mints one while `LORA_PLANE` is debug-only;
-  before release the plane needs either that gate or the type kept off the air. Phase 2 (2026-09-04, ADR
-  2026-09.7r4d) adds no second divergence — the outbound post is the same type — but it does add a **decoder**
-  flag day of its own, `MeshPostContent.node`/`packetId` relaxed from required to optional, which an older
-  build fails to decode and so renders nothing while still storing, digesting and relaying it normally
-  (`docs/WIRE_COMPAT.md` states the distinction). The gate also owns a budget: `LoraSizeHint`'s
+  channel, a downgraded peer until its older profile arrives. (The second flag-day this gate briefly owned —
+  the `meshpost` custodial type, ADR 2026-09.cf7a — was withdrawn before shipping by ADR 2026-09.26q3; the
+  Meshtastic room no longer puts anything on Knit's mesh.) The gate also owns a budget: `LoraSizeHint`'s
   `DM_BODY_BYTES` (320) is honest only in the `0x05` form — a budget DM carrying its four inline acks is 596 B
   against the 681-B ceiling there, but **675–683 B untranscoded** — so whatever falls back to `0x03` for an
   ungated peer must drop that budget ~20 B or accept a `loraTooBig` on a tenth of the DMs the composer just

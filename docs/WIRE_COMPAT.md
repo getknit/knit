@@ -37,7 +37,9 @@ Each evolves independently; bump the right one:
   advert/handshake hint (Wi-Fi Aware `serviceSpecificInfo` / the BLE service-data payload), known at
   connection time, **unauthenticated** — a routing/degradation hint only, never a trust input.
 - **`RelayEnvelope.type` registry**: `chat`, `groupupdate`, `groupleave`, `profile`, `receipt`,
-  `reaction`, `blobreq`, `keyreq`, `typing`, `meshpost`.
+  `reaction`, `blobreq`, `keyreq`, `typing`. (`meshpost` is **burned**: minted on an unpushed branch in
+  September 2026 and withdrawn before it shipped — never reuse the string, since a lab build may still hold a
+  frame of it.)
 - **`EncEnvelope.v`**: the E2E crypto scheme — `1` = static keys (AES-GCM + per-recipient HPKE wrap),
   `2` = the ratchet schemes (AES-GCM under a derived key, `keys` empty; the DM form's header rides
   `EncEnvelope.r` — `docs/FORWARD_SECRECY_RATCHET.md` — and the group sender-key form's rides
@@ -484,76 +486,41 @@ ctl value, no `EncEnvelope.v` / `MessageContent.v` bump, no discovery marker. Th
 profile frame discloses the flag to a carrier exactly as it already discloses the status text beside it; the
 sealed path hides an update from carriers for ratchet-capable peers, as for every other presentation field.
 
-**Precedent — the first new `type` string since the v1 baseline, and the first entry on `isCustodial`
-(the Meshtastic LongFast bridge, ADR 2026-09.cf7a).** Every precedent above deliberately avoided minting a
-`type`, and three of them say why in so many words: `isCustodial` is a fixed list on deployed builds, so a new
-type is not custodial to an older peer. `meshpost` — a post overheard on a foreign mesh's public channel and
-re-published by the phone whose board heard it — is the case where that argument came out the other way, and
-the reasoning is worth having in full because the next reader will meet the same fork.
+**Precedent — the eighth additive `ProfileContent` change, and the first by the *nullable* route (the bound
+LoRa board, ADR 2026-09.26q3, 2026-09-05).** `ProfileContent.loraNode: Long? = null`, `ProfilePayload.loraNode:
+Long? = null`, and `ProfileV2` label **6**: the Meshtastic node number of the board the phone currently holds,
+so a contact's phone can line a post its own board heard on the radio channel up with this one. Nullable rather
+than defaulted because 0 is not a node number and there is no value that means "none"; elided while unbound,
+so every existing golden vector stayed put (three new ones — `profileContentLoraNode`, `profilePayloadLoraNode`,
+`messageContentV2ProfileLoraNode`), an older peer's profile reads null, and a board handed on or unpaired is
+unsaid by **omission** on the next profile — the prekey's shape. A presentation field, so it rides all three
+layouts under the same LWW watermark (the open-to-chat rule above); the transcoder needed nothing (text key
+plus a uint, 14 B at most, only while bound —
+`FrameTranscoderTest.aBoundBoardProfileRidesAsTextKeyPlusUintAndRebuildsExact`), and
+`CoordinationPlaneSizeBudgetTest` measures it on its max-size fixtures. No capability bit, no ctl value, no
+version bump, no discovery marker. The DB bumps (v10 → v11): `peers.loraNode` for the claim and
+`messages.originPeerId` for the match a heard post made at ingest — local only, tested. *Metadata cost:* the
+cleartext profile discloses the board's node number to a carrier; the board already broadcasts that number in
+every `NODEINFO` on the public band, so a radio learns nothing new and a spool learns which board a Knit node
+holds. The number is self-asserted and unsigned by the board, so a receiver treats a match as an attribution
+and keeps the unverified styling — signature-backed confidence (Meshtastic 2.8's XEdDSA) is a roadmap item.
 
-**Why a `chat` with an extra field does not work here**, which is the shape every precedent above chose. Two
-things an *older* build does with such a frame. It attributes the text to the gateway's own user — the frame is
-signed by the phone that overheard the post, not by whoever said it, and that is unavoidable: a Meshtastic
-speaker has no Knit identity to sign with. And it **renders** it, which earns a sealed `CTL_RECEIPT` from every
-recipient — ticks that then ride the LoRa plane home from far pockets for a message nobody is waiting on. A new
-type is invisible to both: `dispatchByType` ends `else -> Unit`, so an old build relays it verbatim, renders
-nothing, and ticks nothing, and `AckSync` simply never learns the type exists.
-
-**What it spends, and what it does not.** One `type` string (`FrameType.MESH_POST`), one content class
-(`MeshPostContent` — three required fields, five nullable/defaulted ones, so a name-less post is `a3` on the
-wire; two golden vectors added, none moved), one entry on `isReplayable` (and so on `isCustodial`), one
-conversation id, one own custody bucket + TTL, and a local DB bump (v9 → v10, six nullable `messages` columns,
-one tested `KnitMigrations` entry). **No** capability bit, no `EncEnvelope.v`, no `MessageContent.v`, no ctl
-value, no discovery marker. The `0x05` transcoder needed nothing: its rewriter is generic, so an unknown type
-rides as its text name with an opaque payload (`FrameTranscoderTest`), and `FastFrameCodec`'s frozen `DICT_V1`
-simply does not contain the new string, which costs a little compression and nothing else.
-
-**The cost, stated plainly, because it is the reason this had never been done.** `FrameType.isCustodial` is
-fixed on every build in the field. A build without this change holds none of these rows while we hold them all
-— two nodes with continuously different live sets for the whole TTL, which is exactly the digest divergence
-ADR 006 exists to prevent and which churns the NDP cue plane between them. It is accepted **only** because the
-whole LoRa plane is `BuildConfig.LORA_PLANE`-gated (debug on, release/staging off), so no shipped build ever
-mints one; it rides the same release gate the `0x05` flag-day already owes (`roadmap.md`). The rule this
-precedent adds: **a new custodial type is a flag-day, not an additive change** — it is additive on the
-*decoder* and divergent on the *digest*, and only a gate that keeps it off shipped builds makes the second half
-tolerable. `FrameType.isCustodial`'s kdoc and `FrameTypeTest` both say so at the line where someone would
-widen it again.
-
-Two smaller rules the same change settles. **A derived frame id is not a wire concern** — `FrameId.forMeshPost`
-hashes `(node, packetId)` so every gateway that heard one packet mints one id, which is what makes the
-duplicate copies collapse on the `SeenSet`, `insertIfAbsent` and `StoreDigest` machinery instead of multiplying
-through it; `FrameId`'s kdoc and `NEXT_WIRE_BREAK.md` both already said the format is free, and this is the
-first change to spend that freedom. And **a per-type clause in a convergence-critical quota is convergent when
-the type is new**: `ForwardDao.countBySender` now excludes `type = 'meshpost'`, which is a no-op on any build
-that stores none, so every node still counts the bucket identically. *Metadata cost:* the frame is cleartext by
-construction — it re-publishes something that was already broadcast unencrypted on a public band — so it
-discloses to a carrier only what a radio in that neighbourhood could already hear, plus which Knit node was
-listening.
-
-**Precedent — relaxing a required field to optional is a flag day on the *decoder*, and that is not the same
-thing as a divergence (the LongFast bridge's outbound half, ADR 2026-09.7r4d).** Rule 1 above says every field
-added after v1 must be nullable or defaulted, and every precedent here has obeyed it in the direction of
-*adding*. This is the first change to go the other way: `MeshPostContent.node` and `packetId` were required
-and are now optional, because a post typed **in** the bridged room has neither — its author's phone may hold
-no radio at all, and which gateway transmits it, under which node number and with which packet id, is decided
-later and elsewhere. `node == null` is then the discriminator between the two shapes the one type carries.
-
-A build that predates the change fails `decodePayload` on the new shape and renders nothing. What matters is
-what that does **not** touch: custody and relay run outside `dispatchByType`, so the frame is still stored,
-still folded into the content digest and still forwarded. So the two failure modes have to be named
-separately — a **decoder** flag day, where an old build silently shows less, and a **digest** divergence,
-where two builds hold different live sets and churn the cue plane against each other (the `meshpost` entry
-above, ADR 006). This is the first and not the second, and the mitigation is different in kind: a divergence
-needs a gate, while this needs only that the fleet reflash together. Both are still flag days, and both are
-tolerable here only because `BuildConfig.LORA_PLANE` keeps the whole plane out of shipped builds.
-
-What it spends beyond that: **nothing**. No new `type`, no new `isCustodial` entry, no capability bit, no ctl
-value, no conversation id, no DB column, no custody bucket — the outbound post is the same `meshpost`, in the
-same room, under the same 6 h TTL and quota, with the same no-receipt rule and the same "never back on the
-LoRa band" exclusions. One new golden vector (`meshPostContentAuthored`, `a2` on the wire — body and name),
-and the two existing ones are unmoved because both still set all three fields. That economy is the argument
-for the whole shape: a `chat` frame carrying a room discriminator would have needed a decision about every
-one of those, and got them all wrong on an old build.
+**Withdrawn precedent — the one `type` string minted since the v1 baseline (`meshpost`, ADR 2026-09.cf7a and
+2026-09.7r4d, September 2026), taken back before it shipped (ADR 2026-09.26q3).** It was the first entry on
+`isCustodial` since v1, and it is gone because of exactly the cost every earlier precedent had avoided:
+`FrameType.isCustodial` is fixed on every build in the field, so a build without the type held none of those
+rows while a build with it held them all — two nodes with continuously different live sets for the whole TTL,
+the digest divergence ADR 006 exists to prevent. It was tolerable only behind the `BuildConfig.LORA_PLANE`
+gate, and the redesign made it unnecessary: a post heard on the paired board's channel is now a local row, never
+a frame, so nothing about it is custodied, fanned out or relayed. Three rules survive the withdrawal, and are
+kept here because the next reader will meet the same fork. **A new custodial type is a flag-day, not an
+additive change** — additive on the decoder, divergent on the digest, and only a gate that keeps it off shipped
+builds makes the second half tolerable (`FrameType.isCustodial`'s kdoc says so at the line where someone would
+widen it). **A decoder flag day and a digest divergence are different things**: relaxing a required field to
+optional makes an older build render less while still storing, digesting and relaying normally, and needs only
+that a fleet reflash together, where a divergence needs a gate. And **a derived id is not a wire concern**:
+`FrameId.forMeshPost` still hashes `(node, packetId)` so one packet is one row however often the board replays
+it, and lives only in the local `messages` table now. The string itself is burned in the registry above.
 
 **Precedent — a new attachment *kind* that spends no field (link-preview cards, ADR 2026-09.n752).** A
 card the sender fetched rides as a content-addressed blob under one new MIME value,
