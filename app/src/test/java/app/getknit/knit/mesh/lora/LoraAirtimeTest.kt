@@ -95,6 +95,47 @@ class LoraAirtimeTest {
     }
 
     @Test
+    fun aGossipOfferRidesABridgeBudgetThatServingHasSpent() {
+        // The failure this exists for: an OFFER shares BRIDGE with the backfill it drives, so a gateway busy
+        // serving a far pocket starved its own offers — and an offer is the only thing that makes the far
+        // pocket able to serve back. Serving is what should shed under pressure, not the packet that unlocks
+        // the reverse direction.
+        val air = LoraAirtime().apply { onRadioConfig(radio()) }
+        val offer = listOf(LoraCtl.HEADER_BYTES + LoraCtl.MAX_PREFIXES * LoraCtl.PREFIX_BYTES)
+        var now = 0L
+        while (air.admits(AirBucket.BRIDGE, FrameClass.ROOM, offer, now)) {
+            air.record(AirBucket.BRIDGE, MeshtasticProto.MAX_PAYLOAD, now)
+            now += 3_000
+        }
+        assertFalse("serving is refused at its share", air.admits(AirBucket.BRIDGE, FrameClass.ROOM, offer, now))
+        assertTrue("the offer still rides", air.admits(AirBucket.BRIDGE, FrameClass.GOSSIP, offer, now))
+    }
+
+    @Test
+    fun aGossipOfferStillStopsAtTheWindowTotal() {
+        // The exemption is from the BRIDGE share, not from the allowance: live chat still outranks gossip,
+        // and a window spent on messages somebody typed repairs the bridge in the next one.
+        val air = LoraAirtime().apply { onRadioConfig(radio()) }
+        val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
+        var now = 0L
+        while (air.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now)) {
+            air.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, now)
+            now += 3_000
+        }
+        assertFalse("no air left at all", air.admits(AirBucket.BRIDGE, FrameClass.GOSSIP, packet, now))
+    }
+
+    @Test
+    fun gossipSpendingCostsServingItsHeadroom() {
+        // It books BRIDGE even though it is not judged against it, so a chatty gossip timer degrades the
+        // backfill rather than the reverse — which is the direction the whole split is arguing for.
+        val air = LoraAirtime().apply { onRadioConfig(radio()) }
+        val before = air.usedMs(AirBucket.BRIDGE, 0L)
+        air.record(AirBucket.BRIDGE, MeshtasticProto.MAX_PAYLOAD, 0L)
+        assertTrue("the offer's air is on the bridge ledger", air.usedMs(AirBucket.BRIDGE, 0L) > before)
+    }
+
+    @Test
     fun aBootstrapFrameStillRidesWithTheRestOfTheBudgetSpent() {
         val air = LoraAirtime().apply { onRadioConfig(radio()) }
         val packet = listOf(MeshtasticProto.MAX_PAYLOAD)

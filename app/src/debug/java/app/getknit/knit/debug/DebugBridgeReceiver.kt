@@ -935,6 +935,8 @@ class DebugBridgeReceiver :
             .put("loraReassembled", snap.loraReassembled)
             .put("loraTooBig", snap.loraTooBig)
             .put("loraDroppedQueue", snap.loraDroppedQueue)
+            .put("loraAirtimeHeld", snap.loraAirtimeHeld)
+            .put("loraAirtimeHeldByBucket", JSONObject(snap.loraAirtimeHeldByBucket))
             .put("loraSuppressed", snap.loraSuppressed)
             .put("loraNak", snap.loraNak)
             .put("loraNakByReason", JSONObject(snap.loraNakByReason))
@@ -1144,6 +1146,7 @@ class DebugBridgeReceiver :
             .put("snr", status.lastSnr?.toDouble() ?: JSONObject.NULL)
             .put("rssi", status.lastRssi ?: JSONObject.NULL)
             .put("queueFree", status.queueFree ?: JSONObject.NULL)
+            .put("queued", status.queued)
             .put("heard", status.heard) // frame authors, relayed and backfilled ones included
             .put("boardsHeard", status.boardsHeard) // radios on air — "how many boards can I hear"
             // The bridge's own oracle (ADR 044): which board here speaks for the pocket, what the radio is,

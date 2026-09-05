@@ -124,6 +124,9 @@ class MeshMetricsTest {
         metrics.onLoraTranscoded()
         metrics.onLoraPadded()
         metrics.onLoraDroppedQueue()
+        metrics.onLoraAirtimeHeld("BRIDGE")
+        metrics.onLoraAirtimeHeld("BRIDGE")
+        metrics.onLoraAirtimeHeld("LIVE")
         metrics.onLoraSuppressed()
         metrics.onLoraNak()
         metrics.onFileSent(TransportKind.LoRa) // no-op: LoRa carries no files
@@ -138,6 +141,9 @@ class MeshMetricsTest {
         assertEquals(1L, snap.loraTranscoded)
         assertEquals(1L, snap.loraPadded)
         assertEquals(1L, snap.loraDroppedQueue)
+        // Held is not dropped: the two must never be read as one number, which is the point of the split.
+        assertEquals(3L, snap.loraAirtimeHeld)
+        assertEquals(mapOf("BRIDGE" to 2L, "LIVE" to 1L), snap.loraAirtimeHeldByBucket)
         assertEquals(1L, snap.loraSuppressed)
         assertEquals(1L, snap.loraNak)
     }

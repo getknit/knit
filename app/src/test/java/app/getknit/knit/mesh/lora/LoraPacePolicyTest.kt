@@ -113,6 +113,58 @@ class LoraPacePolicyTest {
     }
 
     @Test
+    fun aSupersededOfferLeavesTheQueue() {
+        // An OFFER is a snapshot of what we hold. One still queued from a previous interval names a set we
+        // have since changed, so a far gateway would compute its backfill against a lie — and one queued at
+        // a time is what keeps the Trickle timer, not the queue, the rate bound on this class.
+        val pace = LoraPacePolicy(minGapMs = 0)
+        pace.enqueue(frame("offer:old", FrameClass.GOSSIP))
+        pace.enqueue(frame("room"))
+        assertEquals(1, pace.dropQueued(FrameClass.GOSSIP))
+        pace.enqueue(frame("offer:new", FrameClass.GOSSIP))
+        assertEquals(2, pace.pending)
+        assertEquals("offer:new", pace.take(0)!!.label)
+        assertEquals("nothing else went with it", "room", pace.take(0)!!.label)
+    }
+
+    @Test
+    fun aHeldFrameIsReportedOnceAndNotOnEveryTake() {
+        // The pacer re-asks the budget every few seconds; a counter built on that would report the clock.
+        val air = LoraAirtime()
+        val pace = LoraPacePolicy(minGapMs = 0, airtime = air)
+        var now = 0L
+        while (air.admits(AirBucket.BRIDGE, FrameClass.ROOM, listOf(MeshtasticProto.MAX_PAYLOAD), now)) {
+            air.record(AirBucket.BRIDGE, MeshtasticProto.MAX_PAYLOAD, now)
+            now += 3_000
+        }
+        val big = ByteArray(MeshtasticProto.MAX_PAYLOAD)
+        pace.enqueue(OutboundFrame(listOf(big), "backfill", FrameClass.ROOM, AirBucket.BRIDGE))
+        assertNull(pace.take(now))
+        assertEquals(listOf(AirBucket.BRIDGE), pace.lastAirtimeHolds)
+        assertNull(pace.take(now + 3_000))
+        assertEquals("still stuck, but no longer news", emptyList<AirBucket>(), pace.lastAirtimeHolds)
+        assertEquals("and still queued, never dropped", 1, pace.pending)
+    }
+
+    @Test
+    fun theOfferGoesWhileTheBackfillBesideItWaitsForTheWindow() {
+        // The whole failure, at the layer that decides it: both frames spend BRIDGE, the bucket is spent, and
+        // only the one that unlocks the far pocket's reply may still leave.
+        val air = LoraAirtime()
+        val pace = LoraPacePolicy(minGapMs = 0, airtime = air)
+        var now = 0L
+        while (air.admits(AirBucket.BRIDGE, FrameClass.ROOM, listOf(MeshtasticProto.MAX_PAYLOAD), now)) {
+            air.record(AirBucket.BRIDGE, MeshtasticProto.MAX_PAYLOAD, now)
+            now += 3_000
+        }
+        val big = ByteArray(MeshtasticProto.MAX_PAYLOAD)
+        pace.enqueue(OutboundFrame(listOf(big), "backfill", FrameClass.ROOM, AirBucket.BRIDGE))
+        pace.enqueue(OutboundFrame(listOf(big), "offer", FrameClass.GOSSIP, AirBucket.BRIDGE))
+        assertEquals("offer", pace.take(now)!!.label)
+        assertEquals("the backfill it would have crowded out is still queued", 1, pace.pending)
+    }
+
+    @Test
     fun theBootstrapRidesEvenWithTheBudgetSpent() {
         val air = LoraAirtime()
         val pace = LoraPacePolicy(minGapMs = 0, airtime = air)

@@ -39,4 +39,10 @@ internal data class LoraStatus(
      * so the gap between "heard" and "linked" — the state that silenced a board in the field — is visible.
      */
     val pocketSightings: Int = 0,
+    /**
+     * Frames waiting in the pacer. Beside [airtime] it is the difference between a quiet plane and a starved
+     * one: a spent bucket holds frames rather than dropping them, so without a depth the dump reads healthy
+     * until the queue overflows and the drops arrive all at once (2026-09-04).
+     */
+    val queued: Int = 0,
 )

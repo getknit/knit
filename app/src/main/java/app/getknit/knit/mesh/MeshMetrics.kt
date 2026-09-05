@@ -229,6 +229,8 @@ class MeshMetrics {
     private val loraReassembled = AtomicLong()
     private val loraTooBig = AtomicLong()
     private val loraDroppedQueue = AtomicLong()
+    private val loraAirtimeHeld = AtomicLong()
+    private val loraAirtimeHeldByBucket = ConcurrentHashMap<String, AtomicLong>()
     private val loraSuppressed = AtomicLong()
     private val loraNak = AtomicLong()
     private val loraNakByReason = ConcurrentHashMap<String, AtomicLong>()
@@ -634,6 +636,20 @@ class MeshMetrics {
         loraNakByReason.getOrPut(reason) { AtomicLong() }.incrementAndGet()
     }
 
+    /**
+     * A queued LoRa frame the airtime budget made wait, by the [AirBucket] name it spends from. **Held, not
+     * dropped** — it stays queued for a later window — which is exactly why it needed a counter of its own:
+     * `loraDroppedQueue` only ever sees such a frame if the queue later fills and sheds it, so a plane whose
+     * bucket is spent reads perfectly healthy right up until it overflows (field-observed 2026-09-04, a 99 %
+     * BRIDGE bucket with `loraBridgeRefused` at zero throughout).
+     *
+     * Counted once per frame, not once per pacer wake, so this measures congestion rather than the clock.
+     */
+    fun onLoraAirtimeHeld(bucket: String) {
+        loraAirtimeHeld.incrementAndGet()
+        loraAirtimeHeldByBucket.getOrPut(bucket) { AtomicLong() }.incrementAndGet()
+    }
+
     /** The LoRa board session reached Ready — context for the received/sent counts (how often it links). */
     fun onLoraSessionUp() {
         loraSessionUps.incrementAndGet()
@@ -666,7 +682,13 @@ class MeshMetrics {
         loraProfileRefanSkipped.incrementAndGet()
     }
 
-    /** A gossip OFFER we published — one packet naming the custody window this gateway holds (ADR 044). */
+    /**
+     * A gossip OFFER that **reached the air** — one packet naming the custody window this gateway holds
+     * (ADR 044). Counted at transmit and not at enqueue, because an offer that never flies is the one failure
+     * this counter has to be able to show: it read 7 against two transmissions in the field while the far
+     * pocket heard none at all. It is also what makes `loraSent − loraDmSent − loraOfferSent` the profile +
+     * room count the debug bridge documents.
+     */
     fun onLoraOfferSent() {
         loraOfferSent.incrementAndGet()
     }
@@ -802,6 +824,8 @@ class MeshMetrics {
             loraReassembled = loraReassembled.get(),
             loraTooBig = loraTooBig.get(),
             loraDroppedQueue = loraDroppedQueue.get(),
+            loraAirtimeHeld = loraAirtimeHeld.get(),
+            loraAirtimeHeldByBucket = loraAirtimeHeldByBucket.mapValues { it.value.get() },
             loraSuppressed = loraSuppressed.get(),
             loraNak = loraNak.get(),
             loraNakByReason = loraNakByReason.mapValues { it.value.get() },
@@ -894,6 +918,8 @@ class MeshMetrics {
         val loraReassembled: Long = 0,
         val loraTooBig: Long = 0,
         val loraDroppedQueue: Long = 0,
+        val loraAirtimeHeld: Long = 0,
+        val loraAirtimeHeldByBucket: Map<String, Long> = emptyMap(),
         val loraSuppressed: Long = 0,
         val loraNak: Long = 0,
         val loraNakByReason: Map<String, Long> = emptyMap(),

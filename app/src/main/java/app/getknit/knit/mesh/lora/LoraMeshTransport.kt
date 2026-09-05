@@ -622,8 +622,13 @@ internal class LoraMeshTransport(
         val prefixes = runCatching { offerPrefixes(LoraCtl.MAX_PREFIXES) }.getOrDefault(IntArray(0))
         val payload = LoraCtl.encodeOffer(StoreDigest.hash64(self), prefixes, maxPayload)
         lastOfferPrefixes = LoraCtl.decodeOffer(payload)?.prefixes ?: IntArray(0)
+        // An OFFER is a snapshot. One still queued from a previous interval names a set we have since
+        // changed, so a far gateway would compute its backfill against a lie — and one queued at a time is
+        // what keeps the Trickle timer the real bound on this class. Not a drop: nothing is lost, it is
+        // replaced by a truer copy, so `loraDroppedQueue` must not move.
+        val superseded = pace.dropQueued(FrameClass.GOSSIP)
+        if (superseded > 0) log("lora offer superseded $superseded still queued")
         enqueue(listOf(payload), "offer:${lastOfferPrefixes.size}", FrameClass.GOSSIP, AirBucket.BRIDGE)
-        metrics.onLoraOfferSent()
     }
 
     /**
@@ -663,6 +668,14 @@ internal class LoraMeshTransport(
      * empty set could walk us through our whole custody set on the air; without the last, a busy bridge
      * would crowd out live chat. The sig dedup is deliberately **not** a fourth: see [serveOne]. What it
      * cost us was the repair, what it saved is at most a duplicate frame the receiver's SeenSet drops.
+     *
+     * The budget is asked **before** each frame is queued, and the round stops at the first refusal. It used
+     * to be consulted only by the pacer, after the hourly allowance had been booked and `loraBridged`
+     * counted — so a bridge whose window was spent kept enqueueing frames that sat until class shedding
+     * evicted them, and both the cap and the counter described air nobody ever heard (2026-09-04: `loraBridged`
+     * at the full 12, `loraDroppedQueue` 23, nothing landing). The check reads **recorded** air, not what is
+     * already queued and unspent, so one round's frames still all pass; what it stops is the next round, and
+     * the rounds after that, which is where the pile came from.
      */
     private suspend fun serveBackfill(offer: LoraCtl.Offer) {
         if (currentConfig?.bridge != true || !mayTransmit()) return
@@ -680,9 +693,18 @@ internal class LoraMeshTransport(
         // every gateway in range; beaconing on each one would spend more air on profiles than on messages.
         if (candidates.isNotEmpty()) beaconProfile(FIRST_HEARING_GAP_MS)
         var served = 0
+        var windowSpent = false
         for (wire in candidates) {
-            if (served >= allowance) break
-            if (serveOne(wire)) served++
+            if (windowSpent || served >= allowance) break
+            when (serveOne(wire)) {
+                Serve.SENT -> served++
+
+                Serve.SKIPPED -> Unit
+
+                // The next frame will not fit either, so the round ends here rather than queueing what only
+                // class shedding would remove later — and the unserved allowance goes back below.
+                Serve.NO_AIR -> windowSpent = true
+            }
         }
         budget.refund(allowance - served)
         if (served > 0) {
@@ -695,8 +717,12 @@ internal class LoraMeshTransport(
         log("lora bridge served=$served/$allowance to ${offer.publisher.toULong().toString(HEX)}")
     }
 
+    /** What one backfill candidate did: went out, was passed over, or found the bridge window spent. */
+    private enum class Serve { SENT, SKIPPED, NO_AIR }
+
     /**
-     * Enqueues one backfilled frame; false when it can't ride (too big, or a link already covers it).
+     * Enqueues one backfilled frame. [Serve.SKIPPED] when it can't ride (too big, or a link already covers
+     * it); [Serve.NO_AIR] when the bridge window cannot carry it, which ends the round rather than this frame.
      *
      * Deliberately gated by **neither** dedup set. This is the digest-driven repair path: the offer is
      * positive evidence that the far gateway lacks this exact frame, which outranks either set's guess that
@@ -708,19 +734,29 @@ internal class LoraMeshTransport(
      * Still **recorded**, so a live fan-out inside the window doesn't duplicate what the bridge just queued.
      * `LoraFramePolicy.backfillRank` already serves profiles first.
      */
-    private fun serveOne(wire: WireEnvelope): Boolean {
-        val env = WireCodec.decodeEnvelope(wire.signed) ?: return false
+    private fun serveOne(wire: WireEnvelope): Serve {
+        val env = WireCodec.decodeEnvelope(wire.signed) ?: return Serve.SKIPPED
         if (coveredByLink(env)) {
             metrics.onLoraSkippedLinked() // the far pocket would only ever be a carrier for a frame its addressee already holds
-            return false
+            return Serve.SKIPPED
         }
         val label = "bridge:${env.id}"
-        val parts = encodeOrNull(wire, label) ?: return false
-        sigSeen.add(dedupKey(wire, env)) // recorded for the fan-out's benefit, never consulted here — see the kdoc
+        val parts = encodeOrNull(wire, label) ?: return Serve.SKIPPED
         // Its natural class, so a room post still cannot evict a DM in the queue, but the BRIDGE bucket, so
         // every byte of it is metered as the backfill it is.
-        enqueue(parts, label, classOf(env, FanoutHint.CONTENT), AirBucket.BRIDGE)
-        return true
+        val klass = classOf(env, FanoutHint.CONTENT)
+        // Asked before the dedup slot is spent, for the reason [encodeOrNull] gives about the sig window: a
+        // frame that never goes out must leave nothing behind that suppresses a later attempt at it.
+        if (!pace.airtime.admits(AirBucket.BRIDGE, klass, parts.map { it.size }, clock())) {
+            // The same counter a frame the pacer holds ticks, because it is the same fact: this one waits for
+            // a later window and the next offer will name it again. Refusing here instead of in the queue is
+            // what keeps the serve cap honest, but it must not make the refusal invisible on the way.
+            metrics.onLoraAirtimeHeld(AirBucket.BRIDGE.name)
+            return Serve.NO_AIR
+        }
+        sigSeen.add(dedupKey(wire, env)) // recorded for the fan-out's benefit, never consulted here — see the kdoc
+        enqueue(parts, label, klass, AirBucket.BRIDGE)
+        return Serve.SENT
     }
 
     /** Whether [minGapMs] has elapsed since the last self-profile; overflow-safe against the [NEVER] sentinel. */
@@ -734,6 +770,10 @@ internal class LoraMeshTransport(
     private suspend fun pacerLoop() {
         while (scope.isActive) {
             val frame = pace.take(clock())
+            // Reported after every take, admitted or not: one bucket can be spent while another still flows,
+            // and it is the *held* frame that has to be visible — nothing else counts it until the queue
+            // fills and sheds it as an ordinary drop.
+            pace.lastAirtimeHolds.forEach { metrics.onLoraAirtimeHeld(it.name) }
             if (frame == null) {
                 waitForNextSend()
                 continue
@@ -777,6 +817,9 @@ internal class LoraMeshTransport(
         metrics.onLoraSent()
         if (frame.fragmented) metrics.onLoraFragSent()
         if (frame.klass == FrameClass.DM || frame.klass == FrameClass.TICK) metrics.onLoraDmSent() // both DM-form
+        // Counted here rather than at enqueue: an offer refused by the budget or superseded in the queue is
+        // one the far pocket never heard, and this counter's whole job is to say whether it did.
+        if (frame.klass == FrameClass.GOSSIP) metrics.onLoraOfferSent()
         log("lora tx ${frame.label} parts=${frame.messages.size}")
     }
 
@@ -1040,6 +1083,7 @@ internal class LoraMeshTransport(
                 lastSnr = lastRx?.snr,
                 lastRssi = lastRx?.rssi,
                 queueFree = link.queue.value?.free,
+                queued = pace.pending,
                 heard = _reachable.value.size,
                 boardsHeard = boardsHeardAt.size,
                 battery = link.battery.value,

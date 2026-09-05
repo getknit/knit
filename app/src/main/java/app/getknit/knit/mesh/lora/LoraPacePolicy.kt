@@ -33,6 +33,17 @@ internal class LoraPacePolicy(
         private set
 
     /**
+     * The buckets of frames the airtime budget held for the **first** time on the last [take] — one entry per
+     * frame, and a given frame appears at most once in its whole life (see [OutboundFrame.heldForAir]).
+     *
+     * [lastAirtimeRefusals] answers "how many are stuck right now", which is a level and is re-read every
+     * wake; this answers "what just became stuck", which is an event and is what a counter may be built on.
+     * Empty on the common path, so a drain that admits everything allocates nothing.
+     */
+    var lastAirtimeHolds: List<AirBucket> = emptyList()
+        private set
+
+    /**
      * How a frame was admitted: [DROPPED_OLDEST] means the queue was full and the oldest frame of the lowest
      * class present was evicted to make room; [REFUSED] means the newcomer itself was that lowest class, alone,
      * and was dropped instead (everything queued outranks it).
@@ -72,6 +83,21 @@ internal class LoraPacePolicy(
     }
 
     /**
+     * Drops every queued frame of [klass] and returns how many went.
+     *
+     * For the OFFER, which is a **snapshot**: a superseded one announces a set we have since changed, so a far
+     * gateway would compute its backfill against a lie — and holding at most one is also what keeps
+     * [LoraGossipPolicy]'s Trickle timer the real rate bound on that class, rather than whatever the queue
+     * happened to accumulate while the window was spent. A replacement is not a loss, so the caller must not
+     * count these as dropped.
+     */
+    fun dropQueued(klass: FrameClass): Int {
+        val before = queue.size
+        queue.removeAll { it.klass == klass }
+        return before - queue.size
+    }
+
+    /**
      * The earliest time the next frame may go out: the min gap since the last send, any NAK cool-down, and —
      * once [take] has found the whole queue over budget — the moment the rolling window next frees air.
      *
@@ -104,23 +130,12 @@ internal class LoraPacePolicy(
      * out through the ordinary class shedding instead.
      */
     fun take(now: Long): OutboundFrame? {
-        if (queue.isEmpty()) return null
-        if (now < nextDueAt()) return null
-        if (boardFree == 0) return null
-        var refused = 0
-        var best = -1
-        for (i in queue.indices) {
-            val frame = queue[i]
-            // What is still owed, not the whole frame: a resumed frame's earlier fragments are already on the
-            // air and already booked, so charging admission for them again would refuse a frame that fits.
-            if (!airtime.admits(frame.bucket, frame.klass, frame.remaining.map { it.size }, now)) {
-                refused++
-                continue
-            }
-            // Strictly-better only, so the earliest frame of the winning class keeps its place in line.
-            if (best < 0 || frame.klass < queue[best].klass) best = i
-        }
-        lastAirtimeRefusals = refused
+        // Cleared on entry, not only where it is filled: this returns early on an empty queue, an unelapsed
+        // gap or a full board, and a caller reading [lastAirtimeHolds] after every call would otherwise
+        // re-report the last call's holds on every wake — the per-wake counting the flag exists to avoid.
+        lastAirtimeHolds = emptyList()
+        if (!mayDrain(now)) return null
+        val best = admitBest(now)
         if (best < 0) {
             // Every queued frame is over budget: defer to when the window returns some air. Null (an empty
             // ledger, so the frame is simply bigger than the whole allowance) leaves the caller's own floor
@@ -131,6 +146,39 @@ internal class LoraPacePolicy(
         airtimeBlockedUntil = 0L
         lastSentAt = now
         return queue.removeAt(best)
+    }
+
+    /** Whether anything at all may leave now: something queued, the gap and cool-downs elapsed, board room. */
+    private fun mayDrain(now: Long): Boolean = queue.isNotEmpty() && now >= nextDueAt() && boardFree != 0
+
+    /**
+     * The index of the frame to send, or -1 when the budget refuses them all. Records [lastAirtimeRefusals]
+     * and [lastAirtimeHolds] on the way past.
+     */
+    private fun admitBest(now: Long): Int {
+        var refused = 0
+        var best = -1
+        var held: MutableList<AirBucket>? = null
+        for (i in queue.indices) {
+            val frame = queue[i]
+            // What is still owed, not the whole frame: a resumed frame's earlier fragments are already on the
+            // air and already booked, so charging admission for them again would refuse a frame that fits.
+            if (!airtime.admits(frame.bucket, frame.klass, frame.remaining.map { it.size }, now)) {
+                refused++
+                // Once per frame, not once per wake: the pacer re-asks this question every few seconds, and a
+                // counter that ticked on each of them would report the clock rather than the congestion.
+                if (!frame.heldForAir) {
+                    frame.onAirtimeHeld()
+                    (held ?: mutableListOf<AirBucket>().also { held = it }) += frame.bucket
+                }
+                continue
+            }
+            // Strictly-better only, so the earliest frame of the winning class keeps its place in line.
+            if (best < 0 || frame.klass < queue[best].klass) best = i
+        }
+        lastAirtimeRefusals = refused
+        lastAirtimeHolds = held ?: emptyList()
+        return best
     }
 
     fun onQueueStatus(free: Int) {
@@ -192,11 +240,24 @@ internal class OutboundFrame(
     var sentParts: Int = 0
         private set
 
+    /**
+     * Whether the airtime budget has ever made this frame wait. Held frames are **not** dropped — they stay
+     * queued for a later window — so the plane can be starved while every drop counter reads zero, which is
+     * how a 99 %-spent BRIDGE bucket looked healthy in the field. This flag is what lets that be counted once
+     * per frame rather than once per pacer wake; see [LoraPacePolicy.lastAirtimeHolds].
+     */
+    var heldForAir: Boolean = false
+        private set
+
     /** The fragments still owed to the board; the whole frame until one of them is refused part-way. */
     val remaining: List<ByteArray> get() = if (sentParts == 0) messages else messages.drop(sentParts)
 
     fun onPartSent() {
         sentParts++
+    }
+
+    fun onAirtimeHeld() {
+        heldForAir = true
     }
 
     val fragmented: Boolean get() = messages.size > 1

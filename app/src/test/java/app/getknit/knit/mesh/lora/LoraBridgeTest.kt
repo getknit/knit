@@ -124,6 +124,8 @@ class LoraBridgeTest {
          * holds can be backfilled either. Lets a test isolate what the control packets alone prove.
          */
         mute: Boolean = false,
+        /** Injectable so a test can hand one side a bridge budget small enough to spend in a round or two. */
+        pace: LoraPacePolicy = LoraPacePolicy(minGapMs = 0),
         now: () -> Long,
     ): Rig {
         val link = FakeMeshtasticLink(nodeNum, air)
@@ -143,7 +145,7 @@ class LoraBridgeTest {
                 metrics = metrics,
                 clock = now,
                 wallClock = wallClock ?: now,
-                pace = LoraPacePolicy(minGapMs = 0),
+                pace = pace,
                 // No jitter: an offer goes out at exactly the midpoint of its interval.
                 gossip = LoraGossipPolicy(random = { 0 }),
                 offerPrefixes = { custody.prefixes(it) },
@@ -781,6 +783,57 @@ class LoraBridgeTest {
             assertTrue(
                 "and it is served the author's profile first, so it can verify anything at all",
                 a.metrics.snapshot().loraSent > 0,
+            )
+        }
+
+    @Test
+    fun aGatewayWhoseBridgeBudgetIsSpentStillGetsItsOwnOfferOntoTheAir() =
+        runTest {
+            // Work item #38, end to end. Alice's OFFER used to share the BRIDGE bucket with the backfill she
+            // spends it on, so a gateway busy serving the far pocket starved its own offers — and an offer is
+            // the only thing that makes the far pocket able to serve *back*. Self-reinforcing: her next offer
+            // would have shown the same gap, and his next serve would have starved it again. Field-observed
+            // 2026-09-04 (BRIDGE 13372/13500, `lora tx offer` twice against seven published).
+            val air = FakeMeshtasticAir()
+            val ledger = LoraAirtime()
+            val a =
+                rig(air, 1u, "alice", backgroundScope, pace = LoraPacePolicy(minGapMs = 0, airtime = ledger)) {
+                    testScheduler.currentTime
+                }
+            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
+
+            // A round of serving, booked directly so the saturation is exact rather than a function of how
+            // many bytes these fixture frames happen to compact to. Timestamped now, so the rolling window
+            // holds it for the fifteen minutes this test runs inside.
+            while (ledger.admits(AirBucket.BRIDGE, FrameClass.ROOM, listOf(MeshtasticProto.MAX_PAYLOAD), 0L)) {
+                ledger.record(AirBucket.BRIDGE, MeshtasticProto.MAX_PAYLOAD, 0L)
+            }
+            assertFalse(
+                "alice's bridge bucket is spent",
+                ledger.admits(AirBucket.BRIDGE, FrameClass.ROOM, listOf(MeshtasticProto.MAX_PAYLOAD), 0L),
+            )
+
+            a.transport.start()
+            b.transport.start()
+            a.transport.onForeignReachable(setOf("a2"))
+            b.transport.onForeignReachable(setOf("b2"))
+            runCurrent()
+
+            // The frame pocket B is holding for pocket A. Only alice's own OFFER can ask bob for it.
+            val heldForAlice = frame("b2", body = "said in pocket B")
+            b.custody.held += heldForAlice
+
+            repeat(2) {
+                advanceTimeBy(LoraGossipPolicy.MIN_INTERVAL_MS)
+                runCurrent()
+            }
+
+            assertEquals("alice serves nothing — that budget is gone", 0L, a.metrics.snapshot().loraBridged)
+            assertTrue("but her own offers still reach the air", a.metrics.snapshot().loraOfferSent > 0)
+            assertTrue("so bob learns what she lacks", b.metrics.snapshot().loraOfferReceived > 0)
+            assertTrue(
+                "and the frame he was holding for her crosses",
+                a.received.any { it.envelope.id == idOf(heldForAlice) },
             )
         }
 

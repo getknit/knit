@@ -13,7 +13,11 @@ internal enum class AirBucket {
     /** Somebody is waiting for this right now: the live fan-out and the targeted tick. */
     LIVE,
 
-    /** Nobody is waiting: the gossip offer, the digest-driven backfill, and the first-hearing re-offer. */
+    /**
+     * Nobody is waiting: the gossip offer, the digest-driven backfill, and the first-hearing re-offer. All
+     * three **book** their air here, but only serving is judged against the share — a [FrameClass.GOSSIP]
+     * offer is exempt, for the reason [LoraAirtime] gives.
+     */
     BRIDGE,
 
     /**
@@ -82,6 +86,22 @@ internal data class AirtimeSnapshot(
  * delaying somebody's message. A [FrameClass.TICK] — our own delivery receipt — is refused once a window is
  * [tickTailShare] from spent, so the last of the air always goes to content (ADR 054): a ✓✓ heals on
  * re-delivery, a message somebody is waiting for does not.
+ *
+ * That [bridgeShare] cap is on **serving**, and a [FrameClass.GOSSIP] frame is exempt from it. The OFFER is
+ * not backfill: it is the one packet that decides whether any backfill happens at all — including the far
+ * pocket's, whose air this budget does not pay for — so a gateway whose offers never fly silences the other
+ * pocket rather than merely serving it less. Serving is the right thing to shed under pressure; the packet
+ * that unlocks the reverse direction is not. It is still charged against the **total** and still *recorded*
+ * against [AirBucket.BRIDGE], so heavy gossip costs serving its headroom and never the other way round.
+ *
+ * Both exemptions here are bounded, but not by the same thing, and the difference is the point.
+ * [AirBucket.BOOTSTRAP] is bounded by a **share** because nothing else bounds it — a relayed profile arrives
+ * as often as the horizon sends one. Gossip is bounded by a **timer**: `LoraGossipPolicy` is Trickle, one
+ * transmit slot per interval over a five-minute floor, which is a harder ceiling than a share and is already
+ * the mechanism that exists for exactly this. Giving it a slice of [bridgeShare] instead was rejected as
+ * unsizeable: a full 48-prefix OFFER is ~2 s at LongFast and ~13 s at LongSlow against the same budget, so a
+ * fractional reserve starves at slow presets and a time-sized one blocks serving outright at them — on both
+ * gateways at once, which is the same deadlock wearing the other hat.
  *
  * [AirBucket.BOOTSTRAP] is the odd one, and the reason is worth stating. Nothing a peer sends verifies
  * without its author's `profile`, so a window that refuses the profile costs more airtime than it saves:
@@ -253,10 +273,11 @@ internal class LoraAirtime(
     /**
      * Whether a whole frame — [payloadSizes] is one entry per packet it fragments into — fits [bucket]'s
      * budget. Admission is all-or-nothing per frame: half a fragmented message on the air is pure waste, so
-     * a frame that does not fit entirely waits rather than starting. A [FrameClass.TICK] stops at the tail
-     * and an [AirBucket.BOOTSTRAP] frame is judged against its own share alone (see the class doc). Note
-     * [AirBucket.BRIDGE] and [AirBucket.BOOTSTRAP] spending counts against the **total** as well as its own
-     * budget: each is a share of the one allowance, not a second allowance beside it.
+     * a frame that does not fit entirely waits rather than starting. A [FrameClass.TICK] stops at the tail,
+     * an [AirBucket.BOOTSTRAP] frame is judged against its own share alone and a [FrameClass.GOSSIP] one is
+     * not judged against [AirBucket.BRIDGE] at all (see the class doc for both). Note [AirBucket.BRIDGE] and
+     * [AirBucket.BOOTSTRAP] spending counts against the **total** as well as its own budget: each is a share
+     * of the one allowance, not a second allowance beside it.
      */
     fun admits(
         bucket: AirBucket,
@@ -273,7 +294,12 @@ internal class LoraAirtime(
         val used = liveUsedMs + bridgeUsedMs + bootstrapUsedMs
         if (used + cost > budgetMs(AirBucket.LIVE)) return false
         if (klass == FrameClass.TICK && used + cost > (budgetMs(AirBucket.LIVE) * (1 - tickTailShare)).toLong()) return false
-        return bucket != AirBucket.BRIDGE || bridgeUsedMs + cost <= budgetMs(AirBucket.BRIDGE)
+        // The OFFER is not backfill: it is the one packet that decides whether any backfill happens at all,
+        // including the far pocket's, whose air this budget does not pay for. So serving must not be able to
+        // starve it — see the class doc.
+        return bucket != AirBucket.BRIDGE ||
+            klass == FrameClass.GOSSIP ||
+            bridgeUsedMs + cost <= budgetMs(AirBucket.BRIDGE)
     }
 
     /** Books [payloadBytes] of air against [bucket]. Called once the board has actually accepted the write. */

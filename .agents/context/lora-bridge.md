@@ -208,7 +208,17 @@ shared band — which a dedicated RF slot makes vacuous. So a board on a dedicat
 gets **450 s a window**, one in EU_868 still gets 45 s, and the unlock is a constructor flag wired to
 `BuildConfig.DEBUG` (`LoraAirtime` itself stays pure and is tested both ways).
 `AirBucket.LIVE` may spend all of it; `AirBucket.BRIDGE` (offers + backfill + the ADR 039 re-offer) is capped
-at 30 %, so backfill degrades before live chat does; `AirBucket.BOOTSTRAP` (a live `profile` fan-out, ours or
+at 30 %, so backfill degrades before live chat does — but that cap is on **serving**: a `FrameClass.GOSSIP`
+OFFER books `BRIDGE` and is judged only against the window *total* (ADR 2026-09.t8t8). An OFFER is not
+backfill, it is the packet that decides whether any backfill happens at all — including the far pocket's,
+whose air this budget does not pay for — so a gateway busy serving used to starve its own offers and thereby
+silence the other pocket entirely (field-observed 2026-09-04: `BRIDGE 13372/13500`, two transmitted offers
+against seven published, the far side hearing none and holding a room post ~30 min). What bounds gossip is the
+Trickle timer, not a share; a reserved *slice* of BRIDGE was rejected because it cannot be sized across presets
+(a 48-prefix OFFER is ~2 s at LongFast and ~13 s at LongSlow against the same 13.5 s budget). Only one OFFER is
+ever queued — `publishOffer` calls `LoraPacePolicy.dropQueued`, since a superseded snapshot names a set we have
+since changed. Serving also asks the budget **before** it queues (`serveOne` → `Serve.NO_AIR` ends the round),
+so the hourly serve cap is no longer spent on frames that only class shedding will remove; `AirBucket.BOOTSTRAP` (a live `profile` fan-out, ours or
 relayed — paired to `FrameClass.BOOTSTRAP` by `AirBucket.defaultFor`) is capped at 25 % and is the **one class
 judged outside the total**, so the key bootstrap still rides a spent window (ADR 056). It used to be admitted
 unconditionally *and* recorded, which is a budget with no floor: on the lab gateway 79 % of every LoRa frame
@@ -617,11 +627,15 @@ where no other Knit board is listening. Set the Meshtastic app's device to **Non
   index in settings now points at the Knit slot. Both boards must be provisioned before frames cross.
 - `…debug.LORA` (debug bridge): `--es address <MAC>` + `--es name <n>` binds a board, `--ei channel <idx>`,
   `--ez on <true|false>`, `--ez bridge <true|false>`; no extras dumps
-  `state/boardNodeNum/snr/rssi/queueFree/heard/role/pocketLinks/pocketSightings/gatewaysHeard/radio/airtime/counters`
+  `state/boardNodeNum/snr/rssi/queueFree/queued/heard/role/pocketLinks/pocketSightings/gatewaysHeard/radio/airtime/counters`
   (`airtime` also carries `dedicated`, true when the board is on its own RF slot and so off the politeness
   ceiling — ADR 067; `liveMs`/`bridgeMs`/`bootstrapMs` against their budgets — `loraSent − loraDmSent −
-  loraOfferSent` is the profile + room count, and profiles are the fragmented ones; `loraProfileRefanSkipped`
-  against `loraSent` is the re-fan redundancy). It is the
+  loraOfferSent` is the profile + room count, which holds only because `loraOfferSent` counts what was
+  **transmitted** rather than what was enqueued (ADR 2026-09.t8t8), and profiles are the fragmented ones;
+  `loraProfileRefanSkipped` against `loraSent` is the re-fan redundancy). `loraAirtimeHeld` /
+  `loraAirtimeHeldByBucket` beside `queued` is what tells a starved plane from a quiet one: a spent bucket
+  *holds* frames rather than dropping them, so no counter moves until the queue overflows and the drops all
+  arrive at once. It is the
   two-board oracle. `…debug.LORATX --es text <s>` sends a raw payload straight to the board (board-side
   sanity via `meshtastic --noproto`). `…debug.LORAPROV` sets the board up headlessly; `--es mode dedicated`
   is ADR 067's debug-only dedicated-frequency setup and `--es mode restore` undoes either.
@@ -657,7 +671,10 @@ where no other Knit board is listening. Set the Meshtastic app's device to **Non
   reports `role: PASSIVE`, `loraPassive` climbs, its `loraSent` stays flat, and the bridge keeps working.
   (4) Over an hour of chat pace: `airtime.liveMs` under `liveBudgetMs`, `bridgeMs` under `bridgeBudgetMs`,
   `loraNak == 0`, `loraDroppedQueue == 0`. (5) `…debug.LORA --ez bridge false` → `loraOfferSent` stops
-  climbing and no backfill is served, while a live room post still crosses.
+  climbing and no backfill is served, while a live room post still crosses. (6) With `bridgeMs` at its budget
+  from serving, `lora tx offer` still appears on the gossip schedule and `loraOfferSent` matches that line
+  count; `loraAirtimeHeld` names `BRIDGE` while `queued` shows the depth, and `loraBridged` stops short of
+  `SERVE_CAP_PER_HOUR` rather than running to it with nothing landing (ADR 2026-09.t8t8).
 
 ## First-session unknowns to confirm (assumptions, not blockers)
 
