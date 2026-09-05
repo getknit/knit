@@ -58,7 +58,7 @@ enum class RelayPlane {
  * a relay outage, which heals by itself and must not paint a notice across every open thread.
  */
 enum class RelayReach {
-    /** Plane off, no relay configured, or none connected — say nothing. */
+    /** Plane off, no relay configured, none connected, or the Meshtastic room — say nothing. */
     Silent,
 
     /** A live scope for this thread exists on at least one connected relay. */
@@ -108,12 +108,19 @@ fun planeFor(facts: RelayFacts): RelayPlane =
  * The broadcast room is checked before coverage rather than after, because it is a *structural*
  * exclusion — `ScopeFrames.eligibleForDm` requires a recipient and a v2 ratchet header, neither of which
  * a room frame has — and a permanent fact deserves different copy from a temporary one.
+ *
+ * The Meshtastic room ([Conversations.MESHTASTIC]) is a structural exclusion too, but it earns no copy at
+ * all: nothing in that thread ever enters Knit's mesh — it is this phone's mirror of the board's own
+ * channel — so a relay could not carry it under any future configuration. [RelayReach.Pending] would have
+ * promised a coverage that is never coming, and even the room's permanent-by-design wording would be
+ * describing a plane that thread was never on.
  */
 fun reachFor(
     conversationId: String,
     facts: RelayFacts,
 ): RelayReach =
     when {
+        conversationId == Conversations.MESHTASTIC -> RelayReach.Silent
         !facts.enabled || facts.active == 0 || facts.connected == 0 -> RelayReach.Silent
         conversationId == Conversations.NEARBY -> RelayReach.Room
         conversationId in facts.coveredLabels -> RelayReach.Covered

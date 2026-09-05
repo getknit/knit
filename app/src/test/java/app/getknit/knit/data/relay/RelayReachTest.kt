@@ -64,6 +64,17 @@ class RelayReachTest {
     }
 
     @Test
+    fun `the Meshtastic room says nothing about relays, ever`() {
+        // Its posts are a local mirror of the board's own channel and never enter Knit's mesh, so no
+        // relay could carry them under any configuration — "not covered yet" would promise a coverage
+        // that is never coming. Silent on a live plane, and silent even if a scope claimed its id.
+        assertEquals(RelayReach.Silent, reachFor(Conversations.MESHTASTIC, covered))
+        val odd = covered.copy(coveredLabels = covered.coveredLabels + Conversations.MESHTASTIC)
+        assertEquals(RelayReach.Silent, reachFor(Conversations.MESHTASTIC, odd))
+        assertEquals(RelayReach.Silent, noticeFor(Conversations.MESHTASTIC, covered, roomNoticeDismissed = false))
+    }
+
+    @Test
     fun `an unscoped conversation is pending`() {
         assertEquals(RelayReach.Pending, reachFor("peer-unknown", covered))
     }

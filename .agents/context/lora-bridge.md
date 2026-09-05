@@ -621,7 +621,11 @@ each hear the channel for themselves.
   bound or history remains, and `PublicPostGate` swaps the composer for a footer with no radio bound (or a
   Knit-at-0 board) and only changes the hint while the link is down, so the keyboard survives a BLE flap.
   Notifications key on the resolved contact (or the `!hex` id, never `me`), stay `IMPORTANCE_LOW`, and carry
-  no inline reply.
+  no inline reply. `MeshRoomNotice` is the room's **only** pinned strip: `reachFor` answers
+  `RelayReach.Silent` for `Conversations.MESHTASTIC` ahead of every other rule, so no relay notice ever
+  appears here. The exclusion is structural like the Nearby room's, but it earns no copy at all — these posts
+  never enter Knit's mesh, so no relay could carry them under any configuration, and "not covered by relays
+  yet" promised a coverage that is never coming.
 
 ## Board setup (once, Meshtastic CLI or app)
 
