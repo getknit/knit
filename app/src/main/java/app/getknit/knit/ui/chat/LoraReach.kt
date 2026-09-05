@@ -6,6 +6,7 @@ import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.lora.LoraSizeHint
+import app.getknit.knit.mesh.lora.PublicPostPolicy
 
 /**
  * What to tell the user about a thread's LoRa reach — the board's counterpart of [RelayReach]. Only the
@@ -126,7 +127,15 @@ fun loraGroupReachFor(
         else -> LoraReach.GroupUnsupported
     }
 
-/** The [LoraCarry] for a draft in [conversationId]. */
+/**
+ * The [LoraCarry] for a draft in [conversationId].
+ *
+ * The **bridged** room is [LoraCarry.None] whatever the plane is doing, because its length rule is not this
+ * one: a post there is capped hard in the composer at what a Meshtastic frame carries
+ * ([PublicPostPolicy.bodyBudget]). Left as a DM it would take the DM's larger hint and hang a soft "may not
+ * reach people over LoRa" under a field that has already refused the 201st byte — and it would follow the
+ * private-messages-over-LoRa switch, which governs nothing in that room.
+ */
 fun loraCarryFor(
     conversationId: String,
     isGroup: Boolean,
@@ -134,6 +143,7 @@ fun loraCarryFor(
 ): LoraCarry =
     when {
         facts.plane != LoraPlane.Live -> LoraCarry.None
+        conversationId == Conversations.MESHTASTIC -> LoraCarry.None
         conversationId == Conversations.NEARBY -> LoraCarry.Room
         isGroup -> LoraCarry.None
         facts.dms -> LoraCarry.Dm

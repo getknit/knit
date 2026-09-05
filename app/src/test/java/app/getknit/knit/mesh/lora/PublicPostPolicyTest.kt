@@ -58,6 +58,32 @@ class PublicPostPolicyTest {
     }
 
     @Test
+    fun `the composer's budget is the room the author's own name leaves`() {
+        // What the composer caps the draft at, so the transmit path never has to trim one. The pair has to
+        // agree exactly: a budget a byte too generous puts the silent cut back.
+        assertEquals(PublicPostPolicy.MAX_ON_AIR_BYTES - "Alice: ".length, PublicPostPolicy.bodyBudget("Alice"))
+        assertEquals(PublicPostPolicy.MAX_ON_AIR_BYTES, PublicPostPolicy.bodyBudget(null))
+        assertEquals(PublicPostPolicy.MAX_ON_AIR_BYTES, PublicPostPolicy.bodyBudget("   "))
+    }
+
+    @Test
+    fun `a draft written to the budget goes out whole`() {
+        // The property the cap exists for, stated as the composer will use it: fill the budget exactly and
+        // nothing is cut. Checked with a two-byte name, so a budget counted in characters would fail it.
+        val name = "Álice"
+        val body = "x".repeat(PublicPostPolicy.bodyBudget(name))
+        val text = PublicPostPolicy.onAirText(name, body)
+        assertEquals("$name: $body", text)
+        assertTrue(text.toByteArray().size <= PublicPostPolicy.MAX_ON_AIR_BYTES)
+    }
+
+    @Test
+    fun `a name that leaves no room budgets the whole line for the words`() {
+        // Matches the prefix-dropping rule above: where the name goes, the body gets the line it vacated.
+        assertEquals(PublicPostPolicy.MAX_ON_AIR_BYTES, PublicPostPolicy.bodyBudget("n".repeat(400)))
+    }
+
+    @Test
     fun `a post that already fits is left exactly as it was typed`() {
         val body = "  meet at the trailhead  ".trim()
         assertEquals("Alice: $body", PublicPostPolicy.onAirText("Alice", body))

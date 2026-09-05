@@ -738,7 +738,13 @@
     <string name="chat_mesh_room_body">These posts were overheard by a paired Meshtastic radio on its public channel. Anyone with a radio can send them and anyone can claim any name, so treat both the names and the messages as unverified. Some arrive from the Internet rather than from anyone nearby. What you post here goes out in the clear under your Knit name, and needs a radio nearby to carry it.</string>
     <string name="chat_mesh_hint">Post as %1$s</string>
     <string name="chat_mesh_hint_anon">Post to the public channel</string>
-    <string name="chat_mesh_too_long">Longer posts are cut short on the public channel</string>
+    <!-- The composer's length counter as a post nears the Meshtastic frame's limit, and the refusal for
+         anything that is not text. The channel carries one short line: the cap is hard, so the counter shows
+         what is used out of what there is rather than warning after the fact. The spoken form is separate
+         because "183/193" is read aloud as a fraction. -->
+    <string name="chat_mesh_post_length">%1$d/%2$d</string>
+    <string name="chat_mesh_post_length_a11y">Post length: %1$d of %2$d</string>
+    <string name="chat_mesh_text_only">The public channel carries text only</string>
     <string name="chat_mesh_consent_title">Post to the public channel?</string>
     <string name="chat_mesh_consent_can_title">Who can see this</string>
     <string name="chat_mesh_consent_can_body">Anyone with a Meshtastic radio in range. Many radios also pass this channel on to a public Internet server, where it is stored by people you will never meet.</string>

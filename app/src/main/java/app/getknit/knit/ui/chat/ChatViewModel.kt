@@ -50,6 +50,7 @@ import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
+import app.getknit.knit.mesh.lora.PublicPostPolicy
 import app.getknit.knit.mesh.meshNodeLabel
 import app.getknit.knit.mesh.protocol.LinkCard
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
@@ -276,6 +277,12 @@ data class ChatUiState(
     // name, or null when they have not set one. Shown in the composer hint so the one place ADR 049's rule is
     // suspended says so before the user types, rather than after the words have left.
     val publicPostName: String? = null,
+    // The UTF-8 bytes a post's words may occupy here, or null in every thread that is not the bridged room.
+    // A hard cap rather than the soft LoRa length hint: a Meshtastic frame carries one short line, the
+    // transmit path trims a longer one without asking (and does it on whichever phone in the pocket owns the
+    // board, not necessarily this one), so the field refuses the overflow while the author can still choose
+    // what to cut. Falls with the display name, since that rides on the front of every post.
+    val publicPostBudget: Int? = null,
     // Whether a post here still needs the first-use disclosure. Read only by [isBridged] threads.
     val needsPublicConsent: Boolean = false,
 )
@@ -771,6 +778,8 @@ class ChatViewModel(
                 canSendFile = !isRoom && !isBridged,
                 isBridged = isBridged,
                 publicPostName = myName.takeIf { isBridged && it.isNotBlank() },
+                publicPostBudget =
+                    if (isBridged) PublicPostPolicy.bodyBudget(myName.takeIf { it.isNotBlank() }) else null,
                 needsPublicConsent = isBridged && !publicConsented,
                 isBlocked = !isRoom && !isBridged && !isGroup && conversationId in blocked,
                 verified = !isRoom && !isBridged && !isGroup && peersByNode[conversationId]?.verified == true,
@@ -957,6 +966,9 @@ class ChatViewModel(
             url !in failedUrls &&
             online &&
             settings.linkPreviewsEnabled.first() &&
+            // A card is an attachment, and the bridged room takes none — see [stage]. Read from the id rather
+            // than from `loraCarry`, which is None here precisely because the room's length rule is its own.
+            !isBridged &&
             state.value.loraCarry == LoraCarry.None &&
             !audienceCannotRenderCards()
 
@@ -1261,6 +1273,16 @@ class ChatViewModel(
         when (result) {
             is AttachmentStore.IngestResult.Success -> {
                 when {
+                    // The bridged room carries one line of text and nothing beside it: `sendPublicPost` takes a
+                    // string, so anything staged here would sit in the composer and then vanish at send. The
+                    // composer already offers no picker and tells the keyboard it takes no images, so what
+                    // reaches this is the share sheet — which lists the room, because sharing *text* into it is
+                    // a fair thing to want. One refusal at the funnel covers every route into it.
+                    isBridged -> {
+                        blobs.deleteIfUnreferenced(result.ingested.hash)
+                        _events.tryEmit(R.string.chat_mesh_text_only)
+                    }
+
                     !result.flagged -> {
                         // A staged card gives way to whatever the user attached on purpose (one slot).
                         _pendingAttachment.value?.takeIf { it.link != null && result.ingested.link == null }?.let { card ->

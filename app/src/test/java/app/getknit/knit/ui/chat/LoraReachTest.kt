@@ -116,6 +116,19 @@ class LoraReachTest {
     }
 
     @Test
+    fun `the bridged room carries nothing here — its length rule is a hard cap of its own`() {
+        // Not None because the plane is down: a bridged post is capped to a Meshtastic frame in the composer
+        // whatever this plane is doing. Left as Dm it would take the DM's 320-byte hint and hang a soft "may
+        // not reach people over LoRa" under a field that has already refused the 201st byte, and it would
+        // follow the private-messages-over-LoRa switch, which governs nothing in this room.
+        assertEquals(LoraCarry.None, loraCarryFor(Conversations.MESHTASTIC, isGroup = false, facts = live))
+        assertEquals(
+            LoraCarry.None,
+            loraCarryFor(Conversations.MESHTASTIC, isGroup = false, facts = LoraFacts(LoraPlane.Live, dms = false)),
+        )
+    }
+
+    @Test
     fun `the budget follows the carry form and what rides along`() {
         assertNull(loraBudgetFor(LoraCarry.None, replying = false, attached = false))
         assertEquals(LoraSizeHint.ROOM_BODY_BYTES, loraBudgetFor(LoraCarry.Room, replying = false, attached = false))

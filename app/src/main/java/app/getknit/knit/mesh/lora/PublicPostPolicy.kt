@@ -45,16 +45,38 @@ internal object PublicPostPolicy {
         name: String?,
         body: String,
     ): String {
-        val prefix =
-            name
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
-                ?.let { "$it: " }
-                .orEmpty()
-        val room = MAX_ON_AIR_BYTES - LoraSizeHint.utf8Length(prefix)
-        // A name long enough to leave no room for the body is not a post; drop the prefix rather than the words.
-        if (room <= 0) return trimToUtf8(body, MAX_ON_AIR_BYTES)
-        return prefix + trimToUtf8(body, room)
+        val prefix = prefixFor(name)
+        val room = bodyBudget(name)
+        // A name long enough to leave no room for the body is not a post; drop the prefix rather than the words,
+        // which is exactly the case where the budget and the prefix no longer share one line.
+        val prefixFits = LoraSizeHint.utf8Length(prefix) + room <= MAX_ON_AIR_BYTES
+        return (if (prefixFits) prefix else "") + trimToUtf8(body, room)
+    }
+
+    /**
+     * The `"Alex: "` this author's line opens with, or empty where there is no name to put on it. Stated once
+     * so [onAirText] and [bodyBudget] cannot come to different answers about what the words are competing with.
+     */
+    fun prefixFor(name: String?): String =
+        name
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { "$it: " }
+            .orEmpty()
+
+    /**
+     * The UTF-8 bytes this author's **words** may occupy — what the composer caps the draft at, so that what a
+     * person typed is what a stranger's radio shows.
+     *
+     * The cap belongs in the composer and not only here because [onAirText] trims *silently*, on a device that
+     * may not even be the one that typed the post: a phone with no board of its own hands its post to whichever
+     * gateway is in the pocket, so a sentence cut in half would go out under the author's name with nothing on
+     * the author's screen to say so. Same arithmetic as [onAirText], including its answer for a name too long
+     * to leave any room at all — the prefix goes rather than the words, so the whole line is the budget.
+     */
+    fun bodyBudget(name: String?): Int {
+        val room = MAX_ON_AIR_BYTES - LoraSizeHint.utf8Length(prefixFor(name))
+        return if (room <= 0) MAX_ON_AIR_BYTES else room
     }
 
     /**

@@ -10,9 +10,12 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.mesh.lora.PublicPostPolicy
 import app.getknit.knit.ui.theme.KnitTheme
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -61,6 +64,9 @@ class ChatMeshRoomTest {
     private var profileOpened: String? = null
     private var consentAccepted = false
 
+    /** Held rather than made inline, so a test can seed a draft and read back what the field kept of it. */
+    private val inputState = TextFieldState("")
+
     /** The Nearby room, for the control case: the same bubble where its author *is* a Knit peer. */
     private fun renderRoom(rows: List<ChatRow>) =
         render(Conversations.NEARBY, ChatUiState(rows = rows, isRoom = true, myNodeId = "me", title = "Nearby"))
@@ -76,6 +82,7 @@ class ChatMeshRoomTest {
             isBridged = true,
             canSendFile = false,
             publicPostName = "Alice",
+            publicPostBudget = PublicPostPolicy.bodyBudget("Alice"),
             myNodeId = "me",
             title = "LongFast",
         ),
@@ -92,7 +99,7 @@ class ChatMeshRoomTest {
                 ChatScreenContent(
                     conversationId = conversationId,
                     state = state,
-                    inputState = TextFieldState(""),
+                    inputState = inputState,
                     pendingAttachment = null,
                     replyingTo = null,
                     now = 1_700_000_000_000L,
@@ -215,10 +222,57 @@ class ChatMeshRoomTest {
     @Test
     fun theRoomOffersNothingItCannotPutOnTheAir() {
         // A photo, a file or a voice note has no way onto a foreign mesh's text channel; offering one would
-        // flood it inside Knit and silently never leave.
+        // flood it inside Knit and silently never leave. The same flag takes the composer's content receiver
+        // away, which is what turns the keyboard's GIF and sticker tabs into "images not supported here" —
+        // not assertable from here, since a content receiver publishes no semantics, only MIME types to the
+        // IME. `ChatViewModelTest` covers the refusal under it, for the routes that do not pass this screen.
         render(listOf(row()))
         compose.onNodeWithContentDescription("Attach photo").assertDoesNotExist()
         compose.onNodeWithContentDescription("Hold to record a voice message").assertDoesNotExist()
+    }
+
+    @Test
+    fun aPostIsCappedAtWhatOneMeshtasticFrameCarries() {
+        // The cap is hard rather than a warning: the transmit path trims a long post silently, and does it on
+        // whichever phone in the pocket owns the board — so a sentence cut in half would go out under this
+        // author's name with nothing on their screen to say so. Refusing the byte keeps that decision here.
+        val budget = PublicPostPolicy.bodyBudget("Alice")
+        render(listOf(row()))
+        compose.onNodeWithTag("chat_input").performTextInput("x".repeat(budget))
+        compose.onNodeWithTag("chat_input").performTextInput("y")
+        assertEquals("the overflowing keystroke is refused, not trimmed in", budget, inputState.text.length)
+        assertTrue("and it is refused whole", inputState.text.none { it == 'y' })
+    }
+
+    @Test
+    fun theCapIsCountedInBytesBecauseTheFrameIs() {
+        // The failure a character cap would miss: fifty emoji are two hundred bytes, and a field measuring
+        // UTF-16 units would wave all of them through and let the radio cut the line instead.
+        render(listOf(row()))
+        compose.onNodeWithTag("chat_input").performTextInput("🙂".repeat(60))
+        assertTrue("nothing over the byte budget was kept", inputState.text.isEmpty())
+    }
+
+    @Test
+    fun theLastStretchOfTheBudgetIsCounted() {
+        // Only the last stretch: a permanent counter over a field almost nobody fills is chrome, and a field
+        // that stops accepting input with no warning at all reads as a bug. Both halves are shown because the
+        // cap here is short and surprising — a bare remainder would never say what the room was.
+        val budget = PublicPostPolicy.bodyBudget("Alice")
+        render(listOf(row()))
+        compose.onNodeWithTag("chat_public_post_length").assertDoesNotExist()
+
+        compose.onNodeWithTag("chat_input").performTextInput("x".repeat(budget - 3))
+        compose
+            .onNodeWithTag("chat_public_post_length", useUnmergedTree = true)
+            .assertTextEquals("${budget - 3}/$budget")
+
+        compose.onNodeWithTag("chat_input").performTextInput("xxx")
+        compose
+            .onNodeWithTag("chat_public_post_length", useUnmergedTree = true)
+            .assertTextEquals("$budget/$budget")
+        // Read aloud as a fraction otherwise; the node carries its own spoken label.
+        compose.onNodeWithContentDescription("Post length: $budget of $budget").assertIsDisplayed()
     }
 
     @Test

@@ -57,6 +57,28 @@ before a word is typed rather than after it has left. The name rides **in the fr
 resolved by the gateway: a gateway that has never seen the author's profile would otherwise put a node id on
 the air, and two gateways with different views of the directory would put different text there.
 
+**The length rule lives in the composer, not only on the wire (2026-09-04, same day).** `PublicPostPolicy`
+trims a long post to 200 bytes on its way to the air, and that trim is *silent* — worse, it happens on
+whichever phone in the pocket owns the board, which under "the gateway observes rather than is asked" need
+not be the phone that typed the post. So a sentence cut in half goes out under its author's name with
+nothing on the author's screen ever having said so. The field now refuses the byte instead
+(`PublicPostPolicy.bodyBudget`, the same arithmetic `onAirText` does, minus the `Alice: ` the author's own
+name will occupy), counted in **UTF-8 bytes** because the frame is — `InputTransformation.maxLength` counts
+UTF-16 units and would wave fifty emoji through a two-hundred-byte line — with a `183/193` counter over the
+send button for the last 40 B, so the field is never just unresponsive. Both halves, because the cap is
+short and surprising: a bare remainder says how much room is left without ever saying what the room was. The wire-side trim stays as the net under it. This also takes
+the room out of `loraCarryFor`: it was falling through to the DM arm, so it wore the DM's 320-byte *hint*
+and followed the private-messages-over-LoRa switch, neither of which governs anything here.
+
+**And the composer accepts no pictures, which is a thing you have to say to the keyboard.** `sendPublicPost`
+takes a string, so anything staged beside the draft is dropped at send — silently, again. Hiding the picker
+was not enough: what advertises image support to the IME is the *presence* of a `contentReceiver`, so a
+field that keeps one and refuses what arrives still offers Gboard's GIF and sticker tabs. The modifier is
+left off entirely in this room, which is what turns those tabs into "images not supported here", and
+`ChatViewModel.stage` refuses at the funnel for the route that does not pass the composer — the share sheet
+lists the room, because sharing *text* into it is a fair thing to want. Link-preview cards are attachments
+too, and are gated on the same flag.
+
 **Two guards, one queue.** `boundSlotIsKnit` is untouched. It exists to keep Knit's cleartext frames off the
 public channel *by accident* and reads an unknown channel table as "stay silent"; the outbound path is a
 consented route *to* that channel and reads the same unknown table as "not the stock primary" — same shape,

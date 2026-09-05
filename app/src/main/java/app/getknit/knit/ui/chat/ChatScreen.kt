@@ -61,6 +61,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.TextFieldBuffer
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
@@ -903,6 +904,7 @@ internal fun ChatScreenContent(
                 linkPreviewLoading = linkPreviewLoading,
                 loraBudget =
                     loraBudgetFor(state.loraCarry, replying = replyingTo != null, attached = pendingAttachment != null),
+                maxBytes = state.publicPostBudget,
                 // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
                 // no on-device model can screen speech, so it is the one place unscreenable audio is not
                 // offered. See docs/CONTENT_MODERATION.md.
@@ -2768,6 +2770,11 @@ private fun MessageInput(
     // The LoRa body budget for this draft ([loraBudgetFor]), or null when it would not ride the board. Above
     // it the composer shows the "long message" hint — a hedge, since the true ceiling is a little higher.
     loraBudget: Int? = null,
+    // A hard UTF-8 byte cap on the draft ([ChatUiState.publicPostBudget]), or null where the ordinary
+    // character cap is the only limit. Set only by the bridged room, whose line has to fit one Meshtastic
+    // frame — the opposite kind of limit from [loraBudget]: that one hedges about a frame the message might
+    // still reach people without, this one is the frame, so the field refuses the byte that would not fit.
+    maxBytes: Int? = null,
     // Replaces the field's "Knit Message" hint. The bridged room passes "Post as Alex", so the one place the
     // user's name leaves Knit for a public band says whose name that is before a word is typed.
     hint: String? = null,
@@ -2791,18 +2798,28 @@ private fun MessageInput(
     // Capture images committed by the keyboard (Gboard GIFs), drag-and-drop, or paste. The state-based
     // BasicTextField is required here: it advertises the accepted content MIME types to the IME, so the
     // keyboard offers GIFs instead of "images not supported here".
+    //
+    // Null where [attachEnabled] is false, and the modifier is then left off entirely rather than given a
+    // listener that refuses: what the IME reads is the *presence* of a content receiver, so a field that
+    // accepts nothing has to say so by having none. That is what turns Gboard's GIF and sticker tabs into
+    // "images not supported here" in the bridged room, where a picture has no way onto a text-only channel
+    // and a silently-dropped one would look like Knit had sent it.
     val receiveContentListener =
-        remember(onReceiveImage) {
-            object : ReceiveContentListener {
-                override fun onReceive(transferableContent: TransferableContent): TransferableContent? {
-                    if (!transferableContent.hasMediaType(MediaType.Image)) return transferableContent
-                    return transferableContent.consume { item ->
-                        val uri = item.uri
-                        if (uri != null) {
-                            onReceiveImage(uri)
-                            true
-                        } else {
-                            false
+        if (!attachEnabled) {
+            null
+        } else {
+            remember(onReceiveImage) {
+                object : ReceiveContentListener {
+                    override fun onReceive(transferableContent: TransferableContent): TransferableContent? {
+                        if (!transferableContent.hasMediaType(MediaType.Image)) return transferableContent
+                        return transferableContent.consume { item ->
+                            val uri = item.uri
+                            if (uri != null) {
+                                onReceiveImage(uri)
+                                true
+                            } else {
+                                false
+                            }
                         }
                     }
                 }
@@ -3047,10 +3064,17 @@ private fun MessageInput(
                                 modifier =
                                     Modifier
                                         .fillMaxWidth()
-                                        .contentReceiver(receiveContentListener)
-                                        .testTag("chat_input")
+                                        .then(
+                                            receiveContentListener?.let { Modifier.contentReceiver(it) } ?: Modifier,
+                                        ).testTag("chat_input")
                                         .semantics { contentDescription = messageHint },
-                                inputTransformation = InputTransformation.maxLength(TextLimits.MESSAGE),
+                                // The byte cap replaces the character one rather than chaining after it: a
+                                // Meshtastic line is a fifth of [TextLimits.MESSAGE] at its most generous, so
+                                // the character cap could never be the one that bit.
+                                inputTransformation =
+                                    remember(maxBytes) {
+                                        maxBytes?.let(::MaxUtf8Bytes) ?: InputTransformation.maxLength(TextLimits.MESSAGE)
+                                    },
                                 textStyle =
                                     MaterialTheme.typography.bodyLarge.copy(
                                         color = MaterialTheme.colorScheme.onSurface,
@@ -3118,86 +3142,98 @@ private fun MessageInput(
                         SendAction.Send -> stringResource(R.string.action_send)
                         SendAction.Attach -> stringResource(R.string.action_attach_photo)
                     }
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    modifier =
-                        Modifier
-                            .size(48.dp)
-                            .align(Alignment.CenterVertically)
-                            .graphicsLayer {
-                                scaleX = sendScale.value
-                                scaleY = sendScale.value
-                            }.testTag("chat_send")
-                            .combinedClickable(
-                                role = Role.Button,
-                                interactionSource = sendInteraction,
-                                // Swallow taps while a send is in flight (the ViewModel guard also drops
-                                // re-entrant sends, but suppressing the click keeps the button from
-                                // feeling dead-but-pressable).
-                                onClick = {
-                                    if (!showSending) {
-                                        if (canSend || !attachEnabled) {
-                                            // The send itself is the only confirmation the composer gives:
-                                            // the field clears and the bubble is already at the bottom of a
-                                            // list the user may not be looking at.
-                                            haptics.performHapticFeedback(HapticFeedbackType.Confirm)
-                                            onSend()
-                                        } else {
-                                            onAttachClick()
-                                        }
-                                    }
-                                },
-                                // Only in attach mode: long-pressing *Send* to open a camera would be
-                                // surprising, and could interrupt the send it looks like it triggers.
-                                onLongClickLabel = takePhotoLabel.takeIf { attachEnabled && !canSend && !showSending },
-                                onLongClick =
-                                    if (attachEnabled && !canSend && !showSending) {
-                                        { onCameraClick() }
-                                    } else {
-                                        null
-                                    },
-                            ),
+                // The byte counter belongs to the button it constrains, not to the thread: it says what the
+                // *send* will carry, so it rides directly over the send button rather than across the width of
+                // the composer where the LoRa hint (about the message's chances, not its size) already lives.
+                // The column takes the button's own `CenterVertically` so a thread with no counter — every
+                // thread but the bridged room — lays out byte for byte as it did before.
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.align(Alignment.CenterVertically),
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        // Send / attach / spinner used to hard-swap. As with the delivery tick, the single
-                        // description rides on the AnimatedContent: `combinedClickable` merges descendants
-                        // into the button node, so two labelled children mid-transition would have the
-                        // button announce both.
-                        val actionEnter = KnitMotion.enterPop()
-                        val actionExit = KnitMotion.exitPop()
-                        AnimatedContent(
-                            targetState = action,
-                            transitionSpec = { actionEnter togetherWith actionExit },
-                            label = "sendAction",
-                            modifier = Modifier.semantics { contentDescription = actionDescription },
-                        ) { current ->
-                            when (current) {
-                                SendAction.Sending -> {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(24.dp),
-                                        strokeWidth = 2.dp,
-                                        // LocalContentColor is the Surface's onPrimary content colour, so
-                                        // the spinner reads against the filled container.
-                                        color = LocalContentColor.current,
-                                    )
-                                }
+                    if (maxBytes != null) {
+                        PostLengthCounter(state = state, maxBytes = maxBytes)
+                    }
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        modifier =
+                            Modifier
+                                .size(48.dp)
+                                .graphicsLayer {
+                                    scaleX = sendScale.value
+                                    scaleY = sendScale.value
+                                }.testTag("chat_send")
+                                .combinedClickable(
+                                    role = Role.Button,
+                                    interactionSource = sendInteraction,
+                                    // Swallow taps while a send is in flight (the ViewModel guard also drops
+                                    // re-entrant sends, but suppressing the click keeps the button from
+                                    // feeling dead-but-pressable).
+                                    onClick = {
+                                        if (!showSending) {
+                                            if (canSend || !attachEnabled) {
+                                                // The send itself is the only confirmation the composer gives:
+                                                // the field clears and the bubble is already at the bottom of a
+                                                // list the user may not be looking at.
+                                                haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                                                onSend()
+                                            } else {
+                                                onAttachClick()
+                                            }
+                                        }
+                                    },
+                                    // Only in attach mode: long-pressing *Send* to open a camera would be
+                                    // surprising, and could interrupt the send it looks like it triggers.
+                                    onLongClickLabel = takePhotoLabel.takeIf { attachEnabled && !canSend && !showSending },
+                                    onLongClick =
+                                        if (attachEnabled && !canSend && !showSending) {
+                                            { onCameraClick() }
+                                        } else {
+                                            null
+                                        },
+                                ),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            // Send / attach / spinner used to hard-swap. As with the delivery tick, the single
+                            // description rides on the AnimatedContent: `combinedClickable` merges descendants
+                            // into the button node, so two labelled children mid-transition would have the
+                            // button announce both.
+                            val actionEnter = KnitMotion.enterPop()
+                            val actionExit = KnitMotion.exitPop()
+                            AnimatedContent(
+                                targetState = action,
+                                transitionSpec = { actionEnter togetherWith actionExit },
+                                label = "sendAction",
+                                modifier = Modifier.semantics { contentDescription = actionDescription },
+                            ) { current ->
+                                when (current) {
+                                    SendAction.Sending -> {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(24.dp),
+                                            strokeWidth = 2.dp,
+                                            // LocalContentColor is the Surface's onPrimary content colour, so
+                                            // the spinner reads against the filled container.
+                                            color = LocalContentColor.current,
+                                        )
+                                    }
 
-                                SendAction.Send -> {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.Send,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(24.dp),
-                                    )
-                                }
+                                    SendAction.Send -> {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.Send,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(24.dp),
+                                        )
+                                    }
 
-                                SendAction.Attach -> {
-                                    Icon(
-                                        imageVector = Icons.Filled.AddPhotoAlternate,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(24.dp),
-                                    )
+                                    SendAction.Attach -> {
+                                        Icon(
+                                            imageVector = Icons.Filled.AddPhotoAlternate,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(24.dp),
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -3205,6 +3241,82 @@ private fun MessageInput(
                 }
             }
         }
+    }
+}
+
+/**
+ * How close to a hard byte cap the composer starts showing the count. Roughly the last line of a Meshtastic
+ * post, so the number appears while there is still a sentence to finish rather than after the field has
+ * already begun refusing keystrokes.
+ */
+private const val COUNTER_FROM_BYTES = 40
+
+/**
+ * `183/193` over the send button, for a draft under a hard byte cap ([MaxUtf8Bytes]).
+ *
+ * Both halves are shown rather than a remainder: the cap here is short and surprising — a Meshtastic line,
+ * not a Knit message — so a bare "10 left" would say how much room is left without ever saying what the room
+ * was. Appears only in the last [COUNTER_FROM_BYTES] bytes: a permanent counter over a field almost nobody
+ * fills would be chrome, while a field that simply stops accepting input with no warning reads as a bug.
+ *
+ * The visible text is `183/193`, which TalkBack would read as a fraction, so the node carries a spoken label
+ * of its own and the number is marked decorative — the same split the composer's hint already uses.
+ */
+@Composable
+private fun PostLengthCounter(
+    state: TextFieldState,
+    maxBytes: Int,
+) {
+    // Derived, so this recomposes on the byte count rather than on every keystroke.
+    val used by remember(state, maxBytes) {
+        derivedStateOf {
+            LoraSizeHint.utf8Length(state.text).takeIf { maxBytes - it <= COUNTER_FROM_BYTES }
+        }
+    }
+    used?.let { bytes ->
+        val spoken = stringResource(R.string.chat_mesh_post_length_a11y, bytes, maxBytes)
+        Text(
+            text = stringResource(R.string.chat_mesh_post_length, bytes, maxBytes),
+            style = MaterialTheme.typography.labelSmall,
+            // Red only once the budget is spent: up to then it is information, not a problem.
+            color =
+                if (bytes >= maxBytes) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            maxLines = 1,
+            // Never wrapped or ellipsised: at a large font scale it may out-measure the 48dp button and take
+            // a few dp off the field, which is cheaper than a counter that cannot be read.
+            softWrap = false,
+            modifier =
+                Modifier
+                    .padding(bottom = 2.dp)
+                    .testTag("chat_public_post_length")
+                    .semantics {
+                        contentDescription = spoken
+                        liveRegion = LiveRegionMode.Polite
+                    },
+        )
+    }
+}
+
+/**
+ * An [InputTransformation] that rejects any edit taking the field past [maxBytes] of **UTF-8** — the unit a
+ * Meshtastic frame is measured in, where `InputTransformation.maxLength` counts UTF-16 units and would let
+ * fifty emoji through a two-hundred-byte line.
+ *
+ * Rejects the whole edit rather than trimming it, exactly as the built-in length filter does: a paste
+ * silently cut to fit is the failure this cap exists to remove, so it must not be reintroduced by the cap
+ * itself. Deliberately no `applySemantics`: `maxTextLength` is a count of characters, and announcing a byte
+ * budget as one would over-promise on every draft that is not plain ASCII. [PostLengthCounter] is a polite
+ * live region instead, which stays true whatever the draft is made of.
+ */
+private class MaxUtf8Bytes(
+    private val maxBytes: Int,
+) : InputTransformation {
+    override fun TextFieldBuffer.transformInput() {
+        if (LoraSizeHint.utf8Length(asCharSequence()) > maxBytes) revertAllChanges()
     }
 }
 

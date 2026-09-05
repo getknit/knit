@@ -792,6 +792,28 @@ class ChatViewModelTest {
             coVerify { blobs.deleteIfUnreferenced("h4") }
         }
 
+    @Test
+    fun theBridgedRoomTakesNoAttachmentByAnyRoute() =
+        runTest {
+            // `sendPublicPost` takes a string, so a staged picture would sit in the composer and then vanish
+            // at send — under the author's name, with nothing to say it never left. The screen offers no
+            // picker and tells the keyboard it takes no images, so what actually reaches this is the share
+            // sheet, which lists the room because sharing *text* into it is a fair thing to want.
+            val uri = Uri.parse("content://images/9")
+            val ingested = AttachmentStore.Ingested(hash = "h9", mime = "image/gif")
+            coEvery { attachments.ingest(uri) } returns AttachmentStore.IngestResult.Success(ingested, flagged = false)
+            val vm = vm(Conversations.MESHTASTIC)
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+
+            vm.attach(uri)
+            advanceUntilIdle()
+
+            assertNull("nothing is staged where nothing can be sent", vm.pendingAttachment.value)
+            coVerify { blobs.deleteIfUnreferenced("h9") }
+            assertTrue("and the refusal says why", events.contains(R.string.chat_mesh_text_only))
+        }
+
     /** A failed capture has to say so: unlike a pick, the shot exists nowhere else to try again from. */
     @Test
     fun aFailedCaptureSurfacesAnErrorWhereAFailedPickStaysSilent() =
