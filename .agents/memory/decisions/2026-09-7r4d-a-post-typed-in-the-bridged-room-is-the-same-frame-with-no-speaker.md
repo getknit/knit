@@ -95,7 +95,15 @@ under it.
 board's node number — and *only* that, never every radio in `boardsHeard`, which §5 proposed. With one
 transmission a far pocket's board is exactly how our post reaches those people, and `boardsHeard` includes the
 far-pocket boards this one is LoRa-bridged to; refusing them would make our own posts invisible to the pockets
-they were written for (`ourOwnBoardsTransmissionIsNeverReadBackInAsSomebodyElsesPost`). Residual: during a
-gateway-election flap a pocket can briefly hold two ACTIVE gateways, and the second would mint a bridged copy
-of the first's transmission whose derived id cannot collapse against the author's random one. Seconds wide,
-and the air receipt closes it properly.
+they were written for (`ourOwnBoardsTransmissionIsNeverReadBackInAsSomebodyElsesPost`).
+
+**Two ACTIVE gateways is not the seconds-wide flap this ADR first claimed.** Verified on hardware the same
+day: the lab pocket held two ACTIVE boards *indefinitely*, and the first outbound post went on the air twice,
+each board then hearing the other's copy and re-ingesting it — one message rendered as three, with the user's
+own words attributed back to them by two `Knit abcd` strangers. `OWN_BOARD` behaved correctly throughout; it
+is scoped to our own board and cannot see a pocket-mate that also believes it is the gateway. The cause was a
+starved gossip offer, fixed separately (ADR 2026-09.xdm2), and this feature is what made a latent election
+failure expensive: phase 1 only *minted* on ACTIVE, so a stuck election produced duplicate frames that
+collapsed on the derived id and nobody saw. So the standing residual is narrower but real — **outbound is only
+as correct as the election** — and the air receipt is what would make a duplicate transmission visible rather
+than merely wrong.

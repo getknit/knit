@@ -1359,6 +1359,35 @@ class LoraMeshTransportTest {
      * per **publish**, and a republish — which mints a new frame id — rides on its own merits.
      */
     @Test
+    fun aProfileBacklogCannotStarveTheGatewayOffer() =
+        runTest {
+            // The lab failure, end to end (2026-09-04). Profiles outrank the OFFER in the dequeue
+            // (BOOTSTRAP < GOSSIP), so a growing backlog of them took every window's freed bootstrap air and
+            // the offer was never *chosen*: `loraOfferSent` stuck at 0 for the whole session, and the two
+            // boards in the pocket therefore both stayed ACTIVE and transmitted every public post twice.
+            // Bounded to one queued copy per author, the backlog drains and the offer gets its turn.
+            val a = rig(FakeMeshtasticAir(), 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            runCurrent()
+
+            // A run of republishes from one author, faster than the plane can drain them.
+            repeat(12) {
+                a.transport.fastFanout(frame(FrameType.PROFILE, "carol", body = "x".repeat(20)))
+                runCurrent()
+            }
+            // Well past a Trickle interval, so the gossip loop has had several chances to be heard.
+            advanceTimeBy(3 * LoraGossipPolicy.MAX_INTERVAL_MS)
+            runCurrent()
+
+            assertTrue("the offer reached the air", a.metrics.snapshot().loraOfferSent > 0)
+            assertTrue(
+                "and the backlog did not grow past one copy of one author's profile",
+                a.link.sent.count { it.size > 0 } < 12,
+            )
+            a.transport.stop()
+        }
+
+    @Test
     fun aProfileIsFannedOncePerPublishNotOnEverySeenSetLapse() =
         runTest {
             val a = rig(FakeMeshtasticAir(), 1u, "alice", backgroundScope) { testScheduler.currentTime }

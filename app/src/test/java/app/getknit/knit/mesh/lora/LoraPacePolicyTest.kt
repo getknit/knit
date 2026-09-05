@@ -10,7 +10,8 @@ class LoraPacePolicyTest {
     private fun frame(
         label: String,
         klass: FrameClass = FrameClass.ROOM,
-    ) = OutboundFrame(messages = listOf(byteArrayOf(1)), label = label, klass = klass)
+        supersedes: String? = null,
+    ) = OutboundFrame(messages = listOf(byteArrayOf(1)), label = label, klass = klass, supersedes = supersedes)
 
     @Test
     fun holdsTheMinimumGapBetweenSends() {
@@ -118,13 +119,72 @@ class LoraPacePolicyTest {
         // have since changed, so a far gateway would compute its backfill against a lie — and one queued at
         // a time is what keeps the Trickle timer, not the queue, the rate bound on this class.
         val pace = LoraPacePolicy(minGapMs = 0)
-        pace.enqueue(frame("offer:old", FrameClass.GOSSIP))
+        pace.enqueue(frame("offer:old", FrameClass.GOSSIP, supersedes = "offer"))
         pace.enqueue(frame("room"))
-        assertEquals(1, pace.dropQueued(FrameClass.GOSSIP))
-        pace.enqueue(frame("offer:new", FrameClass.GOSSIP))
-        assertEquals(2, pace.pending)
+        pace.enqueue(frame("offer:new", FrameClass.GOSSIP, supersedes = "offer"))
+        assertEquals("the older snapshot went, not the room post", 2, pace.pending)
+        assertEquals(1, pace.lastSuperseded)
         assertEquals("offer:new", pace.take(0)!!.label)
         assertEquals("nothing else went with it", "room", pace.take(0)!!.label)
+    }
+
+    @Test
+    fun aProfileSupersedesOnlyItsOwnAuthorsOlderCopy() {
+        // Two peers' profiles are different state and neither replaces the other. Getting this wrong in the
+        // other direction — one key for the whole class — would drop a peer's only profile whenever anybody
+        // else republished, which is the bootstrap the far side cannot decrypt anything without.
+        val pace = LoraPacePolicy(minGapMs = 0)
+        pace.enqueue(frame("alice:v1", FrameClass.BOOTSTRAP, supersedes = "profile:alice"))
+        pace.enqueue(frame("bob:v1", FrameClass.BOOTSTRAP, supersedes = "profile:bob"))
+        pace.enqueue(frame("alice:v2", FrameClass.BOOTSTRAP, supersedes = "profile:alice"))
+
+        assertEquals(2, pace.pending)
+        assertEquals(1, pace.lastSuperseded)
+        assertEquals("bob:v1", pace.take(0)!!.label)
+        assertEquals("only the newest copy of alice survives", "alice:v2", pace.take(0)!!.label)
+    }
+
+    @Test
+    fun aSnapshotBacklogCannotStarveTheOfferForever() {
+        // The lab failure this exists for. Profiles outrank the OFFER in the dequeue (BOOTSTRAP < GOSSIP),
+        // so before supersession a growing backlog of them took every window's freed air and the offer was
+        // never *chosen* — `loraOfferSent` stuck at 0 and the gateway election could never settle. Bounded
+        // per author, the backlog drains and the offer gets its turn.
+        val pace = LoraPacePolicy(minGapMs = 0)
+        repeat(30) { i -> pace.enqueue(frame("alice:v$i", FrameClass.BOOTSTRAP, supersedes = "profile:alice")) }
+        pace.enqueue(frame("offer", FrameClass.GOSSIP, supersedes = "offer"))
+
+        assertEquals("one profile, not thirty", 2, pace.pending)
+        assertEquals("alice:v29", pace.take(0)!!.label)
+        assertEquals("and the offer is right behind it", "offer", pace.take(0)!!.label)
+    }
+
+    @Test
+    fun aSupersessionIsNeverCountedAsADrop() {
+        // `loraDroppedQueue` says the plane shed something it wanted. Nothing is lost here that the newer
+        // frame does not already carry, so the newcomer must still report ACCEPTED.
+        val pace = LoraPacePolicy(minGapMs = 0)
+        pace.enqueue(frame("offer:old", FrameClass.GOSSIP, supersedes = "offer"))
+        assertEquals(
+            LoraPacePolicy.Admission.ACCEPTED,
+            pace.enqueue(frame("offer:new", FrameClass.GOSSIP, supersedes = "offer")),
+        )
+    }
+
+    @Test
+    fun aFullQueueMakesRoomBySupersedingBeforeItSheds() {
+        // Supersession runs first, so a snapshot replacing its own older copy never costs an unrelated frame
+        // its slot — the queue was never really full for this newcomer.
+        val pace = LoraPacePolicy(minGapMs = 0, queueCap = 2)
+        pace.enqueue(frame("alice:v1", FrameClass.BOOTSTRAP, supersedes = "profile:alice"))
+        pace.enqueue(frame("room"))
+        assertEquals(
+            LoraPacePolicy.Admission.ACCEPTED,
+            pace.enqueue(frame("alice:v2", FrameClass.BOOTSTRAP, supersedes = "profile:alice")),
+        )
+        assertEquals(2, pace.pending)
+        assertEquals("alice:v2", pace.take(0)!!.label)
+        assertEquals("the unrelated frame kept its place", "room", pace.take(0)!!.label)
     }
 
     @Test

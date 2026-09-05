@@ -68,7 +68,10 @@ doc). **Don't start a deferred item without explicit direction.**
   as `TEXT_MESSAGE_APP` prefixed with the author's display name — ADR 049's single exception, behind a
   first-use consent sheet (`SettingsStore.meshtasticPostConsented`). One transmission serves the
   neighbourhood: the type stays off the Knit LoRa plane, so a far pocket hears the packet itself. Metered by
-  `AirBucket.PUBLIC` (15 % of the window) plus a 30 s per-gateway floor. **Still owed:** the on-hardware
+  `AirBucket.PUBLIC` (15 % of the window) plus a 30 s per-gateway floor. **Device-verified 2026-09-04** for the
+  consent gate, the composer, the room row on all four devices and the airtime bucket — and it is what found
+  the gossip-offer starvation that had stopped the ADR 044 election settling at all (ADR 2026-09.xdm2), since
+  two ACTIVE gateways transmit every post twice. **Still owed:** a re-run of the on-hardware
   outbound trial (post from the gateway's phone, a PASSIVE phone and the board-less one; confirm exactly one
   packet leaves, `publicMs` climbs while `liveMs` does not, and a second post inside 30 s is refused), and a
   **per-post air receipt** — today a phone with no gateway in its pocket posts into Knit and nothing goes out,

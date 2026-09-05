@@ -57,6 +57,9 @@ internal class LoraPacePolicy(
         // asking for — so the airtime deferral is a fact about the queue as it stood, not a standing
         // cool-down.
         airtimeBlockedUntil = 0L
+        // A snapshot replaces its own older copy before anything else is decided, so a superseded frame can
+        // never cost the newcomer a queue slot or make the queue look fuller than it is.
+        lastSuperseded = frame.supersedes?.let { key -> queue.removeAllReturningCount { it.supersedes == key } } ?: 0
         if (queue.size < queueCap) {
             queue.addLast(frame)
             return Admission.ACCEPTED
@@ -83,19 +86,11 @@ internal class LoraPacePolicy(
     }
 
     /**
-     * Drops every queued frame of [klass] and returns how many went.
-     *
-     * For the OFFER, which is a **snapshot**: a superseded one announces a set we have since changed, so a far
-     * gateway would compute its backfill against a lie — and holding at most one is also what keeps
-     * [LoraGossipPolicy]'s Trickle timer the real rate bound on that class, rather than whatever the queue
-     * happened to accumulate while the window was spent. A replacement is not a loss, so the caller must not
-     * count these as dropped.
+     * How many queued frames the last [enqueue] superseded. Diagnostics only — a supersession is never a drop
+     * (see [OutboundFrame.supersedes]), so nothing counts it against `loraDroppedQueue`.
      */
-    fun dropQueued(klass: FrameClass): Int {
-        val before = queue.size
-        queue.removeAll { it.klass == klass }
-        return before - queue.size
-    }
+    var lastSuperseded = 0
+        private set
 
     /**
      * The earliest time the next frame may go out: the min gap since the last send, any NAK cool-down, and —
@@ -146,6 +141,12 @@ internal class LoraPacePolicy(
         airtimeBlockedUntil = 0L
         lastSentAt = now
         return queue.removeAt(best)
+    }
+
+    private fun ArrayDeque<OutboundFrame>.removeAllReturningCount(predicate: (OutboundFrame) -> Boolean): Int {
+        val before = size
+        removeAll(predicate)
+        return before - size
     }
 
     /** Whether anything at all may leave now: something queued, the gap and cool-downs elapsed, board room. */
@@ -251,6 +252,28 @@ internal class OutboundFrame(
     val bucket: AirBucket = AirBucket.defaultFor(klass),
     /** Which channel it is written to, and so which guard it must pass; see [Destination]. */
     val destination: Destination = Destination.Knit,
+    /**
+     * A key identifying **the thing this frame is a snapshot of**, so that enqueuing a newer copy discards the
+     * older one still waiting. Null for a frame that is an event rather than a state.
+     *
+     * Two classes of frame are snapshots, and both were starving something before this existed. An **OFFER**
+     * names the custody set we hold; a superseded one announces a set we have since changed, so a far gateway
+     * would compute its backfill against a lie. A **profile** carries its author's current key material and
+     * `version`, and the far side takes newest-wins — so an older copy queued ahead of a newer one is not just
+     * useless, it is the wrong answer sent first.
+     *
+     * Unbounded, either would pile up behind a spent airtime share, and a queue that keeps every stale copy
+     * of one state is what turned a 15-minute bootstrap budget into a permanent gossip blackout on the lab
+     * fleet: 28 queued profiles, `loraOfferSent = 0`, and a gateway election that could never settle because
+     * `BOOTSTRAP` outranks `GOSSIP` in the dequeue and the freed air went to profiles every single window.
+     * [LoraAirtime.admits] already exempts the OFFER from the bridge share for the same reason — *"serving
+     * must not be able to starve it"* — and this is that rule's other half, in the queue rather than the
+     * budget.
+     *
+     * **A supersession is never a drop.** Nothing is lost that a newer frame does not already carry, so it
+     * must not move `loraDroppedQueue`, whose job is to say when the plane shed something it wanted.
+     */
+    val supersedes: String? = null,
 ) {
     /**
      * How many of [messages] the board has already taken. A board that runs out of queue part-way through a

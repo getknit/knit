@@ -370,8 +370,23 @@ internal class LoraMeshTransport(
             metrics.onLoraSuppressed() // already sent/received over LoRa within the window
             return
         }
-        enqueue(parts, "$label:${env.type}", classOf(env, hint))
+        enqueue(
+            parts,
+            "$label:${env.type}",
+            classOf(env, hint),
+            supersedes = supersedeKeyFor(env),
+        )
     }
+
+    /**
+     * The [OutboundFrame.supersedes] key for a fanned frame, or null for one that is an event rather than a
+     * state.
+     *
+     * Only a profile qualifies today: it is a snapshot of its author's current keys and the far side takes
+     * newest-wins, so an older copy still queued is the wrong answer waiting to be sent first. That is the
+     * path the lab backlog came down — 28 of them, ahead of every OFFER, forever.
+     */
+    private fun supersedeKeyFor(env: RelayEnvelope): String? = if (env.type == FrameType.PROFILE) profileKey(env.senderId) else null
 
     override fun fastSend(
         wire: WireEnvelope,
@@ -453,10 +468,14 @@ internal class LoraMeshTransport(
         klass: FrameClass,
         bucket: AirBucket = AirBucket.defaultFor(klass),
         destination: Destination = Destination.Knit,
+        supersedes: String? = null,
     ) {
-        if (pace.enqueue(OutboundFrame(parts, label, klass, bucket, destination)) != LoraPacePolicy.Admission.ACCEPTED) {
+        if (pace.enqueue(OutboundFrame(parts, label, klass, bucket, destination, supersedes)) !=
+            LoraPacePolicy.Admission.ACCEPTED
+        ) {
             metrics.onLoraDroppedQueue()
         }
+        if (pace.lastSuperseded > 0) log("lora $label superseded ${pace.lastSuperseded} still queued")
         wake.trySend(Unit)
     }
 
@@ -486,7 +505,7 @@ internal class LoraMeshTransport(
         val parts = encodeOrNull(wire, "profile-self") ?: return
         lastSelfProfileAt.set(clock())
         sigSeen.add(sigKey(wire))
-        enqueue(parts, "profile-self", FrameClass.BOOTSTRAP)
+        enqueue(parts, "profile-self", FrameClass.BOOTSTRAP, supersedes = profileKey(selfIdCached))
     }
 
     /**
@@ -681,13 +700,16 @@ internal class LoraMeshTransport(
         val prefixes = runCatching { offerPrefixes(LoraCtl.MAX_PREFIXES) }.getOrDefault(IntArray(0))
         val payload = LoraCtl.encodeOffer(StoreDigest.hash64(self), prefixes, maxPayload)
         lastOfferPrefixes = LoraCtl.decodeOffer(payload)?.prefixes ?: IntArray(0)
-        // An OFFER is a snapshot. One still queued from a previous interval names a set we have since
-        // changed, so a far gateway would compute its backfill against a lie — and one queued at a time is
-        // what keeps the Trickle timer the real bound on this class. Not a drop: nothing is lost, it is
-        // replaced by a truer copy, so `loraDroppedQueue` must not move.
-        val superseded = pace.dropQueued(FrameClass.GOSSIP)
-        if (superseded > 0) log("lora offer superseded $superseded still queued")
-        enqueue(listOf(payload), "offer:${lastOfferPrefixes.size}", FrameClass.GOSSIP, AirBucket.BRIDGE)
+        // An OFFER is a snapshot ([OutboundFrame.supersedes]): one still queued from a previous interval
+        // names a set we have since changed, so a far gateway would compute its backfill against a lie — and
+        // one queued at a time is what keeps the Trickle timer the real bound on this class.
+        enqueue(
+            listOf(payload),
+            "offer:${lastOfferPrefixes.size}",
+            FrameClass.GOSSIP,
+            AirBucket.BRIDGE,
+            supersedes = OFFER_KEY,
+        )
     }
 
     /**
@@ -1235,6 +1257,17 @@ internal class LoraMeshTransport(
          * — a whole pocket of Knit users is still one voice every 30 s, not one each.
          */
         const val PUBLIC_POST_FLOOR_MS = 30_000L
+
+        /** [OutboundFrame.supersedes] for the OFFER — one publisher, so one key. */
+        private const val OFFER_KEY = "offer"
+
+        /**
+         * [OutboundFrame.supersedes] for a `profile` frame: one queued copy per author, newest wins.
+         *
+         * Per author rather than one for the whole class, because two peers' profiles are different state and
+         * neither replaces the other — the thing being superseded is "what this author last published".
+         */
+        private fun profileKey(authorId: String?): String = "profile:${authorId.orEmpty()}"
 
         const val INBOUND_BUFFER = 64
         const val SIG_TTL_MS = 10 * 60_000L // = SeenSet.DEFAULT_TTL_MS
