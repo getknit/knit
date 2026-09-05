@@ -287,6 +287,12 @@ data class ChatUiState(
     // author can still choose what to cut. The whole line is the author's, since no name rides in front of
     // it (ADR 2026-09.9469).
     val publicPostBudget: Int? = null,
+    // Whether the radio channel this room mirrors is keyed with the stock Meshtastic key everybody holds
+    // ([LoraFacts.primaryKeyIsPublic]). It picks the wording of the standing notice and the composer hint —
+    // "unencrypted" where the key is public, "not end-to-end encrypted" where the user set their own — so
+    // the room never borrows the assurance the padlock gives every other thread. True where there is no
+    // board to ask, which is the pessimistic half of the claim rather than the accurate one.
+    val publicChannelKeyIsPublic: Boolean = true,
     // Whether a post here still needs the first-use disclosure. Read only by [isBridged] threads.
     val needsPublicConsent: Boolean = false,
 )
@@ -789,6 +795,7 @@ class ChatViewModel(
                 canSendFile = !isRoom && !isBridged,
                 isBridged = isBridged,
                 publicPostBudget = if (isBridged) PublicPostPolicy.MAX_ON_AIR_BYTES else null,
+                publicChannelKeyIsPublic = mesh.lora.facts.primaryKeyIsPublic,
                 needsPublicConsent = isBridged && !publicConsented,
                 isBlocked = !isRoom && !isBridged && !isGroup && conversationId in blocked,
                 verified = !isRoom && !isBridged && !isGroup && peersByNode[conversationId]?.verified == true,

@@ -733,10 +733,14 @@
     </plurals>
     <string name="chat_mesh_snr">SNR %1$.1f dB</string>
     <string name="chat_mesh_mqtt">from the Internet</string>
-    <string name="chat_mesh_room_notice">Radio channel — names here are not verified</string>
+    <!-- Two forms, picked off slot 0's key: the stock Meshtastic key is public, so that channel is open to
+         everyone; a key the user set themselves is still shared with every radio holding it, never end-to-end. -->
+    <string name="chat_mesh_room_notice">Unencrypted radio channel — names not verified</string>
+    <string name="chat_mesh_room_notice_keyed">Not end-to-end encrypted — names not verified</string>
     <string name="chat_mesh_room_title">Your radio\'s primary channel</string>
-    <string name="chat_mesh_room_body">This room shows the primary channel of the Meshtastic radio paired to this phone. Anyone with a radio in range can post and anyone can claim any name, so treat both as unverified, even a name that matches one of your contacts. Some posts arrive from the Internet rather than from anyone nearby. What you post here leaves through your own radio, in the clear, under the radio\'s name rather than yours.</string>
-    <string name="chat_mesh_hint">Post to the radio channel</string>
+    <string name="chat_mesh_room_body">This room shows the primary channel of the Meshtastic radio paired to this phone. Knit\'s encryption does not reach it: nothing here is end-to-end encrypted, and on the standard Meshtastic channel the key is public, so anyone with a radio can read it. Anyone with a radio in range can post and anyone can claim any name, so treat both as unverified, even a name that matches one of your contacts. Some posts arrive from the Internet rather than from anyone nearby. What you post here leaves through your own radio, under the radio\'s name rather than yours.</string>
+    <string name="chat_mesh_hint">Post unencrypted to the radio channel</string>
+    <string name="chat_mesh_hint_keyed">Post to the radio channel, not end-to-end encrypted</string>
     <!-- The composer when the room has no radio to post through, or the radio is down. The first two replace
          the field; the third is only a hint, because a link that flaps on every Bluetooth reconnect must not
          take the keyboard away mid-sentence. -->

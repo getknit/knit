@@ -3,6 +3,7 @@ package app.getknit.knit.mesh.lora
 import app.getknit.knit.TextLimits
 import app.getknit.knit.mesh.meshNodeLabel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -177,5 +178,30 @@ class PublicChannelPolicyTest {
         // Zero-padded to eight digits, and a widened unsigned value never prints sixteen.
         assertEquals("!0000000f", meshNodeLabel(15L))
         assertEquals("!ffffffff", meshNodeLabel(0xFFFFFFFFL))
+    }
+
+    @Test
+    fun `a slot 0 on the published default key reads as public, and a real key does not`() {
+        // Which of the room's two privacy notices it gets. The firmware's psk encoding is the whole test:
+        // absent and one-byte are the published default family, 16 and 32 bytes are a key somebody chose.
+        assertTrue("absent: the firmware substitutes its own default", PublicChannelPolicy.primaryKeyIsPublic(listOf(stockPrimary)))
+        assertTrue(
+            "the one-byte default, as `initDefaultChannel` writes it",
+            PublicChannelPolicy.primaryKeyIsPublic(listOf(stockPrimary.copy(psk = byteArrayOf(1)))),
+        )
+        assertTrue(
+            "one byte 0 is no encryption at all, which is not the private case either",
+            PublicChannelPolicy.primaryKeyIsPublic(listOf(stockPrimary.copy(psk = byteArrayOf(0)))),
+        )
+        assertFalse(
+            "16 bytes is a key somebody chose",
+            PublicChannelPolicy.primaryKeyIsPublic(listOf(stockPrimary.copy(psk = ByteArray(16) { 7 }))),
+        )
+        assertFalse("and so is 32", PublicChannelPolicy.primaryKeyIsPublic(listOf(stockPrimary.copy(psk = ByteArray(32) { 7 }))))
+        assertTrue("no table to read answers with the safe half of the claim", PublicChannelPolicy.primaryKeyIsPublic(emptyList()))
+        assertTrue(
+            "and so does a board reporting only its secondaries",
+            PublicChannelPolicy.primaryKeyIsPublic(listOf(knitSecondary)),
+        )
     }
 }

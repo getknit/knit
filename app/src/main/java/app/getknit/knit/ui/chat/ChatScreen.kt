@@ -914,8 +914,12 @@ internal fun ChatScreenContent(
                                     stringResource(R.string.chat_mesh_radio_down)
                                 }
 
-                                else -> {
+                                state.publicChannelKeyIsPublic -> {
                                     stringResource(R.string.chat_mesh_hint)
+                                }
+
+                                else -> {
+                                    stringResource(R.string.chat_mesh_hint_keyed)
                                 }
                             },
                         onFileClick = onFileClick,
@@ -961,7 +965,12 @@ internal fun ChatScreenContent(
                     onDismiss = onDismissRelayNotice.takeIf { dismissable(state.relayReach) },
                 )
                 LoraNotice(reach = state.loraReach, onClick = { showLoraInfo = true })
-                if (state.isBridged) MeshRoomNotice(onClick = { showMeshInfo = true })
+                if (state.isBridged) {
+                    MeshRoomNotice(
+                        keyIsPublic = state.publicChannelKeyIsPublic,
+                        onClick = { showMeshInfo = true },
+                    )
+                }
             }
             // weight(1f), not fillMaxSize(): the notice above is an unweighted sibling, so the list must
             // take the space that is left rather than ask for the whole column.
@@ -1413,8 +1422,19 @@ private fun MeshRoomFooter(text: String) {
 }
 
 /**
- * The Meshtastic room's standing notice: this is a radio channel, and the names on it are unverified — a
- * contact it lines a post up with included, since that match rests on a self-asserted node number.
+ * The Meshtastic room's standing notice: this is a radio channel Knit's encryption does not cover, and the
+ * names on it are unverified — a contact it lines a post up with included, since that match rests on a
+ * self-asserted node number. Both facts belong here rather than only in the dialog this opens, because the
+ * room is drawn like every other thread in Knit and a person who never taps the strip would take the padlock
+ * elsewhere in the app to apply.
+ *
+ * [keyIsPublic] picks how strongly to say the first one, off the board's own slot 0
+ * ([PublicChannelPolicy.primaryKeyIsPublic]). On the channel ADR 045 leaves a Knit board on, the key is
+ * Meshtastic's published default and the AES on the air keeps nobody out, so the honest word is
+ * *unencrypted*. On a slot 0 the user keyed themselves it is shared with every radio holding that key and
+ * with nobody else — better than open, still not end-to-end, and the notice says exactly that instead of
+ * calling their own channel open. Unknown reads as public: the room says the worse of the two rather than
+ * risk a person believing an open channel is private.
  *
  * Unlike its two neighbours this one is not a *reach* state — nothing about it comes and goes with the
  * radios, and there is no condition under which it stops being true — so it takes no state and never
@@ -1422,7 +1442,10 @@ private fun MeshRoomFooter(text: String) {
  * cannot be: dismissing that one hides a fact about *Knit*, while this hides a warning about strangers.
  */
 @Composable
-private fun MeshRoomNotice(onClick: () -> Unit) {
+private fun MeshRoomNotice(
+    keyIsPublic: Boolean,
+    onClick: () -> Unit,
+) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1442,7 +1465,13 @@ private fun MeshRoomNotice(onClick: () -> Unit) {
                 contentDescription = null,
                 modifier = Modifier.size(16.dp),
             )
-            Text(text = stringResource(R.string.chat_mesh_room_notice), style = MaterialTheme.typography.bodySmall)
+            Text(
+                text =
+                    stringResource(
+                        if (keyIsPublic) R.string.chat_mesh_room_notice else R.string.chat_mesh_room_notice_keyed,
+                    ),
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }
@@ -2833,8 +2862,9 @@ private fun MessageInput(
     // frame — the opposite kind of limit from [loraBudget]: that one hedges about a frame the message might
     // still reach people without, this one is the frame, so the field refuses the byte that would not fit.
     maxBytes: Int? = null,
-    // Replaces the field's "Knit Message" hint. The Meshtastic room passes the destination, so a field that
-    // sends somewhere other than Knit says where before a word is typed.
+    // Replaces the field's "Knit Message" hint. The Meshtastic room passes the destination and how it
+    // travels, so a field that sends somewhere other than Knit — and without Knit's encryption — says both
+    // before a word is typed rather than after.
     hint: String? = null,
     // Whether the trailing button falls back to Attach on an empty draft, and whether its long-press opens
     // the camera. Off in the bridged room: a photo has no way onto a foreign mesh's text channel, so it

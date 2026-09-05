@@ -626,7 +626,14 @@ each hear the channel for themselves.
   bound or history remains, and `PublicPostGate` swaps the composer for a footer with no radio bound (or a
   Knit-at-0 board) and only changes the hint while the link is down, so the keyboard survives a BLE flap.
   Notifications key on the resolved contact (or the `!hex` id, never `me`), stay `IMPORTANCE_LOW`, and carry
-  no inline reply. `MeshRoomNotice` is the room's **only** pinned strip: `reachFor` answers
+  no inline reply. The composer hint and the pinned strip both say the room is outside Knit's encryption as
+  well as unverified, since it is drawn like every other thread and a reader who never opens the dialog would
+  carry Knit's padlock into a channel that has none. How strongly is read off slot 0's own key
+  (`PublicChannelPolicy.primaryKeyIsPublic` → `LoraFacts.primaryKeyIsPublic` → `ChatUiState`): a psk of one
+  byte or none is Meshtastic's published default family, so that channel is **unencrypted**; a 16- or 32-byte
+  psk is the user's own key, shared with every radio holding it and still **not end-to-end encrypted**.
+  Unknown — no table, or the link down — reads as public, because the two mistakes do not cost the same.
+  `MeshRoomNotice` is the room's **only** pinned strip: `reachFor` answers
   `RelayReach.Silent` for `Conversations.MESHTASTIC` ahead of every other rule, so no relay notice ever
   appears here. The exclusion is structural like the Nearby room's, but it earns no copy at all — these posts
   never enter Knit's mesh, so no relay could carry them under any configuration, and "not covered by relays

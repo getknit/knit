@@ -130,6 +130,28 @@ internal object PublicChannelPolicy {
     fun isKnitPrimary(channels: List<ChannelInfo>): Boolean = channels.any { it.index == PRIMARY_INDEX && it.name == KnitChannel.NAME }
 
     /**
+     * Whether slot 0 is keyed with something **everybody already has** — which is what decides whether the
+     * room calls itself unencrypted or merely not end-to-end encrypted.
+     *
+     * Meshtastic encrypts every channel, so "unencrypted" is never literally true; what varies is who holds
+     * the key. `ChannelSettings.psk` says which case this is, and the firmware's own encoding is what makes
+     * the question answerable at all: **absent** means the default key (`Channels::initDefaultChannel` writes
+     * the single byte 1), a **single byte** is that same well-known key with its last byte offset by the
+     * value — 0 meaning no encryption at all — and only a **16- or 32-byte** psk is a key somebody chose.
+     * The one-byte family is published in the firmware source, so a channel carrying it is readable by every
+     * radio and every MQTT gateway on the band: unencrypted in every sense a user cares about, and the case
+     * ADR 045 deliberately leaves a Knit board in.
+     *
+     * A board with no slot 0 in its table answers **true**. The unknown has to fall this way: telling
+     * somebody their posts are open when they are shared-key costs them nothing, and the reverse mistake is
+     * the one that gets words read by strangers.
+     */
+    fun primaryKeyIsPublic(channels: List<ChannelInfo>): Boolean {
+        val primary = channels.firstOrNull { it.index == PRIMARY_INDEX } ?: return true
+        return primary.psk.size <= 1
+    }
+
+    /**
      * Whether the primary still carries the name the firmware would give it — empty (which `Channels::getName`
      * substitutes the preset's display name for), or that name spelled out.
      *

@@ -42,6 +42,9 @@ internal class LoraStatusRepository(
                     // reboot), so the per-send status republish never churns them.
                     primaryChannel = ready?.let { PublicChannelPolicy.primaryName(it.channels, it.radio) },
                     canPost = ready != null && !PublicChannelPolicy.isKnitPrimary(ready.channels),
+                    // A board we cannot read the table of answers "public", which is the safe half of the
+                    // claim rather than the accurate one — see the policy's own note.
+                    primaryKeyIsPublic = ready == null || PublicChannelPolicy.primaryKeyIsPublic(ready.channels),
                 )
             }.distinctUntilChanged()
         }

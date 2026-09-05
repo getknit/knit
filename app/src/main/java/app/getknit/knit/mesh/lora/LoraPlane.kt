@@ -44,6 +44,15 @@ data class LoraFacts(
      * send, by the outcome the board hands back.
      */
     val canPost: Boolean = false,
+    /**
+     * Whether slot 0 carries a key every radio on the band already has
+     * ([PublicChannelPolicy.primaryKeyIsPublic]) — what the room's notice and composer hint say about its
+     * privacy: *unencrypted* when true, *not end-to-end encrypted* when the user keyed it themselves.
+     *
+     * True by default and while the link is down, because a room drawn like every other thread in Knit is
+     * read as private unless it says otherwise, and the cost of the two mistakes is not symmetric.
+     */
+    val primaryKeyIsPublic: Boolean = true,
 )
 
 /**

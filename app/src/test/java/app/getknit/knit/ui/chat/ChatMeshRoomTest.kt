@@ -79,6 +79,7 @@ class ChatMeshRoomTest {
         rows: List<ChatRow>,
         showConsent: Boolean = false,
         gate: PublicPostGate = PublicPostGate.Open,
+        keyIsPublic: Boolean = true,
     ) = render(
         Conversations.MESHTASTIC,
         ChatUiState(
@@ -88,6 +89,7 @@ class ChatMeshRoomTest {
             canSendFile = false,
             publicPostBudget = PublicPostPolicy.MAX_ON_AIR_BYTES,
             publicPostGate = gate,
+            publicChannelKeyIsPublic = keyIsPublic,
             myNodeId = "me",
             title = "LongFast",
         ),
@@ -133,13 +135,27 @@ class ChatMeshRoomTest {
     }
 
     @Test
-    fun theRoomSaysItIsARadioChannelAndUnverified() {
+    fun theRoomSaysItIsUnencryptedAndUnverified() {
+        // Both halves on the strip itself: the room is drawn like every other thread, so a reader who never
+        // taps through would otherwise carry Knit's padlock into a channel that has none.
         render(listOf(row()))
         compose.onNodeWithTag("chat_mesh_notice").assertIsDisplayed()
-        compose.onNodeWithText("Radio channel — names here are not verified").assertIsDisplayed()
+        compose.onNodeWithText("Unencrypted radio channel — names not verified").assertIsDisplayed()
 
         compose.onNodeWithTag("chat_mesh_notice").performClick()
         compose.onNodeWithText("anyone can claim any name", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("encryption does not reach it", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun aChannelTheUserKeyedThemselvesIsToldItIsNotEndToEnd() {
+        // The board's slot 0 carries a key of the user's own, so calling their channel open would be a lie
+        // in the other direction. What stays true is the part Knit can speak for: a shared channel key is
+        // not end-to-end encryption, whoever holds it.
+        render(listOf(row()), keyIsPublic = false)
+        compose.onNodeWithText("Not end-to-end encrypted — names not verified").assertIsDisplayed()
+        compose.onNodeWithText("Unencrypted radio channel", substring = true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Post to the radio channel, not end-to-end encrypted").assertIsDisplayed()
     }
 
     @Test
@@ -250,14 +266,15 @@ class ChatMeshRoomTest {
     }
 
     @Test
-    fun theRoomOffersAComposerThatSaysWhereAPostGoes() {
-        // The composer's hint names the destination rather than the author: nothing about the user goes on
-        // the air with a post (ADR 2026-09.9469), so a hint promising otherwise would be the wrong promise.
+    fun theRoomOffersAComposerThatSaysWhereAPostGoesAndHowItTravels() {
+        // The hint names the destination and the lack of encryption, never the author: nothing about the
+        // user goes on the air with a post (ADR 2026-09.9469), so a hint promising otherwise would be the
+        // wrong promise — and this is the last surface before the words leave.
         render(listOf(row()))
         // The visible hint is marked decorative so TalkBack does not read it twice; the field carries it as
         // its own accessibility label instead, which is the node that has to say the right thing.
         compose.onNodeWithTag("chat_input").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Post to the radio channel").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Post unencrypted to the radio channel").assertIsDisplayed()
     }
 
     @Test

@@ -11,6 +11,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -131,6 +133,24 @@ class LoraStatusRepositoryTest {
             // A board that never reported its preset names no channel but may still post.
             status.value = LoraStatus(state = ready)
             assertEquals(LoraFacts(LoraPlane.Live, dms = true, canPost = true), repo.facts.first())
+        }
+
+    @Test
+    fun `slot 0's key rides the facts, and an unreadable board reads as public`() =
+        runTest {
+            // What picks the room's wording between "unencrypted" and "not end-to-end encrypted". The
+            // fallback is the load-bearing half: every state that is not a live board with a real key on
+            // slot 0 has to answer public, or a link that drops mid-session would quietly upgrade the claim.
+            val keyed = ready.copy(channels = listOf(ChannelInfo(0, "Ridge", role = 1, psk = ByteArray(32) { 9 })))
+            status.value = LoraStatus(state = keyed)
+            assertFalse(repo.facts.first().primaryKeyIsPublic)
+
+            status.value = LoraStatus(state = ready.copy(channels = listOf(ChannelInfo(0, "", role = 1))))
+            assertTrue("the stock key everybody holds", repo.facts.first().primaryKeyIsPublic)
+
+            // The link drops with the keyed board still bound: the claim falls back rather than persisting.
+            status.value = LoraStatus(state = LinkState.Idle)
+            assertTrue(repo.facts.first().primaryKeyIsPublic)
         }
 
     @Test
