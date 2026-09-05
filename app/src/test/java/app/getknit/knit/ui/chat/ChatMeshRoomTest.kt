@@ -4,6 +4,7 @@ import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -47,7 +48,9 @@ class ChatMeshRoomTest {
         id = id,
         body = body,
         mine = false,
-        senderName = origin?.name ?: "Sam",
+        // Mirrors ChatViewModel: a bridged author is named by their NODEINFO name when the gateway's board
+        // knew one, and by their `!hex` id when it did not.
+        senderName = origin?.let { it.name ?: it.nodeLabel } ?: "Sam",
         senderNodeId = "sam",
         avatarHash = null,
         sentAt = 1_700_000_000_000L,
@@ -127,16 +130,51 @@ class ChatMeshRoomTest {
         // The bubble merges its children's semantics (it is one long-pressable target), so the line inside
         // it is only addressable by tag in the unmerged tree.
         compose.onNodeWithTag("chat_mesh_origin", useUnmergedTree = true).assertIsDisplayed()
-        // The `!hex` id is always shown: it is the only stable handle a bridged author has, and the name
+        // The `!hex` id is shown because it is the only stable handle a bridged author has, and the name
         // beside it is a claim. The gateway is named because it is the one authenticated party in the row.
-        compose.onNodeWithText("!1234abcd", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("via Sam's radio", substring = true).assertIsDisplayed()
+        // The hops and SNR are the reader's only handle on how far away that unverifiable stranger is.
+        compose
+            .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
+            .assertTextEquals("!1234abcd · via Sam's radio · 2 hops away · SNR -7.3 dB")
+    }
+
+    @Test
+    fun aSpeakerWithNoKnownNameShowsTheirIdExactlyOnce() {
+        // The ordinary case for a stranger's first post: no NODEINFO for them has reached the board yet, so
+        // the name line falls back to the id — and the provenance line must not then repeat it.
+        render(listOf(row(origin = origin.copy(name = null))))
+        compose.onNodeWithText("!1234abcd").assertIsDisplayed()
+        compose
+            .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
+            .assertTextEquals("via Sam's radio · 2 hops away · SNR -7.3 dB")
+    }
+
+    @Test
+    fun aPostHeardDirectlySaysSoRatherThanCountingZeroHops() {
+        render(listOf(row(origin = origin.copy(hops = 0, snrDeci = 62))))
+        compose
+            .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
+            .assertTextEquals("!1234abcd · via Sam's radio · heard directly · SNR 6.2 dB")
+    }
+
+    @Test
+    fun anUnknownHopCountOrSnrIsAbsentRatherThanZero() {
+        // Null is the firmware declining to say (no hop_start, no rxSnr) — which is not the same claim as
+        // "heard directly at 0.0 dB", and must not be rendered as one.
+        render(listOf(row(origin = origin.copy(hops = null, snrDeci = null))))
+        compose
+            .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
+            .assertTextEquals("!1234abcd · via Sam's radio")
     }
 
     @Test
     fun aPostOffAnInternetUplinkSaysSo() {
+        // Last on the line on purpose: the hops and SNR describe the LoRa leg to the gateway's board, so the
+        // caveat that the post entered that mesh from somewhere else is read after them, not instead of them.
         render(listOf(row(origin = origin.copy(viaMqtt = true))))
-        compose.onNodeWithText("from the Internet", substring = true).assertIsDisplayed()
+        compose
+            .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
+            .assertTextEquals("!1234abcd · via Sam's radio · 2 hops away · SNR -7.3 dB · from the Internet")
     }
 
     @Test

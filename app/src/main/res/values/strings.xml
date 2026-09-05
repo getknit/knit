@@ -726,6 +726,12 @@
     <!-- The bridged Meshtastic public channel: posts a paired board overheard, and who to believe about them -->
     <string name="chat_mesh_author">%1$s, on the Meshtastic public channel</string>
     <string name="chat_mesh_via">via %1$s\'s radio</string>
+    <string name="chat_mesh_direct">heard directly</string>
+    <plurals name="chat_mesh_hops">
+        <item quantity="one">%d hop away</item>
+        <item quantity="other">%d hops away</item>
+    </plurals>
+    <string name="chat_mesh_snr">SNR %1$.1f dB</string>
     <string name="chat_mesh_mqtt">from the Internet</string>
     <string name="chat_mesh_room_notice">Public channel — names here are not verified</string>
     <string name="chat_mesh_room_title">A public Meshtastic channel</string>

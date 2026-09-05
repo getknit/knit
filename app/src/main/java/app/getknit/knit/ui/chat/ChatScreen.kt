@@ -2651,19 +2651,42 @@ private fun SystemNotice(
 
 /**
  * The provenance line under a bridged Meshtastic author's name: their `!hex` id, the Knit peer whose radio
- * heard them, and — when the post came off somebody's MQTT uplink — that it may not be from anywhere nearby.
+ * heard them, how that radio heard them, and — when the post came off somebody's MQTT uplink — that it may
+ * not be from anywhere nearby.
  *
  * It is deliberately plain text rather than a badge or a chip. A badge is a mark of standing, and the whole
  * point of this line is the opposite: nothing here is verified, the name above it is a claim, and the only
  * authenticated fact in the row is which radio relayed it. Always shown, never dismissable — an author whose
  * provenance the reader has scrolled past is exactly the one they would misread.
+ *
+ * The hop count and SNR are the reader's only handle on *how far away* an unverifiable stranger is, which is
+ * why they earn a place on a line that is otherwise about doubt: a direct, strong signal is somebody in the
+ * next valley, and twelve hops off an Internet uplink is nobody in particular. They describe the LoRa leg to
+ * the gateway's board and nothing before it — so [MeshOrigin.viaMqtt] comes last, where the caveat it puts on
+ * everything to its left is read after them rather than instead of them.
  */
 @Composable
 private fun MeshOriginLine(origin: MeshOrigin) {
     val parts =
         buildList {
-            add(origin.nodeLabel)
+            // The `!hex` id appears exactly once in the bubble. When the gateway's board had a NODEINFO name
+            // for the speaker, that name is the line above and the id belongs here; when it had none — the
+            // ordinary case for a stranger's first post — the line above *is* the id, and repeating it here
+            // would say the same nothing twice.
+            if (origin.name != null) add(origin.nodeLabel)
             add(stringResource(R.string.chat_mesh_via, origin.gateway))
+            // Zero hops is the firmware's "I heard this myself", not a missing value (that is null, when the
+            // sender's build never set hop_start) — so it reads as the plain fact it is, not as "0 hops away".
+            origin.hops?.let { hops ->
+                add(
+                    if (hops == 0) {
+                        stringResource(R.string.chat_mesh_direct)
+                    } else {
+                        pluralStringResource(R.plurals.chat_mesh_hops, hops, hops)
+                    },
+                )
+            }
+            origin.snrDeci?.let { add(stringResource(R.string.chat_mesh_snr, it / 10f)) }
             if (origin.viaMqtt) add(stringResource(R.string.chat_mesh_mqtt))
         }
     Text(
