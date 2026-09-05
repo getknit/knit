@@ -113,6 +113,7 @@ class ChatViewModelTest {
     private val cardsFlow = MutableStateFlow(emptyMap<String, LinkCard>())
     private val onlineFlow = MutableStateFlow(true)
     private val linkPreviewsEnabledFlow = MutableStateFlow(false)
+    private val publicConsentFlow = MutableStateFlow(false)
 
     @Before
     fun setUp() {
@@ -132,6 +133,9 @@ class ChatViewModelTest {
         every { groups.observeGroup(Conversations.MESHTASTIC) } returns groupFlow
         every { peers.observeDirectory() } returns peersFlow.map { directoryOf(it) }
         every { settings.displayName } returns nameFlow
+        // Same trap as the relay flows below: this one is combined with displayName to build the state, so a
+        // relaxed mock's never-emitting Flow would stall every assertion in the class rather than just this one.
+        every { settings.meshtasticPostConsented } returns publicConsentFlow
         // A relaxed mock would hand back a Flow that never emits, and RelayStatusRepository
         // combines these — one silent flow would stall every state assertion in this class.
         every { settings.spoolEnabled } returns spoolEnabledFlow
@@ -259,7 +263,7 @@ class ChatViewModelTest {
         }
 
     @Test
-    fun theBridgedRoomIsReadOnlyAndTakesItsTitleFromTheChannel() =
+    fun theBridgedRoomSpeaksNowAndTakesItsTitleFromTheChannel() =
         runTest {
             val vm = vm(Conversations.MESHTASTIC)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
@@ -278,11 +282,90 @@ class ChatViewModelTest {
 
             val state = vm.state.value
             assertTrue(state.isBridged)
-            assertFalse("reading a channel and speaking on it are separate decisions", state.canSend)
-            assertFalse(state.canSendFile)
+            assertFalse("nothing on the device can screen a file, and this channel is cleartext", state.canSendFile)
             assertFalse("never a verified badge — nothing here is verified", state.verified)
             assertNull("and no alias suffix: this id is not a peer", state.titleDiscriminator)
             assertEquals("the channel names itself", "LongTurbo", state.title)
+        }
+
+    @Test
+    fun theBridgedComposerNamesTheAuthorItIsAboutToPutOnAPublicBand() =
+        runTest {
+            // ADR 049 keeps this name off the radio everywhere else. The composer hint is where that
+            // exception is stated, so it has to be there before a word is typed rather than after.
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+
+            assertEquals("Alice", vm.state.value.publicPostName)
+            assertTrue("the disclosure has not been accepted yet", vm.state.value.needsPublicConsent)
+        }
+
+    @Test
+    fun theFirstBridgedPostRaisesTheDisclosureAndSendsNothing() =
+        runTest {
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+
+            vm.send("hello mesh")
+            advanceUntilIdle()
+
+            assertTrue(vm.showPublicConsent.value)
+            assertTrue("nothing may reach the air before the disclosure is accepted", mesh.sentPublicPosts.isEmpty())
+        }
+
+    @Test
+    fun acceptingTheDisclosureRecordsItWithoutSendingTheDraft() =
+        runTest {
+            // The sheet's button says "Post" about the room, not about these words. Sending here would put
+            // them on a public band in the same tap as the decision to allow it.
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            vm.send("hello mesh")
+            advanceUntilIdle()
+
+            vm.acceptPublicConsent()
+            advanceUntilIdle()
+
+            assertFalse(vm.showPublicConsent.value)
+            coVerify(exactly = 1) { settings.acceptMeshtasticPostConsent() }
+            assertTrue("accepting records the decision, it does not send the draft", mesh.sentPublicPosts.isEmpty())
+        }
+
+    @Test
+    fun aConsentedBridgedPostTakesItsOwnOriginationPathNotSendChat() =
+        runTest {
+            // sendChat reads its destination off recipientId/group, so a room id handed to it would be minted
+            // as a DM addressed to a peer that does not exist. Hence a separate entry point.
+            publicConsentFlow.value = true
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+
+            vm.send("hello mesh")
+            advanceUntilIdle()
+
+            assertFalse(vm.showPublicConsent.value)
+            assertEquals(listOf("hello mesh"), mesh.sentPublicPosts)
+            assertTrue("never sendChat, which would mint it as a DM to a peer that does not exist", mesh.sentChats.isEmpty())
+        }
+
+    @Test
+    fun theBridgedRoomNeverSendsATypingCue() =
+        runTest {
+            // There is nobody on the far side to show one to, and `sendTyping` has no arm for this room —
+            // an unguarded cue from here would arrive on every phone in the pocket as a *Nearby* one.
+            publicConsentFlow.value = true
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            vm.onChatForeground()
+            advanceUntilIdle()
+
+            vm.onUserTyping()
+            advanceUntilIdle()
+
+            assertTrue(mesh.sentTyping.isEmpty())
         }
 
     @Test

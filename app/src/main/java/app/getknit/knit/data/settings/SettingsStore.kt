@@ -245,6 +245,22 @@ class SettingsStore(
     val spoolConsented: Flow<Boolean> = dataStore.data.map { it[KEY_SPOOL_CONSENTED] ?: false }
 
     /**
+     * Whether the user has been shown, and accepted, the disclosure behind posting into the bridged
+     * Meshtastic room — that the channel is cleartext to every radio in range, that many of those radios
+     * relay it to a public Internet broker where third parties archive it, and that their Knit display name
+     * rides on the front of every post.
+     *
+     * The last of those is the reason this exists at all. ADR 049 keeps the user's name off the public band
+     * — the board is `Knit abcd` to everyone listening, never the person — and this is the single deliberate
+     * exception to it, so it is made by the user, once, in front of the words that say what it costs.
+     *
+     * There is no paired enabled/disabled switch the way [spoolEnabled] pairs with [spoolConsented]: the
+     * spool plane acts on its own in the background and needs a kill switch, while nothing here ever happens
+     * unless somebody types in one room and presses send.
+     */
+    val meshtasticPostConsented: Flow<Boolean> = dataStore.data.map { it[KEY_MESHTASTIC_POST_CONSENTED] ?: false }
+
+    /**
      * Whether the user has dismissed the Nearby room's "never sent over the Internet" notice. Sticky by
      * design: the notice states a permanent structural fact (the room is not scope-eligible, spec §4.4),
      * so it is the one relay notice that will never retire itself — a dismissal that came back on the next
@@ -510,6 +526,9 @@ class SettingsStore(
             it[KEY_SPOOL_ENABLED] = true
         }
 
+    /** Records that the user accepted the disclosure behind [meshtasticPostConsented]. */
+    suspend fun acceptMeshtasticPostConsent() = dataStore.edit { it[KEY_MESHTASTIC_POST_CONSENTED] = true }
+
     /**
      * Seeds the shipped default spools (`res/values/spools.xml`) into [spoolUrls] exactly once, marking
      * the install as seeded so a **removal sticks**. A default the app kept re-adding would not be a
@@ -630,6 +649,7 @@ class SettingsStore(
         val KEY_SPOOL_DISABLED = stringSetPreferencesKey("spool_urls_disabled")
         val KEY_SPOOL_SEEDED = booleanPreferencesKey("spool_defaults_seeded")
         val KEY_SPOOL_CONSENTED = booleanPreferencesKey("spool_consented")
+        val KEY_MESHTASTIC_POST_CONSENTED = booleanPreferencesKey("meshtastic_post_consented")
         val KEY_RELAY_ROOM_NOTICE_DISMISSED = booleanPreferencesKey("relay_room_notice_dismissed")
         val KEY_LORA_ENABLED = booleanPreferencesKey("lora_enabled")
         val KEY_LORA_DM_ENABLED = booleanPreferencesKey("lora_dm_enabled")

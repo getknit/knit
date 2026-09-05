@@ -222,6 +222,26 @@ internal class LoraPacePolicy(
  */
 internal enum class FrameClass { BOOTSTRAP, GOSSIP, DM, ROOM, TICK }
 
+/**
+ * Where a queued frame is going, which decides both the channel it is written to and the guard it must pass.
+ *
+ * The two are kept apart deliberately (§5 of work item #37). `boundSlotIsKnit` exists to stop Knit's own
+ * cleartext frames reaching the public channel *by accident* — the failure it guards against is silence being
+ * safer than a mistake — while [Public] is a deliberate, consented path to index 0 whose guard asks the
+ * opposite question. Sharing code between them would let a fix to one quietly relax the other.
+ *
+ * They do share the **queue**: one duty-cycle ledger, one 3 s inter-packet gap, one NAK back-off, one
+ * `queueFree` backpressure. A public post that bypassed the pacer would be a second transmitter on the same
+ * radio, which is how a politeness ceiling stops meaning anything.
+ */
+internal enum class Destination {
+    /** Knit's own secondary channel — the bound slot, guarded by `boundSlotIsKnit`. */
+    Knit,
+
+    /** The foreign mesh's public primary — index 0, `TEXT_MESSAGE_APP`, guarded by `LongFastPolicy`. */
+    Public,
+}
+
 /** A whole frame queued for the LoRa hop: its already-encoded fragment messages, a diagnostic label, its class. */
 internal class OutboundFrame(
     val messages: List<ByteArray>,
@@ -229,6 +249,8 @@ internal class OutboundFrame(
     val klass: FrameClass = FrameClass.ROOM,
     /** Which rolling budget this frame spends from; see [AirBucket] and [AirBucket.defaultFor]. */
     val bucket: AirBucket = AirBucket.defaultFor(klass),
+    /** Which channel it is written to, and so which guard it must pass; see [Destination]. */
+    val destination: Destination = Destination.Knit,
 ) {
     /**
      * How many of [messages] the board has already taken. A board that runs out of queue part-way through a

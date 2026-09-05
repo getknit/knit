@@ -291,6 +291,9 @@ class InboundPipelineTest {
 
         /** When armed, records the `isRoom` scope each inbound classification ran under. */
         var classifyScopes: MutableList<Boolean>? = null
+
+        /** `(name, body)` for every post the pipeline handed to the foreign public channel. */
+        val publicPosts = mutableListOf<Pair<String?, String>>()
         val pipeline: InboundPipeline
 
         init {
@@ -374,6 +377,10 @@ class InboundPipelineTest {
                     redistributeGroupKey = { groupId, requester -> redistributed += groupId to requester },
                     flushGroupKeys = { member, force -> groupKeysFlushed += member to force },
                     replayGroupCustody = { groupId, senderId -> custodyReplays += groupId to senderId },
+                    publicChannel = { name, body ->
+                        publicPosts += name to body
+                        true
+                    },
                 )
         }
 
@@ -455,6 +462,21 @@ class InboundPipelineTest {
                             viaMqtt = viaMqtt,
                         ),
                     ),
+            )
+
+        /** A post written in Knit for the bridged room: no Meshtastic identity, because its author has none. */
+        fun publicPost(
+            author: Party,
+            id: String,
+            body: String,
+            name: String? = "Alice",
+        ): RelayEnvelope =
+            RelayEnvelope(
+                type = FrameType.MESH_POST,
+                id = id,
+                senderId = author.nodeId,
+                sentAt = 5L,
+                payload = WireCodec.encodePayload(MeshPostContent(body = body, name = name)),
             )
 
         /** An E2E DM chat frame from [author] addressed to [to], sealed to [to]'s bundle. */
@@ -2301,6 +2323,88 @@ class InboundPipelineTest {
             advanceUntilIdle()
 
             assertEquals(listOf(true), scopes)
+        }
+
+    @Test
+    fun aPostWrittenInKnitLandsInTheRoomAsAnOrdinaryMessageWithNoOrigin() =
+        runTest {
+            // No origin columns is the whole of the authored shape's UI: every rule that asks whether a row
+            // is a bridged one reads `originNode == null` — `mine`, the avatar, the chat list's "is this
+            // ours", the preview — so this renders as an ordinary outgoing message with no branch anywhere.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+
+            rig.deliver(alice, rig.publicPost(alice, id = "pp1", body = "meet at the trailhead"))
+            advanceUntilIdle()
+
+            val row = rig.msgMap.getValue("pp1")
+            assertEquals(Conversations.MESHTASTIC, row.conversationId)
+            assertEquals("meet at the trailhead", row.body)
+            assertEquals("its author is a real pinned identity, unlike a speaker's", alice.nodeId, row.senderId)
+            assertNull("no speaker, so no attribution to render", row.originNode)
+            assertNull(row.originName)
+            assertNull(row.originChannel)
+        }
+
+    @Test
+    fun aPostWrittenInKnitIsNeverAckedEither() =
+        runTest {
+            // A ✓✓ here would mean another phone in this pocket holds it, never that it reached the air —
+            // and the air is the one thing its author wants to know about.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val acksToAlice = recordFramesSentTo(rig, alice)
+
+            rig.deliver(alice, rig.publicPost(alice, id = "pp-ack", body = "hi"))
+            advanceUntilIdle()
+
+            assertTrue(acksToAlice.none { it.type == FrameType.RECEIPT })
+        }
+
+    @Test
+    fun aPostHeardOverAShortRangePlaneIsHandedToTheRadio() =
+        runTest {
+            // §5: the gateway is not asked, it transmits what it sees arrive. That is what lets a phone with
+            // no board of its own post at all.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+
+            rig.deliver(alice, rig.publicPost(alice, id = "pp-air", body = "hello mesh"), kind = TransportKind.WifiAware)
+            advanceUntilIdle()
+
+            assertEquals(listOf("Alice" to "hello mesh"), rig.publicPosts)
+        }
+
+    @Test
+    fun aPostThatArrivedOverLoRaOrASpoolIsNeverPutBackOnTheAir() =
+        runTest {
+            // One that arrived over LoRa was already on that band; one off a spool came from outside the
+            // neighbourhood entirely. Re-posting either turns every far pocket into a repeater.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+
+            rig.deliver(alice, rig.publicPost(alice, id = "pp-lora", body = "over the band"), kind = TransportKind.LoRa)
+            advanceUntilIdle()
+
+            assertTrue(rig.msgMap.containsKey("pp-lora"))
+            assertTrue("delivered, but never re-transmitted", rig.publicPosts.isEmpty())
+        }
+
+    @Test
+    fun anOverheardPostIsNeverPutBackOnTheChannelItCameFrom() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val gateway = party()
+            rig.pin(gateway)
+
+            rig.deliver(gateway, rig.meshPost(gateway, id = "mp-echo", body = "hi"), kind = TransportKind.WifiAware)
+            advanceUntilIdle()
+
+            assertTrue(rig.publicPosts.isEmpty())
         }
 
     @Test

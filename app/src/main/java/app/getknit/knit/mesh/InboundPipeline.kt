@@ -136,6 +136,10 @@ class InboundPipeline(
     private val dmAcks: DmAckCoalescer? = null,
     private val flushPending: suspend (String) -> Unit,
     private val classifyText: suspend (String, String, Boolean) -> Boolean,
+    // Puts a post written in the bridged room on the foreign mesh's public channel — [PublicChannelSink],
+    // implemented by the LoRa transport. A no-op by default, so a build with no board and every test that
+    // does not care need no wiring; a refusal is ordinary (only the pocket's ACTIVE gateway returns true).
+    private val publicChannel: suspend (name: String?, body: String) -> Boolean = { _, _ -> false },
     // Re-seals our recent unacked DMs to a peer whose ratchet session was just replaced (the recovery
     // half of an inbound reset) — MeshManager.resealRecentDmsTo, lambda-mediated like originate.
     private val resealUnacked: suspend (String) -> Unit = {},
@@ -591,12 +595,13 @@ class InboundPipeline(
     }
 
     /**
-     * A post overheard on a foreign mesh's public channel and re-published by the phone whose board heard it
-     * (the LongFast bridge, [FrameType.MESH_POST]). It lands in its own public room
-     * ([Conversations.MESHTASTIC]) through the ordinary chat delivery path, so moderation, notification, the
-     * unread count and store-and-forward all work exactly as they already do.
+     * One post in the bridged public room ([FrameType.MESH_POST]) — either overheard on a foreign mesh's
+     * public channel and re-published by the phone whose board heard it, or typed by a Knit user here.
+     * [MeshPostContent.node] tells the two apart, and it lands in [Conversations.MESHTASTIC] through the
+     * ordinary chat delivery path either way, so moderation, notification, the unread count and
+     * store-and-forward all work exactly as they already do.
      *
-     * Three things it deliberately does **not** do, each of which would be wrong in a different way:
+     * **The overheard shape** does three things it would be wrong to do, each in a different way:
      *
      * - **No receipt.** [deliverChat] is called with `ack = false`. There is nobody to tick: the speaker has
      *   no Knit identity, and the frame's `senderId` is the gateway, which would otherwise collect one sealed
@@ -608,6 +613,18 @@ class InboundPipeline(
      * - **No blocklist check on the speaker.** Blocking is keyed on Knit node ids; a Meshtastic node number is
      *   not one and is trivially spoofable, so a per-speaker block would be a promise the wire cannot keep.
      *   Blocking the *gateway* does work, and is checked here, because that is a real pinned identity.
+     *
+     * **The authored shape** writes no origin at all, which is the whole of its UI: every rule that asks
+     * whether a row is a bridged one reads `originNode == null` — `mine`, the avatar, the chat list's
+     * "is this ours", the preview — so an authored post renders as an ordinary outgoing message with no
+     * branch anywhere. It keeps `ack = false` too, deliberately: a ✓✓ here would mean another phone in this
+     * pocket holds it, never that it reached the air, and that is the one thing its author wants to know.
+     *
+     * It is also where the post reaches a radio. The gateway is not asked — it transmits what it sees
+     * arrive, which is what lets a phone with no board of its own post at all. The condition is §5 of work
+     * item #37: **written here, or heard over a short-range plane.** A post that arrived over LoRa was
+     * already on that band, and one off a spool came from outside the neighbourhood entirely — re-posting
+     * either would turn every far pocket into a repeater for the same words.
      */
     private suspend fun handleMeshPost(
         env: RelayEnvelope,
@@ -617,25 +634,31 @@ class InboundPipeline(
         val content = WireCodec.decodePayload<MeshPostContent>(env.payload) ?: return
         if (content.body.isEmpty()) return
         val me = identity.nodeId()
-        deliverChat(
-            env = env,
-            // The room's own content shape is a plain body: a bridged post carries no attachment, no mention,
-            // no reply and no encryption, so the chat shell it is delivered through is exactly that much.
-            content = ChatContent(body = content.body),
-            me = me,
-            conversationId = Conversations.MESHTASTIC,
-            plane = plane,
-            origin =
+        val origin =
+            content.node?.let { node ->
                 MeshPostOrigin(
-                    node = content.node,
+                    node = node,
                     name = content.name,
                     channel = content.channel,
                     hops = content.hops,
                     snrDeci = content.snrDeci,
                     viaMqtt = content.viaMqtt,
-                ),
+                )
+            }
+        deliverChat(
+            env = env,
+            // The room's own content shape is a plain body: a post here carries no attachment, no mention,
+            // no reply and no encryption, so the chat shell it is delivered through is exactly that much.
+            content = ChatContent(body = content.body),
+            me = me,
+            conversationId = Conversations.MESHTASTIC,
+            plane = plane,
+            origin = origin,
             ack = false,
         )
+        if (origin == null && (env.senderId == me || plane == DeliveryPlane.Nearby)) {
+            publicChannel(content.name, content.body)
+        }
     }
 
     /**
@@ -647,6 +670,16 @@ class InboundPipeline(
      * radio, which is exactly what the plane records (ADR 040).
      */
     internal suspend fun deliverOwnMeshPost(env: RelayEnvelope) = handleMeshPost(env, DeliveryPlane.LoRa)
+
+    /**
+     * The local half of a post written here ([MeshController.sendPublicPost]) — the same delivery body every
+     * other phone in the pocket will run on the same bytes.
+     *
+     * Stamped [DeliveryPlane.Nearby] because that is what it is: the frame was authored on this device and
+     * floods over the short-range planes. The stamp is presentation only (ADR 040) and this row is our own,
+     * so nothing reads it; the plane [handleMeshPost] tests is not this one but the sender being us.
+     */
+    internal suspend fun deliverOwnPublicPost(env: RelayEnvelope) = handleMeshPost(env, DeliveryPlane.Nearby)
 
     /**
      * The one thing [handleChat] still does for a *blocked* sender: send the best-effort broadcast/group

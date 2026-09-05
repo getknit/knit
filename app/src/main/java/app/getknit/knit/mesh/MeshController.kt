@@ -133,6 +133,17 @@ interface MeshController {
         replyTo: ReplyRef? = null,
     ): Boolean
 
+    /**
+     * Composes a post for the **bridged public room** ([app.getknit.knit.data.message.Conversations.MESHTASTIC]),
+     * stores it locally, and floods it. The pocket's ACTIVE gateway then also puts it on the foreign mesh's
+     * public channel — which may be a different phone from this one, or none at all.
+     *
+     * Separate from [sendChat] rather than a conversation id passed to it: `sendChat` reads the destination
+     * off `recipientId`/`group`, so a room id handed to it would be taken for a peer node id and minted as a
+     * DM addressed to nobody. Returns false without sending if on-device filtering flags [text].
+     */
+    suspend fun sendPublicPost(text: String): Boolean = false
+
     /** Floods a group metadata update (e.g. a rename) immediately, independent of any chat message. */
     suspend fun sendGroupUpdate(group: GroupInfo)
 

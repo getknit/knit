@@ -195,6 +195,62 @@ class LoraAirtimeTest {
     }
 
     @Test
+    fun thePublicChannelIsCappedInBothDirections() {
+        // Its own share, so a busy public room cannot crowd the pocket's own chat off the band; charged
+        // against the total too, so it is a share of the one allowance and not a second one beside it.
+        val air = LoraAirtime().apply { onRadioConfig(radio()) }
+        val post = listOf(PublicPostPolicy.MAX_ON_AIR_BYTES)
+        var now = 0L
+        var admitted = 0
+        while (air.admits(AirBucket.PUBLIC, FrameClass.ROOM, post, now)) {
+            air.record(AirBucket.PUBLIC, PublicPostPolicy.MAX_ON_AIR_BYTES, now)
+            admitted++
+            now += 30_000
+            assertTrue("the share is bounded", admitted < 100)
+        }
+        assertTrue("some public traffic always fits", admitted > 0)
+        assertEquals((air.allowanceMs() * LoraAirtime.PUBLIC_SHARE).toLong(), air.budgetMs(AirBucket.PUBLIC))
+        assertTrue(
+            "the pocket's own chat still has most of the window",
+            air.admits(AirBucket.LIVE, FrameClass.ROOM, listOf(MeshtasticProto.MAX_PAYLOAD), now),
+        )
+        val left = air.allowanceMs() - air.usedMs(AirBucket.PUBLIC, now)
+        assertTrue("and what it spent is real air, charged to the total", left < air.allowanceMs())
+    }
+
+    @Test
+    fun aSpentWindowRefusesAPublicPostToo() {
+        // The other direction: nothing here is exempt from the total the way the key bootstrap is. A window
+        // spent on Knit's own traffic is spent, and a post waits for the next one.
+        val air = LoraAirtime().apply { onRadioConfig(radio()) }
+        val packet = listOf(MeshtasticProto.MAX_PAYLOAD)
+        var now = 0L
+        while (air.admits(AirBucket.LIVE, FrameClass.ROOM, packet, now)) {
+            air.record(AirBucket.LIVE, MeshtasticProto.MAX_PAYLOAD, now)
+            now += 3_000
+        }
+        assertFalse(air.admits(AirBucket.PUBLIC, FrameClass.ROOM, listOf(PublicPostPolicy.MAX_ON_AIR_BYTES), now))
+    }
+
+    @Test
+    fun aPublicPostIsPricedWithTheSignatureTheFirmwareWillAddToIt() {
+        // A 200-byte text body sits under the 2.8 firmware's 165-byte signing cliff plus its own framing, so
+        // the board attaches 66 bytes Knit never asked for. ADR 2026-09.mhs5 pads Knit's own frames *past*
+        // that cliff to dodge it; a human-readable post cannot be padded, so the budget pays for it instead.
+        val signing = LoraAirtime().apply { onRadioConfig(radio()) }
+        val notSigning =
+            LoraAirtime().apply {
+                onRadioConfig(radio())
+                onFirmware("2.7.26")
+            }
+        val short = 120
+        assertTrue(
+            "the surcharge is priced, not assumed away",
+            signing.timeOnAirMs(short) > notSigning.timeOnAirMs(short),
+        )
+    }
+
+    @Test
     fun theWindowIsFifteenMinutesSoAWorstCaseHourStaysUnderTheEuRefusalPoint() {
         assertEquals(15 * 60_000L, LoraAirtime.WINDOW_MS)
         val air = LoraAirtime().apply { onRadioConfig(radio(region = LoraRegion.EU_868)) }

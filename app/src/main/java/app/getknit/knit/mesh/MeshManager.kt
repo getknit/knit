@@ -149,6 +149,11 @@ class MeshManager(
     // sentAt) are deterministic under test. Defaults to the real clock, so production wiring (the Koin
     // module) is unchanged; mirrors the house convention — ForwardSync(clock = …), AckSync, KeyExchange.
     private val clock: () -> Long = { System.currentTimeMillis() },
+    // Puts a post written in the bridged public room on the foreign mesh's public channel — the LoRa
+    // transport's [PublicChannelSink]. A lambda rather than the interface for the reason [MeshPostSink] is a
+    // seam in the other direction: the two ends construct each other, so one of them has to be late-bound.
+    // The default refuses everything, which is what every test and every board-less build wants.
+    private val publicChannel: suspend (name: String?, body: String) -> Boolean = { _, _ -> false },
 ) : MeshController,
     ProfileFrameSource,
     FarPeerFrameSource,
@@ -329,6 +334,7 @@ class MeshManager(
             dmAcks = dmAcks,
             flushPending = ::flushPendingFor,
             classifyText = ::isTextFlagged,
+            publicChannel = publicChannel,
             resealUnacked = ::resealRecentDmsTo,
             redistributeGroupKey = ::redistributeGroupKey,
             flushGroupKeys = ::flushPendingGroupKeysFor,
@@ -1626,6 +1632,11 @@ class MeshManager(
     override suspend fun sendTyping(conversationId: String) {
         val me = identity.nodeId()
         val kind = Conversations.kindFor(conversationId)
+        // The bridged public room has no typing cue and must not fall through to one. A `typing` frame
+        // carries its scope in `recipientId` or `TypingContent.groupId` and this room is neither, so an
+        // unguarded cue from here would arrive on every phone in the pocket as a *Nearby* one. The UI
+        // already refuses to raise it; this is the net under that, at the layer that mints the frame.
+        if (kind == ConversationKind.MESHTASTIC) return
         val recipientId = if (kind == ConversationKind.DM) conversationId else null
         val groupId = if (kind == ConversationKind.GROUP) conversationId else null
         val env =
@@ -2206,6 +2217,51 @@ class MeshManager(
             )
         originateSigned(env)
         pipeline.deliverOwnMeshPost(env)
+    }
+
+    /**
+     * A post a Knit user typed in the bridged public room — the outbound half of the same bridge, and the
+     * only thing in Knit that is written for an audience outside it.
+     *
+     * It is the **same frame type** as an overheard post, with `node`/`packetId` absent. That is what buys
+     * the whole feature for one nullable field: the room routing, the custody bucket and its 6 h TTL, the
+     * "never back on the LoRa band" exclusions on all three paths, and the no-receipt rule all already hold
+     * for `meshpost`, and none of them would have held for a `chat` frame with a room field on it. Absent
+     * rather than zero because the author genuinely does not know them: their phone may hold no radio, and
+     * which gateway transmits this — under which node number, with which packet id — is decided later and
+     * elsewhere. Nothing derives the frame id from them, so it is minted like any other.
+     *
+     * Moderated with `isRoom = true`, which [sendChat] would not do: it infers the scope from the addressing
+     * shape, and this frame is addressed to nobody. A public radio channel deserves the room moderator —
+     * profanity as well as toxicity — at least as much as Nearby does.
+     *
+     * Delivered locally through the inbound path like the overheard case, and for the same reason: the row
+     * this device writes must be the row every other phone in the pocket writes from the same bytes. That
+     * path is also what hands the post to the gateway, so nothing here knows a radio exists.
+     */
+    override suspend fun sendPublicPost(text: String): Boolean {
+        if (isTextFlagged(text, "outgoing", isRoom = true)) return false
+        val me = identity.nodeId()
+        val env =
+            RelayEnvelope(
+                type = FrameType.MESH_POST,
+                id = FrameId.new(),
+                senderId = me,
+                sentAt = clock(),
+                payload =
+                    WireCodec.encodePayload(
+                        MeshPostContent(
+                            body = text,
+                            // Carried rather than resolved by the gateway: a gateway that has never seen this
+                            // author's profile would otherwise put a node id on the air, and two gateways with
+                            // different views of the directory would put different text there.
+                            name = settings.displayName.first().takeIf { it.isNotBlank() },
+                        ),
+                    ),
+            )
+        originateSigned(env)
+        pipeline.deliverOwnPublicPost(env)
+        return true
     }
 
     /**

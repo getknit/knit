@@ -8,6 +8,7 @@ import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshPost
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.Peer
+import app.getknit.knit.mesh.PublicChannelSink
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.SeenSet
 import app.getknit.knit.mesh.StoreDigest
@@ -101,7 +102,8 @@ internal class LoraMeshTransport(
     private val gateway: LoraGatewayPolicy = LoraGatewayPolicy(),
     private val gossip: LoraGossipPolicy = LoraGossipPolicy(),
 ) : MeshTransport,
-    LoraPlaneStatus {
+    LoraPlaneStatus,
+    PublicChannelSink {
     override val kind = TransportKind.LoRa
     override val hasFastPlane = true
     override val shortRange = false
@@ -191,6 +193,10 @@ internal class LoraMeshTransport(
     // until proven otherwise, so a lone board bridges from the first packet rather than after a gossip round.
     @Volatile
     private var role = LoraGatewayPolicy.Role.ACTIVE
+
+    // When this gateway last put a post on the foreign public channel, for the per-gateway floor. Monotonic
+    // (`clock`), so it survives a wall-clock jump; NEVER so the first post of a session is never held.
+    private val lastPublicPostAt = AtomicLong(NEVER)
 
     // The prefix set our last OFFER announced — kept so an inbound OFFER can be recognised as announcing the
     // same set (the only genuinely redundant one, see LoraGossipPolicy) without re-querying custody.
@@ -446,8 +452,9 @@ internal class LoraMeshTransport(
         label: String,
         klass: FrameClass,
         bucket: AirBucket = AirBucket.defaultFor(klass),
+        destination: Destination = Destination.Knit,
     ) {
-        if (pace.enqueue(OutboundFrame(parts, label, klass, bucket)) != LoraPacePolicy.Admission.ACCEPTED) {
+        if (pace.enqueue(OutboundFrame(parts, label, klass, bucket, destination)) != LoraPacePolicy.Admission.ACCEPTED) {
             metrics.onLoraDroppedQueue()
         }
         wake.trySend(Unit)
@@ -598,6 +605,58 @@ internal class LoraMeshTransport(
      * suppressed", and minting a bridged post transmits nothing at all.
      */
     private fun isPocketGateway(): Boolean = role == LoraGatewayPolicy.Role.ACTIVE
+
+    /**
+     * Puts one Knit user's post on the foreign mesh's public channel — [PublicChannelSink], the bridge's
+     * outbound half. Called by the delivery path for every post it sees arrive, so a refusal is the ordinary
+     * answer: on a two-board pocket exactly one device returns true.
+     *
+     * The guards are all here rather than at the write, so each one can be counted and named. They are
+     * deliberately **not** [boundSlotIsKnit]'s: that guard exists to keep Knit's cleartext frames off the
+     * public channel by accident and reads an unknown channel table as "stay silent", while this is a
+     * consented path *to* that channel and reads an unknown table as "not the stock primary". Same shape,
+     * opposite safe answer, so sharing code between them would make one of the two wrong.
+     */
+    override suspend fun postToPublicChannel(
+        name: String?,
+        body: String,
+    ): Boolean {
+        // Not a refusal reason: the passive board is not failing at anything, its pocket-mate is transmitting.
+        if (!isPocketGateway()) {
+            metrics.onPublicPostPassive()
+            return false
+        }
+        val ready = link.state.value as? LinkState.Ready ?: return refusePublicPost(PublicPostRefusal.NOT_READY)
+        // A board with Knit bound to index 0 has no public primary to post on — the debug-bridge shape the
+        // receive half refuses to read for the same reason (`aBoardWithKnitBoundToIndexZeroReadsNoPublicPrimary`).
+        if (currentConfig?.channelIndex == LongFastPolicy.PRIMARY_INDEX) {
+            return refusePublicPost(PublicPostRefusal.KNIT_ON_PRIMARY)
+        }
+        if (!LongFastPolicy.isStockPrimary(ready.channels, ready.radio)) {
+            return refusePublicPost(PublicPostRefusal.NOT_STOCK_PRIMARY)
+        }
+        val now = clock()
+        val last = lastPublicPostAt.get()
+        if (last != NEVER && now - last < PUBLIC_POST_FLOOR_MS) return refusePublicPost(PublicPostRefusal.TOO_SOON)
+        val message = PublicPostPolicy.onAirText(name, body).encodeToByteArray()
+        if (message.size > maxPayload) return refusePublicPost(PublicPostRefusal.TOO_LARGE)
+        // Asked before queueing rather than left to the pacer: a post the budget will not carry should be
+        // counted as refused now, not sit in the queue looking sent until the window rolls over.
+        if (!pace.airtime.admits(AirBucket.PUBLIC, FrameClass.ROOM, listOf(message.size), now)) {
+            return refusePublicPost(PublicPostRefusal.NO_AIR)
+        }
+        // Claimed at enqueue, not at write: the floor is about how often this gateway *decides* to speak, and
+        // charging it only once the pacer drains would let a burst queue up behind one 3 s gap.
+        lastPublicPostAt.set(now)
+        enqueue(listOf(message), "public", FrameClass.ROOM, AirBucket.PUBLIC, Destination.Public)
+        return true
+    }
+
+    private fun refusePublicPost(reason: PublicPostRefusal): Boolean {
+        metrics.onPublicPostRefused(reason.name)
+        log("lora public post refused: $reason")
+        return false
+    }
 
     /**
      * Publishes a [LoraCtl] OFFER on the gossip policy's schedule. One packet says what we hold, so a far
@@ -802,6 +861,14 @@ internal class LoraMeshTransport(
     }
 
     private suspend fun sendFrame(frame: OutboundFrame) {
+        // Two destinations, two guards, and deliberately no shared code between them (§5 of work item #37):
+        // `boundSlotIsKnit` stops Knit's own frames reaching the public channel by accident, while the public
+        // post's guards were all applied at `postToPublicChannel`, where a refusal could still be counted and
+        // reported. All that is left here is which channel and which portnum.
+        if (frame.destination == Destination.Public) {
+            sendPublicFrame(frame)
+            return
+        }
         val ch = currentConfig?.channelIndex ?: return
         if (!boundSlotIsKnit(ch)) {
             metrics.onLoraSuppressed()
@@ -823,13 +890,30 @@ internal class LoraMeshTransport(
         log("lora tx ${frame.label} parts=${frame.messages.size}")
     }
 
+    /**
+     * Writes one public post on the foreign mesh's primary channel: index 0, `TEXT_MESSAGE_APP`, cleartext.
+     *
+     * Never fragmented — [PublicPostPolicy.MAX_ON_AIR_BYTES] is a fifth of what one packet carries — so there
+     * is no resume cursor to honour and one `sendMessage` is the whole frame.
+     */
+    private suspend fun sendPublicFrame(frame: OutboundFrame) {
+        val message = frame.messages.firstOrNull() ?: return
+        if (!sendMessage(message, LongFastPolicy.PRIMARY_INDEX, frame, MeshtasticProto.PORT_TEXT_MESSAGE)) {
+            metrics.onPublicPostRefused(PublicPostRefusal.NAK.name)
+            return
+        }
+        metrics.onPublicPostSent()
+        log("lora tx public ${message.size}B")
+    }
+
     /** Sends one fragment; false ends the frame (a NAK, error, or no headroom). */
     private suspend fun sendMessage(
         message: ByteArray,
         channelIndex: Int,
         frame: OutboundFrame,
+        portnum: Int = MeshtasticProto.PORT_PRIVATE_APP,
     ): Boolean =
-        when (val result = link.send(message, channelIndex, hopLimit = HOP_LIMIT)) {
+        when (val result = link.send(message, channelIndex, portnum = portnum, hopLimit = HOP_LIMIT)) {
             is SendResult.Queued -> {
                 pace.onQueueStatus(result.queue.free)
                 pace.airtime.record(frame.bucket, message.size, clock())
@@ -915,7 +999,18 @@ internal class LoraMeshTransport(
         if (packet.portnum != MeshtasticProto.PORT_TEXT_MESSAGE) return // never a post; not worth a counter
         metrics.onMeshPostHeard()
         val ready = link.state.value as? LinkState.Ready ?: return
-        when (val verdict = LongFastPolicy.judge(packet, ready.channels, ready.radio, link.nodes.value[packet.from]?.longName)) {
+        val verdict =
+            LongFastPolicy.judge(
+                packet = packet,
+                channels = ready.channels,
+                radio = ready.radio,
+                name = link.nodes.value[packet.from]?.longName,
+                // Our own board's transmissions are never read back in: the outbound half puts this pocket's
+                // posts on this channel, and a pocket-mate's board that briefly also thought it was ACTIVE
+                // would otherwise mint a second, un-collapsible copy of one we already have.
+                ownNode = ready.board.myNodeNum,
+            )
+        when (verdict) {
             is LongFastPolicy.Verdict.Refused -> {
                 metrics.onMeshPostRefused(verdict.reason.name)
             }
@@ -1129,6 +1224,17 @@ internal class LoraMeshTransport(
          * that caused this, and a silent regression the moment a board reports it.
          */
         const val HOP_LIMIT = 3
+
+        /**
+         * The shortest gap between two posts this gateway puts on the foreign public channel (§5 of work
+         * item #37).
+         *
+         * The binding limit in practice, ahead of [AirBucket.PUBLIC]'s share, and that ordering is the point:
+         * a refusal a user can predict ("wait a moment") beats one that depends on what the rest of the plane
+         * happened to be doing. It also bounds the worst case a bridge can inflict on a shared community band
+         * — a whole pocket of Knit users is still one voice every 30 s, not one each.
+         */
+        const val PUBLIC_POST_FLOOR_MS = 30_000L
 
         const val INBOUND_BUFFER = 64
         const val SIG_TTL_MS = 10 * 60_000L // = SeenSet.DEFAULT_TTL_MS

@@ -272,9 +272,12 @@ data class ChatUiState(
     // really asking "is this Nearby", and answering yes here would put a stranger's unauthenticated name
     // wherever Knit shows a person it vouches for.
     val isBridged: Boolean = false,
-    // Whether the composer accepts input at all. False only for [isBridged]: reading a foreign public
-    // channel and speaking on it are separate decisions, and only the first has been made.
-    val canSend: Boolean = true,
+    // The name that will ride on the front of a post to the foreign public channel — the user's own display
+    // name, or null when they have not set one. Shown in the composer hint so the one place ADR 049's rule is
+    // suspended says so before the user types, rather than after the words have left.
+    val publicPostName: String? = null,
+    // Whether a post here still needs the first-use disclosure. Read only by [isBridged] threads.
+    val needsPublicConsent: Boolean = false,
 )
 
 /**
@@ -589,14 +592,20 @@ class ChatViewModel(
             loraThread,
         ) { count, health, typing, relay, lora -> MeshStatus(count, health, typing, relay, lora) }
 
+    // Paired rather than combined separately because `combine`'s typed arity stops at five, and these two
+    // are one question anyway: who this device posts to the foreign public channel as, and whether it may.
+    private val publicIdentity =
+        combine(settings.displayName, settings.meshtasticPostConsented) { name, consented -> name to consented }
+
     val state: StateFlow<ChatUiState> =
         combine(
             messagesWithReactions,
             peers.observeDirectory(),
             meshStatus,
             myNodeId,
-            settings.displayName,
-        ) { bundle, directory, mesh, me, myName ->
+            publicIdentity,
+        ) { bundle, directory, mesh, me, publicId ->
+            val (myName, publicConsented) = publicId
             val count = mesh.neighborCount
             val health = mesh.transportHealth
             val typingMap = mesh.typing
@@ -761,7 +770,8 @@ class ChatViewModel(
                     },
                 canSendFile = !isRoom && !isBridged,
                 isBridged = isBridged,
-                canSend = !isBridged,
+                publicPostName = myName.takeIf { isBridged && it.isNotBlank() },
+                needsPublicConsent = isBridged && !publicConsented,
                 isBlocked = !isRoom && !isBridged && !isGroup && conversationId in blocked,
                 verified = !isRoom && !isBridged && !isGroup && peersByNode[conversationId]?.verified == true,
                 isGroup = isGroup,
@@ -984,6 +994,28 @@ class ChatViewModel(
     private val _isSending = MutableStateFlow(false)
     val isSending: StateFlow<Boolean> = _isSending.asStateFlow()
 
+    private val _showPublicConsent = MutableStateFlow(false)
+
+    /** Whether the bridged room's first-use disclosure is on screen. See [acceptPublicConsent]. */
+    val showPublicConsent: StateFlow<Boolean> = _showPublicConsent.asStateFlow()
+
+    /**
+     * Records the disclosure as accepted and lowers it. Deliberately does **not** send: the user pressed a
+     * button that said "Post" on a sheet, not on their message, and making one tap do both would mean the
+     * words went out in the same motion as the decision to allow them to.
+     */
+    fun acceptPublicConsent() {
+        viewModelScope.launch {
+            settings.acceptMeshtasticPostConsent()
+            _showPublicConsent.value = false
+        }
+    }
+
+    /** Lowers the disclosure without recording anything, so the next attempt asks again. */
+    fun dismissPublicConsent() {
+        _showPublicConsent.value = false
+    }
+
     fun send(
         text: String,
         mentions: List<Mention> = emptyList(),
@@ -992,6 +1024,13 @@ class ChatViewModel(
         val trimmed = text.trim().take(TextLimits.MESSAGE)
         val attachment = _pendingAttachment.value
         if (trimmed.isEmpty() && attachment == null) return
+        // The bridged room's first post raises the disclosure instead of sending. Raised here rather than on
+        // opening the room, because a person who only ever reads it should never be asked to decide anything;
+        // the draft is kept, so accepting sends what they already wrote.
+        if (isBridged && state.value.needsPublicConsent) {
+            _showPublicConsent.value = true
+            return
+        }
         // Ignore re-entrant taps while a send is in flight, and — on success — until the field is
         // actually cleared, so a tap landing in the gap between sendChat returning and clearText running
         // can't re-send the same draft. Released in the blocked branch and in onInputCleared().
@@ -1007,9 +1046,14 @@ class ChatViewModel(
                 val outgoingReply = normalizeSelfAuthor(replyTo)
                 // Re-read the group at send time so it's never misrouted as a DM in a startup race, and so
                 // a pending rename rides this message (its GroupInfo.name converges last-writer-wins).
-                val group = if (isRoom) null else groups.find(conversationId)
+                val group = if (isRoom || isBridged) null else groups.find(conversationId)
                 val sent =
-                    if (group != null) {
+                    if (isBridged) {
+                        // The bridged room is not addressed to anybody: no recipient, no group, no
+                        // attachment, no reply. `sendChat` would read that shape as the Nearby room and put
+                        // the post there, so this room has its own origination path (see MeshController).
+                        meshManager.sendPublicPost(trimmed)
+                    } else if (group != null) {
                         meshManager.sendChat(
                             trimmed,
                             attachment,
@@ -1469,6 +1513,9 @@ class ChatViewModel(
      * Cheap and fire-and-forget — the screen may call this on every keystroke.
      */
     fun onUserTyping() {
+        // Never in the bridged room: there is nobody on the far side to show a cue to, and the frame it would
+        // mint carries no room of its own, so `MeshManager.sendTyping` would publish it as a *Nearby* cue.
+        if (isBridged) return
         val now = System.currentTimeMillis()
         if (!chatForeground.value || now - lastTypingSentAt < TYPING_SEND_INTERVAL_MS) return
         lastTypingSentAt = now

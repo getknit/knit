@@ -27,6 +27,16 @@ internal enum class AirBucket {
      * profile is history like everything else the bridge carries.
      */
     BOOTSTRAP,
+
+    /**
+     * A Knit user's own post on the **foreign** mesh's public channel (the LongFast bridge's outbound half).
+     *
+     * Its own budget because it is the one thing on this plane that spends Knit's airtime on an audience
+     * that is not Knit: a busy public room must not be able to crowd the pocket's own chat off the band,
+     * and the pocket's own chat must not be able to leave a user unable to answer somebody. Judged against
+     * the total as well, like [BRIDGE] — it is a share of the one allowance, not a second one beside it.
+     */
+    PUBLIC,
     ;
 
     companion object {
@@ -66,6 +76,8 @@ internal data class AirtimeSnapshot(
     val bridgeBudgetMs: Long,
     val bootstrapUsedMs: Long,
     val bootstrapBudgetMs: Long,
+    val publicUsedMs: Long = 0L,
+    val publicBudgetMs: Long = 0L,
     /** Whether the board is on a dedicated RF slot, and so out from under the politeness ceiling (ADR 067). */
     val dedicated: Boolean = false,
     /** Whether the budget is charging for the signature 2.8 firmware adds to our small packets. */
@@ -142,6 +154,7 @@ internal class LoraAirtime(
     private val politeCeilingPercent: Double = POLITE_CEILING_PERCENT,
     private val tickTailShare: Double = TICK_TAIL_SHARE,
     private val bootstrapShare: Double = BOOTSTRAP_SHARE,
+    private val publicShare: Double = PUBLIC_SHARE,
     /**
      * Whether a dedicated RF slot lifts the politeness ceiling. False everywhere but a debug build — the
      * setup that pins the slot is itself debug-only, and a release build must budget exactly as it does
@@ -159,6 +172,7 @@ internal class LoraAirtime(
     private var liveUsedMs = 0L
     private var bridgeUsedMs = 0L
     private var bootstrapUsedMs = 0L
+    private var publicUsedMs = 0L
 
     /** The board's radio settings, or null until the handshake reports them. */
     var radio: LoraRadioConfig? = null
@@ -256,6 +270,7 @@ internal class LoraAirtime(
             AirBucket.LIVE -> allowanceMs()
             AirBucket.BRIDGE -> (allowanceMs() * bridgeShare).toLong()
             AirBucket.BOOTSTRAP -> (allowanceMs() * bootstrapShare).toLong()
+            AirBucket.PUBLIC -> (allowanceMs() * publicShare).toLong()
         }
 
     fun usedMs(
@@ -267,6 +282,7 @@ internal class LoraAirtime(
             AirBucket.LIVE -> liveUsedMs
             AirBucket.BRIDGE -> bridgeUsedMs
             AirBucket.BOOTSTRAP -> bootstrapUsedMs
+            AirBucket.PUBLIC -> publicUsedMs
         }
     }
 
@@ -287,19 +303,42 @@ internal class LoraAirtime(
     ): Boolean {
         prune(now)
         val cost = payloadSizes.sumOf { timeOnAirMs(it) }
-        // The bootstrap alone is judged outside the total: a window that has spent itself on chat must still
-        // be able to hand a far pocket the key that makes that chat readable. Its own share is what stops
-        // that exemption from becoming the whole allowance (ADR 056).
-        if (bucket == AirBucket.BOOTSTRAP) return bootstrapUsedMs + cost <= budgetMs(AirBucket.BOOTSTRAP)
-        val used = liveUsedMs + bridgeUsedMs + bootstrapUsedMs
-        if (used + cost > budgetMs(AirBucket.LIVE)) return false
-        if (klass == FrameClass.TICK && used + cost > (budgetMs(AirBucket.LIVE) * (1 - tickTailShare)).toLong()) return false
-        // The OFFER is not backfill: it is the one packet that decides whether any backfill happens at all,
-        // including the far pocket's, whose air this budget does not pay for. So serving must not be able to
-        // starve it — see the class doc.
-        return bucket != AirBucket.BRIDGE ||
-            klass == FrameClass.GOSSIP ||
-            bridgeUsedMs + cost <= budgetMs(AirBucket.BRIDGE)
+        val used = liveUsedMs + bridgeUsedMs + bootstrapUsedMs + publicUsedMs
+        val tickCeiling = (budgetMs(AirBucket.LIVE) * (1 - tickTailShare)).toLong()
+        // A `when` rather than a ladder of early returns only because there are now five answers; the order
+        // is the same and load-bearing. Note the TICK arm refuses but does not admit — a tick under the tail
+        // still has to pass the bridge test below it, exactly as it did when this was a guard clause.
+        return when {
+            // The bootstrap alone is judged outside the total: a window that has spent itself on chat must
+            // still be able to hand a far pocket the key that makes that chat readable. Its own share is what
+            // stops that exemption from becoming the whole allowance (ADR 056).
+            bucket == AirBucket.BOOTSTRAP -> {
+                bootstrapUsedMs + cost <= budgetMs(AirBucket.BOOTSTRAP)
+            }
+
+            used + cost > budgetMs(AirBucket.LIVE) -> {
+                false
+            }
+
+            // The public channel is judged against its own share as well as the total, in both directions: it
+            // cannot crowd out the pocket's own traffic, and the pocket's own traffic leaves it a floor.
+            bucket == AirBucket.PUBLIC -> {
+                publicUsedMs + cost <= budgetMs(AirBucket.PUBLIC)
+            }
+
+            klass == FrameClass.TICK && used + cost > tickCeiling -> {
+                false
+            }
+
+            // The OFFER is not backfill: it is the one packet that decides whether any backfill happens at
+            // all, including the far pocket's, whose air this budget does not pay for. So serving must not be
+            // able to starve it — see the class doc.
+            else -> {
+                bucket != AirBucket.BRIDGE ||
+                    klass == FrameClass.GOSSIP ||
+                    bridgeUsedMs + cost <= budgetMs(AirBucket.BRIDGE)
+            }
+        }
     }
 
     /** Books [payloadBytes] of air against [bucket]. Called once the board has actually accepted the write. */
@@ -315,6 +354,7 @@ internal class LoraAirtime(
             AirBucket.LIVE -> liveUsedMs += ms
             AirBucket.BRIDGE -> bridgeUsedMs += ms
             AirBucket.BOOTSTRAP -> bootstrapUsedMs += ms
+            AirBucket.PUBLIC -> publicUsedMs += ms
         }
     }
 
@@ -341,6 +381,8 @@ internal class LoraAirtime(
             bridgeBudgetMs = budgetMs(AirBucket.BRIDGE),
             bootstrapUsedMs = bootstrapUsedMs,
             bootstrapBudgetMs = budgetMs(AirBucket.BOOTSTRAP),
+            publicUsedMs = publicUsedMs,
+            publicBudgetMs = budgetMs(AirBucket.PUBLIC),
             dedicated = dedicated(),
             signing = signing,
         )
@@ -356,6 +398,7 @@ internal class LoraAirtime(
                 AirBucket.LIVE -> liveUsedMs -= oldest.ms
                 AirBucket.BRIDGE -> bridgeUsedMs -= oldest.ms
                 AirBucket.BOOTSTRAP -> bootstrapUsedMs -= oldest.ms
+                AirBucket.PUBLIC -> publicUsedMs -= oldest.ms
             }
         }
     }
@@ -411,6 +454,18 @@ internal class LoraAirtime(
          * to traffic somebody is actually waiting for.
          */
         const val BOOTSTRAP_SHARE = 0.25
+
+        /**
+         * The share of the allowance a Knit user's posts to the **foreign** public channel may spend.
+         *
+         * Small on purpose, and small enough that the per-gateway floor is usually the binding limit rather
+         * than this: at LongFast a 200-byte signed post is ~1.9 s, so 15 % of a 45 s window is about three
+         * posts every fifteen minutes — roughly twice what a 30 s floor allows, which is the right ordering.
+         * A budget that bound first would make the refusal depend on what the *rest* of the plane had been
+         * doing, and "your message went nowhere because somebody nearby was syncing" is not an explanation
+         * anybody can act on.
+         */
+        const val PUBLIC_SHARE = 0.15
 
         /**
          * The cap Knit applies even where the law does not. Most regions run at 100 % duty, but a phone that

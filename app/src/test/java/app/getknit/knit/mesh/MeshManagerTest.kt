@@ -39,6 +39,7 @@ import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.mesh.protocol.MeshPostContent
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.ReactionContent
@@ -238,10 +239,22 @@ class MeshManagerTest {
         // Hoisted so a test can pre-shape group-ratchet state (e.g. a stale outbox ack) around the
         // manager's own send/flush paths — same instance the manager is wired with below.
         val groupRatchet = GroupRatchetSessions(store = GroupRatchetRepository(db.groupRatchetDao()))
+
+        /**
+         * The user's display name, live so a test can set it before a send reads it. Stubbed for every rig
+         * rather than only the profile ones: a relaxed mock hands back a Flow that never emits, and
+         * `sendPublicPost` reads this with `.first()` — which would hang rather than fail.
+         */
+        val displayName = MutableStateFlow("")
         val manager: MeshManager
 
         init {
             coEvery { identity.nodeId() } returns me.nodeId
+            coEvery { settings.displayName } returns displayName
+            // The local delivery of anything we originate runs the inbound path, whose first act is a
+            // blocklist read with `.first()`. A relaxed mock's empty flow throws there rather than hanging.
+            coEvery { settings.blockedNodeIds } returns MutableStateFlow(emptySet())
+            coEvery { settings.acceptedConversations } returns MutableStateFlow(emptySet())
             coEvery { textModeration.classify(any(), any()) } returns TextVerdict.ALLOWED
             coEvery { messages.save(any()) } answers { saved += firstArg<MessageEntity>() }
             coEvery { peers.find(any()) } returns null // default: no recipient key is known
@@ -291,7 +304,6 @@ class MeshManagerTest {
          * moving. Returns the display-name flow the test edits.
          */
         fun stubProfileState(publishedAt: MutableStateFlow<Long>): MutableStateFlow<String> {
-            val displayName = MutableStateFlow("")
             coEvery { settings.displayName } returns displayName
             coEvery { settings.status } returns MutableStateFlow("")
             coEvery { settings.avatarUpdatedAt } returns avatarUpdatedAt
@@ -355,10 +367,12 @@ class MeshManagerTest {
         suspend fun awaitProfileWatcher() = await(1) { avatarUpdatedAt.subscriptionCount.value }
 
         /** The distinct CHAT routing envelopes the manager originated (collapsing the flood + fast-fanout copies). */
-        fun sentChatFrames(): List<RelayEnvelope> =
+        fun sentChatFrames(): List<RelayEnvelope> = sentFrames().filter { it.type == FrameType.CHAT }
+
+        /** Every distinct routing envelope the manager originated (collapsing the flood + fast-fanout copies). */
+        fun sentFrames(): List<RelayEnvelope> =
             transport.sent
                 .mapNotNull { WireCodec.decodeEnvelope(it.first.signed) }
-                .filter { it.type == FrameType.CHAT }
                 .distinctBy { it.id }
     }
 
@@ -378,6 +392,61 @@ class MeshManagerTest {
             assertTrue("nothing is persisted locally", rig.saved.isEmpty())
             assertTrue("and nothing hits the wire", rig.transport.sent.isEmpty())
             coVerify(exactly = 0) { rig.messages.save(any()) }
+        }
+
+    @Test
+    fun aPublicPostIsScreenedByTheRoomModeratorNotTheDirectOne() =
+        runTest(UnconfinedTestDispatcher()) {
+            // `sendChat` infers the scope from the addressing shape, which for this frame — addressed to
+            // nobody — would say "not a room". A cleartext public radio channel deserves the room moderator
+            // (profanity as well as toxicity) at least as much as Nearby does.
+            val rig = Rig(backgroundScope)
+            val scopes = mutableListOf<Boolean>()
+            coEvery { rig.textModeration.classify(any(), any()) } answers {
+                scopes += secondArg<Boolean>()
+                TextVerdict.ALLOWED
+            }
+
+            assertTrue(rig.manager.sendPublicPost("hello mesh"))
+            advanceUntilIdle()
+
+            // Twice: once on the way out, once again when the local delivery runs the same inbound path
+            // every other phone in the pocket will. Both under the room scope — that is the claim.
+            assertEquals(listOf(true, true), scopes)
+        }
+
+    @Test
+    fun aFlaggedPublicPostIsBlockedBeforeItCanReachTheAir() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            coEvery { rig.textModeration.classify(any(), any()) } returns
+                TextVerdict(allowed = false, category = TextVerdict.Category.TOXICITY)
+
+            val ok = rig.manager.sendPublicPost("something abusive")
+            advanceUntilIdle()
+
+            assertFalse(ok)
+            assertTrue("nothing is persisted locally", rig.saved.isEmpty())
+            assertTrue("and nothing hits the wire, so no gateway ever sees it", rig.transport.sent.isEmpty())
+        }
+
+    @Test
+    fun aPublicPostCarriesItsAuthorsNameSoTheGatewayNeedNotResolveIt() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A gateway that has never seen this author's profile would otherwise put a node id on the air,
+            // and two gateways with different views of the directory would put different text there.
+            val rig = Rig(backgroundScope)
+            rig.displayName.value = "Alice"
+
+            assertTrue(rig.manager.sendPublicPost("hello mesh"))
+            advanceUntilIdle()
+
+            val env = rig.sentFrames().single { it.type == FrameType.MESH_POST }
+            val content = WireCodec.decodePayload<MeshPostContent>(env.payload)!!
+            assertEquals("hello mesh", content.body)
+            assertEquals("Alice", content.name)
+            assertNull("no Meshtastic identity: the author has none", content.node)
+            assertNull(content.packetId)
         }
 
     // --- broadcast room (plaintext) ---

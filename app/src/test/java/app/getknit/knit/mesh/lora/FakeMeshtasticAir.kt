@@ -82,6 +82,14 @@ internal class FakeMeshtasticLink(
      */
     val sentHopLimits = mutableListOf<Int?>()
 
+    /**
+     * The channel index and portnum each send asked for, positionally alongside [sent]. Both are invisible
+     * in the payload and both are the whole difference between a Knit frame and a post on somebody else's
+     * public channel, so a transmit that went to the wrong one would otherwise look identical here.
+     */
+    val sentChannels = mutableListOf<Int>()
+    val sentPortnums = mutableListOf<Int>()
+
     override suspend fun send(
         payload: ByteArray,
         channelIndex: Int,
@@ -91,6 +99,8 @@ internal class FakeMeshtasticLink(
         if (free == 0) return SendResult.Busy
         sent += payload
         sentHopLimits += hopLimit
+        sentChannels += channelIndex
+        sentPortnums += portnum
         val id = nextId++
         if (queueFills) free--
         air.broadcast(nodeNum, channelIndex, portnum, payload)

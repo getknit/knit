@@ -961,6 +961,13 @@ class DebugBridgeReceiver :
             .put("meshPostViaMqtt", snap.meshPostViaMqtt)
             .put("meshPostPassive", snap.meshPostPassive)
             .put("meshPostRefusedByReason", JSONObject(snap.meshPostRefusedByReason))
+            // The outbound half. Unlike the five above these cost airtime, so read `publicPostSent` against
+            // `airtime.publicMs`/`publicBudgetMs` to say whether the quota is set right. A high refusal count
+            // is the ordinary shape rather than a fault: every phone in a pocket sees every post, and only
+            // the ACTIVE gateway transmits one.
+            .put("publicPostSent", snap.publicPostSent)
+            .put("publicPostPassive", snap.publicPostPassive)
+            .put("publicPostRefusedByReason", JSONObject(snap.publicPostRefusedByReason))
 
     /**
      * Dumps the DM ratchet's per-peer state and, with `--es reset <peerNodeId>`, forces a session reset
@@ -1180,6 +1187,8 @@ class DebugBridgeReceiver :
                         .put("bridgeBudgetMs", air.bridgeBudgetMs)
                         .put("bootstrapMs", air.bootstrapUsedMs)
                         .put("bootstrapBudgetMs", air.bootstrapBudgetMs)
+                        .put("publicMs", air.publicUsedMs)
+                        .put("publicBudgetMs", air.publicBudgetMs)
                 } ?: JSONObject.NULL,
             ).put("counters", metricsJson(metrics.snapshot()))
     }

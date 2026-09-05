@@ -735,8 +735,18 @@
     <string name="chat_mesh_mqtt">from the Internet</string>
     <string name="chat_mesh_room_notice">Public channel — names here are not verified</string>
     <string name="chat_mesh_room_title">A public Meshtastic channel</string>
-    <string name="chat_mesh_room_body">These posts were overheard by a paired Meshtastic radio on its public channel. Anyone with a radio can send them and anyone can claim any name, so treat both the names and the messages as unverified. Some arrive from the Internet rather than from anyone nearby. Knit reads this channel and does not post to it.</string>
-    <string name="chat_mesh_read_only">Knit does not post to this channel</string>
+    <string name="chat_mesh_room_body">These posts were overheard by a paired Meshtastic radio on its public channel. Anyone with a radio can send them and anyone can claim any name, so treat both the names and the messages as unverified. Some arrive from the Internet rather than from anyone nearby. What you post here goes out in the clear under your Knit name, and needs a radio nearby to carry it.</string>
+    <string name="chat_mesh_hint">Post as %1$s</string>
+    <string name="chat_mesh_hint_anon">Post to the public channel</string>
+    <string name="chat_mesh_too_long">Longer posts are cut short on the public channel</string>
+    <string name="chat_mesh_consent_title">Post to the public channel?</string>
+    <string name="chat_mesh_consent_can_title">Who can see this</string>
+    <string name="chat_mesh_consent_can_body">Anyone with a Meshtastic radio in range. Many radios also pass this channel on to a public Internet server, where it is stored by people you will never meet.</string>
+    <string name="chat_mesh_consent_cannot_title">What does not go out</string>
+    <string name="chat_mesh_consent_cannot_body">Your picture, your contacts, and everything in your other conversations. Those stay on Knit\'s own channel.</string>
+    <string name="chat_mesh_consent_scope">Your Knit name goes on the front of each post, so people can answer you. Everywhere else on the radio you are just “Knit”. This room only.</string>
+    <string name="chat_mesh_consent_accept">Post</string>
+    <string name="chat_mesh_consent_decline">Not now</string>
     <string name="chat_mesh_subtitle">Meshtastic public channel</string>
 
     <!-- Message details ("Message info", from a message's long-press menu) -->

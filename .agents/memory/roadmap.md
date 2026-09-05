@@ -61,6 +61,18 @@ doc). **Don't start a deferred item without explicit direction.**
   was reverted before shipping. **Still owed:** the on-hardware trial in `context/lora-bridge.md` — the
   frequency must be *unchanged*, the battery row must survive the telemetry stretch, and a stock node between
   two boards should extend the range.
+  **The LongFast bridge carries the foreign mesh's public channel both ways** (2026-09-03/04, ADR
+  2026-09.cf7a then 2026-09.7r4d): the board's stock public primary is read into a second public room
+  (`Conversations.MESHTASTIC`) as a signed `meshpost` frame the ACTIVE gateway mints, and a post typed in that
+  room is the **same** frame with `node`/`packetId` absent, which the pocket's ACTIVE gateway puts on channel 0
+  as `TEXT_MESSAGE_APP` prefixed with the author's display name — ADR 049's single exception, behind a
+  first-use consent sheet (`SettingsStore.meshtasticPostConsented`). One transmission serves the
+  neighbourhood: the type stays off the Knit LoRa plane, so a far pocket hears the packet itself. Metered by
+  `AirBucket.PUBLIC` (15 % of the window) plus a 30 s per-gateway floor. **Still owed:** the on-hardware
+  outbound trial (post from the gateway's phone, a PASSIVE phone and the board-less one; confirm exactly one
+  packet leaves, `publicMs` climbs while `liveMs` does not, and a second post inside 30 s is refused), and a
+  **per-post air receipt** — today a phone with no gateway in its pocket posts into Knit and nothing goes out,
+  silently.
   **The setup also marks the board unmonitored** (2026-09-01, ADR 2026-09.emd7): `User.is_unmessagable`
   rides the same `set_owner` as the rename, so other people's clients stop offering a board whose inbound
   path keeps only `PRIVATE_APP` as a message target; Restore clears it, and firmware older than 2.6.9 is
@@ -316,7 +328,11 @@ doc). **Don't start a deferred item without explicit direction.**
   since the v1 baseline, and that list is fixed on every fielded build — so a build without it holds none of
   those rows while a debug build holds them all, and their custody digests differ for the whole TTL (the ADR 006
   divergence, against anything in radio range). Nothing shipped mints one while `LORA_PLANE` is debug-only;
-  before release the plane needs either that gate or the type kept off the air. The gate also owns a budget: `LoraSizeHint`'s
+  before release the plane needs either that gate or the type kept off the air. Phase 2 (2026-09-04, ADR
+  2026-09.7r4d) adds no second divergence — the outbound post is the same type — but it does add a **decoder**
+  flag day of its own, `MeshPostContent.node`/`packetId` relaxed from required to optional, which an older
+  build fails to decode and so renders nothing while still storing, digesting and relaying it normally
+  (`docs/WIRE_COMPAT.md` states the distinction). The gate also owns a budget: `LoraSizeHint`'s
   `DM_BODY_BYTES` (320) is honest only in the `0x05` form — a budget DM carrying its four inline acks is 596 B
   against the 681-B ceiling there, but **675–683 B untranscoded** — so whatever falls back to `0x03` for an
   ungated peer must drop that budget ~20 B or accept a `loraTooBig` on a tenth of the DMs the composer just

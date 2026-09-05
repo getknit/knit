@@ -20,6 +20,7 @@ import app.getknit.knit.mesh.MeshPostSink
 import app.getknit.knit.mesh.MeshStartGate
 import app.getknit.knit.mesh.MeshTransport
 import app.getknit.knit.mesh.ProfileFrameSource
+import app.getknit.knit.mesh.PublicChannelSink
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.bluetooth.BleConnectArbiter
 import app.getknit.knit.mesh.bluetooth.BluetoothMeshTransport
@@ -153,6 +154,10 @@ val meshModule =
         single<FarPeerFrameSource> { get<MeshManager>() }
         single<BridgeFrameSource> { get<MeshManager>() }
         single<MeshPostSink> { get<MeshManager>() }
+        // The bridge's outbound half. Bound to the LoRa transport, and reached from MeshManager through a
+        // lambda for the same reason MeshPostSink is reached from the transport through one: the two ends
+        // construct each other, so exactly one of the two edges has to resolve late.
+        single<PublicChannelSink> { get<LoraMeshTransport>() }
         single {
             val settings = get<SettingsStore>()
             LoraMeshTransport(
@@ -210,6 +215,7 @@ val meshModule =
                 get(),
                 get(),
                 get(),
+                publicChannel = { name, body -> get<PublicChannelSink>().postToPublicChannel(name, body) },
             )
         }
         // UI ViewModels, MeshService, and the notification/debug entry points bind this narrow facade (not

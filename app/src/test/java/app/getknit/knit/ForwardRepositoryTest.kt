@@ -124,6 +124,23 @@ class ForwardRepositoryTest : RoomDbTest() {
         return CarriedFrame(env, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
     }
 
+    /** A post written in Knit for the bridged room — the same type, with no Meshtastic identity on it. */
+    private fun publicPost(
+        id: String,
+        sender: String,
+        sentAt: Long,
+    ): CarriedFrame {
+        val env =
+            RelayEnvelope(
+                type = FrameType.MESH_POST,
+                id = id,
+                senderId = sender,
+                sentAt = sentAt,
+                payload = WireCodec.encodePayload(MeshPostContent(body = "hi", name = "Alice")),
+            )
+        return CarriedFrame(env, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
+    }
+
     /** A chat frame with a raw (here: undecodable) payload — to prove the column decode never gates the insert. */
     private fun chatRaw(
         id: String,
@@ -321,6 +338,21 @@ class ForwardRepositoryTest : RoomDbTest() {
 
             assertEquals(setOf("mp", "dm"), dao.liveIds(now = 500L).toSet())
             assertEquals("the bridged post lapses first", setOf("dm"), dao.liveIds(now = 2_000L).toSet())
+        }
+
+    @Test
+    fun `a post written in Knit is custodied exactly like an overheard one`() =
+        runTest {
+            // Both shapes are one type, and every custody rule keys on the type alone — which is what makes
+            // the classification convergent: two nodes decide identically without decoding the payload.
+            val dao = db.forwardDao()
+            val repo = ForwardRepository(dao, StoreDigest { 0L }, db, ttlMs = 10_000L, meshPostTtlMs = 1_000L, maxMeshPost = 2)
+            repo.store(publicPost("pp10", sender = "me", sentAt = 10L), ForwardStore.ORIGIN_SELF, now = 0L)
+            repo.store(meshPost("mp20", sender = "gw", sentAt = 20L), ForwardStore.ORIGIN_RELAY, now = 0L)
+            repo.store(publicPost("pp30", sender = "me", sentAt = 30L), ForwardStore.ORIGIN_SELF, now = 0L)
+
+            assertEquals("one quota, oldest out", setOf("mp20", "pp30"), dao.liveIds(now = 0L).toSet())
+            assertEquals("and one TTL", emptySet<String>(), dao.liveIds(now = 2_000L).toSet())
         }
 
     @Test

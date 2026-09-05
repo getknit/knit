@@ -51,6 +51,17 @@ internal object LongFastPolicy {
 
         /** No packet id, so no deterministic frame id and no way for two gateways to converge on one copy. */
         NO_PACKET_ID,
+
+        /**
+         * Our own board sent it — the echo of a post this pocket put on the channel itself.
+         *
+         * Deliberately narrow: **only** our own board, never every radio that also speaks Knit. Since an
+         * outbound post is transmitted once and once only, a *far* pocket's board hearing it off the air is
+         * exactly how that post reaches those people; refusing the nodes in `boardsHeard` — which includes
+         * the far-pocket boards this one is LoRa-bridged to — would make our own posts invisible to the
+         * pockets they were written for.
+         */
+        OWN_BOARD,
     }
 
     /** Either the post to publish, or why it was refused. */
@@ -70,14 +81,18 @@ internal object LongFastPolicy {
      * channel, and neither is this policy's business.
      *
      * [name] is what the board's NodeDB calls the speaker, looked up by the caller so this stays pure.
+     * [ownNode] is our own board's node number, so its own transmissions are not read back in as somebody
+     * else's post ([Refusal.OWN_BOARD]).
      */
     fun judge(
         packet: ReceivedPacket,
         channels: List<ChannelInfo>,
         radio: LoraRadioConfig?,
         name: String? = null,
+        ownNode: UInt? = null,
     ): Verdict {
         if (!isStockPrimary(channels, radio)) return Verdict.Refused(Refusal.NOT_STOCK_PRIMARY)
+        if (ownNode != null && packet.from == ownNode) return Verdict.Refused(Refusal.OWN_BOARD)
         if (packet.to != MeshtasticProto.BROADCAST) return Verdict.Refused(Refusal.NOT_BROADCAST)
         if (packet.portnum != MeshtasticProto.PORT_TEXT_MESSAGE) return Verdict.Refused(Refusal.NOT_TEXT)
         if (packet.id == 0u) return Verdict.Refused(Refusal.NO_PACKET_ID)

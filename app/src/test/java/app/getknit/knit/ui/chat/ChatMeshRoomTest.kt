@@ -59,28 +59,33 @@ class ChatMeshRoomTest {
     )
 
     private var profileOpened: String? = null
+    private var consentAccepted = false
 
     /** The Nearby room, for the control case: the same bubble where its author *is* a Knit peer. */
     private fun renderRoom(rows: List<ChatRow>) =
         render(Conversations.NEARBY, ChatUiState(rows = rows, isRoom = true, myNodeId = "me", title = "Nearby"))
 
-    private fun render(rows: List<ChatRow>) =
-        render(
-            Conversations.MESHTASTIC,
-            ChatUiState(
-                rows = rows,
-                isRoom = false,
-                isBridged = true,
-                canSend = false,
-                canSendFile = false,
-                myNodeId = "me",
-                title = "LongFast",
-            ),
-        )
+    private fun render(
+        rows: List<ChatRow>,
+        showConsent: Boolean = false,
+    ) = render(
+        Conversations.MESHTASTIC,
+        ChatUiState(
+            rows = rows,
+            isRoom = false,
+            isBridged = true,
+            canSendFile = false,
+            publicPostName = "Alice",
+            myNodeId = "me",
+            title = "LongFast",
+        ),
+        showConsent = showConsent,
+    )
 
     private fun render(
         conversationId: String,
         state: ChatUiState,
+        showConsent: Boolean = false,
     ) {
         compose.setContent {
             KnitTheme {
@@ -95,6 +100,8 @@ class ChatMeshRoomTest {
                     onOpenProfile = { profileOpened = it },
                     onOpenGroupDetails = {},
                     onSend = {},
+                    showPublicConsent = showConsent,
+                    onAcceptPublicConsent = { consentAccepted = true },
                     onAttachClick = {},
                     onClearAttachment = {},
                     onReceiveImage = {},
@@ -195,10 +202,35 @@ class ChatMeshRoomTest {
     }
 
     @Test
-    fun theRoomOffersNoComposer() {
+    fun theRoomOffersAComposerThatNamesTheAuthorItWillPutOnTheAir() {
+        // Everywhere else on this band the user is "Knit abcd" (ADR 049). The hint is the whole visible
+        // surface of that exception, so it has to name them before they type rather than after they send.
         render(listOf(row()))
-        compose.onNodeWithTag("chat_read_only").assertIsDisplayed()
-        compose.onNodeWithText("Knit does not post to this channel").assertIsDisplayed()
-        compose.onNodeWithTag("chat_input").assertDoesNotExist()
+        // The visible hint is marked decorative so TalkBack does not read it twice; the field carries it as
+        // its own accessibility label instead, which is the node that has to say the right thing.
+        compose.onNodeWithTag("chat_input").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Post as Alice").assertIsDisplayed()
+    }
+
+    @Test
+    fun theRoomOffersNothingItCannotPutOnTheAir() {
+        // A photo, a file or a voice note has no way onto a foreign mesh's text channel; offering one would
+        // flood it inside Knit and silently never leave.
+        render(listOf(row()))
+        compose.onNodeWithContentDescription("Attach photo").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Hold to record a voice message").assertDoesNotExist()
+    }
+
+    @Test
+    fun theDisclosureSaysWhatLeavesTheDeviceAndWhatDoesNot() {
+        // The scope line is the one this sheet exists for: a name that stays off the radio everywhere else
+        // rides on the front of every post here. A sheet that only reassured would be the dishonest version.
+        render(listOf(row()), showConsent = true)
+        compose.onNodeWithText("Who can see this").assertIsDisplayed()
+        compose.onNodeWithText("What does not go out").assertIsDisplayed()
+        compose.onNodeWithText("Your Knit name goes on the front", substring = true).assertIsDisplayed()
+
+        compose.onNodeWithTag("chat_mesh_consent_accept").performClick()
+        assertTrue("accepting has to reach the ViewModel", consentAccepted)
     }
 }

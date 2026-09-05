@@ -256,6 +256,14 @@ class MeshMetrics {
     private val meshPostPassive = AtomicLong()
     private val meshPostRefusedByReason = ConcurrentHashMap<String, AtomicLong>()
 
+    // The LongFast bridge's outbound half. Unlike the five above these DO spend airtime, so `publicPostSent`
+    // read against the PUBLIC bucket in `…debug.LORA` is what says whether the quota is set right. The
+    // refusals are the other half of that: on a two-board pocket exactly one device sends any given post and
+    // the other refuses, so a high refusal count is the ordinary shape rather than a fault.
+    private val publicPostSent = AtomicLong()
+    private val publicPostPassive = AtomicLong()
+    private val publicPostRefusedByReason = ConcurrentHashMap<String, AtomicLong>()
+
     /** A frame this device authored and injected into the mesh. */
     fun onOriginated() {
         framesOriginated.incrementAndGet()
@@ -751,6 +759,21 @@ class MeshMetrics {
         meshPostRefusedByReason.computeIfAbsent(reason) { AtomicLong() }.incrementAndGet()
     }
 
+    /** One post this pocket put on the foreign public channel. The only counter here that cost airtime. */
+    fun onPublicPostSent() {
+        publicPostSent.incrementAndGet()
+    }
+
+    /** A post another board in this pocket is transmitting instead. Expected on a spare board. */
+    fun onPublicPostPassive() {
+        publicPostPassive.incrementAndGet()
+    }
+
+    /** A post this device did not put on the air, by `PublicPostRefusal`. */
+    fun onPublicPostRefused(reason: String) {
+        publicPostRefusedByReason.computeIfAbsent(reason) { AtomicLong() }.incrementAndGet()
+    }
+
     @Suppress("LongMethod") // a flat field-by-field copy — one line per counter; splitting it would only scatter it
     fun snapshot(): Snapshot {
         val byReason = drops.mapValues { it.value.get() }
@@ -846,6 +869,9 @@ class MeshMetrics {
             meshPostViaMqtt = meshPostViaMqtt.get(),
             meshPostPassive = meshPostPassive.get(),
             meshPostRefusedByReason = meshPostRefusedByReason.mapValues { it.value.get() },
+            publicPostSent = publicPostSent.get(),
+            publicPostPassive = publicPostPassive.get(),
+            publicPostRefusedByReason = publicPostRefusedByReason.mapValues { it.value.get() },
         )
     }
 
@@ -940,5 +966,8 @@ class MeshMetrics {
         val meshPostViaMqtt: Long = 0,
         val meshPostPassive: Long = 0,
         val meshPostRefusedByReason: Map<String, Long> = emptyMap(),
+        val publicPostSent: Long = 0,
+        val publicPostPassive: Long = 0,
+        val publicPostRefusedByReason: Map<String, Long> = emptyMap(),
     )
 }

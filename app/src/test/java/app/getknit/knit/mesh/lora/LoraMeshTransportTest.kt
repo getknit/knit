@@ -580,6 +580,164 @@ class LoraMeshTransportTest {
             b.transport.stop()
         }
 
+    // --- The LongFast bridge: posting on the foreign mesh's public primary. ---
+
+    @Test
+    fun aPostGoesOutOnThePublicPrimaryAsPlainMeshtasticChat() =
+        runTest {
+            // Index 0 and TEXT_MESSAGE_APP are the whole difference between this and a Knit frame, and
+            // neither is visible in the payload — so they are asserted rather than inferred. The hop limit
+            // is load-bearing for the same reason it is on the Knit path: omit it and nothing repeats us.
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf())
+
+            assertTrue(r.transport.postToPublicChannel("Alice", "meet at the trailhead"))
+            runCurrent()
+
+            assertEquals(
+                "Alice: meet at the trailhead",
+                r.link.sent
+                    .single()
+                    .decodeToString(),
+            )
+            assertEquals(LongFastPolicy.PRIMARY_INDEX, r.link.sentChannels.single())
+            assertEquals(MeshtasticProto.PORT_TEXT_MESSAGE, r.link.sentPortnums.single())
+            assertEquals(LoraMeshTransport.HOP_LIMIT, r.link.sentHopLimits.single())
+            assertEquals(1L, r.metrics.snapshot().publicPostSent)
+            r.transport.stop()
+        }
+
+    @Test
+    fun aKnitFrameStillGoesToTheBoundSlotWhileThePublicPathIsInUse() =
+        runTest {
+            // The two paths share one queue and one duty-cycle ledger but must never share a destination.
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf())
+
+            r.transport.postToPublicChannel("Alice", "hello mesh")
+            runCurrent()
+            r.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "a Knit room post"))
+            advanceTimeBy(4_000)
+            runCurrent()
+
+            assertEquals(listOf(LongFastPolicy.PRIMARY_INDEX, 1), r.link.sentChannels)
+            assertEquals(
+                listOf(MeshtasticProto.PORT_TEXT_MESSAGE, MeshtasticProto.PORT_PRIVATE_APP),
+                r.link.sentPortnums,
+            )
+            r.transport.stop()
+        }
+
+    @Test
+    fun onlyTheActiveGatewayPutsAPostOnTheAir() =
+        runTest {
+            // Every phone in a pocket sees every post; exactly one transmits it. A passive board refusing is
+            // the ordinary shape here, not a fault, so it gets its own counter rather than a refusal reason.
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf())
+            // A co-pocket rival with a lower publisher key takes the ACTIVE role; we stand down (ADR 044).
+            r.transport.suppressDataPath(setOf("bob"))
+            r.link.deliver(
+                from = 9u,
+                channelIndex = 1,
+                portnum = MeshtasticProto.PORT_PRIVATE_APP,
+                payload = LoraCtl.encodeOffer(StoreDigest.hash64("bob"), IntArray(0), 200),
+            )
+            runCurrent()
+
+            assertFalse(r.transport.postToPublicChannel("Alice", "hello mesh"))
+            runCurrent()
+
+            assertTrue(r.link.sent.isEmpty())
+            assertEquals(1L, r.metrics.snapshot().publicPostPassive)
+            r.transport.stop()
+        }
+
+    @Test
+    fun aSecondPostInsideTheFloorIsRefusedRatherThanQueued() =
+        runTest {
+            // The floor is about how often this gateway decides to speak, so it is claimed at the decision
+            // and not at the write — otherwise a burst queues up behind one inter-packet gap and goes out
+            // anyway, a few seconds later.
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf())
+
+            assertTrue(r.transport.postToPublicChannel("Alice", "first"))
+            assertFalse(r.transport.postToPublicChannel("Alice", "second"))
+            advanceTimeBy(LoraMeshTransport.PUBLIC_POST_FLOOR_MS)
+            runCurrent()
+
+            assertEquals(listOf("Alice: first"), r.link.sent.map { it.decodeToString() })
+            assertEquals(
+                1L,
+                r.metrics.snapshot().publicPostRefusedByReason[PublicPostRefusal.TOO_SOON.name],
+            )
+            r.transport.stop()
+        }
+
+    @Test
+    fun aRenamedPrimaryIsNeverPostedTo() =
+        runTest {
+            // The same rule that refuses to *read* a renamed primary refuses to write one: a board whose
+            // index 0 is somebody's private group must not receive a Knit user's cleartext words either.
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf(), primaryName = "Book club")
+
+            assertFalse(r.transport.postToPublicChannel("Alice", "hello mesh"))
+            runCurrent()
+
+            assertTrue(r.link.sent.isEmpty())
+            assertEquals(
+                1L,
+                r.metrics.snapshot().publicPostRefusedByReason[PublicPostRefusal.NOT_STOCK_PRIMARY.name],
+            )
+            r.transport.stop()
+        }
+
+    @Test
+    fun aBoardWithKnitBoundToIndexZeroHasNoPublicPrimaryToPostOn() =
+        runTest {
+            // The write-side twin of `aBoardWithKnitBoundToIndexZeroReadsNoPublicPrimary`: on such a board
+            // index 0 is Knit's own traffic, so a "public" post there would land on the Knit channel.
+            val air = FakeMeshtasticAir()
+            val r = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            r.transport.start()
+            runCurrent()
+
+            assertFalse(r.transport.postToPublicChannel("Alice", "hello mesh"))
+            runCurrent()
+
+            // Not "nothing was sent" and not "nothing went to index 0" — this rig beacons its own profile
+            // on session-up, and on this board index 0 *is* where Knit's own traffic goes. The claim is
+            // that no Meshtastic chat packet went out, which is the shape a public post would have had.
+            assertTrue(r.link.sentPortnums.none { it == MeshtasticProto.PORT_TEXT_MESSAGE })
+            assertEquals(
+                1L,
+                r.metrics.snapshot().publicPostRefusedByReason[PublicPostRefusal.KNIT_ON_PRIMARY.name],
+            )
+            r.transport.stop()
+        }
+
+    @Test
+    fun ourOwnBoardsTransmissionIsNeverReadBackInAsSomebodyElsesPost() =
+        runTest {
+            // The echo case. Narrow on purpose: only *our* board, never every radio that also speaks Knit —
+            // a far pocket's board hearing this post off the air is exactly how it reaches those people.
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = bridgeRig(air, posts)
+
+            r.link.deliverPublicText(from = 1u, body = "Alice: hello mesh", id = 42u)
+            runCurrent()
+
+            assertTrue(posts.isEmpty())
+            assertEquals(
+                1L,
+                r.metrics.snapshot().meshPostRefusedByReason[LongFastPolicy.Refusal.OWN_BOARD.name],
+            )
+            r.transport.stop()
+        }
+
     @Test
     fun aBoardWhoseSlotIsNotTheKnitChannelStaysSilent() =
         runTest {

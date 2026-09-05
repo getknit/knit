@@ -50,6 +50,9 @@ class FakeMeshController : MeshController {
     )
 
     val sentChats = mutableListOf<SentChat>()
+
+    /** Bodies passed to [sendPublicPost] — the bridged room's own origination path, never [sendChat]. */
+    val sentPublicPosts = mutableListOf<String>()
     val sentGroupUpdates = mutableListOf<GroupInfo>()
     val sentGroupLeaves = mutableListOf<String>()
     val sentReactions = mutableListOf<Pair<String, String>>()
@@ -57,6 +60,9 @@ class FakeMeshController : MeshController {
 
     /** When false, [sendChat] records the call but returns false (simulates the moderator flagging the text). */
     var sendChatResult = true
+
+    /** The same, for [sendPublicPost]: the room moderator screens a public-channel post too. */
+    var sendPublicPostResult = true
 
     /** What [spoolStatus] answers — the Internet plane, as Diagnostics and the relay screen read it. */
     var spools: List<SpoolStatus> = emptyList()
@@ -93,6 +99,11 @@ class FakeMeshController : MeshController {
     ): Boolean {
         sentChats += SentChat(text, attachment, mentions, recipientId, group, replyTo)
         return sendChatResult
+    }
+
+    override suspend fun sendPublicPost(text: String): Boolean {
+        sentPublicPosts += text
+        return sendPublicPostResult
     }
 
     override suspend fun sendGroupUpdate(group: GroupInfo) {

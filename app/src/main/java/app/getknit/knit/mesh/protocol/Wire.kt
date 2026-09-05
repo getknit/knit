@@ -275,21 +275,27 @@ data class TypingContent(
 )
 
 /**
- * Content of a [FrameType.MESH_POST] frame — one post overheard on a foreign mesh's public channel and
- * re-published into Knit by the gateway phone whose board heard it.
+ * Content of a [FrameType.MESH_POST] frame — one post in the bridged public room. It carries **two** shapes,
+ * and [node] is the discriminator between them:
  *
- * **Everything here is an attribution, not an identity.** The frame's [RelayEnvelope.senderId] is the
- * gateway, which is who signed it and the only party any of this is authenticated against; [node] and [name]
- * are what an unauthenticated public channel said about itself, are trivially spoofable, and must never be
- * rendered as a Knit peer. Nothing in this payload creates a peer row, counts toward presence, or is
- * addressable.
+ * - **[node] non-null — overheard.** A post the gateway phone's board heard on a foreign mesh's public
+ *   channel and re-published into Knit. **Everything about its author is an attribution, not an identity.**
+ *   The frame's [RelayEnvelope.senderId] is the gateway, which is who signed it and the only party any of
+ *   this is authenticated against; [node] and [name] are what an unauthenticated public channel said about
+ *   itself, are trivially spoofable, and must never be rendered as a Knit peer. Nothing in this payload
+ *   creates a peer row, counts toward presence, or is addressable.
+ * - **[node] null — written here.** A post a Knit user typed in the room, signed by that user, which the
+ *   pocket's ACTIVE gateway also puts on the foreign channel. Its author *is* [RelayEnvelope.senderId], a
+ *   real pinned identity, so it renders as an ordinary Knit message. It cannot carry [node] or [packetId]:
+ *   the author's phone may hold no radio at all, and does not know which gateway will transmit it, under
+ *   which node number, or with which packet id.
  *
  * The fields split three ways. [body], [node] and [packetId] are the post itself — [packetId] rides because
- * the frame id is derived from it, so a receiver can check that derivation rather than take the id on trust.
- * [name] and [channel] are snapshots taken at mint, because the receiver has no way to look either up: it has
- * no NodeDB and no sight of the gateway board's channel table. [hops], [snrDeci] and [viaMqtt] describe how
- * the post reached *this pocket's* board — a property of the crossing, which is why they are carried rather
- * than derived, and the raw material of the volume measurement the receive-only phase exists to produce.
+ * an overheard post's frame id is derived from it, so a receiver can check that derivation rather than take
+ * the id on trust. [name] and [channel] are snapshots taken at mint, because the receiver has no way to look
+ * either up: it has no NodeDB and no sight of the gateway board's channel table. [hops], [snrDeci] and
+ * [viaMqtt] describe how the post reached *this pocket's* board — a property of the crossing, which is why
+ * they are carried rather than derived, and the raw material of the volume measurement phase 1 produced.
  *
  * [snrDeci] is deci-dB rather than the radio's own float so the encoding pins byte-exactly in
  * `GoldenVectorTest`; a tenth of a dB is well inside what the measurement can use.
@@ -297,11 +303,20 @@ data class TypingContent(
 @Serializable
 data class MeshPostContent(
     val body: String,
-    /** The speaker's Meshtastic node number, widened from its unsigned 32 bits. Also renders its `!hex` id. */
-    val node: Long,
-    /** The Meshtastic packet id the frame id derives from, widened the same way. */
-    val packetId: Long,
-    /** `User.long_name` as the gateway's NodeDB had it at mint; null when the gateway had never heard one. */
+    /**
+     * The speaker's Meshtastic node number, widened from its unsigned 32 bits; also renders its `!hex` id.
+     * **Null means the post was written in Knit rather than overheard** — the discriminator the whole
+     * two-shape reading above hangs off, and the one thing that decides whether a row gets an origin.
+     */
+    val node: Long? = null,
+    /** The Meshtastic packet id an overheard post's frame id derives from, widened the same way. */
+    val packetId: Long? = null,
+    /**
+     * The name this post's author goes by: `User.long_name` as the gateway's NodeDB had it for an overheard
+     * post, the author's own display name for one written here. One field because it answers one question,
+     * and carrying it rather than resolving it means the text that reaches the air is identical whichever
+     * gateway transmits it — including one that has never seen the author's profile.
+     */
     val name: String? = null,
     /** The public channel's name as the gateway's board reported it — `LongFast`, `LongTurbo`, `MediumFast`. */
     val channel: String? = null,

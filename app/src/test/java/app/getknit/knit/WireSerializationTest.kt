@@ -501,6 +501,19 @@ class WireSerializationTest {
     }
 
     @Test
+    fun `a post written in Knit carries no Meshtastic identity, because its author has none`() {
+        // The two shapes of one type, and the discriminator between them. An author's phone may hold no radio
+        // at all, and which gateway transmits this — under which node number, with which packet id — is
+        // decided later and elsewhere, so both ride absent rather than as zero.
+        val authored = MeshPostContent(body = "meet at the trailhead", name = "Alice")
+        val encoded = WireCodec.encodePayload(authored)
+        assertEquals(authored, WireCodec.decodePayload<MeshPostContent>(encoded))
+        assertNull("no speaker means no origin, and no origin means it renders as ours", authored.node)
+        assertFalse("an absent node must not ride", encoded.decodeToString().contains("node"))
+        assertFalse("nor an absent packet id", encoded.decodeToString().contains("packetId"))
+    }
+
+    @Test
     fun `a build that predates the bridge decodes a mesh post, relays it, and renders nothing`() {
         // The whole additive argument in one test. `type` is a plain String, so the decode does not throw and
         // the router keeps its id to dedup and forward by; nothing about the payload is required for that.

@@ -530,6 +530,31 @@ construction — it re-publishes something that was already broadcast unencrypte
 discloses to a carrier only what a radio in that neighbourhood could already hear, plus which Knit node was
 listening.
 
+**Precedent — relaxing a required field to optional is a flag day on the *decoder*, and that is not the same
+thing as a divergence (the LongFast bridge's outbound half, ADR 2026-09.7r4d).** Rule 1 above says every field
+added after v1 must be nullable or defaulted, and every precedent here has obeyed it in the direction of
+*adding*. This is the first change to go the other way: `MeshPostContent.node` and `packetId` were required
+and are now optional, because a post typed **in** the bridged room has neither — its author's phone may hold
+no radio at all, and which gateway transmits it, under which node number and with which packet id, is decided
+later and elsewhere. `node == null` is then the discriminator between the two shapes the one type carries.
+
+A build that predates the change fails `decodePayload` on the new shape and renders nothing. What matters is
+what that does **not** touch: custody and relay run outside `dispatchByType`, so the frame is still stored,
+still folded into the content digest and still forwarded. So the two failure modes have to be named
+separately — a **decoder** flag day, where an old build silently shows less, and a **digest** divergence,
+where two builds hold different live sets and churn the cue plane against each other (the `meshpost` entry
+above, ADR 006). This is the first and not the second, and the mitigation is different in kind: a divergence
+needs a gate, while this needs only that the fleet reflash together. Both are still flag days, and both are
+tolerable here only because `BuildConfig.LORA_PLANE` keeps the whole plane out of shipped builds.
+
+What it spends beyond that: **nothing**. No new `type`, no new `isCustodial` entry, no capability bit, no ctl
+value, no conversation id, no DB column, no custody bucket — the outbound post is the same `meshpost`, in the
+same room, under the same 6 h TTL and quota, with the same no-receipt rule and the same "never back on the
+LoRa band" exclusions. One new golden vector (`meshPostContentAuthored`, `a2` on the wire — body and name),
+and the two existing ones are unmoved because both still set all three fields. That economy is the argument
+for the whole shape: a `chat` frame carrying a room discriminator would have needed a decision about every
+one of those, and got them all wrong on an old build.
+
 **Precedent — a new attachment *kind* that spends no field (link-preview cards, ADR 2026-09.n752).** A
 card the sender fetched rides as a content-addressed blob under one new MIME value,
 `application/vnd.knit.link-preview`, inside the existing `attachmentMime` — sealed in `MessageContent`

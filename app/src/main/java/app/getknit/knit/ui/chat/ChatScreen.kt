@@ -93,6 +93,7 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Sensors
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -102,12 +103,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -261,6 +264,7 @@ fun ChatScreen(
     val confirmAttachment by viewModel.confirmAttachment.collectAsStateWithLifecycle()
     val stagedAttachmentRelay by viewModel.stagedAttachmentRelay.collectAsStateWithLifecycle()
     val linkPreviewLoading by viewModel.linkPreviewLoading.collectAsStateWithLifecycle()
+    val showPublicConsent by viewModel.showPublicConsent.collectAsStateWithLifecycle()
     val voiceRecording by viewModel.voiceRecording.collectAsStateWithLifecycle()
     val voicePlayback by viewModel.voicePlayback.collectAsStateWithLifecycle()
     val recentReactions by viewModel.recentReactions.collectAsStateWithLifecycle()
@@ -440,6 +444,9 @@ fun ChatScreen(
             // emits clearInput only once a message is actually accepted (see the collector above).
             viewModel.send(text, applied, replyingTo)
         },
+        showPublicConsent = showPublicConsent,
+        onAcceptPublicConsent = viewModel::acceptPublicConsent,
+        onDismissPublicConsent = viewModel::dismissPublicConsent,
         onAttachClick = {
             picker.launch(
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
@@ -565,6 +572,11 @@ internal fun ChatScreenContent(
     // content-level tests can leave it out.
     onOpenMessageDetails: (messageId: String) -> Unit = {},
     onSend: () -> Unit,
+    // The bridged room's first-use disclosure. Raised by the ViewModel when a post is attempted before it
+    // has been accepted, so the draft the user already wrote is what gets sent once they accept.
+    showPublicConsent: Boolean = false,
+    onAcceptPublicConsent: () -> Unit = {},
+    onDismissPublicConsent: () -> Unit = {},
     onAttachClick: () -> Unit,
     // Long-pressing the attach affordance opens the in-app camera (ADR 029, unchanged); the paperclip in
     // the field opens the file picker. Defaulted so previews and the content tests need no extra wiring.
@@ -858,50 +870,53 @@ internal fun ChatScreenContent(
             )
         },
         bottomBar = {
-            // The bridged room takes no composer at all rather than a disabled one. A greyed-out input
-            // invites the user to work out why it will not take their message; a line saying Knit does not
-            // post to this channel answers that before they try.
-            if (!state.canSend) {
-                ReadOnlyFooter()
-            } else {
-                MessageInput(
-                    state = inputState,
-                    isSending = isSending,
-                    pendingAttachment = pendingAttachment,
-                    stagedAttachmentRelay = stagedAttachmentRelay,
-                    candidates = state.mentionCandidates,
-                    replyingTo = replyingTo,
-                    myNodeId = state.myNodeId,
-                    onCancelReply = onCancelReply,
-                    onMentionAdded = onMentionAdded,
-                    onAttachClick = onAttachClick,
-                    onCameraClick = onCameraClick,
-                    // Files are DM/group only, for the reason voice notes are: nothing on the device can screen
-                    // one, and the room floods unencrypted to everyone in range. See docs/CONTENT_MODERATION.md §7.
-                    fileEnabled = state.canSendFile,
-                    onFileClick = onFileClick,
-                    onClearAttachment = onClearAttachment,
-                    onReceiveImage = onReceiveImage,
-                    onSend = onSend,
-                    onTyping = onTyping,
-                    onDraftChanged = onDraftChanged,
-                    linkPreviewLoading = linkPreviewLoading,
-                    loraBudget =
-                        loraBudgetFor(state.loraCarry, replying = replyingTo != null, attached = pendingAttachment != null),
-                    // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
-                    // no on-device model can screen speech, so it is the one place unscreenable audio is not
-                    // offered. See docs/CONTENT_MODERATION.md.
-                    voiceEnabled = !state.isRoom,
-                    voiceRecording = voiceRecording,
-                    voicePlayback = voicePlayback,
-                    onStartVoice = onStartVoice,
-                    onLockVoice = onLockVoice,
-                    onStopVoice = onStopVoice,
-                    onCancelVoice = onCancelVoice,
-                    onVoicePlay = onVoicePlay,
-                    onVoiceSeek = onVoiceSeek,
-                )
-            }
+            MessageInput(
+                state = inputState,
+                isSending = isSending,
+                pendingAttachment = pendingAttachment,
+                stagedAttachmentRelay = stagedAttachmentRelay,
+                candidates = state.mentionCandidates,
+                replyingTo = replyingTo,
+                myNodeId = state.myNodeId,
+                onCancelReply = onCancelReply,
+                onMentionAdded = onMentionAdded,
+                onAttachClick = onAttachClick,
+                onCameraClick = onCameraClick,
+                // Files are DM/group only, for the reason voice notes are: nothing on the device can screen
+                // one, and the room floods unencrypted to everyone in range. See docs/CONTENT_MODERATION.md §7.
+                fileEnabled = state.canSendFile,
+                // Naming the author in the hint is the whole of the ADR 049 exception's visible surface:
+                // everywhere else on the radio this user is "Knit abcd", and here they are themselves.
+                hint =
+                    if (!state.isBridged) {
+                        null
+                    } else {
+                        state.publicPostName?.let { stringResource(R.string.chat_mesh_hint, it) }
+                            ?: stringResource(R.string.chat_mesh_hint_anon)
+                    },
+                onFileClick = onFileClick,
+                onClearAttachment = onClearAttachment,
+                onReceiveImage = onReceiveImage,
+                onSend = onSend,
+                onTyping = onTyping,
+                onDraftChanged = onDraftChanged,
+                linkPreviewLoading = linkPreviewLoading,
+                loraBudget =
+                    loraBudgetFor(state.loraCarry, replying = replyingTo != null, attached = pendingAttachment != null),
+                // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
+                // no on-device model can screen speech, so it is the one place unscreenable audio is not
+                // offered. See docs/CONTENT_MODERATION.md.
+                attachEnabled = !state.isBridged,
+                voiceEnabled = !state.isRoom && !state.isBridged,
+                voiceRecording = voiceRecording,
+                voicePlayback = voicePlayback,
+                onStartVoice = onStartVoice,
+                onLockVoice = onLockVoice,
+                onStopVoice = onStopVoice,
+                onCancelVoice = onCancelVoice,
+                onVoicePlay = onVoicePlay,
+                onVoiceSeek = onVoiceSeek,
+            )
         },
     ) { padding ->
         // Column rather than a list item so the relay notice stays pinned: it states a standing fact
@@ -1137,6 +1152,15 @@ internal fun ChatScreenContent(
         )
     }
 
+    if (showPublicConsent) {
+        ModalBottomSheet(
+            onDismissRequest = onDismissPublicConsent,
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        ) {
+            PublicPostConsentBody(onAccept = onAcceptPublicConsent, onDecline = onDismissPublicConsent)
+        }
+    }
+
     relayMarkerExplained?.let { cause ->
         // The peer's name makes the fallback concrete ("arrives when you and Ana are in range") rather
         // than abstract; in the room and in groups the title is already the collective noun.
@@ -1293,27 +1317,46 @@ private fun LoraNotice(
 }
 
 /**
- * What stands in for the composer in a read-only thread: a line saying so, in the same slot the input would
- * occupy. Its own footer rather than a disabled [MessageInput] because a greyed-out text field is a puzzle —
- * the user taps it, nothing happens, and nothing explains why.
+ * The disclosure shown once, before the first post a user sends to the foreign mesh's public channel.
+ *
+ * Split can/cannot rather than a paragraph, the way the Internet plane's sheet is (`ui/relay/`), because the
+ * two halves are what a person actually has to weigh. The third line is the one this sheet exists for: ADR 049
+ * keeps the user's name off the public band everywhere else, and a post here puts it on the front of every
+ * message in the clear. Burying that mid-sentence would be the kind of technically-true disclosure nobody
+ * reads.
+ *
+ * Decline first, accept second — the destructive-ish choice should not be the one under the thumb.
  */
 @Composable
-private fun ReadOnlyFooter() {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.fillMaxWidth().testTag("chat_read_only"),
+private fun PublicPostConsentBody(
+    onAccept: () -> Unit,
+    onDecline: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        Text(stringResource(R.string.chat_mesh_consent_title), style = MaterialTheme.typography.headlineSmall)
+        Text(stringResource(R.string.chat_mesh_consent_can_title), style = MaterialTheme.typography.titleSmall)
+        Text(stringResource(R.string.chat_mesh_consent_can_body), style = MaterialTheme.typography.bodyMedium)
+        Text(stringResource(R.string.chat_mesh_consent_cannot_title), style = MaterialTheme.typography.titleSmall)
+        Text(stringResource(R.string.chat_mesh_consent_cannot_body), style = MaterialTheme.typography.bodyMedium)
         Text(
-            text = stringResource(R.string.chat_mesh_read_only),
+            text = stringResource(R.string.chat_mesh_consent_scope),
             style = MaterialTheme.typography.bodySmall,
-            textAlign = TextAlign.Center,
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+        ) {
+            TextButton(onClick = onDecline) { Text(stringResource(R.string.chat_mesh_consent_decline)) }
+            Spacer(Modifier.width(8.dp))
+            Button(
+                onClick = onAccept,
+                modifier = Modifier.testTag("chat_mesh_consent_accept"),
+            ) { Text(stringResource(R.string.chat_mesh_consent_accept)) }
+        }
     }
 }
 
@@ -2725,6 +2768,13 @@ private fun MessageInput(
     // The LoRa body budget for this draft ([loraBudgetFor]), or null when it would not ride the board. Above
     // it the composer shows the "long message" hint — a hedge, since the true ceiling is a little higher.
     loraBudget: Int? = null,
+    // Replaces the field's "Knit Message" hint. The bridged room passes "Post as Alex", so the one place the
+    // user's name leaves Knit for a public band says whose name that is before a word is typed.
+    hint: String? = null,
+    // Whether the trailing button falls back to Attach on an empty draft, and whether its long-press opens
+    // the camera. Off in the bridged room: a photo has no way onto a foreign mesh's text channel, so it
+    // would flood inside Knit and silently never leave — an affordance that lies about what it does.
+    attachEnabled: Boolean = true,
     // Voice notes. Off in the broadcast room (see the call site). While `voiceRecording` is non-null the
     // whole input row is replaced by the recording bar — there is nothing useful to type mid-recording, and
     // leaving the field live would put the keyboard over the cancel affordance.
@@ -2984,7 +3034,7 @@ private fun MessageInput(
                             // The hint is a sibling overlay, so wire it onto the field as its accessibility
                             // label (the field would otherwise be an unnamed edit box); the visible hint is
                             // then marked decorative to avoid TalkBack reading it twice.
-                            val messageHint = stringResource(R.string.chat_message_hint)
+                            val messageHint = hint ?: stringResource(R.string.chat_message_hint)
                             if (state.text.isEmpty()) {
                                 Text(
                                     messageHint,
@@ -3059,7 +3109,7 @@ private fun MessageInput(
                 val action =
                     when {
                         showSending -> SendAction.Sending
-                        canSend -> SendAction.Send
+                        canSend || !attachEnabled -> SendAction.Send
                         else -> SendAction.Attach
                     }
                 val actionDescription =
@@ -3088,7 +3138,7 @@ private fun MessageInput(
                                 // feeling dead-but-pressable).
                                 onClick = {
                                     if (!showSending) {
-                                        if (canSend) {
+                                        if (canSend || !attachEnabled) {
                                             // The send itself is the only confirmation the composer gives:
                                             // the field clears and the bubble is already at the bottom of a
                                             // list the user may not be looking at.
@@ -3101,9 +3151,9 @@ private fun MessageInput(
                                 },
                                 // Only in attach mode: long-pressing *Send* to open a camera would be
                                 // surprising, and could interrupt the send it looks like it triggers.
-                                onLongClickLabel = takePhotoLabel.takeIf { !canSend && !showSending },
+                                onLongClickLabel = takePhotoLabel.takeIf { attachEnabled && !canSend && !showSending },
                                 onLongClick =
-                                    if (!canSend && !showSending) {
+                                    if (attachEnabled && !canSend && !showSending) {
                                         { onCameraClick() }
                                     } else {
                                         null

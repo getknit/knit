@@ -122,6 +122,9 @@ class GoldenVectorTest {
                 ),
             "meshPostContentBare" to
                 WireCodec.encodePayload(MeshPostContent(body = "hi", node = 1, packetId = 2)),
+            // The authored shape: written in Knit rather than overheard, so no Meshtastic identity at all.
+            "meshPostContentAuthored" to
+                WireCodec.encodePayload(MeshPostContent(body = "hi", name = "Alice")),
             "mention" to WireCodec.encodePayload(Mention("node1", "Ann")),
             "replyRef" to WireCodec.encodePayload(ReplyRef("m0", "a", "Ann", "see you", hasAttachment = true)),
             "wrappedKey" to WireCodec.encodePayload(WrappedKey(to = "bob", wk = bytes(80, 4))),
@@ -444,6 +447,7 @@ class GoldenVectorTest {
                 // `a3` = map(3): the three required fields alone. Every optional one is elided while unset,
                 // which is what makes them additive — and what keeps a name-less post small.
                 "meshPostContentBare" to "a364626f6479626869646e6f646501687061636b6574496402",
+                "meshPostContentAuthored" to "a264626f6479626869646e616d6565416c696365",
                 "mention" to "a2666e6f64654964656e6f646531646e616d6563416e6e",
                 "replyRef" to
                     "a5696d6573736167654964626d3068617574686f724964616166617574686f7263416e6e67736e69707065746773656520796f756d68" +
