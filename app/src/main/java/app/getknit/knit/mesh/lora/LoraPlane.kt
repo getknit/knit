@@ -32,6 +32,18 @@ data class LoraFacts(
      * percentage, so a busy plane does not re-emit the facts on every packet. False unless [plane] is Live.
      */
     val airtimeSpent: Boolean = false,
+    /**
+     * The board's primary (slot 0) channel as the Meshtastic room names it — its own name, else the preset's
+     * (`LongFast`, `MediumFast`, …) — while [plane] is [LoraPlane.Live]; null otherwise, and null on a board
+     * that has neither named it nor reported its preset. The room's title and the chat-list row read it.
+     */
+    val primaryChannel: String? = null,
+    /**
+     * Whether a post typed in the Meshtastic room can leave this device now: the link is live and slot 0 is
+     * not the Knit channel itself. Structural only — the 30 s floor and the airtime budget are answered per
+     * send, by the outcome the board hands back.
+     */
+    val canPost: Boolean = false,
 )
 
 /**

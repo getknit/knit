@@ -116,6 +116,17 @@ class LoraReachTest {
     }
 
     @Test
+    fun `the room's composer is gated on a live board that can post, and nothing else is gated at all`() {
+        assertEquals(PublicPostGate.NoRadio, publicPostGateFor(Conversations.MESHTASTIC, LoraFacts()))
+        assertEquals(PublicPostGate.RadioDown, publicPostGateFor(Conversations.MESHTASTIC, LoraFacts(LoraPlane.Down)))
+        assertEquals(PublicPostGate.ChannelUnusable, publicPostGateFor(Conversations.MESHTASTIC, LoraFacts(LoraPlane.Live)))
+        assertEquals(PublicPostGate.Open, publicPostGateFor(Conversations.MESHTASTIC, LoraFacts(LoraPlane.Live, canPost = true)))
+        // Every other thread is open whatever the radio is doing — the gate is about the room's own path.
+        assertEquals(PublicPostGate.Open, publicPostGateFor(Conversations.NEARBY, LoraFacts()))
+        assertEquals(PublicPostGate.Open, publicPostGateFor("ana", LoraFacts(LoraPlane.Down)))
+    }
+
+    @Test
     fun `the bridged room carries nothing here — its length rule is a hard cap of its own`() {
         // Not None because the plane is down: a bridged post is capped to a Meshtastic frame in the composer
         // whatever this plane is doing. Left as Dm it would take the DM's 320-byte hint and hang a soft "may

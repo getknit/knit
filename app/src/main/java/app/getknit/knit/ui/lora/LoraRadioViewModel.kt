@@ -99,6 +99,8 @@ data class LoraRadioUiState(
     val radioConfig: String? = null,
     /** The name the connected board gives the selected [channel] slot; null while not connected or when unnamed. */
     val channelName: String? = null,
+    /** The board's primary channel as the Meshtastic room names it (its own name, else the preset's); null until known. */
+    val publicChannel: String? = null,
     /**
      * The board is set up for Knit: it carries the Knit channel in a secondary slot, it is named for Knit and
      * its housekeeping is quiet. The only other state is "a stock Meshtastic board" — there is no middle one.
@@ -221,6 +223,7 @@ internal class LoraRadioViewModel(
                 airtimePercent = ready?.let { status.airtime?.let(::airtimePercent) },
                 radioConfig = ready?.radio?.let { "${it.region} ${it.modemPreset}" },
                 channelName = channelName,
+                publicChannel = ready?.let { PublicChannelPolicy.primaryName(it.channels, it.radio) },
                 boardSetUp = setUp,
                 meshName = ready?.board?.owner?.longName,
                 knitName = wanted?.longName,

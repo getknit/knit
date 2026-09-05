@@ -32,11 +32,16 @@ internal class LoraStatusRepository(
                 lora.status,
             ) { enabled, address, dms, status ->
                 val plane = loraPlaneFor(enabled, bound = address != null, state = status.state)
+                val ready = (status.state as? LinkState.Ready)?.takeIf { plane == LoraPlane.Live }
                 LoraFacts(
                     plane = plane,
                     dms = enabled && dms,
                     battery = status.battery.takeIf { plane == LoraPlane.Live },
                     airtimeSpent = plane == LoraPlane.Live && status.airtime?.let(::saturated) == true,
+                    // Both change only on a link transition (the channel table reloads after a setup
+                    // reboot), so the per-send status republish never churns them.
+                    primaryChannel = ready?.let { PublicChannelPolicy.primaryName(it.channels, it.radio) },
+                    canPost = ready != null && !PublicChannelPolicy.isKnitPrimary(ready.channels),
                 )
             }.distinctUntilChanged()
         }

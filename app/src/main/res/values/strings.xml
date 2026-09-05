@@ -43,7 +43,7 @@
     <string name="channel_dms_name">Direct messages</string>
     <string name="channel_dms_desc">Private 1:1 messages</string>
     <string name="channel_meshtastic_name">Meshtastic public channel</string>
-    <string name="channel_meshtastic_desc">Posts your radio overhears on the public Meshtastic channel</string>
+    <string name="channel_meshtastic_desc">Posts on your Meshtastic radio\'s primary channel</string>
     <string name="mention_channel_name">Mentions</string>
     <string name="mention_channel_description">Notifications when someone @-mentions you</string>
 
@@ -657,6 +657,7 @@
     <string name="lora_role_passive">Another Knit board nearby is bridging — this one is listening</string>
     <string name="lora_airtime">Airtime %1$d%% of the current budget</string>
     <string name="lora_radio_config">Radio %1$s</string>
+    <string name="lora_public_channel">Primary channel %1$s</string>
 
     <string name="lora_summary_off">Off</string>
     <string name="lora_summary_connected">On · %1$s · connected</string>
@@ -723,9 +724,8 @@
     <string name="chat_lora_group_body">The LoRa radio carries the Nearby room and private messages, not group chats. Someone here was last heard over LoRa, so they won\'t see these messages until they are back in Wi-Fi or Bluetooth range, or reachable through an Internet relay. Nothing is lost — the messages wait for them.</string>
     <string name="chat_lora_long_message">Long message — it may not reach people over LoRa</string>
 
-    <!-- The bridged Meshtastic public channel: posts a paired board overheard, and who to believe about them -->
-    <string name="chat_mesh_author">%1$s, on the Meshtastic public channel</string>
-    <string name="chat_mesh_via">via %1$s\'s radio</string>
+    <!-- The Meshtastic room: the paired radio's primary channel, and who to believe about the names on it -->
+    <string name="chat_mesh_author">%1$s, on the Meshtastic channel</string>
     <string name="chat_mesh_direct">heard directly</string>
     <plurals name="chat_mesh_hops">
         <item quantity="one">%d hop away</item>
@@ -733,19 +733,33 @@
     </plurals>
     <string name="chat_mesh_snr">SNR %1$.1f dB</string>
     <string name="chat_mesh_mqtt">from the Internet</string>
-    <string name="chat_mesh_room_notice">Public channel — names here are not verified</string>
-    <string name="chat_mesh_room_title">A public Meshtastic channel</string>
-    <string name="chat_mesh_room_body">These posts were overheard by a paired Meshtastic radio on its public channel. Anyone with a radio can send them and anyone can claim any name, so treat both the names and the messages as unverified. Some arrive from the Internet rather than from anyone nearby. What you post here goes out in the clear under your Knit name, and needs a radio nearby to carry it.</string>
+    <string name="chat_mesh_room_notice">Radio channel — names here are not verified</string>
+    <string name="chat_mesh_room_title">Your radio\'s primary channel</string>
+    <string name="chat_mesh_room_body">This room shows the primary channel of the Meshtastic radio paired to this phone. Anyone with a radio in range can post and anyone can claim any name, so treat both as unverified, even a name that matches one of your contacts. Some posts arrive from the Internet rather than from anyone nearby. What you post here leaves through your own radio, in the clear, under your Knit name.</string>
     <string name="chat_mesh_hint">Post as %1$s</string>
-    <string name="chat_mesh_hint_anon">Post to the public channel</string>
+    <string name="chat_mesh_hint_anon">Post to the radio channel</string>
+    <!-- The composer when the room has no radio to post through, or the radio is down. The first two replace
+         the field; the third is only a hint, because a link that flaps on every Bluetooth reconnect must not
+         take the keyboard away mid-sentence. -->
+    <string name="chat_mesh_no_radio">Pair a Meshtastic radio to post here. This room is your own radio\'s primary channel.</string>
+    <string name="chat_mesh_channel_unusable">This radio\'s primary channel can\'t take posts. Check its channels in the Meshtastic app.</string>
+    <string name="chat_mesh_radio_down">Connect your radio to post</string>
+    <string name="chat_mesh_empty">Nothing heard on this channel yet.</string>
+    <!-- Why a post did not leave, said once as a toast; the draft stays. -->
+    <string name="chat_mesh_post_not_connected">Not posted — your radio isn\'t connected</string>
+    <string name="chat_mesh_post_too_soon">Not posted — one post every 30 seconds. Try again shortly.</string>
+    <string name="chat_mesh_post_too_large">Not posted — too long for one radio packet</string>
+    <string name="chat_mesh_post_no_air">Not posted — the radio has used its airtime for now. Try again in a few minutes.</string>
+    <string name="chat_mesh_post_channel_unusable">Not posted — this radio\'s primary channel can\'t take posts</string>
+    <string name="chat_mesh_post_refused">Not posted — the radio refused it. Try again.</string>
     <!-- The composer's length counter as a post nears the Meshtastic frame's limit, and the refusal for
          anything that is not text. The channel carries one short line: the cap is hard, so the counter shows
          what is used out of what there is rather than warning after the fact. The spoken form is separate
          because "183/193" is read aloud as a fraction. -->
     <string name="chat_mesh_post_length">%1$d/%2$d</string>
     <string name="chat_mesh_post_length_a11y">Post length: %1$d of %2$d</string>
-    <string name="chat_mesh_text_only">The public channel carries text only</string>
-    <string name="chat_mesh_consent_title">Post to the public channel?</string>
+    <string name="chat_mesh_text_only">The radio channel carries text only</string>
+    <string name="chat_mesh_consent_title">Post to the radio channel?</string>
     <string name="chat_mesh_consent_can_title">Who can see this</string>
     <string name="chat_mesh_consent_can_body">Anyone with a Meshtastic radio in range. Many radios also pass this channel on to a public Internet server, where it is stored by people you will never meet.</string>
     <string name="chat_mesh_consent_cannot_title">What does not go out</string>
@@ -753,7 +767,7 @@
     <string name="chat_mesh_consent_scope">Your Knit name goes on the front of each post, so people can answer you. Everywhere else on the radio you are just “Knit”. This room only.</string>
     <string name="chat_mesh_consent_accept">Post</string>
     <string name="chat_mesh_consent_decline">Not now</string>
-    <string name="chat_mesh_subtitle">Meshtastic public channel</string>
+    <string name="chat_mesh_subtitle">Your radio\'s primary channel</string>
 
     <!-- Message details ("Message info", from a message's long-press menu) -->
     <string name="message_details_title">Message info</string>

@@ -369,8 +369,12 @@ class MessageNotifier(
                 .setLargeIcon(avatar)
                 .setContentIntent(openChatIntent(r.tag, r.conversationId))
                 .setDeleteIntent(dismissIntent(r.tag))
-                .addAction(replyAction(r.tag, r.conversationId))
-                .addAction(markReadAction(r.tag, r.conversationId))
+                .apply {
+                    // No inline reply for the Meshtastic room: a post there needs the first-use disclosure
+                    // and the byte budget, both of which live in the composer. A reply typed from the shade
+                    // would be echoed as sent and go nowhere.
+                    if (r.kind != ConversationKind.MESHTASTIC) addAction(replyAction(r.tag, r.conversationId))
+                }.addAction(markReadAction(r.tag, r.conversationId))
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(true)
 

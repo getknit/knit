@@ -28,9 +28,9 @@ object NotificationChannels {
     const val DMS = "knit_msg_dms"
     const val MENTIONS = "knit_msg_mentions"
 
-    // The bridged Meshtastic public channel. LOW (silent) rather than Nearby's DEFAULT, because it is the one
-    // room whose volume nobody here controls: it carries a whole neighbourhood's public chat plus whatever
-    // bots and MQTT uplinks are on it. Its own channel, so muting that firehose costs the user nothing else.
+    // The Meshtastic room — the paired radio's primary channel. LOW (silent) rather than Nearby's DEFAULT,
+    // because it is the one room whose volume nobody here controls: it carries a whole neighbourhood's chat
+    // plus whatever bots and MQTT uplinks are on it. Its own channel, so muting that firehose costs nothing else.
     const val MESHTASTIC = "knit_msg_meshtastic"
 
     // Coalesced "message request received" heads-up for a stranger's first (unaccepted) DM/group.

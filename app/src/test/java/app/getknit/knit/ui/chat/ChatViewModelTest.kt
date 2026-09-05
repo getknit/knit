@@ -28,6 +28,8 @@ import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.linkpreview.LinkPreviewService
 import app.getknit.knit.mesh.FakeMeshController
+import app.getknit.knit.mesh.PublicPostOutcome
+import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.b64
@@ -199,18 +201,17 @@ class ChatViewModelTest {
         )
 
     @Test
-    fun aBridgedPostIsAttributedToItsSpeakerNotToTheGatewayThatSignedIt() =
+    fun aHeardPostIsAttributedToItsSpeakerNotToUs() =
         runTest {
-            // The frame's senderId is the gateway — the only authenticated party in the row — but the person
-            // who *spoke* is a Meshtastic node the directory knows nothing about. Rendering the gateway's
-            // name and avatar here would put a Knit contact's face on somebody else's words.
+            // The row's senderId is this phone, by convention (its board heard the post) — but the person who
+            // *spoke* is a Meshtastic node the directory knows nothing about. Rendering us here would put our
+            // own name on somebody else's words.
             val vm = vm(Conversations.MESHTASTIC)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
-            peersFlow.value = listOf(peer("sam", name = "Sam", avatarHash = "sam-avatar"))
             messagesFlow.value =
                 listOf(
                     msg(
-                        senderId = "sam",
+                        senderId = "me",
                         body = "anyone around?",
                         id = "mp1",
                         sentAt = 100,
@@ -229,14 +230,112 @@ class ChatViewModelTest {
                 vm.state.value.rows
                     .first { it.id == "mp1" }
             assertEquals("Bob", row.senderName)
-            assertNull("never the gateway's avatar", row.avatarHash)
+            assertFalse("not ours, whatever the sender column says", row.mine)
+            assertNull("a stranger wears no face", row.avatarHash)
             assertEquals("!1234abcd", row.origin?.nodeLabel)
-            assertEquals("Sam", row.origin?.gateway)
+            assertNull(row.origin?.peerId)
             assertEquals(true, row.origin?.viaMqtt)
         }
 
     @Test
-    fun aBridgedPostWithNoKnownNameFallsBackToItsNodeId() =
+    fun aHeardPostFromAContactWearsTheirNameAndAvatarAndDropsTheirOwnPrefix() =
+        runTest {
+            // Lined up at ingest with the contact whose profile claimed the speaker's board. Their board put
+            // "Sam: " on the line for stock clients; shown under Sam's own name that prefix says nothing, so
+            // the bubble drops it while the row keeps what went on the air.
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            peersFlow.value = listOf(peer("sam", name = "Sam", avatarHash = "sam-avatar"))
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "me",
+                        body = "Sam: hi",
+                        id = "mp-sam",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0x1234abcd,
+                        originName = "Knit 1a2b",
+                        originPeerId = "sam",
+                    ),
+                )
+            advanceUntilIdle()
+
+            val row =
+                vm.state.value.rows
+                    .first { it.id == "mp-sam" }
+            assertEquals("Sam", row.senderName)
+            assertEquals("sam-avatar", row.avatarHash)
+            assertEquals("hi", row.body)
+            assertEquals("sam", row.origin?.peerId)
+            assertEquals("the board's own name for them survives on the origin", "Knit 1a2b", row.origin?.name)
+            assertFalse(row.mine)
+        }
+
+    @Test
+    fun aContactsPrefixIsStrippedOnlyWhenItIsTheirs() =
+        runTest {
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            peersFlow.value = listOf(peer("sam", name = "Sam"))
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "me",
+                        body = "Samuel: hi",
+                        id = "a",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 1,
+                        originPeerId = "sam",
+                    ),
+                    msg(
+                        senderId = "me",
+                        body = "Sam: ",
+                        id = "b",
+                        sentAt = 200,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 1,
+                        originPeerId = "sam",
+                    ),
+                    msg(
+                        senderId = "me",
+                        body = "Sam: hi",
+                        id = "c",
+                        sentAt = 300,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 2,
+                    ),
+                )
+            advanceUntilIdle()
+
+            val rows =
+                vm.state.value.rows
+                    .associateBy { it.id }
+            assertEquals("a longer name is not a match", "Samuel: hi", rows.getValue("a").body)
+            assertEquals("stripping to nothing keeps the line", "Sam: ", rows.getValue("b").body)
+            assertEquals("a stranger's line is content", "Sam: hi", rows.getValue("c").body)
+        }
+
+    @Test
+    fun ourOwnPostIsAnOrdinaryOutgoingRowThatNeverTicksTwice() =
+        runTest {
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value =
+                listOf(msg(senderId = "me", body = "hello mesh", id = "own", sentAt = 100, conversationId = Conversations.MESHTASTIC))
+            advanceUntilIdle()
+
+            val row =
+                vm.state.value.rows
+                    .first { it.id == "own" }
+            assertTrue(row.mine)
+            assertNull(row.origin)
+            assertFalse("nothing on the channel acks, so it never shows delivered", row.received)
+        }
+
+    @Test
+    fun aHeardPostWithNoKnownNameFallsBackToItsNodeId() =
         runTest {
             // What every Meshtastic client shows for a node it has no NODEINFO for — so a stranger reads the
             // same here as there, rather than borrowing a name from somewhere.
@@ -245,7 +344,7 @@ class ChatViewModelTest {
             messagesFlow.value =
                 listOf(
                     msg(
-                        senderId = "sam",
+                        senderId = "me",
                         id = "mp2",
                         sentAt = 100,
                         conversationId = Conversations.MESHTASTIC,
@@ -263,14 +362,14 @@ class ChatViewModelTest {
         }
 
     @Test
-    fun theBridgedRoomSpeaksNowAndTakesItsTitleFromTheChannel() =
+    fun theRoomIsTitledByTheLiveBoardThenByItsNewestPost() =
         runTest {
             val vm = vm(Conversations.MESHTASTIC)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
             messagesFlow.value =
                 listOf(
                     msg(
-                        senderId = "sam",
+                        senderId = "me",
                         id = "mp3",
                         sentAt = 100,
                         conversationId = Conversations.MESHTASTIC,
@@ -285,7 +384,91 @@ class ChatViewModelTest {
             assertFalse("nothing on the device can screen a file, and this channel is cleartext", state.canSendFile)
             assertFalse("never a verified badge — nothing here is verified", state.verified)
             assertNull("and no alias suffix: this id is not a peer", state.titleDiscriminator)
-            assertEquals("the channel names itself", "LongTurbo", state.title)
+            assertEquals("with no board connected the newest post names the channel", "LongTurbo", state.title)
+
+            // A connected board names it — whatever the user set slot 0 to, preset or their own word.
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, primaryChannel = "MediumFast", canPost = true)
+            advanceUntilIdle()
+            assertEquals("MediumFast", vm.state.value.title)
+
+            loraFactsFlow.value = LoraFacts()
+            messagesFlow.value = emptyList()
+            advanceUntilIdle()
+            assertEquals(context.getString(R.string.meshtastic_title), vm.state.value.title)
+        }
+
+    @Test
+    fun theComposerGateFollowsTheRadio() =
+        runTest {
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+            assertEquals(PublicPostGate.NoRadio, vm.state.value.publicPostGate)
+
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Down)
+            advanceUntilIdle()
+            assertEquals(PublicPostGate.RadioDown, vm.state.value.publicPostGate)
+
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = false)
+            advanceUntilIdle()
+            assertEquals(PublicPostGate.ChannelUnusable, vm.state.value.publicPostGate)
+
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true)
+            advanceUntilIdle()
+            assertEquals(PublicPostGate.Open, vm.state.value.publicPostGate)
+        }
+
+    @Test
+    fun aPostWithNoLiveRadioIsRefusedBeforeTheDisclosureAndKeepsTheDraft() =
+        runTest {
+            // Asking for the disclosure with no radio to post through would be a question about nothing.
+            val vm = vm(Conversations.MESHTASTIC)
+            val events = mutableListOf<Int>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Down)
+            advanceUntilIdle()
+
+            vm.send("hello mesh")
+            advanceUntilIdle()
+
+            assertEquals(listOf(R.string.chat_mesh_post_not_connected), events)
+            assertFalse(vm.showPublicConsent.value)
+            assertTrue(mesh.sentPublicPosts.isEmpty())
+            assertFalse("the guard is released, the draft is the user's", vm.isSending.value)
+        }
+
+    @Test
+    fun aRefusedPostKeepsTheDraftAndSaysWhy() =
+        runTest {
+            publicConsentFlow.value = true
+            val vm = vm(Conversations.MESHTASTIC)
+            val events = mutableListOf<Int>()
+            var cleared = 0
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.events.collect { events += it } }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.clearInput.collect { cleared++ } }
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true)
+            advanceUntilIdle()
+
+            val expected =
+                mapOf(
+                    PublicPostRefusal.NOT_READY to R.string.chat_mesh_post_not_connected,
+                    PublicPostRefusal.TOO_SOON to R.string.chat_mesh_post_too_soon,
+                    PublicPostRefusal.TOO_LARGE to R.string.chat_mesh_post_too_large,
+                    PublicPostRefusal.NO_AIR to R.string.chat_mesh_post_no_air,
+                    PublicPostRefusal.KNIT_ON_PRIMARY to R.string.chat_mesh_post_channel_unusable,
+                    PublicPostRefusal.NAK to R.string.chat_mesh_post_refused,
+                )
+            for ((reason, string) in expected) {
+                mesh.publicPostOutcome = PublicPostOutcome.Refused(reason)
+                vm.send("hello mesh")
+                advanceUntilIdle()
+                assertEquals(reason.name, string, events.last())
+                assertFalse(vm.isSending.value)
+            }
+            assertEquals("the draft is never cleared on a refusal", 0, cleared)
+            assertEquals(expected.size, mesh.sentPublicPosts.size)
         }
 
     @Test
@@ -306,6 +489,7 @@ class ChatViewModelTest {
         runTest {
             val vm = vm(Conversations.MESHTASTIC)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true) // the gate runs before the disclosure
             advanceUntilIdle()
 
             vm.send("hello mesh")
@@ -322,6 +506,8 @@ class ChatViewModelTest {
             // them on a public band in the same tap as the decision to allow it.
             val vm = vm(Conversations.MESHTASTIC)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true)
+            advanceUntilIdle()
             vm.send("hello mesh")
             advanceUntilIdle()
 
@@ -341,6 +527,7 @@ class ChatViewModelTest {
             publicConsentFlow.value = true
             val vm = vm(Conversations.MESHTASTIC)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true)
             advanceUntilIdle()
 
             vm.send("hello mesh")
@@ -371,8 +558,8 @@ class ChatViewModelTest {
     @Test
     fun aBridgedPostNeverShowsALoRaCongestionNotice() =
         runTest {
-            // Nothing leaves this thread, so no notice about delayed delivery could be true — however spent
-            // the board's airtime window is.
+            // A spent window is answered per send, as a refusal the composer shows — never as a standing
+            // notice about delayed delivery.
             val vm = vm(Conversations.MESHTASTIC)
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
             loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, airtimeSpent = true)

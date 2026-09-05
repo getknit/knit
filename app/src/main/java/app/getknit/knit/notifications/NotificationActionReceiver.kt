@@ -93,10 +93,9 @@ class NotificationActionReceiver :
 
                 ConversationKind.GROUP -> groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo()) }
 
-                // The bridged Meshtastic room is read-only: there is no Knit frame that would reach its
-                // audience, and putting a reply on the public channel is a separate, deliberate act that has
-                // not been built. The notification carries no reply action for it either — this is the
-                // backstop, not the gate.
+                // Inline reply is not offered for the Meshtastic room: a post there needs the first-use
+                // disclosure and the byte budget, which live in the composer, and the notification carries no
+                // reply action for it (MessageNotifier). This is the backstop, not the gate.
                 ConversationKind.MESHTASTIC -> Unit
             }
         }

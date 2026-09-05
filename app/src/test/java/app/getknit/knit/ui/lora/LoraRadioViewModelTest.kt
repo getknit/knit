@@ -224,6 +224,31 @@ class LoraRadioViewModelTest {
         }
 
     @Test
+    fun `a connected board names its primary channel`() =
+        runTest {
+            val vm = start()
+            val radio =
+                LoraRadioConfig(
+                    usePreset = true,
+                    modemPreset = ModemPreset.LONG_FAST,
+                    region = LoraRegion.US,
+                    hopLimit = 3,
+                    overrideDutyCycle = false,
+                )
+            status.value = LoraStatus(state = ready(listOf(ChannelInfo(0, "", role = 1))).copy(radio = radio))
+            advanceUntilIdle()
+            assertEquals("an unnamed slot 0 is the preset's name", "LongFast", vm.state.value.publicChannel)
+
+            status.value = LoraStatus(state = ready(listOf(ChannelInfo(0, "Ridge", role = 1))).copy(radio = radio))
+            advanceUntilIdle()
+            assertEquals("Ridge", vm.state.value.publicChannel)
+
+            status.value = LoraStatus(state = ready(listOf(ChannelInfo(0, "", role = 1))))
+            advanceUntilIdle()
+            assertNull("unnamed and no preset reported: nothing to call it", vm.state.value.publicChannel)
+        }
+
+    @Test
     fun `the airtime ledger is a percentage of the budget, and only while connected`() =
         runTest {
             val vm = start()

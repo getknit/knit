@@ -1,11 +1,13 @@
 package app.getknit.knit.ui.chat
 
 import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -23,9 +25,9 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * The bridged Meshtastic room's screen. Every assertion here is really one rule: a post overheard on somebody
- * else's public channel must never look like a message from a Knit peer — because on that channel anyone can
- * claim any name, and the UI is the only place that distinction is visible.
+ * The Meshtastic room's screen. Every assertion here is really one rule: a post heard on the paired radio's
+ * channel must never look like a message from a Knit peer — a contact it is lined up with included — because
+ * on that channel anyone can claim any name, and the UI is the only place that distinction is visible.
  */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -37,7 +39,7 @@ class ChatMeshRoomTest {
         MeshOrigin(
             nodeLabel = "!1234abcd",
             name = "Bob",
-            gateway = "Sam",
+            peerId = null,
             hops = 2,
             snrDeci = -73,
             viaMqtt = false,
@@ -47,15 +49,17 @@ class ChatMeshRoomTest {
         id: String = "mp1",
         body: String = "anyone around?",
         origin: MeshOrigin? = this.origin,
+        senderName: String? = null,
+        avatarHash: String? = null,
     ) = ChatRow(
         id = id,
         body = body,
         mine = false,
-        // Mirrors ChatViewModel: a bridged author is named by their NODEINFO name when the gateway's board
-        // knew one, and by their `!hex` id when it did not.
-        senderName = origin?.let { it.name ?: it.nodeLabel } ?: "Sam",
+        // Mirrors ChatViewModel: a heard author is named by the contact their board resolved to, else the
+        // NodeDB name the board knew, else their `!hex` id.
+        senderName = senderName ?: origin?.let { it.name ?: it.nodeLabel } ?: "Sam",
         senderNodeId = "sam",
-        avatarHash = null,
+        avatarHash = avatarHash,
         sentAt = 1_700_000_000_000L,
         received = false,
         origin = origin,
@@ -74,6 +78,7 @@ class ChatMeshRoomTest {
     private fun render(
         rows: List<ChatRow>,
         showConsent: Boolean = false,
+        gate: PublicPostGate = PublicPostGate.Open,
     ) = render(
         Conversations.MESHTASTIC,
         ChatUiState(
@@ -83,6 +88,7 @@ class ChatMeshRoomTest {
             canSendFile = false,
             publicPostName = "Alice",
             publicPostBudget = PublicPostPolicy.bodyBudget("Alice"),
+            publicPostGate = gate,
             myNodeId = "me",
             title = "LongFast",
         ),
@@ -128,28 +134,27 @@ class ChatMeshRoomTest {
     }
 
     @Test
-    fun theRoomSaysItIsPublicAndUnverified() {
+    fun theRoomSaysItIsARadioChannelAndUnverified() {
         render(listOf(row()))
         compose.onNodeWithTag("chat_mesh_notice").assertIsDisplayed()
-        compose.onNodeWithText("Public channel — names here are not verified").assertIsDisplayed()
+        compose.onNodeWithText("Radio channel — names here are not verified").assertIsDisplayed()
 
         compose.onNodeWithTag("chat_mesh_notice").performClick()
         compose.onNodeWithText("anyone can claim any name", substring = true).assertIsDisplayed()
     }
 
     @Test
-    fun aBridgedPostNamesItsSpeakerAndTheRadioThatCarriedIt() {
+    fun aHeardPostNamesItsSpeakerAndHowItWasHeard() {
         render(listOf(row()))
         compose.onNodeWithText("Bob").assertIsDisplayed()
         // The bubble merges its children's semantics (it is one long-pressable target), so the line inside
         // it is only addressable by tag in the unmerged tree.
         compose.onNodeWithTag("chat_mesh_origin", useUnmergedTree = true).assertIsDisplayed()
-        // The `!hex` id is shown because it is the only stable handle a bridged author has, and the name
-        // beside it is a claim. The gateway is named because it is the one authenticated party in the row.
-        // The hops and SNR are the reader's only handle on how far away that unverifiable stranger is.
+        // The `!hex` id is shown because it is the only stable handle a heard author has, and the name beside
+        // it is a claim. The hops and SNR are the reader's only handle on how far away that stranger is.
         compose
             .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
-            .assertTextEquals("!1234abcd · via Sam's radio · 2 hops away · SNR -7.3 dB")
+            .assertTextEquals("!1234abcd · 2 hops away · SNR -7.3 dB")
     }
 
     @Test
@@ -160,7 +165,7 @@ class ChatMeshRoomTest {
         compose.onNodeWithText("!1234abcd").assertIsDisplayed()
         compose
             .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
-            .assertTextEquals("via Sam's radio · 2 hops away · SNR -7.3 dB")
+            .assertTextEquals("2 hops away · SNR -7.3 dB")
     }
 
     @Test
@@ -168,36 +173,73 @@ class ChatMeshRoomTest {
         render(listOf(row(origin = origin.copy(hops = 0, snrDeci = 62))))
         compose
             .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
-            .assertTextEquals("!1234abcd · via Sam's radio · heard directly · SNR 6.2 dB")
+            .assertTextEquals("!1234abcd · heard directly · SNR 6.2 dB")
     }
 
     @Test
     fun anUnknownHopCountOrSnrIsAbsentRatherThanZero() {
         // Null is the firmware declining to say (no hop_start, no rxSnr) — which is not the same claim as
         // "heard directly at 0.0 dB", and must not be rendered as one.
-        render(listOf(row(origin = origin.copy(hops = null, snrDeci = null))))
+        render(
+            listOf(
+                row(origin = origin.copy(hops = null, snrDeci = null)),
+                // And with the id already on the name line there is nothing left to say, so no line at all.
+                row(id = "mp2", origin = origin.copy(name = null, hops = null, snrDeci = null)),
+            ),
+        )
+        compose.onAllNodesWithTag("chat_mesh_origin", useUnmergedTree = true).assertCountEquals(1)
         compose
             .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
-            .assertTextEquals("!1234abcd · via Sam's radio")
+            .assertTextEquals("!1234abcd")
     }
 
     @Test
     fun aPostOffAnInternetUplinkSaysSo() {
-        // Last on the line on purpose: the hops and SNR describe the LoRa leg to the gateway's board, so the
-        // caveat that the post entered that mesh from somewhere else is read after them, not instead of them.
+        // Last on the line on purpose: the hops and SNR describe the LoRa leg to this board, so the caveat
+        // that the post entered the mesh from somewhere else is read after them, not instead of them.
         render(listOf(row(origin = origin.copy(viaMqtt = true))))
         compose
             .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
-            .assertTextEquals("!1234abcd · via Sam's radio · 2 hops away · SNR -7.3 dB · from the Internet")
+            .assertTextEquals("!1234abcd · 2 hops away · SNR -7.3 dB · from the Internet")
     }
 
     @Test
     fun aBridgedAuthorIsNotTappable() {
-        // The sharp edge. Routing this tap would land on the *gateway* — a real contact — and offer to
-        // message somebody who never said any of this.
+        // The sharp edge: a name off an open channel is a claim, and there is no profile behind it.
         render(listOf(row()))
-        compose.onNodeWithContentDescription("Bob, on the Meshtastic public channel").assertHasNoClickAction()
+        compose.onNodeWithContentDescription("Bob, on the Meshtastic channel").assertHasNoClickAction()
         assertTrue("nothing may open a profile from here", profileOpened == null)
+    }
+
+    @Test
+    fun aResolvedContactWearsTheirAvatarButIsStillNotTappable() {
+        // Lined up with a contact by node number — a self-asserted profile field, not a signature — so the
+        // bubble wears their name and face and still offers nothing to tap through to.
+        render(listOf(row(origin = origin.copy(name = "Knit 1a2b", peerId = "sam"), senderName = "Sam", avatarHash = "sam-avatar")))
+        compose.onNodeWithText("Sam").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Sam, on the Meshtastic channel").assertHasNoClickAction()
+        assertTrue(profileOpened == null)
+        // The board's own name for the speaker moves down to the provenance line, beside the id.
+        compose
+            .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
+            .assertTextEquals("!1234abcd · Knit 1a2b · 2 hops away · SNR -7.3 dB")
+    }
+
+    @Test
+    fun withNoRadioTheComposerGivesWayToALineSayingSo() {
+        render(listOf(row()), gate = PublicPostGate.NoRadio)
+        compose.onNodeWithTag("chat_mesh_footer").assertIsDisplayed()
+        compose.onNodeWithText("Pair a Meshtastic radio to post here", substring = true).assertIsDisplayed()
+        compose.onNodeWithTag("chat_input").assertDoesNotExist()
+    }
+
+    @Test
+    fun whileTheRadioIsDownTheComposerStaysAndItsHintSaysToConnect() {
+        // A link that flaps on every Bluetooth reconnect must not take the keyboard away mid-sentence.
+        render(listOf(row()), gate = PublicPostGate.RadioDown)
+        compose.onNodeWithTag("chat_input").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Connect your radio to post").assertIsDisplayed()
+        compose.onNodeWithTag("chat_mesh_footer").assertDoesNotExist()
     }
 
     @Test
@@ -233,9 +275,9 @@ class ChatMeshRoomTest {
 
     @Test
     fun aPostIsCappedAtWhatOneMeshtasticFrameCarries() {
-        // The cap is hard rather than a warning: the transmit path trims a long post silently, and does it on
-        // whichever phone in the pocket owns the board — so a sentence cut in half would go out under this
-        // author's name with nothing on their screen to say so. Refusing the byte keeps that decision here.
+        // The cap is hard rather than a warning: the transmit path trims a long post silently, so a sentence
+        // cut in half would go out under this author's name with nothing on their screen to say so. Refusing
+        // the byte keeps that decision here.
         val budget = PublicPostPolicy.bodyBudget("Alice")
         render(listOf(row()))
         compose.onNodeWithTag("chat_input").performTextInput("x".repeat(budget))

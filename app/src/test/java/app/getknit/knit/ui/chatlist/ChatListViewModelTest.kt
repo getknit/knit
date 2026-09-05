@@ -18,6 +18,7 @@ import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.FakeMeshController
 import app.getknit.knit.mesh.lora.LoraFacts
+import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.ui.chat.DeliveryStatus
 import app.getknit.knit.ui.directoryOf
 import app.getknit.knit.ui.group
@@ -90,10 +91,10 @@ class ChatListViewModelTest {
     private fun vm() = ChatListViewModel(messages, peers, settings, identity, mesh, groups, relayFlow, loraFlow, context)
 
     @Test
-    fun theBridgedMeshtasticRoomAppearsOnlyOnceAPostArrives() =
+    fun theRadioRoomAppearsWithABoundBoardOrAHistory() =
         runTest {
-            // Unlike Nearby it is not synthesized: it is somebody else's channel and needs a paired radio to
-            // exist at all, so a standing empty row would offer what most installs cannot have.
+            // It is this phone's own radio's channel: with no radio bound and nothing heard, no row — a
+            // standing empty row would offer what this install cannot have.
             val vm = vm()
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
             advanceUntilIdle()
@@ -102,6 +103,19 @@ class ChatListViewModelTest {
                     .none { it.id == Conversations.MESHTASTIC },
             )
 
+            // Bound (even while the link is down): the room exists, empty, under the generic title.
+            loraFlow.value = LoraFacts(plane = LoraPlane.Down)
+            advanceUntilIdle()
+            val empty =
+                vm.state.value.conversations
+                    .first { it.id == Conversations.MESHTASTIC }
+            assertEquals(context.getString(R.string.meshtastic_title), empty.title)
+            assertNull(empty.lastPreview)
+            assertTrue(empty.isRoom && empty.isBridged)
+            assertTrue("an empty radio room is nothing to open, so the hint stays", vm.state.value.showGettingStarted)
+
+            // Unbound again with history: the history keeps the row.
+            loraFlow.value = LoraFacts()
             messagesFlow.value =
                 listOf(
                     msg(
@@ -121,15 +135,50 @@ class ChatListViewModelTest {
                     .first { it.id == Conversations.MESHTASTIC }
             assertTrue("it draws the room glyph", row.isRoom)
             assertTrue("but it can be cleared, unlike Nearby", row.isBridged)
-            assertEquals("the channel names itself", "LongFast", row.title)
+            assertEquals("with no board connected the newest post names the channel", "LongFast", row.title)
+
+            // A connected board names it — its own slot 0, whatever that is set to.
+            loraFlow.value = LoraFacts(plane = LoraPlane.Live, primaryChannel = "MediumFast")
+            advanceUntilIdle()
+            assertEquals(
+                "MediumFast",
+                vm.state.value.conversations
+                    .first { it.id == Conversations.MESHTASTIC }
+                    .title,
+            )
         }
 
     @Test
-    fun aBridgedPreviewNamesTheSpeakerEvenOnTheGatewayThatSignedIt() =
+    fun aHeardPreviewNamesTheContactOnceAndDropsTheirOwnPrefix() =
         runTest {
-            // The row's senderId is the gateway, and on the gateway itself that is `me` — so without the
-            // origin the preview would read "You: …" over a stranger's words on the one device that actually
-            // hears the channel, and the gateway's own name on every other phone in the pocket.
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            peersFlow.value = listOf(peer("sam", name = "Sam"))
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "me",
+                        body = "Sam: hi",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0x1234abcd,
+                        originName = "Knit 1a2b",
+                        originPeerId = "sam",
+                    ),
+                )
+            advanceUntilIdle()
+
+            val row =
+                vm.state.value.conversations
+                    .first { it.id == Conversations.MESHTASTIC }
+            assertEquals("Sam: hi", row.lastPreview)
+        }
+
+    @Test
+    fun aHeardPreviewNamesTheSpeakerNotUs() =
+        runTest {
+            // The row's senderId is `me` by convention (our board heard it) — so without the origin the
+            // preview would read "You: …" over a stranger's words.
             val vm = vm()
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
             messagesFlow.value =
@@ -157,7 +206,7 @@ class ChatListViewModelTest {
                     .first { it.id == Conversations.MESHTASTIC }
             // No NODEINFO name for the newest speaker, so its `!hex` id stands in — as in every Meshtastic client.
             assertEquals("!deadbeef: still here", row.lastPreview)
-            assertNull("nor does a post we merely relayed grow a delivery tick", row.lastStatus)
+            assertNull("nor does a post we merely heard grow a delivery tick", row.lastStatus)
             assertEquals("and both count as unread — we wrote neither", 2, row.unreadCount)
         }
 

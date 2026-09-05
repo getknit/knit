@@ -16,6 +16,7 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.groupTitle
 import app.getknit.knit.data.message.isStatusNotice
+import app.getknit.knit.data.message.meshRoomChannel
 import app.getknit.knit.data.message.receivedPlane
 import app.getknit.knit.data.relay.RelayFacts
 import app.getknit.knit.data.relay.RelayPlane
@@ -26,6 +27,7 @@ import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
+import app.getknit.knit.mesh.lora.PublicPostPolicy
 import app.getknit.knit.mesh.meshNodeLabel
 import app.getknit.knit.ui.chat.DeliveryStatus
 import app.getknit.knit.ui.chat.attachmentPreview
@@ -65,9 +67,9 @@ data class ConversationRow(
     // The ` (Alias)` suffix already inside [title] when another known peer shares this DM peer's name
     // (ADR 058), so the row can draw it muted. Null for the room, groups, and an unambiguous name.
     val discriminator: String? = null,
-    // True for the bridged Meshtastic channel. It is a room ([isRoom] is true too, so it draws the room
-    // glyph), but unlike Nearby it *is* clearable: it appears only once a post arrives, so clearing it takes
-    // the row away as well — which is the honest way to say "not interested" in a feed nobody opted into.
+    // True for the Meshtastic room — the paired radio's primary channel. It is a room ([isRoom] is true too,
+    // so it draws the room glyph), but unlike Nearby it *is* clearable: clearing it drops the history, and
+    // the row itself stays only while a radio is bound (or history remains).
     val isBridged: Boolean = false,
 )
 
@@ -137,6 +139,8 @@ class ChatListViewModel(
         val warning: RadioWarning?,
         val relayPlane: RelayPlane,
         val loraPlane: LoraPlane,
+        /** The board's primary channel as the Meshtastic room names it, while live — the row's title. */
+        val publicChannel: String?,
     )
 
     private val messagesAndBlocks =
@@ -177,9 +181,11 @@ class ChatListViewModel(
     private val relayPlane =
         relayFacts.map { planeFor(it) }.distinctUntilChanged()
 
-    // Same collapse for the LoRa plane: the facts also carry the DM switch, which this screen never reads.
-    private val loraPlane =
-        loraFacts.map { it.plane }.distinctUntilChanged()
+    // Same collapse for the LoRa plane: the facts also carry the DM switch and the battery, which this screen
+    // never reads. The primary channel's name rides beside the plane because the Meshtastic room's row is
+    // titled by it.
+    private val loraRoom =
+        loraFacts.map { it.plane to it.primaryChannel }.distinctUntilChanged()
 
     private val meshStatus =
         combine(
@@ -187,8 +193,8 @@ class ChatListViewModel(
             meshManager.transportHealth,
             visibleWarning,
             relayPlane,
-            loraPlane,
-        ) { count, health, warning, plane, lora -> MeshStatus(count, health, warning, plane, lora) }
+            loraRoom,
+        ) { count, health, warning, plane, (loraPlane, channel) -> MeshStatus(count, health, warning, plane, loraPlane, channel) }
 
     val state: StateFlow<ChatListUiState> =
         combine(
@@ -245,10 +251,10 @@ class ChatListViewModel(
                 val last = threadMsgs.lastOrNull { !it.isStatusNotice }
                 val lastReadAt = lastReadAll[conversationId] ?: 0L
 
-                // "Ours" means we wrote it. A bridged Meshtastic post is signed by whichever phone's board
-                // overheard it, so on the gateway itself `senderId == me` — but we did not write a word of
-                // it, and treating it as ours would exempt it from the unread count on the one device that
-                // hears the channel and hang a delivery tick on somebody else's words.
+                // "Ours" means we wrote it. A heard Meshtastic post sits in our sender column by convention
+                // (the phone whose board heard it writes the row) — but we did not write a word of it, and
+                // treating it as ours would exempt it from the unread count and hang a delivery tick on
+                // somebody else's words.
                 fun MessageEntity.isOurs() = senderId == me && originNode == null
                 // Until our own id resolves, count nothing as unread so our own messages aren't miscounted.
                 val unread =
@@ -289,25 +295,26 @@ class ChatListViewModel(
                     isGroup = false,
                     avatarHash = null,
                 )
-            // The bridged Meshtastic room, unlike Nearby, appears only once a post has arrived. It is not
-            // this app's room and it needs a paired radio to exist at all, so a standing empty row would be
-            // an offer of something most installs cannot have.
+            // The Meshtastic room is this phone's own radio's channel, so it exists whenever a radio is bound
+            // — empty until the channel speaks, like Nearby — and stays while history does after the radio
+            // goes. Never on a phone with no radio and no history: a standing empty row there would be an
+            // offer of something this install cannot have.
             val bridgedMsgs = byConversation[Conversations.MESHTASTIC].orEmpty()
             val bridged =
-                bridgedMsgs.takeIf { it.isNotEmpty() }?.let { msgs ->
+                if (mesh.loraPlane != LoraPlane.Off || bridgedMsgs.isNotEmpty()) {
                     rowFor(
                         Conversations.MESHTASTIC,
-                        msgs,
-                        // The channel's own name where a post carried one, else the generic label — the same
-                        // rule the thread header uses, so the list and the screen agree.
-                        title =
-                            msgs.lastOrNull { !it.originChannel.isNullOrBlank() }?.originChannel
-                                ?: context.getString(R.string.meshtastic_title),
+                        bridgedMsgs,
+                        // The live board's channel, else the newest post's, else the generic label — the
+                        // same rule the thread header uses, so the list and the screen agree.
+                        title = meshRoomChannel(mesh.publicChannel, bridgedMsgs) ?: context.getString(R.string.meshtastic_title),
                         isRoom = true,
                         isGroup = false,
                         avatarHash = null,
                         isBridged = true,
                     )
+                } else {
+                    null
                 }
             val groupRows =
                 activeGroups.filter { !isPending(it.groupId) }.map { g ->
@@ -360,7 +367,7 @@ class ChatListViewModel(
             // is the state it is written for.
             val gettingStarted =
                 nearby.lastMessageAt == null &&
-                    bridged == null &&
+                    bridged?.lastMessageAt == null &&
                     groupRows.isEmpty() &&
                     dms.isEmpty() &&
                     requestCount == 0
@@ -415,13 +422,16 @@ class ChatListViewModel(
                     ""
                 }
             }
-        // A bridged Meshtastic post's author is the speaker, never the gateway whose signature it carries —
-        // and on the gateway itself the two are `me`, so without this the row would read "You: …" over
-        // somebody else's words. The directory knows nothing about a Meshtastic node, so the snapshot on the
-        // row is the only name there is; it falls back to the `!hex` id every Meshtastic client would show.
+        // A heard Meshtastic post's author is the speaker, never us — the row sits in our sender column by
+        // convention, so without this the preview would read "You: …" over somebody else's words. A speaker
+        // whose board a contact's profile claims is named as that contact, without the "Name: " their board
+        // put on the line; a stranger is the NodeDB name the board had for them, else the `!hex` id every
+        // Meshtastic client would show.
         message.originNode?.let { node ->
-            val speaker = message.originName?.takeIf { it.isNotBlank() } ?: meshNodeLabel(node)
-            return context.getString(R.string.chat_list_preview_with_sender, speaker, body)
+            val contact = message.originPeerId?.let { directory.label(it) }
+            val speaker = contact?.text ?: message.originName?.takeIf { it.isNotBlank() } ?: meshNodeLabel(node)
+            val line = if (contact != null) PublicPostPolicy.displayBody(contact.name, body) else body
+            return context.getString(R.string.chat_list_preview_with_sender, speaker, line)
         }
         val isOwn = message.senderId == me
         if (isDm && !isOwn) return body
@@ -447,9 +457,9 @@ class ChatListViewModel(
                 // the broadcast room can't be deleted
                 ConversationKind.GROUP -> groups.delete(conversationId)
 
-                // Unlike Nearby, the bridged room *is* clearable: it appears only once a post arrives, so
-                // clearing it also removes the row until the next one — which is the honest way to say "not
-                // interested in this" for a feed the user did not ask to join.
+                // Unlike Nearby, the Meshtastic room *is* clearable: the history goes, and the row stays
+                // only while a radio is bound — the honest way to say "not interested" in a channel that
+                // arrives unasked.
                 ConversationKind.MESHTASTIC, ConversationKind.DM -> messages.deleteByConversation(conversationId)
             }
         }

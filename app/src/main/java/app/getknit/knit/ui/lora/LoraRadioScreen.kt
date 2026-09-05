@@ -585,6 +585,15 @@ private fun StatusRow(state: LoraRadioUiState) {
                 )
             }
             state.radioConfig?.let { Text(stringResource(R.string.lora_radio_config, it), style = detail, color = muted) }
+            // What the Meshtastic room mirrors — slot 0 as the board names it.
+            state.publicChannel?.let {
+                Text(
+                    text = stringResource(R.string.lora_public_channel, it),
+                    style = detail,
+                    color = muted,
+                    modifier = Modifier.testTag("lora_public_channel"),
+                )
+            }
             // What the plane has spent of its own hourly allowance — the whole point of the governor is that
             // this is visible rather than inferred from a duty-cycle refusal.
             state.airtimePercent?.let {

@@ -26,6 +26,7 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.groupTitle
+import app.getknit.knit.data.message.meshRoomChannel
 import app.getknit.knit.data.message.receivedPlane
 import app.getknit.knit.data.message.replyRef
 import app.getknit.knit.data.reaction.ReactionEntity
@@ -45,6 +46,7 @@ import app.getknit.knit.linkpreview.LinkPreviewPolicy
 import app.getknit.knit.linkpreview.LinkPreviewService
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.PublicPostOutcome
+import app.getknit.knit.mesh.PublicPostRefusal
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
@@ -156,32 +158,33 @@ data class ChatRow(
     // The message this row quotes (Signal-style reply), or null when it isn't a reply. Denormalized so the
     // quote renders even if the quoted original isn't in this thread. See [MessageEntity.replyRef].
     val replyTo: ReplyRef? = null,
-    // Set only on a bridged Meshtastic post, and the flag the bubble reads to render one differently: an
-    // unverified badge, no tappable avatar, and the gateway named as the radio that carried it. Null on every
-    // ordinary row, including our own.
+    // Set only on a post heard on the paired radio's channel, and the flag the bubble reads to render one
+    // differently: a muted name, no tappable avatar, and the provenance line. Null on every ordinary row,
+    // including our own.
     val origin: MeshOrigin? = null,
 )
 
 /**
- * Who said a bridged post on the foreign mesh, and how it reached us — the render-time shape of
+ * Who said a post on the radio channel, and how it reached this board — the render-time shape of
  * [MessageEntity]'s `origin*` columns.
  *
  * Everything here is **unauthenticated**. A Meshtastic node number and name are self-asserted on an open,
  * unsigned channel and are trivially spoofable, so [name] is a claim rather than an identity and the UI must
- * never let it look like a Knit peer. [gateway] is the one part anybody vouched for: the Knit peer whose
- * board heard the post and whose signature the frame carries.
+ * never let it look like a Knit peer — and that includes [peerId]: a contact resolved by node number is a
+ * match against a self-asserted profile field, not a signature, so the bubble wears their name and face
+ * but keeps the unverified styling.
  */
 data class MeshOrigin(
-    /** The speaker's `!hex` id, always shown — it is the only stable handle a bridged author has. */
+    /** The speaker's `!hex` id — the only stable handle a heard author has. */
     val nodeLabel: String,
-    /** `User.long_name` if the gateway's board knew one, else null and the id stands alone. */
+    /** `User.long_name` if the board's NodeDB knew one, else null and the id stands alone. */
     val name: String?,
-    /** The Knit peer whose radio carried it, already resolved to a display label. */
-    val gateway: String,
+    /** The contact whose profile claimed the speaker's board when the post was heard, or null for a stranger. */
+    val peerId: String?,
     val hops: Int?,
-    /** Signal-to-noise at the gateway's board, in tenths of a dB. */
+    /** Signal-to-noise at this board, in tenths of a dB. */
     val snrDeci: Int?,
-    /** The post entered the foreign mesh over an MQTT uplink, so it may have come from anywhere. */
+    /** The post entered the mesh over an MQTT uplink, so it may have come from anywhere. */
     val viaMqtt: Boolean,
 )
 
@@ -256,6 +259,10 @@ data class ChatUiState(
     val loraReach: LoraReach = LoraReach.Silent,
     // Whether (and in which form) a draft here rides LoRa — sizes the composer's length hint. See [loraCarryFor].
     val loraCarry: LoraCarry = LoraCarry.None,
+    // Whether the Meshtastic room's composer may post from this device, and if not why ([publicPostGateFor]).
+    // [PublicPostGate.Open] everywhere else, and as the seed — a send that beats the first emission is judged
+    // by the board's own outcome rather than by a stale gate.
+    val publicPostGate: PublicPostGate = PublicPostGate.Open,
     // Whether the composer shows its attach-a-file button (ADR 2026-09.qq2r) — everywhere except the
     // Nearby room, which
     // takes the refusal voice notes take: nothing on the device can screen a file, and the room floods
@@ -267,22 +274,22 @@ data class ChatUiState(
     // one side has updated. The capability is enforced where it can explain itself instead, in
     // [ChatViewModel.attachFile].
     val canSendFile: Boolean = false,
-    // True when this thread is the **bridged Meshtastic public channel** — posts a paired board overheard on
-    // the foreign mesh's primary. It is a public room like Nearby, and shares its glyph and its "no
-    // attachments" refusal, but its authors are not Knit peers at all: no avatar, no verified badge, and
-    // nothing to tap through to. Distinct from [isRoom] because almost every rule that reads that flag is
-    // really asking "is this Nearby", and answering yes here would put a stranger's unauthenticated name
-    // wherever Knit shows a person it vouches for.
+    // True when this thread is the **Meshtastic room** — the paired radio's primary channel, mirrored into a
+    // room on this phone. It is a public room like Nearby, and shares its glyph and its "no attachments"
+    // refusal, but its authors are not Knit peers: no verified badge, nothing to tap through to, and a contact
+    // it lines a post up with is still an unverified match. Distinct from [isRoom] because almost every rule
+    // that reads that flag is really asking "is this Nearby", and answering yes here would put a stranger's
+    // unauthenticated name wherever Knit shows a person it vouches for.
     val isBridged: Boolean = false,
-    // The name that will ride on the front of a post to the foreign public channel — the user's own display
-    // name, or null when they have not set one. Shown in the composer hint so the one place ADR 049's rule is
+    // The name that will ride on the front of a post to the radio channel — the user's own display name, or
+    // null when they have not set one. Shown in the composer hint so the one place ADR 049's rule is
     // suspended says so before the user types, rather than after the words have left.
     val publicPostName: String? = null,
-    // The UTF-8 bytes a post's words may occupy here, or null in every thread that is not the bridged room.
-    // A hard cap rather than the soft LoRa length hint: a Meshtastic frame carries one short line, the
-    // transmit path trims a longer one without asking (and does it on whichever phone in the pocket owns the
-    // board, not necessarily this one), so the field refuses the overflow while the author can still choose
-    // what to cut. Falls with the display name, since that rides on the front of every post.
+    // The UTF-8 bytes a post's words may occupy here, or null in every thread that is not the Meshtastic
+    // room. A hard cap rather than the soft LoRa length hint: a Meshtastic frame carries one short line and
+    // the transmit path trims a longer one without asking, so the field refuses the overflow while the
+    // author can still choose what to cut. Falls with the display name, since that rides on the front of
+    // every post.
     val publicPostBudget: Int? = null,
     // Whether a post here still needs the first-use disclosure. Read only by [isBridged] threads.
     val needsPublicConsent: Boolean = false,
@@ -335,7 +342,7 @@ class ChatViewModel(
     /** This thread is the broadcast room (vs a 1:1 DM keyed by the peer's node id). */
     private val isRoom = conversationId == Conversations.NEARBY
 
-    /** This thread is the bridged Meshtastic public channel — read-only, and its authors are not peers. */
+    /** This thread is the Meshtastic room — the paired radio's primary channel; its authors are not peers. */
     private val isBridged = conversationId == Conversations.MESHTASTIC
 
     private val myNodeId = MutableStateFlow<String?>(null)
@@ -543,10 +550,10 @@ class ChatViewModel(
         ) : LoraAudience
 
         /**
-         * The bridged Meshtastic room, which has no LoRa audience to speak of — nothing here is ever sent, so
-         * no congestion notice about delayed delivery could be true. Its own object rather than reusing
-         * [Room]: the room's saturated notice reads the airtime *this* device would spend, and this thread
-         * spends none.
+         * The Meshtastic room, which has no LoRa audience to speak of: a post leaves through this phone's own
+         * board and a spent window is answered per send (a refusal the composer shows), so no standing
+         * congestion notice about delayed delivery applies. Its own object rather than reusing [Room]: that
+         * notice is about Knit's queue toward LoRa-only peers, and this room has no peers.
          */
         data object Bridged : LoraAudience
     }
@@ -635,14 +642,18 @@ class ChatViewModel(
             val reactionsByMessage = reacts.groupBy { it.messageId }
             val rows =
                 msgs.map { m ->
-                    // A bridged post's author is the Meshtastic speaker, NOT the frame's signer — the gateway
-                    // whose board heard it, which the directory would otherwise name here. Resolve the origin
-                    // first so the name, avatar and tap target below all follow from the same answer.
-                    val origin = m.originNode?.let { node -> meshOriginFor(m, node, directory.label(m.senderId).text) }
+                    // A heard post's author is the Meshtastic speaker, NOT the row's sender — that is this
+                    // phone, by convention. Resolve the origin first so the name, avatar and tap target below
+                    // all follow from the same answer. A speaker whose board a contact's profile claimed
+                    // wears that contact's name and face; still an unverified match, so the bubble keeps the
+                    // muted name and the untappable avatar.
+                    val origin = m.originNode?.let { node -> meshOriginFor(m, node) }
                     val mine = m.senderId == me && origin == null
+                    val contact = origin?.peerId?.let { directory.label(it) }
                     val senderLabel = if (mine || origin != null) null else directory.label(m.senderId)
                     val name =
-                        origin?.let { it.name ?: it.nodeLabel }
+                        contact?.text
+                            ?: origin?.let { it.name ?: it.nodeLabel }
                             ?: senderLabel?.text
                             ?: myName.ifBlank { context.getString(R.string.chat_self_name) }
                     val tallies =
@@ -660,16 +671,23 @@ class ChatViewModel(
                     val heldBytes = m.attachmentHash?.let { blobSizes[it] }
                     ChatRow(
                         id = m.id,
-                        body = m.body,
+                        // A contact's own "Name: " prefix — what their board puts on the line so stock
+                        // clients can tell who spoke — is dropped for display once the row is lined up with
+                        // them; the row itself keeps what went on the air.
+                        body = if (contact != null) PublicPostPolicy.displayBody(contact.name, m.body) else m.body,
                         mine = mine,
                         senderName = name,
                         senderNodeId = m.senderId,
-                        senderDiscriminator = senderLabel?.discriminator,
-                        senderPlainName = senderLabel?.name ?: name,
+                        senderDiscriminator = contact?.discriminator ?: senderLabel?.discriminator,
+                        senderPlainName = contact?.name ?: senderLabel?.name ?: name,
                         kind = m.kind,
-                        // Never the gateway's avatar on a bridged post: it would put a Knit peer's face on
-                        // somebody else's words. A bridged author draws the letter avatar instead.
-                        avatarHash = if (origin == null) peersByNode[m.senderId]?.avatarHash else null,
+                        // Never our own avatar on a heard post (the sender column is ours by convention):
+                        // the resolved contact's face where there is one, else the letter avatar.
+                        avatarHash =
+                            when {
+                                origin != null -> origin.peerId?.let { peersByNode[it]?.avatarHash }
+                                else -> peersByNode[m.senderId]?.avatarHash
+                            },
                         sentAt = m.sentAt,
                         received = m.received,
                         deliveredVia = m.receivedPlane,
@@ -756,12 +774,11 @@ class ChatViewModel(
                             context.getString(R.string.nearby_title)
                         }
 
-                        // The channel's own name where a post has told us one (`LongFast`, `MediumFast` — it
-                        // varies with the board's preset), else the generic label. Read off the newest post
-                        // rather than the board, because a phone with no board of its own still shows this
-                        // room and has only the frames to go on.
+                        // The live board's primary channel (`LongFast`, `MediumFast`, or a name the user
+                        // gave it), else the newest post's, else the generic label — one rule with the
+                        // chat list (`meshRoomChannel`), so the two agree.
                         isBridged -> {
-                            msgs.lastOrNull { !it.originChannel.isNullOrBlank() }?.originChannel
+                            meshRoomChannel(mesh.lora.facts.primaryChannel, msgs)
                                 ?: context.getString(R.string.meshtastic_title)
                         }
 
@@ -815,29 +832,25 @@ class ChatViewModel(
                             )
                         }
 
-                        // Nothing leaves this thread, so no congestion notice about it could be true. What
-                        // the room does say about itself is a static strip in the screen, not a reach state.
+                        // A post here leaves through this phone's own board, and a spent window is answered
+                        // per send; what the room says about itself is a static strip, not a reach state.
                         LoraAudience.Bridged -> {
                             LoraReach.Silent
                         }
                     },
                 loraCarry = loraCarryFor(conversationId, isGroup, mesh.lora.facts),
+                publicPostGate = publicPostGateFor(conversationId, mesh.lora.facts),
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom))
 
-    /**
-     * The render shape of a bridged post's attribution. [gatewayLabel] is the frame signer resolved through
-     * the peer directory — the one identity in this row anybody vouched for, which is why the bubble names it
-     * ("via Sam's radio") rather than leaving an unauthenticated Meshtastic name standing alone.
-     */
+    /** The render shape of a heard post's attribution — the row's `origin*` columns, the `!hex` id derived. */
     private fun meshOriginFor(
         m: MessageEntity,
         node: Long,
-        gatewayLabel: String,
     ) = MeshOrigin(
         nodeLabel = meshNodeLabel(node),
         name = m.originName?.takeIf { it.isNotBlank() },
-        gateway = gatewayLabel,
+        peerId = m.originPeerId,
         hops = m.originHops,
         snrDeci = m.originSnrDeci,
         viaMqtt = m.originViaMqtt,
@@ -1013,6 +1026,66 @@ class ChatViewModel(
     val showPublicConsent: StateFlow<Boolean> = _showPublicConsent.asStateFlow()
 
     /**
+     * A post to the Meshtastic room, which leaves through this phone's own board and nowhere else.
+     *
+     * The gate comes first — asking for the disclosure with no radio to post through would be a question
+     * about nothing — then the first-use disclosure (raised here rather than on opening the room, because a
+     * person who only ever reads it should never be asked to decide anything; the draft is kept, so accepting
+     * sends what they already wrote), then the board. Every refusal keeps the draft and says why, so a post
+     * never silently goes nowhere — the failure the whole room is designed around.
+     */
+    private fun postPublic(text: String) {
+        if (state.value.publicPostGate != PublicPostGate.Open) {
+            _events.tryEmit(R.string.chat_mesh_post_not_connected)
+            return
+        }
+        if (state.value.needsPublicConsent) {
+            _showPublicConsent.value = true
+            return
+        }
+        if (_isSending.value) return
+        _isSending.value = true
+        viewModelScope.launch {
+            var accepted = false
+            try {
+                when (val outcome = meshManager.sendPublicPost(text)) {
+                    PublicPostOutcome.Queued -> {
+                        accepted = true
+                        // The same clean slate an accepted chat send leaves: nothing is ever staged here,
+                        // but a card fetch still in flight for this draft must not stage into the next.
+                        _pendingAttachment.value = null
+                        dismissedUrl = null
+                        failedUrls.clear()
+                        draftEpoch.value++
+                        _clearInput.tryEmit(Unit)
+                    }
+
+                    PublicPostOutcome.Blocked -> {
+                        _events.tryEmit(R.string.moderation_text_blocked)
+                    }
+
+                    is PublicPostOutcome.Refused -> {
+                        _events.tryEmit(refusalMessage(outcome.reason))
+                    }
+                }
+            } finally {
+                if (!accepted) _isSending.value = false
+            }
+        }
+    }
+
+    /** What the composer says for a board's refusal — exhaustive, so a new reason cannot go unsaid. */
+    private fun refusalMessage(reason: PublicPostRefusal): Int =
+        when (reason) {
+            PublicPostRefusal.NO_BOARD, PublicPostRefusal.NOT_READY -> R.string.chat_mesh_post_not_connected
+            PublicPostRefusal.KNIT_ON_PRIMARY -> R.string.chat_mesh_post_channel_unusable
+            PublicPostRefusal.TOO_SOON -> R.string.chat_mesh_post_too_soon
+            PublicPostRefusal.TOO_LARGE -> R.string.chat_mesh_post_too_large
+            PublicPostRefusal.NO_AIR -> R.string.chat_mesh_post_no_air
+            PublicPostRefusal.NAK -> R.string.chat_mesh_post_refused
+        }
+
+    /**
      * Records the disclosure as accepted and lowers it. Deliberately does **not** send: the user pressed a
      * button that said "Post" on a sheet, not on their message, and making one tap do both would mean the
      * words went out in the same motion as the decision to allow them to.
@@ -1037,11 +1110,11 @@ class ChatViewModel(
         val trimmed = text.trim().take(TextLimits.MESSAGE)
         val attachment = _pendingAttachment.value
         if (trimmed.isEmpty() && attachment == null) return
-        // The bridged room's first post raises the disclosure instead of sending. Raised here rather than on
-        // opening the room, because a person who only ever reads it should never be asked to decide anything;
-        // the draft is kept, so accepting sends what they already wrote.
-        if (isBridged && state.value.needsPublicConsent) {
-            _showPublicConsent.value = true
+        // The Meshtastic room is not addressed to anybody: no recipient, no group, no attachment, no reply.
+        // `sendChat` would read that shape as the Nearby room and put the post there, so it has its own path
+        // to the board, with its own gate, disclosure and refusals.
+        if (isBridged) {
+            postPublic(trimmed)
             return
         }
         // Ignore re-entrant taps while a send is in flight, and — on success — until the field is
@@ -1059,14 +1132,9 @@ class ChatViewModel(
                 val outgoingReply = normalizeSelfAuthor(replyTo)
                 // Re-read the group at send time so it's never misrouted as a DM in a startup race, and so
                 // a pending rename rides this message (its GroupInfo.name converges last-writer-wins).
-                val group = if (isRoom || isBridged) null else groups.find(conversationId)
+                val group = if (isRoom) null else groups.find(conversationId)
                 val sent =
-                    if (isBridged) {
-                        // The Meshtastic room is not addressed to anybody: no recipient, no group, no
-                        // attachment, no reply. `sendChat` would read that shape as the Nearby room and put
-                        // the post there, so this room has its own path to the board (see MeshController).
-                        meshManager.sendPublicPost(trimmed) == PublicPostOutcome.Queued
-                    } else if (group != null) {
+                    if (group != null) {
                         meshManager.sendChat(
                             trimmed,
                             attachment,
@@ -1274,8 +1342,8 @@ class ChatViewModel(
         when (result) {
             is AttachmentStore.IngestResult.Success -> {
                 when {
-                    // The bridged room carries one line of text and nothing beside it: `sendPublicPost` takes a
-                    // string, so anything staged here would sit in the composer and then vanish at send. The
+                    // The Meshtastic room carries one line of text and nothing beside it: `sendPublicPost` takes
+                    // a string, so anything staged here would sit in the composer and then vanish at send. The
                     // composer already offers no picker and tells the keyboard it takes no images, so what
                     // reaches this is the share sheet — which lists the room, because sharing *text* into it is
                     // a fair thing to want. One refusal at the funnel covers every route into it.

@@ -53,10 +53,10 @@ class LoraStatusRepositoryTest {
             assertEquals(LoraFacts(LoraPlane.Down, dms = true), repo.facts.first())
 
             status.value = LoraStatus(state = ready)
-            assertEquals(LoraFacts(LoraPlane.Live, dms = true), repo.facts.first())
+            assertEquals(LoraFacts(LoraPlane.Live, dms = true, canPost = true), repo.facts.first())
 
             dms.value = false
-            assertEquals(LoraFacts(LoraPlane.Live, dms = false), repo.facts.first())
+            assertEquals(LoraFacts(LoraPlane.Live, dms = false, canPost = true), repo.facts.first())
 
             // Off outranks a still-ready link, and the DM switch reads false once the plane is off.
             dms.value = true
@@ -74,7 +74,7 @@ class LoraStatusRepositoryTest {
             status.value = LoraStatus(state = LinkState.Connecting, heard = 3) // still Down — a peer count is not the header's business
             status.value = LoraStatus(state = ready)
 
-            assertEquals(listOf(LoraFacts(LoraPlane.Down, dms = true), LoraFacts(LoraPlane.Live, dms = true)), seen)
+            assertEquals(listOf(LoraFacts(LoraPlane.Down, dms = true), LoraFacts(LoraPlane.Live, dms = true, canPost = true)), seen)
             job.cancel()
         }
 
@@ -97,10 +97,40 @@ class LoraStatusRepositoryTest {
             status.value = LoraStatus(state = LinkState.Idle, airtime = spent)
             assertEquals(LoraFacts(LoraPlane.Down, dms = true), repo.facts.first())
             status.value = LoraStatus(state = ready, airtime = spent)
-            assertEquals(LoraFacts(LoraPlane.Live, dms = true, airtimeSpent = true), repo.facts.first())
+            assertEquals(LoraFacts(LoraPlane.Live, dms = true, airtimeSpent = true, canPost = true), repo.facts.first())
             // Live and bridge spending count together, against the live budget — as the governor admits them.
             status.value = LoraStatus(state = ready, airtime = roomy)
-            assertEquals(LoraFacts(LoraPlane.Live, dms = true, airtimeSpent = false), repo.facts.first())
+            assertEquals(LoraFacts(LoraPlane.Live, dms = true, airtimeSpent = false, canPost = true), repo.facts.first())
+        }
+
+    @Test
+    fun `the primary channel's name and the posting verdict ride the facts only while the link is live`() =
+        runTest {
+            val radio =
+                LoraRadioConfig(
+                    usePreset = true,
+                    modemPreset = ModemPreset.MEDIUM_FAST,
+                    region = LoraRegion.US,
+                    hopLimit = 3,
+                    overrideDutyCycle = false,
+                )
+            val stock = ready.copy(channels = listOf(ChannelInfo(0, "", role = 1)), radio = radio)
+            status.value = LoraStatus(state = LinkState.Idle)
+            assertEquals(LoraFacts(LoraPlane.Down, dms = true), repo.facts.first())
+            status.value = LoraStatus(state = stock)
+            assertEquals(LoraFacts(LoraPlane.Live, dms = true, primaryChannel = "MediumFast", canPost = true), repo.facts.first())
+
+            // A named slot 0 is called what the user called it.
+            status.value = LoraStatus(state = stock.copy(channels = listOf(ChannelInfo(0, "Ridge", role = 1))))
+            assertEquals("Ridge", repo.facts.first().primaryChannel)
+
+            // Knit itself at slot 0 — the lab binding — leaves nothing to post on.
+            status.value = LoraStatus(state = stock.copy(channels = listOf(ChannelInfo(0, KnitChannel.NAME, role = 1))))
+            assertEquals(LoraFacts(LoraPlane.Live, dms = true, primaryChannel = KnitChannel.NAME, canPost = false), repo.facts.first())
+
+            // A board that never reported its preset names no channel but may still post.
+            status.value = LoraStatus(state = ready)
+            assertEquals(LoraFacts(LoraPlane.Live, dms = true, canPost = true), repo.facts.first())
         }
 
     @Test
@@ -110,6 +140,6 @@ class LoraStatusRepositoryTest {
             status.value = LoraStatus(state = LinkState.Idle, battery = battery)
             assertEquals(LoraFacts(LoraPlane.Down, dms = true), repo.facts.first())
             status.value = LoraStatus(state = ready, battery = battery)
-            assertEquals(LoraFacts(LoraPlane.Live, dms = true, battery = battery), repo.facts.first())
+            assertEquals(LoraFacts(LoraPlane.Live, dms = true, battery = battery, canPost = true), repo.facts.first())
         }
 }

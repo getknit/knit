@@ -128,10 +128,35 @@ fun loraGroupReachFor(
     }
 
 /**
+ * Whether the Meshtastic room's composer may post from this device, and if not, what stands in its way.
+ * [Open] in every other thread. The room posts through this phone's own radio, so the answer follows the
+ * radio: none bound, bound but down, or bound and live but with nothing to post on.
+ */
+enum class PublicPostGate {
+    Open,
+    NoRadio,
+    RadioDown,
+    ChannelUnusable,
+}
+
+/** The [PublicPostGate] for [conversationId] given the plane's [facts]. */
+fun publicPostGateFor(
+    conversationId: String,
+    facts: LoraFacts,
+): PublicPostGate =
+    when {
+        conversationId != Conversations.MESHTASTIC -> PublicPostGate.Open
+        facts.plane == LoraPlane.Off -> PublicPostGate.NoRadio
+        facts.plane == LoraPlane.Down -> PublicPostGate.RadioDown
+        !facts.canPost -> PublicPostGate.ChannelUnusable
+        else -> PublicPostGate.Open
+    }
+
+/**
  * The [LoraCarry] for a draft in [conversationId].
  *
- * The **bridged** room is [LoraCarry.None] whatever the plane is doing, because its length rule is not this
- * one: a post there is capped hard in the composer at what a Meshtastic frame carries
+ * The **Meshtastic** room is [LoraCarry.None] whatever the plane is doing, because its length rule is not
+ * this one: a post there is capped hard in the composer at what a Meshtastic frame carries
  * ([PublicPostPolicy.bodyBudget]). Left as a DM it would take the DM's larger hint and hang a soft "may not
  * reach people over LoRa" under a field that has already refused the 201st byte — and it would follow the
  * private-messages-over-LoRa switch, which governs nothing in that room.
