@@ -182,6 +182,7 @@ class MeshMetrics {
     private val receiptsSealedFallback = AtomicLong()
     private val receiptsCustodied = AtomicLong()
     private val receiptsCoalesced = AtomicLong()
+    private val receiptsRidden = AtomicLong()
     private val reactionsSealed = AtomicLong()
     private val reactionsSealedFallback = AtomicLong()
     private val groupSealedRatchet = AtomicLong()
@@ -383,6 +384,15 @@ class MeshMetrics {
      */
     fun onReceiptCoalesced(count: Int) {
         receiptsCoalesced.addAndGet(count.toLong())
+    }
+
+    /**
+     * Broadcast-room delivery ticks that rode a frame already going to their author instead of waiting for a
+     * link (ADR 2026-09.aa27). Each one is a room tick that reached its author for no frame and no custody
+     * row of its own; the gap between this and the ticks still held is what the ride does not cover.
+     */
+    fun onReceiptRidden(count: Int) {
+        receiptsRidden.addAndGet(count.toLong())
     }
 
     /** A reaction sealed as a v2 ctl frame (DM or group form). */
@@ -814,6 +824,7 @@ class MeshMetrics {
             receiptsSealedFallback = receiptsSealedFallback.get(),
             receiptsCustodied = receiptsCustodied.get(),
             receiptsCoalesced = receiptsCoalesced.get(),
+            receiptsRidden = receiptsRidden.get(),
             reactionsSealed = reactionsSealed.get(),
             reactionsSealedFallback = reactionsSealedFallback.get(),
             groupSealedRatchet = groupSealedRatchet.get(),
@@ -913,6 +924,7 @@ class MeshMetrics {
         val receiptsSealedFallback: Long = 0,
         val receiptsCustodied: Long = 0,
         val receiptsCoalesced: Long = 0,
+        val receiptsRidden: Long = 0,
         val reactionsSealed: Long = 0,
         val reactionsSealedFallback: Long = 0,
         val groupSealedRatchet: Long = 0,

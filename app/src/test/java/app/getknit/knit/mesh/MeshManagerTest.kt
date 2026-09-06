@@ -1023,6 +1023,46 @@ class MeshManagerTest {
             assertEquals(2L, rig.metrics.snapshot().receiptsCoalesced)
         }
 
+    /**
+     * ADR 2026-09.aa27: a room tick waiting for a ride takes the inline-ack slots a DM ack leaves free, and
+     * the coalesced `CTL_RECEIPT` carries whatever is still waiting. Both frames are ones this device was
+     * sending to that author anyway, so the tick crosses for no frame and no custody row of its own.
+     */
+    @Test
+    fun aRoomTickWaitingForARideTakesTheSlotsADmAckLeaves() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            rig.manager.dmAcks.hold(rig.bob.nodeId, "dm-1")
+            rig.manager.ackSync.giveBackRiding(rig.bob.nodeId, listOf("room-1", "room-2"))
+
+            assertTrue(rig.manager.sendChat("plain", recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+
+            assertEquals("the DM ack rode", 1L, rig.metrics.snapshot().receiptsCoalesced)
+            assertEquals("and the room ticks filled the rest of the slots", 2L, rig.metrics.snapshot().receiptsRidden)
+            assertEquals("nothing left waiting for a carrier", 0, rig.manager.ackSync.ridingFor(rig.bob.nodeId))
+        }
+
+    @Test
+    fun theCoalescedTickCarriesTheRoomTicksWaitingForTheSameAuthor() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The field case (Pixel 8, 2026-09-05): two room ticks owed since 19:08 and a DM ack flushing at
+            // 19:11 toward the same absent author. One frame, already sealed to them and already custodied.
+            val rig = Rig(backgroundScope)
+            rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            rig.manager.dmAcks.hold(rig.bob.nodeId, "dm-1")
+            rig.manager.ackSync.giveBackRiding(rig.bob.nodeId, listOf("room-1", "room-2"))
+            rig.clockNow += DmAckCoalescer.HOLD_MS
+            rig.manager.dmAcks.flushDue()
+            advanceUntilIdle()
+
+            assertEquals("one originated tick, not three", 1, rig.sentChatFrames().size)
+            assertEquals(1L, rig.metrics.snapshot().receiptsCustodied)
+            assertEquals(2L, rig.metrics.snapshot().receiptsRidden)
+            assertEquals(0, rig.manager.ackSync.ridingFor(rig.bob.nodeId))
+        }
+
     /** A seal that falls back to v1 cannot carry inline acks (a v1 reader never looks): they go back to the coalescer. */
     @Test
     fun aV1FallbackGivesTheInlineAcksBack() =

@@ -910,6 +910,7 @@ class DebugBridgeReceiver :
             .put("receiptsSealedFallback", snap.receiptsSealedFallback)
             .put("receiptsCustodied", snap.receiptsCustodied)
             .put("receiptsCoalesced", snap.receiptsCoalesced)
+            .put("receiptsRidden", snap.receiptsRidden)
             .put("reactionsSealed", snap.reactionsSealed)
             .put("reactionsSealedFallback", snap.reactionsSealedFallback)
             .put("dropsByReason", JSONObject(snap.dropsByReason.mapKeys { it.key.name }))

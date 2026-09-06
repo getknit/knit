@@ -235,7 +235,9 @@ class MeshManager(
     // ADR 018 sealed away. The lambdas read this manager's fields lazily at call time (the pipeline's
     // originate pattern); flushScope defers to the session scope so debounce wakes die with stop() —
     // retryPending() on the heal heartbeat is the backstop.
-    private val ackSync =
+    // `internal` for the same reason [dmAcks] is: the JVM tests drive the ride hold directly rather than
+    // staging a whole absent-author delivery to get one id into it.
+    internal val ackSync =
         AckSync(
             transport = transport,
             selfId = { identity.nodeId() },
@@ -700,6 +702,7 @@ class MeshManager(
         // it for DMs that came over the board, in place of a standalone tick that would cost ~3 s of LoRa
         // air. Attached only in the v2 arm of the seal; a v1 fallback or a parked DM gives them back.
         val inlineAcks = inlineAcksFor(recipientId, group, text, replying = replyTo != null, attached = attachment != null)
+        val inlineIds = inlineAcks.ids
         val content =
             MessageContent(
                 body = text,
@@ -714,10 +717,19 @@ class MeshManager(
                 attachmentSize = attachment?.takeIf { it.name != null }?.sizeBytes?.toLong(),
                 replyTo = replyTo,
             )
-        val envelope = sealEnvelopeFor(id, me, sentAt, recipientId, group, content, inlineAcks)
-        if (inlineAcks.isNotEmpty() && recipientId != null) {
+        val envelope = sealEnvelopeFor(id, me, sentAt, recipientId, group, content, inlineIds)
+        if (inlineIds.isNotEmpty() && recipientId != null) {
             val carried = envelope != null && EncEnvelope.isDmRatchetVersion(envelope.v)
-            if (carried) metrics.onReceiptCoalesced(inlineAcks.size) else dmAcks.giveBack(recipientId, inlineAcks)
+            if (carried) {
+                metrics.onReceiptCoalesced(inlineAcks.dm.size)
+                metrics.onReceiptRidden(inlineAcks.room.size)
+            } else {
+                // Each half goes back to the hold that owns it. A room ack must never land in [dmAcks]:
+                // that hold *originates* what it still holds when the debounce runs out, which is the
+                // custody row the ride exists to avoid (ADR 2026-09.aa27).
+                dmAcks.giveBack(recipientId, inlineAcks.dm)
+                ackSync.giveBackRiding(recipientId, inlineAcks.room)
+            }
         }
         // Persist our own plaintext copy regardless, so the sender always sees their message. A DM whose
         // recipient key isn't known yet is flagged pendingKey so handleProfile can retransmit it when the
@@ -1387,13 +1399,34 @@ class MeshManager(
         text: String,
         replying: Boolean,
         attached: Boolean,
-    ): List<String> {
-        if (recipientId == null || group != null || dmAcks.pending(recipientId).isEmpty()) return emptyList()
-        val peer = peers.find(recipientId) ?: return emptyList()
-        if ((peer.capabilities ?: 0L) and Protocol.CAP_INLINE_ACK == 0L) return emptyList()
+    ): InlineAcks {
+        if (recipientId == null || group != null) return InlineAcks()
+        val waiting = dmAcks.pending(recipientId).size + ackSync.ridingFor(recipientId)
+        if (waiting == 0) return InlineAcks()
+        val peer = peers.find(recipientId) ?: return InlineAcks()
+        if ((peer.capabilities ?: 0L) and Protocol.CAP_INLINE_ACK == 0L) return InlineAcks()
         val room = LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying, attached) - LoraSizeHint.utf8Length(text)
         val fit = (room / INLINE_ACK_BYTES).coerceIn(0, MAX_INLINE_ACKS)
-        return if (fit == 0) emptyList() else dmAcks.take(recipientId, fit)
+        if (fit == 0) return InlineAcks()
+        // DM acks take the slots first: someone is waiting on each of those and this ride is the only path
+        // they have that costs nothing. A room ack has no single addressee waiting and is content to catch
+        // the next carrier, so it fills what is left.
+        val dm = dmAcks.take(recipientId, fit)
+        return InlineAcks(dm = dm, room = ackSync.takeRiding(recipientId, fit - dm.size))
+    }
+
+    /**
+     * The receipt ids one outbound DM carries inline, split by the hold each came from — [dmAcks] for a DM
+     * receipt held off the board (ADR 054), [AckSync]'s ride hold for a broadcast-room tick waiting for a
+     * frame going that way (ADR 2026-09.aa27). The split exists only for the give-back: a seal that falls
+     * short of v2 carries neither, and putting them back in the wrong hold would either lose them or
+     * originate a custody row for a room tick.
+     */
+    private class InlineAcks(
+        val dm: List<String> = emptyList(),
+        val room: List<String> = emptyList(),
+    ) {
+        val ids: List<String> get() = dm + room
     }
 
     /**
@@ -1404,10 +1437,18 @@ class MeshManager(
         authorId: String,
         ackIds: List<String>,
     ) {
-        if (originateDeliveryTick(authorId, ackIds)) {
+        // The best carrier there is (ADR 2026-09.aa27): this frame is already sealed to that author, already
+        // originated and already custodied, so the room ticks waiting for a ride cost it a few bytes and no
+        // row of their own. Field case: the pocket member that owed two room ticks originated exactly this
+        // frame 3 minutes later for an unrelated DM ack, and they would have crossed there instead of
+        // waiting 45 minutes for a link.
+        val riding = ackSync.takeRiding(authorId, AckSync.MAX_BATCH_ACKS - ackIds.size)
+        if (originateDeliveryTick(authorId, ackIds + riding)) {
             metrics.onReceiptCoalesced(ackIds.size - 1)
+            metrics.onReceiptRidden(riding.size)
             return
         }
+        ackSync.giveBackRiding(authorId, riding)
         val me = identity.nodeId()
         ackIds.forEach { pipeline.ackCleartext(it, me) }
     }

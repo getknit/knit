@@ -27,6 +27,13 @@ import java.util.concurrent.ConcurrentHashMap
  *   (15 min), so a flat retry cleared it every single time; a sealed entry that never finds a live link
  *   now retries on a doubling backoff ([backOff]) instead — ~8 re-sends across the 24 h TTL, not ~96.
  *   A live link overrides the schedule: it is the reliable path home, and it ends the entry.
+ * - **Absent, sealed-capable author of a *room* post** — no seal, no frame, no custody row: the bare id waits
+ *   in a **ride hold** ([takeRiding], ADR 2026-09.aa27) for a frame this device is going to seal toward that
+ *   author anyway — an outbound DM's inline acks, or the coalesced `CTL_RECEIPT` it originates for held DM
+ *   receipts. The room deliberately never escalates (below), so the alternative was sealing a standalone tick
+ *   with nowhere to go, spending a chain key up front and re-sending those bytes on a backoff until the
+ *   author reappeared. A ride costs nothing and usually converges in minutes; a tick that finds no carrier
+ *   ages out silently, which is the residual, and a live link still ends the wait as one batched tick.
  * - **Absent, sealed-capable author** — the acks *batch* per author ([enqueue]) and, after [debounceMs]
  *   (a best-effort [flushScope] wake; [retryPending] on the heal heartbeat is the backstop), escalate as
  *   ONE sealed tick carrying every pending id (`MessageContent.acks`) handed to [originateTick] — signed
@@ -113,13 +120,22 @@ class AckSync(
     // exists-gate's re-ack on every custody re-serve of the message (else each re-serve would re-seal).
     private val escalated = ConcurrentHashMap<String, Long>()
 
+    // authorId -> broadcast-room acks waiting for a *ride*: a frame this device is going to seal toward that
+    // author anyway (ADR 2026-09.aa27). Same shape as [pending] and swept the same way, but it never flushes
+    // on a timer and never originates — a room tick that finds no carrier ages out silently, which is what
+    // keeps this cheaper than escalation rather than a slower spelling of it. [PendingBatch.wakeArmed] stays
+    // false throughout: nothing wakes for a ride.
+    private val riding = ConcurrentHashMap<String, PendingBatch>()
+
     /**
      * We delivered a broadcast/group message [messageId] authored by [authorId]: tick it now (best-effort) and
      * remember it so we retry until the tick lands or it ages out. Never acks our own message. If the author is
      * already a live neighbor the tick goes over that link and isn't stored (nothing to retry); when
      * [escalatable] (a **group** tick — the broadcast room deliberately never escalates: it is the ambient,
      * shorter-lived class and its ticks stay best-effort) an absent sealed-capable author's ack joins that
-     * author's pending batch instead (see the class doc).
+     * author's pending batch instead (see the class doc). A **room** tick toward an absent sealed-capable
+     * author joins the ride hold instead of sealing: same "never escalate" rule, without the chain key and
+     * the retry loop that a standalone tick with no path was spending on nothing.
      */
     suspend fun owe(
         messageId: String,
@@ -130,14 +146,9 @@ class AckSync(
         if (authorId == me) return
         sweep()
         if (escalated.containsKey(messageId)) return
-        pending[authorId]?.let { batch -> if (synchronized(batch) { batch.ids.containsKey(messageId) }) return }
+        if (holds(pending, authorId, messageId) || holds(riding, authorId, messageId)) return
         val existing = owed[messageId]
-        val batchable = escalatable && existing == null
-        val absent = transport.neighbors.value.none { it.nodeId == authorId }
-        if (batchable && absent && canSeal(authorId)) {
-            enqueue(authorId, messageId)
-            return
-        }
+        if (heldForAbsentAuthor(messageId, authorId, escalatable, fresh = existing == null)) return
         // A re-delivery re-owes an id we may already hold: keep the existing entry (and its cached
         // seal) rather than sealing again — the one-key-per-owed-tick budget.
         val entry =
@@ -158,7 +169,11 @@ class AckSync(
      * we owe it and drop those entries — a live link is a reliable path home for the receipt.
      */
     suspend fun onNeighborAdded(peer: Peer) {
-        flushBatchOverLink(peer)
+        flushBatchOverLink(pending, peer)
+        // The ride we were waiting for may never have come; a live link is the reliable path home and ends
+        // the wait, as one sealed tick covering the batch rather than the one-key-per-message the room used
+        // to spend up front.
+        flushBatchOverLink(riding, peer)
         if (owed.isEmpty()) return
         val me = selfId()
         owed.filterValues { it.authorId == peer.nodeId }.toList().forEach { (messageId, entry) ->
@@ -186,6 +201,106 @@ class AckSync(
             // rather than a heartbeat tally — an entry still inside its backoff is skipped silently.
             if (sendOwedIfDue(me, messageId, entry, nowMs)) metrics.onReceiptResent()
         }
+    }
+
+    /**
+     * Parks a tick toward an author we have no live link to, in whichever hold its class may use — returning
+     * false when neither applies and the caller falls through to an owed entry it will retry itself.
+     *
+     * A **group** tick joins the escalation batch (ADR 033): it may spend a custody row, so it converges to
+     * an author who never comes back. A **room** tick joins the ride hold (ADR 2026-09.aa27): it may not, so
+     * instead of sealing a standalone frame with nowhere to go — a ratchet chain key spent up front, then
+     * those same bytes re-sent on a backoff to nobody — the bare id waits for a frame we are going to seal
+     * toward that author anyway. Same "no path right now", different answer, and the difference is exactly
+     * which of them is allowed to cost the mesh a row.
+     *
+     * [fresh] is "we hold no owed entry for this id yet": a re-owe keeps whatever the first one decided.
+     * [canSeal] gates both for one reason — each form lives inside a sealed frame, so an author that cannot
+     * read one keeps today's cleartext best-effort entry.
+     */
+    private suspend fun heldForAbsentAuthor(
+        messageId: String,
+        authorId: String,
+        escalatable: Boolean,
+        fresh: Boolean,
+    ): Boolean {
+        if (!fresh || transport.neighbors.value.any { it.nodeId == authorId } || !canSeal(authorId)) return false
+        if (escalatable) enqueue(authorId, messageId) else holdForRide(authorId, messageId)
+        return true
+    }
+
+    /** Whether [batches] already holds [messageId] for [authorId] — the re-owe no-op for both batch maps. */
+    private fun holds(
+        batches: ConcurrentHashMap<String, PendingBatch>,
+        authorId: String,
+        messageId: String,
+    ): Boolean = batches[authorId]?.let { batch -> synchronized(batch) { batch.ids.containsKey(messageId) } } == true
+
+    /**
+     * Adds [messageId] to [authorId]'s ride hold, retrying into a fresh batch if a concurrent take detached
+     * this one. The detach race is the one [enqueue] documents: detachment happens before a flush copies the
+     * ids, both under the batch lock, so an id that landed in a detached batch would be lost.
+     */
+    private fun holdForRide(
+        authorId: String,
+        messageId: String,
+    ) {
+        while (true) {
+            val batch = riding.computeIfAbsent(authorId) { PendingBatch() }
+            val inserted =
+                synchronized(batch) {
+                    if (riding[authorId] !== batch) return@synchronized false
+                    batch.ids[messageId] = now()
+                    true
+                }
+            if (inserted) {
+                // Bounded like [pending]: a room ack nobody ever carries must not accumulate for ever. It is
+                // dropped, never originated — originating is exactly the cost this path exists to avoid.
+                trimRiding()
+                return
+            }
+        }
+    }
+
+    /**
+     * Ids waiting for a ride toward [authorId], oldest first, at most [limit] — removed from the hold, so a
+     * caller that does not carry them must hand them back with [giveBackRiding].
+     *
+     * The caller is `MeshManager`, at the two points where it is already sealing something toward that
+     * author: the inline acks of an outbound DM (`CAP_INLINE_ACK`, ADR 054) and the coalesced `CTL_RECEIPT`
+     * it originates for held DM receipts. Both frames are sealed to that author alone, so the ids reach
+     * exactly the reader they concern and no carrier learns anything a receipt did not already tell it —
+     * the ADR 018 rule this had to keep.
+     */
+    fun takeRiding(
+        authorId: String,
+        limit: Int,
+    ): List<String> {
+        if (limit <= 0) return emptyList()
+        val batch = riding[authorId] ?: return emptyList()
+        val taken =
+            synchronized(batch) {
+                batch.ids.keys
+                    .take(limit)
+                    .also { ids -> ids.forEach { batch.ids.remove(it) } }
+            }
+        if (synchronized(batch) { batch.ids.isEmpty() }) riding.remove(authorId, batch)
+        return taken
+    }
+
+    /** How many ids are waiting for a ride toward [authorId] — lets a caller skip the work when there are none. */
+    fun ridingFor(authorId: String): Int = riding[authorId]?.let { synchronized(it) { it.ids.size } } ?: 0
+
+    /**
+     * Returns ids [takeRiding] handed out that never rode — the frame fell back to a form that cannot carry
+     * them. They keep their place in the queue rather than their original timestamps, which only shortens
+     * the wait they get; nothing here may originate them.
+     */
+    fun giveBackRiding(
+        authorId: String,
+        ids: List<String>,
+    ) {
+        ids.forEach { holdForRide(authorId, it) }
     }
 
     /** Adds [messageId] to [authorId]'s pending batch, arming the debounce wake / flushing a full batch. */
@@ -274,8 +389,11 @@ class AckSync(
      * live-link send is today's drop-the-entry semantics, so a custody re-serve re-owes and re-sends,
      * which markReceived absorbs idempotently.
      */
-    private suspend fun flushBatchOverLink(peer: Peer) {
-        val batch = pending.remove(peer.nodeId) ?: return
+    private suspend fun flushBatchOverLink(
+        batches: ConcurrentHashMap<String, PendingBatch>,
+        peer: Peer,
+    ) {
+        val batch = batches.remove(peer.nodeId) ?: return
         val ids = synchronized(batch) { LinkedHashMap(batch.ids) }
         if (ids.isEmpty()) return
         val wire = sealTick(peer.nodeId, ids.keys.toList())
@@ -418,11 +536,31 @@ class AckSync(
         val cutoff = now() - ttlMs
         owed.entries.removeAll { it.value.recordedAt < cutoff }
         escalated.entries.removeAll { it.value < cutoff }
-        pending.entries.removeAll { (_, batch) ->
-            synchronized(batch) {
-                batch.ids.entries.removeAll { it.value < cutoff }
-                batch.ids.isEmpty()
+        listOf(pending, riding).forEach { batches ->
+            batches.entries.removeAll { (_, batch) ->
+                synchronized(batch) {
+                    batch.ids.entries.removeAll { it.value < cutoff }
+                    batch.ids.isEmpty()
+                }
             }
+        }
+    }
+
+    /** Drops the oldest waiting ride once the hold is over [PENDING_CAP] — never originates it (see [hold]). */
+    private fun trimRiding() {
+        while (riding.values.sumOf { synchronized(it) { it.ids.size } } > PENDING_CAP) {
+            val oldest =
+                riding.entries.minByOrNull { (_, batch) ->
+                    synchronized(batch) { batch.ids.values.firstOrNull() ?: Long.MAX_VALUE }
+                } ?: return
+            val empty =
+                synchronized(oldest.value) {
+                    oldest.value.ids.keys
+                        .firstOrNull()
+                        ?.let { oldest.value.ids.remove(it) }
+                    oldest.value.ids.isEmpty()
+                }
+            if (empty) riding.remove(oldest.key, oldest.value)
         }
     }
 

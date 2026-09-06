@@ -312,6 +312,119 @@ class AckSyncTest {
         }
 
     @Test
+    fun aRoomTickTowardAnAbsentAuthorWaitsForARideInsteadOfSealing() =
+        runTest(UnconfinedTestDispatcher()) {
+            // ADR 2026-09.aa27. The room never escalates, so an absent author's tick used to seal a
+            // standalone frame with nowhere to go — a chain key spent up front, then those same bytes
+            // re-sent on a backoff until the author reappeared. It now waits for a carrier instead.
+            val sealed = CopyOnWriteArrayList<List<String>>()
+            val author = Author("author")
+            val recip = FakeLoopTransport("recip")
+            author.start(backgroundScope)
+            val ack =
+                ackSyncOn(
+                    recip,
+                    "recip",
+                    canSeal = { true },
+                    sealTick = { a, ids ->
+                        sealed.add(ids)
+                        sealedWire("recip", a, ids)
+                    },
+                )
+
+            ack.owe("m1", "author")
+            ack.owe("m2", "author")
+
+            assertTrue("no chain key is spent on a tick with nowhere to go", sealed.isEmpty())
+            assertTrue("and nothing goes on the air", author.received().isEmpty())
+            assertEquals("both wait for a ride", 2, ack.ridingFor("author"))
+        }
+
+    @Test
+    fun aWaitingRoomTickIsHandedToTheNextFrameGoingThatWay() =
+        runTest(UnconfinedTestDispatcher()) {
+            val author = Author("author")
+            val recip = FakeLoopTransport("recip")
+            author.start(backgroundScope)
+            val ack = ackSyncOn(recip, "recip", canSeal = { true }, sealTick = { a, ids -> sealedWire("recip", a, ids) })
+
+            ack.owe("m1", "author")
+            ack.owe("m2", "author")
+            ack.owe("m3", "author")
+
+            assertEquals("oldest first, and only what the carrier has room for", listOf("m1", "m2"), ack.takeRiding("author", 2))
+            assertEquals(1, ack.ridingFor("author"))
+
+            // The frame fell back to a form that cannot carry them: they go back to the hold, never onward.
+            ack.giveBackRiding("author", listOf("m1", "m2"))
+            assertEquals(3, ack.ridingFor("author"))
+            assertTrue("a ride is never a send of its own", author.received().isEmpty())
+        }
+
+    @Test
+    fun aRoomTickWaitingForARideIsNotReHeldByACustodyReServe() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A room post re-serves routinely, and the deliver path re-owes it every time. Without the
+            // re-owe no-op the hold would grow a duplicate on each pass.
+            val recip = FakeLoopTransport("recip")
+            val ack = ackSyncOn(recip, "recip", canSeal = { true }, sealTick = { a, ids -> sealedWire("recip", a, ids) })
+
+            ack.owe("m1", "author")
+            ack.owe("m1", "author")
+            ack.owe("m1", "author")
+
+            assertEquals("one entry however often custody re-serves it", 1, ack.ridingFor("author"))
+        }
+
+    @Test
+    fun aLinkEndsTheWaitAsOneBatchedTick() =
+        runTest(UnconfinedTestDispatcher()) {
+            // No carrier ever came, but the author is back: the reliable path home ends the wait, and it
+            // costs one chain key for the whole batch rather than the one-per-message the room used to
+            // spend before it had anything to send them on.
+            val sealed = CopyOnWriteArrayList<List<String>>()
+            val author = Author("author")
+            val recip = FakeLoopTransport("recip")
+            author.start(backgroundScope)
+            val ack =
+                ackSyncOn(
+                    recip,
+                    "recip",
+                    canSeal = { true },
+                    sealTick = { a, ids ->
+                        sealed.add(ids)
+                        sealedWire("recip", a, ids)
+                    },
+                )
+
+            ack.owe("m1", "author")
+            ack.owe("m2", "author")
+            recip.connect(author.transport)
+            ack.onNeighborAdded(Peer("author"))
+
+            assertEquals("one seal covering the batch", listOf(listOf("m1", "m2")), sealed)
+            assertEquals("and nothing left waiting", 0, ack.ridingFor("author"))
+        }
+
+    @Test
+    fun aLegacyAuthorsRoomTickKeepsTheCleartextBestEffortForm() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A ride only exists inside a frame sealed to that author, so an author that cannot read one
+            // keeps today's path — the same reason canSeal gates escalation.
+            val author = Author("author")
+            val recip = FakeLoopTransport("recip")
+            author.start(backgroundScope)
+            val ack = ackSyncOn(recip, "recip", canSeal = { false })
+
+            ack.owe("m1", "author")
+            assertEquals("nothing waits for a ride it could never take", 0, ack.ridingFor("author"))
+
+            recip.connect(author.transport)
+            ack.onNeighborAdded(Peer("author"))
+            assertEquals(listOf("m1"), author.ackIds())
+        }
+
+    @Test
     fun theDebounceWakeFlushesWithoutAHeal() =
         runTest {
             // The flushScope wake is the primary trigger; retryPending/heal is only the backstop. Virtual

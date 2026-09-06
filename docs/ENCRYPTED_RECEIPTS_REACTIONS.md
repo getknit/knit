@@ -169,6 +169,16 @@ rows). Cleartext ticks and the broadcast room never escalate: a cleartext receip
 re-leak the delivery event this scheme sealed away, and the room is the ambient, shorter-lived class
 (`owe(escalatable = false)`).
 
+A room tick toward an **absent** sealed-capable author instead **rides** (ADR 2026-09.aa27): the bare id
+waits in `AckSync`'s ride hold for a frame this device is going to seal toward that author anyway — an
+outbound DM's inline acks (§ `CAP_INLINE_ACK`, ADR 054) or the coalesced `CTL_RECEIPT` that `flushDmAcks`
+originates — so it crosses for no frame and no custody row of its own. It seals nothing up front, which is
+what the old form spent a chain key on before re-sending those bytes on a backoff to nobody; a live link
+still ends the wait, as one tick covering the batch. The receiving half is unchanged: `applySealedReceipt`
+admits an id whose `recipientOf` is null (a broadcast post) and `ackerFor` has a `NEARBY` arm. Counted as
+`receiptsRidden`. An acker that never sends that author anything still ages out silently, so the room's
+details list stays "everyone we heard back from", never a census.
+
 ## 6. Blocked-sender posture (ADR 010)
 
 Outbound: ticks and seeds to blocked authors still seal and send — withholding would reveal the
