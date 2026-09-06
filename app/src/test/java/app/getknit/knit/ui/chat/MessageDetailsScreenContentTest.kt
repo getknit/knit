@@ -157,11 +157,31 @@ class MessageDetailsScreenContentTest {
     }
 
     @Test
-    fun `the broadcast room's open list drops the denominator`() {
+    fun `the broadcast room's open list drops the denominator and says it is open`() {
+        // No roster means no denominator and no "waiting on" — and the list is who answered, not who
+        // received it, which the header claims and the note under the rows spells out (ADR 2026-09.aa27).
         render(withRecipients().copy(waitingOn = emptyList(), recipientTotal = 0))
 
-        compose.onNodeWithText("Received by 2").assertIsDisplayed()
+        compose.onNodeWithTag("message_details_delivered_header").assertTextEquals("Confirmed delivered to")
+        compose.onNodeWithTag("message_details_open_list_note").assertIsDisplayed()
         compose.onNodeWithTag("message_details_waiting_header").assertDoesNotExist()
+    }
+
+    @Test
+    fun `a group send has a roster to account for, so it gets no open-list note`() {
+        render(withRecipients())
+
+        compose.onNodeWithTag("message_details_open_list_note").assertDoesNotExist()
+    }
+
+    @Test
+    fun `a room post nobody has answered yet shows no list and no note`() {
+        // Nothing recorded means we know nothing, not that nobody received it: with no rows to qualify,
+        // the note would be the only thing on screen and would read as a failure.
+        render(populated())
+
+        compose.onNodeWithTag("message_details_delivered_header").assertDoesNotExist()
+        compose.onNodeWithTag("message_details_open_list_note").assertDoesNotExist()
     }
 
     @Test

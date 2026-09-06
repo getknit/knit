@@ -272,9 +272,15 @@ private fun MessageSummary(state: MessageDetailsUiState) {
 }
 
 /**
- * The per-recipient delivery split: who a message we sent has reached, then who it hasn't. The second half
- * is absent in the broadcast room, which has no roster to be waiting on — there the first header drops the
- * denominator and reads "Received by N" instead.
+ * The per-recipient delivery split: who a message we sent has reached, then who it hasn't.
+ *
+ * The second half is absent in the broadcast room, which has no roster to be waiting on — and with no
+ * roster there is no denominator either, so the room's list is **open**: everyone whose tick got home, and
+ * never a count of everyone who received the post. Its header says "Confirmed delivered to" rather than the
+ * group's "Delivered to", and a note under the rows says the rest out loud, because a bare list of names
+ * over a header reads as a census whatever the header is called. A room tick only reaches its author over a
+ * live link or a frame already going that way (ADR 2026-09.aa27), so the gap is real and permanent rather
+ * than a delay: an acker that never sends this author anything is simply never listed.
  */
 private fun LazyListScope.recipientSections(
     state: MessageDetailsUiState,
@@ -287,14 +293,28 @@ private fun LazyListScope.recipientSections(
                     // Plain label: the ratio is already on the delivery line in the summary above.
                     stringResource(R.string.message_details_delivered_to)
                 } else {
-                    // The broadcast room has no denominator, so its header is the only place a count fits.
-                    stringResource(R.string.message_details_received_by, state.deliveredTo.size)
+                    // The room's list is what came back, not who received it — so the header claims exactly
+                    // that and no count, which here would only look like a total it cannot be.
+                    stringResource(R.string.message_details_confirmed_delivered_to)
                 },
             testTag = "message_details_delivered_header",
         )
     }
     items(state.deliveredTo, key = { "delivered_${it.nodeId}" }) { recipient ->
         RecipientListRow(recipient = recipient, onOpen = onOpenProfile)
+    }
+    if (state.recipientTotal == 0) {
+        item {
+            // Under the rows, not above them: it is a footnote to the list, and putting it first would push
+            // the names the reader came for off the top. A group send never sees it — it has a roster, so
+            // its two sections already account for everyone.
+            Text(
+                text = stringResource(R.string.message_details_room_open_list),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("message_details_open_list_note"),
+            )
+        }
     }
     if (state.waitingOn.isNotEmpty()) {
         item {

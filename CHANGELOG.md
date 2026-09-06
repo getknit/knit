@@ -54,8 +54,8 @@ document:
   picker and nearby count now show only what your own radios can currently see.
 - A Nearby room message sent while two radios were out of range of each other now arrives when they come
   back into range. It used to wait for the phones to get close enough for Wi-Fi or Bluetooth instead.
-- Message details for a room post names more of the people who got it. Someone out of range when you posted
-  used to stay unlisted until you were side by side again.
+- Message details for a room post names more of the people who got it. The list now says it may not be
+  everyone who received the post.
 
 ## [2.4.0](https://github.com/getknit/knit/releases/tag/v2.4.0) — 2026-08-31T05:12:27Z
 

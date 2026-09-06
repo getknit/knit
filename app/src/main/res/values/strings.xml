@@ -797,8 +797,9 @@
     <!-- Per-recipient delivery, on a group message you sent -->
     <string name="message_details_delivered_to">Delivered to</string>
     <string name="message_details_waiting_on">Waiting on</string>
-    <!-- The broadcast room has no roster, so its list has no total to count against -->
-    <string name="message_details_received_by">Received by %1$d</string>
+    <!-- The broadcast room has no roster, so its list is who answered, never everyone who received it -->
+    <string name="message_details_confirmed_delivered_to">Confirmed delivered to</string>
+    <string name="message_details_room_open_list">The room has no member list. This is who your phone has heard back from, and others in range may have received it too.</string>
     <!-- Row content descriptions: a section header is not announced with the rows under it -->
     <string name="message_details_recipient_delivered">%1$s, delivered %2$s</string>
     <string name="message_details_recipient_waiting">%1$s, not delivered yet</string>

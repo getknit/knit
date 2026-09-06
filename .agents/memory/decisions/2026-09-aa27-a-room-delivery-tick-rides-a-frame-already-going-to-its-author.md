@@ -57,9 +57,15 @@ see who received what.
 ## What it costs
 
 If the acker never sends that author anything — no DM, no DM receipt — the ids age out silently and that
-acker is missing from the author's list. The ride narrows the gap; it does not close it, and the room's
-details screen remains "everyone we heard back from", never a census. Counted as `receiptsRidden`, whose
-gap from the ticks still held is the part this does not cover.
+acker is missing from the author's list. The ride narrows the gap; it does not close it. Counted as
+`receiptsRidden`, whose gap from the ticks still held is the part this does not cover.
+
+So the screen says so. The room's list used to be headed "Received by N", which reads as a census over a
+list of names whatever else is on the page; it is now **"Confirmed delivered to"** with a note under the
+rows — *"The room has no member list. This is who your phone has heard back from, and others in range may
+have received it too."* A group send keeps "Delivered to" and its ratio, because a roster really does
+account for everyone. A room post with nothing recorded still shows no list and no note: nothing recorded
+means we know nothing, not that nobody received it, and a note alone would read as a failure.
 
 `canSeal` gates the hold for the same reason it gates escalation: a ride only exists inside a frame sealed
 to that author, so a legacy author keeps today's cleartext best-effort entry.
