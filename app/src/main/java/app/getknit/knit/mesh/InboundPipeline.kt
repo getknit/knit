@@ -2425,8 +2425,6 @@ class InboundPipeline(
         val id: String,
         val name: String,
         val avatar: ByteArray?,
-        /** The contact's stored display name, for the prefix their board put on the line; null for a stranger. */
-        val plainName: String?,
     )
 
     /**
@@ -2444,7 +2442,7 @@ class InboundPipeline(
             origin.peerId?.let { label(it, contact?.name) }
                 ?: origin.name?.takeIf(String::isNotBlank)
                 ?: meshNodeLabel(origin.node)
-        return HeardSpeaker(id, name, contact?.avatarHash?.let { blobs.bytes(it) }, contact?.name)
+        return HeardSpeaker(id, name, contact?.avatarHash?.let { blobs.bytes(it) })
     }
 
     /**

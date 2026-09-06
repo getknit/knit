@@ -282,7 +282,7 @@ class AckSync(
             synchronized(batch) {
                 batch.ids.keys
                     .take(limit)
-                    .also { ids -> ids.forEach { batch.ids.remove(it) } }
+                    .onEach { batch.ids.remove(it) }
             }
         if (synchronized(batch) { batch.ids.isEmpty() }) riding.remove(authorId, batch)
         return taken

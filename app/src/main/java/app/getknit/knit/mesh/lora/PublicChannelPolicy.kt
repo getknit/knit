@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.TextLimits
 import app.getknit.knit.mesh.MeshPost
+import kotlin.math.roundToInt
 
 /**
  * Decides which packets off the board are a **post on its primary (slot 0) channel** — the Meshtastic room's
@@ -111,7 +112,7 @@ internal object PublicChannelPolicy {
                 name = name?.takeIf { it.isNotBlank() }?.take(TextLimits.DISPLAY_NAME),
                 channel = primaryName(channels, radio),
                 hops = packet.hopsAway,
-                snrDeci = packet.rxSnr?.let { Math.round(it * DECI) },
+                snrDeci = packet.rxSnr?.let { (it * DECI).roundToInt() },
                 viaMqtt = packet.viaMqtt,
                 // The bytes as heard, beside the readable body: a signature is over these.
                 payload = packet.payload,

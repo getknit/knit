@@ -164,9 +164,7 @@ internal class MeshtasticSession(
                 }
 
                 // Adapter went off mid-dial: fall through and let the loop re-check adapterOn at the top.
-                DialResult.AdapterOff -> {
-                    Unit
-                }
+                DialResult.AdapterOff -> {}
 
                 is DialResult.Failed -> {
                     streak = backoffAndWait("dial ${result.phase} ${result.status}", streak)

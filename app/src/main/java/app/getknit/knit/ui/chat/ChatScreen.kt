@@ -1737,7 +1737,7 @@ private fun MessageBubble(
             // so the avatar opens their profile as a Knit author's does — by peer id, since the row's sender
             // is this phone on a heard post.
             val matchedPeer = row.origin?.peerId
-            val verifiedPeer = matchedPeer?.takeIf { row.origin?.verified == true }
+            val verifiedPeer = row.origin?.takeIf { it.verified }?.peerId
             Avatar(
                 avatarHash = row.avatarHash,
                 name = row.senderName,

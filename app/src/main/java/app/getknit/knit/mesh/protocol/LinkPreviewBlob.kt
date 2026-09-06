@@ -88,9 +88,9 @@ class LinkPreviewBlob(
         var result = v
         result = 31 * result + url.hashCode()
         result = 31 * result + title.hashCode()
-        result = 31 * result + (description?.hashCode() ?: 0)
+        result = 31 * result + description.hashCode()
         result = 31 * result + (image?.contentHashCode() ?: 0)
-        result = 31 * result + (imageMime?.hashCode() ?: 0)
+        result = 31 * result + imageMime.hashCode()
         return result
     }
 
@@ -126,7 +126,7 @@ class LinkPreviewBlob(
         fun decodeOrNull(bytes: ByteArray): LinkPreviewBlob? {
             if (bytes.isEmpty() || bytes.size > MAX_BYTES) return null
             val blob = WireCodec.decodePayload<LinkPreviewBlob>(bytes) ?: return null
-            if (blob.v < VERSION || blob.v > MAX_SUPPORTED) return null
+            if (blob.v !in VERSION..MAX_SUPPORTED) return null
             return blob.normalized()
         }
 

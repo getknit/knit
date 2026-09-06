@@ -1,6 +1,5 @@
 package app.getknit.knit.ui.chat
 
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -62,7 +61,6 @@ import coil3.compose.AsyncImage
  * verdict covers the whole card. No skeleton and no spinner for a card that has not decoded: the bubble
  * simply draws nothing until [ChatRow.linkCard] is set, because the body's own link is already tappable.
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun LinkPreviewCard(
     card: LinkCard,
@@ -147,7 +145,6 @@ private fun CardPicture(image: LinkCardImage) {
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HiddenCard(
     onReveal: () -> Unit,
