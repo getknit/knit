@@ -46,6 +46,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.getknit.knit.BuildConfig
 import app.getknit.knit.R
 import app.getknit.knit.mesh.IntroState
 import app.getknit.knit.ui.components.Avatar
@@ -131,6 +132,10 @@ internal fun ProfileDetailsScreenContent(
     onUnblock: () -> Unit,
     onMarkVerified: () -> Unit,
     onClearVerification: () -> Unit,
+    // Whether the LoRa plane is introduced at all in this build — a peer on a debug build can name a board
+    // in a profile a release build has no radio for, and a line about a feature that isn't there is noise.
+    // A parameter rather than a bare BuildConfig read so the hidden case is previewable and testable.
+    showLoraRadio: Boolean = BuildConfig.LORA_PLANE,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var showAvatarFullscreen by remember { mutableStateOf(false) }
@@ -304,6 +309,21 @@ internal fun ProfileDetailsScreenContent(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
+            // The Meshtastic board they say they hold, in the `!hex` every radio client writes a node number
+            // in — so it reads the same here as under a heard post in the radio room, which is what a reader
+            // who followed "open their profile" from that room's caveat came to compare. Plain text beside
+            // the node id, not a badge: the claim is self-asserted, and only the room's shield is evidence.
+            if (showLoraRadio) {
+                state.loraNodeLabel?.let { board ->
+                    Text(
+                        text = stringResource(R.string.profile_details_lora_node, board),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.testTag("profile_details_lora_node"),
+                    )
+                }
+            }
+
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -365,6 +385,7 @@ fun ProfileDetailsScreenOnlineVerifiedPreview() =
                     safetyNumber = "12345 67890 12345 67890 12345 67890",
                     myQrPayload = "knit:verify:ada",
                     openToChat = true,
+                    loraNodeLabel = "!1234abcd",
                 ),
             snackbarHostState = remember { SnackbarHostState() },
             onBack = {},

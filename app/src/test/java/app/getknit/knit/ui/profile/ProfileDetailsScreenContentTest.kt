@@ -33,29 +33,34 @@ class ProfileDetailsScreenContentTest {
 
     private val context: Context get() = ApplicationProvider.getApplicationContext()
 
-    private fun state(openToChat: Boolean = false) =
-        ProfileDetailsUiState(
-            openToChat = openToChat,
-            nodeId = "8f3a2b1c9d4e",
-            displayName = "Ada Lovelace",
-            status = "Hiking this weekend",
-            avatarHash = null,
-            online = true,
-            isBlocked = false,
-            hasKey = true,
-            verified = true,
-            safetyNumber = "12345 67890 12345 67890 12345 67890",
-            myQrPayload = null,
-        )
+    private fun state(
+        openToChat: Boolean = false,
+        loraNodeLabel: String? = null,
+    ) = ProfileDetailsUiState(
+        openToChat = openToChat,
+        loraNodeLabel = loraNodeLabel,
+        nodeId = "8f3a2b1c9d4e",
+        displayName = "Ada Lovelace",
+        status = "Hiking this weekend",
+        avatarHash = null,
+        online = true,
+        isBlocked = false,
+        hasKey = true,
+        verified = true,
+        safetyNumber = "12345 67890 12345 67890 12345 67890",
+        myQrPayload = null,
+    )
 
     private fun setContent(
         onMessage: (String) -> Unit = {},
         openToChat: Boolean = false,
+        loraNodeLabel: String? = null,
+        showLoraRadio: Boolean = true,
     ) {
         compose.setContent {
             KnitTheme {
                 ProfileDetailsScreenContent(
-                    state = state(openToChat),
+                    state = state(openToChat, loraNodeLabel),
                     snackbarHostState = SnackbarHostState(),
                     onBack = {},
                     onMessage = onMessage,
@@ -64,6 +69,7 @@ class ProfileDetailsScreenContentTest {
                     onUnblock = {},
                     onMarkVerified = {},
                     onClearVerification = {},
+                    showLoraRadio = showLoraRadio,
                 )
             }
         }
@@ -97,6 +103,29 @@ class ProfileDetailsScreenContentTest {
     fun noBadgeWhenNotOpenToChat() {
         setContent()
         compose.onNodeWithTag("profile_details_open_to_chat").assertDoesNotExist()
+    }
+
+    /** The board line is the peer's claim: shown as `!hex` when their profile names one, absent otherwise. */
+    @Test
+    fun theBoundBoardShowsOnlyWhenTheProfileNamesOne() {
+        setContent(loraNodeLabel = "!1234abcd")
+        compose
+            .onNodeWithText(context.getString(R.string.profile_details_lora_node, "!1234abcd"))
+            .performScrollTo()
+            .assertIsDisplayed()
+    }
+
+    @Test
+    fun noBoardLineWhenTheProfileNamesNoBoard() {
+        setContent()
+        compose.onNodeWithTag("profile_details_lora_node").assertDoesNotExist()
+    }
+
+    /** A build with no LoRa plane has no radio to compare against, so the claim stays hidden there. */
+    @Test
+    fun noBoardLineWhereThePlaneIsDark() {
+        setContent(loraNodeLabel = "!1234abcd", showLoraRadio = false)
+        compose.onNodeWithTag("profile_details_lora_node").assertDoesNotExist()
     }
 
     @Test

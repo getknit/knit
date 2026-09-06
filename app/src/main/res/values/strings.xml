@@ -350,6 +350,7 @@
     <string name="profile_details_offline">Offline</string>
     <string name="profile_details_open_to_chat">Open to chat</string>
     <string name="profile_details_view_photo">View photo</string>
+    <string name="profile_details_lora_node">LoRa radio: %1$s</string>
 
     <!-- Encryption indicator in the chat header -->
     <string name="chat_encrypted_desc">Encrypted</string>

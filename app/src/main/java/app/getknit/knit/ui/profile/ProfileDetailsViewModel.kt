@@ -12,6 +12,7 @@ import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.crypto.ContactCard
 import app.getknit.knit.mesh.crypto.SafetyNumber
 import app.getknit.knit.mesh.crypto.VerifyPayload
+import app.getknit.knit.mesh.meshNodeLabel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -53,6 +54,10 @@ data class ProfileDetailsUiState(
     val intro: IntroState? = null,
     // The peer's declared "open to chat" flag, as their latest profile carried it; shown only when set.
     val openToChat: Boolean = false,
+    // The Meshtastic board their latest profile claims (`peers.loraNode`), already in the `!hex` form every
+    // radio client writes a node number in, or null when the profile named none. Self-asserted, like the
+    // status: it says which radio to expect them on, never that a post from it was theirs.
+    val loraNodeLabel: String? = null,
 )
 
 /**
@@ -121,6 +126,7 @@ class ProfileDetailsViewModel(
                 myQrPayload = myId?.let { VerifyPayload.encode(it.nodeId, it.bundle) },
                 intro = intro,
                 openToChat = peer?.openToChat == true,
+                loraNodeLabel = peer?.loraNode?.let(::meshNodeLabel),
             )
         }.stateIn(
             viewModelScope,

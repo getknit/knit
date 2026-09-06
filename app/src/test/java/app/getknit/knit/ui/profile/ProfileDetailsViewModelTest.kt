@@ -25,6 +25,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -90,6 +91,25 @@ class ProfileDetailsViewModelTest {
             peersFlow.value = listOf(peer(nodeId, name = "Ada"))
             advanceUntilIdle()
             assertFalse(vm.state.value.openToChat)
+        }
+
+    /**
+     * The bound board arrives as the raw node number and is shown as `!hex` — the form the radio room writes
+     * under a heard post, so the two can be read against each other. A profile that names no board says
+     * nothing rather than zero.
+     */
+    @Test
+    fun theBoundBoardRendersAsAMeshtasticNodeLabel() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            peersFlow.value = listOf(peer(nodeId, name = "Ada", loraNode = 0x1234abcdL))
+            advanceUntilIdle()
+            assertEquals("!1234abcd", vm.state.value.loraNodeLabel)
+
+            peersFlow.value = listOf(peer(nodeId, name = "Ada"))
+            advanceUntilIdle()
+            assertNull(vm.state.value.loraNodeLabel)
         }
 
     @Test

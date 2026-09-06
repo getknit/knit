@@ -74,6 +74,7 @@ fun peer(
     updatedAt: Long = 0L,
     capabilities: Long? = null,
     openToChat: Boolean = false,
+    loraNode: Long? = null,
 ): PeerEntity =
     PeerEntity(
         nodeId = nodeId,
@@ -84,6 +85,7 @@ fun peer(
         updatedAt = updatedAt,
         capabilities = capabilities,
         openToChat = openToChat,
+        loraNode = loraNode,
     )
 
 fun group(
