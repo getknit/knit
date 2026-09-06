@@ -27,10 +27,18 @@ One bullet is one change. Say what changed, then who notices; stop.
 
 ## Run humanizer before you commit
 
-Every new entry goes through the `humanizer` skill before it lands. A `PreToolUse` hook on `CHANGELOG.md`
-judges the result against the same AI-tells list that already gates outbound `gh` prose, and blocks the
-edit with the offending spans quoted — so a bullet that reads like a model wrote it does not get committed,
-whether or not you remembered the skill.
+Every new entry goes through the `humanizer` skill before it lands. Two `PreToolUse` hooks on `CHANGELOG.md`
+then check it, and they split the work on purpose — each one only judges what it can actually be right about.
+Both look at the bullets a call *adds* under `## Unreleased`, reconstructed by diffing against the file on
+disk, so neighbouring bullets carried along as edit context are never the ones blamed.
+
+- `.claude/hooks/changelog-gate.py` counts: words (55), sentences (3), the 110-column wrap, emoji, curly
+  quotes, and a short list of words with no honest use here (delve, seamless, testament, …). Exact numbers,
+  no judgement, and it fails open on anything it cannot parse.
+- The prompt hook judges taste against the same AI-tells list that gates outbound `gh` prose — marketing
+  register, a closing sentence that restates the opening, a forced metaphor. It may block only on a span it
+  quotes verbatim from the bullet, and it is barred from citing any count, because the model behind it used
+  to invent word counts and quote em dashes that were not in the text.
 
 The tells that keep showing up in this file: negative parallelism ("not just X, but Y"), rule-of-three
 padding, "seamless" / "robust" / "ensure" as filler, an em dash used for rhythm rather than an aside, and a
