@@ -97,8 +97,24 @@ import kotlinx.serialization.json.Json
  * The row's [id] is always **deterministic** for its event, so a custody replay or a re-served frame
  * upserts the same row instead of duplicating the notice, and its [sentAt] comes from the frame (or the
  * sender's profile version), never the local wall clock, so notices order identically on every device.
+ *
+ * Two composite indices, both led by `conversationId`, replace the single-column index they are prefixes of:
+ *  - `(conversationId, sentAt, id)` *orders* a thread as well as finding it. With `conversationId` pinned by
+ *    equality the `(sentAt, id)` suffix is scanned backward, so the chat screen's newest-first window needs
+ *    no sort and stops at its LIMIT rather than reading the whole thread. The retention sweep's
+ *    `ORDER BY sentAt DESC, id DESC LIMIT :keep` rides it too.
+ *  - `(conversationId, kind, senderId)` *covers* the sender queries: both constrained columns are equalities
+ *    and `senderId` is the scanned suffix, so `observeSendersIn` and `hasMessagesIn` are answered out of the
+ *    index with no row fetches. Without it, the live @-mention query would walk every row of a thread on
+ *    every write to the table — worse than the whole-thread read the window removes.
  */
-@Entity(tableName = "messages", indices = [Index("conversationId")])
+@Entity(
+    tableName = "messages",
+    indices = [
+        Index(value = ["conversationId", "sentAt", "id"]),
+        Index(value = ["conversationId", "kind", "senderId"]),
+    ],
+)
 data class MessageEntity(
     @PrimaryKey val id: String,
     val senderId: String,
@@ -246,7 +262,12 @@ object MentionStore {
 
     fun encode(mentions: List<Mention>): String = json.encodeToString(mentions)
 
-    fun decode(stored: String): List<Mention> = runCatching { json.decodeFromString<List<Mention>>(stored) }.getOrDefault(emptyList())
+    fun decode(stored: String): List<Mention> {
+        // Most rows mention nobody, and the column's default is the literal "[]" — parsing that back into an
+        // empty list costs a kotlinx.serialization round trip per row, per emission, on the chat fold.
+        if (stored.isBlank() || stored == "[]") return emptyList()
+        return runCatching { json.decodeFromString<List<Mention>>(stored) }.getOrDefault(emptyList())
+    }
 }
 
 /**

@@ -41,6 +41,7 @@ import app.getknit.knit.data.relay.reachFor
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.identity.PeerLabel
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.linkpreview.LinkPreviewPolicy
 import app.getknit.knit.linkpreview.LinkPreviewService
@@ -80,11 +81,13 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -336,6 +339,9 @@ data class ChatUiState(
     val publicChannelKeyIsPublic: Boolean = true,
     // Whether a post here still needs the first-use disclosure. Read only by [isBridged] threads.
     val needsPublicConsent: Boolean = false,
+    // Whether the thread holds messages older than the loaded window, so the screen can draw a loading row
+    // above the oldest bubble and ask for the next page as the reader reaches it. See [ChatWindow].
+    val hasOlder: Boolean = false,
     // True only for the initial seed value (see [state]'s stateIn below), before the Room + DataStore +
     // mesh flows have all first-emitted. A long thread takes long enough to read and fold into rows that
     // the seed's empty list would otherwise render as "no messages yet" on a conversation that has
@@ -465,6 +471,54 @@ class ChatViewModel(
     private val _clearInput = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val clearInput: SharedFlow<Unit> = _clearInput.asSharedFlow()
 
+    /**
+     * The rows the window returned, paired with the limit that produced them. The pairing is load-bearing:
+     * [ChatUiState.hasOlder] compares the two, and reading [windowLimit] on its own would measure the *next*
+     * limit against the *previous* rows for the moment between a page being asked for and arriving — long
+     * enough to blink the "loading older" row out from under the user mid-page.
+     */
+    private data class Window(
+        val limit: Int,
+        val messages: List<MessageEntity>,
+    )
+
+    // How far back into the thread the screen currently reads. Grown a page at a time by [loadOlder] as the
+    // user scrolls into history, or jumped straight to a depth by [revealMessage] for a tapped reply quote.
+    private val windowLimit = MutableStateFlow(ChatWindow.INITIAL)
+
+    /**
+     * This thread's window: the newest [windowLimit] messages, oldest first. **The screen's only subscription
+     * to the messages table** — the link-preview walk, the read watermark and the row fold all read this one.
+     * Three separate collectors meant Room re-ran the query and rebuilt the whole list three times over for
+     * every write to `messages` anywhere in the app, since invalidation is per-table, not per-query.
+     *
+     * A `StateFlow` rather than a `shareIn` so [loadOlder] can see the window that actually rendered; null
+     * until the first emission, which every consumer drops with `filterNotNull()`.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val windowed: StateFlow<Window?> =
+        windowLimit
+            // No distinctUntilChanged: a StateFlow already conflates equal values, so re-collecting the same
+            // limit is impossible and the operator is a deprecated no-op on this receiver.
+            .flatMapLatest { limit ->
+                messages.observeNewestMessages(conversationId, limit).map { Window(limit, it) }
+            }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    // Held blob sizes + moderation-flagged hashes plus the content-filtering setting, and the decoded
+    // link-preview cards, combined upstream so the main bundle stays at the typed 5-flow combine overload.
+    // The setting only gates receive-side *hiding* (the chat blur + toxic-text collapse below), so toggling
+    // it reactively reveals/hides already-received content without re-screening; what you can send is
+    // enforced elsewhere regardless.
+    private val blobState =
+        combine(
+            blobs.observeSizes(),
+            imageScreening.observeFlaggedHashes(),
+            settings.contentFilteringEnabled,
+            linkCards.cards,
+        ) { sizes, flagged, hideSensitive, cards ->
+            BlobState(sizes, flagged.toSet(), hideSensitive, cards)
+        }
+
     init {
         viewModelScope.launch { myNodeId.value = identity.nodeId() }
         watchDraftForLinks()
@@ -472,9 +526,9 @@ class ChatViewModel(
         // rows pick the result up through blobState. The pair list is distinct so a size change elsewhere in
         // the table does not re-walk the thread.
         viewModelScope.launch {
-            combine(messages.observeMessages(conversationId), blobs.observeSizes()) { msgs, sizes ->
-                msgs
-                    .filter { it.attachmentMime == LinkPreviewBlob.MIME && it.attachmentHash != null && it.attachmentHash in sizes }
+            combine(windowed.filterNotNull(), blobState) { window, blob ->
+                window.messages
+                    .filter { it.attachmentMime == LinkPreviewBlob.MIME && it.attachmentHash != null && it.attachmentHash in blob.sizes }
                     .map { it.attachmentHash!! to it.attachmentKey }
             }.distinctUntilChanged().collect { held ->
                 held.forEach { (hash, key) -> linkCards.ensure(hash, key) }
@@ -483,8 +537,12 @@ class ChatViewModel(
         // Advance this conversation's read watermark while the chat is on screen: on every stream
         // emission (so messages arriving while you read don't reappear as unread), stamp newest sentAt.
         viewModelScope.launch {
-            combine(chatForeground, messages.observeMessages(conversationId)) { foreground, msgs ->
-                if (foreground) msgs.maxOfOrNull { it.sentAt } else null
+            combine(chatForeground, windowed.filterNotNull()) { foreground, window ->
+                // The window is anchored at the newest end and handed over oldest-first, so its last row is
+                // the thread's newest message — no scan. Deliberately the *raw* window rather than the
+                // blocked-filtered rows: if a blocked peer sent the newest message, skipping it here would
+                // leave the thread showing unread forever.
+                if (foreground) window.messages.lastOrNull()?.sentAt else null
             }.distinctUntilChanged().collect { watermark ->
                 if (watermark != null) settings.setLastReadAt(conversationId, watermark)
             }
@@ -498,6 +556,13 @@ class ChatViewModel(
     // the same rows carry the byte length, what tells the UI whether those bytes can cross a relay.
     private data class MessagesBundle(
         val messages: List<MessageEntity>,
+        // Everyone who has ever posted here, straight from the table rather than from [messages] — the
+        // window only reaches back so far, and who you can @-mention must not depend on how far you scrolled.
+        val senders: List<String>,
+        // Whether the thread holds anything older than the window. Computed on the *raw* window, before the
+        // blocked filter below: a window made entirely of blocked senders folds to zero rows, and measuring
+        // that would report an empty thread with all its history still sitting behind it.
+        val hasOlder: Boolean,
         val reactions: List<ReactionEntity>,
         val blocked: Set<String>,
         val blobSizes: Map<String, Int>,
@@ -519,21 +584,6 @@ class ChatViewModel(
         val linkCards: Map<String, LinkCard>,
     )
 
-    // Held blob sizes + moderation-flagged hashes plus the content-filtering setting, and the decoded
-    // link-preview cards, combined upstream so the main bundle stays at the typed 5-flow combine overload.
-    // The setting only gates receive-side *hiding* (the chat blur + toxic-text collapse below), so toggling
-    // it reactively reveals/hides already-received content without re-screening; what you can send is
-    // enforced elsewhere regardless.
-    private val blobState =
-        combine(
-            blobs.observeSizes(),
-            imageScreening.observeFlaggedHashes(),
-            settings.contentFilteringEnabled,
-            linkCards.cards,
-        ) { sizes, flagged, hideSensitive, cards ->
-            BlobState(sizes, flagged.toSet(), hideSensitive, cards)
-        }
-
     // The group row paired with "how many members have acked each message", re-subscribed whenever the
     // roster changes (a departure changes the denominator AND which receipts count). Not a group ⇒ no
     // roster ⇒ no counts, and the tick keeps its plain wording.
@@ -551,16 +601,26 @@ class ChatViewModel(
                 }
             }
 
+    // The window paired with this thread's full sender list, folded first so the bundle below stays at the
+    // typed 5-flow combine overload.
+    private val windowWithSenders =
+        combine(
+            windowed.filterNotNull(),
+            messages.observeSendersIn(conversationId),
+        ) { window, senders -> window to senders }
+
     private val messagesWithReactions =
         combine(
-            messages.observeMessages(conversationId),
-            reactions.observeReactions(),
+            windowWithSenders,
+            reactions.observeReactionsIn(conversationId),
             settings.blockedNodeIds,
             blobState,
             groupDelivery,
-        ) { msgs, reacts, blocked, blob, (group, delivered) ->
+        ) { (window, senders), reacts, blocked, blob, (group, delivered) ->
             MessagesBundle(
-                msgs.filter { it.senderId !in blocked },
+                window.messages.filter { it.senderId !in blocked },
+                senders.filter { it !in blocked },
+                window.messages.size >= window.limit,
                 reacts,
                 blocked,
                 blob.sizes,
@@ -689,6 +749,13 @@ class ChatViewModel(
             // Group once, then tally per emoji within each message's bucket. Orphan reactions (no matching
             // message yet) simply never produce a row until their message arrives.
             val reactionsByMessage = reacts.groupBy { it.messageId }
+            // Resolve each node id's label once for the whole fold. For an id absent from the peer table —
+            // every speaker in the Nearby and bridged rooms — PeerLabels has nothing cached and re-derives
+            // the alias tokens and runs its collision loop, and the rows below ask up to twice per message
+            // before the candidates and typing peers ask again.
+            val labels = HashMap<String, PeerLabel>()
+
+            fun label(nodeId: String) = labels.getOrPut(nodeId) { directory.label(nodeId) }
             val rows =
                 msgs.map { m ->
                     // A heard post's author is the Meshtastic speaker, NOT the row's sender — that is this
@@ -699,8 +766,8 @@ class ChatViewModel(
                     // caveat-first avatar until it did.
                     val origin = m.originNode?.let { node -> meshOriginFor(m, node) }
                     val mine = m.senderId == me && origin == null
-                    val contact = origin?.peerId?.let { directory.label(it) }
-                    val senderLabel = if (mine || origin != null) null else directory.label(m.senderId)
+                    val contact = origin?.peerId?.let { label(it) }
+                    val senderLabel = if (mine || origin != null) null else label(m.senderId)
                     val name =
                         contact?.text
                             ?: origin?.let { it.name ?: it.nodeLabel }
@@ -774,18 +841,18 @@ class ChatViewModel(
             // Autocomplete candidates: everyone we've received a message from, plus a group's roster (so
             // @-mentions work in a fresh group before anyone has spoken), resolved to a display name.
             val candidates =
-                (msgs.map { it.senderId } + members)
+                (bundle.senders + members)
                     .asSequence()
-                    .filter { it != me }
+                    .filter { it != me && it !in blocked }
                     .distinct()
                     .map { id ->
-                        val label = directory.label(id)
+                        val resolved = label(id)
                         MentionCandidate(
                             nodeId = id,
-                            displayName = label.text,
+                            displayName = resolved.text,
                             avatarHash = peersByNode[id]?.avatarHash,
-                            alias = label.alias,
-                            discriminator = label.discriminator,
+                            alias = resolved.alias,
+                            discriminator = resolved.discriminator,
                         )
                     }.sortedBy { it.displayName.lowercase() }
                     .toList()
@@ -796,11 +863,12 @@ class ChatViewModel(
                     .orEmpty()
                     .asSequence()
                     .filter { it != me && it !in blocked }
-                    .map { id -> TypingPeer(id, directory.label(id).text, peersByNode[id]?.avatarHash) }
+                    .map { id -> TypingPeer(id, label(id).text, peersByNode[id]?.avatarHash) }
                     .sortedBy { it.name.lowercase() }
                     .toList()
             ChatUiState(
                 rows = rows,
+                hasOlder = bundle.hasOlder,
                 neighborCount = count,
                 transportHealth = health,
                 myNodeId = me.orEmpty(),
@@ -814,7 +882,7 @@ class ChatViewModel(
                                 memberIds = members,
                                 selfId = me,
                                 fallback = context.getString(R.string.group_unnamed),
-                            ) { id -> directory.label(id).text }
+                            ) { id -> label(id).text }
                         }
 
                         isRoom -> {
@@ -830,10 +898,10 @@ class ChatViewModel(
                         }
 
                         else -> {
-                            directory.label(conversationId).text
+                            label(conversationId).text
                         }
                     },
-                titleDiscriminator = if (isRoom || isBridged || isGroup) null else directory.label(conversationId).discriminator,
+                titleDiscriminator = if (isRoom || isBridged || isGroup) null else label(conversationId).discriminator,
                 // A room uses a glyph; a group shows its photo (or the glyph when unset); a DM the peer avatar.
                 avatarHash =
                     when {
@@ -1627,6 +1695,37 @@ class ChatViewModel(
     /** A message's text was copied to the clipboard; surface the confirmation toast. */
     fun onMessageCopied() {
         _events.tryEmit(R.string.chat_message_copied)
+    }
+
+    /**
+     * Reads one more page of history, for a reader who has scrolled to the oldest loaded message.
+     *
+     * Grows from the limit the *rendered* window was fetched with, not from [windowLimit], so the window
+     * advances exactly one page per call and calls arriving while a page is still in flight are absorbed
+     * rather than stacking — the screen drives this from a `snapshotFlow` over the visible range, and Room
+     * answers asynchronously. (The screen's own latch is what keeps one fling to one page; this keeps the
+     * two from compounding.)
+     */
+    fun loadOlder() {
+        val window = windowed.value ?: return
+        if (window.messages.size < window.limit) return // the whole thread is already loaded
+        windowLimit.compareAndSet(window.limit, (window.limit + ChatWindow.PAGE).coerceAtMost(ChatWindow.MAX))
+    }
+
+    /**
+     * Grows the window until [messageId] is inside it, for a tapped reply quote whose original is older than
+     * anything loaded. One query rather than paging blindly toward it: [MessageRepository.depthOf] answers
+     * how deep the message sits from the newest end, which is exactly the window that reaches it.
+     *
+     * A message that is no longer stored — retention trimmed it — reports depth 0 and is left alone, which
+     * keeps the screen's existing behaviour of quietly ignoring a quote it cannot follow.
+     */
+    fun revealMessage(messageId: String) {
+        viewModelScope.launch {
+            val depth = messages.depthOf(conversationId, messageId)
+            if (depth <= 0) return@launch
+            windowLimit.update { current -> maxOf(current, depth.coerceAtMost(ChatWindow.MAX)) }
+        }
     }
 
     /** Chat is on screen: suppress this conversation's notifications and clear any active one (the user is reading). */

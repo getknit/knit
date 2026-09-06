@@ -228,6 +228,7 @@ import app.getknit.knit.ui.voice.VoiceStopButton
 import app.getknit.knit.ui.voice.rememberMicGate
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
@@ -490,6 +491,8 @@ fun ChatScreen(
             }
         },
         onSaveAttachment = viewModel::saveAttachment,
+        onLoadOlder = viewModel::loadOlder,
+        onRevealMessage = viewModel::revealMessage,
         onDismissRelayNotice = viewModel::dismissRelayNotice,
         voiceRecording = voiceRecording,
         voicePlayback = voicePlayback,
@@ -619,6 +622,11 @@ internal fun ChatScreenContent(
     onCancelVoice: () -> Unit = {},
     onVoicePlay: (hash: String, key: String?) -> Unit = { _, _ -> },
     onVoiceSeek: (hash: String, positionMs: Int) -> Unit = { _, _ -> },
+    // History paging. `onLoadOlder` asks for the next page as the reader approaches the oldest loaded
+    // message; `onRevealMessage` pulls a specific older message in, for a quote whose original the window
+    // has not reached. Defaulted so previews and the content-level tests need not name them.
+    onLoadOlder: () -> Unit = {},
+    onRevealMessage: (messageId: String) -> Unit = {},
 ) {
     var fullscreenImage by remember { mutableStateOf<FullscreenImage?>(null) }
     // The message the full emoji picker is open for (from the long-press menu's "+"), or null. Saveable so a
@@ -662,6 +670,39 @@ internal fun ChatScreenContent(
     LaunchedEffect(newest?.id) {
         val row = newest ?: return@LaunchedEffect
         if (row.mine || listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
+    }
+
+    // Read another page of history as the reader approaches the oldest loaded message. Under reverseLayout
+    // the LAST visible index is the oldest row — the visual top — and the count comes from layoutInfo rather
+    // than state.rows.size because the typing indicator is an item too, and would otherwise shift the
+    // threshold by one whenever somebody starts or stops typing. A page appends to the end of the reversed
+    // list, so index 0 (the newest bubble, glued to the bottom) never moves and the effect above never fires.
+    LaunchedEffect(listState, state.hasOlder) {
+        if (!state.hasOlder) return@LaunchedEffect
+        snapshotFlow {
+            val info = listState.layoutInfo
+            // Nothing is visible until the list has laid out, and an absent index must read as "not near the
+            // top" — treating it as 0 makes the comparison `0 >= -10`, which is true, and every chat would
+            // ask for a second page of history before it had drawn its first.
+            val oldestVisible = info.visibleItemsInfo.lastOrNull()?.index ?: return@snapshotFlow false
+            oldestVisible >= info.totalItemsCount - ChatWindow.LOAD_AHEAD
+        }.distinctUntilChanged().collect { nearOldest -> if (nearOldest) onLoadOlder() }
+    }
+
+    // A tapped quote whose original is older than the window: ask for it, then scroll once it lands. Held
+    // rather than acted on immediately because the rows arrive an emission later.
+    var pendingQuoteTarget by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(pendingQuoteTarget, state.rows.size) {
+        val target = pendingQuoteTarget ?: return@LaunchedEffect
+        val idx = state.rows.asReversed().indexOfFirst { it.id == target }
+        if (idx >= 0) {
+            pendingQuoteTarget = null
+            highlightedMessageId = target
+            listState.animateScrollToItem(idx)
+        } else if (!state.hasOlder) {
+            // The whole thread is loaded and the message is not in it — retention trimmed it. Stop waiting.
+            pendingQuoteTarget = null
+        }
     }
 
     // Reveal the typing indicator when it appears: it's inserted at the visual bottom, where scroll
@@ -1005,7 +1046,7 @@ internal fun ChatScreenContent(
                 } else {
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().testTag("chat_thread"),
                         contentPadding = PaddingValues(12.dp),
                         // Bottom-anchored so the thread opens on the newest message with no scroll; the data is
                         // reversed to match, making index 0 the newest row, drawn at the bottom. Arrangement.Bottom
@@ -1031,7 +1072,14 @@ internal fun ChatScreenContent(
                                 )
                             }
                         }
-                        items(state.rows.asReversed(), key = { it.id }) { row ->
+                        items(
+                            state.rows.asReversed(),
+                            key = { it.id },
+                            // A centred status notice and a chat bubble are different enough shapes that
+                            // sharing one subcomposition slot costs more than it saves. Keyed on plain
+                            // data — statusNoticeText is @Composable and cannot be called from here.
+                            contentType = { row -> if (row.kind == MessageEntity.KIND_NORMAL) "bubble" else "notice" },
+                        ) { row ->
                             // Fade only, no placement animation (`placementSpec = null`): the three
                             // LaunchedEffects above already drive animateScrollToItem(0) when a message or a
                             // typing peer arrives, and a placement animation would be sliding rows in one
@@ -1101,6 +1149,11 @@ internal fun ChatScreenContent(
                                         if (idx >= 0) {
                                             highlightedMessageId = targetId
                                             scrollScope.launch { listState.animateScrollToItem(idx) }
+                                        } else {
+                                            // Older than the loaded window: grow it far enough to reach the
+                                            // original, and let the effect above scroll once it arrives.
+                                            onRevealMessage(targetId)
+                                            pendingQuoteTarget = targetId
                                         }
                                     },
                                     onDelete = onDeleteMessage,
@@ -1115,6 +1168,11 @@ internal fun ChatScreenContent(
                                     onVoicePlay = onVoicePlay,
                                     onVoiceSeek = onVoiceSeek,
                                 )
+                            }
+                        }
+                        if (state.hasOlder) {
+                            item(key = "older_loading", contentType = "older_loading") {
+                                OlderHistoryRow()
                             }
                         }
                     }
@@ -2735,6 +2793,33 @@ private fun relativeTime(
             now,
             DateUtils.MINUTE_IN_MILLIS,
         ).toString()
+}
+
+/**
+ * The row above the oldest loaded bubble while there is more history behind it. Under the thread's
+ * `reverseLayout` this is emitted after the messages and drawn at the visual top, so scrolling into it is
+ * what asks for the next page.
+ *
+ * A finite indicator on purpose: a `rememberInfiniteTransition` here would keep Compose from ever going
+ * idle on a settled screen, and every `waitForIdle` in the seeded and Robolectric suites would time out.
+ */
+@Composable
+private fun OlderHistoryRow() {
+    val label = stringResource(R.string.chat_loading_older)
+    Box(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp)
+                .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable

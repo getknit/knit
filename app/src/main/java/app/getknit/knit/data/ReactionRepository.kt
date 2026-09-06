@@ -15,6 +15,9 @@ class ReactionRepository(
 ) {
     fun observeReactions(): Flow<List<ReactionEntity>> = dao.observeAll()
 
+    /** Live reactions on one thread's messages, oldest first — the chat screen's arm. */
+    fun observeReactionsIn(conversationId: String): Flow<List<ReactionEntity>> = dao.observeForConversation(conversationId)
+
     /** Live reactions on a single message, oldest first — who reacted, with what (message details). */
     fun observeReactionsFor(messageId: String): Flow<List<ReactionEntity>> = dao.observeForMessage(messageId)
 

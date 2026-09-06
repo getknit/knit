@@ -311,6 +311,110 @@ class MessageDaoTest : RoomDbTest() {
             ).first()
             .sorted()
 
+    // --- The thread window (ChatWindow / ChatViewModel) --------------------------------------------------
+    //
+    // These run the real SQL over a thread the size the retention caps actually allow, which is the only place
+    // "the screen no longer reads the whole conversation" can be proved. A 1,000-message thread plus a decoy
+    // thread; `sentAt` doubles as the row's ordinal so every assertion can name exact messages.
+
+    /** Seeds [count] messages in [conversationId] with `sentAt` running 1..count, oldest first. */
+    private suspend fun seedThread(
+        conversationId: String,
+        count: Int,
+        sender: String = "s",
+    ) {
+        for (i in 1..count) {
+            dao.upsert(msg("$conversationId-$i", conversationId = conversationId, sender = sender, sentAt = i.toLong()))
+        }
+    }
+
+    @Test
+    fun `the window reads only the newest N of a thousand, and nothing from another thread`() =
+        runTest {
+            seedThread(THREAD, 1_000)
+            seedThread("other", 300)
+
+            val window = dao.observeNewestForConversation(THREAD, 60).first()
+
+            assertEquals("the cap holds, not the thread size", 60, window.size)
+            assertTrue("only this thread", window.all { it.conversationId == THREAD })
+            assertEquals("newest first", 1_000L, window.first().sentAt)
+            assertEquals("and it stops 60 back, not at the oldest", 941L, window.last().sentAt)
+        }
+
+    @Test
+    fun `growing the window only adds older messages, leaving the newest end identical`() =
+        runTest {
+            seedThread(THREAD, 1_000)
+
+            val first = dao.observeNewestForConversation(THREAD, 60).first()
+            val grown = dao.observeNewestForConversation(THREAD, 160).first()
+
+            assertEquals(160, grown.size)
+            assertEquals("the newest 60 are the same rows in the same order", first, grown.take(60))
+            assertEquals("and the extra 100 are older", 841L, grown.last().sentAt)
+        }
+
+    @Test
+    fun `messages sharing a sentAt keep a stable order across the window boundary`() =
+        runTest {
+            // Ten messages at one instant — a burst arriving together, which the room really does produce.
+            // Without the `id DESC` tiebreak SQLite may return them in any order, so a message could sit
+            // inside the window one moment and outside it the next, appearing twice or vanishing mid-scroll.
+            for (c in 'a'..'j') {
+                dao.upsert(msg("tie-$c", conversationId = THREAD, sentAt = 500L))
+            }
+
+            val small = dao.observeNewestForConversation(THREAD, 5).first()
+            val large = dao.observeNewestForConversation(THREAD, 10).first()
+
+            assertEquals(listOf("tie-j", "tie-i", "tie-h", "tie-g", "tie-f"), small.map { it.id })
+            assertEquals("the small window is the large one's prefix", small, large.take(5))
+            assertEquals("every message once, none skipped", 10, large.map { it.id }.distinct().size)
+        }
+
+    @Test
+    fun `a window wider than the thread returns the whole thread`() =
+        runTest {
+            seedThread(THREAD, 40)
+
+            val window = dao.observeNewestForConversation(THREAD, 60).first()
+
+            // This is what tells the screen there is no more history to fetch: fewer rows back than asked for.
+            assertEquals(40, window.size)
+            assertTrue("short of the limit means nothing older", window.size < 60)
+        }
+
+    @Test
+    fun `depthOf gives the window that just reaches a message, and zero for one that is gone`() =
+        runTest {
+            seedThread(THREAD, 1_000)
+
+            // The row at sentAt 500 has 500 messages at or newer than it (500..1000 is 501 — inclusive).
+            val depth = dao.depthOf(THREAD, "$THREAD-500")
+            assertEquals(501, depth)
+
+            val reached = dao.observeNewestForConversation(THREAD, depth).first()
+            assertTrue("a window that size contains it", reached.any { it.id == "$THREAD-500" })
+
+            assertEquals("a retention-trimmed target reports no depth", 0, dao.depthOf(THREAD, "never-stored"))
+        }
+
+    @Test
+    fun `observeSendersIn names every author of a long thread, notices excluded`() =
+        runTest {
+            // Who you can @-mention must not depend on how far back the reader has scrolled, so this is asked
+            // of the table rather than derived from the loaded window.
+            seedThread(THREAD, 400, sender = "alice")
+            dao.upsert(msg("bob-1", conversationId = THREAD, sender = "bob", sentAt = 900L))
+            dao.upsert(msg("left", conversationId = THREAD, sender = "carol", sentAt = 950L, kind = MessageEntity.KIND_MEMBER_LEFT))
+
+            val senders = dao.observeSendersIn(THREAD).first()
+
+            assertEquals(setOf("alice", "bob"), senders.toSet())
+            assertFalse("a status notice's subject has not spoken here", "carol" in senders)
+        }
+
     private fun msg(
         id: String,
         recipientId: String? = null,
@@ -336,5 +440,6 @@ class MessageDaoTest : RoomDbTest() {
 
     private companion object {
         const val ME = "me"
+        const val THREAD = "thread"
     }
 }

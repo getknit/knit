@@ -275,6 +275,31 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v13 — `messages` swaps its `conversationId` index for two composites led by that same column. The old
+     * index located a thread's rows but left SQLite sorting every one of them to satisfy `ORDER BY sentAt`;
+     * `(conversationId, sentAt, id)` orders them in place, so the chat screen's newest-first window needs no
+     * sort and stops at its LIMIT. `(conversationId, kind, senderId)` covers the sender queries, which the
+     * screen now runs *live* for @-mention candidates — unindexed, that would walk a whole thread on every
+     * write. Dropping the single-column index costs nothing: it is a strict prefix of both, so every
+     * `conversationId`-only lookup is still served. The first bump that moves no columns and touches no
+     * rows; the SQL must still stay byte-equivalent to what Room generates for `app/schemas/**/13.json`.
+     */
+    val MIGRATION_12_13 =
+        object : Migration(12, 13) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("DROP INDEX IF EXISTS `index_messages_conversationId`")
+                connection.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_messages_conversationId_sentAt_id` " +
+                        "ON `messages` (`conversationId`, `sentAt`, `id`)",
+                )
+                connection.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_messages_conversationId_kind_senderId` " +
+                        "ON `messages` (`conversationId`, `kind`, `senderId`)",
+                )
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -289,5 +314,6 @@ object KnitMigrations {
             MIGRATION_9_10,
             MIGRATION_10_11,
             MIGRATION_11_12,
+            MIGRATION_12_13,
         )
 }

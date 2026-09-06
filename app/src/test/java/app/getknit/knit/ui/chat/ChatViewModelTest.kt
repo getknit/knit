@@ -55,6 +55,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -122,17 +123,17 @@ class ChatViewModelTest {
     fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         coEvery { identity.nodeId() } returns "me"
-        every { messages.observeMessages(Conversations.NEARBY) } returns messagesFlow
-        every { reactions.observeReactions() } returns reactionsFlow
+        stubThread(Conversations.NEARBY)
+        every { reactions.observeReactionsIn(any()) } returns reactionsFlow
         every { settings.blockedNodeIds } returns blockedFlow
         every { settings.recentReactions } returns recentsFlow
         every { blobs.observeSizes() } returns sizesFlow
         every { imageScreening.observeFlaggedHashes() } returns flaggedFlow
         every { settings.contentFilteringEnabled } returns filteringFlow
         every { groups.observeGroup(Conversations.NEARBY) } returns groupFlow
-        every { messages.observeMessages(GROUP) } returns messagesFlow
+        stubThread(GROUP)
         every { groups.observeGroup(GROUP) } returns groupFlow
-        every { messages.observeMessages(Conversations.MESHTASTIC) } returns messagesFlow
+        stubThread(Conversations.MESHTASTIC)
         every { groups.observeGroup(Conversations.MESHTASTIC) } returns groupFlow
         every { peers.observeDirectory() } returns peersFlow.map { directoryOf(it) }
         every { settings.displayName } returns nameFlow
@@ -170,8 +171,31 @@ class ChatViewModelTest {
 
     /** The per-thread flows setUp stubs only for the room and the group — a DM thread needs its own. */
     private fun stubDm(peerId: String) {
-        every { messages.observeMessages(peerId) } returns messagesFlow
+        stubThread(peerId)
         every { groups.observeGroup(peerId) } returns groupFlow
+    }
+
+    /** Every window limit the ViewModel has asked the repository for, oldest first — see [stubThread]. */
+    private val requestedLimits = mutableListOf<Int>()
+
+    /**
+     * Stands in for the windowed read of one thread. [messagesFlow] holds the *whole* conversation and the
+     * stub hands back its newest `limit`, which is exactly what
+     * `MessageDao.observeNewestForConversation` + the repository's `asReversed()` produce. Every pre-existing
+     * test in this class seeds a handful of messages, so `takeLast` is the identity there and none of them
+     * change behaviour; recording the limits is what lets the paging tests prove the window was narrowed at
+     * the query rather than filtered in memory afterwards.
+     */
+    private fun stubThread(conversationId: String) {
+        every { messages.observeNewestMessages(conversationId, any()) } answers {
+            val limit = secondArg<Int>()
+            requestedLimits += limit
+            messagesFlow.map { all -> all.takeLast(limit) }
+        }
+        every { messages.observeSendersIn(conversationId) } returns
+            messagesFlow.map { all ->
+                all.filter { it.kind == MessageEntity.KIND_NORMAL }.map { it.senderId }.distinct()
+            }
     }
 
     private fun vm(conversationId: String = Conversations.NEARBY) =
@@ -217,6 +241,218 @@ class ChatViewModelTest {
 
             assertFalse("a real emission is never loading", vm.state.value.isLoading)
             assertEquals(1, vm.state.value.rows.size)
+        }
+
+    // --- Reading a long thread a window at a time --------------------------------------------------------
+
+    /** A conversation the size the retention caps actually permit; `sentAt` doubles as each row's ordinal. */
+    private fun longThread(
+        count: Int = 1_000,
+        senderId: String = "them",
+    ) = (1..count).map { msg(senderId = senderId, body = "m$it", sentAt = it.toLong()) }
+
+    private fun TestScope.collectState(vm: ChatViewModel) {
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+    }
+
+    @Test
+    fun aThousandMessageThreadOpensOnItsNewestWindowNotItsWholeHistory() =
+        runTest {
+            val vm = vm()
+            collectState(vm)
+            messagesFlow.value = longThread()
+            advanceUntilIdle()
+
+            val state = vm.state.value
+            assertEquals("the cold open folds a window, not the thread", ChatWindow.INITIAL, state.rows.size)
+            assertEquals("anchored at the newest message", 1_000L, state.rows.last().sentAt)
+            assertEquals("and reaching exactly INITIAL back", 941L, state.rows.first().sentAt)
+            assertTrue("with history still behind it", state.hasOlder)
+            assertEquals(
+                "the narrowing happened in the query, not in memory afterwards",
+                listOf(ChatWindow.INITIAL),
+                requestedLimits,
+            )
+        }
+
+    @Test
+    fun aThreadShorterThanTheWindowReportsNothingOlder() =
+        runTest {
+            val vm = vm()
+            collectState(vm)
+            messagesFlow.value = longThread(count = 40)
+            advanceUntilIdle()
+
+            assertEquals(40, vm.state.value.rows.size)
+            assertFalse("fewer rows back than asked for means the whole thread is loaded", vm.state.value.hasOlder)
+        }
+
+    @Test
+    fun loadOlderAddsAPageOfHistoryWithoutDisturbingTheNewestEnd() =
+        runTest {
+            val vm = vm()
+            collectState(vm)
+            messagesFlow.value = longThread()
+            advanceUntilIdle()
+            val newestBefore =
+                vm.state.value.rows
+                    .last()
+                    .id
+
+            vm.loadOlder()
+            advanceUntilIdle()
+
+            val state = vm.state.value
+            assertEquals(ChatWindow.INITIAL + ChatWindow.PAGE, state.rows.size)
+            assertEquals("the page is read from Room", ChatWindow.INITIAL + ChatWindow.PAGE, requestedLimits.last())
+            // The screen's follow-to-bottom effect keys on the last row's id, and the LazyColumn's index 0 is
+            // that same row. A page that changed either would yank the reader out of the history they are
+            // reading, which is the whole reason the window grows at the old end.
+            assertEquals("the newest message is still the newest", newestBefore, state.rows.last().id)
+            assertEquals("and the window reaches a page further back", 841L, state.rows.first().sentAt)
+        }
+
+    @Test
+    fun repeatedLoadOlderWalksBackOnePageAtATimeAndNeverSkips() =
+        runTest {
+            val vm = vm()
+            collectState(vm)
+            messagesFlow.value = longThread()
+            advanceUntilIdle()
+            requestedLimits.clear()
+
+            repeat(5) {
+                vm.loadOlder()
+                advanceUntilIdle()
+            }
+
+            // Each call grows from the window that actually rendered, not from whatever the limit has been
+            // set to, so the pages step evenly instead of compounding into 60 → 260 → 660 while Room is still
+            // answering the first one.
+            assertEquals(
+                (1..5).map { ChatWindow.INITIAL + it * ChatWindow.PAGE },
+                requestedLimits,
+            )
+            assertEquals(ChatWindow.INITIAL + 5 * ChatWindow.PAGE, vm.state.value.rows.size)
+            assertEquals(
+                "still anchored at the newest message",
+                1_000L,
+                vm.state.value.rows
+                    .last()
+                    .sentAt,
+            )
+        }
+
+    @Test
+    fun loadOlderDoesNothingOnceTheWholeThreadIsLoaded() =
+        runTest {
+            val vm = vm()
+            collectState(vm)
+            messagesFlow.value = longThread(count = 10)
+            advanceUntilIdle()
+            requestedLimits.clear()
+
+            vm.loadOlder()
+            advanceUntilIdle()
+
+            assertEquals(10, vm.state.value.rows.size)
+            assertTrue("no page was requested", requestedLimits.isEmpty())
+        }
+
+    @Test
+    fun theReadWatermarkFollowsTheThreadsNewestMessageNotTheWindowsPage() =
+        runTest {
+            val vm = vm()
+            collectState(vm)
+            vm.onChatForeground()
+            messagesFlow.value = longThread()
+            advanceUntilIdle()
+
+            // The window is anchored at the newest end, so "newest loaded" and "newest in the thread" are the
+            // same message. If the window ever drifted, every thread the user read would keep an unread badge.
+            coVerify { settings.setLastReadAt(Conversations.NEARBY, 1_000L) }
+        }
+
+    @Test
+    fun mentionCandidatesIncludeSomeoneWhoOnlySpokeBeyondTheWindow() =
+        runTest {
+            val vm = vm()
+            collectState(vm)
+            // Carol spoke once, a thousand messages ago. She is nowhere in the loaded window, and deriving the
+            // candidates from those rows would mean you could only @-mention her after scrolling back to her.
+            messagesFlow.value = listOf(msg(senderId = "carol", body = "hello", sentAt = 1L)) + longThread(senderId = "bob")
+            advanceUntilIdle()
+
+            val candidates =
+                vm.state.value.mentionCandidates
+                    .map { it.nodeId }
+            assertTrue("carol is still mentionable: $candidates", "carol" in candidates)
+            assertTrue("bob is too", "bob" in candidates)
+            assertFalse("we are never our own candidate", "me" in candidates)
+        }
+
+    @Test
+    fun aBlockedSenderIsNeitherMentionableNorAbleToHideTheRestOfTheThread() =
+        runTest {
+            blockedFlow.value = setOf("mallory")
+            val vm = vm()
+            collectState(vm)
+            // A whole window of blocked messages folds to zero rows. Measuring "is there more?" on those rows
+            // would report an empty conversation with all its history sitting right behind it.
+            messagesFlow.value = longThread(senderId = "bob") +
+                (1..ChatWindow.INITIAL).map {
+                    msg(senderId = "mallory", body = "spam$it", sentAt = 1_000L + it)
+                }
+            advanceUntilIdle()
+
+            val state = vm.state.value
+            assertTrue("nothing from a blocked sender is rendered", state.rows.none { it.senderNodeId == "mallory" })
+            assertTrue("but the thread still reads as having more", state.hasOlder)
+            assertFalse("and they are not mentionable", "mallory" in state.mentionCandidates.map { it.nodeId })
+        }
+
+    @Test
+    fun revealMessageOpensTheWindowFarEnoughToReachAQuotedOriginal() =
+        runTest {
+            val vm = vm()
+            collectState(vm)
+            messagesFlow.value = longThread()
+            advanceUntilIdle()
+            val target = messagesFlow.value.first().id // the oldest message, far outside the window
+            assertTrue(
+                "precondition: not loaded",
+                vm.state.value.rows
+                    .none { it.id == target },
+            )
+            coEvery { messages.depthOf(Conversations.NEARBY, target) } returns 1_000
+
+            vm.revealMessage(target)
+            advanceUntilIdle()
+
+            assertTrue(
+                "the quoted original is now in the window",
+                vm.state.value.rows
+                    .any { it.id == target },
+            )
+        }
+
+    @Test
+    fun revealMessageLeavesTheWindowAloneForAMessageRetentionHasTrimmed() =
+        runTest {
+            val vm = vm()
+            collectState(vm)
+            messagesFlow.value = longThread()
+            advanceUntilIdle()
+            requestedLimits.clear()
+            // Depth 0 is how the query reports "not stored" — the screen's existing behaviour for a quote it
+            // cannot follow is to do nothing, and growing the window to no purpose would be worse.
+            coEvery { messages.depthOf(Conversations.NEARBY, "gone") } returns 0
+
+            vm.revealMessage("gone")
+            advanceUntilIdle()
+
+            assertEquals(ChatWindow.INITIAL, vm.state.value.rows.size)
+            assertTrue(requestedLimits.isEmpty())
         }
 
     @Test

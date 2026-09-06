@@ -107,6 +107,8 @@
     <string name="chatlist_radio_banner_all_off_airplane">Airplane mode is on — turn it off or turn on Wi-Fi/Bluetooth to connect</string>
     <string name="chatlist_radio_banner_dismiss">Dismiss</string>
     <string name="chat_empty">No messages yet.\nSay hello to nearby devices.</string>
+    <!-- Shown above the oldest loaded message while more of the conversation is being read in. -->
+    <string name="chat_loading_older">Loading earlier messages…</string>
     <string name="chat_message_hint">Knit Message</string>
     <string name="chat_typing">%1$s is typing</string>
     <string name="chat_typing_multiple">%1$s and others are typing</string>

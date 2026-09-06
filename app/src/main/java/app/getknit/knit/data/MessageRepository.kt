@@ -6,6 +6,7 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.message.MessageEntity
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
 /**
  * Single source of truth for chat messages. Retention caps ([sweepRetention]) bound the table against a
@@ -24,6 +25,25 @@ class MessageRepository(
 
     /** Messages in a single thread (the broadcast room or a 1:1 DM), oldest first. */
     fun observeMessages(conversationId: String): Flow<List<MessageEntity>> = dao.observeForConversation(conversationId)
+
+    /**
+     * The newest [limit] messages in a thread, oldest first — the chat screen's window. Reversing here keeps
+     * the ascending shape every consumer of [observeMessages] already expects; `asReversed` is a view, not a
+     * copy. See [MessageDao.observeNewestForConversation] for why the window exists and why it is stable.
+     */
+    fun observeNewestMessages(
+        conversationId: String,
+        limit: Int,
+    ): Flow<List<MessageEntity>> = dao.observeNewestForConversation(conversationId, limit).map { it.asReversed() }
+
+    /** How deep [id] sits from the newest end of its thread — the window that just reaches a quoted message. */
+    suspend fun depthOf(
+        conversationId: String,
+        id: String,
+    ): Int = dao.depthOf(conversationId, id)
+
+    /** Everyone who has posted an ordinary message in [conversationId] — the @-mention candidates. */
+    fun observeSendersIn(conversationId: String): Flow<List<String>> = dao.observeSendersIn(conversationId)
 
     /** One message by id, null once it is deleted — backs the message-details screen. */
     fun observeMessage(id: String): Flow<MessageEntity?> = dao.observeById(id)

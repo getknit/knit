@@ -3,12 +3,14 @@ package app.getknit.knit.ui.chat
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -48,6 +50,7 @@ class ChatScreenContentTest {
         pendingAttachment: AttachmentStore.Ingested? = null,
         linkPreviewLoading: Boolean = false,
         onDraftChanged: (String) -> Unit = {},
+        onLoadOlder: () -> Unit = {},
     ): @androidx.compose.runtime.Composable () -> Unit =
         {
             KnitTheme {
@@ -79,9 +82,63 @@ class ChatScreenContentTest {
                     onUnblock = {},
                     onCopy = {},
                     onSaveAttachment = { _, _, _ -> },
+                    onLoadOlder = onLoadOlder,
                 )
             }
         }
+
+    /** A thread of [count] rows, newest last, in the oldest-first shape the ViewModel emits. */
+    private fun rows(count: Int) =
+        (1..count).map { i ->
+            ChatRow(
+                id = "m$i",
+                body = "message $i",
+                mine = false,
+                senderName = "Bob",
+                senderNodeId = "bob",
+                avatarHash = null,
+                sentAt = 1_700_000_000_000L + i,
+                received = false,
+            )
+        }
+
+    @Test
+    fun aThreadWithMoreHistorySaysSoAboveItsOldestMessage() {
+        compose.setContent(
+            content(input = "", state = ChatUiState(isRoom = true, myNodeId = "me", rows = rows(3), hasOlder = true)),
+        )
+
+        compose.onNodeWithText("Loading earlier messages…").assertExists()
+    }
+
+    @Test
+    fun aFullyLoadedThreadSaysNothingAboveItsOldestMessage() {
+        compose.setContent(
+            content(input = "", state = ChatUiState(isRoom = true, myNodeId = "me", rows = rows(3), hasOlder = false)),
+        )
+
+        compose.onNodeWithText("Loading earlier messages…").assertDoesNotExist()
+    }
+
+    @Test
+    fun scrollingBackToTheOldestLoadedMessageAsksForAnotherPage() {
+        var pages = 0
+        compose.setContent(
+            content(
+                input = "",
+                state = ChatUiState(isRoom = true, myNodeId = "me", rows = rows(60), hasOlder = true),
+                onLoadOlder = { pages++ },
+            ),
+        )
+        // The thread opens resting on the newest message, so nothing has been asked for yet.
+        assertEquals(0, pages)
+
+        // The list is reversed, so its last index is the oldest row — the visual top.
+        compose.onNodeWithTag("chat_thread").performScrollToIndex(59)
+        compose.waitForIdle()
+
+        assertTrue("reaching the oldest loaded message reads more history", pages > 0)
+    }
 
     @Test
     fun sendButtonSendsWhenTheInputIsNotEmpty() {

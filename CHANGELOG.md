@@ -40,6 +40,8 @@ document:
 
 - A chat with a lot of messages no longer opens on "No messages yet". Faint placeholder bubbles fill the
   thread while Knit loads it, so a long conversation stops looking like an empty one.
+- A long chat now opens as fast as a short one. Knit loads the newest messages first and adds older ones as
+  you scroll back, so a thread with thousands in it no longer stalls on the way in.
 - Aliases are three words now, like ReallyJoyfulFerret. Settings and a contact's profile show the new one.
 - Knit no longer feeds what is on screen to Android's content-capture service (the "app content"
   suggestions). An end-to-end-encrypted messenger has no business handing its screen text to another

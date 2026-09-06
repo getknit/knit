@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -44,11 +45,58 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v12) creates and opens from the exported JSON`() =
+    fun `the current schema (v13) creates and opens from the exported JSON`() =
         runTest {
-            val version = 12 // KnitDatabase @Database(version = 12) — bump alongside the DB (its retention is CLASS,
+            val version = 13 // KnitDatabase @Database(version = 13) — bump alongside the DB (its retention is CLASS,
             // so the version can't be read reflectively). A missing schemas/<db>/<version>.json fails here.
             helper.createDatabase(version).close()
+        }
+
+    @Test
+    fun `migrate 12 to 13 keeps messages and re-indexes the thread for the chat window`() =
+        runTest {
+            // The first bump that moves no columns: it swaps `messages`' single-column index for the two
+            // composites the chat screen's windowed read depends on. runMigrationsAndValidate already fails if
+            // the index set doesn't match the exported v13 JSON, so what is worth asserting here is the half
+            // it can't see — that a real device's rows come through an index rebuild intact — plus the shape
+            // of the new indices, since the *column order* is what decides whether SQLite can skip the sort.
+            helper.createDatabase(12).use { c ->
+                c.execSQL(
+                    "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
+                        "mentions, replyToHasAttachment, moderation, pendingKey, kind, originViaMqtt, originSigned) " +
+                        "VALUES ('m1','n1','m-public','hello',1,0,5,'[]',0,0,0,0,0,0)",
+                )
+                c.execSQL(
+                    "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
+                        "mentions, replyToHasAttachment, moderation, pendingKey, kind, originViaMqtt, originSigned) " +
+                        "VALUES ('m2','n2','m-public','later',9,0,5,'[]',0,0,0,0,0,0)",
+                )
+            }
+            helper.runMigrationsAndValidate(13, listOf(KnitMigrations.MIGRATION_12_13)).use { c ->
+                c.prepare("SELECT id FROM messages WHERE conversationId = 'm-public' ORDER BY sentAt DESC, id DESC").use { st ->
+                    assertTrue(st.step())
+                    assertEquals("the newest message still leads the thread", "m2", st.getText(0))
+                    assertTrue(st.step())
+                    assertEquals("and nothing was lost to the index rebuild", "m1", st.getText(0))
+                }
+
+                val indices = mutableListOf<String>()
+                c.prepare("PRAGMA index_list(messages)").use { st ->
+                    while (st.step()) indices += st.getText(1)
+                }
+                assertTrue("the thread-ordering index: $indices", "index_messages_conversationId_sentAt_id" in indices)
+                assertTrue("the sender-covering index: $indices", "index_messages_conversationId_kind_senderId" in indices)
+                assertFalse("the single-column index it replaces is gone: $indices", "index_messages_conversationId" in indices)
+
+                // Column order, not just existence: (conversationId, sentAt, id) is what lets an equality on
+                // the thread leave `sentAt` as the scanned suffix, so the window needs no sort. Reordered, the
+                // index would still exist and every other test would still pass — slowly.
+                val columns = mutableListOf<String>()
+                c.prepare("PRAGMA index_info(index_messages_conversationId_sentAt_id)").use { st ->
+                    while (st.step()) columns += st.getText(2)
+                }
+                assertEquals(listOf("conversationId", "sentAt", "id"), columns)
+            }
         }
 
     @Test

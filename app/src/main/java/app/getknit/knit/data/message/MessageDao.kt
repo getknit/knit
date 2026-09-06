@@ -18,6 +18,41 @@ interface MessageDao {
     fun observeForConversation(conversationId: String): Flow<List<MessageEntity>>
 
     /**
+     * The newest [limit] messages in a thread, **newest first** — the chat screen's window (ADR: the thread
+     * reads a window, not the whole conversation). A long-lived thread runs to the retention cap (5,000 on an
+     * accepted thread, 2,000 in a room), and reading all of it was what made a cold open slow.
+     *
+     * The `id` tiebreak matches [deleteOldestInConversation]'s and is what makes the window *stable*: rows
+     * sharing a `sentAt` would otherwise be free to reshuffle across the boundary as the limit grows, so a
+     * message could appear twice or vanish while scrolling back. Ordering is served whole by the
+     * `(conversationId, sentAt, id)` index, so there is no sort and the scan stops at [limit].
+     *
+     * Callers want oldest-first; [app.getknit.knit.data.MessageRepository.observeNewestMessages] reverses.
+     */
+    @Query(
+        "SELECT * FROM messages WHERE conversationId = :conversationId " +
+            "ORDER BY sentAt DESC, id DESC LIMIT :limit",
+    )
+    fun observeNewestForConversation(
+        conversationId: String,
+        limit: Int,
+    ): Flow<List<MessageEntity>>
+
+    /**
+     * How many messages sit at or newer than [id] in its thread — the window size that just reaches it, so
+     * tapping a reply quote can pull an older message into the window in one round trip rather than paging
+     * blindly toward it. Zero when [id] is not stored (the subquery yields null and nothing compares true).
+     */
+    @Query(
+        "SELECT COUNT(*) FROM messages WHERE conversationId = :conversationId " +
+            "AND sentAt >= (SELECT sentAt FROM messages WHERE id = :id)",
+    )
+    suspend fun depthOf(
+        conversationId: String,
+        id: String,
+    ): Int
+
+    /**
      * The whole stored row for [id], or null once it is gone — lets the message-details screen follow a
      * single message (and close itself when that message is deleted out from under it).
      */
@@ -231,6 +266,15 @@ interface MessageDao {
      */
     @Query("SELECT DISTINCT senderId FROM messages WHERE conversationId = :conversationId AND kind = 0")
     suspend fun sendersIn(conversationId: String): List<String>
+
+    /**
+     * The live form of [sendersIn], for the chat screen's @-mention autocomplete. Same `kind = 0` rule and
+     * the same reason for it. It exists because the screen reads a *window* of the thread: deriving the
+     * candidates from the loaded rows would quietly drop everyone who last spoke further back than the
+     * window reaches, so who you can mention would depend on how far you had scrolled.
+     */
+    @Query("SELECT DISTINCT senderId FROM messages WHERE conversationId = :conversationId AND kind = 0")
+    fun observeSendersIn(conversationId: String): Flow<List<String>>
 
     /**
      * Whether [conversationId] holds any ordinary message (`kind = 0`, [MessageEntity.KIND_NORMAL]) —

@@ -95,7 +95,12 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
     //     `messages.originSigned`, what a heard radio post's XEdDSA signature proved at ingest, frozen on the
     //     row beside `originPeerId`. Null / 0 (`ORIGIN_UNSIGNED`) on every existing row: no profile before this
     //     carried a key and no post had been checked; migrated by KnitMigrations.MIGRATION_11_12.
-    version = 12,
+    // v13: no columns — `messages` trades its `conversationId` index for a composite over
+    //     (conversationId, sentAt, id). The old index found a thread's rows but left SQLite sorting all of
+    //     them to order the thread; the composite orders them too, which is what lets the chat screen read a
+    //     bounded newest-first window instead of the whole conversation. Data untouched; migrated by
+    //     KnitMigrations.MIGRATION_12_13.
+    version = 13,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
     // the migration test's MigrationTestHelper. Room also errors at compile time if an entity changes without

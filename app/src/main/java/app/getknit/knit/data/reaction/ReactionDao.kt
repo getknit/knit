@@ -12,6 +12,18 @@ interface ReactionDao {
     fun observeAll(): Flow<List<ReactionEntity>>
 
     /**
+     * Live reactions on one thread's messages, oldest first — what a chat screen actually needs. Same
+     * tombstone filter as [observeAll]; the join is what narrows it, since a reaction row names only its
+     * message. A chat screen used to collect [observeAll] and then group the whole table by message id on
+     * every emission, so a reaction in some other conversation rebuilt this one's rows.
+     */
+    @Query(
+        "SELECT r.* FROM reactions r JOIN messages m ON m.id = r.messageId " +
+            "WHERE m.conversationId = :conversationId AND r.emoji IS NOT NULL ORDER BY r.updatedAt ASC",
+    )
+    fun observeForConversation(conversationId: String): Flow<List<ReactionEntity>>
+
+    /**
      * Live reactions on one message, oldest first — the per-reactor rows the message-details screen
      * lists by name. Same tombstone filter as [observeAll] (a retraction is `emoji IS NULL`, not a
      * deleted row), narrowed by the existing `messageId` index.

@@ -133,6 +133,76 @@ class MessageRepositoryTest : RoomDbTest() {
             assertEquals(listOf("H1"), repo.hashesNeedingFetch())
         }
 
+    @Test
+    fun `the window hands back the newest messages oldest-first, so the ascending shape is unchanged`() =
+        runTest {
+            val repo = repo()
+            for (i in 1..1_000) repo.save(msg("m$i", sentAt = i.toLong()))
+
+            val window = repo.observeNewestMessages(Conversations.NEARBY, 60).first()
+
+            assertEquals(60, window.size)
+            // The DAO reads newest-first; the repository reverses so every consumer of the old
+            // `observeMessages` ordering — the rows, the read watermark, the room's channel name — is
+            // looking at the same shape it always was, just less of it.
+            assertEquals("oldest of the window leads", 941L, window.first().sentAt)
+            assertEquals("newest of the thread trails", 1_000L, window.last().sentAt)
+        }
+
+    @Test
+    fun `a new message rolls the window forward without widening it`() =
+        runTest {
+            val repo = repo()
+            for (i in 1..1_000) repo.save(msg("m$i", sentAt = i.toLong()))
+            assertEquals(
+                1_000L,
+                repo
+                    .observeNewestMessages(Conversations.NEARBY, 60)
+                    .first()
+                    .last()
+                    .sentAt,
+            )
+
+            repo.save(msg("m1001", sentAt = 1_001L))
+            val after = repo.observeNewestMessages(Conversations.NEARBY, 60).first()
+
+            // The cap is enforced by the query, not by trimming afterwards: an arriving message can never
+            // push the window past its limit, which is what makes "fewer rows than asked for" a sound test
+            // for "nothing older left to read".
+            assertEquals(60, after.size)
+            assertEquals(1_001L, after.last().sentAt)
+            assertEquals(942L, after.first().sentAt)
+        }
+
+    @Test
+    fun `trimming old history leaves the window untouched`() =
+        runTest {
+            val repo = repo()
+            for (i in 1..1_000) repo.save(msg("m$i", sentAt = i.toLong()))
+
+            // The retention sweep deletes from the far end of the thread. The window is anchored at the
+            // newest end, so it simply pulls one more old row in and what the reader is looking at does
+            // not move.
+            db.messageDao().deleteOlderThan(Conversations.NEARBY, cutoff = 100L)
+            val window = repo.observeNewestMessages(Conversations.NEARBY, 60).first()
+
+            assertEquals(60, window.size)
+            assertEquals(1_000L, window.last().sentAt)
+        }
+
+    @Test
+    fun `depthOf reaches a message the window has not, and reports nothing for one that is gone`() =
+        runTest {
+            val repo = repo()
+            for (i in 1..1_000) repo.save(msg("m$i", sentAt = i.toLong()))
+
+            val depth = repo.depthOf(Conversations.NEARBY, "m200")
+            assertTrue("far outside the opening window", depth > 60)
+            assertTrue(repo.observeNewestMessages(Conversations.NEARBY, depth).first().any { it.id == "m200" })
+
+            assertEquals(0, repo.depthOf(Conversations.NEARBY, "trimmed-away"))
+        }
+
     private fun msg(
         id: String,
         recipientId: String? = null,
@@ -141,13 +211,14 @@ class MessageRepositoryTest : RoomDbTest() {
         attachmentKey: String? = null,
         received: Boolean = false,
         pendingKey: Boolean = false,
+        sentAt: Long = 1L,
     ) = MessageEntity(
         id = id,
         senderId = "s",
         recipientId = recipientId,
         conversationId = conversationId,
         body = "",
-        sentAt = 1L,
+        sentAt = sentAt,
         received = received,
         attachmentHash = attachmentHash,
         attachmentKey = attachmentKey,
