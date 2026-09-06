@@ -140,6 +140,8 @@ class ChatListViewModel(
         val loraPlane: LoraPlane,
         /** The board's primary channel as the Meshtastic room names it, while live — the row's title. */
         val publicChannel: String?,
+        /** Whether the Meshtastic room exists on this phone at all (`SettingsStore.loraRoomEnabled`). */
+        val loraRoom: Boolean,
     )
 
     private val messagesAndBlocks =
@@ -182,9 +184,9 @@ class ChatListViewModel(
 
     // Same collapse for the LoRa plane: the facts also carry the DM switch and the battery, which this screen
     // never reads. The primary channel's name rides beside the plane because the Meshtastic room's row is
-    // titled by it.
+    // titled by it, and the room switch because it decides whether that row exists.
     private val loraRoom =
-        loraFacts.map { it.plane to it.primaryChannel }.distinctUntilChanged()
+        loraFacts.map { Triple(it.plane, it.primaryChannel, it.room) }.distinctUntilChanged()
 
     private val meshStatus =
         combine(
@@ -193,7 +195,9 @@ class ChatListViewModel(
             visibleWarning,
             relayPlane,
             loraRoom,
-        ) { count, health, warning, plane, (loraPlane, channel) -> MeshStatus(count, health, warning, plane, loraPlane, channel) }
+        ) { count, health, warning, plane, (loraPlane, channel, room) ->
+            MeshStatus(count, health, warning, plane, loraPlane, channel, room)
+        }
 
     val state: StateFlow<ChatListUiState> =
         combine(
@@ -297,10 +301,12 @@ class ChatListViewModel(
             // The Meshtastic room is this phone's own radio's channel, so it exists whenever a radio is bound
             // — empty until the channel speaks, like Nearby — and stays while history does after the radio
             // goes. Never on a phone with no radio and no history: a standing empty row there would be an
-            // offer of something this install cannot have.
+            // offer of something this install cannot have. And never at all once the user has switched the
+            // room off: that hides the row **including** its history, which is the whole of what "hidden"
+            // means here — the rows stay in the database and come back with the switch.
             val bridgedMsgs = byConversation[Conversations.MESHTASTIC].orEmpty()
             val bridged =
-                if (mesh.loraPlane != LoraPlane.Off || bridgedMsgs.isNotEmpty()) {
+                if (mesh.loraRoom && (mesh.loraPlane != LoraPlane.Off || bridgedMsgs.isNotEmpty())) {
                     rowFor(
                         Conversations.MESHTASTIC,
                         bridgedMsgs,

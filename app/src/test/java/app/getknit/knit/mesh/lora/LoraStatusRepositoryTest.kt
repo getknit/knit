@@ -24,12 +24,14 @@ class LoraStatusRepositoryTest {
     private val enabled = MutableStateFlow(true)
     private val address = MutableStateFlow<String?>("AA:BB:CC:DD:EE:FF")
     private val dms = MutableStateFlow(true)
+    private val room = MutableStateFlow(true)
     private val status = MutableStateFlow(LoraStatus())
     private val settings =
         mockk<SettingsStore> {
             every { loraEnabled } returns enabled
             every { loraDeviceAddress } returns address
             every { loraDmEnabled } returns dms
+            every { loraRoomEnabled } returns room
         }
     private val lora =
         object : LoraPlaneStatus {
@@ -64,6 +66,27 @@ class LoraStatusRepositoryTest {
             dms.value = true
             enabled.value = false
             assertEquals(LoraFacts(LoraPlane.Off, dms = false), repo.facts.first())
+        }
+
+    @Test
+    fun `the room switch survives the plane going off, and takes canPost with it`() =
+        runTest {
+            status.value = LoraStatus(state = ready)
+            assertTrue(repo.facts.first().room)
+
+            room.value = false
+            val off = repo.facts.first()
+            assertFalse("the room is switched off", off.room)
+            assertFalse("so there is nothing to post from", off.canPost)
+            assertEquals("but the plane itself is untouched", LoraPlane.Live, off.plane)
+
+            // The one place this differs from the DM switch: `room` is the user's answer alone, never folded
+            // with the plane, because the room's row is drawn from stored history as well as from a board.
+            room.value = true
+            enabled.value = false
+            val planeOff = repo.facts.first()
+            assertTrue("a stored history still has a room to live in", planeOff.room)
+            assertFalse(planeOff.dms)
         }
 
     @Test

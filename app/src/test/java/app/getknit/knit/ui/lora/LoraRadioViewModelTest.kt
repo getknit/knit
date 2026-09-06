@@ -1,5 +1,6 @@
 package app.getknit.knit.ui.lora
 
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.settings.KnitBoardSetup
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.mesh.lora.AirtimeSnapshot
@@ -19,6 +20,7 @@ import app.getknit.knit.mesh.lora.LoraStatus
 import app.getknit.knit.mesh.lora.ModemPreset
 import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.lora.ProvisionResult
+import app.getknit.knit.notifications.Notifier
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +48,7 @@ class LoraRadioViewModelTest {
     private val enabled = MutableStateFlow(true)
     private val dms = MutableStateFlow(true)
     private val bridge = MutableStateFlow(true)
+    private val room = MutableStateFlow(true)
     private val address = MutableStateFlow<String?>("AA:BB:CC:DD:EE:01")
     private val channel = MutableStateFlow(1)
     private val boardSetup = MutableStateFlow<KnitBoardSetup?>(null)
@@ -54,6 +57,7 @@ class LoraRadioViewModelTest {
             every { loraEnabled } returns enabled
             every { loraDmEnabled } returns dms
             every { loraBridgeEnabled } returns bridge
+            every { loraRoomEnabled } returns room
             every { loraDeviceAddress } returns address
             every { loraChannelIndex } returns channel
             every { loraBoardSetup } returns boardSetup
@@ -97,8 +101,10 @@ class LoraRadioViewModelTest {
         Dispatchers.resetMain()
     }
 
+    private val notifier = mockk<Notifier>(relaxed = true)
+
     private fun TestScope.start(): LoraRadioViewModel {
-        val vm = LoraRadioViewModel(settings, lora, boards)
+        val vm = LoraRadioViewModel(settings, lora, boards, notifier)
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
         advanceUntilIdle()
         return vm
@@ -208,6 +214,35 @@ class LoraRadioViewModelTest {
             vm.onToggleBridge(true)
             advanceUntilIdle()
             io.mockk.coVerify { settings.setLoraBridgeEnabled(true) }
+        }
+
+    @Test
+    fun `the room switch reflects the stored setting and a tap writes it back`() =
+        runTest {
+            val vm = start()
+            assertTrue("the room is on out of the box", vm.state.value.roomEnabled)
+            room.value = false
+            advanceUntilIdle()
+            assertFalse(vm.state.value.roomEnabled)
+            vm.onToggleRoom(true)
+            advanceUntilIdle()
+            io.mockk.coVerify { settings.setLoraRoomEnabled(true) }
+        }
+
+    @Test
+    fun `switching the room off clears what it has already put on the shade`() =
+        runTest {
+            // Nothing new can notify once the transport stops delivering, but a post heard a minute ago
+            // would otherwise sit on the shade pointing at a thread that no longer has a row.
+            val vm = start()
+            vm.onToggleRoom(false)
+            advanceUntilIdle()
+            io.mockk.coVerify { settings.setLoraRoomEnabled(false) }
+            io.mockk.verify { notifier.clearConversation(Conversations.MESHTASTIC) }
+
+            vm.onToggleRoom(true)
+            advanceUntilIdle()
+            io.mockk.verify(exactly = 1) { notifier.clearConversation(Conversations.MESHTASTIC) }
         }
 
     @Test

@@ -91,6 +91,52 @@ class ChatListViewModelTest {
     private fun vm() = ChatListViewModel(messages, peers, settings, identity, mesh, groups, relayFlow, loraFlow, context)
 
     @Test
+    fun theRadioRoomIsHiddenOutrightWhenTheUserSwitchesItOff() =
+        runTest {
+            // The switch hides the row *including* its history, which is the whole of what "hidden" means —
+            // the rows stay in the database and the switch brings them back. A rule that only hid the empty
+            // row would leave a phone that had ever heard a post with a permanent one.
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraFlow.value = LoraFacts(plane = LoraPlane.Live, primaryChannel = "LongFast")
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "gw",
+                        body = "anyone around?",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0x1234abcd,
+                        originName = "Bob",
+                        originChannel = "LongFast",
+                    ),
+                )
+            advanceUntilIdle()
+            assertTrue(
+                vm.state.value.conversations
+                    .any { it.id == Conversations.MESHTASTIC },
+            )
+
+            loraFlow.value = LoraFacts(plane = LoraPlane.Live, primaryChannel = "LongFast", room = false)
+            advanceUntilIdle()
+            assertTrue(
+                "a live board does not bring the row back",
+                vm.state.value.conversations
+                    .none { it.id == Conversations.MESHTASTIC },
+            )
+
+            // And the history it hid is still there to come back to.
+            loraFlow.value = LoraFacts(plane = LoraPlane.Live, primaryChannel = "LongFast")
+            advanceUntilIdle()
+            assertEquals(
+                100L,
+                vm.state.value.conversations
+                    .first { it.id == Conversations.MESHTASTIC }
+                    .lastMessageAt,
+            )
+        }
+
+    @Test
     fun theRadioRoomAppearsWithABoundBoardOrAHistory() =
         runTest {
             // It is this phone's own radio's channel: with no radio bound and nothing heard, no row — a

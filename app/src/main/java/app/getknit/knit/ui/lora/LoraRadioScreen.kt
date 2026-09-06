@@ -69,6 +69,7 @@ fun LoraRadioScreen(onBack: () -> Unit) {
         onToggle = viewModel::onToggle,
         onToggleDms = viewModel::onToggleDms,
         onToggleBridge = viewModel::onToggleBridge,
+        onToggleRoom = viewModel::onToggleRoom,
         onPickBoard = viewModel::pickBoard,
         onForgetBoard = viewModel::forgetBoard,
         onShowAllBoards = viewModel::setShowAllBoards,
@@ -89,6 +90,7 @@ internal fun LoraRadioScreenContent(
     onToggle: (Boolean) -> Unit,
     onToggleDms: (Boolean) -> Unit = {},
     onToggleBridge: (Boolean) -> Unit = {},
+    onToggleRoom: (Boolean) -> Unit = {},
     onPickBoard: (BoardOption) -> Unit = {},
     onForgetBoard: () -> Unit = {},
     onShowAllBoards: (Boolean) -> Unit = {},
@@ -130,6 +132,7 @@ internal fun LoraRadioScreenContent(
             )
             DmSwitchRow(enabled = state.dmEnabled, active = state.enabled, onToggle = onToggleDms)
             BridgeSwitchRow(enabled = state.bridgeEnabled, active = state.enabled, onToggle = onToggleBridge)
+            RoomSwitchRow(enabled = state.roomEnabled, active = state.enabled, onToggle = onToggleRoom)
 
             Text(
                 text = stringResource(R.string.lora_board_section),
@@ -272,6 +275,39 @@ private fun BridgeSwitchRow(
             Text(stringResource(R.string.lora_bridge_title), style = MaterialTheme.typography.titleMedium)
             Text(
                 text = stringResource(R.string.lora_bridge_subtitle),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(checked = enabled, onCheckedChange = null, enabled = active)
+    }
+}
+
+/**
+ * The Meshtastic-room switch (ADR 2026-09.26q3): whether the board's own primary channel is mirrored into a
+ * room on this phone at all. Off, slot 0 is never read — the room's row leaves the chat list, nothing from it
+ * notifies, and posts stop being processed where they land rather than being filtered later. The board keeps
+ * carrying Knit's own traffic either way. Inert while the plane is off.
+ */
+@Composable
+private fun RoomSwitchRow(
+    enabled: Boolean,
+    active: Boolean,
+    onToggle: (Boolean) -> Unit,
+) {
+    Row(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .toggleable(value = enabled, enabled = active, onValueChange = onToggle, role = Role.Switch)
+                .testTag("lora_room_switch"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(stringResource(R.string.lora_room_title), style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = stringResource(R.string.lora_room_subtitle),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

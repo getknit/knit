@@ -81,5 +81,5 @@ val uiModule =
         viewModel { MessageRequestsViewModel(get(), get(), get(), get(), get(), androidContext()) }
         viewModel { AddContactViewModel(get(), get(), get(), get(), get()) }
         viewModel { InternetRelayViewModel(get(), get()) }
-        viewModel { LoraRadioViewModel(get(), get(), get()) }
+        viewModel { LoraRadioViewModel(get(), get(), get(), get()) }
     }

@@ -24,6 +24,16 @@ enum class LoraPlane {
 data class LoraFacts(
     val plane: LoraPlane = LoraPlane.Off,
     val dms: Boolean = false,
+    /**
+     * Whether the Meshtastic room exists on this phone (`SettingsStore.loraRoomEnabled`) — what puts its row
+     * in the chat list, and one of [canPost]'s inputs.
+     *
+     * **Default on, and deliberately not folded with [plane] the way [dms] is.** Whether a DM rides the board
+     * is meaningless without one; whether the room exists is not, because its row outlives the radio — a
+     * phone that read a channel for a week and then switched the plane off still has that history to show.
+     * So this carries the user's answer alone, and the row's own rule pairs it with the plane.
+     */
+    val room: Boolean = true,
     /** The board's battery while [plane] is [LoraPlane.Live] (the Profile row shows it); never a reach input. */
     val battery: BoardBattery? = null,
     /**
@@ -39,9 +49,9 @@ data class LoraFacts(
      */
     val primaryChannel: String? = null,
     /**
-     * Whether a post typed in the Meshtastic room can leave this device now: the link is live and slot 0 is
-     * not the Knit channel itself. Structural only — the 30 s floor and the airtime budget are answered per
-     * send, by the outcome the board hands back.
+     * Whether a post typed in the Meshtastic room can leave this device now: the [room] is switched on, the
+     * link is live and slot 0 is not the Knit channel itself. Structural only — the 30 s floor and the airtime
+     * budget are answered per send, by the outcome the board hands back.
      */
     val canPost: Boolean = false,
     /**

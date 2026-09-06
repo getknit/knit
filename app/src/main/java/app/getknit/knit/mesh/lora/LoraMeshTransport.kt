@@ -642,6 +642,10 @@ internal class LoraMeshTransport(
      * make one of the two wrong.
      */
     override suspend fun postToPublicChannel(body: String): PublicPostRefusal? {
+        // The composer is gone with the room's row, so this is the net under a route that no longer draws one
+        // (the debug SEND intent, a screen still on the back stack) — the same net `MeshManager.sendTyping`
+        // keeps under the room it must not cue.
+        if (currentConfig?.room == false) return refusePublicPost(PublicPostRefusal.ROOM_OFF)
         val ready = link.state.value as? LinkState.Ready ?: return refusePublicPost(PublicPostRefusal.NOT_READY)
         // A board whose slot 0 is the Knit channel has no primary to post on — the debug-bridge shape the
         // receive half refuses to read for the same reason, decided off the same table.
@@ -1018,6 +1022,14 @@ internal class LoraMeshTransport(
         // still has a primary to mirror — the one shape with nothing to mirror (Knit itself at slot 0, the
         // debug bridge's lab binding) is refused inside, off the channel table.
         if (packet.channelIndex == PublicChannelPolicy.PRIMARY_INDEX && packet.portnum == MeshtasticProto.PORT_TEXT_MESSAGE) {
+            // The room is switched off: this packet has nowhere to go. Dropped here rather than later so the
+            // whole cost of a post the user asked not to see — the judge, the signature verify, the contact
+            // lookup, the moderator, the row and its notification — is never paid. Counted, so `…debug.LORA`
+            // can still tell "the channel is quiet" from "the channel is busy and Knit is ignoring it".
+            if (currentConfig?.room == false) {
+                metrics.onMeshPostRefused(MESH_POST_ROOM_OFF)
+                return
+            }
             onPrimaryPacket(packet)
             return
         }
@@ -1354,6 +1366,13 @@ internal class LoraMeshTransport(
         val PRE_READY_PAYLOAD: Int = minOf(MeshtasticProto.MAX_PAYLOAD, MTU_FLOOR - TORADIO_OVERHEAD)
     }
 }
+
+/**
+ * Why a slot-0 chat packet was dropped before [PublicChannelPolicy] ever saw it: the user switched the
+ * Meshtastic room off. A refusal name rather than a counter of its own, beside `BLOCKED_CONTACT`, because it
+ * belongs in the same "heard on the primary and not delivered" tally the rest of the reasons share.
+ */
+internal const val MESH_POST_ROOM_OFF = "ROOM_OFF"
 
 /**
  * What a board reports about itself when its session comes up, for the profile to advertise: its node number

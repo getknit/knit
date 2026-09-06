@@ -29,19 +29,25 @@ internal class LoraStatusRepository(
                 settings.loraEnabled,
                 settings.loraDeviceAddress,
                 settings.loraDmEnabled,
+                settings.loraRoomEnabled,
                 lora.status,
-            ) { enabled, address, dms, status ->
+            ) { enabled, address, dms, room, status ->
                 val plane = loraPlaneFor(enabled, bound = address != null, state = status.state)
                 val ready = (status.state as? LinkState.Ready)?.takeIf { plane == LoraPlane.Live }
                 LoraFacts(
                     plane = plane,
                     dms = enabled && dms,
+                    // Not `enabled && room`, unlike the line above: the room's row is drawn from history as
+                    // well as from a live board, so switching the *plane* off must not hide it (see LoraFacts).
+                    room = room,
                     battery = status.battery.takeIf { plane == LoraPlane.Live },
                     airtimeSpent = plane == LoraPlane.Live && status.airtime?.let(::saturated) == true,
                     // Both change only on a link transition (the channel table reloads after a setup
                     // reboot), so the per-send status republish never churns them.
                     primaryChannel = ready?.let { PublicChannelPolicy.primaryName(it.channels, it.radio) },
-                    canPost = ready != null && !PublicChannelPolicy.isKnitPrimary(ready.channels),
+                    // The room switch is folded in here rather than at every reader: a room the user has
+                    // switched off has nothing to post from, and the transport refuses such a post anyway.
+                    canPost = room && ready != null && !PublicChannelPolicy.isKnitPrimary(ready.channels),
                     // A board we cannot read the table of answers "public", which is the safe half of the
                     // claim rather than the accurate one — see the policy's own note.
                     primaryKeyIsPublic = ready == null || PublicChannelPolicy.primaryKeyIsPublic(ready.channels),

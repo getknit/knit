@@ -1194,11 +1194,20 @@ class ChatViewModel(
     private fun refusalMessage(reason: PublicPostRefusal): Int =
         when (reason) {
             PublicPostRefusal.NO_BOARD, PublicPostRefusal.NOT_READY -> R.string.chat_mesh_post_not_connected
+
             PublicPostRefusal.KNIT_ON_PRIMARY -> R.string.chat_mesh_post_channel_unusable
+
             PublicPostRefusal.TOO_SOON -> R.string.chat_mesh_post_too_soon
+
             PublicPostRefusal.TOO_LARGE -> R.string.chat_mesh_post_too_large
+
             PublicPostRefusal.NO_AIR -> R.string.chat_mesh_post_no_air
+
             PublicPostRefusal.NAK -> R.string.chat_mesh_post_refused
+
+            // Only reachable on a screen that outlived its own row (the switch flipped while the thread was
+            // open); the row and its composer both go with the setting.
+            PublicPostRefusal.ROOM_OFF -> R.string.chat_mesh_post_room_off
         }
 
     /**

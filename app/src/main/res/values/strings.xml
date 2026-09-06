@@ -657,6 +657,9 @@
     <!-- Bridging distant groups over LoRa (ADR 044). -->
     <string name="lora_bridge_title">Bridge distant groups</string>
     <string name="lora_bridge_subtitle">Pass on messages between groups too far apart to reach each other, including ones you did not send, using a small capped share of airtime. Off, you also stop receiving what you missed.</string>
+    <!-- The Meshtastic room: mirroring the board's own primary channel into a room on this phone (ADR 2026-09.26q3). -->
+    <string name="lora_room_title">Meshtastic room</string>
+    <string name="lora_room_subtitle">Show your radio\'s own channel as a room in Knit, so you can read and join whatever else is on it. Off, the room is hidden and silent and Knit ignores that channel — your board still carries Knit\'s own messages.</string>
     <string name="lora_role_passive">Another Knit board nearby is bridging — this one is listening</string>
     <string name="lora_airtime">Airtime %1$d%% of the current budget</string>
     <string name="lora_radio_config">Radio %1$s</string>
@@ -769,6 +772,7 @@
     <string name="chat_mesh_post_no_air">Not posted — the radio has used its airtime for now. Try again in a few minutes.</string>
     <string name="chat_mesh_post_channel_unusable">Not posted — this radio\'s primary channel can\'t take posts</string>
     <string name="chat_mesh_post_refused">Not posted — the radio refused it. Try again.</string>
+    <string name="chat_mesh_post_room_off">Not posted — the Meshtastic room is switched off in LoRa settings</string>
     <!-- The composer's length counter as a post nears the Meshtastic frame's limit, and the refusal for
          anything that is not text. The channel carries one short line: the cap is hard, so the counter shows
          what is used out of what there is rather than warning after the fact. The spoken form is separate

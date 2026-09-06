@@ -621,6 +621,16 @@ user gave slot 0 — and **nothing in it ever crosses Knit's mesh**: no frame, n
 gateway election on either direction. A phone with no board never sees these posts; two phones with boards
 each hear the channel for themselves.
 
+- **The switch** (ADR 2026-09.x52a). `SettingsStore.loraRoomEnabled`, **default on**, on the LoRa settings
+  screen beside the DM and bridge switches, and carried to the transport as `LoraConfig.room`. Off, the
+  slot-0 branch of `onLoraPacket` **returns before `onPrimaryPacket`** — so `judge`, the name lookup, the
+  XEdDSA verify, the contact resolution, the moderator, the row and its notification are all never reached,
+  counted as `meshPostRefusedByReason.ROOM_OFF` while `meshPostHeard` stays at zero — `postToPublicChannel`
+  refuses `ROOM_OFF`, and `ChatListViewModel` drops the room's row **including its history** (the rows stay
+  in the database and return with the switch). `LoraFacts.room` is the user's answer *alone*, never folded
+  with the plane the way `dms` is, because the row is drawn from history as well as from a live board;
+  `canPost` folds both. Knit's own frames on the bound slot are untouched. Toggling off also calls
+  `Notifier.clearConversation` so nothing already on the shade outlives the row. `…debug.LORA --ez room false`.
 - **Inbound.** `LoraMeshTransport.onLoraPacket` routes a channel-0 `TEXT_MESSAGE_APP` packet — by portnum,
   never by the bound index, which defaults to 0 on a board that never ran the setup — to `onPrimaryPacket` →
   `PublicChannelPolicy.judge` (broadcast, text, a packet id, a body; `OWN_BOARD` refuses our own board's echo

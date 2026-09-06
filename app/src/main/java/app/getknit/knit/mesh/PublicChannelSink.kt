@@ -40,6 +40,13 @@ enum class PublicPostRefusal {
     /** A board is bound but its session is not up. */
     NOT_READY,
 
+    /**
+     * The user switched the Meshtastic room off (`SettingsStore.loraRoomEnabled`), so this phone has no room
+     * to post from. Unreachable from the composer, which goes with the room's row — this is the net under the
+     * routes that do not draw one.
+     */
+    ROOM_OFF,
+
     /** Slot 0 on this board *is* the Knit channel (the lab shape), so there is no primary to post on. */
     KNIT_ON_PRIMARY,
 

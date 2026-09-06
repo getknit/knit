@@ -163,14 +163,17 @@ val meshModule =
             LoraMeshTransport(
                 selfId = { get<app.getknit.knit.identity.Identity>().nodeId() },
                 link = get(),
+                // The three per-plane switches are folded first so the whole config stays inside `combine`'s
+                // typed five-flow arity — the same fold ChatListViewModel/ChatViewModel make for the same reason.
                 config =
                     combine(
                         settings.loraEnabled,
                         settings.loraDeviceAddress,
                         settings.loraChannelIndex,
-                        settings.loraDmEnabled,
-                        settings.loraBridgeEnabled,
-                    ) { on, addr, ch, dms, bridge -> if (on && addr != null) LoraConfig(addr, ch, dms, bridge) else null },
+                        combine(settings.loraDmEnabled, settings.loraBridgeEnabled, settings.loraRoomEnabled, ::Triple),
+                    ) { on, addr, ch, (dms, bridge, room) ->
+                        if (on && addr != null) LoraConfig(addr, ch, dms, bridge, room) else null
+                    },
                 selfProfile = { get<ProfileFrameSource>().signedProfile() },
                 farFrames = { get<FarPeerFrameSource>().framesFor(it) },
                 offerPrefixes = { get<BridgeFrameSource>().offerPrefixes(it) },

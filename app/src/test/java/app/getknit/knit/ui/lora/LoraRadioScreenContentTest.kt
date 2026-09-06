@@ -35,6 +35,7 @@ class LoraRadioScreenContentTest {
         onToggle: (Boolean) -> Unit = {},
         onShowAllBoards: (Boolean) -> Unit = {},
         onToggleBridge: (Boolean) -> Unit = {},
+        onToggleRoom: (Boolean) -> Unit = {},
         onAskSetup: () -> Unit = {},
         onSetUp: () -> Unit = {},
         onRestore: () -> Unit = {},
@@ -46,6 +47,7 @@ class LoraRadioScreenContentTest {
                     onBack = {},
                     onToggle = onToggle,
                     onToggleBridge = onToggleBridge,
+                    onToggleRoom = onToggleRoom,
                     onShowAllBoards = onShowAllBoards,
                     onAskSetup = onAskSetup,
                     onSetUp = onSetUp,
@@ -158,6 +160,15 @@ class LoraRadioScreenContentTest {
         render(connected().copy(bridgeEnabled = false), onToggleBridge = { toggled = it })
         compose.onNodeWithTag("lora_bridge_switch").performScrollTo().assertIsOff()
         compose.onNodeWithTag("lora_bridge_switch").performClick()
+        assertEquals(true, toggled)
+    }
+
+    @Test
+    fun theRoomSwitchReflectsTheStoredSettingAndReportsATap() {
+        var toggled: Boolean? = null
+        render(connected().copy(roomEnabled = false), onToggleRoom = { toggled = it })
+        compose.onNodeWithTag("lora_room_switch").performScrollTo().assertIsOff()
+        compose.onNodeWithTag("lora_room_switch").performClick()
         assertEquals(true, toggled)
     }
 

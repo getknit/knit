@@ -91,6 +91,13 @@ doc). **Don't start a deferred item without explicit direction.**
   them; the `heartbeat{nonce=1}` NodeInfo ping after a bind, so peers learn a fresh board's key at once; a
   warning for the downgrade shape — an unsigned post under 166 B from a contact whose profile advertises a
   key; and a mismatch / board-only verdict seen on hardware, which needs a third signer on the mesh.
+  **The room is now a switch, default on** (2026-09-06, ADR 2026-09.x52a): `SettingsStore.loraRoomEnabled`
+  on the LoRa settings screen beside the DM and bridge switches. Off, the transport drops a slot-0 chat
+  packet before `onPrimaryPacket`, so nothing is judged, verified, moderated, stored or notified
+  (`meshPostRefusedByReason.ROOM_OFF` climbs, `meshPostHeard` does not); the row leaves the chat list
+  *including* its history, a post cannot leave the device, and the shade is cleared on the off edge. Knit's
+  own frames on the bound slot are untouched. **Still owed:** the device leg — switch the room off on one
+  lab phone with a `LongFast` primary in earshot and watch the two counters diverge.
   **The setup also marks the board unmonitored** (2026-09-01, ADR 2026-09.emd7): `User.is_unmessagable`
   rides the same `set_owner` as the rename, so other people's clients stop offering a board whose inbound
   path keeps only `PRIVATE_APP` as a message target; Restore clears it, and firmware older than 2.6.9 is

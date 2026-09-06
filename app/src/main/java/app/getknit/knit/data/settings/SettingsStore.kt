@@ -304,6 +304,21 @@ class SettingsStore(
     val loraBridgeEnabled: Flow<Boolean> =
         dataStore.data.map { BuildConfig.LORA_PLANE && (it[KEY_LORA_BRIDGE_ENABLED] ?: true) }
 
+    /**
+     * Whether the **Meshtastic room** — the bound board's primary (slot 0) channel, mirrored into
+     * `Conversations.MESHTASTIC` (ADR 2026-09.26q3) — exists on this phone at all: **default on** whenever the
+     * plane is on. Off, the transport drops a slot-0 chat packet where it lands, so nothing is judged,
+     * verified, moderated, stored or notified; the room's row leaves the chat list even where history remains,
+     * and a post cannot leave this device. Knit's own frames are untouched — this is the switch for someone who
+     * wants the board as a Knit radio and not as a window onto whatever else is on its channel.
+     *
+     * It hides the room; it never deletes it. History stays where it is and comes back with the switch, which
+     * is what makes this a display choice rather than a destructive one.
+     * Gated on `BuildConfig.LORA_PLANE` like [loraEnabled].
+     */
+    val loraRoomEnabled: Flow<Boolean> =
+        dataStore.data.map { BuildConfig.LORA_PLANE && (it[KEY_LORA_ROOM_ENABLED] ?: true) }
+
     /** The bonded Meshtastic board's MAC address the LoRa plane binds to, or null if none is chosen. */
     val loraDeviceAddress: Flow<String?> = dataStore.data.map { it[KEY_LORA_ADDRESS] }
 
@@ -474,6 +489,8 @@ class SettingsStore(
     suspend fun setLoraDmEnabled(value: Boolean) = dataStore.edit { it[KEY_LORA_DM_ENABLED] = value }
 
     suspend fun setLoraBridgeEnabled(value: Boolean) = dataStore.edit { it[KEY_LORA_BRIDGE_ENABLED] = value }
+
+    suspend fun setLoraRoomEnabled(value: Boolean) = dataStore.edit { it[KEY_LORA_ROOM_ENABLED] = value }
 
     /** Records the chosen board's address + name in one write so the row can never show a name without an address. */
     suspend fun setLoraDevice(
@@ -691,6 +708,7 @@ class SettingsStore(
         val KEY_LORA_ENABLED = booleanPreferencesKey("lora_enabled")
         val KEY_LORA_DM_ENABLED = booleanPreferencesKey("lora_dm_enabled")
         val KEY_LORA_BRIDGE_ENABLED = booleanPreferencesKey("lora_bridge_enabled")
+        val KEY_LORA_ROOM_ENABLED = booleanPreferencesKey("lora_room_enabled")
         val KEY_LORA_ADDRESS = stringPreferencesKey("lora_device_address")
         val KEY_LORA_NAME = stringPreferencesKey("lora_device_name")
         val KEY_LORA_CHANNEL = intPreferencesKey("lora_channel_index")

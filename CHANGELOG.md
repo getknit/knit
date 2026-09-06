@@ -22,6 +22,8 @@ document:
 
 ### Added
 
+- Turn off the Meshtastic room in LoRa settings if you'd rather not read your radio's own channel. It leaves
+  the chat list and goes quiet, and your board carries only Knit's own messages.
 - A contact's post in the Meshtastic room now shows a shield when their radio signed it. On radios running
   firmware 2.8 or newer, a post can be up to 166 bytes, the most the radio can still sign.
 - A contact's profile now shows the LoRa radio they say they use. The Meshtastic room prints the same number

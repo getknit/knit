@@ -332,4 +332,10 @@ internal data class LoraConfig(
     val dms: Boolean = true,
     /** Whether this board gossips and serves backfill between pockets (`SettingsStore.loraBridgeEnabled`, ADR 044). */
     val bridge: Boolean = true,
+    /**
+     * Whether the board's primary (slot 0) channel is mirrored into the Meshtastic room at all
+     * (`SettingsStore.loraRoomEnabled`, ADR 2026-09.26q3). Off, a slot-0 chat packet is dropped where it
+     * lands and a post cannot be put on that channel; Knit's own frames on the bound slot are unaffected.
+     */
+    val room: Boolean = true,
 )

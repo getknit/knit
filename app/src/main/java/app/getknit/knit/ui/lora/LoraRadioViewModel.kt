@@ -3,6 +3,7 @@ package app.getknit.knit.ui.lora
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.BuildConfig
+import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.settings.KnitBoardSetup
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.mesh.lora.AirtimeSnapshot
@@ -21,6 +22,7 @@ import app.getknit.knit.mesh.lora.LoraSlot
 import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.lora.ProvisionResult
 import app.getknit.knit.mesh.lora.PublicChannelPolicy
+import app.getknit.knit.notifications.Notifier
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -77,6 +79,11 @@ data class LoraRadioUiState(
     /** Whether private messages ride LoRa too (`SettingsStore.loraDmEnabled`; meaningful only while [enabled]). */
     val dmEnabled: Boolean = true,
     val bridgeEnabled: Boolean = true,
+    /**
+     * Whether the Meshtastic room is mirrored at all (`SettingsStore.loraRoomEnabled`; meaningful only while
+     * [enabled]). Off, slot 0 is never read into a room and the room's row leaves the chat list.
+     */
+    val roomEnabled: Boolean = true,
     val boardName: String? = null,
     val boardAddress: String? = null,
     val channel: Int = 0,
@@ -162,6 +169,7 @@ internal class LoraRadioViewModel(
     private val settings: SettingsStore,
     private val lora: LoraPlaneStatus,
     private val boards: BoardDirectory,
+    private val notifier: Notifier,
 ) : ViewModel() {
     // Transient, action-driven UI state (the provisioning spinner + its outcome) that isn't in a settings flow.
     private val provisionState = MutableStateFlow(ProvisionState())
@@ -170,6 +178,23 @@ internal class LoraRadioViewModel(
     // system settings); the toggle that reveals the devices the board filter hides.
     private val refresh = MutableStateFlow(0)
     private val showAll = MutableStateFlow(false)
+
+    /** The four per-plane switches, folded onto one arm so the state combine stays inside its five-flow arity. */
+    private data class Switches(
+        val enabled: Boolean,
+        val dms: Boolean,
+        val bridge: Boolean,
+        val room: Boolean,
+    )
+
+    private val switches =
+        combine(
+            settings.loraEnabled,
+            settings.loraDmEnabled,
+            settings.loraBridgeEnabled,
+            settings.loraRoomEnabled,
+            ::Switches,
+        )
 
     /** The bonded list is a Binder call into the Bluetooth service, so it is read on its own arm — never on link churn. */
     private data class Picker(
@@ -185,12 +210,12 @@ internal class LoraRadioViewModel(
 
     val state: StateFlow<LoraRadioUiState> =
         combine(
-            combine(settings.loraEnabled, settings.loraDmEnabled, settings.loraBridgeEnabled, ::Triple),
+            switches,
             picker,
             settings.loraChannelIndex,
             lora.status,
             provisionState,
-        ) { (enabled, dmEnabled, bridgeEnabled), picker, channel, status, provision ->
+        ) { switches, picker, channel, status, provision ->
             val address = picker.address
             val ready = status.state as? LinkState.Ready
             // The name the board gives the bound slot: "Knit" once the setup has written it there.
@@ -205,9 +230,10 @@ internal class LoraRadioViewModel(
             // to store the unmonitored mark is wanted exactly as it is (ADR 2026-09.emd7).
             val wanted = status.boardNodeNum?.let { BoardName.forNode(it, ready?.board?.firmwareVersion) }
             LoraRadioUiState(
-                enabled = enabled,
-                dmEnabled = dmEnabled,
-                bridgeEnabled = bridgeEnabled,
+                enabled = switches.enabled,
+                dmEnabled = switches.dms,
+                bridgeEnabled = switches.bridge,
+                roomEnabled = switches.room,
                 boardName = picker.bonded.firstOrNull { it.address == address }?.name ?: address,
                 boardAddress = address,
                 channel = channel,
@@ -314,6 +340,18 @@ internal class LoraRadioViewModel(
 
     fun onToggleDms(on: Boolean) {
         viewModelScope.launch { settings.setLoraDmEnabled(on) }
+    }
+
+    /**
+     * Switches the Meshtastic room on or off. Switching it off also clears whatever the room has already put
+     * on the shade: the transport stops delivering from this moment, so nothing *new* can notify, but a post
+     * heard a minute ago would otherwise sit there pointing at a thread that no longer has a row.
+     */
+    fun onToggleRoom(on: Boolean) {
+        viewModelScope.launch {
+            settings.setLoraRoomEnabled(on)
+            if (!on) notifier.clearConversation(Conversations.MESHTASTIC)
+        }
     }
 
     fun pickBoard(board: BoardOption) {

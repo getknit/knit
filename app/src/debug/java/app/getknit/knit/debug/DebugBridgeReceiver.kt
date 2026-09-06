@@ -1146,7 +1146,9 @@ class DebugBridgeReceiver :
      * Configures and inspects the LoRa (Meshtastic) plane — the only way to drive it on a locked lab
      * device. `--es address <MAC>` + `--es name <n>` binds a bonded board, `--ei channel <idx>` sets the
      * channel index, `--ez on <true|false>` flips the switch, `--ez dms <true|false>` the private-messages
-     * switch (ADR 039); no extras just dumps status. The reply's
+     * switch (ADR 039) and `--ez room <true|false>` the Meshtastic room (ADR 2026-09.26q3, on by default —
+     * off, slot 0 is dropped where it lands, so `meshPostRefusedByReason.ROOM_OFF` climbs and
+     * `meshPostHeard` does not); no extras just dumps status. The reply's
      * `state`/`heard`/counters are the field oracle for the two-board range trial.
      */
     private suspend fun handleLora(intent: Intent): JSONObject {
@@ -1156,6 +1158,7 @@ class DebugBridgeReceiver :
         if (intent.hasExtra(EXTRA_ON)) settings.setLoraEnabled(intent.getBooleanExtra(EXTRA_ON, false))
         if (intent.hasExtra("dms")) settings.setLoraDmEnabled(intent.getBooleanExtra("dms", true))
         if (intent.hasExtra("bridge")) settings.setLoraBridgeEnabled(intent.getBooleanExtra("bridge", true))
+        if (intent.hasExtra("room")) settings.setLoraRoomEnabled(intent.getBooleanExtra("room", true))
 
         val status = lora.status.value
         return JSONObject()
@@ -1163,6 +1166,7 @@ class DebugBridgeReceiver :
             .put("enabled", settings.loraEnabled.first())
             .put("dms", settings.loraDmEnabled.first())
             .put("bridge", settings.loraBridgeEnabled.first())
+            .put("room", settings.loraRoomEnabled.first())
             .put("address", settings.loraDeviceAddress.first() ?: JSONObject.NULL)
             .put("channel", settings.loraChannelIndex.first())
             .put("state", status.state::class.simpleName)

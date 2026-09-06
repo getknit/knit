@@ -427,6 +427,7 @@ class LoraMeshTransportTest {
         primaryName: String = "",
         primaryPsk: ByteArray = ByteArray(0),
         firmware: String = "2.5.0",
+        room: Boolean = true,
     ): Rig {
         val r =
             rig(
@@ -434,7 +435,7 @@ class LoraMeshTransportTest {
                 1u,
                 "alice",
                 backgroundScope,
-                config = MutableStateFlow(LoraConfig("AA:1", 1)),
+                config = MutableStateFlow(LoraConfig("AA:1", 1, room = room)),
                 firmware = firmware,
                 onPublicPost = { posts += it },
             ) { testScheduler.currentTime }
@@ -672,6 +673,61 @@ class LoraMeshTransportTest {
             )
             a.transport.stop()
             b.transport.stop()
+        }
+
+    @Test
+    fun aRoomSwitchedOffDropsThePrimaryPacketWhereItLands() =
+        runTest {
+            // The whole point of the switch is that nothing downstream runs: not the judge, not the
+            // signature verify, not the row, not the notification. So the assertion is on the *counters* as
+            // much as on the empty list — `meshPostHeard` is what onPrimaryPacket increments on its first
+            // line, and it must stay at zero.
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = bridgeRig(air, posts, room = false)
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "anyone around?", id = 77u)
+            runCurrent()
+
+            assertTrue("nothing reached the room", posts.isEmpty())
+            val snap = r.metrics.snapshot()
+            assertEquals("the packet was never judged", 0L, snap.meshPostHeard)
+            assertEquals(0L, snap.meshPostIngested)
+            assertEquals(1L, snap.meshPostRefusedByReason[MESH_POST_ROOM_OFF])
+            r.transport.stop()
+        }
+
+    @Test
+    fun aRoomSwitchedOffStillCarriesKnitsOwnFrames() =
+        runTest {
+            // The switch hides a room, it does not stand the board down: a phone that wants the board as a
+            // Knit radio and nothing else must keep every Knit frame it had.
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = bridgeRig(air, posts, room = false)
+
+            r.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "over the hill"))
+            runCurrent()
+
+            assertTrue("the Knit frame still went out", r.link.sent.isNotEmpty())
+            r.transport.stop()
+        }
+
+    @Test
+    fun aPostCannotLeaveADeviceWhoseRoomIsSwitchedOff() =
+        runTest {
+            // The composer goes with the row, so this is only reachable from a screen that outlived it or
+            // the debug intent — but a post that left anyway would put words on a channel the user has
+            // told Knit to stop reading, and they would never see the replies.
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf(), room = false)
+
+            assertEquals(PublicPostRefusal.ROOM_OFF, r.transport.postToPublicChannel("meet at the trailhead"))
+            runCurrent()
+
+            assertTrue("nothing went on the air", r.link.sent.isEmpty())
+            assertEquals(0L, r.metrics.snapshot().publicPostSent)
+            r.transport.stop()
         }
 
     // --- The LongFast bridge: posting on the foreign mesh's public primary. ---
