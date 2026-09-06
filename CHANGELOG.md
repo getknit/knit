@@ -52,6 +52,8 @@ document:
   drawing nothing, with no way out but force-stopping it; it now notices and rebuilds its own screen.
 - Phones that only relayed your messages no longer count as nearby. The online dot, chat list, group
   picker and nearby count now show only what your own radios can currently see.
+- A Nearby room message sent while two radios were out of range of each other now arrives when they come
+  back into range. It used to wait for the phones to get close enough for Wi-Fi or Bluetooth instead.
 
 ## [2.4.0](https://github.com/getknit/knit/releases/tag/v2.4.0) — 2026-08-31T05:12:27Z
 

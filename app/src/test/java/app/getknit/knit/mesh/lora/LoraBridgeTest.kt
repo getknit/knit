@@ -33,6 +33,7 @@ import org.junit.Test
  * it exists only as a name in that set.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
+@Suppress("LargeClass") // one two-pocket rig, many scenarios — splitting it would duplicate the rig, not clarify
 class LoraBridgeTest {
     private var sigCounter = 0
 
@@ -66,25 +67,28 @@ class LoraBridgeTest {
 
     /**
      * Stands in for `MeshManager`'s [app.getknit.knit.mesh.BridgeFrameSource] over `ForwardStore.liveFrames`:
-     * a held set, the same prefix computation, and the same "what does their offer not name" diff.
+     * a held set, the same prefix computation, and the same "what does their offer not name" diff. Both
+     * halves are drawn from [LoraFramePolicy.bridgeOrder] exactly as the real one draws them — a fake that
+     * ordered its offer differently from its serve would hide the failure ADR 2026-09.zkma is about.
      */
     private class FakeCustody {
         val held = mutableListOf<WireEnvelope>()
         var served = 0
 
-        fun prefixes(limit: Int): IntArray = held.takeLast(limit).map { LoraCtl.prefixOf(StoreDigest.hash64(idFor(it))) }.toIntArray()
+        fun prefixes(limit: Int): IntArray = candidates().take(limit).map { LoraCtl.prefixOf(StoreDigest.hash64(idFor(it))) }.toIntArray()
 
         fun missing(
             theirs: IntArray,
             limit: Int,
         ): List<WireEnvelope> {
             val have = theirs.toHashSet()
-            return held
+            return candidates()
                 .filter { LoraCtl.prefixOf(StoreDigest.hash64(idFor(it))) !in have }
-                .sortedBy { LoraFramePolicy.backfillRank(WireCodec.decodeEnvelope(it.signed)!!) }
                 .take(limit)
                 .also { served += it.size }
         }
+
+        private fun candidates() = LoraFramePolicy.bridgeOrder(held) { WireCodec.decodeEnvelope(it.signed)!! }
 
         private fun idFor(w: WireEnvelope) = WireCodec.decodeEnvelope(w.signed)!!.id
     }
@@ -835,6 +839,85 @@ class LoraBridgeTest {
                 "and the frame he was holding for her crosses",
                 a.received.any { it.envelope.id == idOf(heldForAlice) },
             )
+        }
+
+    /**
+     * The field failure ADR 2026-09.zkma is about (Pixel 9 / Pixel 7, 2026-09-05): the same Nearby-room post,
+     * sent out of LoRa range and still undelivered an hour after coming back into it, in a pocket that had
+     * been chatting all afternoon.
+     *
+     * One packet of offer holds ~48 prefixes and a busy pocket holds hundreds of frames, so the offer is a
+     * *window*: whatever falls outside it looks missing to the far gateway for ever. The window used to be the
+     * newest by `sentAt` while the backfill preferred profiles — and a profile's `sentAt` is its publish stamp,
+     * hours old — so no profile was ever named, every profile looked missing, and all four slots an offer buys
+     * went to profiles both sides already held. The lab logs show it exactly: `bridge served=4/4`, four
+     * profiles, three of them the recipient's own, and the room post still waiting.
+     */
+    @Test
+    fun aRoomPostCrossesAPocketWhoseOfferIsFullOfRecentChat() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+
+            // An afternoon of room chat, comfortably more than one offer's ~48 prefixes can name, held by
+            // both pockets — so the offer is a *window* and something has to fall outside it.
+            val chatter = List(60) { frame("a2", body = "history $it", sentAt = 1_000L + it) }
+            // Profiles both pockets already hold, published this morning — the frames the old window could
+            // never name, because a profile's `sentAt` is its publish stamp and sorts below every recent
+            // frame. Four of them, because an offer buys four slots.
+            val profiles = List(4) { frame("peer$it", type = FrameType.PROFILE, body = "p$it", sentAt = 0L) }
+            a.custody.held += chatter + profiles
+            b.custody.held += chatter + profiles
+
+            // The post typed while the boards were out of range: the newest thing alice holds.
+            val room = frame("alice", body = "posted while out of range", sentAt = 9_000L)
+            a.custody.held += room
+
+            advanceTimeBy(toFirstOffer)
+            runCurrent()
+            advanceTimeBy(30_000)
+            runCurrent()
+
+            assertTrue(
+                "the room post crosses instead of a fifth round of profiles both pockets already hold",
+                b.received.any { it.envelope.id == idOf(room) },
+            )
+            assertTrue(
+                "and no slot is spent re-serving a profile the offer already named",
+                b.received.none { it.envelope.id in profiles.map(::idOf) },
+            )
+        }
+
+    /**
+     * Only the newest publish carries the key a far pocket needs, so custody holding three of one author's
+     * profiles must not cost three of the four slots an offer buys (ADR 2026-09.zkma). The rule is symmetric,
+     * so both ends agree the superseded ones are not missing.
+     */
+    @Test
+    fun onlyAnAuthorsNewestProfileIsWorthASlot() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+
+            val old = frame("carol", type = FrameType.PROFILE, body = "old", sentAt = 1_000L)
+            val newest = frame("carol", type = FrameType.PROFILE, body = "new", sentAt = 2_000L)
+            a.custody.held += listOf(old, newest)
+
+            advanceTimeBy(toFirstOffer)
+            runCurrent()
+            advanceTimeBy(60_000)
+            runCurrent()
+
+            assertTrue("carol's current key crosses", b.received.any { it.envelope.id == idOf(newest) })
+            assertFalse("the publish it superseded does not", b.received.any { it.envelope.id == idOf(old) })
         }
 
     @Test

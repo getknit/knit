@@ -2240,11 +2240,14 @@ class MeshManager(
     }
 
     /**
-     * [BridgeFrameSource]: the id prefixes of the newest live frames a LoRa gateway could serve, for the body
-     * of its OFFER (ADR 044). Read straight off `liveFrames` — the set the ADR 006 TTL and quota rules already
-     * bound identically on every node — filtered to what the plane can actually carry, so a group frame never
-     * spends one of the ~48 prefix slots one packet holds. Newest first: the encoder truncates to fit, and the
-     * oldest are both the likeliest to have propagated already and the first custody will expire.
+     * [BridgeFrameSource]: the id prefixes of the live frames a LoRa gateway could serve, for the body of its
+     * OFFER (ADR 044). Read straight off `liveFrames` — the set the ADR 006 TTL and quota rules already bound
+     * identically on every node — filtered to what the plane can actually carry, so a group frame never spends
+     * one of the ~48 prefix slots one packet holds.
+     *
+     * The head of [bridgeCandidates], which is [framesMissing]'s order too: the encoder truncates to fit, so
+     * whatever the offer cannot reach is what a far gateway will send us for ever, and the only safe frames to
+     * leave unnamed are the ones it would serve last (ADR 2026-09.zkma).
      *
      * `dms = true` here is deliberate even when the user has DMs off this plane. An offer says what we
      * **hold**, not what we would send, and naming a DM we already have is what stops a far gateway serving
@@ -2261,7 +2264,8 @@ class MeshManager(
      * [BridgeFrameSource]: the carriable frames we hold whose id prefix [theirPrefixes] does not name — what
      * the publishing gateway is missing. Ranked by [LoraFramePolicy.backfillRank] (key bootstrap, then the
      * room, then sealed DMs — ADR 2026-09.rre4) and newest-first within a rank, then capped at [limit]; the
-     * caller's airtime budget is the real bound and usually bites first.
+     * caller's airtime budget is the real bound and usually bites first. The rank is [bridgeCandidates]' own,
+     * so this and [offerPrefixes] can never disagree about which frames a truncated offer leaves out.
      *
      * A prefix that collides makes a frame look present when it is not, so it is skipped this round. That is
      * the accepted cost of fitting a useful window into one packet (see [LoraCtl]); nothing here is a trust
@@ -2278,25 +2282,26 @@ class MeshManager(
         val have = theirPrefixes.toHashSet()
         return bridgeCandidates(dms)
             .filter { LoraCtl.prefixOf(StoreDigest.hash64(it.envelope.id)) !in have }
-            .sortedWith(compareBy({ LoraFramePolicy.backfillRank(it.envelope) }, { -it.envelope.sentAt }))
             .take(limit)
             .map { WireEnvelope(sig = it.sig, signed = it.signed) }
     }
 
     /**
-     * The live custody frames the LoRa plane could carry, newest first — the one place the bridge's frame-set
-     * rule is applied, so the offer and the serve can never disagree about what is eligible. Deliberately the
-     * plane's own [LoraFramePolicy] rather than a restatement of it here: a rule stated twice drifts.
+     * The live custody frames the LoRa plane could carry, in [LoraFramePolicy.bridgeOrder] — the one place the
+     * bridge's frame-set rule is applied, so the offer and the serve can never disagree about what is eligible
+     * *or about which frames a one-packet offer has room to name*. Deliberately the plane's own
+     * [LoraFramePolicy] rather than a restatement of it here: a rule stated twice drifts.
      */
     private suspend fun bridgeCandidates(dms: Boolean): List<CarriedFrame> {
         val carried = forwardStore.liveFrames(clock())
         if (carried.isEmpty()) return emptyList()
-        return carried
-            .filter { frame ->
+        val eligible =
+            carried.filter { frame ->
                 val wire = WireEnvelope(sig = frame.sig, signed = frame.signed)
                 LoraFramePolicy.eligible(frame.envelope, wire, LoraFramePolicy.Path.BACKFILL) &&
                     (dms || !LoraFramePolicy.isDmForm(frame.envelope))
-            }.sortedByDescending { it.envelope.sentAt }
+            }
+        return LoraFramePolicy.bridgeOrder(eligible) { it.envelope }
     }
 
     /**

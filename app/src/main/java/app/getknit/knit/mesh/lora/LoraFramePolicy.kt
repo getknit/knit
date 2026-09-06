@@ -74,6 +74,45 @@ internal object LoraFramePolicy {
     private const val RANK_ROOM = 1
     private const val RANK_DM = 2
 
+    /**
+     * The bridge's candidate list: the frames [frames] holds that are worth a slot, superseded profiles
+     * dropped, in [backfillRank] order and newest-first within a rank. **Both halves of the digest exchange
+     * must draw from this one list** — the OFFER names its head (one packet holds ~48 prefixes) and the
+     * serve picks the head of what the OFFER did not name — because a frame the offer cannot reach but the
+     * serve prefers is re-sent on every round, for ever.
+     *
+     * That is not hypothetical: the offer used to be the newest 48 frames by `sentAt` while the serve
+     * preferred profiles, and a `profile`'s `sentAt` is a **publish stamp** up to 12 h old. In any pocket
+     * with 48 frames of recent chat, no profile was ever named, so every profile looked missing to the far
+     * gateway for ever — and since profiles rank first, all four slots an offer buys went to profiles the
+     * peer already held, round after round, and no room post could ever cross. Field-observed on the lab
+     * boards (2026-09-05, ADR 2026-09.zkma): `bridge served=4/4` four times running, every frame a profile,
+     * three of them the *recipient's own*, while the Nearby-room post that was waiting never moved until the
+     * two phones came back into BLE range.
+     *
+     * Superseded profiles go for the same reason they are worthless: only the newest publish carries the key
+     * and prekey a far pocket needs, and holding three of one author's — the lab really did serve three —
+     * spends three of the four slots to say one thing. Dropping them is symmetric, so two nodes applying this
+     * rule agree about what is missing; keeping the *newest* is what makes a genuine republish still cross.
+     *
+     * Custody itself is untouched: this ranks what the ~1 kbps plane offers to carry, not what is stored.
+     */
+    fun <T> bridgeOrder(
+        frames: List<T>,
+        envelopeOf: (T) -> RelayEnvelope,
+    ): List<T> {
+        val newestProfile =
+            frames
+                .filter { envelopeOf(it).type == FrameType.PROFILE }
+                .groupBy { envelopeOf(it).senderId }
+                .mapValues { (_, theirs) -> theirs.maxOf { envelopeOf(it).sentAt } }
+        return frames
+            .filter { frame ->
+                val env = envelopeOf(frame)
+                env.type != FrameType.PROFILE || env.sentAt == newestProfile[env.senderId]
+            }.sortedWith(compareBy({ backfillRank(envelopeOf(it)) }, { -envelopeOf(it).sentAt }))
+    }
+
     /** DM-form chat: addressed to one recipient, no group — a DM, or any sealed ctl frame riding as one. */
     fun isDmForm(env: RelayEnvelope): Boolean = env.type == FrameType.CHAT && env.recipientId != null && env.group == null
 

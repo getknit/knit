@@ -257,7 +257,20 @@ what the prefixes don't name, ranked profile → room → DM newest-first (ADR 2
 pacing queue's `FrameClass` order, on purpose: the queue asks who transmits first, the rank asks which frames
 are worth a scarce slot, and a room post is readable by the whole far pocket for typically one packet against
 a DM's one addressee for two); ≤ 4 per offer, ≤ 12 per publisher per
-hour, and hard-bounded by the BRIDGE budget. Frames are re-wrapped verbatim like any custody
+hour, and hard-bounded by the BRIDGE budget.
+
+> **The offer names the head of that same ranked list** (`LoraFramePolicy.bridgeOrder`, ADR 2026-09.zkma) —
+> one packet holds ~48 prefixes against a 1000-row store, so the offer is a *window*, and a frame it cannot
+> reach that the serve prefers is re-sent every round for ever. The window used to be the newest 48 by
+> `sentAt` while the serve preferred profiles, and a `profile`'s `sentAt` is a **publish stamp** hours old:
+> no profile was ever named, every profile looked missing, and all four slots went to profiles both pockets
+> already held — round after round, for as long as the pocket had 48 frames of recent chat, which is why it
+> read as intermittent. Field-observed 2026-09-05: `bridge served=4/4` both ways, hours apart, the same four
+> ids, three of them the recipient's **own** publishes, and a room post that only arrived when the phones
+> re-linked over BLE. The list also collapses each author's profiles to the newest — only that one carries a
+> usable key, and custody really did hold three. Regressions:
+> `LoraBridgeTest.aRoomPostCrossesAPocketWhoseOfferIsFullOfRecentChat` and
+> `onlyAnAuthorsNewestProfileIsWorthASlot`. Frames are re-wrapped verbatim like any custody
 re-serve — no wire change, no custody rule touched. `SettingsStore.loraBridgeEnabled` (default **on**, the
 "Bridge distant groups" switch) gates offering and serving together.
 
