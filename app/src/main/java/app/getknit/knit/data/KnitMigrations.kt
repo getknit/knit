@@ -227,11 +227,25 @@ object KnitMigrations {
         }
 
     /**
-     * v10 — the bridged Meshtastic post's attribution: six `messages` columns naming who said it on the
-     * foreign mesh and how it reached this pocket's board. Null (and `0` for the flag) on every existing row,
-     * which is exactly right — no message written before this version can be a bridged post, so there is
-     * nothing to backfill and no ambiguity about what a null means. Additive only; the SQL must stay
-     * byte-equivalent to what Room generates for `app/schemas/**/10.json`.
+     * v10 — the LoRa bridge's attribution columns and the index the chat window reads through, in one bump.
+     * Six `messages` columns name who said a bridged Meshtastic post on the foreign mesh and how it reached
+     * this pocket's board. `peers.loraNode` and `messages.originPeerId` hold the board a peer's latest
+     * profile claims and the contact a heard post resolved to at ingest — frozen on the row, so a board
+     * changing hands never re-attributes history. `peers.loraKey` and `messages.originSigned` hold the
+     * Curve25519 key that claim advertises and what the post's XEdDSA signature proved when it landed. And
+     * `messages` trades its `conversationId` index for two composites led by that same column.
+     *
+     * Null (and `0` for the flags) is the one honest value on every existing row: no message written before
+     * this version can be a bridged post, no profile before it claimed a board or carried a key, and no post
+     * had been matched or checked — so there is nothing to backfill and no ambiguity about what a null means.
+     * The re-index moves no rows. `(conversationId, sentAt, id)` orders a thread in place, so the chat
+     * screen's newest-first window needs no sort and stops at its LIMIT; `(conversationId, kind, senderId)`
+     * covers the sender queries that screen now runs *live* for @-mention candidates, which unindexed would
+     * walk a whole thread on every write. Dropping the single-column index costs nothing: it is a strict
+     * prefix of both, so every `conversationId`-only lookup is still served.
+     *
+     * Additive but for that index swap; the SQL must stay byte-equivalent to what Room generates for
+     * `app/schemas/**/10.json`.
      */
     val MIGRATION_9_10 =
         object : Migration(9, 10) {
@@ -242,52 +256,13 @@ object KnitMigrations {
                 connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originHops` INTEGER DEFAULT NULL")
                 connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originSnrDeci` INTEGER DEFAULT NULL")
                 connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originViaMqtt` INTEGER NOT NULL DEFAULT 0")
-            }
-        }
 
-    /**
-     * v11 — the bound-board claim and the heard-post match: `peers.loraNode`, the Meshtastic node number a
-     * peer's latest profile says they hold, and `messages.originPeerId`, the contact a heard radio post
-     * resolved to at ingest. Null on every existing row — no profile before this version claimed a board, and
-     * no post could have been matched. Additive only; the SQL must stay byte-equivalent to what Room generates
-     * for `app/schemas/**/11.json`.
-     */
-    val MIGRATION_10_11 =
-        object : Migration(10, 11) {
-            override suspend fun migrate(connection: SQLiteConnection) {
                 connection.execSQL("ALTER TABLE `peers` ADD COLUMN `loraNode` INTEGER DEFAULT NULL")
                 connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originPeerId` TEXT DEFAULT NULL")
-            }
-        }
 
-    /**
-     * v12 — signature-backed attribution for heard radio posts: `peers.loraKey`, the Curve25519 key a peer's
-     * latest profile advertises for their board, and `messages.originSigned`, what a heard post's signature
-     * proved at ingest. Null and 0 (`MessageEntity.ORIGIN_UNSIGNED`) on every existing row — no profile before
-     * this version carried a key and no post was checked. Additive only; the SQL must stay byte-equivalent to
-     * what Room generates for `app/schemas/**/12.json`.
-     */
-    val MIGRATION_11_12 =
-        object : Migration(11, 12) {
-            override suspend fun migrate(connection: SQLiteConnection) {
                 connection.execSQL("ALTER TABLE `peers` ADD COLUMN `loraKey` TEXT DEFAULT NULL")
                 connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originSigned` INTEGER NOT NULL DEFAULT 0")
-            }
-        }
 
-    /**
-     * v13 — `messages` swaps its `conversationId` index for two composites led by that same column. The old
-     * index located a thread's rows but left SQLite sorting every one of them to satisfy `ORDER BY sentAt`;
-     * `(conversationId, sentAt, id)` orders them in place, so the chat screen's newest-first window needs no
-     * sort and stops at its LIMIT. `(conversationId, kind, senderId)` covers the sender queries, which the
-     * screen now runs *live* for @-mention candidates — unindexed, that would walk a whole thread on every
-     * write. Dropping the single-column index costs nothing: it is a strict prefix of both, so every
-     * `conversationId`-only lookup is still served. The first bump that moves no columns and touches no
-     * rows; the SQL must still stay byte-equivalent to what Room generates for `app/schemas/**/13.json`.
-     */
-    val MIGRATION_12_13 =
-        object : Migration(12, 13) {
-            override suspend fun migrate(connection: SQLiteConnection) {
                 connection.execSQL("DROP INDEX IF EXISTS `index_messages_conversationId`")
                 connection.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_messages_conversationId_sentAt_id` " +
@@ -312,8 +287,5 @@ object KnitMigrations {
             MIGRATION_7_8,
             MIGRATION_8_9,
             MIGRATION_9_10,
-            MIGRATION_10_11,
-            MIGRATION_11_12,
-            MIGRATION_12_13,
         )
 }

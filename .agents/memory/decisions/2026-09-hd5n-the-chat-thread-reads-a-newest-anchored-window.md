@@ -31,7 +31,7 @@ a map, subscribed twice.
 **What changed.** The screen reads the newest `ChatWindow.INITIAL` (60) messages and grows by `PAGE` (100) as
 the reader scrolls back, through `MessageDao.observeNewestForConversation` — `ORDER BY sentAt DESC, id DESC
 LIMIT :limit`, reversed to the ascending shape in the repository by `asReversed()` (an O(1) view) so nothing
-downstream changed shape. DB v13 replaces the single-column index with `(conversationId, sentAt, id)`, which
+downstream changed shape. DB v10 replaces the single-column index with `(conversationId, sentAt, id)`, which
 *orders* a thread as well as finding it, so the window needs no sort and stops at its limit.
 
 The reader a reader reaches for first is androidx.paging. It does not fit: it would be a new dependency

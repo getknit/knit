@@ -498,7 +498,7 @@ layouts under the same LWW watermark (the open-to-chat rule above); the transcod
 plus a uint, 14 B at most, only while bound —
 `FrameTranscoderTest.aBoundBoardProfileRidesAsTextKeyPlusUintAndRebuildsExact`), and
 `CoordinationPlaneSizeBudgetTest` measures it on its max-size fixtures. No capability bit, no ctl value, no
-version bump, no discovery marker. The DB bumps (v10 → v11): `peers.loraNode` for the claim and
+version bump, no discovery marker. The DB bump (v9 → v10, which carries the whole bridge): `peers.loraNode` for the claim and
 `messages.originPeerId` for the match a heard post made at ingest — local only, tested. *Metadata cost:* the
 cleartext profile discloses the board's node number to a carrier; the board already broadcasts that number in
 every `NODEINFO` on the public band, so a radio learns nothing new and a spool learns which board a Knit node
@@ -521,7 +521,7 @@ ESP32 cap** (16 B of headroom under the 448-B ceiling), and the max-size intro t
 intro's legacy `0x03` form is now 684 B, three bytes past the three-packet ceiling — a form the LoRa plane has
 not sent since the ADR 060 flag-day (it transcodes unconditionally), so `anIntroFitsTheLoraHop` now measures
 the form the plane sends. No capability bit, no ctl value, no version bump, no discovery marker.
-The DB bumps (v11 → v12): `peers.loraKey` for the claim and `messages.originSigned` for what a heard post's
+The DB bump (the same v9 → v10): `peers.loraKey` for the claim and `messages.originSigned` for what a heard post's
 signature proved at ingest, frozen beside `originPeerId` — local only, tested. *Metadata cost:* none new —
 the key already rides every `NODEINFO` the board broadcasts on the public band, and on 2.8 the node number
 the profile already carried *is* the CRC32 of it. What a receiver does with it: verifies a heard post's

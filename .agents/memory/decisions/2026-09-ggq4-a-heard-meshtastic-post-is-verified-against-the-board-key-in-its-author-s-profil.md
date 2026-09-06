@@ -45,7 +45,7 @@ rides all three layouts under the presentation watermark like `loraNode`, and th
 signature covers it, which is the whole binding: the *user* is asserting "this is my radio's key". The board
 reports both in one `BoardBinding` at `Ready` (`LoraMeshTransport.onBoardBound`), the settings write both in
 one edit (`SettingsStore.setLoraBoard`) so the profile republishes once, and `MeshManager` folds the pair
-into one arm of its five-flow combine. `peers.loraKey` stores the claim (DB v12) and `messages.originSigned`
+into one arm of its five-flow combine. `peers.loraKey` stores the claim (DB v10) and `messages.originSigned`
 freezes what the signature proved, judged once in `InboundPipeline.deliverMeshPost` beside the contact
 resolution and never again — a contact re-keying their board later does not re-judge what their old board
 said. Four values, an append-only registry on `MessageEntity`: `ORIGIN_UNSIGNED` (no signature, or nothing
@@ -91,7 +91,7 @@ keygens to land on a contact's number, hours on a GPU; the full key is what make
 (`CoordinationPlaneSizeBudgetTest`: the max-size profile transcodes to 432 B, still two LoRa packets at the
 ESP32 cap with 16 B to spare; the max-size intro to 600 B, still three — its legacy `0x03` form crossed the
 three-packet ceiling by 3 B, which the LoRa plane has not sent since the ADR 060 flag-day, so that test now
-measures the transcoded form), DB v12, one profile field. What it proves is bounded and the strings say
+measures the transcoded form), DB v10, one profile field. What it proves is bounded and the strings say
 so: the *radio* named in a contact's profile transmitted the words, not that the person did — a shared,
 borrowed or stolen board signs for whoever holds it, and so does any phone bonded to it, and the board's
 private key is readable over its admin paths. The trap is on the board side: a signed packet that fails

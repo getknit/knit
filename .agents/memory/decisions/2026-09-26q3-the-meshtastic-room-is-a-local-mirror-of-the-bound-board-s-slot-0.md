@@ -76,7 +76,7 @@ while the link is down, because that state flaps on every BLE reconnect and unmo
 the keyboard mid-sentence; the gate runs *before* the consent sheet, since asking for a disclosure with no
 radio to post through is a question about nothing.
 
-**What it costs, and what it does not cover.** DB v11 (two nullable columns), one profile field, and a
+**What it costs, and what it does not cover.** DB v10 (two nullable columns), one profile field, and a
 withdrawn wire type — the ADR 006 debt is repaid rather than gated. What it does not cover, and the trap: **a
 resolved contact is not a verified one.** Any radio can claim any node number, so a spoofed `from` puts words
 under a contact's name, softened only by the unverified styling. Meshtastic 2.8 signs the broadcasts a board

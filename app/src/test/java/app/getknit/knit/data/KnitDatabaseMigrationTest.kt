@@ -45,58 +45,11 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v13) creates and opens from the exported JSON`() =
+    fun `the current schema (v10) creates and opens from the exported JSON`() =
         runTest {
-            val version = 13 // KnitDatabase @Database(version = 13) — bump alongside the DB (its retention is CLASS,
+            val version = 10 // KnitDatabase @Database(version = 10) — bump alongside the DB (its retention is CLASS,
             // so the version can't be read reflectively). A missing schemas/<db>/<version>.json fails here.
             helper.createDatabase(version).close()
-        }
-
-    @Test
-    fun `migrate 12 to 13 keeps messages and re-indexes the thread for the chat window`() =
-        runTest {
-            // The first bump that moves no columns: it swaps `messages`' single-column index for the two
-            // composites the chat screen's windowed read depends on. runMigrationsAndValidate already fails if
-            // the index set doesn't match the exported v13 JSON, so what is worth asserting here is the half
-            // it can't see — that a real device's rows come through an index rebuild intact — plus the shape
-            // of the new indices, since the *column order* is what decides whether SQLite can skip the sort.
-            helper.createDatabase(12).use { c ->
-                c.execSQL(
-                    "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
-                        "mentions, replyToHasAttachment, moderation, pendingKey, kind, originViaMqtt, originSigned) " +
-                        "VALUES ('m1','n1','m-public','hello',1,0,5,'[]',0,0,0,0,0,0)",
-                )
-                c.execSQL(
-                    "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
-                        "mentions, replyToHasAttachment, moderation, pendingKey, kind, originViaMqtt, originSigned) " +
-                        "VALUES ('m2','n2','m-public','later',9,0,5,'[]',0,0,0,0,0,0)",
-                )
-            }
-            helper.runMigrationsAndValidate(13, listOf(KnitMigrations.MIGRATION_12_13)).use { c ->
-                c.prepare("SELECT id FROM messages WHERE conversationId = 'm-public' ORDER BY sentAt DESC, id DESC").use { st ->
-                    assertTrue(st.step())
-                    assertEquals("the newest message still leads the thread", "m2", st.getText(0))
-                    assertTrue(st.step())
-                    assertEquals("and nothing was lost to the index rebuild", "m1", st.getText(0))
-                }
-
-                val indices = mutableListOf<String>()
-                c.prepare("PRAGMA index_list(messages)").use { st ->
-                    while (st.step()) indices += st.getText(1)
-                }
-                assertTrue("the thread-ordering index: $indices", "index_messages_conversationId_sentAt_id" in indices)
-                assertTrue("the sender-covering index: $indices", "index_messages_conversationId_kind_senderId" in indices)
-                assertFalse("the single-column index it replaces is gone: $indices", "index_messages_conversationId" in indices)
-
-                // Column order, not just existence: (conversationId, sentAt, id) is what lets an equality on
-                // the thread leave `sentAt` as the scanned suffix, so the window needs no sort. Reordered, the
-                // index would still exist and every other test would still pass — slowly.
-                val columns = mutableListOf<String>()
-                c.prepare("PRAGMA index_info(index_messages_conversationId_sentAt_id)").use { st ->
-                    while (st.step()) columns += st.getText(2)
-                }
-                assertEquals(listOf("conversationId", "sentAt", "id"), columns)
-            }
         }
 
     @Test
@@ -369,112 +322,90 @@ class KnitDatabaseMigrationTest {
         }
 
     @Test
-    fun `migrate 10 to 11 keeps peers and messages and leaves both new columns null`() =
+    @Suppress("LongMethod") // one case per bump, and this bump carries four things — splitting re-runs the same migration
+    fun `migrate 9 to 10 adds the bridge's attribution columns empty and re-indexes the thread`() =
         runTest {
-            // No profile before v11 claimed a board and no heard post could have been matched to a contact,
-            // so null is the one honest value on every existing row of both tables.
-            helper.createDatabase(10).use { c ->
+            // One bump carrying four things, so this case checks all four against rows a real device would
+            // hold at v9: the six bridged-post columns, the board claim and its match, the board key and its
+            // verdict, and the index swap. Empty is the one honest value for every new column — no message
+            // written before v10 can be a bridged post and no profile had claimed a board or carried a key,
+            // so there is nothing to backfill and no ambiguity about what a null means here.
+            helper.createDatabase(9).use { c ->
                 c.execSQL("INSERT INTO peers (nodeId, name, status, verified, updatedAt, openToChat) VALUES ('n1','Ann','around',1,7,0)")
                 c.execSQL(
                     "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
-                        "mentions, replyToHasAttachment, moderation, pendingKey, kind, originViaMqtt) " +
-                        "VALUES ('m1','n1','m-public','hello',1,0,5,'[]',0,0,0,0,0)",
+                        "mentions, replyToHasAttachment, moderation, pendingKey, kind) " +
+                        "VALUES ('m1','n1','m-public','hello',1,1,0,'[]',0,0,0,0)",
                 )
-            }
-            helper.runMigrationsAndValidate(11, listOf(KnitMigrations.MIGRATION_10_11)).use { c ->
-                c.prepare("SELECT name, loraNode FROM peers WHERE nodeId = 'n1'").use { s ->
-                    assertTrue(s.step())
-                    assertEquals("Ann", s.getText(0))
-                    assertTrue("nobody had claimed a board", s.isNull(1))
-                }
-                c.prepare("SELECT body, originPeerId FROM messages WHERE id = 'm1'").use { s ->
-                    assertTrue(s.step())
-                    assertEquals("hello", s.getText(0))
-                    assertTrue("and no post had been matched", s.isNull(1))
-                }
-                c.execSQL("UPDATE peers SET loraNode = 3735928559 WHERE nodeId = 'n1'")
-                c.execSQL("UPDATE messages SET originPeerId = 'n1' WHERE id = 'm1'")
-                c.prepare("SELECT loraNode FROM peers WHERE nodeId = 'n1'").use { s ->
-                    assertTrue(s.step())
-                    assertEquals("a full 32-bit node number fits", 3735928559L, s.getLong(0))
-                }
-                c.prepare("SELECT originPeerId FROM messages WHERE id = 'm1'").use { s ->
-                    assertTrue(s.step())
-                    assertEquals("n1", s.getText(0))
-                }
-            }
-        }
-
-    @Test
-    fun `migrate 11 to 12 keeps peers and messages, leaves the key null and the verdict unsigned`() =
-        runTest {
-            // No profile before v12 carried a board key and no heard post had its signature checked, so the
-            // key is null and the verdict is ORIGIN_UNSIGNED (0) on every existing row.
-            helper.createDatabase(11).use { c ->
-                c.execSQL(
-                    "INSERT INTO peers (nodeId, name, status, verified, updatedAt, openToChat, loraNode) " +
-                        "VALUES ('n1','Ann','around',1,7,0,3735928559)",
-                )
-                c.execSQL(
-                    "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
-                        "mentions, replyToHasAttachment, moderation, pendingKey, kind, originViaMqtt, originPeerId) " +
-                        "VALUES ('m1','n1','m-public','hello',1,0,5,'[]',0,0,0,0,0,'n1')",
-                )
-            }
-            helper.runMigrationsAndValidate(12, listOf(KnitMigrations.MIGRATION_11_12)).use { c ->
-                c.prepare("SELECT loraNode, loraKey FROM peers WHERE nodeId = 'n1'").use { s ->
-                    assertTrue(s.step())
-                    assertEquals("the claim survives", 3735928559L, s.getLong(0))
-                    assertTrue("no profile had carried a key", s.isNull(1))
-                }
-                c.prepare("SELECT originPeerId, originSigned FROM messages WHERE id = 'm1'").use { s ->
-                    assertTrue(s.step())
-                    assertEquals("the match survives", "n1", s.getText(0))
-                    assertEquals("and reads as never checked", 0L, s.getLong(1))
-                }
-                c.execSQL("UPDATE peers SET loraKey = 'oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4=' WHERE nodeId = 'n1'")
-                c.execSQL("UPDATE messages SET originSigned = 2 WHERE id = 'm1'")
-                c.prepare("SELECT loraKey FROM peers WHERE nodeId = 'n1'").use { s ->
-                    assertTrue(s.step())
-                    assertEquals("oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4=", s.getText(0))
-                }
-                c.prepare("SELECT originSigned FROM messages WHERE id = 'm1'").use { s ->
-                    assertTrue(s.step())
-                    assertEquals(2L, s.getLong(0))
-                }
-            }
-        }
-
-    @Test
-    fun `migrate 9 to 10 keeps messages and leaves their bridged-post attribution empty`() =
-        runTest {
-            // No message written before v10 can be a bridged Meshtastic post, so there is nothing to backfill
-            // and no ambiguity about what a null means here — unlike a column added to describe existing rows.
-            helper.createDatabase(9).use { c ->
                 c.execSQL(
                     "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
                         "mentions, replyToHasAttachment, moderation, pendingKey, kind) " +
-                        "VALUES ('m1','n1','nearby','hello',1,1,0,'[]',0,0,0,0)",
+                        "VALUES ('m2','n2','m-public','later',9,1,0,'[]',0,0,0,0)",
                 )
             }
             helper.runMigrationsAndValidate(10, listOf(KnitMigrations.MIGRATION_9_10)).use { c ->
-                c.prepare("SELECT body, originNode, originName, originViaMqtt FROM messages WHERE id = 'm1'").use { s ->
+                c.prepare("SELECT name, loraNode, loraKey FROM peers WHERE nodeId = 'n1'").use { s ->
                     assertTrue(s.step())
-                    assertEquals("hello", s.getText(0))
-                    assertTrue("an existing message is not a bridged post", s.isNull(1))
-                    assertTrue(s.isNull(2))
-                    assertEquals("the flag defaults off, never null", 0L, s.getLong(3))
+                    assertEquals("Ann", s.getText(0))
+                    assertTrue("nobody had claimed a board", s.isNull(1))
+                    assertTrue("and no profile had carried a key", s.isNull(2))
                 }
+                c
+                    .prepare(
+                        "SELECT body, originNode, originName, originViaMqtt, originPeerId, originSigned " +
+                            "FROM messages WHERE id = 'm1'",
+                    ).use { s ->
+                        assertTrue(s.step())
+                        assertEquals("hello", s.getText(0))
+                        assertTrue("an existing message is not a bridged post", s.isNull(1))
+                        assertTrue(s.isNull(2))
+                        assertEquals("the flag defaults off, never null", 0L, s.getLong(3))
+                        assertTrue("and no post had been matched", s.isNull(4))
+                        assertEquals("or checked", 0L, s.getLong(5))
+                    }
+
+                // The re-index moves no rows, and this is the half runMigrationsAndValidate cannot see: that a
+                // real device's thread comes through the rebuild intact and still reads newest-first.
+                c.prepare("SELECT id FROM messages WHERE conversationId = 'm-public' ORDER BY sentAt DESC, id DESC").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("the newest message still leads the thread", "m2", s.getText(0))
+                    assertTrue(s.step())
+                    assertEquals("and nothing was lost to the index rebuild", "m1", s.getText(0))
+                }
+
+                val indices = mutableListOf<String>()
+                c.prepare("PRAGMA index_list(messages)").use { s ->
+                    while (s.step()) indices += s.getText(1)
+                }
+                assertTrue("the thread-ordering index: $indices", "index_messages_conversationId_sentAt_id" in indices)
+                assertTrue("the sender-covering index: $indices", "index_messages_conversationId_kind_senderId" in indices)
+                assertFalse("the single-column index it replaces is gone: $indices", "index_messages_conversationId" in indices)
+
+                // Column order, not just existence: (conversationId, sentAt, id) is what lets an equality on
+                // the thread leave `sentAt` as the scanned suffix, so the window needs no sort. Reordered, the
+                // index would still exist and every other test would still pass — slowly.
+                val columns = mutableListOf<String>()
+                c.prepare("PRAGMA index_info(index_messages_conversationId_sentAt_id)").use { s ->
+                    while (s.step()) columns += s.getText(2)
+                }
+                assertEquals(listOf("conversationId", "sentAt", "id"), columns)
+
+                // And the new columns take what the bridge writes into them: a fully attributed heard post,
+                // resolved to a contact and signature-checked.
                 c.execSQL(
                     "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
                         "mentions, replyToHasAttachment, moderation, pendingKey, kind, " +
-                        "originNode, originName, originChannel, originHops, originSnrDeci, originViaMqtt) " +
-                        "VALUES ('m2','gw','m-public','hi',2,0,5,'[]',0,0,0,0, 305441741,'Bob','LongFast',2,-73,1)",
+                        "originNode, originName, originChannel, originHops, originSnrDeci, originViaMqtt, " +
+                        "originPeerId, originSigned) " +
+                        "VALUES ('m3','gw','m-public','hi',2,0,5,'[]',0,0,0,0, 305441741,'Bob','LongFast',2,-73,1, 'n1',2)",
+                )
+                c.execSQL(
+                    "UPDATE peers SET loraNode = 3735928559, loraKey = 'oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4=' WHERE nodeId = 'n1'",
                 )
                 c
                     .prepare(
-                        "SELECT originNode, originName, originChannel, originHops, originSnrDeci, originViaMqtt " +
-                            "FROM messages WHERE id = 'm2'",
+                        "SELECT originNode, originName, originChannel, originHops, originSnrDeci, originViaMqtt, " +
+                            "originPeerId, originSigned FROM messages WHERE id = 'm3'",
                     ).use { s ->
                         assertTrue(s.step())
                         assertEquals(305441741L, s.getLong(0))
@@ -483,7 +414,14 @@ class KnitDatabaseMigrationTest {
                         assertEquals(2L, s.getLong(3))
                         assertEquals(-73L, s.getLong(4))
                         assertEquals(1L, s.getLong(5))
+                        assertEquals("n1", s.getText(6))
+                        assertEquals(2L, s.getLong(7))
                     }
+                c.prepare("SELECT loraNode, loraKey FROM peers WHERE nodeId = 'n1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("a full 32-bit node number fits", 3735928559L, s.getLong(0))
+                    assertEquals("oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4=", s.getText(1))
+                }
             }
         }
 }

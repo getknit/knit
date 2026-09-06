@@ -37,8 +37,8 @@ private typealias Builder = RoomDatabase.Builder<KnitDatabase>
  * database SQLCipher wrote *before* Room ever saw it, materialised from the checked-in schema JSON:
  *
  * 1. An existing database already at the current version opens with no migration and no integrity complaint.
- * 2. A v1-era database walks all six [KnitMigrations] under the driver, proving the migration chain runs on
- *    SQLCipher and not only on the framework engine the JVM migration suite uses.
+ * 2. A v1-era database walks every [KnitMigrations] entry under the driver, proving the migration chain runs
+ *    on SQLCipher and not only on the framework engine the JVM migration suite uses.
  *
  * (The cross-seam case — a database written by the old `openHelperFactory(SupportOpenHelperFactory)` path and
  * reopened through the driver — was verified on the commit that made the switch, while Room 2.8 still offered
@@ -67,8 +67,10 @@ class SqlCipherDriverUpgradeTest {
             openRawConnection().use { connection ->
                 connection.materialiseSchema(CURRENT_VERSION)
                 connection.execSQL(
-                    "INSERT INTO peers (nodeId, name, status, verified, updatedAt) " +
-                        "VALUES ('${PEER.nodeId}', '${PEER.name}', '', 0, ${PEER.updatedAt})",
+                    // `openToChat` is NOT NULL with no table-level default (v9 added it with one only on the
+                    // ALTER), so a column-listed INSERT has to name it — as Room's own insert does.
+                    "INSERT INTO peers (nodeId, name, status, verified, updatedAt, openToChat) " +
+                        "VALUES ('${PEER.nodeId}', '${PEER.name}', '', 0, ${PEER.updatedAt}, 0)",
                 )
             }
 
@@ -193,7 +195,7 @@ class SqlCipherDriverUpgradeTest {
         const val TABLE_NAME_PLACEHOLDER = "\${TABLE_NAME}"
 
         /** Bump alongside `KnitDatabase`'s `@Database(version = …)`; its retention is CLASS, so it can't be read. */
-        const val CURRENT_VERSION = 7
+        const val CURRENT_VERSION = 10
 
         /** Tables the migration chain introduces after v1: none of these appear in `1.json`. */
         val MIGRATED_IN_TABLES = listOf("ratchet_sessions", "group_roots", "message_receipts")

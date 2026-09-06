@@ -79,28 +79,25 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
     //     carried it (`ProfileContent.openToChat`, and the sealed `ProfilePayload.openToChat`). Off the wire,
     //     under the presentation LWW watermark; 0 on every existing row, which is correct (nobody has asserted
     //     it, and the wire elides the flag while off); migrated by KnitMigrations.MIGRATION_8_9.
-    // v10: six `messages` columns attributing a **bridged Meshtastic post** — `originNode`, `originName`,
-    //     `originChannel`, `originHops`, `originSnrDeci`, `originViaMqtt` (the LongFast bridge). A denormalized
-    //     snapshot in the replyTo* mould, and for a stronger reason than that one: the speaker has no Knit
-    //     identity and no peer row, so there is nothing on this device to resolve the name against, now or
-    //     ever. Local only (a heard post is never framed), null/0 on every existing row — no message before this could be
-    //     a bridged post; migrated by KnitMigrations.MIGRATION_9_10.
-    // v11: `peers.loraNode` — the Meshtastic board a peer's latest profile says they hold (off the wire,
-    //     `ProfileContent.loraNode`, under the presentation LWW watermark) — and `messages.originPeerId`, the
-    //     contact a heard radio post resolved to at ingest, frozen on the row so a board changing hands never
-    //     re-attributes history. Both null on every existing row: nobody had claimed a board and no post had
-    //     been matched; migrated by KnitMigrations.MIGRATION_10_11.
-    // v12: `peers.loraKey` — the Curve25519 key a peer's latest profile advertises for their board (off the
-    //     wire, `ProfileContent.loraKey`, the same presentation watermark as `loraNode`) — and
-    //     `messages.originSigned`, what a heard radio post's XEdDSA signature proved at ingest, frozen on the
-    //     row beside `originPeerId`. Null / 0 (`ORIGIN_UNSIGNED`) on every existing row: no profile before this
-    //     carried a key and no post had been checked; migrated by KnitMigrations.MIGRATION_11_12.
-    // v13: no columns — `messages` trades its `conversationId` index for a composite over
-    //     (conversationId, sentAt, id). The old index found a thread's rows but left SQLite sorting all of
-    //     them to order the thread; the composite orders them too, which is what lets the chat screen read a
-    //     bounded newest-first window instead of the whole conversation. Data untouched; migrated by
-    //     KnitMigrations.MIGRATION_12_13.
-    version = 13,
+    // v10: the LoRa bridge's attribution columns, plus the index the chat window reads through — one bump,
+    //     four parts. Six `messages` columns attribute a **bridged Meshtastic post** — `originNode`,
+    //     `originName`, `originChannel`, `originHops`, `originSnrDeci`, `originViaMqtt` (the LongFast
+    //     bridge). A denormalized snapshot in the replyTo* mould, and for a stronger reason than that one:
+    //     the speaker has no Knit identity and no peer row, so there is nothing on this device to resolve
+    //     the name against, now or ever. `peers.loraNode` is the board a peer's latest profile says they
+    //     hold (off the wire, `ProfileContent.loraNode`, under the presentation LWW watermark) and
+    //     `messages.originPeerId` the contact a heard post resolved to at ingest, frozen on the row so a
+    //     board changing hands never re-attributes history. `peers.loraKey` is the Curve25519 key that same
+    //     profile advertises for the board and `messages.originSigned` what the post's XEdDSA signature
+    //     proved, frozen beside `originPeerId`. Local only (a heard post is never framed), null / 0
+    //     (`ORIGIN_UNSIGNED`) on every existing row — no message before this could be a bridged post and no
+    //     profile had claimed a board or carried a key. Finally, and moving no rows at all, `messages`
+    //     trades its `conversationId` index for composites over (conversationId, sentAt, id) and
+    //     (conversationId, kind, senderId): the old index found a thread's rows but left SQLite sorting all
+    //     of them, and the first composite orders them too, which is what lets the chat screen read a
+    //     bounded newest-first window instead of the whole conversation. Migrated by
+    //     KnitMigrations.MIGRATION_9_10.
+    version = 10,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
     // the migration test's MigrationTestHelper. Room also errors at compile time if an entity changes without
