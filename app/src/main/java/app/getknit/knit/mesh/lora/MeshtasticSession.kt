@@ -841,7 +841,7 @@ internal class MeshtasticSession(
         was: BoardOwnerRaw,
         want: BoardOwner,
     ): List<AdminStep>? {
-        if (was.owner == want) return emptyList()
+        if (was.owner.carries(want)) return emptyList()
         val named =
             spliceStringFields(
                 was.raw,

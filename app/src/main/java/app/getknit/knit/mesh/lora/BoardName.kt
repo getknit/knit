@@ -21,7 +21,16 @@ internal data class BoardOwner(
      * beside the node number, so a contact's phone can verify the posts 2.8 firmware signs for us.
      */
     val publicKey: String? = null,
-)
+) {
+    /**
+     * Whether this identity already *is* [want] in the three fields a `set_owner` write can carry — the two
+     * names and the unmonitored mark. Deliberately not whole-object equality: [publicKey] is the board's
+     * own, published by the firmware and never written by Knit, so comparing it would leave every board
+     * that has one looking permanently unfinished — the setup screen offering an action that can never
+     * complete, and every setup re-writing an identity the board already carries.
+     */
+    fun carries(want: BoardOwner): Boolean = longName == want.longName && shortName == want.shortName && unmessagable == want.unmessagable
+}
 
 /**
  * What a board set up for Knit calls itself (ADR 049).

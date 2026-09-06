@@ -383,6 +383,17 @@ class MeshtasticSessionTest {
     /** The same board once Knit has written its whole identity — the starting point for a re-run. */
     private val knitUser = spliceVarintFields(namedKnitUser, mapOf(MeshtasticProto.USER_IS_UNMESSAGABLE to 1L))!!
 
+    /**
+     * The same finished board as a real one reports it: carrying the `public_key` the firmware publishes on
+     * its own (every board since PKC landed). Knit never writes that field, so it must not count towards
+     * whether the board already carries the identity Knit wants.
+     */
+    private val keyedKnitUser =
+        knitUser +
+            ProtoWriter()
+                .bytes(MeshtasticProto.USER_PUBLIC_KEY, ByteArray(MeshtasticProto.NODE_PUBLIC_KEY_BYTES) { 7 })
+                .toByteArray()
+
     /** What [boardConfigs] and [boardUser] say the board was set to, in the shape a setup reports back. */
     private val boardIntervals =
         BoardSettings(
@@ -668,6 +679,27 @@ class MeshtasticSessionTest {
                 "nothing rewritten",
                 ch.writes.none { BoardBytes.isAdminSet(it) || BoardBytes.isAdminSetConfig(it) || BoardBytes.isAdminSetOwner(it) },
             )
+            session.stop()
+        }
+
+    @Test
+    fun provisionOnAFinishedBoardThatPublishesAPublicKeyWritesNoOwner() =
+        runTest {
+            val ch = FakeGattChannel()
+            scriptBoard(
+                ch,
+                channels = listOf(Triple(0, "", 1), Triple(2, "Knit", 2)),
+                configs = boardConfigs,
+                user = keyedKnitUser,
+                firmware = MARKING_FIRMWARE,
+            )
+            val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+
+            val result = async { session.provisionChannel(provisionSpec) }.await()
+            assertEquals(ProvisionResult.Provisioned(2, alreadyPresent = true), result)
+            assertTrue("no owner rewritten", ch.writes.none { BoardBytes.isAdminSetOwner(it) })
             session.stop()
         }
 

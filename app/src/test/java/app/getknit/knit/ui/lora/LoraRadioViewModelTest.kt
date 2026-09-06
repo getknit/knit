@@ -621,6 +621,26 @@ class LoraRadioViewModelTest {
         }
 
     @Test
+    fun `the board's own public key does not make a finished board look unfinished`() =
+        runTest {
+            // Every board since PKC publishes a `public_key` Knit never writes. Counting it towards the
+            // identity left the action on screen forever: each press wrote the same owner and changed nothing.
+            status.value =
+                LoraStatus(
+                    state =
+                        ready(
+                            listOf(ChannelInfo(0, "LongFast", 1), ChannelInfo(1, "Knit", 2)),
+                            owner = BoardOwner("Knit 002a", "Knit", unmessagable = true, publicKey = "ZmFrZWtleQ=="),
+                            firmware = marking,
+                        ),
+                    boardNodeNum = 42u,
+                )
+            val vm = start()
+
+            assertFalse(vm.state.value.needsRename)
+        }
+
+    @Test
     fun `a board too old to store the mark is never nagged about it`() =
         runTest {
             // 2.6.8 drops field 9 and never reports it back, so the prompt would never go away. Writing to

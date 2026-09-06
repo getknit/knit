@@ -231,7 +231,7 @@ internal class LoraRadioViewModel(
                 // gets the benefit of the doubt, exactly as an unreadable channel table does. Two things
                 // can be unfinished here — the name (ADR 049) and the unmonitored mark (ADR 2026-09.emd7) —
                 // and the screen tells them apart by comparing [meshName] against [knitName].
-                needsRename = setUp && wanted != null && ready.board.owner?.let { it != wanted } == true,
+                needsRename = setUp && wanted != null && ready.board.owner?.let { !it.carries(wanted) } == true,
                 customPrimary = ready?.let { isCustomPrimary(it) } == true,
                 presetMismatch = ready?.let(::presetMismatch),
                 confirmSetup = provision.confirm,
