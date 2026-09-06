@@ -35,10 +35,16 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Still deferred (by design)
 
-- **The LoRa (Meshtastic-over-BLE) plane is hidden in shipped builds** (2026-08-24, ADR 038) —
-  `BuildConfig.LORA_PLANE` true in debug, false in release/staging, `-PloraPlane=true|false` overrides.
-  It gates the LoRa child in `CompositeMeshTransport`, the `lora` settings route + Profile row, and
+- **The LoRa (Meshtastic-over-BLE) plane was hidden in shipped builds, INTRODUCED at 2.5.0**
+  (2026-08-24, ADR 038; flipped 2026-09-06, ADR 2026-09.6gtm) — `BuildConfig.LORA_PLANE` is now true
+  everywhere and `-PloraPlane=false` rebuilds the dark artifact 2.3.0–2.4.x shipped. It gates the LoRa
+  child in `CompositeMeshTransport`, the `lora` settings route + Profile row, and
   `SettingsStore.loraEnabled`. The code is **not** stripped (R8 prunes the `if (LORA_PLANE)` branches).
+  Visible is not enabled: `loraEnabled` still defaults false, and the plane is inert until the user pairs
+  a Meshtastic board and sets it up. **The two device trials that gated the flip — ADR 044's four-device
+  two-pocket bridge run and ADR 054's airtime three-phone run — were not run, and now ride as shipped
+  risk** (ADR 2026-09.6gtm records what bounds it: airtime budgets, `LOCAL_ONLY` rebroadcast, `hop_limit`
+  0, and a plane that is additive to custody).
   MVP shipped: `mesh/lora/` (pure, JVM-tested end-to-end over a fake board/air) + `mesh/bluetooth/meshtastic/`
   (the GATT client, device-verified only). Carries the Nearby-room broadcast subset (chat, reaction, ✓✓ tick,
   profile) and, since ADR 039 (2026-08-24), **sealed 1:1 DMs** — the whole DM form, receipts/reactions/ctl
@@ -342,19 +348,22 @@ doc). **Don't start a deferred item without explicit direction.**
   unsigned tick 157, sealed reaction 229 with 👍 (one at 231/255; 261 with the longest RGI emoji sequence and
   290 at the `TextLimits.REACTION` cap — two packets on every plane, never three), 40-char DM 244 (one NAN message, two LoRa
   packets), 100-char DM 304 (two — the structural floor, sig 64 + ids 48 + ek 32 + ct 124), profile 352
-  (3 → 2 parts at 228), 12-ack tick 409 (3 → 2). Still owed: **(a) the LoRa gate before that plane ships to
-  release** — today every LoRa frame the transcoder reproduces rides `0x05` (a flag-day, acceptable only while
-  `LORA_PLANE` is debug-only); the gate is "every peer heard on the plane within the 45-min linger advertised
-  `CAP_FRAME_TRANSCODE` through the profile frame it beacons here, newest-`sentAt`-wins, closed when no one is
-  heard" (~20 lines in `LoraMeshTransport.onFramePacket`/`recomputeReachable`/`encodeOrNull`), or a capability
-  byte on a new `LoraCtl` kind; residuals either way: an unheard far-pocket old build on a rebroadcasting
-  channel, a downgraded peer until its older profile arrives. (The second flag-day this gate briefly owned —
+  (3 → 2 parts at 228), 12-ack tick 409 (3 → 2). Still owed: **(a) the LoRa gate — RETIRED as a release
+  blocker 2026-09-06 (ADR 2026-09.6gtm)**, because the plane shipped `0x05`-only: a dark build never joined
+  the plane, so every release that can hear a LoRa frame is 2.5.0 or newer and speaks the transcoded form,
+  and there is no older population to fall back for. The gate's design — "every peer heard on the plane
+  within the 45-min linger advertised `CAP_FRAME_TRANSCODE` through the profile frame it beacons here,
+  newest-`sentAt`-wins, closed when no one is heard" (~20 lines in
+  `LoraMeshTransport.onFramePacket`/`recomputeReachable`/`encodeOrNull`), or a capability byte on a new
+  `LoraCtl` kind — is what a *future* tag change needs; residuals then: an unheard far-pocket old build on a
+  rebroadcasting channel, a downgraded peer until its older profile arrives. Building it now would only
+  re-open the budget below. (The second flag-day this gate briefly owned —
   the `meshpost` custodial type, ADR 2026-09.cf7a — was withdrawn before shipping by ADR 2026-09.26q3; the
   Meshtastic room no longer puts anything on Knit's mesh.) The gate also owns a budget: `LoraSizeHint`'s
   `DM_BODY_BYTES` (320) is honest only in the `0x05` form — a budget DM carrying its four inline acks is 596 B
-  against the 681-B ceiling there, but **675–683 B untranscoded** — so whatever falls back to `0x03` for an
-  ungated peer must drop that budget ~20 B or accept a `loraTooBig` on a tenth of the DMs the composer just
-  promised would fit (`CoordinationPlaneSizeBudgetTest` pins both budget tests on the transcoded form for
+  against the 681-B ceiling there, but **675–683 B untranscoded** — so anything that ever falls back to `0x03`
+  for an ungated peer must drop that budget ~20 B or accept a `loraTooBig` on a tenth of the DMs the composer
+  just promised would fit (`CoordinationPlaneSizeBudgetTest` pins both budget tests on the transcoded form for
   exactly that reason); **(b) the compact group form as v4** (derived nonce + labeled plaintext for `g`,
   roster-gated on every member's pinned capability; ~12 + 20–40 B a post,
   no packet-count change on its own — v3 is the DM form by executable rule, ADR 059 amendment); **(c)** seed

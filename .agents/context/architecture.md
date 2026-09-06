@@ -44,7 +44,7 @@ mesh/bluetooth/ BluetoothMeshTransport (BLE advertise/scan + persistent L2CAP li
                android.bluetooth.* boundary (Meshtastic GATT client at bluetooth/meshtastic/) ·
                ScanDemandPolicy/PromotionPolicy/ConnectBackoffPolicy/BleConnectArbiter
 mesh/lora/     LoraMeshTransport — fast-plane-only child carrying the Nearby-room broadcast subset over a
-               Meshtastic board (off by default, BuildConfig.LORA_PLANE, ADR 038) · pure JVM-tested
+               Meshtastic board (BuildConfig.LORA_PLANE, on since 2.5.0, user-off by default; ADR 038) · pure JVM-tested
                MeshtasticSession/MeshtasticProto/LoraFramePolicy/LoraPacePolicy over the MeshtasticLink seam
 linkpreview/   sender-side link previews (ADR 2026-09.n752): LinkPreviewService (gates → fetch → parse →
                moderate) · OkHttpPreviewFetcher (the only okhttp3 importer besides the spool dialer; bound

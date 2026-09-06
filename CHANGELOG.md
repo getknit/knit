@@ -22,6 +22,8 @@ document:
 
 ### Added
 
+- Pair a Meshtastic radio and Knit will use it. The Nearby room and your direct messages then reach contacts
+  well past where Wi-Fi and Bluetooth give out.
 - Turn off the Meshtastic room in LoRa settings if you'd rather not read your radio's own channel. It leaves
   the chat list and goes quiet, and your board carries only Knit's own messages.
 - A contact's post in the Meshtastic room now shows a shield when their radio signed it. On radios running

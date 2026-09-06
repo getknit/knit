@@ -71,12 +71,12 @@ val nativeSymbols = (project.findProperty("knit.nativeSymbols") as? String)?.toB
 // *enabled*: `SettingsStore.spoolEnabled` still defaults false behind a consent sheet.
 val internetPlane = (project.findProperty("internetPlane") as? String)?.toBoolean()
 
-// LoRa (Meshtastic-over-BLE) plane — the same kind of visibility switch, still ON in debug and OFF in
-// release/staging, overridable with `-PloraPlane=true|false`. It gates the LoRa child in the composite
+// LoRa (Meshtastic-over-BLE) plane — the same kind of visibility switch, now ON everywhere as of 2.5.0
+// (ADR 2026-09.6gtm), overridable with `-PloraPlane=true|false`. It gates the LoRa child in the composite
 // transport, the settings screen + its route, and SettingsStore.loraEnabled. Not a code strip (R8 prunes
 // the `if (LORA_PLANE)` branches); the default lives in source so F-Droid's -P-free rebuild stays identical.
-// Still dark in shipped builds at 2.4.0: the plane owes the four-device two-pocket trial and the
-// airtime-shaping three-phone trial in `.agents/context/lora-bridge.md` before it can be introduced.
+// ON means *visible and reachable*, never *enabled*: `SettingsStore.loraEnabled` still defaults false, and
+// a board has to be paired and set up before a single frame leaves over the radio.
 val loraPlane = (project.findProperty("loraPlane") as? String)?.toBoolean()
 
 // ABIs packaged into the **debug** APK. Debug is unminified and carries both tflite models, so it is
@@ -283,12 +283,11 @@ android {
             // (ADR 064) — the release default now agrees with debug, and `-PinternetPlane=false` is what
             // takes it back out. The user still opts in: the plane ships visible and switched off.
             //
-            // The LoRa plane stays dark in every shipped artifact (staging inherits this via initWith);
-            // `-PloraPlane=true` re-lights it for a lab reflash of a release-shaped build. It is held back
-            // on evidence, not on polish — the two device trials in `.agents/context/lora-bridge.md` are
-            // still owed — so these two lines are deliberately no longer symmetric.
+            // The LoRa plane is introduced at 2.5.0 (ADR 2026-09.6gtm) and the two flags are a pair again;
+            // `-PloraPlane=false` produces the dark artifact 2.3.0–2.4.x shipped. Same posture as above:
+            // visible and reachable, switched off, and inert until the user pairs a Meshtastic board.
             buildConfigField("boolean", "INTERNET_PLANE", (internetPlane ?: true).toString())
-            buildConfigField("boolean", "LORA_PLANE", (loraPlane ?: false).toString())
+            buildConfigField("boolean", "LORA_PLANE", (loraPlane ?: true).toString())
             // Never ship a fault injector, whatever `-PmodelFaultOnLoad` said.
             buildConfigField("String", "MODEL_FAULT_ON_LOAD", "\"\"")
             // Unsigned when no keystore.properties / KNIT_UPLOAD_* creds are present (see signingConfigs).

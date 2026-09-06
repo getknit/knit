@@ -38,9 +38,10 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   all at once) and find the additive route per `docs/WIRE_COMPAT.md`.
 - **When touching `mesh/lora/` or `mesh/bluetooth/meshtastic/` (the LoRa/Meshtastic bridge):** READ
   `.agents/context/lora-bridge.md` — a Meshtastic board over BLE GATT extends the **Nearby room and 1:1
-  DMs** over LoRa as a fast-plane-only `MeshTransport` child, off by default behind `BuildConfig.LORA_PLANE`
-  (ADR 038 + 039). `mesh/lora/` is pure/JVM-tested; the only `android.bluetooth.*` importer is
-  `mesh/bluetooth/meshtastic/MeshtasticGatt`.
+  DMs** over LoRa as a fast-plane-only `MeshTransport` child, shipped visible since 2.5.0 behind
+  `BuildConfig.LORA_PLANE` and off until the user pairs a board (ADR 038 + 039, introduced by ADR
+  2026-09.6gtm — it is no longer a gate that keeps anything out of shipped builds). `mesh/lora/` is
+  pure/JVM-tested; the only `android.bluetooth.*` importer is `mesh/bluetooth/meshtastic/MeshtasticGatt`.
 - **When touching `linkpreview/`, `net/`, `mesh/protocol/LinkPreviewBlob`, or anything that opens an
   Internet socket outside the spool plane:** READ ADR 2026-09.n752. A link preview is a card the **sender**
   fetches and sends as an ordinary attachment under its own MIME (no wire field, no DB change); the receiver

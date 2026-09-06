@@ -541,7 +541,9 @@ a frame, so nothing about it is custodied, fanned out or relayed. Three rules su
 kept here because the next reader will meet the same fork. **A new custodial type is a flag-day, not an
 additive change** — additive on the decoder, divergent on the digest, and only a gate that keeps it off shipped
 builds makes the second half tolerable (`FrameType.isCustodial`'s kdoc says so at the line where someone would
-widen it). **A decoder flag day and a digest divergence are different things**: relaxing a required field to
+widen it). `BuildConfig.LORA_PLANE` is no longer such a gate: the plane ships lit from 2.5.0 (ADR
+2026-09.6gtm), so a future custodial type needs a gate of its own.
+**A decoder flag day and a digest divergence are different things**: relaxing a required field to
 optional makes an older build render less while still storing, digesting and relaying normally, and needs only
 that a fleet reflash together, where a divergence needs a gate. And **a derived id is not a wire concern**:
 `FrameId.forMeshPost` still hashes `(node, packetId)` so one packet is one row however often the board replays
