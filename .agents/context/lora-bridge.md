@@ -229,7 +229,13 @@ Trickle timer, not a share; a reserved *slice* of BRIDGE was rejected because it
 (a 48-prefix OFFER is ~2 s at LongFast and ~13 s at LongSlow against the same 13.5 s budget). Only one OFFER is
 ever queued — `publishOffer` calls `LoraPacePolicy.dropQueued`, since a superseded snapshot names a set we have
 since changed. Serving also asks the budget **before** it queues (`serveOne` → `Serve.NO_AIR` ends the round),
-so the hourly serve cap is no longer spent on frames that only class shedding will remove; `AirBucket.BOOTSTRAP` (a live `profile` fan-out, ours or
+so the hourly serve cap is no longer spent on frames that only class shedding will remove — and it asks
+against what is already **queued** for BRIDGE (`LoraPacePolicy.pendingSizes`) as well as what is recorded, so
+a round cannot promise more air than the window has left. Without that, a round passed admission whole and
+then ran out of window part-way down the queue, and the frame the queue reached last was always the room post
+the backfill rank had deliberately put *first* (`FrameClass` drains a DM before the room; `backfillRank`
+spends slots the other way). ADR 2026-09.zkma;
+`LoraBridgeTest.aRoundThatCannotPayForEverythingKeepsWhatTheRankChose`. `AirBucket.BOOTSTRAP` (a live `profile` fan-out, ours or
 relayed — paired to `FrameClass.BOOTSTRAP` by `AirBucket.defaultFor`) is capped at 25 % and is the **one class
 judged outside the total**, so the key bootstrap still rides a spent window (ADR 056). It used to be admitted
 unconditionally *and* recorded, which is a budget with no floor: on the lab gateway 79 % of every LoRa frame

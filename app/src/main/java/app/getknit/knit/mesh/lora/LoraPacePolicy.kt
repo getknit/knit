@@ -182,6 +182,19 @@ internal class LoraPacePolicy(
         return best
     }
 
+    /**
+     * The payload sizes still owed by everything queued for [bucket] — air this frame's sender has committed
+     * to but the ledger has not recorded, because a frame is only booked when it actually leaves.
+     *
+     * The bridge asks this before it queues (ADR 2026-09.zkma). Its own admission test reads *recorded* air,
+     * which is what lets a whole round pass and then run out of window part-way down the queue — and the
+     * frame the queue reaches last is the one the backfill rank deliberately put first, since [FrameClass]
+     * orders a DM ahead of the room while [LoraFramePolicy.backfillRank] orders the room ahead of the DM.
+     * Counting what is already waiting closes that: a round can no longer promise more air than it has.
+     */
+    fun pendingSizes(bucket: AirBucket): List<Int> =
+        queue.filter { it.bucket == bucket }.flatMap { frame -> frame.remaining.map { it.size } }
+
     fun onQueueStatus(free: Int) {
         boardFree = free
     }

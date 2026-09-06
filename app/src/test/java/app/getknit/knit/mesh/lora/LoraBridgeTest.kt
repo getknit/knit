@@ -920,6 +920,57 @@ class LoraBridgeTest {
             assertFalse("the publish it superseded does not", b.received.any { it.envelope.id == idOf(old) })
         }
 
+    /**
+     * ADR 2026-09.zkma, the other half. [LoraFramePolicy.backfillRank] spends a round's four scarce slots on
+     * the room before the DMs (ADR 2026-09.rre4); [FrameClass] then drains the DMs before the room, because
+     * the two orders answer different questions and are right to differ. What was wrong is that the ledger
+     * only books a frame when it *leaves*, so a whole round passed admission on recorded air and then ran out
+     * of window part-way down the queue — and the frame the queue reached last was always the one the rank
+     * had deliberately put first. Measured on the rig before the fix: `[profile, dm, dm, dm, room]` on the
+     * air, the room post last.
+     */
+    @Test
+    fun aRoundThatCannotPayForEverythingKeepsWhatTheRankChose() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val ledger = LoraAirtime()
+            val a =
+                rig(air, 1u, "alice", backgroundScope, pace = LoraPacePolicy(minGapMs = 0, airtime = ledger)) {
+                    testScheduler.currentTime
+                }
+            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            b.transport.start()
+            a.transport.onForeignReachable(setOf("a2"))
+            b.transport.onForeignReachable(setOf("b2"))
+            runCurrent()
+
+            // Spend alice's bridge bucket down to roughly one frame's worth of air, so the round has to
+            // choose. Booked in quarter-frame steps so the leftover lands between one frame and two.
+            val one = listOf(MeshtasticProto.MAX_SIGNED_PAYLOAD)
+            while (ledger.admits(AirBucket.BRIDGE, FrameClass.ROOM, one + one, 0L)) {
+                ledger.record(AirBucket.BRIDGE, MeshtasticProto.MAX_SIGNED_PAYLOAD / 4, 0L)
+            }
+
+            val room = frame("a2", body = "room post")
+            val dms = List(3) { frame("a2", body = "dm $it", recipientId = "b2") }
+            a.custody.held += room
+            a.custody.held += dms
+
+            advanceTimeBy(toFirstOffer)
+            runCurrent()
+            advanceTimeBy(60_000)
+            runCurrent()
+
+            val crossed = b.received.mapTo(HashSet()) { it.envelope.id }
+            val dmsCrossed = dms.count { idOf(it) in crossed }
+            assertTrue(
+                "the window really is too small for the whole round, or this proves nothing ($dmsCrossed DMs)",
+                dmsCrossed < dms.size,
+            )
+            assertTrue("and the room post the rank chose is what the air pays for", idOf(room) in crossed)
+        }
+
     @Test
     fun onePublishersRepeatedOffersCannotDragTheWholeStoreOntoTheAir() =
         runTest {

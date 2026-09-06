@@ -619,6 +619,9 @@ internal class LoraMeshTransport(
         return to == selfIdCached || to in linkedPeers
     }
 
+    /** A publisher key as it reads in the log: the unsigned hex of the 64-bit hash an OFFER carries. */
+    private fun keyOf(publisher: Long): String = publisher.toULong().toString(HEX)
+
     /** Whether we may put anything on the air at all. A passive gateway listens and relays, but never transmits. */
     private fun mayTransmit(): Boolean {
         if (role == LoraGatewayPolicy.Role.ACTIVE) return true
@@ -721,10 +724,15 @@ internal class LoraMeshTransport(
         val self = selfIdCached
         if (self != null && offer.publisher == StoreDigest.hash64(self)) return // our own, echoed by the mesh
         val now = clock()
+        val key = keyOf(offer.publisher)
         metrics.onLoraOfferReceived()
         gateway.onOffer(offer.publisher, now)
         val sameSet = offer.prefixes.contentEquals(lastOfferPrefixes)
         gossip.onOffer(sameSet = sameSet, now = now)
+        // Logged before any of the decisions below, because "did the other gateway's offer reach this phone
+        // at all" is the question a field trial cannot answer afterwards — an offer that was heard and
+        // declined and one that was lost to the air both leave no trace otherwise (ADR 2026-09.zkma).
+        log("lora rx offer:${offer.prefixes.size} from $key same=$sameSet")
         // An offer announcing a set that is not ours may have snapped the timer to its floor, and the gossip
         // loop is asleep on a wait computed from the *old*, longer due time. Without the poke it would sleep
         // through the acceleration and wake past the reset interval's end — doubling instead of snapping.
@@ -737,7 +745,10 @@ internal class LoraMeshTransport(
         //
         // A co-pocket gateway is not a bridge peer: custody syncs to it for real over BLE/NAN, so serving it
         // over LoRa would spend air on frames already crossing a link that costs nothing.
-        if (!gateway.isFarGateway(offer.publisher, pocketKeys())) return
+        if (!gateway.isFarGateway(offer.publisher, pocketKeys())) {
+            log("lora bridge skipped $key: co-pocket gateway")
+            return
+        }
         scope.launch { serveBackfill(offer) }
     }
 
@@ -758,12 +769,24 @@ internal class LoraMeshTransport(
      * the rounds after that, which is where the pile came from.
      */
     private suspend fun serveBackfill(offer: LoraCtl.Offer) {
-        if (currentConfig?.bridge != true || !mayTransmit()) return
+        val key = keyOf(offer.publisher)
+        // One reason per line rather than one guard: a round that serves nothing says so at the end, and the
+        // three ways it can decline to start had no trace at all until a field trial needed to tell them
+        // apart from an offer that never arrived (ADR 2026-09.zkma).
+        if (currentConfig?.bridge != true) {
+            log("lora bridge skipped $key: the bridge switch is off")
+            return
+        }
+        if (!mayTransmit()) {
+            log("lora bridge skipped $key: passive gateway")
+            return
+        }
         val now = clock()
         val budget = servedTo.getOrPut(offer.publisher) { ServeBudget() }
         val allowance = budget.take(BACKFILL_LIMIT, now)
         if (allowance == 0) {
             metrics.onLoraBridgeRefused()
+            log("lora bridge refused $key: hourly serve cap spent")
             return
         }
         val dms = currentConfig?.dms == true
@@ -794,7 +817,7 @@ internal class LoraMeshTransport(
             gossip.reset(clock())
             gossipWake.trySend(Unit)
         }
-        log("lora bridge served=$served/$allowance to ${offer.publisher.toULong().toString(HEX)}")
+        log("lora bridge served=$served/$allowance to $key")
     }
 
     /** What one backfill candidate did: went out, was passed over, or found the bridge window spent. */
@@ -827,7 +850,15 @@ internal class LoraMeshTransport(
         val klass = classOf(env, FanoutHint.CONTENT)
         // Asked before the dedup slot is spent, for the reason [encodeOrNull] gives about the sig window: a
         // frame that never goes out must leave nothing behind that suppresses a later attempt at it.
-        if (!pace.airtime.admits(AirBucket.BRIDGE, klass, parts.map { it.size }, clock())) {
+        //
+        // Against what is already **queued** for BRIDGE as well as what is already recorded (ADR
+        // 2026-09.zkma). The ledger only books a frame when it leaves, so a whole round used to pass
+        // admission and then run out of window half-way down the queue — and the frame left behind was
+        // always the room post, because [FrameClass] drains a DM before the room while
+        // [LoraFramePolicy.backfillRank] spends the round's scarce slots the other way round. Serving in
+        // rank order only means anything if the round stops at what it can actually pay for.
+        val outstanding = pace.pendingSizes(AirBucket.BRIDGE) + parts.map { it.size }
+        if (!pace.airtime.admits(AirBucket.BRIDGE, klass, outstanding, clock())) {
             // The same counter a frame the pacer holds ticks, because it is the same fact: this one waits for
             // a later window and the next offer will name it again. Refusing here instead of in the queue is
             // what keeps the serve cap honest, but it must not make the refusal invisible on the way.

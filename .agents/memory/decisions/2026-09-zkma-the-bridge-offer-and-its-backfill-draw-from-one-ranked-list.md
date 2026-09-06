@@ -76,3 +76,33 @@ ordered its offer differently from its serve would hide exactly this.
 **The trap:** the two halves live in different files (`LoraFramePolicy` ranks, `MeshManager` reads custody),
 and either can be "tidied" into its own sort without the other noticing. There is no runtime symptom to
 catch it — the plane keeps working, just never on the frame anyone is waiting for.
+
+## The rank only counts if the round stops at what it can pay for
+
+Found while building the regression above, and the same symptom from the other end. `backfillRank` spends a
+round's four scarce slots on the room before the DMs (ADR 2026-09.rre4). `FrameClass` then drains a DM
+before the room, and both orders are right: the queue asks who transmits first once the air is paid for, the
+rank asks which frames are worth paying for. The defect was that nothing made the second decision stick.
+
+`LoraAirtime` books a frame when it **leaves**, not when it is queued, and `serveOne` asked admission
+against *recorded* air — deliberately, so one round's frames all pass and it is the next round that is
+stopped (ADR 044). So a round could enqueue four frames worth more air than the window had left, the queue
+would drain them cheapest-class-first, and the window would run out part-way down. The frame the queue
+reached last was always the one the rank had put first. Measured on the rig: `[profile, dm, dm, dm, room]`
+on the air, the room post last, and with a window that could only pay for two of them the room post was
+simply never sent.
+
+`serveOne` now asks against what is already **queued** for BRIDGE as well (`LoraPacePolicy.pendingSizes`),
+so the round stops at the frames it can actually carry. Because candidates arrive in rank order, the ones it
+keeps are the ones the rank chose. The queue's order is untouched, and so is shedding — a live DM still
+drains ahead of a backfilled room post, which is what the class order is for.
+
+Reordering the queue instead was the first thing to reach for and is wrong twice over: `FrameClass` also
+drives shedding ("a room post never evicts a DM"), and a comparator that ordered BRIDGE frames by rank while
+ordering everything else by class is intransitive against live traffic.
+
+**Residual:** the round's room post still goes out after its DMs, so a board that dies mid-round strands it.
+That is now bad luck rather than arithmetic — the budget can no longer be the thing that loses it.
+
+Kept true by `LoraBridgeTest.aRoundThatCannotPayForEverythingKeepsWhatTheRankChose`, which spends the bridge
+bucket down to about one frame and asserts that the frame the air pays for is the room post.
