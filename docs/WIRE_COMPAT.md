@@ -503,7 +503,32 @@ version bump, no discovery marker. The DB bumps (v10 → v11): `peers.loraNode` 
 cleartext profile discloses the board's node number to a carrier; the board already broadcasts that number in
 every `NODEINFO` on the public band, so a radio learns nothing new and a spool learns which board a Knit node
 holds. The number is self-asserted and unsigned by the board, so a receiver treats a match as an attribution
-and keeps the unverified styling — signature-backed confidence (Meshtastic 2.8's XEdDSA) is a roadmap item.
+and keeps the unverified styling — unless the next field lets it check one.
+
+**Precedent — the ninth additive `ProfileContent` change (the bound board's signing key, ADR 2026-09.ggq4,
+2026-09-05).** `ProfileContent.loraKey: String? = null`, `ProfilePayload.loraKey: String? = null` and
+`ProfileV2` label **7** (`ByteArray?`): the Curve25519 public key the board signs under, base64 of the 32 raw
+bytes on the two public layouts (the `pubKey`/`avatarHash` string convention, equality-safe on a data class)
+and the raw bytes on the compact sealed one (its `avatarHash` idiom). Nullable, by the `loraNode` route;
+elided while unbound *and* while the board's firmware does not sign, so a pre-2.8 user's profile is
+byte-identical to before and every existing golden vector stayed put (three new ones —
+`profileContentLoraKey`, `profilePayloadLoraKey`, `messageContentV2ProfileLoraKey`). A presentation field on
+all three layouts under the same LWW watermark. The transcoder needed nothing (text key plus a 44-character
+text string, `FrameTranscoderTest.aBoardKeyProfileRidesAsTextKeyPlusValueAndRebuildsExact`); the cost is
+**54 B** on the cleartext profile while a signing board is bound, and `CoordinationPlaneSizeBudgetTest`
+carries it on both max-size fixtures: the max-size profile transcodes to **432 B, still two LoRa packets at the
+ESP32 cap** (16 B of headroom under the 448-B ceiling), and the max-size intro to 600 B, still three. The
+intro's legacy `0x03` form is now 684 B, three bytes past the three-packet ceiling — a form the LoRa plane has
+not sent since the ADR 060 flag-day (it transcodes unconditionally), so `anIntroFitsTheLoraHop` now measures
+the form the plane sends. No capability bit, no ctl value, no version bump, no discovery marker.
+The DB bumps (v11 → v12): `peers.loraKey` for the claim and `messages.originSigned` for what a heard post's
+signature proved at ingest, frozen beside `originPeerId` — local only, tested. *Metadata cost:* none new —
+the key already rides every `NODEINFO` the board broadcasts on the public band, and on 2.8 the node number
+the profile already carried *is* the CRC32 of it. What a receiver does with it: verifies a heard post's
+XEdDSA signature (`mesh/crypto/XeddsaVerify`, over the firmware's own `from ‖ id ‖ portnum ‖ payload`) and
+shows the post as that contact's, with a shield. What it proves is bounded: the *radio* named in the profile
+transmitted the words — the frame's Ed25519 signature is what binds that claim to the identity — never that
+the person typed them.
 
 **Withdrawn precedent — the one `type` string minted since the v1 baseline (`meshpost`, ADR 2026-09.cf7a and
 2026-09.7r4d, September 2026), taken back before it shipped (ADR 2026-09.26q3).** It was the first entry on

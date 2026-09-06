@@ -44,9 +44,9 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v11) creates and opens from the exported JSON`() =
+    fun `the current schema (v12) creates and opens from the exported JSON`() =
         runTest {
-            val version = 11 // KnitDatabase @Database(version = 11) — bump alongside the DB (its retention is CLASS,
+            val version = 12 // KnitDatabase @Database(version = 12) — bump alongside the DB (its retention is CLASS,
             // so the version can't be read reflectively). A missing schemas/<db>/<version>.json fails here.
             helper.createDatabase(version).close()
         }
@@ -353,6 +353,46 @@ class KnitDatabaseMigrationTest {
                 c.prepare("SELECT originPeerId FROM messages WHERE id = 'm1'").use { s ->
                     assertTrue(s.step())
                     assertEquals("n1", s.getText(0))
+                }
+            }
+        }
+
+    @Test
+    fun `migrate 11 to 12 keeps peers and messages, leaves the key null and the verdict unsigned`() =
+        runTest {
+            // No profile before v12 carried a board key and no heard post had its signature checked, so the
+            // key is null and the verdict is ORIGIN_UNSIGNED (0) on every existing row.
+            helper.createDatabase(11).use { c ->
+                c.execSQL(
+                    "INSERT INTO peers (nodeId, name, status, verified, updatedAt, openToChat, loraNode) " +
+                        "VALUES ('n1','Ann','around',1,7,0,3735928559)",
+                )
+                c.execSQL(
+                    "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
+                        "mentions, replyToHasAttachment, moderation, pendingKey, kind, originViaMqtt, originPeerId) " +
+                        "VALUES ('m1','n1','m-public','hello',1,0,5,'[]',0,0,0,0,0,'n1')",
+                )
+            }
+            helper.runMigrationsAndValidate(12, listOf(KnitMigrations.MIGRATION_11_12)).use { c ->
+                c.prepare("SELECT loraNode, loraKey FROM peers WHERE nodeId = 'n1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("the claim survives", 3735928559L, s.getLong(0))
+                    assertTrue("no profile had carried a key", s.isNull(1))
+                }
+                c.prepare("SELECT originPeerId, originSigned FROM messages WHERE id = 'm1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("the match survives", "n1", s.getText(0))
+                    assertEquals("and reads as never checked", 0L, s.getLong(1))
+                }
+                c.execSQL("UPDATE peers SET loraKey = 'oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4=' WHERE nodeId = 'n1'")
+                c.execSQL("UPDATE messages SET originSigned = 2 WHERE id = 'm1'")
+                c.prepare("SELECT loraKey FROM peers WHERE nodeId = 'n1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4=", s.getText(0))
+                }
+                c.prepare("SELECT originSigned FROM messages WHERE id = 'm1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(2L, s.getLong(0))
                 }
             }
         }

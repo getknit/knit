@@ -474,8 +474,122 @@ class ChatViewModelTest {
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
             advanceUntilIdle()
 
-            assertEquals(PublicPostPolicy.MAX_ON_AIR_BYTES, vm.state.value.publicPostBudget)
+            // The facts' default is a board that signs, so the cap is the signable one.
+            assertEquals(PublicPostPolicy.MAX_SIGNED_TEXT_BYTES, vm.state.value.publicPostBudget)
             assertTrue("the disclosure has not been accepted yet", vm.state.value.needsPublicConsent)
+        }
+
+    @Test
+    fun theBridgedComposerKeepsTheClientCapWhenTheRadioDoesNotSign() =
+        runTest {
+            // A pre-2.8 board signs nothing, so there is no cliff to stay under: the 200-byte client
+            // convention is the cap, as it always was.
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true, signs = false)
+            advanceUntilIdle()
+            assertEquals(PublicPostPolicy.MAX_ON_AIR_BYTES, vm.state.value.publicPostBudget)
+
+            loraFactsFlow.value = LoraFacts(plane = LoraPlane.Live, canPost = true, signs = true)
+            advanceUntilIdle()
+            assertEquals(PublicPostPolicy.MAX_SIGNED_TEXT_BYTES, vm.state.value.publicPostBudget)
+        }
+
+    @Test
+    fun aSignedContactPostIsMarkedVerifiedInItsRow() =
+        runTest {
+            // The one state the room vouches for: the post's signature verified under the key the contact's
+            // own profile names. The row says so; the screen draws the shield off it.
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            peersFlow.value = listOf(peer("sam", name = "Sam", avatarHash = "sam-avatar"))
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "me",
+                        body = "hi",
+                        id = "mp-signed",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0x1234abcd,
+                        originName = "Knit 1a2b",
+                        originPeerId = "sam",
+                        originSigned = MessageEntity.ORIGIN_SIGNED_BY_CONTACT,
+                    ),
+                )
+            advanceUntilIdle()
+
+            val row =
+                vm.state.value.rows
+                    .first { it.id == "mp-signed" }
+            assertEquals("Sam", row.senderName)
+            assertEquals(MeshSignature.CONTACT, row.origin?.signed)
+            assertEquals(true, row.origin?.verified)
+            assertEquals("sam", row.origin?.peerId)
+        }
+
+    @Test
+    fun aMismatchedSignatureRowIsAStrangerWhateverTheNodeNumberClaims() =
+        runTest {
+            // Ingest attributed nobody (the signature failed the claimant's key), so the row is a stranger's
+            // and says so — the board's name for the speaker, never the contact's.
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            peersFlow.value = listOf(peer("sam", name = "Sam", avatarHash = "sam-avatar"))
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "me",
+                        body = "hi",
+                        id = "mp-mismatch",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0x1234abcd,
+                        originName = "Knit 1a2b",
+                        originPeerId = null,
+                        originSigned = MessageEntity.ORIGIN_SIGNATURE_MISMATCH,
+                    ),
+                )
+            advanceUntilIdle()
+
+            val row =
+                vm.state.value.rows
+                    .first { it.id == "mp-mismatch" }
+            assertEquals("Knit 1a2b", row.senderName)
+            assertNull("no face for a stranger", row.avatarHash)
+            assertEquals(MeshSignature.MISMATCH, row.origin?.signed)
+            assertEquals(false, row.origin?.verified)
+        }
+
+    @Test
+    fun aBoardSignedStrangerStaysAStranger() =
+        runTest {
+            // Our own board vouched for the number, which says the same radio keeps using it — not who
+            // holds it. No contact, no shield; the provenance line gets a word.
+            val vm = vm(Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value =
+                listOf(
+                    msg(
+                        senderId = "me",
+                        body = "hi",
+                        id = "mp-board",
+                        sentAt = 100,
+                        conversationId = Conversations.MESHTASTIC,
+                        originNode = 0x1234abcd,
+                        originName = "Bob",
+                        originSigned = MessageEntity.ORIGIN_SIGNED_BY_BOARD,
+                    ),
+                )
+            advanceUntilIdle()
+
+            val row =
+                vm.state.value.rows
+                    .first { it.id == "mp-board" }
+            assertEquals("Bob", row.senderName)
+            assertNull(row.origin?.peerId)
+            assertEquals(MeshSignature.BOARD, row.origin?.signed)
+            assertEquals(false, row.origin?.verified)
         }
 
     @Test

@@ -154,7 +154,18 @@ Golden byte vectors pin every field number; malformed input decodes to null, nev
   or decline it; `LoraAirtime` charges for it, and since ADR 2026-09.mhs5 **dodges** it — see the codec note
   below. Receiving is unaffected while
   `Config.SecurityConfig.packet_signature_policy` is at its `COMPATIBLE` default — under `STRICT` a board
-  drops every unsigned packet, which after the padding is every Knit frame rather than most of them.
+  drops every unsigned packet, which after the padding is every Knit frame rather than most of them;
+  `BALANCED` is safe (it drops only unsigned packets that *could* have been signed, and a padded frame could
+  not). **The phone gets the whole story** (ADR 2026-09.ggq4, verified on both lab tags): the 64-byte
+  `Data.xeddsa_signature` rides up intact, and the board's own verdict `MeshPacket.xeddsa_signed` (field 22,
+  computed on receive against the key *its* NodeDB holds, never trusted off the air) beside it, plus
+  `NodeInfo.has_xeddsa_signed` (14) and `DeviceMetadata.has_xeddsa` (14, which `LoraAirtime.onFirmware` now
+  takes ahead of the version parse). The signing input is `LE32(from) ‖ LE32(id) ‖ LE32(portnum) ‖ payload`
+  under the board's Curve25519 key converted to Ed25519 (`y = (u − 1)/(u + 1)`, sign bit 0); on 2.8 a node
+  number **is** the CRC32 of that key. The text cliff is **166 B** (one-byte portnum), the Knit-frame one 165.
+  Two rules to remember: a signed packet that fails against the key the *receiving* board holds is dropped
+  before the phone sees it, whatever the policy — a stale or planted key silently blackholes that sender —
+  and an unverifiable one (no key in the NodeDB) is passed up with the signature and the flag false.
 
 ## Key bootstrap (the far side has never seen the author's profile)
 
@@ -616,11 +627,34 @@ each hear the channel for themselves.
   `PeerRepository.findByLoraNode` (newest `updatedAt` wins — a board that changed hands is claimed twice until
   the old holder's next profile drops it) **once, at ingest**, and freezes it as `messages.originPeerId`, so
   history is never re-attributed. A resolved contact wears their name and avatar with the **unverified**
-  styling (muted name, untappable avatar, the room strip); a blocked contact's board is dropped
+  styling (muted name, untappable avatar, the room strip) until a signature verifies the match — then a Knit
+  author's colour, a shield and a direct avatar tap; a blocked contact's board is dropped
   (`BLOCKED_CONTACT`). A row's body is shown word for word, since ADR 2026-09.9469 left nothing on the line
   but the words — a heard `"Sam: hi"` is a stranger's content, not a prefix to strip. The match rests on a
-  self-asserted node number, and now with no name on the line to corroborate it — 2.8's XEdDSA signature is
-  not decoded — see the roadmap.
+  self-asserted node number — **unless the signature checks out** (ADR 2026-09.ggq4). The profile also
+  carries the board's Curve25519 key (`ProfileContent.loraKey` ← `SettingsStore.loraBoardKey`, written with
+  the number in one edit and only while the board signs), `peers.loraKey` stores it, and `deliverMeshPost`
+  verifies a signed post on the phone (`mesh/crypto/XeddsaVerify`, over `from ‖ id ‖ portnum ‖ payload` as
+  heard — `MeshPost.payload`, never the trimmed body) and freezes the verdict on the row as
+  `messages.originSigned`: `UNSIGNED` (nothing to say — pre-2.8 radios never sign, a post past the cliff
+  cannot), `SIGNED_BY_BOARD` (our board's `xeddsa_signed`: the radio that has been using the number), `SIGNED_BY_CONTACT`
+  (verified under the contact's advertised key — the one verified state) and `SIGNATURE_MISMATCH` (some other
+  radio on the contact's number: **not attributed**, drawn as a stranger that says so). Counters:
+  `meshPostVerified` / `BoardVerified` / `SignatureMismatch`.
+- **Signable cap.** On a board that signs (`LoraFacts.signs`) the composer caps a post at
+  `PublicPostPolicy.MAX_SIGNED_TEXT_BYTES` (166, `MeshtasticProto.maxSignedPayload(PORT_TEXT_MESSAGE)`) so
+  every post leaves signed, else the 200-byte client convention; `postToPublicChannel` trims to the same
+  `onAirBudget(signing)`. Knit-frame padding (ADR 2026-09.mhs5) is untouched.
+- **Verified on hardware (2026-09-05, ADR 2026-09.ggq4):** Pixel 7 on `!64761b18` and Pixel 9 on
+  `!e681a7c3` (both 2.8.0.47db0e3), a post each way — the far phone's `LoraMeshTransport` log reads
+  `lora public post from !… signed=true boardVerified=true`, `…debug.LORA` counts `meshPostMatched` /
+  `meshPostVerified` and no mismatch, and the room draws the shield; a 166-byte post (`lora tx public 166B`)
+  arrived signed and verified, so the text cliff holds. The oracle is the phone itself: `…debug.SEND --es
+  conv m-public` to post, the transport log and the counters to read, no serial needed (and `!e681a7c3` is
+  the Pixel 9's own board — a serial session on it wedges that phone's BLE link). Not seen on hardware: a
+  mismatch or a board-only verdict, for want of a third signer on this mesh. The raw `FromRadio` capture
+  (`.private/scripts/meshtastic-fromradio-capture.py`) is the serial-side oracle when a non-phone board is
+  free.
 - **UI.** `LoraFacts.primaryChannel` / `canPost` (only while Live) title the room and the chat-list row
   (`meshRoomChannel`: live board → newest post's channel → "Meshtastic"), the row exists while a board is
   bound or history remains, and `PublicPostGate` swaps the composer for a footer with no radio bound (or a

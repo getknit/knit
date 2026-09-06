@@ -260,6 +260,21 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v12 — signature-backed attribution for heard radio posts: `peers.loraKey`, the Curve25519 key a peer's
+     * latest profile advertises for their board, and `messages.originSigned`, what a heard post's signature
+     * proved at ingest. Null and 0 (`MessageEntity.ORIGIN_UNSIGNED`) on every existing row — no profile before
+     * this version carried a key and no post was checked. Additive only; the SQL must stay byte-equivalent to
+     * what Room generates for `app/schemas/**/12.json`.
+     */
+    val MIGRATION_11_12 =
+        object : Migration(11, 12) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `peers` ADD COLUMN `loraKey` TEXT DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `originSigned` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -273,5 +288,6 @@ object KnitMigrations {
             MIGRATION_8_9,
             MIGRATION_9_10,
             MIGRATION_10_11,
+            MIGRATION_11_12,
         )
 }

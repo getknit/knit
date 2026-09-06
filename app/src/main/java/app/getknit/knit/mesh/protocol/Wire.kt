@@ -197,7 +197,16 @@ data class ChatContent(
  * one. Nullable rather than defaulted because 0 is not a node number; elided while unbound, and absent on a
  * newer profile it **clears** — a board handed on or unpaired is unsaid by omission, the prekey's shape. A
  * presentation field: it rides all three layouts and moves under the same LWW watermark. Self-asserted and
- * unsigned by the board, so a receiver treats a match as an attribution, never a verified identity.
+ * unsigned by the board, so a receiver treats a match as an attribution, never a verified identity — unless
+ * [loraKey] lets it check one.
+ *
+ * [loraKey] is that board's Curve25519 public key (base64 of the 32 raw bytes, the `pubKey`/`avatarHash`
+ * string convention), advertised **only while the board's firmware signs**: Meshtastic 2.8 signs every
+ * broadcast a board originates that fits, and a contact's phone verifies a heard post's signature against
+ * this key (`mesh/crypto/XeddsaVerify`) before showing the post as ours. Same shape as [loraNode] — nullable,
+ * elided while unbound or on a board that does not sign, absent clears, a presentation field on all three
+ * layouts. What it proves is bounded: the radio named here transmitted the words, not that this person
+ * typed them. Bound to this identity by the frame's own signature, which covers every field of this content.
  */
 @Serializable
 data class ProfileContent(
@@ -212,6 +221,7 @@ data class ProfileContent(
     val version: Long? = null,
     val openToChat: Boolean = false,
     val loraNode: Long? = null,
+    val loraKey: String? = null,
 )
 
 /** Content of a [FrameType.GROUP_LEAVE] frame: the group the (self-asserted) sender is leaving. */
@@ -517,7 +527,9 @@ data class ReactionPayload(
  * [openToChat] mirrors [ProfileContent.openToChat] — a presentation field, so it rides here too (defaulted,
  * elided while off): the sealed path overwrites the whole presentation set under a newer version, and a
  * field carried by the cleartext frame alone would be reverted by the next sealed update. [loraNode]
- * mirrors [ProfileContent.loraNode] for the same reason (nullable, elided while unbound, absent clears).
+ * mirrors [ProfileContent.loraNode] for the same reason (nullable, elided while unbound, absent clears),
+ * and [loraKey] mirrors [ProfileContent.loraKey] (the board's signing key, base64; elided unless the board
+ * signs).
  */
 @Serializable
 data class ProfilePayload(
@@ -527,6 +539,7 @@ data class ProfilePayload(
     val version: Long = 0L,
     val openToChat: Boolean = false,
     val loraNode: Long? = null,
+    val loraKey: String? = null,
 )
 
 /**

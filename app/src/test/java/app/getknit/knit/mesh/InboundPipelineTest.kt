@@ -460,6 +460,7 @@ class InboundPipelineTest {
             name: String = "Peer",
             openToChat: Boolean = false,
             loraNode: Long? = null,
+            loraKey: String? = null,
         ): RelayEnvelope =
             RelayEnvelope(
                 type = FrameType.PROFILE,
@@ -475,6 +476,7 @@ class InboundPipelineTest {
                             avatarHash = avatarHash,
                             openToChat = openToChat,
                             loraNode = loraNode,
+                            loraKey = loraKey,
                         ),
                     ),
             )
@@ -2189,6 +2191,8 @@ class InboundPipelineTest {
         packetId: Long = 9911,
         name: String? = "Bob",
         viaMqtt: Boolean = false,
+        signature: ByteArray? = null,
+        boardVerified: Boolean = false,
     ) = MeshPost(
         node = node,
         packetId = packetId,
@@ -2198,7 +2202,203 @@ class InboundPipelineTest {
         hops = 2,
         snrDeci = -73,
         viaMqtt = viaMqtt,
+        signature = signature,
+        boardVerified = boardVerified,
     )
+
+    // A post the lab board `!e681a7c3` signed under its real key (`XeddsaVerifyTest` vector c): the
+    // Meshtastic room's own shape, TEXT_MESSAGE_APP, verified off-board before it was pinned here.
+    private val labNode = 0xe681a7c3L
+    private val labPacketId = 0x1234abcdL
+    private val labBody = "hello from Knit a7c3"
+    private val labKey = "7Wtkw91w64ahkmd8ESSsCtQ5oSnjy6lMR+fies5QPls="
+    private val otherKey = "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4="
+    private val labSignature =
+        "fbda52354547235b7400409ac34bdfbaea6a9e5d89cae1134e92efaefbe8179b2d581fc366e0af43f04e7228096e0b5b0a6f02da87c2721d8f9a79c31975760d"
+            .chunked(
+                2,
+            ).map {
+                it.toInt(16).toByte()
+            }.toByteArray()
+
+    private fun labPost(
+        signature: ByteArray? = labSignature,
+        boardVerified: Boolean = false,
+        packetId: Long = labPacketId,
+    ) = heardPost(labBody, node = labNode, packetId = packetId, name = "Knit a7c3", signature = signature, boardVerified = boardVerified)
+
+    @Test
+    fun aSignedPostFromAContactsAdvertisedKeyIsVerifiedAtIngest() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, name = "Alice", loraNode = labNode, loraKey = labKey))
+
+            rig.pipeline.deliverMeshPost(labPost())
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertEquals(alice.nodeId, row.originPeerId)
+            assertEquals("the words provably came from her radio", MessageEntity.ORIGIN_SIGNED_BY_CONTACT, row.originSigned)
+            assertEquals(1L, rig.metrics.snapshot().meshPostVerified)
+            assertEquals(1L, rig.metrics.snapshot().meshPostMatched)
+        }
+
+    @Test
+    fun aSignedPostThatFailsTheContactsKeyIsNotAttributedToThem() =
+        runTest {
+            // Alice's profile names a different key than the one that signed — some other radio is on her
+            // number. Worse than a stranger, and shown as one: her name goes nowhere near the words.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, name = "Alice", loraNode = labNode, loraKey = otherKey))
+
+            rig.pipeline.deliverMeshPost(labPost())
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertNull("never attributed", row.originPeerId)
+            assertEquals(MessageEntity.ORIGIN_SIGNATURE_MISMATCH, row.originSigned)
+            assertEquals("Knit a7c3", row.originName)
+            assertEquals(1L, rig.metrics.snapshot().meshPostSignatureMismatch)
+            assertEquals("a mismatch is not a match", 0L, rig.metrics.snapshot().meshPostMatched)
+        }
+
+    @Test
+    fun anUnsignedPostFromAContactsBoardStaysAnUnverifiedAttribution() =
+        runTest {
+            // Unsigned is not evidence — a long post cannot be signed and a pre-2.8 radio never signs — so the
+            // match stands exactly as it did before signatures existed: attributed, and unverified.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, name = "Alice", loraNode = labNode, loraKey = labKey))
+
+            rig.pipeline.deliverMeshPost(labPost(signature = null))
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertEquals(alice.nodeId, row.originPeerId)
+            assertEquals(MessageEntity.ORIGIN_UNSIGNED, row.originSigned)
+            assertEquals(0L, rig.metrics.snapshot().meshPostVerified)
+        }
+
+    @Test
+    fun aStrangersPostTheBoardVouchedForIsMarkedSignedByBoard() =
+        runTest {
+            val rig = Rig(backgroundScope)
+
+            rig.pipeline.deliverMeshPost(heardPost("hi", signature = labSignature, boardVerified = true))
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertNull(row.originPeerId)
+            assertEquals(MessageEntity.ORIGIN_SIGNED_BY_BOARD, row.originSigned)
+            assertEquals(1L, rig.metrics.snapshot().meshPostBoardVerified)
+        }
+
+    @Test
+    fun aContactWithoutAnAdvertisedKeyGetsTheBoardsVerdictAtMost() =
+        runTest {
+            // A contact on a build before this one, or on a board that does not sign: nothing on this phone
+            // can bind the signature to them, so the board's word is the ceiling and the match stays unverified.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, name = "Alice", loraNode = labNode))
+
+            rig.pipeline.deliverMeshPost(labPost(boardVerified = true))
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertEquals(alice.nodeId, row.originPeerId)
+            assertEquals(MessageEntity.ORIGIN_SIGNED_BY_BOARD, row.originSigned)
+        }
+
+    @Test
+    fun theVerdictIsFrozenWhenTheContactLaterRotatesTheirKey() =
+        runTest {
+            // Judged once, at ingest, and written once: the board replaying the packet after Alice's profile
+            // moved to a new key re-judges it (a mismatch now) but never rewrites the row it already made.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, name = "Alice", loraNode = labNode, loraKey = labKey))
+            rig.pipeline.deliverMeshPost(labPost())
+            advanceUntilIdle()
+            assertEquals(
+                MessageEntity.ORIGIN_SIGNED_BY_CONTACT,
+                rig.msgMap.values
+                    .single()
+                    .originSigned,
+            )
+
+            rig.deliver(alice, rig.profile(alice, sentAt = 11L, name = "Alice", loraNode = labNode, loraKey = otherKey))
+            rig.pipeline.deliverMeshPost(labPost())
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertEquals("still her words, judged when they were said", MessageEntity.ORIGIN_SIGNED_BY_CONTACT, row.originSigned)
+            assertEquals(alice.nodeId, row.originPeerId)
+        }
+
+    @Test
+    fun aProfileCarryingABoardKeyStoresItOnThePeerAndAClearedOneRemovesIt() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, loraNode = labNode, loraKey = labKey))
+            assertEquals(labKey, checkNotNull(rig.peerMap[alice.nodeId]).loraKey)
+
+            // Absent on a newer profile clears it — a board that stopped signing, or was unpaired.
+            rig.deliver(alice, rig.profile(alice, sentAt = 11L, loraNode = labNode))
+            assertNull(checkNotNull(rig.peerMap[alice.nodeId]).loraKey)
+            assertEquals("the number is its own field", labNode, rig.peerMap[alice.nodeId]?.loraNode)
+        }
+
+    @Test
+    fun aSealedProfileCarriesTheBoardKeyWithTheRestOfThePresentation() =
+        runTest {
+            // The sealed path copies the whole presentation set (ProfilePayload): a key it did not carry
+            // would be reverted by every sealed update after the cleartext frame that set it.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profileWithPrekey(alice, sentAt = 10L, prekey = null, version = 10L))
+            val author = V2Author(alice, rig)
+            rig.deliver(
+                alice,
+                author.dm(
+                    "ctl-key-1",
+                    "",
+                    ctl = MessageContent.CTL_PROFILE,
+                    pr = ProfilePayload(name = "Ann", status = "", version = 20L, loraNode = labNode, loraKey = labKey),
+                ),
+            )
+            assertEquals(labKey, checkNotNull(rig.peerMap[alice.nodeId]).loraKey)
+            assertEquals(labNode, rig.peerMap[alice.nodeId]?.loraNode)
+            rig.deliver(
+                alice,
+                author.dm("ctl-key-2", "", ctl = MessageContent.CTL_PROFILE, pr = ProfilePayload(name = "Ann", status = "", version = 30L)),
+            )
+            assertNull(checkNotNull(rig.peerMap[alice.nodeId]).loraKey)
+        }
+
+    @Test
+    fun aMismatchFromABlockedContactsNumberIsAStrangersPostNotTheirs() =
+        runTest {
+            // Blocking Alice drops her board's posts; a post on her number that her key disowns is not her
+            // board's, so it lands as any stranger's would rather than vanishing under her block.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.deliver(alice, rig.profile(alice, sentAt = 10L, loraNode = labNode, loraKey = otherKey))
+            rig.settings.blocked.value = setOf(alice.nodeId)
+
+            rig.pipeline.deliverMeshPost(labPost())
+            advanceUntilIdle()
+
+            val row = rig.msgMap.values.single()
+            assertNull(row.originPeerId)
+            assertEquals(MessageEntity.ORIGIN_SIGNATURE_MISMATCH, row.originSigned)
+            assertNull(rig.metrics.snapshot().meshPostRefusedByReason[MESH_POST_BLOCKED_CONTACT])
+        }
 
     @Test
     fun aHeardPostLandsInItsOwnRoomWithItsSpeakerAttributed() =

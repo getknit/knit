@@ -36,6 +36,7 @@ import app.getknit.knit.mesh.crypto.MessageContent
 import app.getknit.knit.mesh.crypto.MessageContentV2
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
+import app.getknit.knit.mesh.crypto.XeddsaVerify
 import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetEngine
@@ -45,6 +46,7 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.readsCryptoV3
 import app.getknit.knit.mesh.crypto.sealBytes
+import app.getknit.knit.mesh.lora.MeshtasticProto
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.EncEnvelope
@@ -611,7 +613,11 @@ class InboundPipeline(
      */
     internal suspend fun deliverMeshPost(post: MeshPost) {
         val me = identity.nodeId()
-        val contact = peers.findByLoraNode(post.node)
+        val claimant = peers.findByLoraNode(post.node)
+        val signed = judgeMeshPostSignature(post, claimant)
+        // A mismatch is some other radio on the contact's number: their name must not go on the words, and
+        // their blocklist entry has nothing to say about a stranger either.
+        val contact = claimant.takeIf { signed != MessageEntity.ORIGIN_SIGNATURE_MISMATCH }
         if (contact != null) {
             // A DataStore read, hoisted ahead of the write like every other blocklist check here.
             if (contact.nodeId in settings.blockedNodeIds.first()) {
@@ -645,9 +651,60 @@ class InboundPipeline(
                     snrDeci = post.snrDeci,
                     viaMqtt = post.viaMqtt,
                     peerId = contact?.nodeId,
+                    signed = signed,
                 ),
             ack = false,
         )
+    }
+
+    /**
+     * What a heard post's XEdDSA signature proves, decided here and nowhere else (`MessageEntity.ORIGIN_*`).
+     *
+     * The strong answer needs two things a contact's own signed profile supplied: the claim that they hold
+     * this node number, and the Curve25519 key that board signs under (`peers.loraKey`). With both, the
+     * signature is checked on this phone over the bytes as heard and the exact input the firmware signs
+     * (`from ‖ id ‖ portnum ‖ payload`) — a pass binds the words to *their* radio, and a failure means some
+     * other radio is using their number, which is worse than a stranger and is recorded as such. Without a
+     * key to check against, the most a post can be is what our own board vouched for
+     * (`MeshPacket.xeddsa_signed`: the radio that has been using the number signed it), and an unsigned post
+     * proves nothing either way — pre-2.8 radios never sign, and a post past the signature cliff cannot.
+     */
+    private fun judgeMeshPostSignature(
+        post: MeshPost,
+        contact: PeerEntity?,
+    ): Int {
+        val key = contact?.loraKey?.let { runCatching { b64d(it) }.getOrNull() }
+        val signature = post.signature
+        return when {
+            key != null && signature != null -> {
+                val ok =
+                    XeddsaVerify.verify(
+                        curvePub = key,
+                        from = post.node.toUInt(),
+                        id = post.packetId.toUInt(),
+                        portnum = MeshtasticProto.PORT_TEXT_MESSAGE,
+                        payload = post.payload,
+                        signature = signature,
+                    )
+                if (ok) {
+                    metrics.onMeshPostVerified()
+                    MessageEntity.ORIGIN_SIGNED_BY_CONTACT
+                } else {
+                    metrics.onMeshPostSignatureMismatch()
+                    Log.w(TAG, "mesh post from ${meshNodeLabel(post.node)}: signature does not match ${contact.nodeId}'s board key")
+                    MessageEntity.ORIGIN_SIGNATURE_MISMATCH
+                }
+            }
+
+            post.boardVerified -> {
+                metrics.onMeshPostBoardVerified()
+                MessageEntity.ORIGIN_SIGNED_BY_BOARD
+            }
+
+            else -> {
+                MessageEntity.ORIGIN_UNSIGNED
+            }
+        }
     }
 
     /**
@@ -1119,6 +1176,7 @@ class InboundPipeline(
                 // copy would be reverted by every sealed update after the cleartext frame that set it.
                 openToChat = payload.openToChat,
                 loraNode = payload.loraNode,
+                loraKey = payload.loraKey,
             ),
         )
         // Status notices for what actually moved. Compared against the pre-write row, and written here
@@ -2150,6 +2208,7 @@ class InboundPipeline(
                 originSnrDeci = origin?.snrDeci,
                 originViaMqtt = origin?.viaMqtt == true,
                 originPeerId = origin?.peerId,
+                originSigned = origin?.signed ?: MessageEntity.ORIGIN_UNSIGNED,
             ).withReply(content.replyTo),
         )
         // Start pulling the referenced blob unless we already hold it (the UI observes the blobs table
@@ -2589,6 +2648,7 @@ class InboundPipeline(
                 openToChat = if (stalePresentation) base.openToChat else content.openToChat,
                 // The same, for the bound LoRa board: absent means unbound (or handed on), and clears.
                 loraNode = if (stalePresentation) base.loraNode else content.loraNode,
+                loraKey = if (stalePresentation) base.loraKey else content.loraKey,
             ),
         )
         applyPresentationFollowUps(env.senderId, existing, name, advertised, haveAvatar, version, stalePresentation)

@@ -22,6 +22,8 @@ document:
 
 ### Added
 
+- A contact's post in the Meshtastic room now shows a shield when their radio signed it. On radios running
+  firmware 2.8 or newer, a post can be up to 166 bytes, the most the radio can still sign.
 - Paste a link into a message and, when your phone is online, a small card with the page's title and picture
   goes along with it. Off by default in Settings, since fetching the card shows the website your IP address.
 - Tell people nearby you're open to chat, from Settings. When someone in radio range has said the same and

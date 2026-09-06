@@ -8,6 +8,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -905,6 +906,74 @@ class MeshtasticSessionTest {
 
             // This is what tells the setup screen a board still carries its old name (ADR 049).
             assertEquals(stockOwner, (session.state.value as LinkState.Ready).board.owner)
+            session.stop()
+        }
+
+    @Test
+    fun readyReportsTheBoardsOwnKeyAndWhetherItSigns() =
+        runTest {
+            // The two things the profile advertises for a signing board: its Curve25519 key, off its own
+            // NodeInfo, and the firmware's own word that it signs (`DeviceMetadata.has_xeddsa`).
+            val ch = FakeGattChannel()
+            ch.onWrite = { bytes ->
+                if (BoardBytes.isWantConfig(bytes)) {
+                    ch.enqueueRead(BoardBytes.myInfo(0xABCDu, "heltec-v4"))
+                    ch.enqueueRead(BoardBytes.metadata("2.8.0.47db0e3", hasXeddsa = true))
+                    ch.enqueueRead(
+                        BoardBytes.nodeInfo(0xABCDu, owner = stockOwner.copy(publicKey = "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4=")),
+                    )
+                    ch.enqueueRead(BoardBytes.configComplete(nonce))
+                }
+            }
+            val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+
+            val board = (session.state.value as LinkState.Ready).board
+            assertEquals("oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4=", board.owner?.publicKey)
+            assertEquals(true, board.hasXeddsa)
+            assertEquals("2.8.0.47db0e3", board.firmwareVersion)
+            session.stop()
+        }
+
+    @Test
+    fun aReceivedPacketCarriesItsSignatureAndTheBoardsVerdict() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+            val received = mutableListOf<ReceivedPacket>()
+            val collector = backgroundScope.launch { session.packets.collect { received += it } }
+            session.start("AA")
+            runCurrent()
+            val sig = ByteArray(64) { it.toByte() }
+            ch.enqueueRead(
+                BoardBytes.packet(
+                    from = 0x1234u,
+                    channel = 0,
+                    portnum = MeshtasticProto.PORT_TEXT_MESSAGE,
+                    payload = "hi".encodeToByteArray(),
+                    id = 7u,
+                    signature = sig,
+                    xeddsaSigned = true,
+                ),
+            )
+            ch.enqueueRead(
+                BoardBytes.packet(
+                    from = 0x1234u,
+                    channel = 0,
+                    portnum = MeshtasticProto.PORT_TEXT_MESSAGE,
+                    payload = "yo".encodeToByteArray(),
+                    id = 8u,
+                ),
+            )
+            ch.notify()
+            runCurrent()
+            assertEquals(2, received.size)
+            assertTrue(sig.contentEquals(received[0].signature))
+            assertTrue("the board's own verdict rides through", received[0].boardVerified)
+            assertNull("an unsigned packet carries no signature", received[1].signature)
+            assertFalse(received[1].boardVerified)
+            collector.cancel()
             session.stop()
         }
 

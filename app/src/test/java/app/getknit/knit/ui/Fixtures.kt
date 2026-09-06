@@ -40,6 +40,7 @@ fun msg(
     originSnrDeci: Int? = null,
     originViaMqtt: Boolean = false,
     originPeerId: String? = null,
+    originSigned: Int = MessageEntity.ORIGIN_UNSIGNED,
 ): MessageEntity =
     MessageEntity(
         id = id,
@@ -61,6 +62,7 @@ fun msg(
         originSnrDeci = originSnrDeci,
         originViaMqtt = originViaMqtt,
         originPeerId = originPeerId,
+        originSigned = originSigned,
     )
 
 fun peer(

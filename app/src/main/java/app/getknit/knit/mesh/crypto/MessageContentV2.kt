@@ -84,6 +84,7 @@ internal object MessageContentV2 {
                         version = it.version,
                         openToChat = it.openToChat,
                         loraNode = it.loraNode,
+                        loraKey = it.loraKey?.let(::b64d),
                     )
                 },
         )
@@ -141,6 +142,7 @@ internal object MessageContentV2 {
                             version = it.version,
                             openToChat = it.openToChat,
                             loraNode = it.loraNode,
+                            loraKey = it.loraKey?.let(::b64),
                         )
                     },
             )
@@ -159,8 +161,9 @@ internal object MessageContentV2 {
      * group form) is a new envelope version. `14`/`15` are the file attachment's name and byte count (ADR
      * 2026-09.qq2r), which took the next free labels rather than the reserved pair. Never recycle a label.
      * The nested layouts are append-only too: `ProfileV2`'s label 5 is the open-to-chat flag (defaulted, so
-     * elided while off — a profile without it decodes as before) and label 6 the bound LoRa board's node
-     * number (nullable, elided while unbound).
+     * elided while off — a profile without it decodes as before), label 6 the bound LoRa board's node
+     * number (nullable, elided while unbound) and label 7 that board's signing key (32 raw bytes here, base64
+     * on the public layouts; nullable, elided unless the board signs).
      */
     @Serializable
     @Suppress("MagicNumber") // the CBOR labels are the layout itself, pinned by GoldenVectorTest
@@ -243,6 +246,8 @@ internal object MessageContentV2 {
         val openToChat: Boolean = false,
         @CborLabel(6)
         val loraNode: Long? = null,
+        @CborLabel(7)
+        val loraKey: ByteArray? = null,
     )
 }
 

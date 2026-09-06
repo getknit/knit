@@ -176,8 +176,9 @@ val meshModule =
                 offerPrefixes = { get<BridgeFrameSource>().offerPrefixes(it) },
                 framesMissing = { prefixes, limit, dms -> get<BridgeFrameSource>().framesMissing(prefixes, limit, dms) },
                 onPublicPost = { get<MeshPostSink>().onPublicPostHeard(it) },
-                // The bound board's node number, persisted so the profile can advertise it (ProfileContent.loraNode).
-                onBoardBound = { settings.setLoraBoardNode(it.toLong()) },
+                // The bound board's node number and signing key, persisted so the profile can advertise them
+                // (ProfileContent.loraNode / loraKey) in one write — one profile republish, not two.
+                onBoardBound = { settings.setLoraBoard(it.nodeNum.toLong(), it.signingKey) },
                 scope = get(),
                 metrics = get(),
                 clock = SystemClock::elapsedRealtime,

@@ -730,8 +730,12 @@
          the caveat first rather than the profile, because the match is a self-asserted field, not a signature. -->
     <string name="chat_mesh_author_contact">%1$s, on the Meshtastic channel \u2014 identity not verified</string>
     <string name="chat_mesh_author_action">Show why this name isn\'t verified</string>
+    <string name="chat_mesh_author_verified">%1$s, on the Meshtastic channel \u2014 signed by their radio</string>
+    <string name="chat_mesh_signed_by_radio">Signed by %1$s\'s radio</string>
+    <string name="chat_mesh_signed">signed</string>
+    <string name="chat_mesh_signature_mismatch">signature doesn\'t match</string>
     <string name="chat_mesh_match_title">Might not be %1$s</string>
-    <string name="chat_mesh_match_body">%1$s\'s profile says they use this radio, and this post came from that radio\'s number. That is the whole match. The Meshtastic channel is unsigned, so any radio can announce that number and any name, and Knit has no way to check that %1$s wrote this. Open their profile if it helps, but read it as a guess about who spoke, not a fact.</string>
+    <string name="chat_mesh_match_body">%1$s\'s profile says they use this radio, and this post came from that radio\'s number. That is the whole match: it carried no signature Knit could check against that profile. Any radio can announce that number and any name, so Knit has no way to check that %1$s wrote this one. Open their profile if it helps, but read it as a guess about who spoke, not a fact.</string>
     <string name="chat_mesh_match_open">Open profile</string>
     <string name="chat_mesh_direct">heard directly</string>
     <plurals name="chat_mesh_hops">
@@ -742,10 +746,10 @@
     <string name="chat_mesh_mqtt">from the Internet</string>
     <!-- Two forms, picked off slot 0's key: the stock Meshtastic key is public, so that channel is open to
          everyone; a key the user set themselves is still shared with every radio holding it, never end-to-end. -->
-    <string name="chat_mesh_room_notice">Unencrypted radio channel — names not verified</string>
-    <string name="chat_mesh_room_notice_keyed">Not end-to-end encrypted — names not verified</string>
+    <string name="chat_mesh_room_notice">Unencrypted radio channel — names not verified unless marked</string>
+    <string name="chat_mesh_room_notice_keyed">Not end-to-end encrypted — names not verified unless marked</string>
     <string name="chat_mesh_room_title">Your radio\'s primary channel</string>
-    <string name="chat_mesh_room_body">This room shows the primary channel of the Meshtastic radio paired to this phone. Knit\'s encryption does not reach it: nothing here is end-to-end encrypted, and on the standard Meshtastic channel the key is public, so anyone with a radio can read it. Anyone with a radio in range can post and anyone can claim any name, so treat both as unverified, even a name that matches one of your contacts. Some posts arrive from the Internet rather than from anyone nearby. What you post here leaves through your own radio, under the radio\'s name rather than yours.</string>
+    <string name="chat_mesh_room_body">This room shows the primary channel of the Meshtastic radio paired to this phone. Knit\'s encryption does not reach it: nothing here is end-to-end encrypted, and on the standard Meshtastic channel the key is public, so anyone with a radio can read it. Anyone with a radio in range can post and anyone can claim any name, so treat both as unverified, even a name that matches one of your contacts. The one exception is a contact\'s name with a shield beside it: their radio signed that post, and the signature checked out against the radio their profile names. A matching name without the shield is still a guess. Some posts arrive from the Internet rather than from anyone nearby. What you post here leaves through your own radio, under the radio\'s name rather than yours.</string>
     <string name="chat_mesh_hint">Post unencrypted to the radio channel</string>
     <string name="chat_mesh_hint_keyed">Post to the radio channel, not end-to-end encrypted</string>
     <!-- The composer when the room has no radio to post through, or the radio is down. The first two replace

@@ -1,5 +1,7 @@
 package app.getknit.knit.mesh.lora
 
+import app.getknit.knit.mesh.crypto.b64
+
 /**
  * A hand-written codec for the sliver of the Meshtastic protobuf schema Knit's LoRa bridge needs — the
  * `ToRadio` frames we write to the board and the `FromRadio` frames it streams back. Deliberately not a
@@ -44,9 +46,16 @@ internal object MeshtasticProto {
     const val LORA_DATA_MAX = DATA_ENCODED_MAX - DATA_BITFIELD_BYTES
 
     /** What `Data` adds around a maximum payload: the two-byte private portnum and the payload's tag + length. */
-    val DATA_FRAMING: Int =
+    val DATA_FRAMING: Int = dataFraming(PORT_PRIVATE_APP)
+
+    /**
+     * What `Data` adds around a maximum payload on [portnum], measured by encoding one: the portnum varint
+     * (one byte up to 127, two for Knit's `PRIVATE_APP`) and the payload's tag + two-byte length. The
+     * difference is why the signature cliff sits one byte higher for ordinary chat than for a Knit frame.
+     */
+    fun dataFraming(portnum: Int): Int =
         ProtoWriter()
-            .varint(DATA_PORTNUM, PORT_PRIVATE_APP)
+            .varint(DATA_PORTNUM, portnum)
             .bytes(DATA_PAYLOAD, ByteArray(LORA_DATA_MAX))
             .toByteArray()
             .size -
@@ -66,6 +75,12 @@ internal object MeshtasticProto {
      */
     const val XEDDSA_SIGNATURE_FIELD = 66
 
+    /** A `Data.xeddsa_signature` is exactly this long (`XEDDSA_SIGNATURE_SIZE`); the firmware emits 0 or 64 bytes, never else. */
+    const val XEDDSA_SIGNATURE_BYTES = 64
+
+    /** A node's `User.public_key` — its Curve25519 key, 32 raw bytes; anything else is not a key. */
+    const val NODE_PUBLIC_KEY_BYTES = 32
+
     /**
      * The largest `Data.payload` the firmware will still fit a signature onto, mirroring its own
      * `signedDataFits` gate (`Router.cpp`): the encoded `Data` **with** the signature must clear
@@ -74,8 +89,17 @@ internal object MeshtasticProto {
      *
      * The cliff lands awkwardly for the frames ADR 060 worked hardest to shrink: a transcoded room tick
      * (157 B) is under it and pays the surcharge, while a signed DM ✓✓ (221 B) is over it and does not.
+     * This is the Knit-frame figure (a `PRIVATE_APP` portnum); [maxSignedPayload] gives the cliff for any port.
      */
-    val MAX_SIGNED_PAYLOAD: Int = DATA_ENCODED_MAX - DATA_FRAMING - DATA_BITFIELD_BYTES - XEDDSA_SIGNATURE_FIELD
+    val MAX_SIGNED_PAYLOAD: Int = maxSignedPayload(PORT_PRIVATE_APP)
+
+    /**
+     * The signature cliff for a packet on [portnum] — [MAX_SIGNED_PAYLOAD]'s formula with that port's own
+     * [dataFraming]: 165 for a Knit frame, **166** for ordinary `TEXT_MESSAGE_APP` chat, whose one-byte
+     * portnum leaves one more byte for the words. The Meshtastic room's composer caps a post at this so every
+     * post a 2.8 board sends for us leaves signed (ADR 2026-09.ggq4).
+     */
+    fun maxSignedPayload(portnum: Int): Int = DATA_ENCODED_MAX - dataFraming(portnum) - DATA_BITFIELD_BYTES - XEDDSA_SIGNATURE_FIELD
 
     /**
      * The bytes a `ToRadio { packet }` wraps around a maximum `Data.payload`, measured by encoding one
@@ -174,6 +198,14 @@ internal object MeshtasticProto {
      * "this board never said", which every client and [BoardOwnerRaw] read as messagable.
      */
     const val USER_IS_UNMESSAGABLE = 9
+
+    /**
+     * `User.public_key` — the node's Curve25519 public key, 32 raw bytes, the key firmware 2.8 signs its
+     * broadcasts under (converted to Ed25519 per XEdDSA; `mesh/crypto/XeddsaVerify`). On 2.8 the node number
+     * is the CRC32 of it. Read off every `NodeInfo` the board streams, our own included: that one is what the
+     * profile advertises beside the node number so a contact's phone can verify our posts.
+     */
+    const val USER_PUBLIC_KEY = 8
 
     // --- ToRadio (phone → board) ---
 
@@ -405,6 +437,7 @@ internal object MeshtasticProto {
             reason
         }.getOrNull()
 
+    @Suppress("CyclomaticComplexMethod") // one `when` branch per MeshPacket field the bridge reads; a flat wire decoder
     private fun decodeMeshPacket(reader: ProtoReader): MeshPacket {
         var from = 0u
         var to = 0u
@@ -417,6 +450,7 @@ internal object MeshtasticProto {
         var hopLimit = 0
         var hopStart = 0
         var viaMqtt = false
+        var xeddsaSigned = false
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (val field = tag ushr WireType.FIELD_SHIFT) {
@@ -465,28 +499,40 @@ internal object MeshtasticProto {
                     hopStart = reader.readVarint32()
                 }
 
+                MP_XEDDSA_SIGNED -> {
+                    xeddsaSigned = reader.readVarint32() != 0
+                }
+
                 else -> {
                     reader.skip(tag and WireType.MASK)
                 }
             }
         }
-        return MeshPacket(from, to, channel, id, decoded, encrypted, rxSnr, rxRssi, hopLimit, hopStart, viaMqtt)
+        return MeshPacket(from, to, channel, id, decoded, encrypted, rxSnr, rxRssi, hopLimit, hopStart, viaMqtt, xeddsaSigned)
     }
 
     private fun decodeData(reader: ProtoReader): MeshData {
         var portnum = 0
         var payload = ByteArray(0)
         var requestId = 0u
+        var signature: ByteArray? = null
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
                 DATA_PORTNUM -> portnum = reader.readVarint32()
+
                 DATA_PAYLOAD -> payload = reader.readBytes()
+
                 DATA_REQUEST_ID -> requestId = reader.readFixed32()
+
+                // The firmware writes 0 or 64 bytes and drops anything else before the phone sees it;
+                // a wrong length here is not a signature and must not be verified as one.
+                DATA_XEDDSA_SIGNATURE -> signature = reader.readBytes().takeIf { it.size == XEDDSA_SIGNATURE_BYTES }
+
                 else -> reader.skip(tag and WireType.MASK)
             }
         }
-        return MeshData(portnum, payload, requestId)
+        return MeshData(portnum, payload, requestId, signature)
     }
 
     private fun decodeMyInfo(reader: ProtoReader): FromRadio.MyInfo {
@@ -660,14 +706,16 @@ internal object MeshtasticProto {
 
     private fun decodeMetadata(reader: ProtoReader): FromRadio.Metadata {
         var firmware: String? = null
+        var hasXeddsa: Boolean? = null
         while (reader.hasMore) {
             val tag = reader.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
                 METADATA_FIRMWARE_VERSION -> firmware = reader.readString()
+                METADATA_HAS_XEDDSA -> hasXeddsa = reader.readVarint32() != 0
                 else -> reader.skip(tag and WireType.MASK)
             }
         }
-        return FromRadio.Metadata(firmware)
+        return FromRadio.Metadata(firmware, hasXeddsa)
     }
 
     // ToRadio field numbers.
@@ -701,11 +749,21 @@ internal object MeshtasticProto {
     private const val MP_VIA_MQTT = 14
     private const val MP_HOP_START = 15
 
+    /**
+     * `MeshPacket.xeddsa_signed` — the board's own verdict: it verified the packet's signature against the
+     * key its NodeDB holds for the sender. Computed on receive and never trusted off the air; absent (false)
+     * when the packet was unsigned or the board had no key to check it with.
+     */
+    private const val MP_XEDDSA_SIGNED = 22
+
     // Data field numbers.
     private const val DATA_PORTNUM = 1
     private const val DATA_PAYLOAD = 2
     private const val DATA_WANT_RESPONSE = 3
     private const val DATA_REQUEST_ID = 6
+
+    /** `Data.xeddsa_signature` — the 64-byte XEdDSA signature 2.8 attaches to a broadcast that fits signed. */
+    private const val DATA_XEDDSA_SIGNATURE = 10
 
     // AdminMessage field numbers (a `oneof`, so at most one of these per message) + its session key.
     private const val ADMIN_GET_CHANNEL_REQUEST = 1
@@ -741,6 +799,9 @@ internal object MeshtasticProto {
     private const val CHANNEL_SETTINGS_NAME = 3
     private const val CHANNEL_ROLE = 3
     private const val METADATA_FIRMWARE_VERSION = 1
+
+    /** `DeviceMetadata.has_xeddsa` — this build verifies XEdDSA signatures (and so signs); absent on builds that predate it. */
+    private const val METADATA_HAS_XEDDSA = 14
     private const val ROUTING_ERROR_REASON = 3
 
     // Config / Config.LoRaConfig field numbers (the radio settings the airtime governor reads).
@@ -853,6 +914,11 @@ internal class BoardOwnerRaw(
             // `optional`, so absent and explicitly-false are distinguishable on the wire — but not to any
             // reader: both mean the node accepts messages, which is what a stock board is.
             unmessagable = (readVarintField(raw, MeshtasticProto.USER_IS_UNMESSAGABLE) ?: 0L) != 0L,
+            // Only a whole key is a key: a truncated or empty field reads as "this node published none".
+            publicKey =
+                readBytesField(raw, MeshtasticProto.USER_PUBLIC_KEY)
+                    ?.takeIf { it.size == MeshtasticProto.NODE_PUBLIC_KEY_BYTES }
+                    ?.let(::b64),
         )
 }
 
@@ -874,6 +940,13 @@ internal class MeshPacket(
      * said this" and "this came off the internet".
      */
     val viaMqtt: Boolean = false,
+    /**
+     * `MeshPacket.xeddsa_signed` — the board verified `decoded.signature` against the key *its* NodeDB holds
+     * for [from]. True is real evidence that the radio which has been using that number sent these bytes;
+     * false says nothing (unsigned, or a sender the board holds no key for). A signature that fails against
+     * the board's key never reaches the phone at all — the firmware drops it, whatever its policy.
+     */
+    val xeddsaSigned: Boolean = false,
 ) {
     /** How many hops away the origin is (`hop_start - hop_limit`), or null when the board didn't report a start. */
     val hopsAway: Int? get() = if (hopStart > 0) (hopStart - hopLimit).coerceAtLeast(0) else null
@@ -903,6 +976,12 @@ internal class MeshData(
     val portnum: Int,
     val payload: ByteArray,
     val requestId: UInt,
+    /**
+     * `Data.xeddsa_signature`, exactly 64 bytes or null. The sender's board signed `from ‖ id ‖ portnum ‖
+     * payload` under its Curve25519 key; `mesh/crypto/XeddsaVerify` checks it on the phone against a key a
+     * contact's profile advertises, which is what turns "some radio sent this" into "their radio sent this".
+     */
+    val signature: ByteArray? = null,
 )
 
 /** One channel as the board reports it in the config handshake, so the transport can select by [name]. */
@@ -947,6 +1026,11 @@ internal sealed interface FromRadio {
 
     data class Metadata(
         val firmwareVersion: String?,
+        /**
+         * `DeviceMetadata.has_xeddsa` — the build verifies (and so signs) XEdDSA. Null on firmware that
+         * predates the field, which [LoraAirtime.onFirmware] answers by reading the version instead.
+         */
+        val hasXeddsa: Boolean? = null,
     ) : FromRadio
 
     /** One NodeDB entry, streamed in the handshake (and pushed on change); only the board's own [metrics] are read. */

@@ -113,6 +113,10 @@ internal object PublicChannelPolicy {
                 hops = packet.hopsAway,
                 snrDeci = packet.rxSnr?.let { Math.round(it * DECI) },
                 viaMqtt = packet.viaMqtt,
+                // The bytes as heard, beside the readable body: a signature is over these.
+                payload = packet.payload,
+                signature = packet.signature,
+                boardVerified = packet.boardVerified,
             ),
         )
     }

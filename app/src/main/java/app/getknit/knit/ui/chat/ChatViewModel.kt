@@ -161,7 +161,9 @@ data class ChatRow(
     // Set only on a post heard on the paired radio's channel, and the flag the bubble reads to render one
     // differently: a muted name, the provenance line, and an avatar that never opens a profile directly —
     // inert for a stranger, and for a resolved contact ([MeshOrigin.peerId]) a tap that opens the caveat
-    // about the match first. Null on every ordinary row, including our own.
+    // about the match first. The one exception is a match the radio's own signature verified
+    // ([MeshOrigin.verified]), which is drawn like a Knit author's. Null on every ordinary row, including
+    // our own.
     val origin: MeshOrigin? = null,
 )
 
@@ -169,11 +171,14 @@ data class ChatRow(
  * Who said a post on the radio channel, and how it reached this board — the render-time shape of
  * [MessageEntity]'s `origin*` columns.
  *
- * Everything here is **unauthenticated**. A Meshtastic node number and name are self-asserted on an open,
- * unsigned channel and are trivially spoofable, so [name] is a claim rather than an identity and the UI must
- * never let it look like a Knit peer — and that includes [peerId]: a contact resolved by node number is a
- * match against a self-asserted profile field, not a signature, so the bubble wears their name and face
- * but keeps the unverified styling, and their avatar reaches that profile only through the caveat.
+ * Everything here is **unauthenticated unless [signed] says otherwise**. A Meshtastic node number and name
+ * are self-asserted on an open channel and are trivially spoofable, so [name] is a claim rather than an
+ * identity and the UI must never let it look like a Knit peer — and that includes [peerId]: a contact
+ * resolved by node number is a match against a self-asserted profile field, so the bubble wears their name
+ * and face but keeps the unverified styling, and their avatar reaches that profile only through the caveat.
+ * [MeshSignature.CONTACT] is the one state Knit vouches for: the post carried the radio's XEdDSA signature
+ * (Meshtastic 2.8) and it verified under the key that contact's own signed profile names, so the bubble
+ * takes a Knit author's styling and a shield. Even then it is the *radio* that is proven, not the hands.
  */
 data class MeshOrigin(
     /** The speaker's `!hex` id — the only stable handle a heard author has. */
@@ -187,7 +192,42 @@ data class MeshOrigin(
     val snrDeci: Int?,
     /** The post entered the mesh over an MQTT uplink, so it may have come from anywhere. */
     val viaMqtt: Boolean,
-)
+    /** What the post's signature proved at ingest; frozen on the row like [peerId]. */
+    val signed: MeshSignature = MeshSignature.NONE,
+) {
+    /** The match is a verified one: the words came from the radio [peerId]'s own profile names. */
+    val verified: Boolean get() = signed == MeshSignature.CONTACT
+}
+
+/**
+ * What a heard post's XEdDSA signature proved — the render-time mirror of `MessageEntity.originSigned`,
+ * decided once at ingest and frozen on the row. Only [CONTACT] changes how a post is drawn.
+ */
+enum class MeshSignature {
+    /** No usable signature: unsigned (pre-2.8 firmware, or a post past the signature cliff), or nothing to check it against. */
+    NONE,
+
+    /** Our own board verified it against the key its NodeDB holds for the number: the radio that has been using it sent it. */
+    BOARD,
+
+    /** Verified on this phone under the key the matched contact's own signed profile advertises. */
+    CONTACT,
+
+    /** Signed, but not under the key the contact's profile names — some other radio is on their number. Drawn as a stranger. */
+    MISMATCH,
+    ;
+
+    companion object {
+        /** The row's `originSigned` value; anything a newer build might store reads as [NONE], never as trust. */
+        fun fromRow(value: Int): MeshSignature =
+            when (value) {
+                MessageEntity.ORIGIN_SIGNED_BY_BOARD -> BOARD
+                MessageEntity.ORIGIN_SIGNED_BY_CONTACT -> CONTACT
+                MessageEntity.ORIGIN_SIGNATURE_MISMATCH -> MISMATCH
+                else -> NONE
+            }
+    }
+}
 
 /**
  * One emoji's tally on a message: the [emoji], how many people reacted with it ([count]), and whether
@@ -648,8 +688,9 @@ class ChatViewModel(
                     // A heard post's author is the Meshtastic speaker, NOT the row's sender — that is this
                     // phone, by convention. Resolve the origin first so the name, avatar and tap target below
                     // all follow from the same answer. A speaker whose board a contact's profile claimed
-                    // wears that contact's name and face; still an unverified match, so the bubble keeps the
-                    // muted name and the untappable avatar.
+                    // wears that contact's name and face; an unverified match unless the radio's signature
+                    // checked out (`MeshOrigin.verified`), so the bubble keeps the muted name and the
+                    // caveat-first avatar until it did.
                     val origin = m.originNode?.let { node -> meshOriginFor(m, node) }
                     val mine = m.senderId == me && origin == null
                     val contact = origin?.peerId?.let { directory.label(it) }
@@ -795,7 +836,8 @@ class ChatViewModel(
                     },
                 canSendFile = !isRoom && !isBridged,
                 isBridged = isBridged,
-                publicPostBudget = if (isBridged) PublicPostPolicy.MAX_ON_AIR_BYTES else null,
+                // 166 bytes on a board that signs (so every post leaves signed), the 200-byte client convention on one that does not.
+                publicPostBudget = if (isBridged) PublicPostPolicy.onAirBudget(mesh.lora.facts.signs) else null,
                 publicChannelKeyIsPublic = mesh.lora.facts.primaryKeyIsPublic,
                 needsPublicConsent = isBridged && !publicConsented,
                 isBlocked = !isRoom && !isBridged && !isGroup && conversationId in blocked,
@@ -853,6 +895,7 @@ class ChatViewModel(
         hops = m.originHops,
         snrDeci = m.originSnrDeci,
         viaMqtt = m.originViaMqtt,
+        signed = MeshSignature.fromRow(m.originSigned),
     )
 
     /** The long-press quick-reaction row: the [RecentReactions.SHOWN] most recent picks, newest first. */

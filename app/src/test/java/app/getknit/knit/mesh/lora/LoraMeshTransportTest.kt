@@ -346,11 +346,12 @@ class LoraMeshTransportTest {
         // the offer goes out at exactly the midpoint, as it already does in LoraBridgeTest.
         gossip: LoraGossipPolicy = LoraGossipPolicy(random = { 0 }),
         firmware: String = "2.5.0",
+        publicKey: String? = null,
         onPublicPost: suspend (MeshPost) -> Unit = {},
-        onBoardBound: suspend (UInt) -> Unit = {},
+        onBoardBound: suspend (BoardBinding) -> Unit = {},
         now: () -> Long,
     ): Rig {
-        val link = FakeMeshtasticLink(nodeNum, air, channelName, firmware)
+        val link = FakeMeshtasticLink(nodeNum, air, channelName, firmware, publicKey)
         val metrics = MeshMetrics()
         val transport =
             LoraMeshTransport(
@@ -425,6 +426,7 @@ class LoraMeshTransportTest {
         posts: MutableList<MeshPost>,
         primaryName: String = "",
         primaryPsk: ByteArray = ByteArray(0),
+        firmware: String = "2.5.0",
     ): Rig {
         val r =
             rig(
@@ -433,6 +435,7 @@ class LoraMeshTransportTest {
                 "alice",
                 backgroundScope,
                 config = MutableStateFlow(LoraConfig("AA:1", 1)),
+                firmware = firmware,
                 onPublicPost = { posts += it },
             ) { testScheduler.currentTime }
         r.transport.start()
@@ -556,15 +559,56 @@ class LoraMeshTransportTest {
     @Test
     fun aReadyBoardReportsItsNodeNumberUpward() =
         runTest {
-            // What the profile advertises so a contact can line a heard post up with this phone.
+            // What the profile advertises so a contact can line a heard post up with this phone. A pre-2.8
+            // board (the fake's default) signs nothing, so no key rides beside the number.
             val air = FakeMeshtasticAir()
-            val bound = mutableListOf<UInt>()
+            val bound = mutableListOf<BoardBinding>()
             val r = rig(air, 7u, "alice", backgroundScope, onBoardBound = { bound += it }) { testScheduler.currentTime }
             r.transport.start()
             runCurrent()
 
-            assertEquals(listOf(7u), bound)
+            assertEquals(listOf(BoardBinding(7u, signingKey = null)), bound)
             r.transport.stop()
+        }
+
+    @Test
+    fun aSigningBoardReportsItsKeyUpwardAndAPreSigningOneDoesNot() =
+        runTest {
+            // The key rides beside the number only when the firmware signs: on 2.8 it is what lets a contact
+            // verify our posts, on 2.5 it would verify nothing and only grow the profile.
+            val air = FakeMeshtasticAir()
+            val key = "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4="
+            val bound = mutableListOf<BoardBinding>()
+            val signing =
+                rig(
+                    air,
+                    7u,
+                    "alice",
+                    backgroundScope,
+                    firmware = "2.8.0.47db0e3",
+                    publicKey = key,
+                    onBoardBound = { bound += it },
+                ) { testScheduler.currentTime }
+            signing.transport.start()
+            runCurrent()
+            assertEquals(listOf(BoardBinding(7u, signingKey = key)), bound)
+            signing.transport.stop()
+
+            bound.clear()
+            val old =
+                rig(
+                    air,
+                    8u,
+                    "bob",
+                    backgroundScope,
+                    firmware = "2.5.0",
+                    publicKey = key,
+                    onBoardBound = { bound += it },
+                ) { testScheduler.currentTime }
+            old.transport.start()
+            runCurrent()
+            assertEquals(listOf(BoardBinding(8u, signingKey = null)), bound)
+            old.transport.stop()
         }
 
     @Test
@@ -654,6 +698,45 @@ class LoraMeshTransportTest {
             assertEquals(MeshtasticProto.PORT_TEXT_MESSAGE, r.link.sentPortnums.single())
             assertEquals(LoraMeshTransport.HOP_LIMIT, r.link.sentHopLimits.single())
             assertEquals(1L, r.metrics.snapshot().publicPostSent)
+            r.transport.stop()
+        }
+
+    @Test
+    fun aPostOnASigningBoardIsTrimmedToTheSignableCap() =
+        runTest {
+            // The composer caps a draft at the same figure, so this only ever trims a draft typed while the
+            // facts still said 200 — but the wire must never carry a byte past the cliff either way, or the
+            // post leaves unsigned with nothing on the author's screen to say so.
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf(), firmware = "2.8.0.47db0e3")
+
+            assertNull(r.transport.postToPublicChannel("x".repeat(PublicPostPolicy.MAX_ON_AIR_BYTES)))
+            runCurrent()
+
+            assertEquals(
+                PublicPostPolicy.MAX_SIGNED_TEXT_BYTES,
+                r.link.sent
+                    .single()
+                    .size,
+            )
+            r.transport.stop()
+        }
+
+    @Test
+    fun aPreSigningBoardKeepsTheClientCap() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf(), firmware = "2.5.0")
+
+            assertNull(r.transport.postToPublicChannel("x".repeat(PublicPostPolicy.MAX_ON_AIR_BYTES + 5)))
+            runCurrent()
+
+            assertEquals(
+                PublicPostPolicy.MAX_ON_AIR_BYTES,
+                r.link.sent
+                    .single()
+                    .size,
+            )
             r.transport.stop()
         }
 

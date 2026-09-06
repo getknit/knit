@@ -76,11 +76,21 @@ doc). **Don't start a deferred item without explicit direction.**
   `context/lora-bridge.md` (two boards, one board-less phone: the board-less phone sees nothing, a contact's
   post wears their name off the node number alone, a second post inside 30 s is refused, the title follows a
   preset change), and
-  **signature-backed confidence** — Meshtastic 2.8 signs broadcasts with the board's XEdDSA key, but Knit
-  does not decode `Data.xeddsa_signature` (field 10) and the firmware hands the phone no verdict, so using it
-  means advertising the board's public key in the profile beside the node number and verifying on the phone
-  against the exact signing input `Router::perhapsEncode` uses; until then a resolved contact stays
-  unverified and a spoofed node number puts words under a contact's name.
+  **signature-backed confidence SHIPPED** (2026-09-05, ADR 2026-09.ggq4): the "no verdict" premise was wrong
+  — both lab tags hand the phone `MeshPacket.xeddsa_signed` and the signature itself — so the profile now
+  carries the board's key (`ProfileContent.loraKey`, ninth additive profile field, only while the board
+  signs), the phone verifies a heard post against it (`mesh/crypto/XeddsaVerify`, the firmware's own
+  `from ‖ id ‖ portnum ‖ payload`) and freezes one of four verdicts on the row (`messages.originSigned`, DB
+  v12); a verified match wears a shield and opens the profile directly, a mismatch is drawn as a stranger,
+  and on a signing board the composer caps a post at the 166-byte text cliff so every post leaves signed.
+  Verified on the two lab phones the same day (`context/lora-bridge.md`): a post each way arrived
+  `signed=true boardVerified=true` and verified, a 166-byte post included. **Still owed:** the
+  `packet_signature_policy` decision — `BALANCED` is safe for the padded plane, `STRICT` loses it, and the
+  recommendation is now `BALANCED`; seeding our own board with a contact's key (`AdminMessage.add_contact`,
+  66) so `BALANCED`/`STRICT` receivers keep the contact's posts and a stale NodeDB key cannot blackhole
+  them; the `heartbeat{nonce=1}` NodeInfo ping after a bind, so peers learn a fresh board's key at once; a
+  warning for the downgrade shape — an unsigned post under 166 B from a contact whose profile advertises a
+  key; and a mismatch / board-only verdict seen on hardware, which needs a third signer on the mesh.
   **The setup also marks the board unmonitored** (2026-09-01, ADR 2026-09.emd7): `User.is_unmessagable`
   rides the same `set_owner` as the rename, so other people's clients stop offering a board whose inbound
   path keeps only `PRIVATE_APP` as a message target; Restore clears it, and firmware older than 2.6.9 is

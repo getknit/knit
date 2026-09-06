@@ -14,6 +14,13 @@ internal data class BoardOwner(
      * for every identity that was not deliberately marked.
      */
     val unmessagable: Boolean = false,
+    /**
+     * `User.public_key` — the node's Curve25519 key, base64 of the 32 raw bytes, or null when it published
+     * none (or a malformed one). Base64 rather than bytes because this is a data class the `nodes` directory
+     * holds and tests compare whole. For the bound board's own entry this is what the profile advertises
+     * beside the node number, so a contact's phone can verify the posts 2.8 firmware signs for us.
+     */
+    val publicKey: String? = null,
 )
 
 /**

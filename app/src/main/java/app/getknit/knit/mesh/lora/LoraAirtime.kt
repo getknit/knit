@@ -192,9 +192,16 @@ internal class LoraAirtime(
         if (config != null) radio = config
     }
 
-    /** Records the board's firmware version, from the handshake's `DeviceMetadata`; null reads as unknown. */
-    fun onFirmware(version: String?) {
-        signing = signsPackets(version)
+    /**
+     * Records what the handshake's `DeviceMetadata` says about signing: [hasXeddsa] is the board's own word
+     * (`has_xeddsa`, a build that verifies and so signs) and wins when present; a firmware too old to carry
+     * the field is judged by its [version] instead, and null reads as unknown.
+     */
+    fun onFirmware(
+        version: String?,
+        hasXeddsa: Boolean? = null,
+    ) {
+        signing = hasXeddsa ?: signsPackets(version)
     }
 
     /**
@@ -203,13 +210,23 @@ internal class LoraAirtime(
      * covers the Meshtastic header and protobuf/crypto framing around it. This is a governor's estimate, not
      * a measurement — it does not know the board's preamble length or whether a rebroadcaster repeated us.
      */
-    override fun timeOnAirMs(payloadBytes: Int): Long {
+    override fun timeOnAirMs(payloadBytes: Int): Long = timeOnAirMs(payloadBytes, MeshtasticProto.MAX_SIGNED_PAYLOAD)
+
+    /**
+     * [timeOnAirMs] for a packet whose signature cliff is [signedUpTo] rather than a Knit frame's: the
+     * Meshtastic room's `TEXT_MESSAGE_APP` posts sign one byte further (`MeshtasticProto.maxSignedPayload`),
+     * and a post at that cap is signed air the ledger has to book, not an unsigned packet one byte past it.
+     */
+    fun timeOnAirMs(
+        payloadBytes: Int,
+        signedUpTo: Int,
+    ): Long {
         val preset = radio?.modemPreset ?: ModemPreset.LONG_FAST
         val sf = preset.spreadFactor
         val symbolMs = 2.0.pow(sf) * MS_PER_SECOND / preset.bandwidthHz
         // Low-data-rate optimize: the firmware enables it once a symbol exceeds 16 ms, which costs 2 bits/symbol.
         val de = if (symbolMs > LDO_THRESHOLD_MS) 1 else 0
-        val phyBytes = payloadBytes + PACKET_OVERHEAD_BYTES + signatureBytes(payloadBytes)
+        val phyBytes = payloadBytes + PACKET_OVERHEAD_BYTES + signatureBytes(payloadBytes, signedUpTo)
         val numerator = (BITS_PER_BYTE * phyBytes - 4 * sf + PAYLOAD_CONST + CRC_BITS).toDouble()
         val denominator = (4 * (sf - 2 * de)).toDouble()
         val payloadSymbols = PAYLOAD_SYMBOL_BASE + maxOf(0.0, ceil(numerator / denominator) * preset.codingRate)
@@ -221,8 +238,10 @@ internal class LoraAirtime(
      * gate: it signs what still fits signed and sends the rest as it always did, so this is a *cliff* rather
      * than a ramp — a 165-byte payload costs 66 bytes more than a 166-byte one.
      */
-    private fun signatureBytes(payloadBytes: Int): Int =
-        if (signing && payloadBytes <= MeshtasticProto.MAX_SIGNED_PAYLOAD) MeshtasticProto.XEDDSA_SIGNATURE_FIELD else 0
+    private fun signatureBytes(
+        payloadBytes: Int,
+        signedUpTo: Int,
+    ): Int = if (signing && payloadBytes <= signedUpTo) MeshtasticProto.XEDDSA_SIGNATURE_FIELD else 0
 
     /**
      * The size to grow a [payloadBytes] packet to so the firmware will **not** sign it, or [payloadBytes]
@@ -300,9 +319,11 @@ internal class LoraAirtime(
         klass: FrameClass,
         payloadSizes: List<Int>,
         now: Long,
+        /** The signature cliff for these packets' port — a Knit frame's unless the caller says otherwise. */
+        signedUpTo: Int = MeshtasticProto.MAX_SIGNED_PAYLOAD,
     ): Boolean {
         prune(now)
-        val cost = payloadSizes.sumOf { timeOnAirMs(it) }
+        val cost = payloadSizes.sumOf { timeOnAirMs(it, signedUpTo) }
         val used = liveUsedMs + bridgeUsedMs + bootstrapUsedMs + publicUsedMs
         val tickCeiling = (budgetMs(AirBucket.LIVE) * (1 - tickTailShare)).toLong()
         // A `when` rather than a ladder of early returns only because there are now five answers; the order
@@ -346,9 +367,10 @@ internal class LoraAirtime(
         bucket: AirBucket,
         payloadBytes: Int,
         now: Long,
+        signedUpTo: Int = MeshtasticProto.MAX_SIGNED_PAYLOAD,
     ) {
         prune(now)
-        val ms = timeOnAirMs(payloadBytes)
+        val ms = timeOnAirMs(payloadBytes, signedUpTo)
         samples.addLast(Sample(now, ms, bucket))
         when (bucket) {
             AirBucket.LIVE -> liveUsedMs += ms

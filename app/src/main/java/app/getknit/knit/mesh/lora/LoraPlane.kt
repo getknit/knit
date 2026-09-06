@@ -53,6 +53,14 @@ data class LoraFacts(
      * read as private unless it says otherwise, and the cost of the two mistakes is not symmetric.
      */
     val primaryKeyIsPublic: Boolean = true,
+    /**
+     * Whether the bound board's firmware signs the posts it sends for us (`LoraAirtime.signing`: 2.8 and
+     * later, or its own `has_xeddsa`). The Meshtastic room's composer reads it to cap a post at the size the
+     * board can still sign, so every post leaves signed ([PublicPostPolicy.onAirBudget]). True until a board
+     * says otherwise, the same default the airtime governor keeps: unknown is the strict case, and a
+     * pre-2.8 board reports its version within the handshake and gets the client cap back.
+     */
+    val signs: Boolean = true,
 )
 
 /**

@@ -59,4 +59,11 @@ data class PeerEntity(
      * (a board that changed hands) and ingest picks the newest — see `PeerDao.findByLoraNode`.
      */
     val loraNode: Long? = null,
+    /**
+     * The Curve25519 public key that board signs under (`ProfileContent.loraKey` / `ProfilePayload.loraKey`),
+     * base64 like [pubKey], or null when the profile named none — a board that does not sign, or a peer on a
+     * build before this one. A presentation field under the same [updatedAt] watermark; what a heard post's
+     * signature is checked against at ingest, which is what makes a match verified rather than claimed.
+     */
+    val loraKey: String? = null,
 )

@@ -489,6 +489,34 @@ class LoraAirtimeTest {
     }
 
     @Test
+    fun aTextPostAtItsOwnCliffIsPricedAsSignedAir() {
+        // The room's TEXT_MESSAGE_APP posts sign one byte further than a Knit frame (166 against 165): a
+        // post at the cap must be booked with the signature the board adds, not as the unsigned packet a
+        // Knit frame of that size would be.
+        val air =
+            LoraAirtime().apply {
+                onRadioConfig(radio())
+                onFirmware("2.8.0.47db0e3")
+            }
+        val textCliff = MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE)
+        assertEquals(166, textCliff)
+        assertEquals(air.timeOnAirMs(166 + MeshtasticProto.XEDDSA_SIGNATURE_FIELD), air.timeOnAirMs(166, signedUpTo = textCliff))
+        assertTrue(air.timeOnAirMs(166, signedUpTo = textCliff) > air.timeOnAirMs(166))
+        // One byte past the text cliff is unsigned on either reading.
+        assertEquals(air.timeOnAirMs(167), air.timeOnAirMs(167, signedUpTo = textCliff))
+    }
+
+    @Test
+    fun theBoardsOwnCapabilityFlagOutranksTheVersionParse() {
+        // `DeviceMetadata.has_xeddsa` is the build's own word; the version is the fallback for firmware too
+        // old to carry the field.
+        assertFalse(LoraAirtime().apply { onFirmware("2.8.0.47db0e3", hasXeddsa = false) }.signing)
+        assertTrue(LoraAirtime().apply { onFirmware("2.7.9", hasXeddsa = true) }.signing)
+        assertTrue(LoraAirtime().apply { onFirmware("2.8.0.47db0e3", hasXeddsa = null) }.signing)
+        assertFalse(LoraAirtime().apply { onFirmware("2.7.26.b246bcd", hasXeddsa = null) }.signing)
+    }
+
+    @Test
     fun theSnapshotReportsWhetherTheSignatureIsBeingChargedFor() {
         assertTrue(LoraAirtime().snapshot(0L).signing)
         assertFalse(LoraAirtime().apply { onFirmware("2.7.26.b246bcd") }.snapshot(0L).signing)

@@ -45,6 +45,9 @@ internal class LoraStatusRepository(
                     // A board we cannot read the table of answers "public", which is the safe half of the
                     // claim rather than the accurate one — see the policy's own note.
                     primaryKeyIsPublic = ready == null || PublicChannelPolicy.primaryKeyIsPublic(ready.channels),
+                    // Deliberately not gated on `ready`: the composer stays mounted through a BLE flap, and
+                    // the budget should follow the board it will post through, not flip on every reconnect.
+                    signs = status.airtime?.signing ?: true,
                 )
             }.distinctUntilChanged()
         }

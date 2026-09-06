@@ -327,6 +327,26 @@ internal fun readVarintField(
         found
     }.getOrNull()
 
+/** The bytes of [field] in [raw], or null when absent or malformed. The last occurrence wins. */
+internal fun readBytesField(
+    raw: ByteArray,
+    field: Int,
+): ByteArray? =
+    runCatching {
+        val reader = ProtoReader(raw)
+        var found: ByteArray? = null
+        while (reader.hasMore) {
+            val tag = reader.readTag()
+            val wire = tag and WireType.MASK
+            if (tag ushr WireType.FIELD_SHIFT == field && wire == WireType.LEN) {
+                found = reader.readBytes()
+            } else {
+                reader.skip(wire)
+            }
+        }
+        found
+    }.getOrNull()
+
 /** The string value of [field] in [raw], or null when absent or malformed. The last occurrence wins. */
 internal fun readStringField(
     raw: ByteArray,

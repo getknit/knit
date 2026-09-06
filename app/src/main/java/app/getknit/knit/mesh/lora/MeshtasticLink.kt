@@ -213,6 +213,11 @@ internal data class BoardInfo(
      * the setup screen reads as "no reason to think it needs renaming".
      */
     val owner: BoardOwner? = null,
+    /**
+     * `DeviceMetadata.has_xeddsa` — the firmware verifies XEdDSA signatures, and so signs the broadcasts it
+     * sends for us. Null on firmware too old to say, which the airtime governor answers from the version.
+     */
+    val hasXeddsa: Boolean? = null,
 )
 
 /** One inbound packet the board handed the phone. */
@@ -228,6 +233,18 @@ internal class ReceivedPacket(
     val hopsAway: Int?,
     /** `MeshPacket.via_mqtt` — the packet came off an MQTT uplink rather than the air. Read by the bridge only. */
     val viaMqtt: Boolean = false,
+    /**
+     * `Data.xeddsa_signature` — the sender board's 64-byte XEdDSA signature over `from ‖ id ‖ portnum ‖
+     * payload`, or null when the packet came unsigned (pre-2.8 firmware, or past the signature cliff).
+     * Verified on the phone against the key a contact's profile advertises (`mesh/crypto/XeddsaVerify`).
+     */
+    val signature: ByteArray? = null,
+    /**
+     * `MeshPacket.xeddsa_signed` — our own board already verified [signature] against the key *its* NodeDB
+     * holds for [from]. Evidence that the radio which has been using that number sent this, and no more:
+     * the board's key is learned off the air, never from a Knit profile.
+     */
+    val boardVerified: Boolean = false,
 )
 
 /**

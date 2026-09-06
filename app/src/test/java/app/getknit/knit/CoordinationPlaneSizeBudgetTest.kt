@@ -327,10 +327,12 @@ class CoordinationPlaneSizeBudgetTest {
                             prekey = PrekeyInfo(id = SPK_ID, pub = spk.pub, sig = spkSig),
                             version = SENT_AT,
                             // The largest profile is one with every flag set: the open-to-chat key rides
-                            // only while true, and the bound-board node only while bound (a full 32-bit
-                            // number is its widest encoding), so the budget is measured with both.
+                            // only while true, the bound-board node only while bound (a full 32-bit
+                            // number is its widest encoding) and the board's signing key only while it
+                            // signs (44 characters of base64), so the budget is measured with all three.
                             openToChat = true,
                             loraNode = 0xFFFFFFFFL,
+                            loraKey = "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4=",
                         ),
                     ),
             ),
@@ -795,11 +797,18 @@ class CoordinationPlaneSizeBudgetTest {
                 version = 1_756_100_000_000L,
                 openToChat = true,
                 loraNode = 0xFFFFFFFFL,
+                loraKey = "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4=",
             )
         val intro = alice.sign(sealer.dm(FrameId.new(), body = "", ctl = MessageContent.CTL_PROFILE, pr = payload))
         report("intro-ctl-profile-init", intro, alice)
-        val parts = checkNotNull(loraParts(intro)) { "a session-initial intro must fit the LoRa hop" }
+        // Measured in the form the plane sends. Since the ADR 060 flag-day `LoraMeshTransport` transcodes
+        // unconditionally (it has no per-peer capability), so the `0x05` form is the bound that matters —
+        // the board key (ADR 2026-09.ggq4, 35 B on this layout) took the max-size intro's legacy `0x03` form
+        // to 684 B, three bytes past the three-packet ceiling, while its transcoded form is 600 B.
+        val parts = checkNotNull(transcodedLoraParts(intro)) { "a session-initial intro must fit the LoRa hop" }
         assertTrue("session-initial intro in <= 3 LoRa packets (was $parts)", parts <= FastFrameCodec.MAX_PARTS)
+        val esp32Parts = checkNotNull(transcodedLoraParts(intro, esp32PayloadCap)) { "and at the ESP32 line's cap" }
+        assertTrue("session-initial intro in <= 3 packets at the ESP32 cap (was $esp32Parts)", esp32Parts <= FastFrameCodec.MAX_PARTS)
     }
 
     /**

@@ -108,7 +108,15 @@ internal object BoardBytes {
      * `FromRadio { metadata = DeviceMetadata { firmware_version } }` — how the board says which release it
      * runs, which decides whether it can store the unmonitored mark (ADR 2026-09.emd7).
      */
-    fun metadata(firmware: String): ByteArray = ProtoWriter().message(13) { string(1, firmware) }.toByteArray()
+    fun metadata(
+        firmware: String,
+        hasXeddsa: Boolean? = null,
+    ): ByteArray =
+        ProtoWriter()
+            .message(13) {
+                string(1, firmware)
+                if (hasXeddsa != null) bool(14, hasXeddsa)
+            }.toByteArray()
 
     fun configComplete(nonce: UInt): ByteArray = ProtoWriter().uint32(7, nonce).toByteArray()
 
@@ -178,6 +186,14 @@ internal object BoardBytes {
                     message(2) {
                         string(MeshtasticProto.USER_LONG_NAME, owner.longName)
                         string(MeshtasticProto.USER_SHORT_NAME, owner.shortName)
+                        owner.publicKey?.let {
+                            bytes(
+                                MeshtasticProto.USER_PUBLIC_KEY,
+                                java.util.Base64
+                                    .getDecoder()
+                                    .decode(it),
+                            )
+                        }
                     }
                 }
                 if (batteryLevel != null || voltage != null) {
@@ -214,6 +230,8 @@ internal object BoardBytes {
         payload: ByteArray,
         id: UInt = 0u,
         requestId: UInt = 0u,
+        signature: ByteArray? = null,
+        xeddsaSigned: Boolean = false,
     ): ByteArray =
         ProtoWriter()
             .message(2) {
@@ -224,8 +242,10 @@ internal object BoardBytes {
                     varint(1, portnum)
                     bytes(2, payload)
                     fixed32(6, requestId)
+                    if (signature != null) bytes(10, signature)
                 }
                 fixed32(6, id)
+                if (xeddsaSigned) bool(22, true)
             }.toByteArray()
 
     /** A ROUTING_APP NAK packet for our packet [requestId] with [reason]. */

@@ -254,6 +254,9 @@ class MeshMetrics {
     private val meshPostIngested = AtomicLong()
     private val meshPostViaMqtt = AtomicLong()
     private val meshPostMatched = AtomicLong()
+    private val meshPostVerified = AtomicLong()
+    private val meshPostBoardVerified = AtomicLong()
+    private val meshPostSignatureMismatch = AtomicLong()
     private val meshPostRefusedByReason = ConcurrentHashMap<String, AtomicLong>()
 
     // The Meshtastic room's outbound half. Unlike the four above these DO spend airtime, so `publicPostSent`
@@ -752,6 +755,21 @@ class MeshMetrics {
         meshPostMatched.incrementAndGet()
     }
 
+    /** A heard post whose signature verified on this phone under the key the matched contact's profile advertises. */
+    fun onMeshPostVerified() {
+        meshPostVerified.incrementAndGet()
+    }
+
+    /** A heard post our own board vouched for (`xeddsa_signed`), with no contact key on this phone to check it against. */
+    fun onMeshPostBoardVerified() {
+        meshPostBoardVerified.incrementAndGet()
+    }
+
+    /** A signed post on a contact's number that failed under their advertised key — shown as a stranger, never as them. */
+    fun onMeshPostSignatureMismatch() {
+        meshPostSignatureMismatch.incrementAndGet()
+    }
+
     /** A primary-channel packet the filters turned away, by `PublicChannelPolicy.Refusal`. */
     fun onMeshPostRefused(reason: String) {
         meshPostRefusedByReason.computeIfAbsent(reason) { AtomicLong() }.incrementAndGet()
@@ -861,6 +879,9 @@ class MeshMetrics {
             meshPostIngested = meshPostIngested.get(),
             meshPostViaMqtt = meshPostViaMqtt.get(),
             meshPostMatched = meshPostMatched.get(),
+            meshPostVerified = meshPostVerified.get(),
+            meshPostBoardVerified = meshPostBoardVerified.get(),
+            meshPostSignatureMismatch = meshPostSignatureMismatch.get(),
             meshPostRefusedByReason = meshPostRefusedByReason.mapValues { it.value.get() },
             publicPostSent = publicPostSent.get(),
             publicPostRefusedByReason = publicPostRefusedByReason.mapValues { it.value.get() },
@@ -957,6 +978,9 @@ class MeshMetrics {
         val meshPostIngested: Long = 0,
         val meshPostViaMqtt: Long = 0,
         val meshPostMatched: Long = 0,
+        val meshPostVerified: Long = 0,
+        val meshPostBoardVerified: Long = 0,
+        val meshPostSignatureMismatch: Long = 0,
         val meshPostRefusedByReason: Map<String, Long> = emptyMap(),
         val publicPostSent: Long = 0,
         val publicPostRefusedByReason: Map<String, Long> = emptyMap(),

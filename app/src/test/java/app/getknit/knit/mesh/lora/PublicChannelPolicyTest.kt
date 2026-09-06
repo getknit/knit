@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lora
 
 import app.getknit.knit.TextLimits
 import app.getknit.knit.mesh.meshNodeLabel
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -34,6 +35,8 @@ class PublicChannelPolicyTest {
         hopsAway: Int? = 2,
         rxSnr: Float? = -7.3f,
         viaMqtt: Boolean = false,
+        signature: ByteArray? = null,
+        boardVerified: Boolean = false,
     ) = ReceivedPacket(
         from = from,
         to = to,
@@ -45,6 +48,8 @@ class PublicChannelPolicyTest {
         rxRssi = -95,
         hopsAway = hopsAway,
         viaMqtt = viaMqtt,
+        signature = signature,
+        boardVerified = boardVerified,
     )
 
     private fun judge(
@@ -203,5 +208,20 @@ class PublicChannelPolicyTest {
             "and so does a board reporting only its secondaries",
             PublicChannelPolicy.primaryKeyIsPublic(listOf(knitSecondary)),
         )
+    }
+
+    @Test
+    fun `a post carries the signature and verdict it arrived with, over the bytes as heard`() {
+        // The body is trimmed for reading; the signature is over the payload byte for byte, so both ride.
+        val sig = ByteArray(64) { it.toByte() }
+        val verdict = judge(packet(body = "  hi from the mesh  ", signature = sig, boardVerified = true))
+        val post = (verdict as PublicChannelPolicy.Verdict.Post).post
+        assertEquals("hi from the mesh", post.body)
+        assertArrayEquals("  hi from the mesh  ".encodeToByteArray(), post.payload)
+        assertArrayEquals(sig, post.signature)
+        assertTrue(post.boardVerified)
+        val unsigned = (judge(packet()) as PublicChannelPolicy.Verdict.Post).post
+        assertNull(unsigned.signature)
+        assertFalse(unsigned.boardVerified)
     }
 }

@@ -972,6 +972,12 @@ class DebugBridgeReceiver :
             .put("meshPostIngested", snap.meshPostIngested)
             .put("meshPostViaMqtt", snap.meshPostViaMqtt)
             .put("meshPostMatched", snap.meshPostMatched)
+            // What the 2.8 signatures proved: `verified` under a contact's advertised key (the shield),
+            // `boardVerified` by our own board's NodeDB key alone, `signatureMismatch` a contact's number
+            // signed by some other radio.
+            .put("meshPostVerified", snap.meshPostVerified)
+            .put("meshPostBoardVerified", snap.meshPostBoardVerified)
+            .put("meshPostSignatureMismatch", snap.meshPostSignatureMismatch)
             .put("meshPostRefusedByReason", JSONObject(snap.meshPostRefusedByReason))
             // The outbound half. Unlike the four above these cost airtime, so read `publicPostSent` against
             // `airtime.publicMs`/`publicBudgetMs` to say whether the quota is set right. Every refusal here

@@ -93,11 +93,12 @@ internal class LoraMeshTransport(
     /** Delivers a post heard on the board's primary channel into the Meshtastic room — [app.getknit.knit.mesh.MeshPostSink]. */
     private val onPublicPost: suspend (MeshPost) -> Unit = {},
     /**
-     * The bound board's node number, reported each time its session comes up. What the profile advertises
-     * so a contact's phone can line a heard post up with this one (`SettingsStore.loraBoardNode`); persisted
-     * by the caller, so a link drop does not unsay it and only a different board changes it.
+     * The bound board's node number and signing key, reported each time its session comes up. What the
+     * profile advertises so a contact's phone can line a heard post up with this one and verify it
+     * (`SettingsStore.loraBoardNode` / `loraBoardKey`); persisted by the caller, so a link drop does not
+     * unsay it and only a different board changes it.
      */
-    private val onBoardBound: suspend (UInt) -> Unit = {},
+    private val onBoardBound: suspend (BoardBinding) -> Unit = {},
     private val scope: CoroutineScope,
     private val metrics: MeshMetrics,
     private val clock: () -> Long,
@@ -645,11 +646,21 @@ internal class LoraMeshTransport(
         val now = clock()
         val last = lastPublicPostAt.get()
         if (last != NEVER && now - last < PUBLIC_POST_FLOOR_MS) return refusePublicPost(PublicPostRefusal.TOO_SOON)
-        val message = PublicPostPolicy.onAirText(body).encodeToByteArray()
+        // The same budget the composer applied — a draft typed while the facts still said 200 (a board that
+        // came up signing after the draft began) is trimmed here rather than sent past the cliff unsigned.
+        val message = PublicPostPolicy.onAirText(body, PublicPostPolicy.onAirBudget(pace.airtime.signing)).encodeToByteArray()
         if (message.size > maxPayload) return refusePublicPost(PublicPostRefusal.TOO_LARGE)
         // Asked before queueing rather than left to the pacer: a post the budget will not carry should be
         // counted as refused now, not sit in the queue looking sent until the window rolls over.
-        if (!pace.airtime.admits(AirBucket.PUBLIC, FrameClass.ROOM, listOf(message.size), now)) {
+        // Priced at the text port's own cliff: a post at the 166-byte cap is signed air, not an unsigned packet.
+        if (!pace.airtime.admits(
+                AirBucket.PUBLIC,
+                FrameClass.ROOM,
+                listOf(message.size),
+                now,
+                signedUpTo = MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE),
+            )
+        ) {
             return refusePublicPost(PublicPostRefusal.NO_AIR)
         }
         // Claimed at enqueue, not at write: the floor is about how often this phone *decides* to speak, and
@@ -926,7 +937,7 @@ internal class LoraMeshTransport(
         when (val result = link.send(message, channelIndex, portnum = portnum, hopLimit = HOP_LIMIT)) {
             is SendResult.Queued -> {
                 pace.onQueueStatus(result.queue.free)
-                pace.airtime.record(frame.bucket, message.size, clock())
+                pace.airtime.record(frame.bucket, message.size, clock(), signedUpTo = MeshtasticProto.maxSignedPayload(portnum))
                 frame.onPartSent()
                 // The ledger just moved, and a send is the only thing that spends it — so republish here
                 // rather than leave the chat's saturation notice and the radio screen's percentage waiting
@@ -1020,7 +1031,8 @@ internal class LoraMeshTransport(
                 metrics.onMeshPostIngested(verdict.post.viaMqtt)
                 log(
                     "lora public post from ${meshNodeLabel(packet.from.toLong())} " +
-                        "${verdict.post.body.length}ch viaMqtt=${verdict.post.viaMqtt}",
+                        "${verdict.post.body.length}ch viaMqtt=${verdict.post.viaMqtt} " +
+                        "signed=${verdict.post.signature != null} boardVerified=${verdict.post.boardVerified}",
                 )
                 scope.launch { onPublicPost(verdict.post) }
             }
@@ -1151,14 +1163,20 @@ internal class LoraMeshTransport(
             metrics.onLoraSessionUp()
             pace.airtime.onRadioConfig(state.radio)
             // 2.8 signs the broadcasts it sends for us, which is airtime the budget has to know about.
-            pace.airtime.onFirmware(state.board.firmwareVersion)
+            pace.airtime.onFirmware(state.board.firmwareVersion, state.board.hasXeddsa)
             log(
                 "lora ready board=${state.board.myNodeNum} mtu=${state.mtu} maxPayload=$maxPayload " +
                     "radio=${state.radio?.region}/${state.radio?.modemPreset} " +
                     "fw=${state.board.firmwareVersion} signing=${pace.airtime.signing}",
             )
             scope.launch { beaconProfile(PROFILE_FLOOR_MS) }
-            scope.launch { onBoardBound(state.board.myNodeNum) }
+            // The key is advertised only while the board signs: a key that never signs verifies nothing,
+            // and a pre-2.8 user's profile should not grow by it.
+            val signingKey =
+                state.board.owner
+                    ?.publicKey
+                    ?.takeIf { pace.airtime.signing }
+            scope.launch { onBoardBound(BoardBinding(state.board.myNodeNum, signingKey)) }
         }
         publishStatus()
     }
@@ -1305,3 +1323,12 @@ internal class LoraMeshTransport(
         val PRE_READY_PAYLOAD: Int = minOf(MeshtasticProto.MAX_PAYLOAD, MTU_FLOOR - TORADIO_OVERHEAD)
     }
 }
+
+/**
+ * What a board reports about itself when its session comes up, for the profile to advertise: its node number
+ * and — only on firmware that signs — the Curve25519 key it signs under (base64, off its own `NodeInfo`).
+ */
+internal data class BoardBinding(
+    val nodeNum: UInt,
+    val signingKey: String?,
+)

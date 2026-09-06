@@ -80,6 +80,7 @@ class ChatMeshRoomTest {
         showConsent: Boolean = false,
         gate: PublicPostGate = PublicPostGate.Open,
         keyIsPublic: Boolean = true,
+        budget: Int = PublicPostPolicy.MAX_ON_AIR_BYTES,
     ) = render(
         Conversations.MESHTASTIC,
         ChatUiState(
@@ -87,7 +88,7 @@ class ChatMeshRoomTest {
             isRoom = false,
             isBridged = true,
             canSendFile = false,
-            publicPostBudget = PublicPostPolicy.MAX_ON_AIR_BYTES,
+            publicPostBudget = budget,
             publicPostGate = gate,
             publicChannelKeyIsPublic = keyIsPublic,
             myNodeId = "me",
@@ -140,7 +141,7 @@ class ChatMeshRoomTest {
         // taps through would otherwise carry Knit's padlock into a channel that has none.
         render(listOf(row()))
         compose.onNodeWithTag("chat_mesh_notice").assertIsDisplayed()
-        compose.onNodeWithText("Unencrypted radio channel — names not verified").assertIsDisplayed()
+        compose.onNodeWithText("Unencrypted radio channel — names not verified unless marked").assertIsDisplayed()
 
         compose.onNodeWithTag("chat_mesh_notice").performClick()
         compose.onNodeWithText("anyone can claim any name", substring = true).assertIsDisplayed()
@@ -153,7 +154,7 @@ class ChatMeshRoomTest {
         // in the other direction. What stays true is the part Knit can speak for: a shared channel key is
         // not end-to-end encryption, whoever holds it.
         render(listOf(row()), keyIsPublic = false)
-        compose.onNodeWithText("Not end-to-end encrypted — names not verified").assertIsDisplayed()
+        compose.onNodeWithText("Not end-to-end encrypted — names not verified unless marked").assertIsDisplayed()
         compose.onNodeWithText("Unencrypted radio channel", substring = true).assertDoesNotExist()
         compose.onNodeWithContentDescription("Post to the radio channel, not end-to-end encrypted").assertIsDisplayed()
     }
@@ -256,6 +257,90 @@ class ChatMeshRoomTest {
 
         compose.onNodeWithText("Open profile").performClick()
         assertEquals("sam", profileOpened)
+    }
+
+    @Test
+    fun aSignedPostFromAContactWearsTheShieldAndOpensTheirProfileDirectly() {
+        // The one match the room vouches for: the radio's own signature verified under the key the
+        // contact's profile names. The name takes a Knit author's colour, a shield sits beside it, and the
+        // avatar opens the profile with no caveat in between — by peer id, since the row's sender is us.
+        render(
+            listOf(
+                row(
+                    origin = origin.copy(name = "Knit 1a2b", peerId = "sam", signed = MeshSignature.CONTACT),
+                    senderName = "Sam",
+                    avatarHash = "sam-avatar",
+                ),
+            ),
+        )
+        compose.onNodeWithText("Sam").assertIsDisplayed()
+        compose.onNodeWithTag("chat_mesh_shield", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithContentDescription("Signed by Sam's radio", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithContentDescription("Sam, on the Meshtastic channel — identity not verified").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Sam, on the Meshtastic channel — signed by their radio").assertHasClickAction().performClick()
+        compose.onNodeWithText("Might not be Sam").assertDoesNotExist()
+        assertEquals("sam", profileOpened)
+        // The provenance line keeps its facts and adds no word: the shield already said it.
+        compose
+            .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
+            .assertTextEquals("!1234abcd · Knit 1a2b · 2 hops away · SNR -7.3 dB")
+    }
+
+    @Test
+    fun anUnsignedPostFromAContactStillTapsThroughToTheCaveat() {
+        // Nothing changes for a match no signature backed: muted name, caveat first, no shield.
+        render(listOf(row(origin = origin.copy(name = "Knit 1a2b", peerId = "sam", signed = MeshSignature.NONE), senderName = "Sam")))
+        compose.onAllNodesWithTag("chat_mesh_shield", useUnmergedTree = true).assertCountEquals(0)
+        compose.onNodeWithContentDescription("Sam, on the Meshtastic channel — identity not verified").performClick()
+        compose.onNodeWithText("Might not be Sam").assertIsDisplayed()
+        compose.onNodeWithText("no signature Knit could check", substring = true).assertIsDisplayed()
+        assertTrue(profileOpened == null)
+    }
+
+    @Test
+    fun aStrangersBoardSignedPostSaysSignedWithoutAShield() {
+        // Our own board vouched for the number — the radio that has been using it sent this — which is a
+        // fact worth a word on the provenance line and nothing more: no contact, no shield, no tap.
+        render(listOf(row(origin = origin.copy(signed = MeshSignature.BOARD))))
+        compose
+            .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
+            .assertTextEquals("!1234abcd · 2 hops away · SNR -7.3 dB · signed")
+        compose.onAllNodesWithTag("chat_mesh_shield", useUnmergedTree = true).assertCountEquals(0)
+        compose.onNodeWithContentDescription("Bob, on the Meshtastic channel").assertHasNoClickAction()
+    }
+
+    @Test
+    fun aPostWhoseSignatureDoesNotMatchIsAStrangerAndSaysSo() {
+        // Ingest attributed nobody, so the row reaches the screen as a stranger's — and the line says why
+        // the name a contact's profile would have put here is missing.
+        render(listOf(row(origin = origin.copy(peerId = null, signed = MeshSignature.MISMATCH))))
+        compose
+            .onNodeWithTag("chat_mesh_origin", useUnmergedTree = true)
+            .assertTextEquals("!1234abcd · 2 hops away · SNR -7.3 dB · signature doesn't match")
+        compose.onAllNodesWithTag("chat_mesh_shield", useUnmergedTree = true).assertCountEquals(0)
+        compose.onNodeWithContentDescription("Bob, on the Meshtastic channel").assertHasNoClickAction()
+    }
+
+    @Test
+    fun theNoticeSaysNamesAreUnverifiedUnlessMarked() {
+        render(listOf(row()))
+        compose.onNodeWithText("names not verified unless marked", substring = true).assertIsDisplayed()
+        compose.onNodeWithTag("chat_mesh_notice").performClick()
+        compose.onNodeWithText("a shield beside it", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun theCapFollowsTheRadiosSignatureCliff() {
+        // On a board that signs, the budget is the last size it can still sign: the 167th byte is refused
+        // and the counter reads against 166, so every post the user is allowed to send leaves signed.
+        val budget = PublicPostPolicy.MAX_SIGNED_TEXT_BYTES
+        render(listOf(row()), budget = budget)
+        compose.onNodeWithTag("chat_input").performTextInput("x".repeat(budget))
+        compose.onNodeWithTag("chat_input").performTextInput("y")
+        assertEquals(budget, inputState.text.length)
+        compose
+            .onNodeWithTag("chat_public_post_length", useUnmergedTree = true)
+            .assertTextEquals("$budget/$budget")
     }
 
     @Test

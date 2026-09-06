@@ -9,7 +9,8 @@ topics: [lora, meshtastic, ui]
 # ADR 2026-09.sre4 — A resolved Meshtastic author's avatar opens the caveat, not the profile
 
 Status: Accepted (2026-09-05) — amends ADR 2026-09.26q3, whose "untappable avatar" now holds only for a
-heard *stranger*.
+heard *stranger*. Amended by ADR 2026-09.ggq4 the same day: the caveat covers the *unverified* match only —
+a match the radio's XEdDSA signature verified opens the profile directly.
 
 **What was observed.** ADR 2026-09.26q3 gave every heard author an inert avatar, on one argument: the name
 beside it is an unauthenticated claim off an open channel, so a tap that reached `profileDetails` would

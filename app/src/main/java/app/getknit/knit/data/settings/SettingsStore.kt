@@ -324,6 +324,14 @@ class SettingsStore(
     val loraBoardNode: Flow<Long?> = dataStore.data.map { it[KEY_LORA_NODE] }
 
     /**
+     * The bound board's Curve25519 public key (base64 of 32 bytes), beside [loraBoardNode] — what the profile
+     * advertises (`ProfileContent.loraKey`) so a contact's phone can verify the posts firmware 2.8 signs for
+     * us. Null while unbound, and on a board whose firmware does not sign: a key that never signs verifies
+     * nothing, so it is not advertised. Written and cleared together with the node number, in one edit.
+     */
+    val loraBoardKey: Flow<String?> = dataStore.data.map { it[KEY_LORA_KEY] }
+
+    /**
      * The board set up for Knit (ADR 045) and the housekeeping intervals it had *before* — so restoring puts
      * the user's own values back rather than the firmware's defaults. Null while no board is set up; a zero
      * interval means "never recorded", which the restore reads as "let the firmware decide".
@@ -474,13 +482,24 @@ class SettingsStore(
     ) = dataStore.edit {
         it[KEY_LORA_ADDRESS] = address
         it[KEY_LORA_NAME] = name
-        // A different board has a different node number; forget the old one until the new one reports in,
-        // rather than advertise a board this phone no longer holds.
+        // A different board has a different node number and key; forget the old ones until the new board
+        // reports in, rather than advertise a board this phone no longer holds.
         it.remove(KEY_LORA_NODE)
+        it.remove(KEY_LORA_KEY)
     }
 
-    /** The bound board reported its node number ([loraBoardNode]). */
-    suspend fun setLoraBoardNode(node: Long) = dataStore.edit { it[KEY_LORA_NODE] = node }
+    /**
+     * The bound board reported its node number and, on firmware that signs, its key ([loraBoardNode],
+     * [loraBoardKey]). One edit on purpose: the profile republishes on every change to either, so writing
+     * them separately would flood it twice for one board.
+     */
+    suspend fun setLoraBoard(
+        node: Long,
+        key: String?,
+    ) = dataStore.edit {
+        it[KEY_LORA_NODE] = node
+        if (key != null) it[KEY_LORA_KEY] = key else it.remove(KEY_LORA_KEY)
+    }
 
     /** Forgets the chosen board (and disables the plane, since it has nothing to bind to). */
     suspend fun clearLoraDevice() =
@@ -488,6 +507,7 @@ class SettingsStore(
             it.remove(KEY_LORA_ADDRESS)
             it.remove(KEY_LORA_NAME)
             it.remove(KEY_LORA_NODE)
+            it.remove(KEY_LORA_KEY)
             it[KEY_LORA_ENABLED] = false
             // The setup record is about *that* board; keeping it would offer a restore for hardware this
             // device no longer knows, and would hand its intervals to whatever board is bound next.
@@ -675,6 +695,7 @@ class SettingsStore(
         val KEY_LORA_NAME = stringPreferencesKey("lora_device_name")
         val KEY_LORA_CHANNEL = intPreferencesKey("lora_channel_index")
         val KEY_LORA_NODE = longPreferencesKey("lora_board_node")
+        val KEY_LORA_KEY = stringPreferencesKey("lora_board_key")
         val KEY_LORA_SETUP_ADDRESS = stringPreferencesKey("lora_setup_address")
         val KEY_LORA_PRIOR_NODE_INFO = intPreferencesKey("lora_prior_node_info_secs")
         val KEY_LORA_PRIOR_POSITION = intPreferencesKey("lora_prior_position_secs")

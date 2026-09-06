@@ -353,6 +353,19 @@ class FrameTranscoderTest {
         assertTrue("the node travels as text key + uint", contains(compact, tstr("loraNode") + uint))
     }
 
+    /** The board's signing key is outside the frozen label map too: text key plus the base64 as a CBOR text string, exact on rebuild. */
+    @Test
+    fun aBoardKeyProfileRidesAsTextKeyPlusValueAndRebuildsExact() {
+        val key = "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4="
+        val content = ProfileContent(name = "A", status = "S", pubKey = bundle, version = SENT_AT, loraNode = 0xdeadbeefL, loraKey = key)
+        val signed = envelope(FrameType.PROFILE, WireCodec.encodePayload(content))
+        val compact = checkNotNull(FrameTranscoder.transcode(signed))
+        assertArrayEquals(signed, FrameTranscoder.rebuild(compact))
+        // 44 characters is past CBOR's one-byte text header: `78 2c` then the base64.
+        val tstr44 = byteArrayOf(0x78, key.length.toByte()) + key.encodeToByteArray()
+        assertTrue("the key travels as text key + tstr(44)", contains(compact, tstr("loraKey") + tstr44))
+    }
+
     @Test
     fun unknownKeysRideAsTextAndSwitchElisionOff() {
         val futureChat =

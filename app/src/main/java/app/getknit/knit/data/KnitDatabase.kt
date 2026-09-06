@@ -90,7 +90,12 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
     //     contact a heard radio post resolved to at ingest, frozen on the row so a board changing hands never
     //     re-attributes history. Both null on every existing row: nobody had claimed a board and no post had
     //     been matched; migrated by KnitMigrations.MIGRATION_10_11.
-    version = 11,
+    // v12: `peers.loraKey` — the Curve25519 key a peer's latest profile advertises for their board (off the
+    //     wire, `ProfileContent.loraKey`, the same presentation watermark as `loraNode`) — and
+    //     `messages.originSigned`, what a heard radio post's XEdDSA signature proved at ingest, frozen on the
+    //     row beside `originPeerId`. Null / 0 (`ORIGIN_UNSIGNED`) on every existing row: no profile before this
+    //     carried a key and no post had been checked; migrated by KnitMigrations.MIGRATION_11_12.
+    version = 12,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
     // the migration test's MigrationTestHelper. Room also errors at compile time if an entity changes without

@@ -55,6 +55,28 @@ class PublicPostPolicyTest {
     }
 
     @Test
+    fun `the signable cap is 166 bytes and under the client cap`() {
+        // MeshtasticProto.maxSignedPayload for the text port: the last size a 2.8 board still signs.
+        assertEquals(166, PublicPostPolicy.MAX_SIGNED_TEXT_BYTES)
+        assertTrue(PublicPostPolicy.MAX_SIGNED_TEXT_BYTES < PublicPostPolicy.MAX_ON_AIR_BYTES)
+    }
+
+    @Test
+    fun `the budget follows whether the board signs`() {
+        assertEquals(PublicPostPolicy.MAX_SIGNED_TEXT_BYTES, PublicPostPolicy.onAirBudget(signing = true))
+        assertEquals(PublicPostPolicy.MAX_ON_AIR_BYTES, PublicPostPolicy.onAirBudget(signing = false))
+    }
+
+    @Test
+    fun `onAirText trims to the signable cap when asked`() {
+        val text = PublicPostPolicy.onAirText("x".repeat(500), PublicPostPolicy.onAirBudget(signing = true))
+        assertEquals(PublicPostPolicy.MAX_SIGNED_TEXT_BYTES, text.toByteArray().size)
+        // And still on a character boundary: 83 two-byte characters, not 83 and a half.
+        val accented = PublicPostPolicy.onAirText("é".repeat(200), PublicPostPolicy.MAX_SIGNED_TEXT_BYTES)
+        assertEquals(83, accented.length)
+    }
+
+    @Test
     fun `a post that already fits is left exactly as it was typed`() {
         val body = "  meet at the trailhead  ".trim()
         assertEquals(body, PublicPostPolicy.onAirText(body))

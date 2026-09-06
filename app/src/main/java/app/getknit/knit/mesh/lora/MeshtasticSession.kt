@@ -296,7 +296,7 @@ internal class MeshtasticSession(
         when (fr) {
             is FromRadio.ConfigComplete -> return fr.id == nonce
             is FromRadio.MyInfo -> board = BoardInfo(fr.myNodeNum, fr.pioEnv, board?.firmwareVersion)
-            is FromRadio.Metadata -> board = (board ?: BLANK_BOARD).copy(firmwareVersion = fr.firmwareVersion)
+            is FromRadio.Metadata -> board = (board ?: BLANK_BOARD).copy(firmwareVersion = fr.firmwareVersion, hasXeddsa = fr.hasXeddsa)
             is FromRadio.Channel -> channels = channels + fr.channel
             is FromRadio.Config -> fr.lora?.let { radio = it }
             is FromRadio.NodeInfo -> onNodeInfo(fr)
@@ -431,6 +431,8 @@ internal class MeshtasticSession(
                         rxRssi = packet.rxRssi,
                         hopsAway = packet.hopsAway,
                         viaMqtt = packet.viaMqtt,
+                        signature = data.signature,
+                        boardVerified = packet.xeddsaSigned,
                     ),
                 )
             }

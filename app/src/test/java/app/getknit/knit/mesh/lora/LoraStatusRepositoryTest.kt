@@ -162,4 +162,31 @@ class LoraStatusRepositoryTest {
             status.value = LoraStatus(state = ready, battery = battery)
             assertEquals(LoraFacts(LoraPlane.Live, dms = true, battery = battery, canPost = true), repo.facts.first())
         }
+
+    @Test
+    fun `the facts say whether the board signs its posts`() =
+        runTest {
+            // Read off the airtime governor's own answer, and not gated on the link being live: the room's
+            // composer stays mounted through a BLE flap, and its cap should follow the board it posts through.
+            assertTrue("unknown is the strict case", repo.facts.first().signs)
+            val air =
+                AirtimeSnapshot(
+                    ModemPreset.LONG_FAST,
+                    LoraRegion.US,
+                    known = true,
+                    liveUsedMs = 0,
+                    liveBudgetMs = 45_000,
+                    bridgeUsedMs = 0,
+                    bridgeBudgetMs = 13_500,
+                    bootstrapUsedMs = 0,
+                    bootstrapBudgetMs = 11_250,
+                    signing = false,
+                )
+            status.value = LoraStatus(state = ready, airtime = air)
+            assertFalse("a pre-2.8 board does not sign", repo.facts.first().signs)
+            status.value = LoraStatus(state = LinkState.Disconnected("flap", retryAtMs = 0, streak = 1), airtime = air)
+            assertFalse("and the answer survives the link dropping", repo.facts.first().signs)
+            status.value = LoraStatus(state = ready, airtime = air.copy(signing = true))
+            assertTrue(repo.facts.first().signs)
+        }
 }

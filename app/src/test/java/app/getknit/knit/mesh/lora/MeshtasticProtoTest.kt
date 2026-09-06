@@ -219,6 +219,35 @@ class MeshtasticProtoTest {
     }
 
     @Test
+    fun decodeNodeInfoReadsTheNodesPublicKey() {
+        // FromRadio { node_info = NodeInfo { num = 0xABCD, user = User { long_name, short_name, public_key(8) = 32 B } } }
+        val key = (0 until 32).map { (it * 7 + 1).toByte() }.toByteArray()
+        val fr =
+            MeshtasticProto.decodeFromRadio(
+                hex("22 39 08 CD D7 02 12 33 12 09 4B 6E 69 74 20 61 62 63 64 1A 04 4B 6E 69 74 42 20 " + key.hex()),
+            )
+        val info = fr as FromRadio.NodeInfo
+        assertEquals(
+            BoardOwner(
+                "Knit abcd",
+                "Knit",
+                publicKey =
+                    java.util.Base64
+                        .getEncoder()
+                        .encodeToString(key),
+            ),
+            info.owner,
+        )
+    }
+
+    @Test
+    fun aPublicKeyThatIsNotThirtyTwoBytesIsNoKey() {
+        // User { long_name, public_key(8) = 5 B } — a truncated field reads as "published none".
+        val fr = MeshtasticProto.decodeFromRadio(hex("22 18 08 CD D7 02 12 12 12 09 4B 6E 69 74 20 61 62 63 64 42 05 01 02 03 04 05"))
+        assertEquals(null, (fr as FromRadio.NodeInfo).owner?.publicKey)
+    }
+
+    @Test
     fun decodeNodeInfoWithoutAUserLeavesTheNameNull() {
         assertNull((MeshtasticProto.decodeFromRadio(hex("22 04 08 CD D7 02")) as FromRadio.NodeInfo).owner)
     }
@@ -431,9 +460,16 @@ class MeshtasticProtoTest {
 
     @Test
     fun decodeMetadataFirmware() {
-        // DeviceMetadata { firmware_version="2.5.0" (field 1) }.
+        // DeviceMetadata { firmware_version="2.5.0" (field 1) }. No has_xeddsa on a build that predates it: null.
         val fr = MeshtasticProto.decodeFromRadio(hex("6A 07 0A 05 32 2E 35 2E 30"))
-        assertEquals(FromRadio.Metadata("2.5.0"), fr)
+        assertEquals(FromRadio.Metadata("2.5.0", hasXeddsa = null), fr)
+    }
+
+    @Test
+    fun decodeMetadataSaysWhetherTheBuildSigns() {
+        // DeviceMetadata { firmware_version="2.8.0" (field 1), has_xeddsa=true (field 14) }.
+        val fr = MeshtasticProto.decodeFromRadio(hex("6A 09 0A 05 32 2E 38 2E 30 70 01"))
+        assertEquals(FromRadio.Metadata("2.8.0", hasXeddsa = true), fr)
     }
 
     @Test
@@ -631,6 +667,66 @@ class MeshtasticProtoTest {
         // The firmware's own budget is 239 (MAX_LORA_PAYLOAD_LEN 255 less the 16-byte header); the two bytes
         // between that and what the lab measured are the bitfield it fills in after us.
         assertEquals(239, MeshtasticProto.DATA_ENCODED_MAX)
+    }
+
+    @Test
+    fun decodePacketCarriesTheSignatureAndTheBoardsVerdict() {
+        val sig = (0 until 64).map { it.toByte() }.toByteArray()
+        val bytes =
+            hex(
+                "12 5C " + // FromRadio.packet, len 92
+                    "0D 78 56 34 12 " + // from = 0x12345678
+                    "15 FF FF FF FF " + // to = broadcast
+                    "22 48 " + // decoded, len 72
+                    "08 01 " + // portnum = TEXT_MESSAGE_APP
+                    "12 02 68 69 " + // payload = "hi"
+                    "52 40 " + sig.hex() + " " + // xeddsa_signature (field 10) = 64 B
+                    "35 01 01 00 00 " + // id = 0x101
+                    "B0 01 01", // xeddsa_signed (field 22) = true
+            )
+        val fr = MeshtasticProto.decodeFromRadio(bytes) as FromRadio.Packet
+        val p = fr.packet
+        assertEquals(0x12345678u, p.from)
+        assertEquals(1, p.decoded!!.portnum)
+        assertEquals("hi", p.decoded!!.payload.decodeToString())
+        assertEquals(sig.hex(), p.decoded!!.signature!!.hex())
+        assertTrue("the board's own verdict rides beside the signature", p.xeddsaSigned)
+    }
+
+    @Test
+    fun aSignatureOfTheWrongLengthDecodesToNoSignature() {
+        // The firmware emits 0 or 64 bytes and nothing else; 63 is not a signature and must not be verified as one.
+        val short = (0 until 63).map { it.toByte() }.toByteArray()
+        val bytes =
+            hex(
+                "12 58 " + // FromRadio.packet, len 88
+                    "0D 78 56 34 12 " +
+                    "15 FF FF FF FF " +
+                    "22 47 " + // decoded, len 71
+                    "08 01 " +
+                    "12 02 68 69 " +
+                    "52 3F " + short.hex() + " " + // 63 B
+                    "35 01 01 00 00",
+            )
+        val p = (MeshtasticProto.decodeFromRadio(bytes) as FromRadio.Packet).packet
+        assertEquals(null, p.decoded!!.signature)
+        assertFalse("absent means unsigned, never true", p.xeddsaSigned)
+    }
+
+    @Test
+    fun theSignableTextCapIsOneByteWiderThanThePrivateAppOne() {
+        // Ordinary chat's portnum (1) is a one-byte varint where Knit's PRIVATE_APP (256) takes two, so a
+        // text post can carry one more byte and still be signed — 166 against the bench-verified 165.
+        assertEquals(166, MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE))
+        assertEquals(MeshtasticProto.MAX_SIGNED_PAYLOAD + 1, MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE))
+        assertEquals(MeshtasticProto.MAX_SIGNED_PAYLOAD, MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_PRIVATE_APP))
+        // At the cliff plus its signature, the framing and the bitfield, the Data is exactly the firmware's budget.
+        assertEquals(
+            MeshtasticProto.DATA_ENCODED_MAX,
+            166 + MeshtasticProto.dataFraming(MeshtasticProto.PORT_TEXT_MESSAGE) + 2 + MeshtasticProto.XEDDSA_SIGNATURE_FIELD,
+        )
+        assertEquals(5, MeshtasticProto.dataFraming(MeshtasticProto.PORT_TEXT_MESSAGE))
+        assertEquals(6, MeshtasticProto.DATA_FRAMING)
     }
 
     @Test

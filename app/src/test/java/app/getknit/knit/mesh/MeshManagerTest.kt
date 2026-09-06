@@ -240,6 +240,9 @@ class MeshManagerTest {
         /** The bound LoRa board's node number, the fifth input — null until a board reports in. */
         val loraBoardNode = MutableStateFlow<Long?>(null)
 
+        /** The bound board's signing key (base64), folded into the fifth input beside the node — null until a signing board reports in. */
+        val loraBoardKey = MutableStateFlow<String?>(null)
+
         // Hoisted so a test can pre-shape group-ratchet state (e.g. a stale outbox ack) around the
         // manager's own send/flush paths — same instance the manager is wired with below.
         val groupRatchet = GroupRatchetSessions(store = GroupRatchetRepository(db.groupRatchetDao()))
@@ -260,6 +263,7 @@ class MeshManagerTest {
             coEvery { identity.nodeId() } returns me.nodeId
             coEvery { settings.displayName } returns displayName
             coEvery { settings.loraBoardNode } returns loraBoardNode
+            coEvery { settings.loraBoardKey } returns loraBoardKey
             // The local delivery of anything we originate runs the inbound path, whose first act is a
             // blocklist read with `.first()`. A relaxed mock's empty flow throws there rather than hanging.
             coEvery { settings.blockedNodeIds } returns MutableStateFlow(emptySet())
@@ -322,6 +326,7 @@ class MeshManagerTest {
             coEvery { settings.avatarUpdatedAt } returns avatarUpdatedAt
             coEvery { settings.openToChat } returns openToChat
             coEvery { settings.loraBoardNode } returns loraBoardNode
+            coEvery { settings.loraBoardKey } returns loraBoardKey
             // start() also reads the open-to-chat cue's persisted state once, with .first().
             coEvery { settings.openToChatNamed } returns MutableStateFlow(emptySet())
             coEvery { settings.openToChatLastPostAt } returns MutableStateFlow(0L)
@@ -1626,18 +1631,40 @@ class MeshManagerTest {
 
             rig.awaitProfileWatcher()
             rig.clockNow = rig.now + 26_000
-            rig.loraBoardNode.value = 0xdeadbeefL // the board's session came up and the transport reported it
+            // A key without a number is nothing to advertise yet (the settings write both in one edit; here
+            // the key lands first), so this alone floods nothing …
+            rig.loraBoardKey.value = "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4="
+            rig.loraBoardNode.value = 0xdeadbeefL // … and the board's number completes the claim: one flood.
             rig.await(1) { rig.floodedProfiles().size }
-            assertEquals(
-                "the profile now names the board",
-                0xdeadbeefL,
-                WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().single().payload)!!.loraNode,
-            )
+            val claimed = WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().single().payload)!!
+            assertEquals("the profile now names the board", 0xdeadbeefL, claimed.loraNode)
+            assertEquals("and the key it signs under", "oR62IJmFUE0Tgcw0GcypU5ZqUFCQllVBy2snB/BKQA4=", claimed.loraKey)
 
             rig.clockNow = rig.now + 52_000
-            rig.loraBoardNode.value = null // unbound: the next profile omits it, which is how a clear arrives
+            rig.loraBoardNode.value = null // unbound: the next profile omits both, which is how a clear arrives
+            rig.loraBoardKey.value = null
             rig.await(2) { rig.floodedProfiles().size }
-            assertNull(WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().last().payload)!!.loraNode)
+            val cleared = WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().last().payload)!!
+            assertNull(cleared.loraNode)
+            assertNull(cleared.loraKey)
+        }
+
+    @Test
+    fun aBoardWithoutASigningKeyAdvertisesOnlyItsNumber() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A pre-2.8 board reports in with no key (the transport withholds one that would verify nothing).
+            val rig = Rig(backgroundScope)
+            val publishedAt = MutableStateFlow(0L)
+            rig.stubProfileState(publishedAt)
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size }
+            rig.awaitProfileWatcher()
+            rig.clockNow = rig.now + 26_000
+            rig.loraBoardNode.value = 0xdeadbeefL
+            rig.await(1) { rig.floodedProfiles().size }
+            val content = WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().single().payload)!!
+            assertEquals(0xdeadbeefL, content.loraNode)
+            assertNull("no key, no key field", content.loraKey)
         }
 
     @Test

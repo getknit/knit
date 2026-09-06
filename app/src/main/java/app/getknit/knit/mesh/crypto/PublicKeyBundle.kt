@@ -87,8 +87,8 @@ class PublicKeyBundle private constructor(
                 .setVariant(HpkeParameters.Variant.NO_PREFIX)
                 .build()
 
-        /** A single-key keyset handle wrapping [key] (random id — irrelevant for a NO_PREFIX key). */
-        private fun keysetOf(key: Key): KeysetHandle =
+        /** A single-key keyset handle wrapping [key] (random id — irrelevant for a NO_PREFIX key). Shared with [XeddsaVerify]. */
+        internal fun keysetOf(key: Key): KeysetHandle =
             KeysetHandle
                 .newBuilder()
                 .addEntry(KeysetHandle.importKey(key).withRandomId().makePrimary())

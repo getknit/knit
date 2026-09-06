@@ -1646,31 +1646,37 @@ private fun MessageBubble(
         verticalAlignment = Alignment.Bottom,
     ) {
         if (!row.mine && showSenderName) {
-            // Three cases, because the name beside a heard Meshtastic author is an unauthenticated claim off
+            // Four cases, because the name beside a heard Meshtastic author is an unauthenticated claim off
             // an open channel. A Knit author's avatar opens their profile, as everywhere. A heard *stranger*
             // has no profile to open, so the avatar stays inert. A heard author whose node number matched a
             // contact's profile wears that contact's face and does take a tap — but it opens the caveat
             // first, never `profileDetails` directly, because the match is a self-asserted profile field
             // rather than a signature, and a straight-through tap would offer to message somebody who may
-            // never have said any of it.
+            // never have said any of it. The exception is a match the radio's own signature verified
+            // (`MeshOrigin.verified`): the words provably came from the radio that contact's profile names,
+            // so the avatar opens their profile as a Knit author's does — by peer id, since the row's sender
+            // is this phone on a heard post.
             val matchedPeer = row.origin?.peerId
+            val verifiedPeer = matchedPeer?.takeIf { row.origin?.verified == true }
             Avatar(
                 avatarHash = row.avatarHash,
                 name = row.senderName,
                 size = 40.dp,
                 contentDescription =
                     when {
+                        verifiedPeer != null -> stringResource(R.string.chat_mesh_author_verified, row.senderName)
                         matchedPeer != null -> stringResource(R.string.chat_mesh_author_contact, row.senderName)
                         row.origin != null -> stringResource(R.string.chat_mesh_author, row.senderName)
                         else -> stringResource(R.string.chat_view_profile, row.senderName)
                     },
                 onClick =
                     when {
+                        verifiedPeer != null -> ({ onOpenProfile(verifiedPeer) })
                         matchedPeer != null -> ({ onExplainHeardAuthor(matchedPeer, row.senderPlainName) })
                         row.origin != null -> null
                         else -> ({ onOpenProfile(row.senderNodeId) })
                     },
-                onClickLabel = if (matchedPeer != null) stringResource(R.string.chat_mesh_author_action) else null,
+                onClickLabel = if (matchedPeer != null && verifiedPeer == null) stringResource(R.string.chat_mesh_author_action) else null,
             )
             Spacer(Modifier.width(8.dp))
         }
@@ -1710,20 +1716,35 @@ private fun MessageBubble(
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                         if (!row.mine && showSenderName) {
-                            PeerNameText(
-                                text = row.senderName,
-                                discriminator = row.senderDiscriminator,
-                                style = MaterialTheme.typography.labelMedium,
-                                // Not the primary colour a Knit author's name takes: that colour is what the
-                                // eye reads as "a person this app knows", and a heard author — a resolved
-                                // contact included — is the one case where it would be a lie.
-                                color =
-                                    if (row.origin != null) {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    } else {
-                                        MaterialTheme.colorScheme.primary
-                                    },
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                PeerNameText(
+                                    text = row.senderName,
+                                    discriminator = row.senderDiscriminator,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    // Not the primary colour a Knit author's name takes: that colour is what
+                                    // the eye reads as "a person this app knows", and a heard author — a
+                                    // resolved contact included — is the one case where it would be a lie.
+                                    // Unless the radio's signature verified the match, which is the one
+                                    // case where it is true, and the shield beside the name says why.
+                                    color =
+                                        if (row.origin != null && !row.origin.verified) {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        } else {
+                                            MaterialTheme.colorScheme.primary
+                                        },
+                                )
+                                if (row.origin?.verified == true) {
+                                    Spacer(Modifier.width(4.dp))
+                                    // The DM header's verified shield at label size: Meshtastic's own apps
+                                    // draw a shield on a signed broadcast, so a reader who knows one knows this.
+                                    Icon(
+                                        imageVector = Icons.Filled.VerifiedUser,
+                                        contentDescription = stringResource(R.string.chat_mesh_signed_by_radio, row.senderPlainName),
+                                        tint = MaterialTheme.colorScheme.tertiary,
+                                        modifier = Modifier.size(14.dp).testTag("chat_mesh_shield"),
+                                    )
+                                }
+                            }
                         }
                         row.origin?.let { MeshOriginLine(it, row.senderName) }
                         row.replyTo?.let { reply ->
@@ -2839,7 +2860,8 @@ private fun SystemNotice(
  * somebody's MQTT uplink — that it may not be from anywhere nearby.
  *
  * It is deliberately plain text rather than a badge or a chip. A badge is a mark of standing, and the whole
- * point of this line is the opposite: nothing here is verified, and the name above it is a claim. Always
+ * point of this line is the opposite: nothing here is verified, and the name above it is a claim — the one
+ * mark of standing, the shield on a signature-verified match, sits beside the name, not here. Always
  * shown while it has something to say, never dismissable — an author whose provenance the reader has scrolled
  * past is exactly the one they would misread.
  *
@@ -2874,6 +2896,15 @@ private fun MeshOriginLine(
             }
             origin.snrDeci?.let { add(stringResource(R.string.chat_mesh_snr, it / 10f)) }
             if (origin.viaMqtt) add(stringResource(R.string.chat_mesh_mqtt))
+            // What the radio's signature proved, when it proved something short of a verified contact: our
+            // board vouched for the number, or a contact's number was signed by some other radio. A verified
+            // match wears the shield beside the name instead, and an unsigned post says nothing — unsigned is
+            // not evidence (pre-2.8 radios never sign, and a long post cannot be).
+            when (origin.signed) {
+                MeshSignature.BOARD -> add(stringResource(R.string.chat_mesh_signed))
+                MeshSignature.MISMATCH -> add(stringResource(R.string.chat_mesh_signature_mismatch))
+                MeshSignature.NONE, MeshSignature.CONTACT -> Unit
+            }
         }
     if (parts.isEmpty()) return
     Text(

@@ -39,7 +39,18 @@ internal class FakeMeshtasticLink(
     private val channelName: String = KnitChannel.NAME,
     /** What the handshake reports as the board's firmware. Pre-2.8 by default: the signature era is opt-in. */
     private val firmware: String = "2.5.0",
+    /** The board's own `User.public_key` (base64), as its NodeInfo would carry it; null on a board that published none. */
+    private val publicKey: String? = null,
 ) : MeshtasticLink {
+    /** The board's own identity as the handshake reports it — named like a stock board, keyed when [publicKey] says so. */
+    private val boardInfo: BoardInfo
+        get() =
+            BoardInfo(
+                nodeNum,
+                "heltec-v4",
+                firmware,
+                owner = publicKey?.let { BoardOwner("Meshtastic $nodeNum", "$nodeNum", publicKey = it) },
+            )
     private val _state = MutableStateFlow<LinkState>(LinkState.Idle)
     override val state = _state
 
@@ -126,7 +137,7 @@ internal class FakeMeshtasticLink(
 
     /** The handshake completing (at ATT MTU 512, the ESP32 line's ceiling): what a real board reports last. */
     fun ready() {
-        _state.value = LinkState.Ready(BoardInfo(nodeNum, "heltec-v4", firmware), listOf(ChannelInfo(0, channelName, 1)), 512)
+        _state.value = LinkState.Ready(boardInfo, listOf(ChannelInfo(0, channelName, 1)), 512)
     }
 
     /**
@@ -150,7 +161,7 @@ internal class FakeMeshtasticLink(
     ) {
         _state.value =
             LinkState.Ready(
-                BoardInfo(nodeNum, "heltec-v4", firmware),
+                boardInfo,
                 listOf(
                     ChannelInfo(0, primaryName, role = 1, psk = primaryPsk),
                     ChannelInfo(knitIndex, KnitChannel.NAME, role = 2, psk = KnitChannel.PSK),
@@ -200,6 +211,8 @@ internal class FakeMeshtasticLink(
         id: UInt = nextId++,
         viaMqtt: Boolean = false,
         to: UInt = MeshtasticProto.BROADCAST,
+        signature: ByteArray? = null,
+        boardVerified: Boolean = false,
     ) {
         _packets.tryEmit(
             ReceivedPacket(
@@ -213,6 +226,8 @@ internal class FakeMeshtasticLink(
                 rxRssi = -110,
                 hopsAway = 1,
                 viaMqtt = viaMqtt,
+                signature = signature,
+                boardVerified = boardVerified,
             ),
         )
     }

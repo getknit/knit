@@ -154,11 +154,43 @@ data class MessageEntity(
      * The Knit contact whose profile claimed [originNode] as their board when this post was heard, resolved
      * **once, at ingest**, and never again: boards change hands, and re-resolving at render time would put
      * old words under whoever holds the board now. Null for a stranger's radio. An attribution, not a verified
-     * identity — the UI keeps the unverified styling for it.
+     * identity — the UI keeps the unverified styling for it — unless [originSigned] says the post was verified
+     * under the key that contact's own profile advertises.
      */
     val originPeerId: String? = null,
+    /**
+     * What the XEdDSA signature on a heard post proved, one of the `ORIGIN_*` values below. Decided **once,
+     * at ingest**, like [originPeerId], and frozen with it: a contact re-keying their board later must not
+     * re-judge what their old board said. [ORIGIN_SIGNED_BY_CONTACT] is the only value that lets the UI drop
+     * the unverified styling; the rest keep it, and an unsigned post is never held against anybody.
+     */
+    val originSigned: Int = ORIGIN_UNSIGNED,
 ) {
     companion object {
+        // [originSigned] values. Append-only like every other registry here: the value is stored on the row.
+
+        /**
+         * [originSigned]: no usable signature — the packet was unsigned (pre-2.8 firmware, or a post past the
+         * signature cliff), or nothing on this phone could check it. Says nothing either way.
+         */
+        const val ORIGIN_UNSIGNED = 0
+
+        /**
+         * [originSigned]: our own board verified the signature against the key *its* NodeDB holds for the
+         * speaker's number — "the radio that has been using this number sent it". No Knit identity behind it.
+         */
+        const val ORIGIN_SIGNED_BY_BOARD = 1
+
+        /** [originSigned]: verified on this phone against the key the resolved contact's own signed profile advertises. */
+        const val ORIGIN_SIGNED_BY_CONTACT = 2
+
+        /**
+         * [originSigned]: the number resolved to a contact advertising a key, the packet was signed, and it
+         * did not verify under that key — some other radio is using their number. The row is **not**
+         * attributed ([originPeerId] stays null) and is shown as a stranger that says so.
+         */
+        const val ORIGIN_SIGNATURE_MISMATCH = 3
+
         /** [moderation]: text passed (or was not checked). */
         const val MODERATION_NONE = 0
 

@@ -48,7 +48,41 @@ data class MeshPost(
     val hops: Int?,
     val snrDeci: Int?,
     val viaMqtt: Boolean,
-)
+    /**
+     * `Data.payload` exactly as heard. [body] is for reading — trimmed and clamped — while this is what the
+     * sender's board signed, byte for byte; a signature is checked over these, never over [body].
+     */
+    val payload: ByteArray = body.encodeToByteArray(),
+    /** The sender board's XEdDSA signature (64 bytes), or null when the packet came unsigned. */
+    val signature: ByteArray? = null,
+    /** Our own board verified [signature] against the key its NodeDB holds for [node] (`MeshPacket.xeddsa_signed`). */
+    val boardVerified: Boolean = false,
+) {
+    /** The scalar members, for [equals]/[hashCode]: the byte arrays are compared by content beside them. */
+    private fun scalars(): List<Any?> = listOf(node, packetId, body, name, channel, hops, snrDeci, viaMqtt, boardVerified)
+
+    /** The byte-array members make the generated `equals`/`hashCode` identity-based; compare the bytes instead. */
+    override fun equals(other: Any?): Boolean =
+        this === other ||
+            (
+                other is MeshPost &&
+                    scalars() == other.scalars() &&
+                    payload.contentEquals(other.payload) &&
+                    (signature ?: EMPTY).contentEquals(other.signature ?: EMPTY)
+            )
+
+    override fun hashCode(): Int {
+        var h = scalars().hashCode()
+        h = h * PRIME + payload.contentHashCode()
+        h = h * PRIME + (signature?.contentHashCode() ?: 0)
+        return h
+    }
+
+    private companion object {
+        const val PRIME = 31
+        val EMPTY = ByteArray(0)
+    }
+}
 
 /**
  * The heard-post attribution as it reaches storage: what the channel said about the speaker, and how the post
@@ -68,10 +102,15 @@ data class MeshPostOrigin(
     val viaMqtt: Boolean,
     /**
      * The Knit contact whose profile claims [node] as its bound board, resolved once at ingest and frozen on
-     * the row — null for a stranger. A node-number match against a self-asserted profile field, never a
-     * signature, so the UI keeps the unverified styling for it.
+     * the row — null for a stranger. A node-number match against a self-asserted profile field, which the UI
+     * keeps the unverified styling for unless [signed] says the post verified under that contact's own key.
      */
     val peerId: String? = null,
+    /**
+     * What the post's signature proved at ingest — a `MessageEntity.ORIGIN_*` value, frozen on the row with
+     * [peerId]. `ORIGIN_SIGNED_BY_CONTACT` is the one value that makes the attribution a verified one.
+     */
+    val signed: Int = 0,
 )
 
 /**
