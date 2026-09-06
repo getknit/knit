@@ -202,6 +202,24 @@ class ChatViewModelTest {
         )
 
     @Test
+    fun theThreadReadsAsLoadingUntilItsFlowsHaveFirstEmitted() =
+        runTest {
+            // The seed is the whole cold open: nothing emits until all five arms of the combine have, and the
+            // Room arm reads the entire thread first. Without this flag the seed's empty row list is
+            // indistinguishable from a conversation that genuinely has nothing in it — and the screen says so,
+            // on a thread with hundreds of messages in it.
+            val vm = vm()
+            assertTrue("the seed is the cold-open frame", vm.state.value.isLoading)
+
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value = listOf(msg(senderId = "them", body = "hi", sentAt = 100))
+            advanceUntilIdle()
+
+            assertFalse("a real emission is never loading", vm.state.value.isLoading)
+            assertEquals(1, vm.state.value.rows.size)
+        }
+
+    @Test
     fun aHeardPostIsAttributedToItsSpeakerNotToUs() =
         runTest {
             // The row's senderId is this phone, by convention (its board heard the post) — but the person who

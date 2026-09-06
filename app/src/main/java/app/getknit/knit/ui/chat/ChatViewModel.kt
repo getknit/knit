@@ -336,6 +336,12 @@ data class ChatUiState(
     val publicChannelKeyIsPublic: Boolean = true,
     // Whether a post here still needs the first-use disclosure. Read only by [isBridged] threads.
     val needsPublicConsent: Boolean = false,
+    // True only for the initial seed value (see [state]'s stateIn below), before the Room + DataStore +
+    // mesh flows have all first-emitted. A long thread takes long enough to read and fold into rows that
+    // the seed's empty list would otherwise render as "no messages yet" on a conversation that has
+    // hundreds — so the screen shows a bubble skeleton for that gap instead. Defaults false so every real
+    // combine emission — and the previews — render content; only the seed passes true.
+    val isLoading: Boolean = false,
 )
 
 /**
@@ -882,7 +888,7 @@ class ChatViewModel(
                 loraCarry = loraCarryFor(conversationId, isGroup, mesh.lora.facts),
                 publicPostGate = publicPostGateFor(conversationId, mesh.lora.facts),
             )
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom))
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ChatUiState(isRoom = isRoom, isLoading = true))
 
     /** The render shape of a heard post's attribution — the row's `origin*` columns, the `!hex` id derived. */
     private fun meshOriginFor(

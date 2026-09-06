@@ -39,6 +39,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -209,6 +210,8 @@ import app.getknit.knit.ui.components.GroupAvatar
 import app.getknit.knit.ui.components.KnitStitchIndicator
 import app.getknit.knit.ui.components.PeerNameText
 import app.getknit.knit.ui.components.RoomAvatar
+import app.getknit.knit.ui.components.skeletonBlockColor
+import app.getknit.knit.ui.components.skeletonPulseAlpha
 import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.openUrl
 import app.getknit.knit.ui.preview.KnitPreview
@@ -975,125 +978,144 @@ internal fun ChatScreenContent(
                     )
                 }
             }
-            // weight(1f), not fillMaxSize(): the notice above is an unweighted sibling, so the list must
+            // Cold open: the state is a five-way combine, and its Room arm reads the *whole* thread and folds
+            // every row before it first emits. On a conversation with a lot of history that gap is long
+            // enough to see — and the seed emission carries no rows, so what would show is the "no messages
+            // yet" copy on a thread that has hundreds. Show the shape of a thread instead, then cross-fade
+            // to the real rows, which land in the same geometry.
+            val threadEnter = KnitMotion.enterFade()
+            val threadExit = KnitMotion.exitFade()
+            // weight(1f), not fillMaxSize(): the notice above is an unweighted sibling, so the thread must
             // take the space that is left rather than ask for the whole column.
-            if (state.rows.isEmpty() && state.typingPeers.isEmpty()) {
-                EmptyState(modifier = Modifier.fillMaxWidth().weight(1f), isBridged = state.isBridged)
-            } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    contentPadding =
-                        androidx.compose.foundation.layout
-                            .PaddingValues(12.dp),
-                    // Bottom-anchored so the thread opens on the newest message with no scroll; the data is
-                    // reversed to match, making index 0 the newest row, drawn at the bottom. Arrangement.Bottom
-                    // keeps a short thread (fewer rows than fit on screen) resting just above the input rather
-                    // than floating at the top with a gap beneath the newest bubble.
-                    verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom),
-                    reverseLayout = true,
-                ) {
-                    // Reverse layout: the first item is drawn at the visual bottom, so the typing indicator sits
-                    // directly above the input and below the newest message (Signal-style, scrolls with content).
-                    if (state.typingPeers.isNotEmpty()) {
-                        item(key = "typing_indicator") {
-                            // Fades with the same spec as a message bubble: the indicator arriving and
-                            // leaving is a state change like any other, and it used to blink.
-                            TypingIndicatorRow(
-                                peers = state.typingPeers,
-                                modifier =
-                                    Modifier.animateItem(
-                                        placementSpec = null,
-                                        fadeInSpec = KnitMotion.fastEffects(),
-                                        fadeOutSpec = KnitMotion.fastEffects(),
-                                    ),
-                            )
-                        }
-                    }
-                    items(state.rows.asReversed(), key = { it.id }) { row ->
-                        // Fade only, no placement animation (`placementSpec = null`): the three
-                        // LaunchedEffects above already drive animateScrollToItem(0) when a message or a
-                        // typing peer arrives, and a placement animation would be sliding rows in one
-                        // direction while the scroll slides the viewport in the other. A new bubble
-                        // appears; nothing travels.
-                        val itemMotion =
-                            Modifier.animateItem(
-                                placementSpec = null,
-                                fadeInSpec = KnitMotion.fastEffects(),
-                                fadeOutSpec = KnitMotion.fastEffects(),
-                            )
-                        val notice = statusNoticeText(row)
-                        if (notice != null) {
-                            SystemNotice(text = notice, modifier = itemMotion)
-                        } else {
-                            MessageBubble(
-                                row,
-                                modifier = itemMotion,
-                                now = now,
-                                // In a 1:1 DM the peer's name is in the top bar, so don't repeat it on every
-                                // received bubble; show it only where multiple people can speak.
-                                // Every room and group names its authors; a DM does not (the header already
-                                // does). The bridged room needs it most of all — its posts come from
-                                // strangers, and an unattributed one would read as if Knit knew who sent it.
-                                showSenderName = state.isRoom || state.isBridged || state.isGroup,
-                                myNodeId = state.myNodeId,
-                                imageRatios = imageRatios,
-                                highlighted = row.id == highlightedMessageId,
-                                onImageClick = { fullscreenImage = it },
-                                onSaveFile = onSaveFile,
-                                onOpenProfile = onOpenProfile,
-                                onReact = onReact,
-                                quickReactions = quickReactions,
-                                onMoreReactions = { emojiSheetFor = it },
-                                onReply = { msg ->
-                                    onStartReply(
-                                        ReplyRef(
-                                            messageId = msg.id,
-                                            authorId = msg.senderNodeId,
-                                            author = msg.senderPlainName,
-                                            snippet =
-                                                buildReplySnippet(
-                                                    msg.body,
-                                                    msg.moderationFlagged,
-                                                    attachmentLabel =
-                                                        when {
-                                                            msg.attachmentName != null -> {
-                                                                fileQuoteLabel.format(msg.attachmentName)
-                                                            }
-
-                                                            VoiceAudio.isVoice(msg.attachmentMime) -> {
-                                                                voiceQuoteLabel
-                                                            }
-
-                                                            else -> {
-                                                                null
-                                                            }
-                                                        },
-                                                ),
-                                            // A quoted card message shows its link text, not an attachment glyph.
-                                            hasAttachment = msg.attachmentHash != null && msg.attachmentMime != LinkPreviewBlob.MIME,
+            AnimatedContent(
+                targetState = state.isLoading,
+                transitionSpec = { threadEnter togetherWith threadExit },
+                label = "chatLoading",
+                modifier = Modifier.fillMaxWidth().weight(1f),
+            ) { loading ->
+                if (loading) {
+                    ChatSkeleton(
+                        // A DM draws no avatar column (see `showSenderName` below), so neither may its
+                        // skeleton, or every bubble shifts sideways as the real rows replace it.
+                        withAvatars = state.isRoom || state.isBridged || state.isGroup,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else if (state.rows.isEmpty() && state.typingPeers.isEmpty()) {
+                    EmptyState(modifier = Modifier.fillMaxSize(), isBridged = state.isBridged)
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(12.dp),
+                        // Bottom-anchored so the thread opens on the newest message with no scroll; the data is
+                        // reversed to match, making index 0 the newest row, drawn at the bottom. Arrangement.Bottom
+                        // keeps a short thread (fewer rows than fit on screen) resting just above the input rather
+                        // than floating at the top with a gap beneath the newest bubble.
+                        verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom),
+                        reverseLayout = true,
+                    ) {
+                        // Reverse layout: the first item is drawn at the visual bottom, so the typing indicator sits
+                        // directly above the input and below the newest message (Signal-style, scrolls with content).
+                        if (state.typingPeers.isNotEmpty()) {
+                            item(key = "typing_indicator") {
+                                // Fades with the same spec as a message bubble: the indicator arriving and
+                                // leaving is a state change like any other, and it used to blink.
+                                TypingIndicatorRow(
+                                    peers = state.typingPeers,
+                                    modifier =
+                                        Modifier.animateItem(
+                                            placementSpec = null,
+                                            fadeInSpec = KnitMotion.fastEffects(),
+                                            fadeOutSpec = KnitMotion.fastEffects(),
                                         ),
-                                    )
-                                },
-                                onQuoteClick = { targetId ->
-                                    val idx = state.rows.asReversed().indexOfFirst { it.id == targetId }
-                                    if (idx >= 0) {
-                                        highlightedMessageId = targetId
-                                        scrollScope.launch { listState.animateScrollToItem(idx) }
-                                    }
-                                },
-                                onDelete = onDeleteMessage,
-                                onBlock = onBlock,
-                                onCopy = onCopy,
-                                onOpenMessageDetails = onOpenMessageDetails,
-                                onExplainRelay = { relayMarkerExplained = it },
-                                onExplainHeardAuthor = { peerId, name ->
-                                    heardAuthorExplained = HeardAuthor(peerId, name)
-                                },
-                                voicePlayback = voicePlayback,
-                                onVoicePlay = onVoicePlay,
-                                onVoiceSeek = onVoiceSeek,
-                            )
+                                )
+                            }
+                        }
+                        items(state.rows.asReversed(), key = { it.id }) { row ->
+                            // Fade only, no placement animation (`placementSpec = null`): the three
+                            // LaunchedEffects above already drive animateScrollToItem(0) when a message or a
+                            // typing peer arrives, and a placement animation would be sliding rows in one
+                            // direction while the scroll slides the viewport in the other. A new bubble
+                            // appears; nothing travels.
+                            val itemMotion =
+                                Modifier.animateItem(
+                                    placementSpec = null,
+                                    fadeInSpec = KnitMotion.fastEffects(),
+                                    fadeOutSpec = KnitMotion.fastEffects(),
+                                )
+                            val notice = statusNoticeText(row)
+                            if (notice != null) {
+                                SystemNotice(text = notice, modifier = itemMotion)
+                            } else {
+                                MessageBubble(
+                                    row,
+                                    modifier = itemMotion,
+                                    now = now,
+                                    // In a 1:1 DM the peer's name is in the top bar, so don't repeat it on every
+                                    // received bubble; show it only where multiple people can speak.
+                                    // Every room and group names its authors; a DM does not (the header already
+                                    // does). The bridged room needs it most of all — its posts come from
+                                    // strangers, and an unattributed one would read as if Knit knew who sent it.
+                                    showSenderName = state.isRoom || state.isBridged || state.isGroup,
+                                    myNodeId = state.myNodeId,
+                                    imageRatios = imageRatios,
+                                    highlighted = row.id == highlightedMessageId,
+                                    onImageClick = { fullscreenImage = it },
+                                    onSaveFile = onSaveFile,
+                                    onOpenProfile = onOpenProfile,
+                                    onReact = onReact,
+                                    quickReactions = quickReactions,
+                                    onMoreReactions = { emojiSheetFor = it },
+                                    onReply = { msg ->
+                                        onStartReply(
+                                            ReplyRef(
+                                                messageId = msg.id,
+                                                authorId = msg.senderNodeId,
+                                                author = msg.senderPlainName,
+                                                snippet =
+                                                    buildReplySnippet(
+                                                        msg.body,
+                                                        msg.moderationFlagged,
+                                                        attachmentLabel =
+                                                            when {
+                                                                msg.attachmentName != null -> {
+                                                                    fileQuoteLabel.format(msg.attachmentName)
+                                                                }
+
+                                                                VoiceAudio.isVoice(msg.attachmentMime) -> {
+                                                                    voiceQuoteLabel
+                                                                }
+
+                                                                else -> {
+                                                                    null
+                                                                }
+                                                            },
+                                                    ),
+                                                // A quoted card message shows its link text, not an attachment glyph.
+                                                hasAttachment = msg.attachmentHash != null && msg.attachmentMime != LinkPreviewBlob.MIME,
+                                            ),
+                                        )
+                                    },
+                                    onQuoteClick = { targetId ->
+                                        val idx = state.rows.asReversed().indexOfFirst { it.id == targetId }
+                                        if (idx >= 0) {
+                                            highlightedMessageId = targetId
+                                            scrollScope.launch { listState.animateScrollToItem(idx) }
+                                        }
+                                    },
+                                    onDelete = onDeleteMessage,
+                                    onBlock = onBlock,
+                                    onCopy = onCopy,
+                                    onOpenMessageDetails = onOpenMessageDetails,
+                                    onExplainRelay = { relayMarkerExplained = it },
+                                    onExplainHeardAuthor = { peerId, name ->
+                                        heardAuthorExplained = HeardAuthor(peerId, name)
+                                    },
+                                    voicePlayback = voicePlayback,
+                                    onVoicePlay = onVoicePlay,
+                                    onVoiceSeek = onVoiceSeek,
+                                )
+                            }
                         }
                     }
                 }
@@ -2721,11 +2743,10 @@ private fun EmptyState(
     isBridged: Boolean = false,
 ) {
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
-        // Fade in rather than paint on arrival. ChatUiState seeds with no rows, so *every* thread shows
-        // this for the frame or two before Room answers — and a hard flash of "no messages yet" on a
-        // conversation that has hundreds is the worst thing this screen does. Starting at zero alpha means
-        // a thread with content replaces it while it is still barely visible, and a genuinely empty one
-        // gets an arrival rather than a snap.
+        // Fade in rather than paint on arrival. [ChatUiState.isLoading] now keeps this off screen until
+        // Room has answered — a hard flash of "no messages yet" on a conversation that has hundreds used to
+        // be the worst thing this screen does, and the skeleton owns that gap instead. What is left is the
+        // arrival itself: a thread that turns out to be empty gets one rather than a snap.
         var shown by remember { mutableStateOf(false) }
         LaunchedEffect(Unit) { shown = true }
         AnimatedVisibility(visible = shown, enter = KnitMotion.enterFade(), exit = KnitMotion.exitFade()) {
@@ -2738,6 +2759,88 @@ private fun EmptyState(
         }
     }
 }
+
+/**
+ * Placeholder bubbles for a thread that is still loading (see [ChatUiState.isLoading]). The geometry mirrors
+ * the real list exactly — same 12.dp content padding, same 6.dp gaps, same bottom-anchored reverse layout,
+ * same 40.dp avatar and bubble corners as [MessageBubble] — so the arriving rows replace it without a jump.
+ *
+ * The pattern of widths is fixed rather than random: a skeleton that reshuffled between recompositions would
+ * read as content changing rather than as content loading. It is also not scrollable and carries no
+ * semantics — there is nothing here to read or reach, and the real thread takes the space back as soon as
+ * Room answers.
+ */
+@Composable
+private fun ChatSkeleton(
+    withAvatars: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    // Hoisted to the list, so every placeholder on screen breathes on one transition rather than its own.
+    val blockColor = skeletonBlockColor(skeletonPulseAlpha(label = "chatSkeleton"))
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.Bottom),
+        reverseLayout = true,
+        userScrollEnabled = false,
+    ) {
+        items(SKELETON_BUBBLES) { bubble ->
+            BubbleSkeleton(bubble = bubble, withAvatars = withAvatars, blockColor = blockColor)
+        }
+    }
+}
+
+/** One placeholder bubble: [SkeletonBubble.mine] picks the side, the tail corner and whether an avatar leads. */
+@Composable
+private fun BubbleSkeleton(
+    bubble: SkeletonBubble,
+    withAvatars: Boolean,
+    blockColor: Color,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (bubble.mine) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        if (!bubble.mine && withAvatars) {
+            Box(Modifier.size(40.dp).clip(CircleShape).background(blockColor))
+            Spacer(Modifier.width(8.dp))
+        }
+        Box(
+            Modifier
+                .fillMaxWidth(bubble.widthFraction)
+                .height(bubble.height)
+                .clip(
+                    if (bubble.mine) {
+                        RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 4.dp, bottomStart = 16.dp)
+                    } else {
+                        RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = 16.dp, bottomStart = 4.dp)
+                    },
+                ).background(blockColor),
+        )
+    }
+}
+
+/** A placeholder bubble's side, its width as a fraction of the row, and its height (one line, or two). */
+private data class SkeletonBubble(
+    val mine: Boolean,
+    val widthFraction: Float,
+    val height: Dp,
+)
+
+// The placeholder thread, newest first to match the reversed data the real list is fed. Both sides speak and
+// the lengths vary, because a column of identical blocks reads as a broken layout rather than as a
+// conversation. Six covers a small phone's thread area; a taller screen keeps its top empty, which is what
+// the top of a thread looks like anyway, and the list clips rather than overflows if one is shorter still.
+private val SKELETON_BUBBLES =
+    listOf(
+        SkeletonBubble(mine = false, widthFraction = 0.52f, height = 40.dp),
+        SkeletonBubble(mine = true, widthFraction = 0.38f, height = 40.dp),
+        SkeletonBubble(mine = true, widthFraction = 0.60f, height = 58.dp),
+        SkeletonBubble(mine = false, widthFraction = 0.70f, height = 58.dp),
+        SkeletonBubble(mine = false, widthFraction = 0.44f, height = 40.dp),
+        SkeletonBubble(mine = true, widthFraction = 0.55f, height = 40.dp),
+    )
 
 /**
  * The "now typing" row: the typing peers' avatars (up to three, slightly overlapped for a group/room) beside
@@ -4064,6 +4167,14 @@ fun MessageInputPreview() =
 fun EmptyStatePreview() =
     KnitPreview {
         EmptyState()
+    }
+
+// The cold-open placeholder, in its room form (avatars) — a DM's drops the leading circle.
+@Preview(showBackground = true, heightDp = 420)
+@Composable
+fun ChatSkeletonPreview() =
+    KnitPreview {
+        ChatSkeleton(withAvatars = true, modifier = Modifier.fillMaxSize())
     }
 
 @Preview(showBackground = true)

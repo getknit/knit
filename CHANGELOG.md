@@ -38,6 +38,8 @@ document:
 
 ### Changed
 
+- A chat with a lot of messages no longer opens on "No messages yet". Faint placeholder bubbles fill the
+  thread while Knit loads it, so a long conversation stops looking like an empty one.
 - Aliases are three words now, like ReallyJoyfulFerret. Settings and a contact's profile show the new one.
 - Knit no longer feeds what is on screen to Android's content-capture service (the "app content"
   suggestions). An end-to-end-encrypted messenger has no business handing its screen text to another
