@@ -85,6 +85,49 @@ class SideChannelLabTest {
         }
 
     /**
+     * A frame crosses a pipe once (`LinkCrossings`, the phone's `writeOnce`). Alice's post reaches Bob by
+     * whichever of her two copies is enqueued first — the router's flood or the fast path's link copy — and
+     * the other is skipped on her side; Bob's re-fan never goes back toward Alice, and his one copy to Carol
+     * is single the same way. Before the memo every `shouldFastFanout` frame crossed each L2CAP link twice
+     * and the receiver's SeenSet ate the second: airtime, never divergence, which is why the oracle is the
+     * one every scenario runs and the count is what this one pins. The pages are lost on purpose so the link
+     * discipline is judged alone (a page would hand Carol the post from Alice directly).
+     */
+    @Test
+    fun aFrameCrossesEachPipeOnce() =
+        runBlocking {
+            val alice = lab.node("alice", pages = pages).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", pages = pages).apply { setDisplayName("Bob") }
+            val carol = lab.node("carol", pages = pages).apply { setDisplayName("Carol") }
+            lab.linkAll(alice to bob, bob to carol)
+            lab.awaitAcquainted(alice, bob, carol)
+            pages.lossy = { _, _ -> true }
+
+            assertTrue(alice.sendRoom("once per pipe"))
+            lab.assertConverged(listOf(bob, carol), atLeast = 1, carriers = listOf(alice)) { Conversations.NEARBY }
+
+            val post = alice.decrypted(Conversations.NEARBY).single().first
+            for (node in listOf(alice, bob, carol)) {
+                // A `sent` line is `#seq <to> <type> <id> relay=… via=…`; group the post's crossings by receiver.
+                val perReceiver =
+                    node.transport.sent
+                        .filter { it.contains(" $post ") }
+                        .groupBy { it.split(" ")[1] }
+                perReceiver.forEach { (to, lines) ->
+                    assertEquals("${node.name} wrote the post to $to more than once: $lines", 1, lines.size)
+                }
+            }
+            assertTrue(
+                "Bob handed Alice her own post back: ${bob.transport.sent.filter { it.contains(" $post ") }}",
+                bob.transport.sent.none { it.contains(" ${alice.nodeId.take(6)} ") && it.contains(" $post ") },
+            )
+            assertTrue(
+                "Alice's second copy for Bob was not skipped: ${alice.transport.dupSkipped}",
+                alice.transport.dupSkipped.any { it.startsWith(bob.nodeId.take(6)) },
+            )
+        }
+
+    /**
      * Erin met Alice and Bob by link, then fell off both — over the budget, in backoff: sighted, not linked.
      * Alice's post reaches her from the page alone, verified against the key she already holds, shown. What
      * the page does *not* do is converge custody: Bob's tick to Alice is DM-form, so it rides links only, and

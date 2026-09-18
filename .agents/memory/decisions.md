@@ -97,6 +97,7 @@ carries; never renumber an old one.
 | [2026-09.66cw](decisions/2026-09-66cw-a-spool-bearer-token-is-stored-in-the-clear.md) | A spool bearer token is stored in the clear, and one canonical URL is what gets stored | spool, privacy, settings, data |
 | [2026-09.6eb6](decisions/2026-09-6eb6-in-app-about-and-licenses.md) | In-app About and licenses: a hand-kept list pinned to the notices file and the release classpath | ui, build, release, settings |
 | [2026-09.6gtm](decisions/2026-09-6gtm-the-lora-plane-is-introduced-at-2-5-0.md) | The LoRa plane is introduced at 2.5.0 | lora, release, mesh |
+| [2026-09.6nmy](decisions/2026-09-6nmy-a-frame-crosses-a-bluetooth-link-at-most-once.md) | A frame crosses a Bluetooth link at most once | bluetooth, fast-path, battery |
 | [2026-09.6ww7](decisions/2026-09-6ww7-a-group-chat-says-lora-will-not-carry-it.md) | A group chat says LoRa will not carry it | lora, ui |
 | [2026-09.7463](decisions/2026-09-7463-sealed-dm-form-chat-rides-the-targeted-coordination-plane-arm.md) | Sealed DM-form chat rides the targeted coordination-plane arm | mesh, nan, fanout |
 | [2026-09.74fq](decisions/2026-09-74fq-open-to-chat-is-a-carried-profile-flag.md) | Open to chat is a carried profile flag, and the nearby cue is batched with per-person and hourly cooldowns | profile, wire, notifications, ui |

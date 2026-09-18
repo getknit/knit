@@ -28,6 +28,15 @@ class BleFastRoutePolicyTest {
     }
 
     @Test
+    fun fanoutNeverRoutesAFrameBackToItsAuthor() {
+        // A page carries no hop id: a frame first heard off one is re-fanned with the author as its hop, so
+        // the router's split horizon cannot exclude the link the copy would have come by. The author has its
+        // own frame by definition.
+        val route = BleFastRoutePolicy.fanout(env(sender = "bob"), linked, sideAvailable = false)
+        assertEquals(setOf("carol"), route.linkTargets)
+    }
+
+    @Test
     fun fanoutOffersThePageOnlyWhenTheChannelIsAvailable() {
         val route = BleFastRoutePolicy.fanout(env(FrameType.REACTION), linked, sideAvailable = true)
         assertEquals(linked, route.linkTargets)

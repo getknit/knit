@@ -1046,6 +1046,7 @@ class DebugBridgeReceiver :
             .put("bleSideReassembled", snap.bleSideReassembled)
             .put("bleSideDeduped", snap.bleSideDeduped)
             .put("bleSideDropsByReason", JSONObject(snap.bleSideDropsByReason.mapKeys { it.key.name }))
+            .put("bleLinkDupSkipped", snap.bleLinkDupSkipped)
             .put("spoolPushed", snap.spoolPushed)
             .put("spoolPulled", snap.spoolPulled)
             .put("spoolBridged", snap.spoolBridged)

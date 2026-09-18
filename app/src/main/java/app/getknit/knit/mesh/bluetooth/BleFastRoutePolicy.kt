@@ -24,7 +24,7 @@ internal object BleFastRoutePolicy {
     )
 
     data class Route(
-        /** Linked peers that get the frame over their L2CAP stream. */
+        /** Linked peers that get the frame over their L2CAP stream — never its author, who has it by definition. */
         val linkTargets: Set<String>,
         /** The side-channel offer, or null when the page is not to be used. */
         val side: SideOffer?,
@@ -44,7 +44,11 @@ internal object BleFastRoutePolicy {
 
                 else -> SideOffer(SideCarousel.Kind.CONTENT, null)
             }
-        return Route(linked, side)
+        // A page carries no hop id, so a frame first heard off one is re-fanned with the author as its hop and
+        // the router's split horizon cannot exclude the link the frame would have come by; the author never
+        // needs its own frame back, so the route excludes it here (the per-link crossing memo catches the
+        // rest — `LinkCrossings`).
+        return Route(linked - env.senderId, side)
     }
 
     fun send(

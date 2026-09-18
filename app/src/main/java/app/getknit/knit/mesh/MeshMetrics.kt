@@ -270,6 +270,7 @@ class MeshMetrics {
     private val bleSideReassembled = AtomicLong()
     private val bleSideDeduped = AtomicLong()
     private val bleSideDrops: Map<BleSideDrop, AtomicLong> = BleSideDrop.entries.associateWith { AtomicLong() }
+    private val bleLinkDupSkipped = AtomicLong()
     private val spoolPushed = AtomicLong()
     private val spoolPulled = AtomicLong()
     private val spoolBridged = AtomicLong()
@@ -680,6 +681,15 @@ class MeshMetrics {
         bleSideDeduped.incrementAndGet()
     }
 
+    /**
+     * A frame already on its way over a Bluetooth link (or just in off it) was handed to that link again and
+     * skipped — the router's flood copy after the fast path's, or a re-fan back toward its hop (`LinkCrossings`).
+     * Climbs about one per room frame per link on a two-radio mesh; the far end's SeenSet used to eat these.
+     */
+    fun onBleLinkDupSkipped() {
+        bleLinkDupSkipped.incrementAndGet()
+    }
+
     /** The side channel discarded a frame — see [BleSideDrop] for how to read each reason. */
     fun onBleSideDropped(reason: BleSideDrop) {
         bleSideDrops.getValue(reason).incrementAndGet()
@@ -1057,6 +1067,7 @@ class MeshMetrics {
             bleSideReassembled = bleSideReassembled.get(),
             bleSideDeduped = bleSideDeduped.get(),
             bleSideDropsByReason = bleSideDrops.mapValues { it.value.get() }.filterValues { it > 0 },
+            bleLinkDupSkipped = bleLinkDupSkipped.get(),
             spoolPushed = spoolPushed.get(),
             spoolPulled = spoolPulled.get(),
             spoolBridged = spoolBridged.get(),
@@ -1173,6 +1184,7 @@ class MeshMetrics {
         val bleSideReassembled: Long = 0,
         val bleSideDeduped: Long = 0,
         val bleSideDropsByReason: Map<BleSideDrop, Long> = emptyMap(),
+        val bleLinkDupSkipped: Long = 0,
         val spoolPushed: Long = 0,
         val spoolPulled: Long = 0,
         val spoolBridged: Long = 0,

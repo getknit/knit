@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.bluetooth
 
 import app.getknit.knit.mesh.SeenSet
+import app.getknit.knit.mesh.link.FrameKey
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireEnvelope
 
@@ -275,20 +276,15 @@ internal class SideCarousel(
 
         private const val SEEN_MAX = 256
         private const val SEEN_TTL_MS = 10 * 60_000L
-        private const val SIG_KEY_BYTES = 8
 
         /**
-         * The dedup key both ends of the channel use: the signature's first bytes (a re-seal keeps its id but
-         * carries a fresh signature, so the id would suppress it), or the id under its own namespace for an
-         * unsigned frame — the same rule as the LoRa plane's `dedupKey`.
+         * The dedup key both ends of the channel use — [FrameKey], shared with the links' crossing memo: the
+         * signature's first bytes (a re-seal keeps its id but carries a fresh signature, so the id would
+         * suppress it), or the id under its own namespace for an unsigned frame.
          */
         fun frameKey(
             wire: WireEnvelope,
             env: RelayEnvelope,
-        ): String {
-            if (wire.sig.isEmpty()) return "u:${env.id}"
-            val n = minOf(SIG_KEY_BYTES, wire.sig.size)
-            return buildString(n * 2) { for (i in 0 until n) append("%02x".format(wire.sig[i])) }
-        }
+        ): String = FrameKey.of(wire, env)
     }
 }

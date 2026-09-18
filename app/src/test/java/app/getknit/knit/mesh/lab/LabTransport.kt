@@ -8,6 +8,8 @@ import app.getknit.knit.mesh.ReceivedDigest
 import app.getknit.knit.mesh.ReceivedFile
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.bluetooth.BleFastRoutePolicy
+import app.getknit.knit.mesh.link.FrameKey
+import app.getknit.knit.mesh.link.LinkCrossings
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
@@ -35,16 +37,18 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * **Bare, it is a link plane with no fast plane** — the Bluetooth plane before its side channel: every
  * originated frame floods once over `send(wire, null)`, every custody re-serve unicasts over
- * `send(wire, peer)`, and `fastFanout`/`fastSend` are the interface's no-ops. One divergence from the phone
- * to keep in mind when counting held frames: production Bluetooth has always *also* carried the fast path's
- * link copy — the composite's `send` fallback before ADR 2026-09.sjaa, `BleFastRoutePolicy` since — so every
- * `shouldFastFanout` frame reaches a linked peer twice over one stream there, and once here.
+ * `send(wire, peer)`, and `fastFanout`/`fastSend` are the interface's no-ops.
  *
  * **With [pages] it is the Bluetooth plane as shipped** (ADR 2026-09.sjaa): [hasFastPlane], and the fast path
  * routes through the real `BleFastRoutePolicy` — [fastFanout] is the link copy to every linked peer (through
  * the same pipe as the flood, held and lost with it: one L2CAP stream) plus a page on the [LabPages] every
  * member in range hears, arriving from the frame's *author*; [fastSend] is the linked addressee over its
  * pipe and never a page. A node joins the pages the way it takes a board (`MeshLab.node(pages = …)`).
+ *
+ * Either way a pipe carries a frame **once**, through the same [LinkCrossings] the phone's transport keeps:
+ * the flood copy and the fast path's link copy are one write, a frame that just came in is never handed back
+ * over the pipe it came by, and what the memo skipped is in [dupSkipped]. Before it, every `shouldFastFanout`
+ * frame crossed a real L2CAP link twice and the far end's SeenSet ate the second.
  */
 class LabTransport(
     val nodeId: String,
@@ -165,6 +169,12 @@ class LabTransport(
     /** Every frame this transport handed a peer, as `to type id` in send order — the diagnosis of "who served that". */
     val sent = CopyOnWriteArrayList<String>()
 
+    /** Every write [crossings] skipped, as `to key via`: the second copy of a frame for one pipe, or an echo. */
+    val dupSkipped = CopyOnWriteArrayList<String>()
+
+    /** One write per pipe per frame, either way, as `BluetoothMeshTransport` keeps it. */
+    private val crossings = LinkCrossings()
+
     /**
      * Links both ways so the two become neighbors, as a data path coming up does. With [publish] false the
      * pipes exist but neither side's `neighbors` moves yet — [publishNeighbors] does that — so a topology of
@@ -175,6 +185,8 @@ class LabTransport(
         publish: Boolean = true,
     ) {
         if (other.nodeId == nodeId) return
+        crossings.forget(other.nodeId)
+        other.crossings.forget(nodeId)
         pipes[other.nodeId] = Pipe(other)
         other.pipes[nodeId] = Pipe(this)
         // Both ends answer `neighbors.value` with the new link before either end's collectors run (see [current]).
@@ -193,6 +205,8 @@ class LabTransport(
     fun disconnect(other: LabTransport) {
         pipes.remove(other.nodeId)
         other.pipes.remove(nodeId)
+        crossings.forget(other.nodeId)
+        other.crossings.forget(nodeId)
         presentNeighbors()
         other.presentNeighbors()
         refreshNeighbors()
@@ -272,13 +286,30 @@ class LabTransport(
         to: Peer?,
     ) {
         val targets = if (to == null) pipes.values.toList() else listOfNotNull(pipes[to.nodeId])
+        val key = FrameKey.ofSigned(wire)
         targets.forEach { pipe ->
             when {
                 pipe.lossy(wire) -> lost += wire
+                !crosses(pipe, key, VIA_LINK) -> Unit
                 pipe.holding -> synchronized(pipe.held) { pipe.held += wire }
                 else -> pipe.target.deliver(wire, nodeId, VIA_LINK)
             }
         }
+    }
+
+    /**
+     * The phone's `writeOnce`: true when [key] is new to this pipe (write it), false when it already crossed
+     * either way (skip it, recorded in [dupSkipped]). Judged after `lossy`, which models a radio that lost the
+     * packet rather than a link that took it. An unsigned frame (null key) always crosses, as on the phone.
+     */
+    private fun crosses(
+        pipe: Pipe,
+        key: String?,
+        via: String,
+    ): Boolean {
+        if (key == null || crossings.firstCrossing(pipe.target.nodeId, key)) return true
+        dupSkipped += "${pipe.target.nodeId.take(NODE_ID_CHARS)} $key via=$via"
+        return false
     }
 
     /**
@@ -291,7 +322,8 @@ class LabTransport(
         val pages = pages ?: return
         val env = WireCodec.decodeEnvelope(wire.signed) ?: return
         val route = BleFastRoutePolicy.fanout(env, pipes.keys.toSet(), sideAvailable = pages.others(this).isNotEmpty())
-        route.linkTargets.forEach { pipes[it]?.let { pipe -> offer(pipe, wire) } }
+        val key = FrameKey.of(wire, env)
+        route.linkTargets.forEach { pipes[it]?.let { pipe -> offer(pipe, wire, key) } }
         if (route.side != null) pages.air(this, wire, env)
     }
 
@@ -301,16 +333,19 @@ class LabTransport(
         to: Peer,
     ) {
         if (pages == null) return
-        BleFastRoutePolicy.send(to.nodeId, pipes.keys.toSet()).linkTargets.forEach { pipes[it]?.let { pipe -> offer(pipe, wire) } }
+        val key = FrameKey.ofSigned(wire)
+        BleFastRoutePolicy.send(to.nodeId, pipes.keys.toSet()).linkTargets.forEach { pipes[it]?.let { pipe -> offer(pipe, wire, key) } }
     }
 
     /** [send]'s pipe discipline for a non-suspending caller — the fast path's link copy. */
     private fun offer(
         pipe: Pipe,
         wire: WireEnvelope,
+        key: String?,
     ) {
         when {
             pipe.lossy(wire) -> lost += wire
+            !crosses(pipe, key, VIA_FAST) -> Unit
             pipe.holding -> synchronized(pipe.held) { pipe.held += wire }
             else -> pipe.target.deliverNow(wire, nodeId, VIA_FAST)
         }
@@ -377,6 +412,7 @@ class LabTransport(
         via: String,
     ): InboundFrame? {
         val envelope = WireCodec.decodeEnvelope(wire.signed) ?: return null
+        crossings.firstCrossing(fromNodeId, FrameKey.of(wire, envelope)) // in counts: it never goes back this way
         pipes[fromNodeId]?.target?.sent?.add(
             "#${SEQ.incrementAndGet()} ${nodeId.take(NODE_ID_CHARS)} ${envelope.type} ${envelope.id} relay=${wire.relay} via=$via",
         )

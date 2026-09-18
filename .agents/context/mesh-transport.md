@@ -206,6 +206,22 @@ scan is floored. The side channel below runs a **second** scan with its own poli
 continuous at LOW_POWER/BALANCED while a flagged peer is around, Off during a connect, and rationed to
 one start per 30 s because Android's five-starts-per-30 s budget is per app and this scan shares it.
 
+## A frame crosses a BLE link once, and the loops sleep until something can change
+
+Two paths used to hand the Bluetooth plane the same frame for the same L2CAP stream — the router's flood copy
+(`MeshRouter` → `CompositeMeshTransport.send`, `wire.relayed()`) and the fast path's link copy
+(`fastFanout`, the immediate one, unrelayed) — and a relayed frame's fast copy went straight back over the link
+it arrived on, because `fastFanout` has no hop id. Different bytes (`hops`), same `sig`, and the far end's
+`SeenSet` dropped the second every time: room chat, reactions, receipts and profiles each crossed every link
+twice. `mesh/link/LinkCrossings` is the per-link memo that stops it, keyed on `mesh/link/FrameKey` (the
+sig-prefix key the side channel already used), marked on the way **in** as well as out, with the router
+`SeenSet`'s ten-minute window and forgotten with the link — so what it skips is exactly what the receiver
+would have dropped, and a peer that restarted with an empty `SeenSet` gets a clean stream. `BleFastRoutePolicy`
+additionally never routes a frame to its own author (a page-first hearing re-fans with the author as hop,
+which the router's split horizon can't exclude). Counter: `bleLinkDupSkipped`, about one per room frame per
+link. The lab's `LabTransport` keeps the same memo (`dupSkipped`), so the box stays the plane as shipped
+(`SideChannelLabTest.aFrameCrossesEachPipeOnce`). ADR 2026-09.6nmy.
+
 ## The BLE side channel is a page carousel, not a message queue (ADR 2026-09.sjaa)
 
 `mesh/bluetooth/BleSideChannel` is the BLE analogue of the NAN coordination plane's fast fan-out

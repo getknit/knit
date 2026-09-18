@@ -27,9 +27,9 @@
 `InboundPipeline`, `MeshRouter`, `ForwardSync`, `KeyExchange`, `AckSync`, both ratchets), the Room-backed
 repositories over Robolectric's in-memory SQLite, a real `IdentityKeyStore` over an in-memory secret, a
 DataStore-backed `SettingsStore` — linked through `LabTransport`, an in-process `MeshTransport` with no radio.
-Bare, it is a link plane with no fast plane (one flood copy per link — production Bluetooth has always also
-sent the fast path's link copy, so a `shouldFastFanout` frame crosses a real L2CAP link twice and a lab pipe
-once); with `pages = LabPages()` it is the Bluetooth plane as shipped, side channel included (below).
+Bare, it is a link plane with no fast plane (one flood copy per link); with `pages = LabPages()` it is the
+Bluetooth plane as shipped, side channel included (below). Either way a pipe carries a frame once, through
+the same `LinkCrossings` memo the phone keeps (`dupSkipped` on the transport lists what it refused).
 The only doubles are the leaves with a hardware or UI side (notifier, tflite text moderators, image moderator).
 The wiring mirrors `di/AppModule` + `di/MeshModule` by hand, so a constructor change is a compile error here
 rather than a silently narrower rig.

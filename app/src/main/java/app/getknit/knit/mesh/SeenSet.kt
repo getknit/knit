@@ -59,7 +59,7 @@ class SeenSet(
         stamps.sortedBy { it.second }.forEach { (id, at) -> if (now - at < ttlMillis) seen[id] = at }
     }
 
-    private companion object {
+    companion object {
         /** Default flood-suppression window: an id counts as new again after 10 minutes. */
         const val DEFAULT_TTL_MS = 10 * 60_000L
     }

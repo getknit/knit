@@ -31,8 +31,10 @@ import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.bleSupport
+import app.getknit.knit.mesh.link.FrameKey
 import app.getknit.knit.mesh.link.FramedLink
 import app.getknit.knit.mesh.link.LinkCallbacks
+import app.getknit.knit.mesh.link.LinkCrossings
 import app.getknit.knit.mesh.link.LinkHandshake
 import app.getknit.knit.mesh.power.PowerPolicy
 import app.getknit.knit.mesh.power.PowerStateSource
@@ -117,6 +119,12 @@ class BluetoothMeshTransport(
 
     // Live L2CAP links, keyed by peer nodeId (many, unlike NAN's ≤1).
     private val links = ConcurrentHashMap<String, FramedLink>()
+
+    // Which frames already crossed which link, either way: the router's flood copy and the fast path's link
+    // copy are the same frame twice for the same stream, and a relayed frame's fast copy would go straight
+    // back over the link it arrived on. One write per link per frame; the far end's SeenSet would have
+    // dropped the rest (see [LinkCrossings] for why that makes it a byte saving and not a delivery change).
+    private val crossings = LinkCrossings(clock = SystemClock::elapsedRealtime)
 
     // Freshest BluetoothDevice per nodeId (updated every sighting, so a rotated random address re-associates).
     private val deviceFor = ConcurrentHashMap<String, BluetoothDevice>()
@@ -230,6 +238,8 @@ class BluetoothMeshTransport(
     private val linkCallbacks =
         object : LinkCallbacks {
             override fun onInbound(frame: InboundFrame) {
+                // In counts as a crossing too: nothing we later hand this link may be the frame it just gave us.
+                crossings.firstCrossing(frame.fromNodeId, FrameKey.of(frame.wire, frame.envelope))
                 _inbound.tryEmit(frame)
             }
 
@@ -333,8 +343,18 @@ class BluetoothMeshTransport(
         to: Peer?,
     ) {
         val bytes = WireCodec.encodeWire(wire)
+        val key = FrameKey.ofSigned(wire) // an unsigned frame is point-to-point and never fanned: no memo
         val targets = if (to == null) links.values.toList() else listOfNotNull(links[to.nodeId])
-        targets.forEach { it.send(bytes) } // FramedLink.send accounts the bytes
+        targets.forEach { writeOnce(it, key, bytes) } // FramedLink.send accounts the bytes
+    }
+
+    /** [FramedLink.send] unless [key] already crossed this link either way — then the far end has it. */
+    private fun writeOnce(
+        link: FramedLink,
+        key: String?,
+        bytes: ByteArray,
+    ) {
+        if (key == null || crossings.firstCrossing(link.nodeId, key)) link.send(bytes) else metrics.onBleLinkDupSkipped()
     }
 
     /**
@@ -350,7 +370,8 @@ class BluetoothMeshTransport(
         val sideAvailable = side != null && side.live && sideCapable.anyCapable(elapsed(), links.keys)
         val route = BleFastRoutePolicy.fanout(env, links.keys, sideAvailable)
         val bytes = WireCodec.encodeWire(wire)
-        route.linkTargets.forEach { links[it]?.send(bytes) }
+        val key = FrameKey.of(wire, env)
+        route.linkTargets.forEach { links[it]?.let { link -> writeOnce(link, key, bytes) } }
         val offer = route.side ?: return
         if (side?.offer(wire, env, offer.kind, offer.coalesceKey) == null) metrics.onBleSideTooBig()
     }
@@ -363,7 +384,8 @@ class BluetoothMeshTransport(
         val route = BleFastRoutePolicy.send(to.nodeId, links.keys)
         if (route.linkTargets.isEmpty()) return
         val bytes = WireCodec.encodeWire(wire)
-        route.linkTargets.forEach { links[it]?.send(bytes) }
+        val key = FrameKey.ofSigned(wire)
+        route.linkTargets.forEach { links[it]?.let { link -> writeOnce(link, key, bytes) } }
     }
 
     override suspend fun sendFile(
@@ -712,6 +734,7 @@ class BluetoothMeshTransport(
                 paceBytesPerSec = BLE_PACE_BYTES_PER_SEC,
                 log = { msg -> Log.d(TAG, msg) },
             )
+        crossings.forget(nodeId) // a fresh stream starts clean: the peer may have restarted with an empty SeenSet
         val prev = links.put(nodeId, framed)
         prev?.close() // a stale link to the same peer — never leak it
         lastLinkOrStartAt = elapsed()
@@ -733,6 +756,7 @@ class BluetoothMeshTransport(
     ) {
         val fl = links.remove(nodeId) ?: return
         fl.close()
+        crossings.forget(nodeId)
         refreshNeighbors()
         publishReachable() // drop the peer from reachable too, unless it's still being scan-sighted
         Log.i(TAG, "bt link down: $nodeId ($reason)")
