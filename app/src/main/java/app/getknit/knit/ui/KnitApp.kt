@@ -35,6 +35,7 @@ import app.getknit.knit.legal.License
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshService
 import app.getknit.knit.mesh.MeshStartGate
+import app.getknit.knit.moderation.MlTextModerator
 import app.getknit.knit.review.ReviewPrompter
 import app.getknit.knit.ui.about.AboutScreen
 import app.getknit.knit.ui.about.LicenseTextScreen
@@ -66,6 +67,8 @@ import app.getknit.knit.ui.share.ShareTargetScreen
 import app.getknit.knit.ui.theme.KnitMotion
 import app.getknit.knit.ui.theme.LocalReduceMotion
 import app.getknit.knit.ui.yourmesh.YourMeshScreen
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 
 // How far a screen slides as it fades: a twenty-fourth of the width. Enough to give the fade a direction
@@ -179,11 +182,20 @@ fun KnitApp(startRoute: String? = null) {
     // no-ops when the mesh isn't running, so this is safe before onboarding; demo builds skip it.
     if (!BuildConfig.SEED_DEMO) {
         val meshManager = koinInject<MeshController>()
+        val textModel = koinInject<MlTextModerator>()
+        val appScope = koinInject<CoroutineScope>()
         val lifecycleOwner = LocalLifecycleOwner.current
         DisposableEffect(lifecycleOwner) {
             val observer =
                 LifecycleEventObserver { _, event ->
                     if (event != Lifecycle.Event.ON_RESUME) return@LifecycleEventObserver
+                    // Warm the toxicity model now that someone can send: the first classify() loads a ~16 MB
+                    // TFLite model, which on the send path freezes the composer. It used to run 5 s into
+                    // every process start — including the foreground service's background restarts with no
+                    // user and nobody nearby — so it lives here (and on the first peer sighting, in
+                    // MeshService) instead. A no-op once loaded; on the app scope so leaving mid-load doesn't
+                    // cancel it.
+                    appScope.launch { textModel.warmUp() }
                     // Foreground state is guaranteed here, so this is where a refused start gets its retry.
                     // Unconditional rather than gated on [MeshStartGate], because a refusal isn't the only
                     // way this composition can come back to a dead service (a stillbirth stopSelf'd into a

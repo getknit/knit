@@ -25,6 +25,7 @@ import app.getknit.knit.R
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.isKoinStarted
 import app.getknit.knit.mesh.power.PowerMonitor
+import app.getknit.knit.moderation.MlTextModerator
 import app.getknit.knit.notifications.NotificationChannels
 import app.getknit.knit.ui.isIgnoringBatteryOptimizations
 import kotlinx.coroutines.CoroutineScope
@@ -46,6 +47,7 @@ class MeshService : LifecycleService() {
     private val powerMonitor: PowerMonitor by inject()
     private val settings: SettingsStore by inject()
     private val scope: CoroutineScope by inject()
+    private val textModel: MlTextModerator by inject()
 
     private val sensorManager by lazy { getSystemService(SensorManager::class.java) }
     private var significantMotion: Sensor? = null
@@ -98,6 +100,7 @@ class MeshService : LifecycleService() {
             return
         }
         observeStatus()
+        warmModelOnFirstPeer()
         powerMonitor.start() // seed power state before the discovery loop first reads it
         meshManager.start()
         // Remember the mesh is running so BootReceiver restores it after a reboot; a later manual Stop
@@ -223,6 +226,20 @@ class MeshService : LifecycleService() {
                 count to health
             }.distinctUntilChanged()
                 .collect { (count, health) -> postForeground(buildNotification(count, health)) }
+        }
+    }
+
+    /**
+     * Load the toxicity model the first time a peer is in range, off the inbound path. The first classify()
+     * otherwise pays a ~16 MB model load inline in the router's single inbound collector, stalling both radios
+     * for the duration; a peer nearby is the one signal that a message may be about to need it. A phone alone
+     * in a drawer never loads it (the warm-up used to run 5 s into every process start). The wait rides
+     * [lifecycleScope] so a stopped service drops it; the load itself rides the app scope so it finishes.
+     */
+    private fun warmModelOnFirstPeer() {
+        lifecycleScope.launch {
+            meshManager.neighborCount.first { it > 0 }
+            scope.launch { textModel.warmUp() }
         }
     }
 

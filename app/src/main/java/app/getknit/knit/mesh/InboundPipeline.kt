@@ -2430,9 +2430,29 @@ class InboundPipeline(
     }
 
     /**
+     * The moderation column for an inbound chat row — classified only on a first delivery. The verdict lands
+     * on the row, and `deliverChat`'s exists-gated persist discards the row for a re-served frame, so a
+     * duplicate (the second radio, a custody re-serve, a restart that emptied the SeenSet) used to buy a full
+     * ML inference for nothing, serialized behind every real one on the moderator's mutex.
+     */
+    private suspend fun inboundModeration(
+        isNew: Boolean,
+        body: String,
+        conversationId: String,
+    ): Int {
+        if (!isNew) return MessageEntity.MODERATION_NONE
+        // Both public rooms take the room moderator (the lexical profanity pass on top of the ML one), and
+        // for one reason: a room is read by strangers. The bridged room needs it at least as much — its
+        // authors are strangers by definition, and nothing screens them before they reach the air.
+        val flagged = classifyText(body, "incoming", Conversations.isPublicRoom(conversationId))
+        return if (flagged) MessageEntity.MODERATION_TEXT_FLAGGED else MessageEntity.MODERATION_NONE
+    }
+
+    /**
      * Persists an inbound chat into [conversationId], starts pulling any attachment blob we don't hold,
      * fires the appropriate notification, and acks. Shared by the DM/broadcast and group delivery paths.
      */
+
     private suspend fun deliverChat(
         env: RelayEnvelope,
         content: ChatContent,
@@ -2474,6 +2494,7 @@ class InboundPipeline(
         // The save below leaves an existing row untouched, so only the notification needs gating.
         val isNew = !messages.exists(env.id)
         val hash = content.attachmentHash
+        val moderation = inboundModeration(isNew, content.body, conversationId)
         persist(
             MessageEntity(
                 id = env.id,
@@ -2504,18 +2525,7 @@ class InboundPipeline(
                 attachmentKey = sealed?.attachmentKey,
                 attachmentName = sealed?.attachmentName,
                 attachmentSize = sealed?.attachmentSize,
-                moderation =
-                    if (
-                        // Both public rooms take the room moderator (the lexical profanity pass on top of the
-                        // ML one), and for one reason: a room is read by strangers. The bridged room needs it
-                        // at least as much — its authors are strangers by definition, and nothing screens
-                        // them before they reach the air.
-                        classifyText(content.body, "incoming", Conversations.isPublicRoom(conversationId))
-                    ) {
-                        MessageEntity.MODERATION_TEXT_FLAGGED
-                    } else {
-                        MessageEntity.MODERATION_NONE
-                    },
+                moderation = moderation,
                 originNode = origin?.node,
                 originName = origin?.name,
                 originChannel = origin?.channel,

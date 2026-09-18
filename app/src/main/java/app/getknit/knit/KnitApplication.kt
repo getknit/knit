@@ -13,7 +13,6 @@ import app.getknit.knit.di.moderationModule
 import app.getknit.knit.di.seedDemoIfEnabled
 import app.getknit.knit.di.startDemoDirectorIfEnabled
 import app.getknit.knit.di.uiModule
-import app.getknit.knit.moderation.MlTextModerator
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.transfer.DirectWifi
 import app.getknit.knit.ui.image.BlobFetcher
@@ -63,24 +62,6 @@ class KnitApplication :
         // the app does not repaint from coral to the wallpaper palette a frame into launch.
         koinApp.koin.get<ThemePreferences>()
 
-        // Warm the toxicity model off the send path. The first classify() lazily loads a ~16 MB TFLite
-        // model + tokenizer + Interpreter and pays first-inference allocation; done on the first outgoing
-        // send it freezes the UI on a cold start (worst on low-end devices). Fire-and-forget on the
-        // app-lifetime scope (Dispatchers.Default) so it never blocks startup; MlTextModerator degrades
-        // gracefully if the assets fail to load, and warmUp() dedupes against a racing first send.
-        //
-        // Held back past the cold-start window on purpose: the load is CPU- and allocation-heavy, and
-        // starting it here put it in contention with the main thread building the Koin graph and with
-        // MeshService racing AOSP's 10 s startForegroundService grace — the tightest moment in the app's
-        // life, and the one where a low-end device has the least headroom. Nothing needs a warm engine
-        // until the user can actually send, which is many seconds out on any device slow enough for the
-        // contention to matter, so the wait costs nothing; a first send that beats it still dedupes
-        // through warmUp()'s own mutex and just pays the load itself, exactly as it did before.
-        koinApp.koin.get<CoroutineScope>().launch {
-            delay(WARMUP_DELAY_MS)
-            koinApp.koin.get<MlTextModerator>().warmUp()
-        }
-
         // Seed the shipped default spools once (res/values/spools.xml). Opens no socket by itself — the
         // Internet plane stays off until the user turns it on — and a later removal sticks. A no-op while
         // the plane is dark (`BuildConfig.INTERNET_PLANE`), including the seeded marker, so the defaults
@@ -97,7 +78,7 @@ class KnitApplication :
         // Clear a Wi-Fi Direct group a previous run left on air. Nothing removes one when the process dies
         // mid-transfer, and a live group both beacons our credentials and keeps Wi-Fi Aware off the radio.
         // Cheap when there is nothing to find (a binder and one query), never touches a group it did not
-        // name, and held back past the cold-start window like the warm-up above.
+        // name, and held back past the cold-start window.
         koinApp.koin.get<CoroutineScope>().launch {
             delay(SWEEP_DELAY_MS)
             runCatching { koinApp.koin.get<DirectWifi>().sweep() }
@@ -132,10 +113,7 @@ class KnitApplication :
             }.build()
 
     private companion object {
-        /** How long the toxicity warm-up waits out the cold-start window before it starts loading. */
-        const val WARMUP_DELAY_MS = 5_000L
-
-        /** The same courtesy for the leftover-group sweep: a stale group has waited this long already. */
+        /** How long the leftover-group sweep waits out the cold-start window: a stale group has waited this long already. */
         const val SWEEP_DELAY_MS = 8_000L
     }
 }

@@ -51,6 +51,8 @@ class MlTextModerator(
     )
 
     private val mutex = Mutex()
+
+    @Volatile
     private var loaded = false
     private var engine: Engine? = null
 
@@ -101,6 +103,10 @@ class MlTextModerator(
      * [classify] already degrades to [TextVerdict.ALLOWED] on any load/inference failure.
      */
     suspend fun warmUp() {
+        // Cheap once the engine is in: every foreground resume and every first peer sighting calls this,
+        // and neither should queue behind the mutex a real classify may be holding. `loaded` is set under
+        // the mutex before the load starts, so the racy read can only send a caller through the lock path.
+        if (loaded) return
         classify(WARMUP_PROBE)
     }
 

@@ -2939,6 +2939,25 @@ class InboundPipelineTest {
         }
 
     @Test
+    fun aReServedMessageIsNotClassifiedAgain() =
+        runTest {
+            // The verdict lands on the row and the exists-gated persist discards the row for a re-served
+            // frame, so a second delivery — the other radio, a custody re-serve, a restart that emptied the
+            // SeenSet — used to buy a full ML inference for nothing, queued behind every real one.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val scopes = mutableListOf<Boolean>()
+            rig.classifyScopes = scopes
+
+            rig.deliver(alice, rig.broadcastChat(alice, id = "b1", body = "hello room"))
+            rig.deliver(alice, rig.broadcastChat(alice, id = "b1", body = "hello room"))
+
+            assertEquals("hello room", rig.msgMap["b1"]?.body)
+            assertEquals(listOf(true), scopes)
+        }
+
+    @Test
     fun theBoardReplayingAPacketWritesOneRowAndNotifiesOnce() =
         runTest {
             // The firmware replays the packets it queued while the phone was away. The derived row id makes
