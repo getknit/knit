@@ -35,6 +35,18 @@ object ConnectBackoffPolicy {
         return jittered.toLong().coerceAtLeast(0L)
     }
 
+    /**
+     * How long the connection engine may sleep before it must look again: until [nextDueAt], the earliest
+     * backoff deadline still ahead of [now] (a backed-off peer becoming eligible is the one thing no event
+     * signals), clamped to [minMs]..[maxMs]; [maxMs] alone when nothing is due, since any event wakes it sooner.
+     */
+    fun nextDueWaitMs(
+        now: Long,
+        nextDueAt: Long?,
+        minMs: Long,
+        maxMs: Long,
+    ): Long = if (nextDueAt == null) maxMs else (nextDueAt - now).coerceIn(minMs, maxMs)
+
     // base shl 16 already dwarfs any sane maxMs; bounding the shift keeps the Long from wrapping on a huge streak.
     private const val MAX_SHIFT = 16
 }

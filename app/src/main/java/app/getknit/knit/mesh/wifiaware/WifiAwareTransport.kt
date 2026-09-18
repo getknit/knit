@@ -540,13 +540,16 @@ class WifiAwareTransport(
                         }
                     }
                 }
-            diagJob =
-                scope.launch {
-                    while (scope.isActive) {
-                        delay(DIAG_INTERVAL_MS)
-                        logState()
+            // R8 strips the Log.d in release, not the string logState builds under the lock: debug only.
+            if (BuildConfig.DEBUG) {
+                diagJob =
+                    scope.launch {
+                        while (scope.isActive) {
+                            delay(DIAG_INTERVAL_MS)
+                            logState()
+                        }
                     }
-                }
+            }
             watchdogJob =
                 scope.launch {
                     while (scope.isActive) {
@@ -2755,7 +2758,7 @@ class WifiAwareTransport(
         const val CUE_HEARTBEAT_MS = 30_000L
 
         // Temporary: how often to dump connection-engine decision state to logcat while debugging.
-        const val DIAG_INTERVAL_MS = 12_000L
+        const val DIAG_INTERVAL_MS = 60_000L // debug builds only; the watchdog's pre-kill dump is unconditional
 
         // Ephemeral-sync teardown. Both sides disconnect on bidirectional quiescence (polled every
         // QUIESCENCE_POLL_MS): the initiator after QUIESCENCE_MS of idle (or the hard SYNC_MAX_WINDOW_MS cap),

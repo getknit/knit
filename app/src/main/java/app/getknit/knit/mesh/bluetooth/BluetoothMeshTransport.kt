@@ -16,6 +16,7 @@ import android.content.pm.PackageManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
+import app.getknit.knit.BuildConfig
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.BleSideDrop
 import app.getknit.knit.mesh.ConnectFailReason
@@ -461,8 +462,13 @@ class BluetoothMeshTransport(
             if (!canScan) {
                 // A connect is in flight (radio contention) or the adapter is off — wait, don't scan. Log the
                 // pause so a scanning gap (which starves presence for the whole mesh) is attributable.
-                if (adapter?.isEnabled == true) Log.d(TAG, "scan paused: connect in flight $inflight arbiter=${arbiter.busy.value}")
-                withTimeoutOrNull(CONNECT_QUIET_MS) { scanWake.receive() }
+                val adapterOn = adapter?.isEnabled == true
+                if (adapterOn) Log.d(TAG, "scan paused: connect in flight $inflight arbiter=${arbiter.busy.value}")
+                // Wait for the event that ends the pause — the connect's end (`registerLink`/`failConnect` →
+                // `wake()`), the arbiter freeing (its collector → `wakeScan()`), the adapter coming back
+                // (`STATE_ON` → `wake()`) — with a timeout sized to that event, not a 2 s poll: an adapter left
+                // off used to wake this loop thirty times a minute for as long as it stayed off.
+                withTimeoutOrNull(if (adapterOn) CONNECT_PAUSE_WAIT_MS else ADAPTER_OFF_WAIT_MS) { scanWake.receive() }
                 continue
             }
             val power = powerState.state.value
@@ -561,9 +567,20 @@ class BluetoothMeshTransport(
 
     private suspend fun connectLoop() {
         while (scope.isActive) {
-            withTimeoutOrNull(CONNECT_TICK_MS) { healSignal.receive() }
             if (adapter?.isEnabled == true) driveConnections()
+            // Every event that can change a promotion decision pokes healSignal (a sighting, a link up or down,
+            // a failed connect, power, the adapter, heal()). The one thing nothing signals is a backed-off peer
+            // becoming eligible again, so the wait runs to the earliest backoff deadline — never a flat 5 s
+            // tick, which woke this loop twelve times a minute on a settled or empty mesh — with a ceiling so a
+            // lost wake costs at most a minute.
+            withTimeoutOrNull(nextConnectWaitMs()) { healSignal.receive() }
         }
+    }
+
+    private fun nextConnectWaitMs(): Long {
+        val now = elapsed()
+        val nextDue = synchronized(lock) { backoffs.values.filter { it.nextAt > now }.minOfOrNull { it.nextAt } }
+        return ConnectBackoffPolicy.nextDueWaitMs(now, nextDue, CONNECT_WAIT_MIN_MS, CONNECT_WAIT_MAX_MS)
     }
 
     private fun driveConnections() {
@@ -983,7 +1000,8 @@ class BluetoothMeshTransport(
         while (scope.isActive) {
             delay(DIAG_INTERVAL_MS)
             audioMonitor.refresh() // re-evaluate audio vs live AudioManager state (the playing edge can be missed)
-            logState()
+            // R8 strips the Log.d in release, not the string this builds under the lock: debug only.
+            if (BuildConfig.DEBUG) logState()
         }
     }
 
@@ -1022,11 +1040,16 @@ class BluetoothMeshTransport(
         /** True on a device with a Bluetooth adapter + BLE — the composite includes this plane only if so. */
         fun isSupported(context: Context): Boolean = support(context) == PlaneSupport.Supported
 
-        // Connection-engine cadence: re-evaluate promotions at least this often (also woken by healSignal).
-        private const val CONNECT_TICK_MS = 5_000L
+        // Connection-engine wait bounds: the loop sleeps to the earliest connect backoff deadline (woken early by
+        // healSignal), never less than the floor — so a deadline that just passed can't spin it — and never more
+        // than the ceiling, the price of a wake that got lost.
+        private const val CONNECT_WAIT_MIN_MS = 1_000L
+        private const val CONNECT_WAIT_MAX_MS = 60_000L
 
-        // While a connect is in flight, poll this often for it to clear before resuming scanning.
-        private const val CONNECT_QUIET_MS = 2_000L
+        // Scan-pause waits: a connect in flight ends within CONNECT_TIMEOUT_MS and wakes the loop itself; an
+        // adapter that is off wakes it from the STATE_ON receiver. Each is a safety net, not a cadence.
+        private const val CONNECT_PAUSE_WAIT_MS = 15_000L
+        private const val ADAPTER_OFF_WAIT_MS = 60_000L
 
         // Bound the responder's HELLO read (BluetoothSocket has no soTimeout) — close the socket if it stalls.
         private const val ACCEPT_HELLO_TIMEOUT_MS = 5_000L
@@ -1042,8 +1065,9 @@ class BluetoothMeshTransport(
         // (radio busy / unreachable) instead of on a tight loop that blacks out scanning every attempt.
         private const val MAX_CONNECT_BACKOFF_MS = 180_000L
 
-        // Cadence of the periodic diagnostic state line (links/reach/inFlight/backoff/a2dp), mirroring NAN.
-        private const val DIAG_INTERVAL_MS = 12_000L
+        // Cadence of the A2DP re-check and (debug) the diagnostic state line, mirroring NAN. A missed playing
+        // edge delays the scan floor by at most this; the two AudioManager binder calls used to run every 12 s.
+        private const val DIAG_INTERVAL_MS = 60_000L
 
         // Quiet window to coalesce a burst of digest-cue changes into ONE re-advertise. The cue is only a coarse
         // "my custody set changed, come sync" hint (the on-link DIGEST id-diff is authoritative), and the legacy

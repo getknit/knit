@@ -43,6 +43,16 @@ class ConnectBackoffPolicyTest {
     }
 
     @Test
+    fun theEngineSleepsToTheEarliestDeadlineWithinItsBounds() {
+        // Nothing backed off → the ceiling (an event wakes it sooner); a deadline ahead → exactly that far;
+        // one that just passed → the floor, never a spin; one far out → the ceiling again.
+        assertEquals(60_000, ConnectBackoffPolicy.nextDueWaitMs(now = 100_000, nextDueAt = null, minMs = 1_000, maxMs = 60_000))
+        assertEquals(7_500, ConnectBackoffPolicy.nextDueWaitMs(now = 100_000, nextDueAt = 107_500, minMs = 1_000, maxMs = 60_000))
+        assertEquals(1_000, ConnectBackoffPolicy.nextDueWaitMs(now = 100_000, nextDueAt = 99_000, minMs = 1_000, maxMs = 60_000))
+        assertEquals(60_000, ConnectBackoffPolicy.nextDueWaitMs(now = 100_000, nextDueAt = 400_000, minMs = 1_000, maxMs = 60_000))
+    }
+
+    @Test
     fun jitterStaysWithinBoundsAcrossTheRange() {
         for (r in listOf(0.0, 0.1, 0.5, 0.9, 0.999)) {
             val d = ConnectBackoffPolicy.nextDelayMs(3, cfg) { r }

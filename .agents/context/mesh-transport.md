@@ -222,6 +222,13 @@ which the router's split horizon can't exclude). Counter: `bleLinkDupSkipped`, a
 link. The lab's `LabTransport` keeps the same memo (`dupSkipped`), so the box stays the plane as shipped
 (`SideChannelLabTest.aFrameCrossesEachPipeOnce`). ADR 2026-09.6nmy.
 
+The loops around the radio no longer poll on a fixed short tick: `scanLoop`'s paused branch waits 60 s while
+the adapter is off (the `STATE_ON` receiver wakes it) and `CONNECT_TIMEOUT_MS + 3 s` while a connect is in
+flight (its end wakes it), `connectLoop` sleeps until the earliest connect backoff expires (clamped to 1–60 s,
+`ConnectBackoffPolicy.nextDueWaitMs`) instead of every 5 s, and both transports' diagnostic state line runs every
+60 s and builds its string only in debug builds. Every wait is still a timeout, so a lost wake costs latency,
+never liveness.
+
 ## The BLE side channel is a page carousel, not a message queue (ADR 2026-09.sjaa)
 
 `mesh/bluetooth/BleSideChannel` is the BLE analogue of the NAN coordination plane's fast fan-out
