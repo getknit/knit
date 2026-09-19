@@ -84,6 +84,7 @@ cooldown the lever.
 **Device trial owed** (two Pixels, the current build first as a control; A screen off on battery, B nearby
 then removed; grep the transport tag for `state ver=`, `re-arm subscribe`, `lonely:`, `discovered`,
 `subscribe config failed`, `re-attaching`, sample `dumpsys wifiaware | grep -i instant` every 10 s):
+
 1. Alone 10 min — `cue=[]` within 150 s of B leaving, `lonely: relaxed` ~3 min later, re-arms at 120 s ± 5 s,
    ICM lit in ≤ 35 % of samples (control ≈ 100 %), no config-failed / re-attach lines.
 2. Walk-up after ≥ 10 min — B screen-on at 5 m: a discovery or first-contact cue on A within 10 s and a
