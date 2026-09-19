@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.Notification
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.R
@@ -131,6 +132,19 @@ class MeshServiceForegroundReclaimTest {
         // a stillbirth, whose onDestroy skips the graph on purpose.
         controller.destroy()
         assertEquals(1, mesh.stopCount)
+    }
+
+    @Test
+    fun `the claim carries the tiered type, connectedDevice alone on this sdk`() {
+        // robolectric.properties pins sdk=36: the nearby-devices tier, where a runtime `location` type would be
+        // a SecurityException without FOREGROUND_SERVICE_LOCATION. The 29-32 half of the mapping is pinned by
+        // MeshForegroundServiceTypesTest; ShadowService records whatever bits startForeground was handed.
+        val service = controller.get()
+        assertEquals(ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE, service.foregroundServiceType)
+        service.stopForeground(Service.STOP_FOREGROUND_DETACH)
+        service.onStartCommand(plainStart(), 0, 2)
+        assertEquals(ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE, service.foregroundServiceType)
+        controller.destroy()
     }
 
     @Test

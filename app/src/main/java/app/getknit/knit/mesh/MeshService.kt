@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh
 
+import android.Manifest
 import android.app.ActivityManager
 import android.app.AlarmManager
 import android.app.Notification
@@ -28,6 +29,7 @@ import app.getknit.knit.mesh.power.PowerMonitor
 import app.getknit.knit.moderation.MlTextModerator
 import app.getknit.knit.notifications.NotificationChannels
 import app.getknit.knit.ui.isIgnoringBatteryOptimizations
+import app.getknit.knit.ui.requiredRadioPermissions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -299,6 +301,12 @@ class MeshService : LifecycleService() {
                 getString(R.string.chat_connection_degraded)
             }
 
+            // The one surface a user sees *while* the Wi-Fi search is refused off screen — and tapping it
+            // opens the app, which is what lifts the refusal (see [meshForegroundServiceTypes]).
+            TransportHealth.ForegroundOnly -> {
+                getString(R.string.mesh_notification_foreground_only)
+            }
+
             TransportHealth.Healthy -> {
                 if (count == 0) {
                     getString(R.string.mesh_notification_searching)
@@ -327,18 +335,9 @@ class MeshService : LifecycleService() {
      */
     private fun postForeground(notification: Notification): Boolean =
         try {
-            ServiceCompat.startForeground(
-                this,
-                NOTIFICATION_ID,
-                notification,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    // Wi-Fi Aware needs no location, so the service is connectedDevice-only (the runtime type
-                    // must match the manifest's foregroundServiceType — see AndroidManifest.xml).
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                } else {
-                    0
-                },
-            )
+            // The runtime type is what the platform acts on (the manifest only bounds it) — see
+            // [meshForegroundServiceTypes] for why `location` rides along on API 29-32.
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, meshForegroundServiceTypes())
             true
         } catch (e: IllegalStateException) {
             Log.w(TAG, "foreground start refused — mesh stays down until the app is next opened", e)
@@ -391,6 +390,45 @@ class MeshService : LifecycleService() {
             )
         }
     }
+}
+
+/**
+ * The foreground-service type bitmask [MeshService.postForeground] claims, **tiered like the radio permissions**:
+ * `connectedDevice` everywhere, plus `location` on exactly the API levels where [requiredRadioPermissions]
+ * rides the location grant (29-32).
+ *
+ * Why the type, and why it has to be the *runtime* one. On those versions the Aware service checks the
+ * location **app-op** on every `publish`/`subscribe` (`WifiAwareServiceImpl.enforceLocationPermission`), and
+ * a "While using the app" grant is a foreground-only app-op — so a service that holds no location type loses
+ * discovery the moment the activity leaves the screen, while `checkSelfPermission` still says granted (work
+ * item #62: the Pixel 3 re-attached 45 times in four minutes off screen, blind throughout). What lifts the
+ * app-op for a backgrounded uid is the `PROCESS_CAPABILITY_FOREGROUND_LOCATION` capability, which
+ * `OomAdjuster` derives on every pass from the **live** `ServiceRecord.foregroundServiceType` — the bits
+ * passed to `startForeground`, never the manifest attribute alone. Passing `0` here, as the pre-34 branch used
+ * to, left the service typeless on the very versions that needed the bit. On 29 that is the whole story
+ * (`PROCESS_STATE_FOREGROUND_SERVICE_LOCATION`); on 30-32 the capability also needs
+ * `mAllowWhileInUsePermissionInFgs`, which the system grants only to a start from a TOP / visible uid —
+ * neither the battery allowlist nor `BOOT_COMPLETED` counts (`ActiveServices.shouldAllowFgsWhileInUsePermissionLocked`,
+ * android12-release). A boot- or sticky-restarted service therefore still discovers only on screen until
+ * Knit is next opened: `KnitApp`'s `ON_RESUME` observer starts the service from a visible activity, the flag
+ * is re-evaluated on every start while false, and [MeshService.onStartCommand] re-posts the state with the
+ * type (ADR 2026-09.f69x). `WifiAwareTransport` names that residual as `TransportHealth.ForegroundOnly`
+ * rather than churning the session. ADR 2026-09.535d.
+ *
+ * Why it stops at 32: from 33 discovery rides `NEARBY_WIFI_DEVICES` with `neverForLocation` and needs no
+ * location at all, and from 34 a `location` type at runtime requires the `FOREGROUND_SERVICE_LOCATION`
+ * permission the manifest deliberately does not declare. Tied to [requiredRadioPermissions] rather than to a
+ * second `SDK_INT` ladder so the two tiers cannot drift; `MeshForegroundServiceTypesTest` pins the mapping.
+ * `ServiceCompat` masks the bits to `FOREGROUND_SERVICE_TYPE_ALLOWED_SINCE_Q` on 29-33, which both are.
+ */
+fun meshForegroundServiceTypes(sdkInt: Int = Build.VERSION.SDK_INT): Int {
+    val location =
+        if (Manifest.permission.ACCESS_FINE_LOCATION in requiredRadioPermissions(sdkInt)) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        } else {
+            0
+        }
+    return ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or location
 }
 
 /**

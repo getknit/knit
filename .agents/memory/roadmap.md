@@ -6,6 +6,20 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Already shipped (was deferred)
 
+- **The mesh service asks for the location foreground type on API 29–32 BUILT** (2026-09-18, ADR
+  2026-09.535d, work item #62) — `meshForegroundServiceTypes` claims `connectedDevice|location` on the tiers
+  where `requiredRadioPermissions` rides the location grant, `NanSessionFault` tells a location refusal from
+  a dead Aware client, and the transport holds it as `TransportHealth.ForegroundOnly` instead of re-attaching
+  45 times in four minutes. Device-verified the same night on the Pixel 3 (`curCapability=L--N` off screen,
+  zero refusals over 25 min, the latch and the heal retry exercised through a forced app-op; the ADR has the
+  numbers). **Still owed:** a real reboot-without-opening (the P3's `adb tcpip` does not survive one), the
+  Play upload check that the manifest's `location` attribute alone raises no location-FGS declaration, and a
+  re-run of ADR 2026-09.kb68's lonely-node trial on the P3, which this masked (every re-attach reset
+  `lonelySince`). Two suspects it surfaced, filed as #76 and #77: `canReclaimForegroundService` reads
+  `PROCESS_STATE_RECEIVER` as `IMPORTANCE_SERVICE`, so `BootReceiver`'s start is refused on an unexempted
+  phone despite ADR 043 calling it exempt; and the NAN responder's `onUnavailable` re-file has no backoff
+  (174 re-files in 130 ms on the P3).
+
 - **Supervised and managed phones are named SHIPPED** (2026-09-16, ADR 2026-09.a8ud) —
   `ui/DeviceSupervision.kt` reads Family Link's supervision profile owner or any other management signal
   into one enum; the onboarding

@@ -40,13 +40,18 @@ data class Peer(
  * is distinguishable from "no neighbors nearby" — and, within that, so an *actionable* radio-off state
  * is distinguishable from a transient fault:
  * - [Healthy]: the radio is attached and advertising/discovering.
+ * - [ForegroundOnly]: the radio is on and attached, but the OS lets it discover only while Knit is on
+ *   screen — on API 29-32 Wi-Fi Aware publish/subscribe are gated on the foreground-only location app-op,
+ *   and a service started off screen (a boot, a sticky restart) holds no background exemption for it (ADR
+ *   2026-09.535d). Not a fault: whatever was up stays up, and opening Knit lifts it for the rest of the
+ *   session. Ranked between [Healthy] and [Degraded] by the composite.
  * - [Degraded]: the radio is on but the last advertise/discover/attach attempt failed — typically
  *   because another app (e.g. Quick Share) has seized it. Usually self-heals; a mesh restart may help.
  * - [Unavailable]: the radio is switched off (the user turned Wi-Fi/Bluetooth off, or airplane mode is
  *   on) or absent — nothing the app can do but wait for the user to turn a radio back on. The UI turns
  *   this into an actionable "turn on Wi-Fi or Bluetooth" hint rather than a generic failure.
  */
-enum class TransportHealth { Healthy, Degraded, Unavailable }
+enum class TransportHealth { Healthy, ForegroundOnly, Degraded, Unavailable }
 
 /**
  * Which physical radio a [MeshTransport] drives. [CompositeMeshTransport] tags each child with it so the

@@ -27,7 +27,9 @@ import java.io.File
  *   richer advertised protoVersion/capabilities wins). Collapsing by nodeId is what makes
  *   `MeshManager.watchNeighbors` fire its newcomer hooks exactly once even when a peer appears on both planes.
  * - [health]: Healthy if **any** child is Healthy (the node can still mesh if one radio works); otherwise
- *   Degraded if any plane is on-but-failing (seized), else Unavailable when every plane is switched off/absent.
+ *   ForegroundOnly if a plane is up but discovers only on screen (the API 29-32 location app-op, ADR
+ *   2026-09.535d), else Degraded if any plane is on-but-failing (seized), else Unavailable when every plane
+ *   is switched off/absent.
  * - [inbound]/[incomingFiles]/[incomingDigests]: merged. A frame that arrives over both planes is de-duped
  *   downstream by `MeshRouter`'s `SeenSet` (10-min TTL), so simultaneous multi-path delivery is safe and free.
  * - [send]: for a specific peer, route to the preferred child holding a live link to it; for a broadcast
@@ -115,6 +117,10 @@ class CompositeMeshTransport(
                 when {
                     // The node can still mesh if any radio is up.
                     hs.any { it == TransportHealth.Healthy } -> TransportHealth.Healthy
+
+                    // A radio that works whenever Knit is on screen outranks one that is failing: "open Knit"
+                    // is a cure the user holds, "radio busy" is a wait.
+                    hs.any { it == TransportHealth.ForegroundOnly } -> TransportHealth.ForegroundOnly
 
                     // At least one radio is on but failing (seized) — a fault, not a user-off state, so it
                     // outranks Unavailable: "radio busy" is the more informative message.

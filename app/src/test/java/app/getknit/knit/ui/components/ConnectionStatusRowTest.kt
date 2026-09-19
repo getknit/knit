@@ -100,6 +100,23 @@ class ConnectionStatusRowTest {
             ).assertIsDisplayed()
     }
 
+    // ForegroundOnly (ADR 2026-09.535d): the peers we hold keep their links, so the count stands; with none, the
+    // OS's rule is named rather than "nobody nearby".
+    @Test
+    fun aSearchRefusedOffScreenKeepsTheCountItHolds() {
+        show(2, TransportHealth.ForegroundOnly, RelayPlane.Off)
+        val mesh = context.resources.getQuantityString(R.plurals.chat_connection_count, 2, 2)
+        compose.onNodeWithContentDescription(described(mesh, plane = null)).assertIsDisplayed()
+    }
+
+    @Test
+    fun aSearchRefusedOffScreenWithNobodyHeldNamesTheRule() {
+        show(0, TransportHealth.ForegroundOnly, RelayPlane.Off)
+        compose
+            .onNodeWithContentDescription(described(context.getString(R.string.chat_connection_foreground_only), plane = null))
+            .assertIsDisplayed()
+    }
+
     @Test
     fun aSeizedRadioWithRelaysUpReadsTheSameWayAsRadiosOff() {
         // Degraded and Unavailable differ in cause but not in consequence once the Internet is carrying.

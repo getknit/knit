@@ -129,12 +129,14 @@ private fun NearbyHero(
     val dot =
         when (health) {
             TransportHealth.Unavailable -> MaterialTheme.colorScheme.outline
+            TransportHealth.ForegroundOnly -> MaterialTheme.colorScheme.outline
             TransportHealth.Degraded -> MaterialTheme.colorScheme.error
             TransportHealth.Healthy -> if (count > 0) MaterialTheme.knitColors.positive else MaterialTheme.colorScheme.outline
         }
     val status =
         when (health) {
             TransportHealth.Unavailable -> R.string.your_mesh_status_radios_off
+            TransportHealth.ForegroundOnly -> R.string.your_mesh_status_foreground_only
             TransportHealth.Degraded -> R.string.your_mesh_status_degraded
             TransportHealth.Healthy -> if (count > 0) R.string.your_mesh_status_connected else R.string.your_mesh_status_alone
         }

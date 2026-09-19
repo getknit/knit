@@ -84,6 +84,14 @@ class YourMeshScreenContentTest {
     }
 
     @Test
+    fun aSearchRefusedOffScreenNamesTheRuleAndKeepsBluetooth() {
+        // ADR 2026-09.535d: the OS's rule on Android 10-12, not a fault — so the line says what still works.
+        render(YourMeshUiState(health = TransportHealth.ForegroundOnly))
+        compose.onNodeWithTag("your_mesh_hero").assertTextContains("only while Knit is open", substring = true)
+        compose.onNodeWithTag("your_mesh_hero").assertTextContains("Bluetooth keeps going", substring = true)
+    }
+
+    @Test
     fun onePersonNearbyIsSingular() {
         render(YourMeshUiState(nearbyCount = 1, carryingNow = 1))
         // The merged node carries the number and the label as two texts, read in sequence by TalkBack.

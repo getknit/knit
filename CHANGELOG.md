@@ -61,6 +61,8 @@ document:
 - A group started while one of its members could only be reached through your relay never showed up on
   their phone until they met someone by radio. Now the group and its first message arrive over the relay
   like any other chat.
+- On Android 10, 11 and 12, Knit stopped looking for phones over Wi-Fi as soon as you left the app. It
+  keeps looking in the background now, and tells you when Android will only allow that with Knit open.
 
 ## [2.6.0](https://github.com/getknit/knit/releases/tag/v2.6.0) — 2026-09-16T07:24:35Z
 

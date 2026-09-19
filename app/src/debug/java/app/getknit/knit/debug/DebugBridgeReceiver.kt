@@ -653,7 +653,20 @@ class DebugBridgeReceiver :
                 .put("status", "ok")
                 .put("self", JSONObject().put("nodeId", selfId).put("name", selfName))
                 .put("health", mesh.transportHealth.value.name)
-                .put("neighborCount", mesh.neighborCount.value)
+                // Per-radio, because the merged health hides a plane's own verdict behind a sibling that works —
+                // `ForegroundOnly` on Wi-Fi Aware reads `Healthy` above whenever Bluetooth is up (ADR 2026-09.535d).
+                .put(
+                    "transports",
+                    JSONArray(
+                        mesh.transportStatuses.value.map {
+                            JSONObject()
+                                .put("kind", it.kind.name)
+                                .put("health", it.health.name)
+                                .put("linked", it.linked)
+                                .put("nearby", it.nearby)
+                        },
+                    ),
+                ).put("neighborCount", mesh.neighborCount.value)
                 // True when a MeshService.start was refused (backgrounded, unexempted) and is still owed the
                 // retry KnitApp's ON_RESUME observer performs — otherwise a dead mesh is indistinguishable
                 // from a live one with no peers. Work item #32.

@@ -32,6 +32,19 @@ class RadioWarningTest {
     }
 
     @Test
+    fun aSearchRefusedOffScreen_isNotARadioOff() {
+        // ForegroundOnly (ADR 2026-09.535d) is the OS's rule, not a switch the user can flip: no banner.
+        assertNull(
+            radioWarningFor(
+                listOf(
+                    status(TransportKind.Bluetooth, TransportHealth.Healthy),
+                    status(TransportKind.WifiAware, TransportHealth.ForegroundOnly),
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun bluetoothOffWifiUp_bluetoothWarning() {
         assertEquals(
             RadioWarning.BluetoothOff,

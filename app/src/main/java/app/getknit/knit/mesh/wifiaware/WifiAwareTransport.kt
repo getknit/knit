@@ -245,6 +245,12 @@ class WifiAwareTransport(
     // attach() refuses until resume(). Never cleared by availability — a same-app hand-over does not flap it.
     @Volatile private var paused = false
 
+    // The OS refused a publish/subscribe for the foreground-only location app-op (API 29-32, Knit off screen —
+    // [NanSessionFault.OffScreenLocation]). The session and whatever was up stay up; publish/subscribe stop
+    // calling into the framework until the next [heal], which is how the app's own resume reaches us (ADR
+    // 2026-09.535d). Handler thread writes; the discovery loop and [heal] read.
+    @Volatile private var offScreenBlocked = false
+
     // Failed attaches over the whole life of the process. The streak above is refundable on purpose; this is
     // not, except by an attach that actually succeeds ([noteAttachSucceeded]). It exists because 2.3.1 shipped
     // the streak with a refund path that a refusing chipset could drive in a loop — see [availabilityReceiver]
@@ -596,7 +602,7 @@ class WifiAwareTransport(
             "state ver=$v live=${peers.keys} inbound=$inbound acc=$acc cap=$serveCap pin=$responderPinsNdi " +
                 "disc=$disc cue=$cues wanted=$wanted initiable=$initiable " +
                 "reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}] " +
-                "bulk[${bulkWanted.debug()}] lonely=${lonelyForMs(now)}ms",
+                "bulk[${bulkWanted.debug()}] lonely=${lonelyForMs(now)}ms offscreen=$offScreenBlocked",
         )
     }
 
@@ -780,6 +786,7 @@ class WifiAwareTransport(
         subscribing.set(false)
         clearAttachBackoff()
         paused = false
+        offScreenBlocked = false
         lastLinkEndedAt = 0L
         sessionCycleSettleStartedAt = 0L
         synchronized(lock) {
@@ -807,8 +814,28 @@ class WifiAwareTransport(
     override fun heal() {
         if (!hasHardware) return
         healRearmOwed = true // one re-arm at the aggressive cooldown, however relaxed the lonely cadence is
+        retryOffScreenBlocked()
         healSignal.trySend(Unit)
     }
+
+    /**
+     * The one retry an off-screen location refusal gets: a [heal] says the app was opened (or the heartbeat /
+     * motion trigger fired), and an open app is exactly what lifts the app-op — `KnitApp`'s resume observer
+     * starts the service from a visible activity before it heals, which is what grants the running record its
+     * while-in-use flag on 30-32. Re-file whichever discovery half is missing on the live session; a retry that
+     * throws re-latches through [onSessionFault], so this is one attempt per heal and never a loop. Subscribe
+     * is left to the loop's own heal-owed re-arm when it was merely closed by `rearmSubscribe`, and filed here
+     * only when nothing is pending.
+     */
+    private fun retryOffScreenBlocked() =
+        onHandler {
+            if (!offScreenBlocked) return@onHandler
+            offScreenBlocked = false
+            if (session == null) return@onHandler // the loop's detached branch attaches; that path publishes
+            Log.i(TAG, "retrying discovery after an off-screen location refusal")
+            if (publishSession == null) startPublish(attachGen)
+            if (subscribeSession == null && !subscribing.get()) startSubscribe()
+        }
 
     /**
      * Lend the radio out ([MeshTransport.pause]): drop every link, the responder and the whole session, and
@@ -833,6 +860,7 @@ class WifiAwareTransport(
             reattaching.set(false)
             ++attachGen // callbacks still in flight from the closed session are stale now
             synchronized(lock) { accepting = 0 }
+            offScreenBlocked = false
             _health.value = TransportHealth.Degraded
         }
     }
@@ -981,6 +1009,9 @@ class WifiAwareTransport(
                         reattaching.set(false) // the reattach that kicked off this (current-gen) attach has settled
                         _health.value = TransportHealth.Healthy
                         lonelySince = 0L // a fresh session hunts at the aggressive cadence, however long we were alone
+                        // A fresh session is a fresh chance whatever teardown path led here (reattach, a session
+                        // cycle); a refusal re-latches on the throw, so this costs at most one call.
+                        offScreenBlocked = false
                         startPublish(gen)
                         startSubscribe()
                     }
@@ -1002,6 +1033,7 @@ class WifiAwareTransport(
                         subscribeSession = null
                         stopResponder()
                         synchronized(lock) { accepting = 0 }
+                        offScreenBlocked = false
                         // A session terminates both when the radio is switched off and when it's seized; distinguish so
                         // the UI can say "radios off" vs "radio busy". The availability receiver corrects this if it flips.
                         _health.value =
@@ -1084,6 +1116,7 @@ class WifiAwareTransport(
 
     private fun startPublish(gen: Int) {
         val s = session ?: return
+        if (offScreenBlocked) return // would throw again; [retryOffScreenBlocked] re-files on the next heal
         // Per-generation publish callback: a stale onPublishStarted (from an attach a reattach superseded)
         // closes its session and never arms a responder, so the responder stays single-owner.
         val cb =
@@ -1094,6 +1127,7 @@ class WifiAwareTransport(
                         return
                     }
                     publishSession = publish
+                    clearForegroundOnly()
                     icmKeepaliveBroken = false // a fresh session gets a fresh chance at in-place updates
                     startResponder() // one accept-any responder for the life of this publish session
                 }
@@ -1130,7 +1164,7 @@ class WifiAwareTransport(
                     metrics.onNanMsgSendFailed()
                 }
             }
-        runCatching { s.publish(buildPublishConfig(), cb, handler) }.onFailure { onSessionDead("publish", it) }
+        runCatching { s.publish(buildPublishConfig(), cb, handler) }.onFailure { onSessionFault("publish", it) }
     }
 
     /**
@@ -1195,6 +1229,7 @@ class WifiAwareTransport(
 
     private fun startSubscribe() {
         val s = session ?: return
+        if (offScreenBlocked) return // would throw again; [retryOffScreenBlocked] re-files on the next heal
         // Serialize subscribe (re)starts the same way attach is serialized: onSubscribeStarted arrives
         // asynchronously, so a rearmSubscribe() racing a still-pending subscribe would otherwise leave two
         // subscribe sessions outstanding and leak the one onSubscribeStarted doesn't keep.
@@ -1209,7 +1244,7 @@ class WifiAwareTransport(
         // rearmSubscribe on a dead session killed the process). Treat it as the terminate we missed.
         runCatching { s.subscribe(builder.build(), subscribeCallback, handler) }.onFailure {
             subscribing.set(false)
-            onSessionDead("subscribe", it)
+            onSessionFault("subscribe", it)
         }
     }
 
@@ -1224,11 +1259,54 @@ class WifiAwareTransport(
             // Handler-funneled like the rest of the session lifecycle: the discovery loop calls this from its
             // worker thread, which raced onAwareSessionTerminated nulling [session] on the handler thread.
             if (session == null || subscribing.get()) return@onHandler // don't stack a rearm on a pending subscribe
+            if (offScreenBlocked) return@onHandler // keep whatever subscribe survived; the re-file would only throw
             synchronized(lock) { discovered.clear() }
             runCatching { subscribeSession?.close() }
             subscribeSession = null
             startSubscribe()
         }
+
+    /**
+     * A publish/subscribe threw. Two causes want opposite responses ([NanSessionFault]): a dead framework-side
+     * client is torn down and re-attached ([onSessionDead]); a location refusal with Knit off screen is held
+     * ([onDiscoveryRefusedOffScreen]) — the session is fine, and re-attaching would only throw again.
+     */
+    private fun onSessionFault(
+        op: String,
+        cause: Throwable,
+    ) = when (NanSessionFault.classify(cause)) {
+        NanSessionFault.DeadSession -> onSessionDead(op, cause)
+        NanSessionFault.OffScreenLocation -> onDiscoveryRefusedOffScreen(op, cause)
+    }
+
+    /**
+     * The OS refused a publish/subscribe because the location app-op is foreground-only and Knit is off screen
+     * (API 29-32; [NanSessionFault.OffScreenLocation]). **Nothing is torn down**: the attach, any live publish,
+     * the responder and every link need no location and keep serving — the node is still discoverable, it just
+     * cannot discover. Latch so the loop's re-arm / relight / attach paths stop calling into the framework
+     * (each would throw on the aggressive cadence), and say so as a verdict the UI can name rather than the
+     * "radio busy" a churn would look like. Lifted by [retryOffScreenBlocked] on the next [heal]. The
+     * `MeshService` type fix (ADR 2026-09.535d) is what keeps this from firing at all after the app has been
+     * opened once; a boot- or sticky-started service on 30-32 is the residual that still lands here.
+     */
+    private fun onDiscoveryRefusedOffScreen(
+        op: String,
+        cause: Throwable,
+    ) = onHandler {
+        subscribing.set(false)
+        if (!offScreenBlocked) {
+            Log.w(TAG, "$op refused off screen (location app-op) — holding discovery until the app is next opened", cause)
+            metrics.onNanOffScreenRefused()
+        }
+        offScreenBlocked = true
+        if (session != null) _health.value = TransportHealth.ForegroundOnly
+    }
+
+    /** A publish or subscribe took: whatever refusal was latched is over. Handler thread. */
+    private fun clearForegroundOnly() {
+        if (_health.value == TransportHealth.ForegroundOnly) _health.value = TransportHealth.Healthy
+        offScreenBlocked = false
+    }
 
     /**
      * The framework-side Aware client died under us: a session binder call threw (e.g. `SecurityException:
@@ -1244,6 +1322,7 @@ class WifiAwareTransport(
         attaching.set(false)
         subscribing.set(false)
         reattaching.set(false)
+        offScreenBlocked = false
         ++attachGen // invalidate any in-flight discovery callbacks from the dead generation
         runCatching { publishSession?.close() }
         runCatching { subscribeSession?.close() }
@@ -1302,6 +1381,7 @@ class WifiAwareTransport(
      * per-link supervisor tears it down on quiescence. Woken early by [healSignal] (cue, link up/down +
      * settle, heal(), screen-on).
      */
+    @Suppress("CyclomaticComplexMethod") // one `when` ladder, one branch per radio state; splitting it hides the precedence
     private suspend fun discoveryLoop() {
         while (scope.isActive) {
             withTimeoutOrNull(rediscoverDelayMs()) { healSignal.receive() }
@@ -1337,6 +1417,10 @@ class WifiAwareTransport(
                 // subscribe is what wedges it on these chipsets (persistent onSessionConfigFailed), so we keep
                 // it stable while things work and only refresh when a reachable, sync-wanted peer is otherwise
                 // unreachable (e.g. it restarted and staled our handle).
+                // Both discovery branches below sit behind the off-screen latch: a re-file would only throw again,
+                // and the next [heal] is the retry (ADR 2026-09.535d).
+                offScreenBlocked -> {}
+
                 needsRediscovery() && now - lastRearmAt > rearmCooldown -> {
                     lastRearmAt = now
                     Log.i(TAG, "re-arm subscribe (lonely=${lonelyForMs(now)}ms cooldown=${rearmCooldown}ms heal=$healDemand)")
@@ -1620,6 +1704,7 @@ class WifiAwareTransport(
             override fun onSubscribeStarted(s: SubscribeDiscoverySession) {
                 subscribing.set(false)
                 subscribeSession = s
+                clearForegroundOnly()
             }
 
             override fun onServiceDiscovered(

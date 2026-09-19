@@ -311,10 +311,12 @@ private fun MeshControlsSection(
     onRestart: () -> Unit,
     onScan: () -> Unit,
 ) {
-    // Status line: distinguish Healthy, Degraded (on but seized), and Unavailable (radios switched off).
+    // Status line: distinguish Healthy, ForegroundOnly (the Wi-Fi search refused off screen, ADR 2026-09.535d),
+    // Degraded (on but seized), and Unavailable (radios switched off).
     val statusRes =
         when (health) {
             TransportHealth.Healthy -> R.string.diagnostics_status_healthy
+            TransportHealth.ForegroundOnly -> R.string.diagnostics_status_foreground_only
             TransportHealth.Degraded -> R.string.diagnostics_status_degraded
             TransportHealth.Unavailable -> R.string.diagnostics_status_unavailable
         }
@@ -323,6 +325,7 @@ private fun MeshControlsSection(
     val hintRes =
         when (health) {
             TransportHealth.Healthy -> null
+            TransportHealth.ForegroundOnly -> R.string.diagnostics_status_foreground_only_hint
             TransportHealth.Degraded -> R.string.diagnostics_status_degraded_hint
             TransportHealth.Unavailable -> unavailableHintFor(radios)
         }
@@ -331,10 +334,13 @@ private fun MeshControlsSection(
             text = stringResource(statusRes),
             style = MaterialTheme.typography.bodyMedium,
             color =
-                if (health == TransportHealth.Healthy) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.error
+                when (health) {
+                    TransportHealth.Healthy -> MaterialTheme.colorScheme.onSurface
+
+                    // The OS's rule, not a fault: the muted colour a switched-off radio's hint gets.
+                    TransportHealth.ForegroundOnly -> MaterialTheme.colorScheme.onSurfaceVariant
+
+                    TransportHealth.Degraded, TransportHealth.Unavailable -> MaterialTheme.colorScheme.error
                 },
         )
         if (hintRes != null) {
@@ -552,12 +558,13 @@ private fun LiveTransportRow(row: TransportRow.Live) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Health dot: the semantic positive when Healthy, error when Degraded (seized), muted outline when Unavailable
-        // (radio off) — off isn't a fault, so it shouldn't read as alarmingly as a seized radio.
+        // (radio off) or ForegroundOnly (the OS refuses the search off screen) — neither is a fault, so neither
+        // should read as alarmingly as a seized radio.
         val dotColor =
             when (status.health) {
                 TransportHealth.Healthy -> MaterialTheme.knitColors.positive
                 TransportHealth.Degraded -> MaterialTheme.colorScheme.error
-                TransportHealth.Unavailable -> MaterialTheme.colorScheme.outline
+                TransportHealth.Unavailable, TransportHealth.ForegroundOnly -> MaterialTheme.colorScheme.outline
             }
         Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(dotColor))
         Spacer(Modifier.width(12.dp))

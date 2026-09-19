@@ -87,7 +87,9 @@ fun ConnectionStatusRow(
                 MaterialTheme.colorScheme.error
             }
 
-            TransportHealth.Healthy -> {
+            // Discovers only on screen (ADR 2026-09.535d) — a rule of the OS, not a fault, so it draws as
+            // Healthy does: positive with peers, muted without.
+            TransportHealth.Healthy, TransportHealth.ForegroundOnly -> {
                 if (neighborCount > 0) MaterialTheme.knitColors.positive else MaterialTheme.colorScheme.outline
             }
         }
@@ -211,6 +213,16 @@ private fun connectionLabel(
                 stringResource(R.string.chat_connection_relay_no_radios)
             } else {
                 stringResource(R.string.chat_connection_degraded)
+            }
+        }
+
+        // Peers we hold stay held (their links need no location); with none, name the rule rather than
+        // "nobody nearby", which would blame the surroundings for what the OS is doing.
+        TransportHealth.ForegroundOnly -> {
+            when {
+                count > 0 -> pluralStringResource(R.plurals.chat_connection_count, count, count)
+                relaying -> stringResource(R.string.chat_connection_relay_only)
+                else -> stringResource(R.string.chat_connection_foreground_only)
             }
         }
 

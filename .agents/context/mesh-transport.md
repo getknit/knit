@@ -153,6 +153,21 @@ the Diagnostics Transports row for a plane the composite never built — "Not su
 Android 12 or newer" — since an omitted row had looked identical to a radio switched off (work item 18). Never
 as a synthetic `TransportStatus`: the chat list's `radioWarningFor` reads every entry there as present hardware.
 
+## On API 29–32 publish/subscribe are location-gated, and the service's type is what lifts it (ADR 2026-09.535d)
+
+`WifiAwareServiceImpl` enforces the **location app-op** on `publish` and `subscribe` only — `attach`,
+`updatePublish`, `sendMessage` and `requestNetwork` are not gated — and a "While using the app" grant is a
+foreground-only app-op, so a backgrounded uid is refused with `SecurityException: UID … does not have
+Coarse/Fine Location permission`. What lifts it is the `location` **runtime** foreground-service type
+(`meshForegroundServiceTypes`, tiered with `requiredRadioPermissions`; the manifest attribute alone grants
+nothing), and on 30–32 also the while-in-use flag the system grants only to a start from a visible activity —
+which `KnitApp`'s resume observer makes on every open. Until then a boot- or sticky-started service still
+discovers only on screen. The transport tells that refusal from a dead client (`NanSessionFault.classify`,
+tier-gated), **holds** it as `TransportHealth.ForegroundOnly` with nothing torn down (the publish, the
+responder and every NDP keep serving) and retries once per `heal()`; routing it through `onSessionDead`
+instead is the 45-attaches-in-four-minutes churn of work item #62, against `NanAttachPolicy`'s leak budget.
+From 33 discovery rides `NEARBY_WIFI_DEVICES` and none of this applies.
+
 ## One file streams at a time per socket
 
 `mesh/link/LinkFraming` (transport-neutral — the same codec runs over the Wi-Fi Aware NDP socket and the

@@ -288,6 +288,44 @@ class DiagnosticsScreenContentTest {
         compose.onNodeWithText(context.getString(R.string.diagnostics_status_unavailable_hint)).assertDoesNotExist()
     }
 
+    /** ADR 2026-09.535d: the Wi-Fi search refused off screen is named as the OS's rule, never as a seized radio. */
+    @Test
+    fun aSearchRefusedOffScreenIsNamedAsTheRule() {
+        compose.setContent {
+            KnitTheme {
+                DiagnosticsScreenContent(
+                    state =
+                        state().copy(
+                            transports =
+                                listOf(
+                                    TransportRow.Live(
+                                        TransportStatus(TransportKind.Bluetooth, TransportHealth.Unavailable, linked = 0, nearby = 0),
+                                    ),
+                                    TransportRow.Live(
+                                        TransportStatus(TransportKind.WifiAware, TransportHealth.ForegroundOnly, linked = 0, nearby = 0),
+                                    ),
+                                ),
+                        ),
+                    health = TransportHealth.ForegroundOnly,
+                    lastCrash = null,
+                    now = 0L,
+                    snackbarHostState = SnackbarHostState(),
+                    onBack = {},
+                    onRestartMesh = {},
+                    onScan = {},
+                    onOpenCrashLog = {},
+                    moderationLatched = false,
+                    onResetModeration = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText(context.getString(R.string.diagnostics_status_foreground_only)).assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.diagnostics_status_foreground_only_hint)).assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.diagnostics_status_degraded_hint)).assertDoesNotExist()
+        compose.onNodeWithText(context.getString(R.string.diagnostics_status_unavailable_hint)).assertDoesNotExist()
+    }
+
     @Test
     fun aPhoneBelowTheWifiAwareFloorIsToldTheAndroidVersion() {
         compose.setContent {

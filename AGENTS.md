@@ -78,6 +78,14 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   state before it resolves the graph; keep it that way. The deadline is 30 s on Android 15 (10 s before), and
   `getForegroundServiceType()` cannot tell you it was lost. Regression: `MeshServiceForegroundReclaimTest`,
   `GraphlessProcessTest`, `MeshServiceStartTest`.
+  **Before touching the type bitmask `postForeground` claims (`meshForegroundServiceTypes`), the manifest's
+  `<service>`, or `TransportHealth.ForegroundOnly` / `NanSessionFault` in `mesh/wifiaware/`:** READ ADR
+  2026-09.535d. The service claims `location` on exactly the tiers where `requiredRadioPermissions` rides the
+  location grant (29-32) — the Wi-Fi Aware publish/subscribe are gated on the foreground-only location app-op
+  there, and only the *runtime* type bit lifts it (the manifest is a bound, never a grant; `0` silently drops
+  it). The manifest's `FOREGROUND_SERVICE_LOCATION` lint is suppressed on purpose (Play's declaration form). A
+  location refusal off screen is held as `ForegroundOnly` and retried on `heal()`, never torn down through
+  `onSessionDead`.
 - **When touching `legal/`, `ui/about/`, `app/src/main/assets/legal/`, `THIRD-PARTY-NOTICES.md`, or a shipped
   dependency:** READ ADR 2026-09.6eb6. The in-app Open-source licenses list is `legal/ThirdPartyNotices.kt`,
   pinned to the notices table by `ThirdPartyNoticesSyncTest` and to `app/gradle.lockfile`'s

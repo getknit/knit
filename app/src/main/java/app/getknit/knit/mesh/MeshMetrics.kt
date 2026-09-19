@@ -250,6 +250,7 @@ class MeshMetrics {
     private val nanOwedNoLinkPeakMs = AtomicLong()
     private val nanAcceptsRefused = AtomicLong()
     private val nanIcmKeepaliveFailed = AtomicLong()
+    private val nanOffScreenRefusals = AtomicLong()
     private val nanMsgsAcked = AtomicLong()
     private val nanMsgSendsFailed = AtomicLong()
     private val filesSentNan = AtomicLong()
@@ -596,6 +597,15 @@ class MeshMetrics {
     /** A live publish session's updatePublish failed — the ICM relight fell back to the subscribe re-arm. */
     fun onNanIcmKeepaliveFailed() {
         nanIcmKeepaliveFailed.incrementAndGet()
+    }
+
+    /**
+     * A publish/subscribe was refused for the foreground-only location app-op with Knit off screen (API 29-32,
+     * ADR 2026-09.535d) — once per latch, not per attempt. Non-zero after the app has been opened once means the
+     * service's `location` foreground type is not taking on this device.
+     */
+    fun onNanOffScreenRefused() {
+        nanOffScreenRefusals.incrementAndGet()
     }
 
     /** A coordination-plane message (cue/fast-frame) was MAC-acked by its peer. */
@@ -1047,6 +1057,7 @@ class MeshMetrics {
             nanOwedNoLinkPeakMs = nanOwedNoLinkPeakMs.get(),
             nanAcceptsRefused = nanAcceptsRefused.get(),
             nanIcmKeepaliveFailed = nanIcmKeepaliveFailed.get(),
+            nanOffScreenRefusals = nanOffScreenRefusals.get(),
             nanMsgsAcked = nanMsgsAcked.get(),
             nanMsgSendsFailed = nanMsgSendsFailed.get(),
             filesSentNan = filesSentNan.get(),
@@ -1164,6 +1175,7 @@ class MeshMetrics {
         val nanOwedNoLinkPeakMs: Long = 0,
         val nanAcceptsRefused: Long = 0,
         val nanIcmKeepaliveFailed: Long = 0,
+        val nanOffScreenRefusals: Long = 0,
         val nanMsgsAcked: Long = 0,
         val nanMsgSendsFailed: Long = 0,
         val filesSentNan: Long = 0,

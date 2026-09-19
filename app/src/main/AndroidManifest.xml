@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Mesh transport plane 1: Wi-Fi Aware (NAN). On API 33+ discovery is location-free via
          NEARBY_WIFI_DEVICES (neverForLocation); on API 29-32 there is no such permission, so Wi-Fi Aware
@@ -15,7 +16,11 @@
          version: the composer's pin reads the device's position once, between the tap and the send, through
          location/AndroidLocationSource — asked the first time the pin is used, never at onboarding, never in the
          background. Android 12 requires COARSE to be declared and requested alongside FINE (the
-         precise/approximate toggle). -->
+         precise/approximate toggle).
+         The grant is "While using the app": the location app-op is foreground-only, and on 29-32 the Aware
+         service checks that app-op on every publish/subscribe, so a plain foreground service loses discovery
+         the moment Knit leaves the screen. The `location` foreground-service type on .mesh.MeshService below
+         is what lets the *service* keep discovering off screen; no code path reads a position there. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
@@ -172,10 +177,18 @@
             </intent-filter>
         </activity>
 
+        <!-- Two types declared, chosen at runtime by mesh/MeshService.kt's meshForegroundServiceTypes: `location`
+             is passed only on API 29-32, the tiers where ui/Permissions.kt rides the location grant (the
+             Wi-Fi Aware publish/subscribe are gated on the foreground-only location app-op there, and only a
+             location-typed foreground service keeps that access off screen; ADR 2026-09.535d). On 34+ only
+             `connectedDevice` is ever passed, so the FOREGROUND_SERVICE_LOCATION permission lint wants for the
+             manifest attribute is never checked by the platform and is deliberately not declared: it would put
+             a location foreground service on Play's declaration form for a type this app never uses there. -->
         <service
             android:name=".mesh.MeshService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|location"
+            tools:ignore="ForegroundServicePermission" />
 
         <!-- Restart the always-on mesh after a device reboot, unless the user manually stopped it
              (mesh_enabled=false). BOOT_COMPLETED is delivered post-unlock, so the credential-encrypted

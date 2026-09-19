@@ -704,7 +704,9 @@ that budget is a purely local knob that can differ per node without breaking cue
 
 ## 13. Background survival (`mesh/MeshService.kt`)
 
-A typed foreground service (`connectedDevice`) hosts `MeshManager` so the mesh survives backgrounding:
+A typed foreground service hosts `MeshManager` so the mesh survives backgrounding — `connectedDevice`, plus
+`location` on API 29–32 where Wi-Fi Aware discovery is gated on the foreground-only location app-op
+(`meshForegroundServiceTypes`, tiered with `requiredRadioPermissions`; ADR 2026-09.535d):
 
 - **Foreground notification** (`knit_mesh` channel, `IMPORTANCE_MIN`) with a Stop action.
 - **Heartbeat:** inexact ~15-min `AlarmManager` alarm → `ACTION_HEAL` → `MeshManager.heal()`.

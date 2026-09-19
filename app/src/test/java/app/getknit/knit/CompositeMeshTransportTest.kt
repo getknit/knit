@@ -277,6 +277,29 @@ class CompositeMeshTransportTest {
         }
 
     @Test
+    fun healthForegroundOnlySitsBetweenHealthyAndDegraded() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild()
+            val nan = FakeChild()
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+
+            // The Wi-Fi search refused off screen (ADR 2026-09.535d) outranks a seized or switched-off sibling:
+            // "open Knit" is a cure the user holds.
+            bt.setHealth(TransportHealth.Unavailable)
+            nan.setHealth(TransportHealth.ForegroundOnly)
+            advanceUntilIdle()
+            assertEquals(TransportHealth.ForegroundOnly, composite.health.value)
+            bt.setHealth(TransportHealth.Degraded)
+            advanceUntilIdle()
+            assertEquals("foreground-only outranks degraded", TransportHealth.ForegroundOnly, composite.health.value)
+
+            // ...but never a plane that works: Bluetooth up means the node meshes, whatever Wi-Fi Aware is refused.
+            bt.setHealth(TransportHealth.Healthy)
+            advanceUntilIdle()
+            assertEquals(TransportHealth.Healthy, composite.health.value)
+        }
+
+    @Test
     fun sendToPeerPrefersBluetoothWhenBothHoldTheLink() =
         runTest(UnconfinedTestDispatcher()) {
             val bt = FakeChild()

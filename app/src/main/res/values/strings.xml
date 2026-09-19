@@ -10,6 +10,9 @@
     <string name="channel_status_desc">Keeps the mesh running while the app is in the background</string>
     <string name="mesh_notification_title">Knit mesh is active</string>
     <string name="mesh_notification_searching">Mesh is active and searching</string>
+    <!-- TransportHealth.ForegroundOnly (ADR 2026-09.535d): on Android 10-12 the Wi-Fi search is refused off
+         screen until Knit has been opened once. Tapping the notification opens Knit, which is the cure. -->
+    <string name="mesh_notification_foreground_only">Open Knit to keep searching for phones over Wi-Fi</string>
     <plurals name="mesh_notification_connected">
         <item quantity="one">Connected to %d nearby device</item>
         <item quantity="other">Connected to %d nearby devices</item>
@@ -120,6 +123,7 @@
     <string name="chat_connection_radio_off">Turn on Wi-Fi or Bluetooth to connect</string>
     <string name="chat_connection_airplane">Airplane mode is on — turn on Wi-Fi or Bluetooth</string>
     <string name="chat_connection_degraded">Mesh radio unavailable — another app may be using it</string>
+    <string name="chat_connection_foreground_only">Wi-Fi searches for phones only while Knit is open</string>
     <!--
       Connection header, Internet plane. These two replace the mesh line only when the Internet plane is
       carrying the conversation and the radios are not — saying "No mesh nodes connected" then would be
@@ -691,6 +695,8 @@
     <string name="diagnostics_status_healthy">Mesh status: Healthy</string>
     <string name="diagnostics_status_degraded">Mesh status: Degraded</string>
     <string name="diagnostics_status_degraded_hint">The radio may be in use by another app like Quick Share. Tap Restart mesh if it doesn\'t recover on its own.</string>
+    <string name="diagnostics_status_foreground_only">Mesh status: Wi-Fi search on screen only</string>
+    <string name="diagnostics_status_foreground_only_hint">On this version of Android, Knit can search for phones over Wi-Fi only while it is open; Bluetooth is unaffected. Opening Knit once keeps the Wi-Fi search going in the background.</string>
     <string name="diagnostics_status_unavailable">Mesh status: Radios off</string>
     <string name="diagnostics_status_unavailable_hint">Wi-Fi and Bluetooth are both off (or airplane mode is on). Turn one on to join the mesh.</string>
     <!-- The same hint on a phone that only has one of the two radios, or neither — named so it never tells
@@ -741,6 +747,7 @@
     <string name="your_mesh_status_alone">No one in range right now. Knit keeps listening.</string>
     <string name="your_mesh_status_radios_off">Turn on Wi-Fi or Bluetooth to reach people nearby.</string>
     <string name="your_mesh_status_degraded">Another app has the radio. Knit picks up again when it lets go.</string>
+    <string name="your_mesh_status_foreground_only">Wi-Fi searches for phones only while Knit is open. Bluetooth keeps going.</string>
     <string name="your_mesh_carrying_heading">Carrying now</string>
     <plurals name="your_mesh_carrying">
         <item quantity="one">%d message for other people</item>
