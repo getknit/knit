@@ -114,6 +114,17 @@ peer off (`CONNECT_BACKOFF_MS`) so a different sync-wanted peer gets the slot ne
 set** (coordination-plane sightings, lingered `REACHABLE_LINGER_MS`) so it doesn't blink as ephemeral
 syncs come and go.
 
+The accept-any **responder** request is the one request that is *not* time-boxed — it stands for the life
+of the publish session — and its `onUnavailable` is the framework declaring it unfulfillable and dropping
+it from its cache. `refileResponder` re-files it on `NanResponderPolicy`'s terms (ADR 2026-09.bgk3): a
+verdict while a link, handshake or accept of ours is live (or inside `SETTLE_MS`) is the documented knock
+refusal — the interface really was busy — and is re-filed after a 500 ms floor without being counted; a
+verdict with the interface free is about the request, backs off along 0.5 → … → 60 s, and at five in a
+row gives the request up for `sessionCycleWithSettle()`, three cycles per episode, refunded only by the
+responder's `onAvailable`. Before this the re-file was immediate and the Pixel 3 filed 174 in 130 ms
+(work item #77). Never count the contended case: a hub serving a long sync collects knocks for the life
+of the link.
+
 ## Three sets, and only one of them means *nearby*
 
 `MeshTransport.neighbors` is live links; `MeshTransport.reachable` is sightings. Above the composite the

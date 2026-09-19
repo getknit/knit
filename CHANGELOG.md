@@ -65,6 +65,9 @@ document:
   keeps looking in the background now, and tells you when Android will only allow that with Knit open.
 - Unless you had turned off battery optimisation for Knit, the mesh stayed down after a reboot until you
   next opened the app. It now comes back at boot either way.
+- Now and then Android refused to let a phone accept Wi-Fi connections from its neighbours, and Knit asked
+  again hundreds of times a second until something else reset the radio. It now waits between tries and
+  resets the radio itself after a few.
 
 ## [2.6.0](https://github.com/getknit/knit/releases/tag/v2.6.0) — 2026-09-16T07:24:35Z
 

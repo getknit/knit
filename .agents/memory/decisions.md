@@ -115,6 +115,7 @@ carries; never renumber an old one.
 | [2026-09.a8ud](decisions/2026-09-a8ud-supervised-and-managed-phones-are-named.md) | Supervised and managed phones are named, and a blocked grant points at whoever holds it | ui, onboarding, permissions, reliability |
 | [2026-09.aa27](decisions/2026-09-aa27-a-room-delivery-tick-rides-a-frame-already-going-to-its-author.md) | A room delivery tick rides a frame already going to its author | receipts, mesh, lora |
 | [2026-09.amzn](decisions/2026-09-amzn-a-spool-s-answers-are-bounded-by-what-the-client-can-track.md) | A spool's answers are bounded by what the client can track | spool, hardening |
+| [2026-09.bgk3](decisions/2026-09-bgk3-an-unfulfillable-responder-request-is-re-filed-on-a-curve-and-given-up-on.md) | An unfulfillable responder request is re-filed on a curve and given up on | wifi-aware, reliability, mesh |
 | [2026-09.bts9](decisions/2026-09-bts9-the-block-list-never-enters-custody.md) | The block list never enters custody: a blocker carries a blocked sender's frames like every other node | custody, convergence, moderation, privacy |
 | [2026-09.cf7a](decisions/2026-09-cf7a-a-meshtastic-public-post-is-a-signed-attribution-in-its-own-room.md) | A Meshtastic public post is a signed attribution in its own room | lora, meshtastic, mesh |
 | [2026-09.e8yw](decisions/2026-09-e8yw-the-bytes-own-radio-arrival-is-the-recipient-s-deferral-evidence.md) | The bytes' own radio arrival is the recipient's deferral evidence, noted before they are stored | spool, attachments |

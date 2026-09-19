@@ -186,6 +186,17 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
     stranded in `system_server` and `dumpsys activity binder-proxies` stays flat. It measures attaches
     allowed, which is that count halved. The reply's `localBinders`/`binderDeathRecipients`
     (`android.os.Debug`) are this process's own counts, not the per-uid count AMS actually kills on.
+- `…debug.NANREFUSE` — reproduces **work item #77** (ADR 2026-09.bgk3): `--ei count N` arms the next N
+  responder requests to be declared unfulfillable ~10 ms after they are filed (the framework's own
+  `onUnavailable` on our callback, so the request really is unregistered and re-filed) and delivers the first
+  verdict to the live responder at once; `0` disarms, no extra just dumps `filed` / `refusals` (the
+  uncontended streak) / `cycles` (this episode) / `armed`. The measurement is on logcat under
+  `WifiAwareTransport`: `re-filing in Nms` per verdict along 0.5 → 1 → 2 → 4 s, `cycling the session (c/3 this
+  episode)` at the fifth, a re-file at the curve's 8 / 16 s while the reattach cooldown holds, and no cycle past
+  the third. `--ei count 25` walks every phase in ~110 s and then leaves a standing responder (P3, 2026-09-19).
+  What it cannot reproduce is the framework's *reason*, which the field capture did not hold either; and a
+  verdict injected while an inbound link is live tears that link down with the request (the real framework
+  has already dropped the request by then), so the contended branch is better read from a natural knock.
 - `…debug.FLAGMSG` — injects one inbound message **the text moderator flagged** (the UI collapses it behind a
   tap-to-reveal) as the newest row of `--es conv <id>` (default `nearby`), from `--es from <peerNodeId>`
   (default a synthetic sender) with body `--es text <body>`. The radio-less build never receives a real

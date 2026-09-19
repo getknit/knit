@@ -88,6 +88,12 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   it). The manifest's `FOREGROUND_SERVICE_LOCATION` lint is suppressed on purpose (Play's declaration form). A
   location refusal off screen is held as `ForegroundOnly` and retried on `heal()`, never torn down through
   `onSessionDead`.
+- **When touching the responder's `onUnavailable`, `refileResponder`, `NanResponderPolicy`, or what refunds
+  `responderRefusals` / `responderCycles` in `WifiAwareTransport`:** READ ADR 2026-09.bgk3. A verdict with a
+  link, handshake or accept of ours live is the documented knock refusal — re-filed after the floor, never
+  counted; a verdict with the interface free is about the request — counted, backed off, and at five in a row
+  given up for a session cycle, three per episode, refunded only by the responder's `onAvailable` (never a
+  fresh session or the availability edge: the cycle produces both). The tests are in `NanResponderPolicyTest`.
 - **When touching `legal/`, `ui/about/`, `app/src/main/assets/legal/`, `THIRD-PARTY-NOTICES.md`, or a shipped
   dependency:** READ ADR 2026-09.6eb6. The in-app Open-source licenses list is `legal/ThirdPartyNotices.kt`,
   pinned to the notices table by `ThirdPartyNoticesSyncTest` and to `app/gradle.lockfile`'s

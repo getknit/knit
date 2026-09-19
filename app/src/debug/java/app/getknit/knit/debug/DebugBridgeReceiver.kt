@@ -157,6 +157,12 @@ import java.nio.ByteBuffer
  *   refund nothing; `--ez cycle true` alternates false/true instead — genuine radio recoveries, the negative
  *   control that must still refund and reattach. The reply's `failuresBefore`/`failuresAfter` is the
  *   measurement: how many attaches the bounds actually let through.
+ * - [ACTION_NANREFUSE] — arms `--ei count N` Wi-Fi Aware responder requests to be declared unfulfillable ~10 ms
+ *   after they are filed (work item #77's shape; 0 disarms, absent just dumps), delivering the first verdict to
+ *   the live responder at once. The reply carries the re-file budget — `refusals` (the uncontended streak),
+ *   `cycles` (session cycles this episode), `filed` and `armed` — and the pacing itself is read off logcat
+ *   under `WifiAwareTransport`: `re-filing in Nms` per verdict, `cycling the session (c/3 this episode)` at the
+ *   give-up. See ADR 2026-09.bgk3 and `NanFaultInjector`.
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  *
  * Each action replies as a one-line JSON object: it is returned via the ordered-broadcast result
@@ -310,6 +316,10 @@ class DebugBridgeReceiver :
 
                         ACTION_NANSTORM -> {
                             handleNanStorm(intent)
+                        }
+
+                        ACTION_NANREFUSE -> {
+                            handleNanRefuse(intent)
                         }
 
                         ACTION_HEAL -> {
@@ -1689,6 +1699,30 @@ class DebugBridgeReceiver :
     }
 
     /**
+     * Arms (or disarms, with `count` 0; dumps, with it absent) forced responder-request refusals — the lab
+     * stand-in for a framework that declares the accept-any request unfulfillable on every file (work item #77,
+     * ADR 2026-09.bgk3). What this measures is the pacing: the delays in the transport's `re-filing in Nms` lines,
+     * the give-up into a session cycle at the fifth uncontended verdict, and the three-cycle cap.
+     */
+    private fun handleNanRefuse(intent: Intent): JSONObject {
+        if (!NanFaultInjector.bound) return reply("error", "Wi-Fi Aware transport is not running")
+        val count = intent.getIntExtra("count", -1)
+        val armed = if (count >= 0) NanFaultInjector.armResponderRefusals(count) else null
+        val what =
+            when {
+                armed == null -> "responder re-file state"
+                armed > 0 -> "armed $armed responder refusals"
+                else -> "responder refusals disarmed"
+            }
+        val r = NanFaultInjector.responderStatus()
+        return reply("ok", what)
+            .put("filed", r?.filed ?: false)
+            .put("refusals", r?.refusals ?: -1)
+            .put("cycles", r?.cycles ?: -1)
+            .put("armed", r?.armed ?: -1)
+    }
+
+    /**
      * Folds the attach budget and this process's Binder-object counts into a reply. The local count is the
      * closest in-process proxy for what AMS is actually watching, which is the count *system_server* holds
      * against our uid — for that, read `adb shell dumpsys activity binder-proxies`.
@@ -1720,6 +1754,7 @@ class DebugBridgeReceiver :
         const val ACTION_HEAL = "app.getknit.knit.debug.HEAL"
         const val ACTION_NANFAIL = "app.getknit.knit.debug.NANFAIL"
         const val ACTION_NANSTORM = "app.getknit.knit.debug.NANSTORM"
+        const val ACTION_NANREFUSE = "app.getknit.knit.debug.NANREFUSE"
         const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
         const val ACTION_MSGNOTIF = "app.getknit.knit.debug.MSGNOTIF"
         const val ACTION_FLAGMSG = "app.getknit.knit.debug.FLAGMSG"

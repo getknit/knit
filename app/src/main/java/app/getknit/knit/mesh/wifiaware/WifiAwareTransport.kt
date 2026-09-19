@@ -268,6 +268,19 @@ class WifiAwareTransport(
 
     @Volatile private var acceptJob: Job? = null
 
+    // A re-file of the responder request waiting out its [NanResponderPolicy] delay, so [stopResponder] can
+    // drop it: a teardown or a fresh publish session supersedes whatever it was about to file.
+    @Volatile private var responderRefile: Runnable? = null
+
+    // Consecutive times the framework declared the responder request unfulfillable with nothing of ours holding
+    // the interface, and the session cycles that streak has spent (work item #77, [NanResponderPolicy]). The
+    // streak is per publish session (a fresh session starts at 0); the cycles are per *episode* and refunded
+    // only by a request that is fulfilled — the responder's onAvailable — never by the fresh session or the
+    // availability edge the escalation's own cycle produces. Handler-thread writes; [logState] reads.
+    @Volatile private var responderRefusals = 0
+
+    @Volatile private var responderCycles = 0
+
     // The single live data-path link, keyed by peer nodeId (at most one entry — one NDI). [NanLink] wraps the
     // shared [FramedLink] (socket I/O) with the NAN-specific per-peer network callback + quiescence supervisor.
     private val peers = ConcurrentHashMap<String, NanLink>()
@@ -535,6 +548,20 @@ class WifiAwareTransport(
                         retryInMs = (attachRetryAfter - SystemClock.elapsedRealtime()).coerceAtLeast(0L),
                     )
                 },
+                onRefuseResponder = {
+                    // `…debug.NANREFUSE`: hand the live responder callback the framework's verdict, on its thread.
+                    val cb = responderCallback
+                    if (cb != null) handler.post { cb.onUnavailable() }
+                    cb != null
+                },
+                responderStatus = {
+                    NanResponderSnapshot(
+                        filed = responderCallback != null,
+                        refusals = responderRefusals,
+                        cycles = responderCycles,
+                        armed = 0,
+                    )
+                },
             )
             attach()
             loopJob = scope.launch { discoveryLoop() }
@@ -600,7 +627,7 @@ class WifiAwareTransport(
         Log.d(
             TAG,
             "state ver=$v live=${peers.keys} inbound=$inbound acc=$acc cap=$serveCap pin=$responderPinsNdi " +
-                "disc=$disc cue=$cues wanted=$wanted initiable=$initiable " +
+                "refused=$responderRefusals/$responderCycles disc=$disc cue=$cues wanted=$wanted initiable=$initiable " +
                 "reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}] " +
                 "bulk[${bulkWanted.debug()}] lonely=${lonelyForMs(now)}ms offscreen=$offScreenBlocked",
         )
@@ -785,6 +812,8 @@ class WifiAwareTransport(
         attaching.set(false)
         subscribing.set(false)
         clearAttachBackoff()
+        responderRefusals = 0
+        responderCycles = 0
         paused = false
         offScreenBlocked = false
         lastLinkEndedAt = 0L
@@ -1129,6 +1158,7 @@ class WifiAwareTransport(
                     publishSession = publish
                     clearForegroundOnly()
                     icmKeepaliveBroken = false // a fresh session gets a fresh chance at in-place updates
+                    responderRefusals = 0 // the streak was about the old session's request; the cycle budget is not
                     startResponder() // one accept-any responder for the life of this publish session
                 }
 
@@ -2197,6 +2227,11 @@ class WifiAwareTransport(
         val cb =
             object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
+                    // The request was fulfilled — an NDP landed on it — which is the one proof the responder works,
+                    // and so the one refund of the re-file budget ([NanResponderPolicy]): a fresh session or an
+                    // availability edge would both be produced by the escalation's own cycle.
+                    responderRefusals = 0
+                    responderCycles = 0
                     if (acceptJob?.isActive != true) acceptJob = scope.launch(Dispatchers.IO) { acceptLoop(ss) }
                 }
 
@@ -2217,13 +2252,14 @@ class WifiAwareTransport(
                     // session). Without this hook the app keeps believing its dead responder is listening and
                     // the node can never serve again until the next full reattach. Re-file a fresh request —
                     // the peer whose inbound was refused backs off and retries against it. Generation-guarded:
-                    // never re-file over a newer responder.
+                    // never re-file over a newer responder. The re-file is paced and counted by
+                    // [refileResponder]: a verdict with nothing of ours on the interface is about the request
+                    // itself, and answering it at once made 174 files in 130 ms on the Pixel 3 (work item #77).
                     val self: ConnectivityManager.NetworkCallback = this
                     onHandler {
                         if (responderCallback !== self) return@onHandler
-                        Log.w(TAG, "responder request declared unfulfillable (inbound NDP during our initiate) — re-filing")
                         stopResponder()
-                        startResponder()
+                        refileResponder(pub)
                     }
                 }
             }
@@ -2239,7 +2275,64 @@ class WifiAwareTransport(
         if (filed) {
             responderPinsNdi = false // a fresh (never-served) request idles interface-less
             Log.i(TAG, "responder listening on port ${ss.localPort}")
+            if (NanFaultInjector.shouldRefuseResponder()) {
+                // Debug builds only, armed only by `…debug.NANREFUSE` — see [NanFaultInjector]. The framework
+                // answered the Pixel 3's every fresh request in ~10 ms; deliver the same verdict on the same clock.
+                handler.postDelayed({ cb.onUnavailable() }, INJECTED_REFUSAL_DELAY_MS)
+            }
         }
+    }
+
+    /**
+     * The framework has just declared the responder request on [pub] unfulfillable and [stopResponder] has
+     * released it. Decide, per [NanResponderPolicy], when the next one is filed — or whether to stop filing and
+     * cycle the session instead (work item #77). Runs on the [handler] thread.
+     *
+     * A verdict while a link, handshake or accept of ours is live — or inside the post-link settle, when the
+     * framework may still hold the interface — is the P0-documented knock refusal: the interface *was* busy,
+     * so it says nothing about the request. It is re-filed after the floor and not counted. A verdict with the
+     * interface free is about the request, and those are counted: the re-file backs off along the curve, and at
+     * [NanResponderPolicy.CYCLE_AT_STREAK] in a row the request is given up on for [sessionCycleWithSettle] —
+     * Tier 1's cure for a wedged responder — under the reattach cooldown every other session cycle honours and
+     * the per-episode cap [NanResponderPolicy.MAX_CYCLES]. Once the cap is spent the re-file simply keeps
+     * following the curve to its one-minute saturation; the watchdog's own tiers remain behind it.
+     *
+     * The delayed file is guarded on the publish session it was scheduled for and on no responder having been
+     * filed in the meantime ([recycleResponder], a fresh `onPublishStarted`), and [stopResponder] drops it, so a
+     * teardown never leaves a stale file behind.
+     */
+    private fun refileResponder(pub: PublishDiscoverySession) {
+        val now = SystemClock.elapsedRealtime()
+        val contended = anyLinkActivity() || now < lastLinkEndedAt + SETTLE_MS
+        if (!contended) responderRefusals++
+        val streak = responderRefusals
+        if (!contended &&
+            NanResponderPolicy.cycleSession(streak, responderCycles) &&
+            now - lastReattachAt > REATTACH_COOLDOWN_MS
+        ) {
+            responderCycles++
+            lastReattachAt = now
+            Log.w(
+                TAG,
+                "responder request declared unfulfillable $streak times in a row with no link up — cycling the " +
+                    "session ($responderCycles/${NanResponderPolicy.MAX_CYCLES} this episode)",
+            )
+            sessionCycleWithSettle()
+            return
+        }
+        val delay = if (contended) NanResponderPolicy.contendedRefileMs() else NanResponderPolicy.refileDelayMs(streak)
+        if (contended) {
+            Log.w(TAG, "responder request declared unfulfillable (inbound NDP during our initiate) — re-filing in ${delay}ms")
+        } else {
+            Log.w(TAG, "responder request declared unfulfillable with no link up ($streak in a row) — re-filing in ${delay}ms")
+        }
+        val refile =
+            Runnable {
+                responderRefile = null
+                if (publishSession === pub && responderCallback == null) startResponder()
+            }
+        responderRefile = refile
+        handler.postDelayed(refile, delay)
     }
 
     @Suppress("LoopWithTooManyJumpStatements") // accept → admit-or-close is naturally break+continue
@@ -2297,6 +2390,8 @@ class WifiAwareTransport(
     }
 
     private fun stopResponder() {
+        responderRefile?.let { handler.removeCallbacks(it) } // a teardown supersedes a re-file still waiting its turn
+        responderRefile = null
         acceptJob?.cancel()
         acceptJob = null
         responderCallback?.let { runCatching { connectivity.unregisterNetworkCallback(it) } }
@@ -2953,6 +3048,10 @@ class WifiAwareTransport(
         // Fallback release of the reattach() single-flight guard if the fresh attach never calls back at all
         // (normally its onAttached/onAttachFailed clears it in well under a second). Bounds "stuck reattaching".
         const val ATTACH_WATCHDOG_MS = 10_000L
+
+        // How long after a responder file the debug fault ([NanFaultInjector], `…debug.NANREFUSE`) delivers its
+        // verdict: the ~10 ms the framework took on the Pixel 3 (work item #77).
+        const val INJECTED_REFUSAL_DELAY_MS = 10L
 
         // Leaked-request wedge watchdog ([checkWedge]): how often to evaluate, and how long a sync must stay
         // *owed with no link forming* (the owed-episode, not time-since-last-link) before self-restarting. The

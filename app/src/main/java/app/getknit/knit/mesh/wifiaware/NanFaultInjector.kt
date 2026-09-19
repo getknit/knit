@@ -11,9 +11,18 @@ internal data class NanAttachSnapshot(
     val retryInMs: Long,
 )
 
+/** What the responder re-file budget looks like right now (ADR 2026-09.bgk3), for the debug bridge's reply. */
+internal data class NanResponderSnapshot(
+    val filed: Boolean,
+    val refusals: Int,
+    val cycles: Int,
+    val armed: Int,
+)
+
 /**
  * Debug-only fault injection for [WifiAwareTransport]'s attach path, so getknit/Knit#9 can be reproduced on
- * hardware that does not have the bug.
+ * hardware that does not have the bug — and, since work item #77, for its responder's `onUnavailable`, so the
+ * re-file pacing of [NanResponderPolicy] can be driven on a device whose framework fulfils the request just fine.
  *
  * The failure it reproduces is not something a lab Pixel can be talked into. It needs a vendor HAL with no
  * STA+NAN interface combination, so that `attach` fails at `bestIfaceCreationProposal is null` while
@@ -43,6 +52,14 @@ internal object NanFaultInjector {
 
     @Volatile private var snapshot: (() -> NanAttachSnapshot)? = null
 
+    // The responder half (`…debug.NANREFUSE`): how many verdicts are still armed, the transport's hook that
+    // delivers one to the live responder callback now, and its snapshot of the re-file budget.
+    @Volatile private var refusalsLeft = 0
+
+    @Volatile private var refuseResponder: (() -> Boolean)? = null
+
+    @Volatile private var responderSnapshot: (() -> NanResponderSnapshot)? = null
+
     /** Whether a transport is running and has bound its hooks — false in release, and before `start()`. */
     val bound: Boolean get() = BuildConfig.DEBUG && availability != null
 
@@ -50,11 +67,18 @@ internal object NanFaultInjector {
     fun bind(
         onAvailability: ((Boolean) -> Unit)?,
         status: (() -> NanAttachSnapshot)?,
+        onRefuseResponder: (() -> Boolean)? = null,
+        responderStatus: (() -> NanResponderSnapshot)? = null,
     ) {
         if (!BuildConfig.DEBUG) return
         availability = onAvailability
         snapshot = status
-        if (onAvailability == null) failuresLeft = 0
+        refuseResponder = onRefuseResponder
+        responderSnapshot = responderStatus
+        if (onAvailability == null) {
+            failuresLeft = 0
+            refusalsLeft = 0
+        }
     }
 
     /** Arms the next [count] attaches to take their failure path; 0 disarms. Returns what is now armed. */
@@ -85,4 +109,29 @@ internal object NanFaultInjector {
     }
 
     fun status(): NanAttachSnapshot? = if (BuildConfig.DEBUG) snapshot?.invoke() else null
+
+    /**
+     * Arms the next [count] responder requests to be declared unfulfillable ~10 ms after they are filed — the
+     * field shape of work item #77, where the framework answered every fresh request in about that — and, if a
+     * responder is filed right now, delivers the first verdict to it at once. 0 disarms. Returns what is armed.
+     * The verdict is our own callback's `onUnavailable`, so the request really is unregistered and re-filed;
+     * what is not reproduced is the framework's reason, which is the one thing the capture did not hold.
+     */
+    fun armResponderRefusals(count: Int): Int {
+        if (!BuildConfig.DEBUG) return 0
+        refusalsLeft = count.coerceAtLeast(0)
+        if (refusalsLeft > 0 && refuseResponder?.invoke() == true) refusalsLeft--
+        return refusalsLeft
+    }
+
+    /** Whether the responder request just filed should be declared unfulfillable — consumes one armed verdict. */
+    fun shouldRefuseResponder(): Boolean {
+        if (!BuildConfig.DEBUG) return false
+        val left = refusalsLeft
+        if (left <= 0) return false
+        refusalsLeft = left - 1
+        return true
+    }
+
+    fun responderStatus(): NanResponderSnapshot? = if (BuildConfig.DEBUG) responderSnapshot?.invoke()?.copy(armed = refusalsLeft) else null
 }
