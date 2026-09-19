@@ -264,7 +264,8 @@ class LabTransport(
         val batch = synchronized(pipe.held) { pipe.held.toList().also { pipe.held.clear() } }
         pipe.holding = keepHolding
         val ordered = reorder(batch)
-        ordered.forEach { pipe.target.deliver(it, nodeId, VIA_LINK) }
+        // Two held copies of one frame (the flood's and the fast path's) are one write here, as on the phone.
+        ordered.forEach { if (crosses(pipe, FrameKey.ofSigned(it), VIA_LINK)) pipe.target.deliver(it, nodeId, VIA_LINK) }
         return ordered
     }
 
@@ -290,8 +291,8 @@ class LabTransport(
         targets.forEach { pipe ->
             when {
                 pipe.lossy(wire) -> lost += wire
+                pipe.holding -> synchronized(pipe.held) { pipe.held += wire } // judged at [release]
                 !crosses(pipe, key, VIA_LINK) -> Unit
-                pipe.holding -> synchronized(pipe.held) { pipe.held += wire }
                 else -> pipe.target.deliver(wire, nodeId, VIA_LINK)
             }
         }
@@ -300,7 +301,10 @@ class LabTransport(
     /**
      * The phone's `writeOnce`: true when [key] is new to this pipe (write it), false when it already crossed
      * either way (skip it, recorded in [dupSkipped]). Judged after `lossy`, which models a radio that lost the
-     * packet rather than a link that took it. An unsigned frame (null key) always crosses, as on the phone.
+     * packet rather than a link that took it, and after `hold`: a held frame is judged when [release] delivers
+     * it, because a scenario may drop it from the batch (the air lost it too) and a frame the far end never
+     * got must not count as crossed — the served key `KeyExchangeLabTest` waits for is the same signed bytes
+     * as the profile the hold swallowed. An unsigned frame (null key) always crosses, as on the phone.
      */
     private fun crosses(
         pipe: Pipe,
@@ -345,8 +349,8 @@ class LabTransport(
     ) {
         when {
             pipe.lossy(wire) -> lost += wire
+            pipe.holding -> synchronized(pipe.held) { pipe.held += wire } // judged at [release]
             !crosses(pipe, key, VIA_FAST) -> Unit
-            pipe.holding -> synchronized(pipe.held) { pipe.held += wire }
             else -> pipe.target.deliverNow(wire, nodeId, VIA_FAST)
         }
     }
