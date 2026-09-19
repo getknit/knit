@@ -197,6 +197,15 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
   What it cannot reproduce is the framework's *reason*, which the field capture did not hold either; and a
   verdict injected while an inbound link is live tears that link down with the request (the real framework
   has already dropped the request by then), so the contended branch is better read from a natural knock.
+- `…debug.NANICM` / `…debug.NANDIAL` — two interop knobs from the Pixel 3 investigation (2026-09-19; see the
+  `nan-sta-drop-kills-aware-client` memory and ADR 2026-09.bgk3's addendum). `NANICM --ez on <bool>` turns Wi-Fi
+  Aware Instant Communication Mode on or off for the running transport and cycles the session so the new
+  publish/subscribe configs take; the hardware's answer bounds `on`, and a process restart reverts to it.
+  `NANDIAL --es to <peerNodeId>` initiates an NDP to a peer currently in `discovered` **regardless of the id
+  tie-break**, so the smaller node can knock on the larger node's responder — the far side's HELLO check still
+  closes the socket; the NDP forming (`onDataPathRequest` there) is the trial. It answers `peer not in
+  discovered ([…])` when the handle is gone, which on API 33+ happens seconds after the last SDF
+  (`onServiceLost`), so poll it rather than wait.
 - `…debug.FLAGMSG` — injects one inbound message **the text moderator flagged** (the UI collapses it behind a
   tap-to-reveal) as the newest row of `--es conv <id>` (default `nearby`), from `--es from <peerNodeId>`
   (default a synthetic sender) with body `--es text <body>`. The radio-less build never receives a real

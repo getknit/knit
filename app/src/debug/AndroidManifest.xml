@@ -27,6 +27,8 @@
                 <action android:name="app.getknit.knit.debug.NANFAIL" />
                 <action android:name="app.getknit.knit.debug.NANSTORM" />
                 <action android:name="app.getknit.knit.debug.NANREFUSE" />
+                <action android:name="app.getknit.knit.debug.NANICM" />
+                <action android:name="app.getknit.knit.debug.NANDIAL" />
                 <action android:name="app.getknit.knit.debug.WEBPPROBE" />
                 <action android:name="app.getknit.knit.debug.WEBPCONV" />
                 <action android:name="app.getknit.knit.debug.WEBPCHECK" />

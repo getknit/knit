@@ -60,6 +60,13 @@ internal object NanFaultInjector {
 
     @Volatile private var responderSnapshot: (() -> NanResponderSnapshot)? = null
 
+    // `…debug.NANICM`: flips Instant Communication Mode on the live transport and cycles the session so the
+    // new publish/subscribe configs take. Returns what the mode now is (false when the hardware lacks it).
+    @Volatile private var instantMode: ((Boolean) -> Boolean)? = null
+
+    // `…debug.NANDIAL`: initiate an NDP to a discovered peer regardless of the id tie-break. Returns a verdict.
+    @Volatile private var dial: ((String) -> String)? = null
+
     /** Whether a transport is running and has bound its hooks — false in release, and before `start()`. */
     val bound: Boolean get() = BuildConfig.DEBUG && availability != null
 
@@ -69,12 +76,16 @@ internal object NanFaultInjector {
         status: (() -> NanAttachSnapshot)?,
         onRefuseResponder: (() -> Boolean)? = null,
         responderStatus: (() -> NanResponderSnapshot)? = null,
+        onInstantMode: ((Boolean) -> Boolean)? = null,
+        onDial: ((String) -> String)? = null,
     ) {
         if (!BuildConfig.DEBUG) return
         availability = onAvailability
         snapshot = status
         refuseResponder = onRefuseResponder
         responderSnapshot = responderStatus
+        instantMode = onInstantMode
+        dial = onDial
         if (onAvailability == null) {
             failuresLeft = 0
             refusalsLeft = 0
@@ -132,6 +143,20 @@ internal object NanFaultInjector {
         refusalsLeft = left - 1
         return true
     }
+
+    /**
+     * Turns Instant Communication Mode on or off for the running transport (a lab knob: an ICM-camped Pixel
+     * fleet against a non-ICM peer is one hypothesis for the Pixel 3's unicast blindness). `null` when no
+     * transport is bound; otherwise the mode now in force, which is `false` on hardware without ICM.
+     */
+    fun setInstantMode(on: Boolean): Boolean? = if (BuildConfig.DEBUG) instantMode?.invoke(on) else null
+
+    /**
+     * Initiates an NDP to [peerNodeId] from the running transport **ignoring the id tie-break** (a lab knob:
+     * the only way to make the smaller node knock on a larger node's responder, which is how a one-directional
+     * data-path failure is told from a dead pair). `null` when no transport is bound; else a short verdict.
+     */
+    fun dial(peerNodeId: String): String? = if (BuildConfig.DEBUG) dial?.invoke(peerNodeId) else null
 
     fun responderStatus(): NanResponderSnapshot? = if (BuildConfig.DEBUG) responderSnapshot?.invoke()?.copy(armed = refusalsLeft) else null
 }

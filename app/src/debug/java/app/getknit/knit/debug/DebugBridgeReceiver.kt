@@ -163,6 +163,12 @@ import java.nio.ByteBuffer
  *   `cycles` (session cycles this episode), `filed` and `armed` — and the pacing itself is read off logcat
  *   under `WifiAwareTransport`: `re-filing in Nms` per verdict, `cycling the session (c/3 this episode)` at the
  *   give-up. See ADR 2026-09.bgk3 and `NanFaultInjector`.
+ * - [ACTION_NANICM] — `--ez on <bool>` turns Wi-Fi Aware Instant Communication Mode on or off for the running
+ *   transport and cycles the session so the new publish/subscribe configs take (a lab knob for interop
+ *   trials against a peer without ICM; the hardware's own answer bounds `on`).
+ * - [ACTION_NANDIAL] — `--es to <peerNodeId>` initiates a Wi-Fi Aware data path to a discovered peer regardless
+ *   of the id tie-break, so the smaller node can knock on the larger node's responder. The far side's HELLO
+ *   check still closes the socket; the NDP forming (`onDataPathRequest` there, a 15 s timeout here) is the trial.
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  *
  * Each action replies as a one-line JSON object: it is returned via the ordered-broadcast result
@@ -320,6 +326,38 @@ class DebugBridgeReceiver :
 
                         ACTION_NANREFUSE -> {
                             handleNanRefuse(intent)
+                        }
+
+                        ACTION_NANDIAL -> {
+                            val to = intent.getStringExtra("to")?.trim().orEmpty()
+                            when {
+                                to.isEmpty() -> {
+                                    reply("error", "missing --es to <peerNodeId>")
+                                }
+
+                                else -> {
+                                    when (val verdict = NanFaultInjector.dial(to)) {
+                                        null -> reply("error", "Wi-Fi Aware transport is not running")
+                                        else -> reply("ok", verdict).put("to", to)
+                                    }
+                                }
+                            }
+                        }
+
+                        ACTION_NANICM -> {
+                            val on = intent.getBooleanExtra("on", true)
+                            when (val now = NanFaultInjector.setInstantMode(on)) {
+                                null -> {
+                                    reply("error", "Wi-Fi Aware transport is not running")
+                                }
+
+                                else -> {
+                                    reply(
+                                        "ok",
+                                        "instant communication mode ${if (now) "on" else "off"} (session cycled)",
+                                    ).put("instantMode", now)
+                                }
+                            }
                         }
 
                         ACTION_HEAL -> {
@@ -1755,6 +1793,8 @@ class DebugBridgeReceiver :
         const val ACTION_NANFAIL = "app.getknit.knit.debug.NANFAIL"
         const val ACTION_NANSTORM = "app.getknit.knit.debug.NANSTORM"
         const val ACTION_NANREFUSE = "app.getknit.knit.debug.NANREFUSE"
+        const val ACTION_NANICM = "app.getknit.knit.debug.NANICM"
+        const val ACTION_NANDIAL = "app.getknit.knit.debug.NANDIAL"
         const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
         const val ACTION_MSGNOTIF = "app.getknit.knit.debug.MSGNOTIF"
         const val ACTION_FLAGMSG = "app.getknit.knit.debug.FLAGMSG"

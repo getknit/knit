@@ -183,7 +183,8 @@ class WifiAwareTransport(
     private val handler = Handler(callbackThread.looper)
 
     private lateinit var localNodeId: String
-    private var instantSupported = false
+
+    @Volatile private var instantSupported = false
 
     // The radio's actual coordination-plane message cap (maxServiceSpecificInfoLen covers sendMessage too);
     // COORD_MSG_MAX stays as the conservative fallback. Bigger caps let more frames ride the zero-NDP path.
@@ -514,11 +515,7 @@ class WifiAwareTransport(
             lastLinkOrAcceptAt = SystemClock.elapsedRealtime() // grace window before the wedge watchdog can fire
             // Instant Communication Mode is API 33; on 29-32 the probe method doesn't exist, so ICM stays off
             // and Wi-Fi Aware falls back to standard discovery windows (slower, but functional).
-            instantSupported =
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                runCatching {
-                    awareManager?.characteristics?.isInstantCommunicationModeSupported() == true
-                }.getOrDefault(false)
+            instantSupported = instantModeAvailable()
             // Concurrent-serve cap from the firmware NDP budget (8 on Pixel-class hardware → cap 4; Samsung
             // S.LSI ships 1 → legacy single-slot). Unreadable ⇒ 1, the conservative fallback.
             serveCap =
@@ -562,6 +559,13 @@ class WifiAwareTransport(
                         armed = 0,
                     )
                 },
+                onInstantMode = { on ->
+                    // `…debug.NANICM`: the hardware's answer bounds it; a session cycle re-files publish/subscribe.
+                    instantSupported = on && instantModeAvailable()
+                    sessionCycleWithSettle()
+                    instantSupported
+                },
+                onDial = ::debugDial,
             )
             attach()
             loopJob = scope.launch { discoveryLoop() }
@@ -1000,6 +1004,38 @@ class WifiAwareTransport(
     private fun onHandler(block: () -> Unit) {
         if (Looper.myLooper() == handler.looper) block() else handler.post(block)
     }
+
+    /**
+     * `…debug.NANDIAL`: initiate to a discovered peer whatever the tie-break says. The far side's HELLO check
+     * still closes the socket if we are the larger id; the NDP forming is the trial. Debug builds only.
+     */
+    private fun debugDial(peer: String): String {
+        val found = synchronized(lock) { discovered[peer] }
+        return when {
+            subscribeSession == null -> {
+                "no subscribe session"
+            }
+
+            found == null -> {
+                "peer not in discovered (${synchronized(lock) { discovered.keys.toList() }})"
+            }
+
+            anyLinkActivity() -> {
+                "link activity in progress"
+            }
+
+            else -> {
+                onHandler { initiateTo(peer, found.advert, found.peerHandle) }
+                "initiating"
+            }
+        }
+    }
+
+    /** Whether this hardware offers Instant Communication Mode (API 33+, and the chip says so). */
+    private fun instantModeAvailable(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            runCatching { awareManager?.characteristics?.isInstantCommunicationModeSupported() == true }
+                .getOrDefault(false)
 
     private fun attach() =
         onHandler {

@@ -136,6 +136,24 @@ row) — re-filing in Xms`, `… (inbound NDP during our initiate) — re-filing
 with no link up — cycling the session (c/3 this episode)`; a healthy device logs none of the first kind,
 and `refused=` on the state line reads `0/0` after any serve.
 
+**Addendum, later the same night — what the Pixel 3's bursts are.** Three more natural bursts on the Pixel 3
+(01:53, 02:06, 03:46), each paced and, once the injected run's budget had lapsed, cycled at the fifth verdict
+as designed. Each began with the STA Wi-Fi dropping, and three of the four STA drops landed within 40 ms of a
+Qualcomm HAL `NDP Cmd Type 0xa` confirm indication (`Response code 1`, REJECT) — the firmware finishing a
+failed data-path negotiation the Pixel 3 had started 30–100 s earlier. It happened on a 5 GHz STA and on a
+2.4 GHz one alike. So on blueline the chain is: initiate → the NDP request never reaches the peer (the Pixel
+9's firmware counted `Num Data Path Request Events 0` across some twenty attempts, phones adjacent, ICM on
+or off) → the firmware's negotiation times out with a reject that also knocks the STA off its AP → the STA
+drop silently drops the Aware client → every request refused on sight. The Pixel 3 has never formed a NAN
+data path with any lab Pixel, and initiating is what hurts it. One concrete lead for the request never
+arriving: the Pixel 3's framework holds the Pixel 9's publish instance id as `16777216` (0x01000000) where the
+Pixel 9's own `mPubSubId` is 1 — a byte-swapped u32 out of the QCA HAL's match indication, which would put
+Publish ID 0 into every NDP request and follow-up the Pixel 3 sends. Its broadcast SDFs are also heard at
+about a third the rate of the other Pixels', so the old firmware is out of step in more than one way. Not
+fixable from the app (the swap lives inside `system_server`'s peer table); the transport's job is to stay
+bounded around it, which this ADR's curve, the reattach cooldown and the three-cycle cap do — the 03:46
+burst cost five files and one cycle.
+
 **Follow-up this opens.** A STA drop that silently kills the Aware client is a fault of its own: the
 transport could watch for it directly — the framework's `WifiManager.NETWORK_STATE_CHANGED_ACTION` /
 `ConnectivityManager` default-network loss on Wi-Fi, or the first `no client exists` failure — and re-attach
