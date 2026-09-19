@@ -104,17 +104,22 @@ internal class FakeMeshtasticLink(
     val sentChannels = mutableListOf<Int>()
     val sentPortnums = mutableListOf<Int>()
 
+    /** The `to` of each send, positionally alongside [sent]: the broadcast address for all but a DM auto-reply. */
+    val sentTos = mutableListOf<UInt>()
+
     override suspend fun send(
         payload: ByteArray,
         channelIndex: Int,
         portnum: Int,
         hopLimit: Int?,
+        to: UInt,
     ): SendResult {
         if (free == 0) return SendResult.Busy
         sent += payload
         sentHopLimits += hopLimit
         sentChannels += channelIndex
         sentPortnums += portnum
+        sentTos += to
         val id = nextId++
         if (queueFills) free--
         air.broadcast(nodeNum, channelIndex, portnum, payload)

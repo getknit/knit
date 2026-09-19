@@ -506,19 +506,27 @@ internal object BoardBytes {
 
     fun isHeartbeat(toRadio: ByteArray): Boolean = toRadio.isNotEmpty() && toRadio[0] == 0x3A.toByte()
 
+    /** Extracts the address from a ToRadio{packet} (MeshPacket field 2, fixed32 tag 0x15). */
+    fun packetTo(toRadio: ByteArray): UInt = packetFixed32(toRadio, field = 2)
+
     /** Extracts the client-assigned id from a ToRadio{packet} (MeshPacket field 6, fixed32 tag 0x35). */
-    fun packetId(toRadio: ByteArray): UInt {
+    fun packetId(toRadio: ByteArray): UInt = packetFixed32(toRadio, field = 6)
+
+    private fun packetFixed32(
+        toRadio: ByteArray,
+        field: Int,
+    ): UInt {
         val reader = ProtoReader(toRadio)
         reader.readTag() // 0x0A (packet)
         val mp = reader.sub()
-        var id = 0u
+        var value = 0u
         while (mp.hasMore) {
             val tag = mp.readTag()
             when (tag ushr WireType.FIELD_SHIFT) {
-                6 -> id = mp.readFixed32()
+                field -> value = mp.readFixed32()
                 else -> mp.skip(tag and WireType.MASK)
             }
         }
-        return id
+        return value
     }
 }

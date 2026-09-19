@@ -270,6 +270,13 @@ internal enum class Destination {
 
     /** The board's own primary — index 0, `TEXT_MESSAGE_APP`, guarded by `PublicChannelPolicy`. */
     Public,
+
+    /**
+     * One Meshtastic user's DM answered — index 0, `TEXT_MESSAGE_APP`, addressed to [OutboundFrame.to],
+     * guarded by [DmAutoReplyPolicy]. The same write as [Public] with one node's number in `to`, which is
+     * what makes the firmware encrypt it to that node rather than to the channel.
+     */
+    Reply,
 }
 
 /**
@@ -325,6 +332,8 @@ internal class OutboundFrame(
     val bucket: AirBucket = AirBucket.defaultFor(klass),
     /** Which channel it is written to, and so which guard it must pass; see [Destination]. */
     val destination: Destination = Destination.Knit,
+    /** Whom it is addressed to: the broadcast address for everything but a [Destination.Reply]. */
+    val to: UInt = MeshtasticProto.BROADCAST,
     /**
      * A key identifying **the thing this frame is a snapshot of**, so that enqueuing a newer copy discards the
      * older one still waiting. Null for a frame that is an event rather than a state.

@@ -247,7 +247,13 @@ doc). **Don't start a deferred item without explicit direction.**
   refusal is shown at the composer with the draft kept. **Still owed:** the on-hardware trial in
   `context/lora-bridge.md` (two boards, one board-less phone: the board-less phone sees nothing, a contact's
   post wears their name off the node number alone, a second post inside 30 s is refused, the title follows a
-  preset change), and
+  preset change). **A DM to a set-up board is auto-answered once** (2026-09-19, ADR 2026-09.4n5p): the
+  stranger's text used to die as `NOT_BROADCAST` behind a delivered tick; now `DmAutoReplyPolicy` answers it
+  with one fixed unicast on index 0 (PKI to the sender's key) — once per sender per day, once per 30 s for
+  anybody, out of the room's `PUBLIC` share, only from a board that ran the setup and is not on a dedicated
+  slot; the per-sender memory rides `LoraPlaneSnapshot.autoReplied`. **Still owed:** a device trial with a
+  stock third node DMing a Knit board (the reply arrives PKI-encrypted and once; `autoReplySent` moves;
+  a second DM is `REPLIED_RECENTLY`), and
   **signature-backed confidence SHIPPED** (2026-09-05, ADR 2026-09.ggq4): the "no verdict" premise was wrong
   — both lab tags hand the phone `MeshPacket.xeddsa_signed` and the signature itself — so the profile now
   carries the board's key (`ProfileContent.loraKey`, ninth additive profile field, only while the board

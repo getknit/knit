@@ -54,6 +54,27 @@ class MeshtasticProtoTest {
     }
 
     @Test
+    fun encodeUnicastPacket() {
+        // The DM auto-reply's shape: `to` is the sender's node number (field 2, fixed32 LE) on index 0 with
+        // the text portnum, which is what makes the firmware PKI-encrypt it to that node rather than to the
+        // channel. Everything else is the broadcast packet's.
+        val bytes =
+            MeshtasticProto.encodePacket(
+                OutboundPacket(
+                    to = 0x1234abcdu,
+                    channelIndex = 0,
+                    id = 0xDEADBEEFu,
+                    portnum = MeshtasticProto.PORT_TEXT_MESSAGE,
+                    payload = byteArrayOf(1, 2, 3),
+                ),
+            )
+        assertEquals(
+            "0A 13 15 CD AB 34 12 22 07 08 01 12 03 01 02 03 35 EF BE AD DE",
+            bytes.hex(),
+        )
+    }
+
+    @Test
     fun encodePacketOmitsDefaultChannelAndEmitsHopLimit() {
         val bytes =
             MeshtasticProto.encodePacket(

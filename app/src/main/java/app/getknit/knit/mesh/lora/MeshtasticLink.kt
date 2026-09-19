@@ -49,12 +49,19 @@ internal interface MeshtasticLink {
      */
     val nodes: StateFlow<Map<UInt, BoardOwner>>
 
-    /** Enqueues one packet on the board. Returns synchronously once the board acknowledges (or refuses) it. */
+    /**
+     * Enqueues one packet on the board. Returns synchronously once the board acknowledges (or refuses) it.
+     *
+     * [to] is the broadcast address for everything Knit sends but the DM auto-reply ([DmAutoReplyPolicy]),
+     * which is addressed to one node. A unicast on channel 0 is the firmware's cue to encrypt to that node's
+     * public key when it holds one (`Router::perhapsEncode`), so the reply reads the way the DM it answers did.
+     */
     suspend fun send(
         payload: ByteArray,
         channelIndex: Int,
         portnum: Int = MeshtasticProto.PORT_PRIVATE_APP,
         hopLimit: Int? = null,
+        to: UInt = MeshtasticProto.BROADCAST,
     ): SendResult
 
     /**

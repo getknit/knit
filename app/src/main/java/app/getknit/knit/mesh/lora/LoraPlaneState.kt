@@ -67,6 +67,8 @@ internal data class LoraPlaneSnapshot(
     val selfProfileAtWall: Long? = null,
     val serve: List<ServeWindow> = emptyList(),
     val profileSeen: List<SeenStamp> = emptyList(),
+    /** The Meshtastic nodes the DM auto-reply has answered inside its window, by `!hex` id ([DmAutoReplyPolicy]). */
+    val autoReplied: List<SeenStamp> = emptyList(),
 )
 
 /** One packet already booked against the rolling window: what it cost, when, and out of whose share. */

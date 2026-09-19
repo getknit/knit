@@ -162,6 +162,13 @@ internal class LoraMeshTransport(
      * the author republishes. See [PROFILE_REFAN_MS] and ADR 057.
      */
     private val profileSeen = SeenSet(ttlMillis = PROFILE_REFAN_MS, clock = clock)
+
+    /**
+     * Who has been told the board is unmonitored, and when the board last said so — the DM auto-reply's two
+     * caps. Not cleared by [quiesce]: the memory is about the senders, not the board, and losing the link
+     * for a minute must not earn anybody a second reply.
+     */
+    private val autoReply = DmAutoReplyPolicy(clock = clock)
     private val fragSeq = AtomicInteger()
     private val reassembler = FragReassembler<UInt>(now = clock, capacity = FRAG_CAP, timeoutMs = FRAG_TIMEOUT_MS)
 
@@ -442,10 +449,11 @@ internal class LoraMeshTransport(
             servedTo.getOrPut(it.publisher) { ServeBudget() }.restore(ServeWindowState(shift.toMono(it.startWall), it.spent))
         }
         profileSeen.restore(snapshot.profileSeen.map { it.id to shift.toMono(it.atWall) })
+        autoReply.restore(snapshot.autoReplied.map { it.id to shift.toMono(it.atWall) })
         val air = pace.airtime.snapshot(now)
         log(
             "lora state restored: air=${air.totalUsedMs}/${air.liveBudgetMs}ms " +
-                "serve=${snapshot.serve.size} profiles=${snapshot.profileSeen.size}",
+                "serve=${snapshot.serve.size} profiles=${snapshot.profileSeen.size} autoReplied=${snapshot.autoReplied.size}",
         )
     }
 
@@ -464,6 +472,9 @@ internal class LoraMeshTransport(
             // Newest first, capped: the gate is per profile *publish*, so a pocket produces a handful a day —
             // but the set it lives in holds thousands, and none of that belongs in a preferences blob.
             profileSeen = profileSeen.stamps().takeLast(STATE_PROFILE_CAP).map { SeenStamp(it.first, shift.toWall(it.second)) },
+            // The DM auto-reply's once-a-day memory: the board replays its queue on reconnect, and a restart
+            // that forgot who was answered would answer the same message again.
+            autoReplied = autoReply.stamps().takeLast(STATE_AUTO_REPLY_CAP).map { SeenStamp(it.first, shift.toWall(it.second)) },
         )
     }
 
@@ -692,8 +703,9 @@ internal class LoraMeshTransport(
         destination: Destination = Destination.Knit,
         supersedes: String? = null,
         gate: RideGate = RideGate(),
+        to: UInt = MeshtasticProto.BROADCAST,
     ) {
-        if (pace.enqueue(OutboundFrame(parts, label, klass, bucket, destination, supersedes, gate)) !=
+        if (pace.enqueue(OutboundFrame(parts, label, klass, bucket, destination, to, supersedes, gate)) !=
             LoraPacePolicy.Admission.ACCEPTED
         ) {
             metrics.onLoraDroppedQueue()
@@ -1287,7 +1299,7 @@ internal class LoraMeshTransport(
         // `boundSlotIsKnit` stops Knit's own frames reaching the public channel by accident, while the public
         // post's guards were all applied at `postToPublicChannel`, where a refusal could still be counted and
         // reported. All that is left here is which channel and which portnum.
-        if (frame.destination == Destination.Public) {
+        if (frame.destination != Destination.Knit) {
             sendPublicFrame(frame)
             return
         }
@@ -1332,19 +1344,27 @@ internal class LoraMeshTransport(
     }
 
     /**
-     * Writes one public post on the foreign mesh's primary channel: index 0, `TEXT_MESSAGE_APP`, cleartext.
+     * Writes one public post on the foreign mesh's primary channel: index 0, `TEXT_MESSAGE_APP`, cleartext —
+     * or, for a [Destination.Reply], the same write addressed to one node, which the firmware then encrypts
+     * to that node's key rather than to the channel.
      *
      * Never fragmented — [PublicPostPolicy.MAX_ON_AIR_BYTES] is a fifth of what one packet carries — so there
      * is no resume cursor to honour and one `sendMessage` is the whole frame.
      */
     private suspend fun sendPublicFrame(frame: OutboundFrame) {
         val message = frame.messages.firstOrNull() ?: return
-        if (!sendMessage(message, PublicChannelPolicy.PRIMARY_INDEX, frame, MeshtasticProto.PORT_TEXT_MESSAGE)) {
-            metrics.onPublicPostRefused(PublicPostRefusal.NAK.name)
+        val reply = frame.destination == Destination.Reply
+        if (!sendMessage(message, PublicChannelPolicy.PRIMARY_INDEX, frame, MeshtasticProto.PORT_TEXT_MESSAGE, to = frame.to)) {
+            if (reply) metrics.onAutoReplyRefused(AutoReplyRefusal.NAK.name) else metrics.onPublicPostRefused(PublicPostRefusal.NAK.name)
             return
         }
-        metrics.onPublicPostSent()
-        log("lora tx public ${message.size}B")
+        if (reply) {
+            metrics.onAutoReplySent()
+            log("lora tx auto-reply to ${meshNodeLabel(frame.to.toLong())} ${message.size}B")
+        } else {
+            metrics.onPublicPostSent()
+            log("lora tx public ${message.size}B")
+        }
     }
 
     /** Sends one fragment; false ends the frame (a NAK, error, or no headroom). */
@@ -1353,8 +1373,9 @@ internal class LoraMeshTransport(
         channelIndex: Int,
         frame: OutboundFrame,
         portnum: Int = MeshtasticProto.PORT_PRIVATE_APP,
+        to: UInt = MeshtasticProto.BROADCAST,
     ): Boolean =
-        when (val result = link.send(message, channelIndex, portnum = portnum, hopLimit = HOP_LIMIT)) {
+        when (val result = link.send(message, channelIndex, portnum = portnum, hopLimit = HOP_LIMIT, to = to)) {
             is SendResult.Queued -> {
                 pace.onQueueStatus(result.queue.free)
                 pace.airtime.record(frame.bucket, message.size, clock(), signedUpTo = MeshtasticProto.maxSignedPayload(portnum))
@@ -1407,6 +1428,15 @@ internal class LoraMeshTransport(
         // index, because the index defaults to 0 on a board that never ran Knit's setup and such a board
         // still has a primary to mirror — the one shape with nothing to mirror (Knit itself at slot 0, the
         // debug bridge's lab binding) is refused inside, off the channel table.
+        // A text addressed to the board rather than to the channel is a Meshtastic user's DM — which nothing
+        // on this phone reads (ADR 2026-09.emd7 marks the board unmonitored to say exactly that), so the one
+        // thing to do with it is tell the sender. Taken ahead of the room's branch on the portnum and the
+        // address alone, never the channel index: on 2.5+ firmware a DM is PKI-encrypted and reported on
+        // index 0 whatever slot the sender used, and an older board reports the slot it decoded on.
+        if (packet.portnum == MeshtasticProto.PORT_TEXT_MESSAGE && packet.to != MeshtasticProto.BROADCAST) {
+            onDirectMessage(packet)
+            return
+        }
         if (packet.channelIndex == PublicChannelPolicy.PRIMARY_INDEX && packet.portnum == MeshtasticProto.PORT_TEXT_MESSAGE) {
             // The room is switched off, or hidden because the board is on a dedicated RF slot (ADR 067):
             // this packet has nowhere to go. Dropped here rather than later so the whole cost of a post the
@@ -1473,6 +1503,66 @@ internal class LoraMeshTransport(
                 scope.launch { onPublicPost(verdict.post) }
             }
         }
+    }
+
+    /**
+     * One text addressed to the board — a Meshtastic user's DM, answered once with [DmAutoReplyPolicy.TEXT].
+     *
+     * The guards are all here rather than at the write, so each one can be counted and named, the same shape
+     * as [postToPublicChannel] and for the same reason. Two are the room's own: a board on a **dedicated**
+     * RF slot (ADR 067) has no Meshtastic neighbours to answer, and a board whose slot 0 is the Knit channel
+     * has no primary to answer on. One is this path's alone: the board must be **set up for Knit**
+     * ([boundSlotIsKnit]), because the setup's confirmation sheet is where the user agreed to the board
+     * saying it is unmonitored (ADR 2026-09.emd7) — a paired stock board that never ran it stays as quiet
+     * as a stock board. Then the policy's own caps, and last the room's airtime share, asked before queueing
+     * so a reply the window will not carry is counted now rather than left to look sent.
+     *
+     * The reply rides the shared pacer as a [Destination.Reply] frame and is priced as a signed post: a
+     * unicast is PKI-encrypted rather than signed, whose overhead is smaller, so the ledger over-charges it
+     * by a few dozen bytes — the conservative error, and not worth a second price.
+     */
+    private fun onDirectMessage(packet: ReceivedPacket) {
+        metrics.onAutoReplyHeard()
+        val refusal = autoReplyRefusal(packet) ?: return
+        metrics.onAutoReplyRefused(refusal)
+        log("lora dm from ${meshNodeLabel(packet.from.toLong())}: auto-reply refused $refusal")
+    }
+
+    /** The gate that stopped the reply to [packet], by name — or null once the reply is queued. */
+    private fun autoReplyRefusal(packet: ReceivedPacket): String? {
+        val ready = link.state.value as? LinkState.Ready ?: return AutoReplyRefusal.NOT_READY.name
+        if (pace.airtime.dedicated()) return AutoReplyRefusal.DEDICATED.name
+        if (PublicChannelPolicy.isKnitPrimary(ready.channels)) return AutoReplyRefusal.KNIT_ON_PRIMARY.name
+        // `boundSlotIsKnit` reads an empty table as "don't suppress"; this is a consented transmission, so the
+        // unknown reads the other way, like the setup's own guard.
+        val bound = currentConfig?.channelIndex
+        if (bound == null || ready.channels.isEmpty() || !boundSlotIsKnit(ready.channels, bound)) return AutoReplyRefusal.NOT_SET_UP.name
+        val reply =
+            when (val verdict = autoReply.judge(packet, ownNode = ready.board.myNodeNum)) {
+                is DmAutoReplyPolicy.Verdict.Refused -> return verdict.reason.name
+                is DmAutoReplyPolicy.Verdict.Reply -> verdict
+            }
+        val message = reply.text.encodeToByteArray()
+        val signedUpTo = MeshtasticProto.maxSignedPayload(MeshtasticProto.PORT_TEXT_MESSAGE)
+        val held =
+            when {
+                message.size > maxPayload -> {
+                    AutoReplyRefusal.TOO_LARGE
+                }
+
+                !pace.airtime.admits(AirBucket.PUBLIC, FrameClass.ROOM, listOf(message.size), clock(), signedUpTo = signedUpTo) -> {
+                    AutoReplyRefusal.NO_AIR
+                }
+
+                else -> {
+                    null
+                }
+            }
+        if (held != null) return held.name
+        log("lora dm from ${meshNodeLabel(packet.from.toLong())}: auto-reply queued")
+        enqueue(listOf(message), "autoreply", FrameClass.ROOM, AirBucket.PUBLIC, Destination.Reply, to = reply.to)
+        stateWake.trySend(Unit) // the sender is stamped now, not at the write: persist it with the ledger
+        return null
     }
 
     /** One inbound mesh frame off the air: reassemble, decode, dedup, and hand it to the router. */
@@ -1749,6 +1839,9 @@ internal class LoraMeshTransport(
          * a preferences blob is the wrong place for them.
          */
         const val STATE_PROFILE_CAP = 128
+
+        /** The most answered DM senders carried across a restart — [DmAutoReplyPolicy.MAX_SENDERS], all of them. */
+        const val STATE_AUTO_REPLY_CAP = DmAutoReplyPolicy.MAX_SENDERS
 
         // The bridge (ADR 044).
         const val BACKFILL_LIMIT = 4 // frames per offer heard

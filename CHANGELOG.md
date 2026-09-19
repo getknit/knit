@@ -30,6 +30,8 @@ document:
 - Android takes an app's permissions back after a few months without use, and Knit would then have to ask
   for them again. The permissions page and Settings now show that switch beside the battery row, with a
   button to the page where it turns off.
+- A Meshtastic user who messages your Knit board directly now gets one automatic reply saying nobody reads
+  it and where to find Knit. The board answers each person once a day, and only if you set it up for Knit.
 
 ### Changed
 

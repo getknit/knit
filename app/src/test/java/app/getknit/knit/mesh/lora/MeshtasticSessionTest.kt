@@ -111,6 +111,37 @@ class MeshtasticSessionTest {
         }
 
     @Test
+    fun sendAddressesThePacketToTheNodeTheCallerNames() =
+        runTest {
+            // The one unicast the plane sends (the DM auto-reply, ADR 2026-09.4n5p). The default stays the
+            // broadcast address so nothing else on the plane changes shape.
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            ch.onWrite = { bytes ->
+                if (BoardBytes.isWantConfig(bytes)) {
+                    ch.enqueueRead(BoardBytes.myInfo(0xABCDu, "heltec-v4"))
+                    ch.enqueueRead(BoardBytes.configComplete(nonce))
+                } else if (BoardBytes.isPacket(bytes)) {
+                    ch.enqueueRead(BoardBytes.queueStatus(free = 15, maxlen = 16, meshPacketId = BoardBytes.packetId(bytes)))
+                }
+            }
+            val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+
+            val unicast =
+                async { session.send(byteArrayOf(1), channelIndex = 0, portnum = MeshtasticProto.PORT_TEXT_MESSAGE, to = 0x1234abcdu) }
+            runCurrent()
+            assertTrue(unicast.await() is SendResult.Queued)
+            val broadcast = async { session.send(byteArrayOf(2), channelIndex = 1) }
+            runCurrent()
+            assertTrue(broadcast.await() is SendResult.Queued)
+
+            val packets = ch.writes.filter(BoardBytes::isPacket)
+            assertEquals(listOf(0x1234abcdu, MeshtasticProto.BROADCAST), packets.map(BoardBytes::packetTo))
+            session.stop()
+        }
+
+    @Test
     fun sendFoldsInAnImmediateNak() =
         runTest {
             val ch = FakeGattChannel()

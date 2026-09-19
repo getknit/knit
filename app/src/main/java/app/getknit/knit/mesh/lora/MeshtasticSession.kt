@@ -113,12 +113,13 @@ internal class MeshtasticSession(
         channelIndex: Int,
         portnum: Int,
         hopLimit: Int?,
+        to: UInt,
     ): SendResult {
         if (payload.size > MeshtasticProto.MAX_PAYLOAD) return SendResult.TooLarge
         val st = _state.value
         if (st !is LinkState.Ready) return SendResult.NotReady(st)
         val reply = CompletableDeferred<SendResult>()
-        inbox.send(Cmd.Send(channelIndex, portnum, hopLimit, payload, reply))
+        inbox.send(Cmd.Send(channelIndex, portnum, hopLimit, payload, reply, to))
         return reply.await()
     }
 
@@ -517,7 +518,14 @@ internal class MeshtasticSession(
         val id = ids.next()
         pending[id] = cmd.reply
         val packet =
-            OutboundPacket(channelIndex = cmd.channelIndex, id = id, portnum = cmd.portnum, payload = cmd.payload, hopLimit = cmd.hopLimit)
+            OutboundPacket(
+                to = cmd.to,
+                channelIndex = cmd.channelIndex,
+                id = id,
+                portnum = cmd.portnum,
+                payload = cmd.payload,
+                hopLimit = cmd.hopLimit,
+            )
         when (val write = channel.writeToRadio(MeshtasticProto.encodePacket(packet), WRITE_TIMEOUT_MS)) {
             is GattResult.Ok -> {
                 lastWriteAt = now()
@@ -1203,6 +1211,7 @@ internal class MeshtasticSession(
             val hopLimit: Int?,
             val payload: ByteArray,
             val reply: CompletableDeferred<SendResult>,
+            val to: UInt = MeshtasticProto.BROADCAST,
         ) : Cmd
 
         class Provision(

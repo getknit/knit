@@ -527,6 +527,7 @@ class LoraMeshTransportTest {
         // The board pinned to a dedicated RF slot (ADR 067), under a governor built the way a debug build
         // builds it — the release governor reads every board as shared, pinned or not.
         dedicated: Boolean = false,
+        state: LoraPlaneState = LoraPlaneState.None,
     ): Rig {
         val r =
             rig(
@@ -538,6 +539,7 @@ class LoraMeshTransportTest {
                 firmware = firmware,
                 pace = LoraPacePolicy(minGapMs = 0, airtime = LoraAirtime(dedicatedUnlocksDuty = dedicated)),
                 onPublicPost = { posts += it },
+                state = state,
             ) { testScheduler.currentTime }
         r.transport.start()
         // After runCurrent, not before: start() only *queues* the transport's jobs, and the link's own
@@ -1060,6 +1062,200 @@ class LoraMeshTransportTest {
                 r.metrics.snapshot().publicPostRefusedByReason[PublicPostRefusal.KNIT_ON_PRIMARY.name],
             )
             r.transport.stop()
+        }
+
+    // --- The DM auto-reply (DmAutoReplyPolicy). ---
+
+    @Test
+    fun aMeshtasticDmToTheBoardIsAnsweredOnceAndNeverEntersTheRoom() =
+        runTest {
+            // A stranger's text addressed to the board: nobody on this phone reads it (ADR 2026-09.emd7), so
+            // the one thing to do is tell them, once. The answer is a unicast on index 0 — which the firmware
+            // turns into a PKI packet to that node — and the message itself is never a room post.
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = bridgeRig(air, posts)
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hello? anyone there?", id = 11u, to = 1u)
+            runCurrent()
+
+            assertTrue("a DM is not a post", posts.isEmpty())
+            val i = r.link.sent.indexOfFirst { it.decodeToString() == DmAutoReplyPolicy.TEXT }
+            assertTrue("the reply went out", i >= 0)
+            assertEquals(0xdeadbeefu, r.link.sentTos[i])
+            assertEquals(PublicChannelPolicy.PRIMARY_INDEX, r.link.sentChannels[i])
+            assertEquals(MeshtasticProto.PORT_TEXT_MESSAGE, r.link.sentPortnums[i])
+            assertEquals(LoraMeshTransport.HOP_LIMIT, r.link.sentHopLimits[i])
+            val snap = r.metrics.snapshot()
+            assertEquals(1L, snap.autoReplyHeard)
+            assertEquals(1L, snap.autoReplySent)
+            assertEquals("a reply is not a post either", 0L, snap.publicPostSent)
+
+            // The same sender again, and the board's replay of the first message: silence.
+            advanceTimeBy(DmAutoReplyPolicy.FLOOR_MS)
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hello??", id = 12u, to = 1u)
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hello? anyone there?", id = 11u, to = 1u)
+            runCurrent()
+
+            assertEquals(1, r.link.sent.count { it.decodeToString() == DmAutoReplyPolicy.TEXT })
+            assertEquals(
+                2L,
+                r.metrics.snapshot().autoReplyRefusedByReason[DmAutoReplyPolicy.Refusal.REPLIED_RECENTLY.name],
+            )
+            r.transport.stop()
+        }
+
+    @Test
+    fun aDmToSomeOtherNodeIsNeitherAnsweredNorMirrored() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = bridgeRig(air, posts)
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "psst", id = 11u, to = 0x99u)
+            runCurrent()
+
+            assertTrue(posts.isEmpty())
+            assertTrue(r.link.sentPortnums.none { it == MeshtasticProto.PORT_TEXT_MESSAGE })
+            assertEquals(
+                1L,
+                r.metrics.snapshot().autoReplyRefusedByReason[DmAutoReplyPolicy.Refusal.NOT_FOR_US.name],
+            )
+            r.transport.stop()
+        }
+
+    @Test
+    fun aBurstOfDmsIsOneReplyAtATime() =
+        runTest {
+            // Three neighbours try the new node inside one floor: one is answered now, and the others are
+            // told nothing until they write again once the floor has passed — the floor never stamps them.
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf())
+
+            r.link.deliverPublicText(from = 0x11u, body = "hi", id = 1u, to = 1u)
+            r.link.deliverPublicText(from = 0x22u, body = "hi", id = 2u, to = 1u)
+            r.link.deliverPublicText(from = 0x33u, body = "hi", id = 3u, to = 1u)
+            runCurrent()
+
+            assertEquals(
+                listOf(0x11u),
+                r.link.sentTos.filterIndexed { i, _ -> r.link.sentPortnums[i] == MeshtasticProto.PORT_TEXT_MESSAGE },
+            )
+            assertEquals(2L, r.metrics.snapshot().autoReplyRefusedByReason[DmAutoReplyPolicy.Refusal.TOO_SOON.name])
+
+            advanceTimeBy(DmAutoReplyPolicy.FLOOR_MS)
+            r.link.deliverPublicText(from = 0x22u, body = "hi again", id = 4u, to = 1u)
+            runCurrent()
+
+            assertEquals(
+                listOf(0x11u, 0x22u),
+                r.link.sentTos.filterIndexed { i, _ ->
+                    r.link.sentPortnums[i] ==
+                        MeshtasticProto.PORT_TEXT_MESSAGE
+                },
+            )
+            r.transport.stop()
+        }
+
+    @Test
+    fun aBoardOnADedicatedSlotAnswersNoDm() =
+        runTest {
+            // No public radio can hear a pinned board (ADR 067), so a text addressed to it is another pinned
+            // Knit board's — and the line would tell a Knit user their own node is unmonitored.
+            val air = FakeMeshtasticAir()
+            val r = bridgeRig(air, mutableListOf(), dedicated = true)
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 11u, to = 1u)
+            runCurrent()
+
+            assertTrue(r.link.sentPortnums.none { it == MeshtasticProto.PORT_TEXT_MESSAGE })
+            assertEquals(1L, r.metrics.snapshot().autoReplyRefusedByReason[AutoReplyRefusal.DEDICATED.name])
+            r.transport.stop()
+        }
+
+    @Test
+    fun aBoardKnitNeverSetUpAnswersNoDm() =
+        runTest {
+            // A paired stock board: the setup's confirmation sheet is where the user agreed to the board
+            // saying it is unmonitored, and this board never showed it. It still mirrors its primary.
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = rig(air, 1u, "alice", backgroundScope, channelName = "", onPublicPost = { posts += it }) { testScheduler.currentTime }
+            r.transport.start()
+            runCurrent()
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 11u, to = 1u)
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi all", id = 12u)
+            runCurrent()
+
+            assertEquals("the room still works", "hi all", posts.single().body)
+            assertTrue(r.link.sentPortnums.none { it == MeshtasticProto.PORT_TEXT_MESSAGE })
+            assertEquals(1L, r.metrics.snapshot().autoReplyRefusedByReason[AutoReplyRefusal.NOT_SET_UP.name])
+            r.transport.stop()
+        }
+
+    @Test
+    fun aDmTheRoomsAirShareCannotCarryIsRefusedNotQueued() =
+        runTest {
+            // Same rule as a post: a reply the window will not carry is counted now rather than sitting in
+            // the queue looking sent. And a refusal for air is the transport's, so the sender *was* stamped —
+            // the policy claimed the reply; the budget is what said no.
+            val air = FakeMeshtasticAir()
+            val airtime = LoraAirtime()
+            val r =
+                rig(
+                    air,
+                    1u,
+                    "alice",
+                    backgroundScope,
+                    config = MutableStateFlow(LoraConfig("AA:1", 1)),
+                    pace = LoraPacePolicy(minGapMs = 0, airtime = airtime),
+                ) { testScheduler.currentTime }
+            r.transport.start()
+            runCurrent()
+            r.link.readyProvisioned()
+            runCurrent()
+            // Spend the public share before the DM arrives — a share there was, on the LongFast/US board
+            // `readyProvisioned` reports.
+            assertTrue(airtime.budgetMs(AirBucket.PUBLIC) > 0)
+            while (airtime.admits(AirBucket.PUBLIC, FrameClass.ROOM, listOf(150), testScheduler.currentTime)) {
+                airtime.record(AirBucket.PUBLIC, 150, testScheduler.currentTime)
+            }
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 11u, to = 1u)
+            runCurrent()
+
+            assertTrue(r.link.sentPortnums.none { it == MeshtasticProto.PORT_TEXT_MESSAGE })
+            assertEquals(1L, r.metrics.snapshot().autoReplyRefusedByReason[AutoReplyRefusal.NO_AIR.name])
+            r.transport.stop()
+        }
+
+    @Test
+    fun theSendersAnsweredOutliveTheProcess() =
+        runTest {
+            // The board replays its queue on reconnect, and a restart is a reconnect: without the memory the
+            // same message would be answered twice, which is exactly the spam the cap exists to prevent.
+            val air = FakeMeshtasticAir()
+            val state = FakePlaneState()
+            val first = bridgeRig(air, mutableListOf(), state = state)
+            first.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 11u, to = 1u)
+            runCurrent()
+            assertEquals(1L, first.metrics.snapshot().autoReplySent)
+            first.transport.stop()
+            runCurrent()
+            assertEquals(listOf(DmAutoReplyPolicy.senderKey(0xdeadbeefu)), state.snapshot?.autoReplied?.map { it.id })
+
+            advanceTimeBy(60 * 60_000L) // an hour on — inside the day
+            val second = bridgeRig(air, mutableListOf(), state = state)
+            second.link.deliverPublicText(from = 0xdeadbeefu, body = "hi", id = 11u, to = 1u)
+            runCurrent()
+
+            assertEquals(0L, second.metrics.snapshot().autoReplySent)
+            assertEquals(
+                1L,
+                second.metrics.snapshot().autoReplyRefusedByReason[DmAutoReplyPolicy.Refusal.REPLIED_RECENTLY.name],
+            )
+            second.transport.stop()
         }
 
     @Test

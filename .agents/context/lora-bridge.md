@@ -796,6 +796,35 @@ each hear the channel for themselves.
   never enter Knit's mesh, so no relay could carry them under any configuration, and "not covered by relays
   yet" promised a coverage that is never coming.
 
+### A DM to the board is answered once (ADR 2026-09.4n5p)
+
+A `TEXT_MESSAGE_APP` packet **addressed to the board** (`to == myNodeNum`) is a Meshtastic user's DM, and
+nothing on this phone reads it — ADR 2026-09.emd7's `is_unmessagable` mark says so to the clients that
+honour it, but the DM still arrives and the firmware ACKs it, so the sender saw a delivered tick against
+words nobody read. `onLoraPacket` now routes it, **ahead of the room's branch and on the portnum + address
+alone** (a 2.5+ board reports a PKI DM on index 0 whatever slot the sender used; current firmware refuses a
+channel-keyed DM at decode), to `onDirectMessage` → `DmAutoReplyPolicy.judge` → one fixed line
+(`DmAutoReplyPolicy.TEXT`, 149 B ASCII: unmonitored, nobody reads it, part of a Knit mesh, getknit.app)
+queued as `Destination.Reply` — the room's own write with the sender's number in `OutboundFrame.to`, so
+`Router::perhapsEncode` PKI-encrypts it to their key. `MeshtasticLink.send(to =)` is the only unicast the
+plane ever sends.
+
+- **Gates, counted by name** (`autoReplyRefusedByReason`): the room's `DEDICATED` (ADR 067) and
+  `KNIT_ON_PRIMARY`, plus `NOT_SET_UP` — the bound slot must carry the Knit channel, and an **empty**
+  channel table reads as not set up (the opposite of `boundSlotIsKnit`'s reading for Knit's own frames),
+  because the setup's confirmation sheet is where the user consented to the board saying it is
+  unmonitored. No settings switch, and the room switch does not gate it.
+- **Politeness**: `PER_SENDER_MS` = 24 h per node (`SeenSet` of 256, keyed `!hex`), `FLOOR_MS` = 30 s for
+  anybody on its own timestamp (never shared with `lastPublicPostAt`), the `PUBLIC` air share asked at the
+  decision (`NO_AIR`, never queued), priced as a signed post (over-charges a PKI unicast by ~54 B — the
+  conservative error). The floor is asked **before** the sender is stamped, so a `TOO_SOON` sender's next
+  message still earns the reply; a `REPLIED_RECENTLY` one is silence for the day, which is what breaks a
+  loop with a neighbour's bot. The per-sender memory persists in `LoraPlaneSnapshot.autoReplied` — the
+  board replays its queue on reconnect, and a restart is a reconnect.
+- **Not on hardware yet.** Needs a stock third node DMing a Knit board; the oracle is `…debug.LORA`'s
+  `autoReplyHeard` / `autoReplySent` and the reply on the stock node's screen, PKI (the padlock) and once.
+  The rig trap: `FakeMeshtasticLink` is node `1u`, so a test DM `from = 0x1u` is `OWN_BOARD`.
+
 ## Board setup (once, Meshtastic CLI or app)
 
 Flash `firmware-heltec-v4-<ver>`; `--set lora.region <US|EU_868|…>`; `--set network.wifi_enabled false`;

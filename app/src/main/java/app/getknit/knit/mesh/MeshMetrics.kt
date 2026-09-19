@@ -328,6 +328,13 @@ class MeshMetrics {
     private val publicPostSent = AtomicLong()
     private val publicPostRefusedByReason = ConcurrentHashMap<String, AtomicLong>()
 
+    // The DM auto-reply (`mesh/lora/DmAutoReplyPolicy`): `heard` is every text addressed to the board, `sent`
+    // the ones answered — airtime, like `publicPostSent` — and the gap is itemised by refusal, the policy's
+    // caps and the transport's gates in one map.
+    private val autoReplyHeard = AtomicLong()
+    private val autoReplySent = AtomicLong()
+    private val autoReplyRefusedByReason = ConcurrentHashMap<String, AtomicLong>()
+
     /** A frame this device authored and injected into the mesh. */
     fun onOriginated() {
         framesOriginated.incrementAndGet()
@@ -1006,6 +1013,21 @@ class MeshMetrics {
         publicPostRefusedByReason.computeIfAbsent(reason) { AtomicLong() }.incrementAndGet()
     }
 
+    /** A text addressed to the board itself — a Meshtastic user's DM — before any gate runs. */
+    fun onAutoReplyHeard() {
+        autoReplyHeard.incrementAndGet()
+    }
+
+    /** One auto-reply the board put on the air. Costs airtime, out of the same PUBLIC share as a post. */
+    fun onAutoReplySent() {
+        autoReplySent.incrementAndGet()
+    }
+
+    /** A DM not answered, by `DmAutoReplyPolicy.Refusal` or `AutoReplyRefusal`. */
+    fun onAutoReplyRefused(reason: String) {
+        autoReplyRefusedByReason.computeIfAbsent(reason) { AtomicLong() }.incrementAndGet()
+    }
+
     @Suppress("LongMethod") // a flat field-by-field copy — one line per counter; splitting it would only scatter it
     fun snapshot(): Snapshot {
         val byReason = drops.mapValues { it.value.get() }
@@ -1126,6 +1148,9 @@ class MeshMetrics {
             meshPostRefusedByReason = meshPostRefusedByReason.mapValues { it.value.get() },
             publicPostSent = publicPostSent.get(),
             publicPostRefusedByReason = publicPostRefusedByReason.mapValues { it.value.get() },
+            autoReplyHeard = autoReplyHeard.get(),
+            autoReplySent = autoReplySent.get(),
+            autoReplyRefusedByReason = autoReplyRefusedByReason.mapValues { it.value.get() },
         )
     }
 
@@ -1244,6 +1269,9 @@ class MeshMetrics {
         val meshPostRefusedByReason: Map<String, Long> = emptyMap(),
         val publicPostSent: Long = 0,
         val publicPostRefusedByReason: Map<String, Long> = emptyMap(),
+        val autoReplyHeard: Long = 0,
+        val autoReplySent: Long = 0,
+        val autoReplyRefusedByReason: Map<String, Long> = emptyMap(),
         val framesHandedOn: Long = 0,
     )
 }

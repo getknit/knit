@@ -1178,6 +1178,12 @@ class DebugBridgeReceiver :
             // was shown to the user at the composer.
             .put("publicPostSent", snap.publicPostSent)
             .put("publicPostRefusedByReason", JSONObject(snap.publicPostRefusedByReason))
+            // The DM auto-reply. `heard` is every text addressed to the board itself, `sent` the ones it
+            // answered (airtime, out of the same PUBLIC share), and the rest is itemised by the policy's caps
+            // (REPLIED_RECENTLY, TOO_SOON) and the transport's gates (NOT_SET_UP, DEDICATED, NO_AIR, NAK…).
+            .put("autoReplyHeard", snap.autoReplyHeard)
+            .put("autoReplySent", snap.autoReplySent)
+            .put("autoReplyRefusedByReason", JSONObject(snap.autoReplyRefusedByReason))
 
     /**
      * Dumps the DM ratchet's per-peer state and, with `--es reset <peerNodeId>`, forces a session reset
