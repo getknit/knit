@@ -397,7 +397,23 @@ class WifiAwareTransport(
 
     // elapsedRealtime of the last subscribe re-arm (to re-discover a peer whose handle staled), rate-limited
     // by REARM_COOLDOWN_MS so we don't churn subscribe (its wedge trigger) hunting a peer that's really gone.
-    @Volatile private var lastRearmAt = 0L
+    @Volatile
+    private var lastRearmAt = 0L
+
+    // How long this node has had nobody to cue ([NanLonelyPolicy.lonelySince]): 0 while a cue target exists,
+    // else the moment the loop first found none. Reset by a fresh session ([onAttached]) and by a peer another
+    // plane sights ([onForeignReachable]), so every "start hunting again" hunts at the aggressive cadence.
+    @Volatile
+    private var lonelySince = 0L
+
+    // [heal] asked for one re-arm at the aggressive cooldown — the 15-min alarm, a significant-motion trigger,
+    // an app resume — consumed by the next loop pass: a phone being walked around re-arms once per trigger,
+    // never once per relaxed window, and the loop's own pokes (a digest move, a link end) carry no such token.
+    @Volatile
+    private var healRearmOwed = false
+
+    @Volatile
+    private var lonelyRelaxedLogged = false
 
     // Non-zero (elapsedRealtime) while a deliberate session cycle sits in its post-teardown settle: the
     // framework's last-client disable runs onAwareDownCleanupDataPaths (the cache wipe that clears a
@@ -580,7 +596,7 @@ class WifiAwareTransport(
             "state ver=$v live=${peers.keys} inbound=$inbound acc=$acc cap=$serveCap pin=$responderPinsNdi " +
                 "disc=$disc cue=$cues wanted=$wanted initiable=$initiable " +
                 "reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}] " +
-                "bulk[${bulkWanted.debug()}]",
+                "bulk[${bulkWanted.debug()}] lonely=${lonelyForMs(now)}ms",
         )
     }
 
@@ -781,12 +797,16 @@ class WifiAwareTransport(
         reachablePeers.clear()
         digestTracker.clear()
         bulkWanted.clearAll()
+        lonelySince = 0L
+        healRearmOwed = false
+        lonelyRelaxedLogged = false
         _neighbors.value = emptySet()
         _reachable.value = emptySet()
     }
 
     override fun heal() {
         if (!hasHardware) return
+        healRearmOwed = true // one re-arm at the aggressive cooldown, however relaxed the lonely cadence is
         healSignal.trySend(Unit)
     }
 
@@ -839,13 +859,22 @@ class WifiAwareTransport(
     }
 
     /**
-     * The set of peers another plane (Bluetooth) can currently see, pushed by [CompositeMeshTransport]. We use it
-     * only to corroborate the wedge watchdog ([checkWedge] / [anySyncOwed]): being called at all means a
-     * corroborating plane exists, so a NAN-only device is left on the un-corroborated fallback.
+     * The set of peers another plane (Bluetooth) can currently see, pushed by [CompositeMeshTransport]. It
+     * corroborates the wedge watchdog ([checkWedge] / [anySyncOwed]) — being called at all means a corroborating
+     * plane exists, so a NAN-only device is left on the un-corroborated fallback — and a peer that plane sights
+     * which we hold no cue target for ends loneliness: the relaxed lonely cadence ([NanLonelyPolicy]) is
+     * restarted and the loop woken, so a BLE walk-up relights discovery within one aggressive tick rather than
+     * one relaxed one. Rising edge only, and NAN's own discoveries fill `cueTarget` before any echo, so it
+     * cannot loop.
      */
     override fun onForeignReachable(peers: Set<String>) {
         hasForeignPlane = true
+        val rising = peers.any { it !in foreignReachable && !cueTarget.containsKey(it) }
         foreignReachable = peers
+        if (rising) {
+            lonelySince = 0L
+            healSignal.trySend(Unit)
+        }
     }
 
     /**
@@ -951,6 +980,7 @@ class WifiAwareTransport(
                         session = newSession
                         reattaching.set(false) // the reattach that kicked off this (current-gen) attach has settled
                         _health.value = TransportHealth.Healthy
+                        lonelySince = 0L // a fresh session hunts at the aggressive cadence, however long we were alone
                         startPublish(gen)
                         startSubscribe()
                     }
@@ -1277,6 +1307,9 @@ class WifiAwareTransport(
             withTimeoutOrNull(rediscoverDelayMs()) { healSignal.receive() }
             recomputeReachable() // age out the nearby set even on an idle tick
             val now = SystemClock.elapsedRealtime()
+            val healDemand = healRearmOwed
+            healRearmOwed = false
+            val rearmCooldown = rearmCooldownMs(now, healDemand)
             when {
                 !hasHardware -> {}
 
@@ -1304,8 +1337,9 @@ class WifiAwareTransport(
                 // subscribe is what wedges it on these chipsets (persistent onSessionConfigFailed), so we keep
                 // it stable while things work and only refresh when a reachable, sync-wanted peer is otherwise
                 // unreachable (e.g. it restarted and staled our handle).
-                needsRediscovery() && now - lastRearmAt > REARM_COOLDOWN_MS -> {
+                needsRediscovery() && now - lastRearmAt > rearmCooldown -> {
                     lastRearmAt = now
+                    Log.i(TAG, "re-arm subscribe (lonely=${lonelyForMs(now)}ms cooldown=${rearmCooldown}ms heal=$healDemand)")
                     rearmSubscribe()
                 }
 
@@ -1526,14 +1560,15 @@ class WifiAwareTransport(
         // there is nothing left to wake for at all, so fall back to the plain idle cadence.
         if (session == null && attachAbandoned) return REDISCOVER_IDLE_MS
         if (session == null) return maxOf(ATTACH_RETRY_MS, attachRetryAfter - SystemClock.elapsedRealtime())
+        // Nobody to cue: hunt aggressively for a while, then — screen off, on battery — relax to the duty cycle
+        // ([NanLonelyPolicy]; the power factor is inside the cadence, so it returns before the ×2 below).
+        if (cueTarget.isEmpty()) return lonelyCadence(SystemClock.elapsedRealtime()).tickMs
         // Tick soon while a sync is still owed (a sync-wanted peer we initiate to, maybe backed off / busy)
-        // so we retry promptly; hunt aggressively when we know of nobody; otherwise relax (a cue with a new
-        // epoch wakes us via healSignal). Doubled when screen-off on battery.
+        // so we retry promptly; otherwise relax (a cue with a new epoch wakes us via healSignal). Doubled
+        // when screen-off on battery.
         val localVersion = storeDigest.current()
         val base =
             when {
-                cueTarget.isEmpty() -> REDISCOVER_LONELY_MS
-
                 // an initiator peer is digest-owed → rediscover / recover fast. Digest-pure: a bulk mark's wake
                 // is the expectBulkTransfer healSignal poke, not a sustained fast-tick cadence.
                 NanSyncPolicy.anyInitiatorDigestOwed(
@@ -1549,6 +1584,36 @@ class WifiAwareTransport(
         val power = powerState.state.value
         return if (power.interactive || power.charging) base else base * 2
     }
+
+    /**
+     * The loop's cadence while it has nobody to cue — and the one writer of [lonelySince], observed here rather
+     * than at the sites that remove a cue target ([NanLonelyPolicy.lonelySince]). Loop thread only.
+     */
+    private fun lonelyCadence(now: Long): NanLonelyPolicy.Cadence {
+        lonelySince = NanLonelyPolicy.lonelySince(cueTarget.isEmpty(), lonelySince, now)
+        val cadence = NanLonelyPolicy.cadence(powerState.state.value, lonelyForMs(now), REDISCOVER_LONELY_MS, REARM_COOLDOWN_MS)
+        if (cadence.relaxed != lonelyRelaxedLogged) {
+            lonelyRelaxedLogged = cadence.relaxed
+            if (cadence.relaxed) {
+                Log.i(TAG, "lonely: relaxed discovery to ${cadence.tickMs}ms (alone ${lonelyForMs(now)}ms)")
+            } else {
+                Log.i(TAG, "lonely: aggressive again")
+            }
+        }
+        return cadence
+    }
+
+    private fun lonelyForMs(now: Long): Long = lonelySince.let { if (it == 0L) 0L else now - it }
+
+    /**
+     * How long since the last subscribe re-arm before the loop may re-arm again: the relaxed lonely cooldown only
+     * with nobody to cue and no [heal] token pending, else [REARM_COOLDOWN_MS] — so a heal buys exactly one
+     * aggressive re-arm, and any peer at all restores the old rule untouched.
+     */
+    private fun rearmCooldownMs(
+        now: Long,
+        healDemand: Boolean,
+    ): Long = if (cueTarget.isEmpty() && !healDemand) lonelyCadence(now).rearmCooldownMs else REARM_COOLDOWN_MS
 
     private val subscribeCallback =
         object : DiscoverySessionCallback() {
@@ -1666,8 +1731,13 @@ class WifiAwareTransport(
         }
         // Cue back exactly once on first contact so the peer learns our epoch (a pure responder whose own
         // subscribe is down bootstraps its reverse-direction handle here). Not a reply to every cue → no
-        // ping-pong; steady state is covered by discovery, epoch-change, and heartbeat cues.
-        if (firstContact) sendCue(cue.nodeId)
+        // ping-pong; steady state is covered by discovery, epoch-change, and heartbeat cues. And wake the loop:
+        // lonely → not lonely is a state change even when the digests already agree, and a loop asleep on the
+        // relaxed lonely tick must not sleep it out with a peer in range.
+        if (firstContact) {
+            sendCue(cue.nodeId)
+            healSignal.trySend(Unit)
+        }
     }
 
     // storeDigest.current(), not version.value: the digest folds live custody ids only, and expiry moves with
@@ -2748,8 +2818,10 @@ class WifiAwareTransport(
         // coordination plane. Short: the cue and the fast-frame are sent back-to-back, so they arrive within it.
         const val CUE_SETTLE_MS = 600L
 
-        // Idle discovery-loop cadence: aggressive when we know of nobody (re-fire one-shot discovery), long
-        // once we've discovered/heard peers (a cue with a new epoch wakes us via healSignal). ×2 screen-off.
+        // Idle discovery-loop cadence: aggressive when we know of nobody (re-fire one-shot discovery) — for the
+        // first minutes; NanLonelyPolicy then relaxes a screen-off node on battery to the duty cycle, since each
+        // re-arm relights Instant Communication Mode and a lonely phone used to keep it lit around the clock —
+        // and long once we've discovered/heard peers (a cue with a new epoch wakes us via healSignal). ×2 screen-off.
         const val REDISCOVER_LONELY_MS = 8_000L
         const val REDISCOVER_IDLE_MS = 120_000L
 
@@ -2819,6 +2891,7 @@ class WifiAwareTransport(
         // Min spacing between subscribe re-arms to re-discover a stale/missing peer handle: long enough that a
         // departed peer's cue target is pruned (cue send fails) before we'd re-arm again, so we don't churn
         // subscribe toward its wedge state; short enough that a restarted peer is reconnected within ~1 tick.
+        // With nobody to cue at all, NanLonelyPolicy stretches it under the relaxed tick (105 s / 285 s).
         const val REARM_COOLDOWN_MS = 15_000L
 
         // Min spacing between subscribe re-arms done purely to keep Instant Communication Mode lit on a

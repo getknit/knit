@@ -60,6 +60,13 @@ class NanSyncPolicyTest {
     }
 
     @Test
+    fun needsRediscoveryIsTrueWithNoCueTargetsAtAll() {
+        // Load-bearing for NanLonelyPolicy: a lonely node re-arms on every eligible tick, so the lonely
+        // cadence and cooldown are what bound how often it relights Instant Communication Mode.
+        assertTrue(NanSyncPolicy.needsRediscovery(emptyList()))
+    }
+
+    @Test
     fun needsRediscoveryIsTrueWhenBlindAndForAnUndiscoveredOwedInitiatorPeer() {
         assertTrue("blind (no cue targets) re-fires discovery", NanSyncPolicy.needsRediscovery(emptyList()))
         assertTrue(NanSyncPolicy.needsRediscovery(listOf(peer(initiator = true, digestWanted = true))))

@@ -82,6 +82,25 @@ class PowerPolicyTest {
     }
 
     @Test
+    fun lonelyRelaxedIsTheRuleIdleAfterScanApplies() {
+        // The Wi-Fi Aware loop reads the same predicate (NanLonelyPolicy), so the two radios relax together.
+        val states =
+            listOf(
+                PowerState(interactive = true),
+                PowerState(interactive = false, charging = true),
+                PowerState(interactive = false, charging = false),
+                PowerState(interactive = false, charging = false, batteryLow = true),
+            )
+        for (state in states) {
+            for (age in listOf(0L, 10 * 60_000L)) {
+                val relaxed = PowerPolicy.lonelyRelaxed(state, age)
+                val idle = PowerPolicy.idleAfterScan(state, neighborCount = 0, lonelyForMs = age)
+                assertEquals("$state at $age", relaxed, idle != 12_000L)
+            }
+        }
+    }
+
+    @Test
     fun isolatedTooLongOnBatteryRelaxesToPowerPolicy() {
         val stale = 5 * 60_000L // past the 3-min aggressive window
         val onBattery = PowerState(interactive = false, charging = false)

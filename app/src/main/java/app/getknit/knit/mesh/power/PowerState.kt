@@ -56,9 +56,18 @@ object PowerPolicy {
         lonelyForMs: Long,
     ): Long {
         if (neighborCount > 0) return dutyCycle(state).baseIntervalMs * (1 + neighborCount)
-        val aggressive = state.interactive || state.charging || lonelyForMs < LONELY_AGGRESSIVE_WINDOW_MS
-        return if (aggressive) LONELY_IDLE_MS else dutyCycle(state).baseIntervalMs
+        return if (lonelyRelaxed(state, lonelyForMs)) dutyCycle(state).baseIntervalMs else LONELY_IDLE_MS
     }
+
+    /**
+     * Whether an isolated node has been alone long enough, on battery with the screen off, to stop hunting
+     * aggressively: the rule [idleAfterScan] applies to the BLE scan and `NanLonelyPolicy` to the Wi-Fi Aware
+     * subscribe re-arm, so the two radios relax together. Interactive or charging never relaxes.
+     */
+    fun lonelyRelaxed(
+        state: PowerState,
+        lonelyForMs: Long,
+    ): Boolean = !(state.interactive || state.charging || lonelyForMs < LONELY_AGGRESSIVE_WINDOW_MS)
 
     /**
      * Idle gap when the node is **settled** — it holds links to every peer it can currently see, so there is no
@@ -97,7 +106,7 @@ object PowerPolicy {
 
     // On battery with the screen off, only stay in the aggressive isolated cadence this long before
     // relaxing — bounds drain for a node that is simply alone (e.g. left in a drawer).
-    private const val LONELY_AGGRESSIVE_WINDOW_MS = 3 * 60_000L
+    const val LONELY_AGGRESSIVE_WINDOW_MS = 3 * 60_000L
 
     // Discovery floor once a node is settled (links to everyone it sees, nothing to promote) or audio-contended:
     // scan no more often than this so a settled clique idles instead of scanning continuously. ~2 min balances

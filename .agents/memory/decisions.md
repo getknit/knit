@@ -126,6 +126,7 @@ carries; never renumber an old one.
 | [2026-09.hknx](decisions/2026-09-hknx-the-two-profile-screens-share-a-section-vocabulary.md) | The two profile screens share a section vocabulary, and Save moves to the app bar | ui, profile |
 | [2026-09.j8c7](decisions/2026-09-j8c7-a-photo-less-avatar-wears-its-node-id-s-hue.md) | A photo-less avatar wears its node id's hue, in a fixed palette shared with the notification shade | ui, identity, notifications |
 | [2026-09.k68y](decisions/2026-09-k68y-diagnostics-reads-a-relay-s-build-from-its-source-offer.md) | Diagnostics reads a relay's build from its /source offer, not from HELLO | spool, diagnostics, ui |
+| [2026-09.kb68](decisions/2026-09-kb68-a-lonely-node-relaxes-its-discovery-cadence.md) | A lonely node relaxes its discovery cadence | wifi-aware, battery, reliability |
 | [2026-09.m7vn](decisions/2026-09-m7vn-settings-and-your-profile-are-two-screens.md) | Settings and your profile are two screens | ui, navigation, settings, profile |
 | [2026-09.m9h8](decisions/2026-09-m9h8-material-you-is-opt-in.md) | Material You is opt-in, and green stays green | ui, theme, settings |
 | [2026-09.mhs5](decisions/2026-09-mhs5-a-lora-packet-is-padded-past-the-firmware-s-signature-cliff.md) | A LoRa packet is padded past the firmware's signature cliff | lora, airtime, link |

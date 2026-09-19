@@ -85,6 +85,23 @@ the radio off the "no interfaces available" wedge. `discoveryLoop`/`rearmSubscri
 discovery **only while the slot is free** (never with a live NDP, whose client side rides the subscribe
 session and would be dropped by a re-arm).
 
+## A lonely node relaxes its discovery cadence (ADR 2026-09.kb68)
+
+With no cue targets `NanSyncPolicy.needsRediscovery` is true on every tick (an empty snapshot is "blind"), so
+the loop re-armed subscribe every `REARM_COOLDOWN_MS` for as long as the phone was alone, and every re-arm
+relights Instant Communication Mode for the framework's 30 s — a phone in a drawer kept ICM lit around the
+clock. `mesh/wifiaware/NanLonelyPolicy` gives the loop its cadence while lonely: the old 8 s / 15 s for the
+first three minutes and whenever the screen is on or the charger is in, then — the same
+`PowerPolicy.lonelyRelaxed` rule the BLE scan uses — the duty cycle's base interval as the tick (120 s / 300 s)
+with the cooldown 15 s under it (ICM 25 % / 10 %). `lonelySince` is observed by the loop, never maintained at
+the cue-target removal sites; it resets on `onAttached` and on a BLE sighting of a peer we hold no cue target
+for (`onForeignReachable` rising edge, which also pokes the loop). `heal()` buys exactly one re-arm at the
+aggressive cooldown (`healRearmOwed`), so walking re-arms once per motion trigger. Nothing else in the loop
+changes: branch order, the watchdog's clocks, the sync and ICM-relight paths all read as before, and every
+wedge the file guards against needs an owed peer to be observed, which a lonely node has none of. Oracles:
+`re-arm subscribe (lonely=…ms cooldown=…ms heal=…)` and `lonely: relaxed …` / `lonely: aggressive again` on
+the transport tag, `lonely=` on the state line. The device trial is listed in the ADR and still owed.
+
 ## `requestNetwork` with no timeout leaks the one interface forever — always time-box it
 
 The 3-arg `requestNetwork(request, cb, handler)` has no timeout, so a request that can't be fulfilled
