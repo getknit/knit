@@ -29,6 +29,16 @@ interface InternetGate {
     val online: StateFlow<Boolean>
 
     /**
+     * What kind of route [isOnline] is answering about — the one thing a long-lived socket needs to pace
+     * its keepalive by: a ping that costs a Wi-Fi radio nothing keeps a cellular modem out of idle all day.
+     * A VPN reads [RouteKind.OTHER]; the platform does not expose what it rides on.
+     */
+    enum class RouteKind { NONE, WIFI, CELLULAR, OTHER }
+
+    /** The route's kind this instant; the default only knows whether there is one. */
+    fun routeKind(): RouteKind = if (isOnline()) RouteKind.OTHER else RouteKind.NONE
+
+    /**
      * One event each time the validated default network becomes a *different* network — never for the
      * same one re-validating or changing capabilities, and never for losing it. A socket dialled over the
      * old route says nothing about the new one, so a plane sitting out a reconnect backoff against a

@@ -642,7 +642,14 @@ class FakeCustody(
         return true
     }
 
-    override suspend fun liveFrames(now: Long): List<CarriedFrame> = rows.values.filter { it.envelope.sentAt + ttlMs >= now }
+    /** How many times the plane read the whole table — what an idle converged relay must not run up. */
+    var liveFramesReads = 0
+        private set
+
+    override suspend fun liveFrames(now: Long): List<CarriedFrame> {
+        liveFramesReads++
+        return rows.values.filter { it.envelope.sentAt + ttlMs >= now }
+    }
 
     override suspend fun liveIds(now: Long): List<String> = liveFrames(now).map { it.envelope.id }
 

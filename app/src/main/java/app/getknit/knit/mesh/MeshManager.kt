@@ -168,6 +168,10 @@ class MeshManager(
     // says nothing about this one. The default never fires, which is every test and every build without
     // the plane; production wiring hands in the platform gate's stream.
     private val routeChanges: Flow<Unit> = emptyFlow(),
+    // Whether the phone has a validated Internet route this instant (`InternetGate.isOnline`): the Internet
+    // plane reads it before every dial, so a relay is never dialled — and never counted as failing — over
+    // no route at all. The default always says yes, which is every test and every build without the plane.
+    private val online: () -> Boolean = { true },
     // The commons (docs/SPOOL_PROTOCOL.md §7.4): the joined rooms, their outbox and their members. Null —
     // every test, and a build with no Internet plane — derives no commons scope and refuses a commons send.
     private val commons: CommonsStore? = null,
@@ -463,6 +467,7 @@ class MeshManager(
                 store = forwardStore,
                 selfId = { identity.nodeId() },
                 urls = { settings.activeSpoolUrls.first().toList() },
+                online = online,
                 canCarry = pipeline::canCarry,
                 commons = commons,
                 hasKey = { peers.find(it)?.pubKey != null },
@@ -680,6 +685,9 @@ class MeshManager(
 
     override fun refreshRelays() {
         scopeSync?.onScopeTableChanged()
+        // The user's refresh means "look now": a scope whose table did not change is otherwise healed on its
+        // next event or the 60 s tick — and this is also the lab's one poke past a clock jump.
+        scopeSync?.onCustodyChanged()
     }
 
     /**

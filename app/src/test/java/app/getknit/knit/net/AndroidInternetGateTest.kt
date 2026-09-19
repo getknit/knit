@@ -75,6 +75,44 @@ class AndroidInternetGateTest {
     }
 
     @Test
+    @Suppress("DEPRECATION") // ShadowNetwork keys a network by the legacy type, like the helper above
+    fun theRouteKindNamesTheTransportOfAValidatedNetwork() =
+        runTest(UnconfinedTestDispatcher()) {
+            // The spool dialer paces its keepalive by this: a 25 s ping is free on Wi-Fi and keeps a cellular
+            // modem out of idle all day.
+            val gate = AndroidInternetGate(context, backgroundScope)
+            activate(*validated)
+            assertEquals(InternetGate.RouteKind.WIFI, gate.routeKind())
+
+            val cellular = ShadowNetwork.newInstance(ConnectivityManager.TYPE_MOBILE)
+            activate(ConnectivityManager.TYPE_MOBILE, cellular, *validated)
+            assertEquals(InternetGate.RouteKind.CELLULAR, gate.routeKind())
+        }
+
+    @Test
+    fun anUnvalidatedOrAbsentRouteHasNoKind() =
+        runTest(UnconfinedTestDispatcher()) {
+            val gate = AndroidInternetGate(context, backgroundScope)
+            shadowOf(connectivity).setActiveNetworkInfo(null)
+            assertEquals(InternetGate.RouteKind.NONE, gate.routeKind())
+            activate(NetworkCapabilities.NET_CAPABILITY_INTERNET, NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+            assertEquals("a captive portal is no route to pace a socket by", InternetGate.RouteKind.NONE, gate.routeKind())
+        }
+
+    @Test
+    fun aRouteOnNeitherRadioReadsAsOther() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A VPN: the platform does not say what it rides on, so the dialer keeps the Wi-Fi cadence.
+            val gate = AndroidInternetGate(context, backgroundScope)
+            activate(*validated)
+            val caps = ShadowNetworkCapabilities.newInstance()
+            validated.forEach { shadowOf(caps).addCapability(it) }
+            shadowOf(caps).addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+            shadowOf(connectivity).setNetworkCapabilities(network, caps)
+            assertEquals(InternetGate.RouteKind.OTHER, gate.routeKind())
+        }
+
+    @Test
     fun noActiveNetworkReadsAsOffline() =
         runTest(UnconfinedTestDispatcher()) {
             shadowOf(connectivity).setActiveNetworkInfo(null)

@@ -152,6 +152,7 @@ carries; never renumber an old one.
 | [2026-09.v6fu](decisions/2026-09-v6fu-a-founding-member-who-left-rejoins-by-their-own-signed-frame.md) | A founding member who left rejoins by their own signed frame | groups, roster, crypto |
 | [2026-09.vej5](decisions/2026-09-vej5-a-spool-is-connected-once-it-says-hello.md) | A spool is connected once it says hello, and a route that swallows the socket is unreachable | spool, ui, diagnostics |
 | [2026-09.vybk](decisions/2026-09-vybk-a-room-flood-is-bounded-by-the-link-it-came-over-and-displaces-strangers-before.md) | A room flood is bounded by the link it came over and displaces strangers before contacts | mesh, retention, sybil |
+| [2026-09.wa79](decisions/2026-09-wa79-a-scope-heals-when-something-changed.md) | A scope heals when something changed | spool, battery, reliability |
 | [2026-09.wdfz](decisions/2026-09-wdfz-message-search-is-an-external-content-fts4-index-over-messages-body.md) | Message search is an external-content FTS4 index over messages.body | data, room, search, perf |
 | [2026-09.wkbk](decisions/2026-09-wkbk-a-gateway-hands-a-targeted-tick-the-last-hop.md) | A gateway hands a targeted tick the last hop | receipts, mesh, lora |
 | [2026-09.wnh6](decisions/2026-09-wnh6-search-is-one-screen-over-the-chat-list-s-own-universe.md) | Search is one screen over the chat list's own universe, and a hit opens the thread on one message | ui, search, navigation |

@@ -24,7 +24,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.yield
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
 /**
@@ -212,6 +214,10 @@ class ScopeSync(
     // and `AckSync`'s spool route. Never a delivery gate — nothing here is.
     private val onPresenceChanged: (Set<String>) -> Unit = {},
     private val presenceLingerMs: Long = SPOOL_COVER_MS,
+    // Whether the phone has a validated route to the Internet right now (`InternetGate.isOnline`). Read
+    // before every dial: with no route a dial can only fail, and would count against a relay that did
+    // nothing. The default never says no, which is every test and every build without the gate.
+    private val online: () -> Boolean = { true },
     private val metrics: MeshMetrics = MeshMetrics(),
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val jitter: () -> Long = { Random.nextLong(RECONNECT_JITTER_MS) },
@@ -299,7 +305,7 @@ class ScopeSync(
      * pushed now rather than at the next tick. Cheap and idempotent — the heal loop re-derives the diff.
      */
     fun onCustodyChanged() {
-        workers.values.forEach { it.wake() }
+        workers.values.forEach { it.markAllDirty() }
     }
 
     /**
@@ -340,9 +346,12 @@ class ScopeSync(
         val live = scopes.mapTo(HashSet()) { it.idHex }
         wanted.forEach { url ->
             val worker = workers.computeIfAbsent(url) { Worker(it) }
-            worker.forgetScopesNotIn(live)
+            val changed = worker.adoptScopes(live)
             worker.ensureRunning(host)
-            worker.wake() // a scope may have appeared since this worker last subscribed
+            // Only a changed table wakes the heal loop — a scope that appeared needs its SUB now. An
+            // unchanged one used to wake every worker every 15 s regardless, and each wake ran a full
+            // custody round per scope: four times the 60 s tick, idle or converged, for nothing.
+            if (changed) worker.wake()
         }
     }
 
@@ -370,6 +379,12 @@ class ScopeSync(
     private class Held(
         val sealed: ScopeFrames.Sealed,
         val carried: CarriedFrame,
+    )
+
+    /** What a pull round did: the ids the spool no longer had, and how many blobs the mesh door took. */
+    private class Pulled(
+        val gone: Set<String>,
+        val accepted: Int,
     )
 
     /**
@@ -436,6 +451,29 @@ class ScopeSync(
         // push (nothing on the inbound path does; `AckSync` pushes from its own flush coroutine).
         private val round = Mutex()
 
+        // What the next round must look at. A scope is dirty when its spool anchor moved ([handleDigest]),
+        // it took a delivery ([handleEvent], a pull) or a direct push ([pushDirect]); every scope is dirty
+        // when local custody changed ([markAllDirty]) and on the 60 s tick, which covers a change with no
+        // event of its own — a swept frame, a lapsed attachment deferral, a stamp ageing out. A clean scope
+        // costs a round nothing: no custody read, no fold, no `ahave`.
+        private val dirty: MutableSet<String> = ConcurrentHashMap.newKeySet()
+        private val allDirty = AtomicBoolean(false)
+        private val tickDue = AtomicBoolean(false)
+
+        // The scope table as of the last reconcile: a change to it is what wakes this worker from there.
+        @Volatile
+        private var lastLive: Set<String> = emptySet()
+
+        // scopeHex → attachment hash → when a round last found nothing left to do for it: fetched, pushed
+        // whole, dead, or past its frame's TTL. Skipped until a timed round finds the entry older than
+        // ATTACHMENT_RECHECK_MS (the spool may have evicted it since), and dropped with the connection.
+        private val settledAttachments = ConcurrentHashMap<String, LinkedHashMap<String, Long>>()
+
+        // scopeHex → the one pending re-look for an attachment a round could not finish (the spool has no
+        // chunks yet, an upload half done, a deferral in force) — the old 15 s reconcile's cadence, paid
+        // only by a scope that has such an attachment.
+        private val attachmentRetries = ConcurrentHashMap<String, Job>()
+
         // Partially-received attachments, keyed "scopeHex|aHash". In memory by design (§9.5): the
         // plane persists nothing, and the spool's bitmap makes a restarted download cheap to resume.
         private val assemblies = ConcurrentHashMap<String, ScopeAttachments.Assembly>()
@@ -486,12 +524,43 @@ class ScopeSync(
         fun stop() {
             job?.cancel()
             job = null
+            cancelAttachmentRetries()
             connection?.close(SpoolCloseCode.NORMAL, "stopping")
             connection = null
         }
 
+        private fun cancelAttachmentRetries() {
+            attachmentRetries.values.forEach { it.cancel() }
+            attachmentRetries.clear()
+        }
+
         fun wake() {
             wakeup.trySend(Unit)
+        }
+
+        /** [scopeHex] has something to look at: run a round for it now. */
+        fun markDirty(scopeHex: String) {
+            dirty += scopeHex
+            wake()
+        }
+
+        /** Every scope has something to look at — local custody moved. */
+        fun markAllDirty() {
+            allDirty.set(true)
+            wake()
+        }
+
+        /**
+         * Takes the reconciled scope table: [forgetScopesNotIn] for what left, and whether the table differs
+         * from the one this worker last adopted — the only reason a reconcile wakes the heal loop.
+         */
+        fun adoptScopes(live: Set<String>): Boolean {
+            forgetScopesNotIn(live)
+            dirty.retainAll(live)
+            synchronized(settledAttachments) { settledAttachments.keys.retainAll(live) }
+            val changed = live != lastLive
+            lastLive = live
+            return changed
         }
 
         /** Asks for the next dial now, unless this worker already has a spool talking to it. */
@@ -561,10 +630,22 @@ class ScopeSync(
         }
 
         private suspend fun runLoop() {
-            var backoff = MIN_BACKOFF_MS
+            var failures = 0
             while (currentCoroutineContext().isActive) {
+                if (!online()) {
+                    // No validated route: a dial can only fail, and would be counted against a relay that
+                    // did nothing — the relay row already says the phone is offline. Wait for a new network
+                    // (`onRouteChanged` → [redialNow]) or look again on a slow cadence: the same network
+                    // re-validating (a captive login) fires no route change.
+                    withTimeoutOrNull(OFFLINE_RECHECK_MS) { redial.receive() }
+                    continue
+                }
                 val reached = session()
-                backoff = if (reached) MIN_BACKOFF_MS else (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
+                failures = if (reached) 0 else failures + 1
+                // Doubling to a minute for the first ten failures, then on to fifteen: a relay that is simply
+                // gone used to be dialled ~1,440 times a day at the 60 s ceiling, each one a DNS lookup, a
+                // TCP connect and a TLS handshake on a radio that could otherwise sleep.
+                val wait = SpoolBackoffPolicy.waitMs(failures)
                 // A spool refusing us at the transport layer (it is at its connection cap) says how long
                 // to stay away. Honour it as a floor only: replacing the backoff would forget how long we
                 // have already been failing, and dropping the jitter would re-synchronise every client one
@@ -573,11 +654,11 @@ class ScopeSync(
                 retryFloorMs = 0L
                 if (floor > 0) {
                     // The spool's own ask is never shortened: a new network changes nothing about its load.
-                    delay(maxOf(backoff, floor) + jitter())
-                } else if (withTimeoutOrNull(backoff + jitter()) { redial.receive() } != null) {
+                    delay(maxOf(wait, floor) + jitter())
+                } else if (withTimeoutOrNull(wait + jitter()) { redial.receive() } != null) {
                     // A new default network is a new situation: the failures counted against the old route
                     // say nothing about this one, so the backoff starts over as well.
-                    backoff = MIN_BACKOFF_MS
+                    failures = 0
                 }
             }
         }
@@ -627,9 +708,28 @@ class ScopeSync(
                 host.launch { readSoftware(conn) }
                 subscribe(conn, mine(scopes, conn))
                 republishPresence() // a connected spool is what makes a stamped peer count
-                while (pump.isActive && currentCoroutineContext().isActive) {
-                    withTimeoutOrNull(TICK_INTERVAL_MS) { wakeup.receive() }
-                    healAll(conn)
+                // The tick is a mark like any other, so a scope busy with events still gets its full pass and
+                // a woken round can tell it was not the tick (the rig's clock is frozen, so a deadline could
+                // not be computed from it). The anchors were cleared with the last session, so the SUB answers
+                // mark every scope dirty and the first round follows them.
+                val ticker =
+                    host.launch {
+                        while (isActive) {
+                            delay(TICK_INTERVAL_MS)
+                            tickDue.set(true)
+                            wake()
+                        }
+                    }
+                try {
+                    while (pump.isActive && currentCoroutineContext().isActive) {
+                        wakeup.receive()
+                        // A conflated token is handed over without suspending; a round that marks its own
+                        // scope again would otherwise run back to back and starve the pump and the ticker.
+                        yield()
+                        healAll(conn, timed = tickDue.getAndSet(false))
+                    }
+                } finally {
+                    ticker.cancel()
                 }
             }
             pump.cancel()
@@ -670,6 +770,9 @@ class ScopeSync(
             // live is simply re-pulled); dropping `accounted` only re-pulls what can never be held, which
             // is the reconnect storm ADR 062 is about.
             accepted.clear()
+            // What a round settled was settled against THIS spool's chunk store; the next session asks again.
+            synchronized(settledAttachments) { settledAttachments.clear() }
+            cancelAttachmentRetries()
             // A session we had to abort is not "reached": the backoff must grow, or an unresponsive spool
             // is dialled again a second later and the whole strike budget spent on it once a minute.
             return ready && fault == null
@@ -755,29 +858,48 @@ class ScopeSync(
                 scope.bounds
             }
 
-        private suspend fun healAll(conn: SpoolConnection) {
-            republishPresence() // the tick is what lets a stamp lapse out of the present set
+        /**
+         * One round: presence and subscriptions every time, then a heal for each scope that is dirty — or
+         * every scope when [timed] (the 60 s tick) or when local custody moved. The marks are drained
+         * BEFORE the custody read: a mark that lands after the drain keeps its token in the conflated wake
+         * channel and is read next round; one that lands before it is covered by this read.
+         */
+        private suspend fun healAll(
+            conn: SpoolConnection,
+            timed: Boolean,
+        ) {
+            republishPresence() // every round, and the tick is one: that is what lets a stamp lapse out of the present set
             if (conn.answered) retireFault(SpoolConnection.UNRESPONSIVE)
             val current = mine(scopes, conn)
             // Sub-before-use is per connection, and the scope table changes as sessions are established.
             subscribe(conn, current.filterNot { conn.isSubscribed(it.idHex) })
-            current.forEach { heal(conn, it) }
+            val all = allDirty.getAndSet(false) || timed
+            val due = if (all) current.onEach { dirty.remove(it.idHex) } else current.filter { dirty.remove(it.idHex) }
+            if (due.isEmpty()) return
+            // One custody read serves every scope in the round (it used to be one per scope per round —
+            // a full table decode, four times a minute, converged or not).
+            val custody = store.liveFrames(clock())
+            due.forEach { heal(conn, it, custody, timed) }
         }
 
         /** §9.1: one scope's heal round against this spool. A no-op while the two digests agree. */
         private suspend fun heal(
             conn: SpoolConnection,
             scope: Scope,
-        ) = round.withLock { healLocked(conn, scope) }
+            custody: List<CarriedFrame>,
+            timed: Boolean,
+        ) = round.withLock { healLocked(conn, scope, custody, timed) }
 
         private suspend fun healLocked(
             conn: SpoolConnection,
             scope: Scope,
+            custody: List<CarriedFrame>,
+            timed: Boolean,
         ) {
-            // One custody read serves both halves of the round: the frames, and the attachments they
+            // The round's custody read serves both halves: the frames, and the attachments they
             // reference. Attachments are healed even when the frame digests already agree — they are
             // outside the digest by design (§6.5), so it can never signal them.
-            val frames = if (scope.commonsId != null) commonsFrames(scope.commonsId) else store.liveFrames(clock())
+            val frames = if (scope.commonsId != null) commonsFrames(scope.commonsId, custody) else custody
             val dead = if (scope.commonsId != null) tombstonesSeen[scope.idHex].orEmpty() else emptySet()
             val local = held(scope, frames).filterKeys { it !in dead }
             // §9.6: fold the accounted band in beside what we hold, so a scope whose spool keeps blobs our
@@ -791,25 +913,39 @@ class ScopeSync(
             localCounts[scope.idHex] = local.size + accountedHere.size
             val anchor = spoolDigests[scope.idHex] ?: return // the SUB hasn't been answered yet
             if (anchor == localFold) {
-                if (scope.commonsId == null) healAttachments(conn, scope, frames)
+                if (scope.commonsId == null) healAttachments(conn, scope, frames, timed)
                 return
             }
-            val listing = conn.list(scope.id)?.takeIf { plausible(scope, it) } ?: return
+            reconcileListing(conn, scope, local, accountedHere)
+            // Text only in this revision: a commons never exchanges attachment records, whatever its HELLO says.
+            if (scope.commonsId == null) healAttachments(conn, scope, frames, timed)
+        }
+
+        /**
+         * §9.1's list → diff → pull → push → re-anchor, for a scope whose two digests disagree. [local] and
+         * [accountedHere] are the round's own view, computed before the LIST so the diff is against what the
+         * fold compared.
+         */
+        private suspend fun reconcileListing(
+            conn: SpoolConnection,
+            scope: Scope,
+            local: Map<String, Held>,
+            accountedHere: Map<String, Long>,
+        ) {
+            val listing = conn.list(scope.id)
+            if (listing == null) {
+                // Unanswered on a live connection: ask again straight away, so a spool that went quiet
+                // strikes out on the connection's silent-request rule in three request timeouts, not three
+                // ticks. On a closed one the answer is instant and the session is already ending — the
+                // pump's completion is the wake that ends it; marking here would spin ahead of it.
+                if (conn.isOpen) markDirty(scope.idHex)
+                return
+            }
+            if (!plausible(scope, listing)) return // the tick is the retry; asking again now would only spin
             val quarantined = invalid[scope.idHex].orEmpty()
             val spoolIds = listing.blobIds.associateBy { hex(it) }
             val tombstoned = listing.tombstones.mapTo(mutableSetOf()) { hex(it) }
-            if (scope.commonsId != null) {
-                local.keys.filter { it in tombstoned }.forEach { remember(tombstonesSeen, scope.idHex, it) }
-                noteOwnProfileTombstones(scope, local, tombstoned)
-            }
-            // The listing is the scope's whole live set, so it is also the only chance to notice that an
-            // accounted blob finally expired at the spool. Drop those: keeping them would leave our fold
-            // carrying an id the spool no longer counts — the same permanent divergence, mirrored.
-            pruneAccounted(scope.idHex, spoolIds.keys)
-            // The same for the invalid set: an id the spool no longer lists can never be re-pulled, so
-            // its quarantine has done its work — and keeping it would deny a blob that a member may yet
-            // re-push clean after the garbage copy expired.
-            pruneInvalid(scope.idHex, spoolIds.keys)
+            val learnt = noteListing(scope, local, spoolIds.keys, tombstoned, accountedHere.keys, quarantined)
             // Skip what we already processed on this connection, and what we have accounted for across
             // every connection. The scope TTL (48 h) deliberately outlives mesh custody (24 h), so a frame
             // we delivered and then swept still sits at the spool for another day: it is absent from
@@ -821,11 +957,50 @@ class ScopeSync(
                     .filterKeys { it !in local && it !in quarantined && it !in processed && it !in accountedHere }
                     .values
                     .toList()
-            val gone = pullMissing(conn, scope, wanted)
+            val pulled = pullMissing(conn, scope, wanted)
             val pushed = pushMissing(conn, scope, local, spoolIds.keys, tombstoned, quarantined)
-            reanchor(scope, spoolIds, gone, pushed)
-            // Text only in this revision: a commons never exchanges attachment records, whatever its HELLO says.
-            if (scope.commonsId == null) healAttachments(conn, scope, frames)
+            reanchor(scope, spoolIds, pulled.gone, pushed)
+            // A round that moved the local view — frames pulled into custody, frames pushed, a tombstone
+            // learnt for a frame we hold, an accounted or quarantined id the spool no longer lists — gets
+            // one more look: the local fold above predates every one of those, and
+            // the next round is what shows the anchor now agrees (the status reads converged from it). A
+            // round that only found ids it may not take — quarantined, parked — does not, or it would spin;
+            // the tick is that case's retry, as it always was.
+            if (pulled.accepted > 0 || pushed.isNotEmpty() || learnt) markDirty(scope.idHex)
+        }
+
+        /**
+         * What a listing teaches about the local view, folded before the pull: the tombstones of frames we
+         * hold (a commons), and the accounted and quarantined ids the spool no longer lists. True when any
+         * of it changed — the local fold a round computed before the LIST is then stale, and the round
+         * re-marks its scope so the next one shows the anchor agrees.
+         *
+         * The listing is the scope's whole live set, so it is also the only chance to notice that an
+         * accounted blob finally expired at the spool. Keeping it would leave our fold carrying an id the
+         * spool no longer counts — permanent divergence, mirrored. Only what was accounted BEFORE this
+         * listing was taken, though: the pump accounts a live event off the round's lock, and a burst of
+         * pushes landing while the LIST was in flight would otherwise be pruned as "no longer listed" the
+         * moment they were accounted. The invalid set the same way: an id the spool no longer lists can
+         * never be re-pulled, so its quarantine has done its work — and keeping it would deny a blob a
+         * member may yet re-push clean after the garbage copy expired.
+         */
+        @Suppress("LongParameterList") // the listing's three sets against the round's two; a holder would only relocate them
+        private suspend fun noteListing(
+            scope: Scope,
+            local: Map<String, Held>,
+            spoolIds: Set<String>,
+            tombstoned: Set<String>,
+            accountedBefore: Set<String>,
+            quarantined: Set<String>,
+        ): Boolean {
+            var learnt = false
+            if (scope.commonsId != null) {
+                local.keys.filter { it in tombstoned }.forEach { if (remember(tombstonesSeen, scope.idHex, it)) learnt = true }
+                noteOwnProfileTombstones(scope, local, tombstoned)
+            }
+            if (pruneAccounted(scope.idHex, spoolIds, accountedBefore)) learnt = true
+            if (pruneInvalid(scope.idHex, spoolIds, quarantined)) learnt = true
+            return learnt
         }
 
         /**
@@ -876,9 +1051,12 @@ class ScopeSync(
          * for every other member, kept live by the 12 h republish — and its own posts from the outbox. Never
          * custody at large: the room is not a mirror of everything this device carries.
          */
-        private suspend fun commonsFrames(conversationId: String): List<CarriedFrame> {
+        private suspend fun commonsFrames(
+            conversationId: String,
+            custody: List<CarriedFrame>,
+        ): List<CarriedFrame> {
             val me = selfId()
-            val ownProfile = store.liveFrames(clock()).filter { it.envelope.type == FrameType.PROFILE && it.envelope.senderId == me }
+            val ownProfile = custody.filter { it.envelope.type == FrameType.PROFILE && it.envelope.senderId == me }
             return ownProfile + commons?.frames(conversationId).orEmpty()
         }
 
@@ -887,18 +1065,23 @@ class ScopeSync(
             conn: SpoolConnection,
             scope: Scope,
             ids: List<ByteArray>,
-        ): Set<String> {
+        ): Pulled {
             val gone = mutableSetOf<String>()
-            if (ids.isEmpty()) return gone
+            var accepted = 0
+            if (ids.isEmpty()) return Pulled(gone, accepted)
             val cap = (conn.limits?.maxPull ?: DEFAULT_MAX_PULL).coerceAtLeast(1)
             // A commons post pulled ahead of its author's profile in the same listing (the listing is
             // unordered) is held for one more try at the end of the round, once the profile has had its
             // chance to land — the common case for a backlog pull into a room someone else has been using.
             val deferred = mutableListOf<SpoolBlob>()
             ids.chunked(cap).forEach { batch ->
-                val outcome = conn.pull(scope.id, batch) ?: return gone
+                val outcome = conn.pull(scope.id, batch) ?: return Pulled(gone, accepted)
                 outcome.blobs.forEach { blob ->
-                    if (accept(scope, blob.blobId, blob.data, Source.PULL) == Accept.PARKED) deferred.add(blob)
+                    when (accept(scope, blob.blobId, blob.data, Source.PULL)) {
+                        Accept.PARKED -> deferred.add(blob)
+                        Accept.DELIVERED -> accepted++
+                        else -> Unit
+                    }
                 }
                 outcome.missing.forEach { gone.add(hex(it)) }
                 // An id we asked for and got an unusable answer for is quarantined, not merely dropped
@@ -906,8 +1089,14 @@ class ScopeSync(
                 // `reanchor` must keep folding it into the digest we compare against.
                 outcome.oversize.forEach { quarantine(scope, hex(it)) }
             }
-            deferred.forEach { blob -> accept(scope, blob.blobId, blob.data, Source.PULL, retry = true) }
-            return gone
+            deferred.forEach { blob ->
+                if (accept(scope, blob.blobId, blob.data, Source.PULL, retry = true) ==
+                    Accept.DELIVERED
+                ) {
+                    accepted++
+                }
+            }
+            return Pulled(gone, accepted)
         }
 
         /** Pushes what the spool lacks, skipping tombstones, quarantine, oversize and expired frames (§9.2). */
@@ -977,10 +1166,14 @@ class ScopeSync(
                 val conn = connection ?: return@withLock false
                 val me = selfId()
                 var any = false
-                for (scope in mine(targets, conn)) if (pushDirectInto(conn, scope, me, env, wire)) any = true
-                // The next round folds the accounted band into the local digest, so the status reads
-                // converged now rather than at the 60 s tick — no LIST, the anchor already matches.
-                if (any) wake()
+                for (scope in mine(targets, conn)) {
+                    if (pushDirectInto(conn, scope, me, env, wire)) {
+                        any = true
+                        // The next round folds the accounted band into the local digest, so the status reads
+                        // converged now rather than at the 60 s tick — no LIST, the anchor already matches.
+                        markDirty(scope.idHex)
+                    }
+                }
                 any
             }
 
@@ -1066,19 +1259,25 @@ class ScopeSync(
             conn: SpoolConnection,
             scope: Scope,
             frames: List<CarriedFrame>,
+            timed: Boolean,
         ) {
             val blobStore = blobs ?: return
             if (conn.limits?.attachments != true) return
             val quarantined = quarantinedAttachments(scope)
+            val settled = settledAttachmentsFor(scope, recheckOlder = timed)
             val candidates =
                 ScopeAttachments
                     .references(frames, scope, selfId())
-                    .filterNot { it.aHash in quarantined }
+                    .filterNot { it.aHash in quarantined || it.aHash in settled }
                     .mapNotNull { ref -> ScopeAttachments.hashBytes(ref.aHash)?.let { ref to it } }
                     .take(ATTACHMENT_SCAN_PER_ROUND)
             var handled = 0
+            var pending = 0
             for ((ref, aHashBytes) in candidates) {
-                if (handled == ATTACHMENTS_PER_ROUND) break
+                if (handled == ATTACHMENTS_PER_ROUND) {
+                    pending++
+                    continue
+                }
                 val mine = blobStore.has(ref.aHash)
                 // Deferring *before* the `ahave` is what makes the gate free: an attachment the radios
                 // are still carrying costs no round trip at all this round, not merely no chunks. A
@@ -1086,15 +1285,64 @@ class ScopeSync(
                 // does need pushing.
                 if (mine && deferAttachment(scope, ref)) {
                     metrics.onSpoolAttachmentDeferred()
+                    pending++
                 } else {
                     handled++
                     val aid = ScopeCrypto.attachmentId(scope.keys, scope.id, aHashBytes)
                     // A dead socket ends the round; there is nothing useful to try against it.
                     val presence = conn.ahave(scope.id, aid) ?: return
-                    if (mine) {
-                        pushAttachment(conn, scope, ref, aid, aHashBytes, presence, blobStore)
-                    } else {
-                        fetchAttachment(conn, scope, ref, aid, presence, blobStore)
+                    val done =
+                        if (mine) {
+                            pushAttachment(conn, scope, ref, aid, aHashBytes, presence, blobStore)
+                        } else {
+                            fetchAttachment(conn, scope, ref, aid, presence, blobStore)
+                        }
+                    if (done) settleAttachment(scope, ref.aHash) else pending++
+                }
+            }
+            // Something is still in flight or still owed: look again on the old reconcile's cadence rather
+            // than the tick's, and only for this scope. A settled scope schedules nothing.
+            if (pending > 0) scheduleAttachmentRetry(scope)
+        }
+
+        /**
+         * The attachments a round need not ask about: settled against this connection and, unless this is a
+         * timed round finding the entry older than ATTACHMENT_RECHECK_MS, not due a second look. The spool
+         * may evict what it held, and nothing on the wire says so — the recheck is how that is noticed.
+         */
+        private fun settledAttachmentsFor(
+            scope: Scope,
+            recheckOlder: Boolean,
+        ): Set<String> =
+            synchronized(settledAttachments) {
+                val set = settledAttachments[scope.idHex] ?: return emptySet()
+                if (recheckOlder) {
+                    val horizon = clock() - ATTACHMENT_RECHECK_MS
+                    set.values.removeAll { it <= horizon }
+                }
+                set.keys.toSet()
+            }
+
+        private fun settleAttachment(
+            scope: Scope,
+            aHash: String,
+        ) {
+            synchronized(settledAttachments) {
+                val set = settledAttachments.getOrPut(scope.idHex) { LinkedHashMap() }
+                set[aHash] = clock()
+                while (set.size > BLOB_SET_MAX) set.remove(set.keys.first())
+            }
+        }
+
+        private fun scheduleAttachmentRetry(scope: Scope) {
+            val host = this@ScopeSync.session ?: return
+            attachmentRetries.compute(scope.idHex) { _, existing ->
+                if (existing?.isActive == true) {
+                    existing
+                } else {
+                    host.launch {
+                        delay(ATTACHMENT_RETRY_MS)
+                        markDirty(scope.idHex)
                     }
                 }
             }
@@ -1109,18 +1357,25 @@ class ScopeSync(
             aid: ByteArray,
             presence: SpoolReply.Presence,
             blobStore: ScopeBlobs,
-        ) {
-            if (presence.dead || presence.total <= 0) return
+        ): Boolean {
+            // Dead is final; no chunks yet is not — the peer may push them any moment, so that is pending.
+            if (presence.dead) return true
+            if (presence.total <= 0) return false
             val key = "${scope.idHex}|${ref.aHash}"
-            val assembly = assemblyFor(scope, key, ref, presence) ?: return
-            if (!pullChunks(conn, scope, ref, aid, presence, assembly, key)) return
-            if (!assembly.isComplete()) return
+            val assembly = assemblyFor(scope, key, ref, presence) ?: return false
+            if (!pullChunks(conn, scope, ref, aid, presence, assembly, key)) return false
+            if (!assembly.isComplete()) return false
             assemblies.remove(key)
             // The decisive check: the bytes must hash to the address the frame named.
-            val bytes = assembly.finish() ?: return quarantineAttachment(scope, ref.aHash)
+            val bytes = assembly.finish()
+            if (bytes == null) {
+                quarantineAttachment(scope, ref.aHash)
+                return true
+            }
             blobStore.save(ref.aHash, ref.mime ?: FALLBACK_MIME, bytes)
             metrics.onSpoolAttachmentPulled()
             onAttachmentObtained(ref.aHash)
+            return true
         }
 
         /**
@@ -1213,21 +1468,23 @@ class ScopeSync(
             aHashBytes: ByteArray,
             presence: SpoolReply.Presence,
             blobStore: ScopeBlobs,
-        ) {
-            if (!worthPushing(scope, ref, presence)) return
-            val bytes = blobStore.bytes(ref.aHash) ?: return
-            if (bytes.isEmpty() || bytes.size > ScopeAttachments.MAX_ATTACHMENT_BYTES) return
+        ): Boolean {
+            // Every early return here is a reason no later round would act differently — settled, not pending.
+            if (!worthPushing(scope, ref, presence)) return true
+            val bytes = blobStore.bytes(ref.aHash) ?: return true
+            if (bytes.isEmpty() || bytes.size > ScopeAttachments.MAX_ATTACHMENT_BYTES) return true
             val total = ScopeAttachments.chunkCount(bytes.size)
             // A spool holding a different chunk count for this id is serving another member's
             // disagreement; first write wins there, so adding ours would only collect `conflict`s.
-            if (presence.total != 0 && presence.total != total) return
+            if (presence.total != 0 && presence.total != total) return true
             val stamp = stampFor(scope, conn.powBits)
             val missing = (0 until total).filter { presence.total == 0 || !ScopeAttachments.bitSet(presence.bits, it) }
             for (index in missing) {
                 val sealed =
                     ScopeCrypto.sealChunk(scope.keys, scope.id, aHashBytes, index, total, ScopeAttachments.sliceAt(bytes, index))
-                if (!putChunk(conn, scope, aid, index, total, sealed, stamp)) return
+                if (!putChunk(conn, scope, aid, index, total, sealed, stamp)) return false
             }
+            return true
         }
 
         /** A retiring scope is drained, a dead attachment is gone, and §9.2 bars an aged-out frame's bytes. */
@@ -1296,12 +1553,15 @@ class ScopeSync(
             // Anchors are keyed by scope with no other bound, so a spool naming scopes we do not carry
             // would grow these maps without limit. We only ever asked about our own.
             val scope = scopes.firstOrNull { it.idHex == scopeHex } ?: return
-            spoolDigests[scopeHex] = ScopeCrypto.digestValue(digest.digest)
-            spoolCounts[scopeHex] = digest.count
+            val value = ScopeCrypto.digestValue(digest.digest)
+            val moved = spoolDigests.put(scopeHex, value) != value
+            val grew = spoolCounts.put(scopeHex, digest.count) != digest.count
             // A commons SUB is answered with the bounds the spool pinned, not the ones we declared (§7.4) —
             // clamped like the HELLO's copy, since what is pinned here sizes what we track for the room.
             if (scope.commonsId != null) pinnedBounds[scopeHex] = digest.bounds.clamped()
-            wake()
+            // Only a digest that says something new is a reason to heal: the unsolicited fan-out repeats the
+            // anchor we already hold. An absent anchor (the SUB's answer on a fresh session) always is.
+            if (moved || grew) markDirty(scopeHex)
         }
 
         /**
@@ -1315,7 +1575,7 @@ class ScopeSync(
         private suspend fun handleEvent(event: SpoolEvent) {
             val scope = mine(scopes, connection).firstOrNull { it.idHex == hex(event.scope) } ?: return
             if (event.data.size > boundsFor(scope).maxBlob) return
-            if (accept(scope, event.blobId, event.data, Source.EVENT) == Accept.DELIVERED) wake()
+            if (accept(scope, event.blobId, event.data, Source.EVENT) == Accept.DELIVERED) markDirty(scope.idHex)
         }
 
         private fun handleScopeError(
@@ -1603,17 +1863,15 @@ class ScopeSync(
         private fun pruneAccounted(
             scopeHex: String,
             live: Set<String>,
-        ) {
-            synchronized(accounted) { accounted[scopeHex]?.keys?.retainAll(live) }
-        }
+            known: Set<String>,
+        ): Boolean = synchronized(accounted) { accounted[scopeHex]?.keys?.removeAll { it in known && it !in live } == true }
 
         /** Drops quarantined ids the spool's listing no longer names: unlisted, they can never be re-pulled. */
         private fun pruneInvalid(
             scopeHex: String,
             live: Set<String>,
-        ) {
-            synchronized(invalid) { invalid[scopeHex]?.retainAll(live) }
-        }
+            known: Set<String>,
+        ): Boolean = synchronized(invalid) { invalid[scopeHex]?.removeAll { it in known && it !in live } == true }
 
         /** A cached hashcash stamp for [scope], mined only when the spool demands one (§8). */
         private fun stampFor(
@@ -1679,9 +1937,16 @@ class ScopeSync(
         private const val RECONCILE_INTERVAL_MS = 15_000L
         private const val TICK_INTERVAL_MS = 60_000L
         private const val HANDSHAKE_TIMEOUT_MS = 20_000L
-        private const val MIN_BACKOFF_MS = 1_000L
-        private const val MAX_BACKOFF_MS = 60_000L
         private const val RECONNECT_JITTER_MS = 750L
+
+        /** How often a worker with no route looks again, between the route changes that wake it at once. */
+        private const val OFFLINE_RECHECK_MS = 60_000L
+
+        /** The re-look for an attachment a round could not finish — the cadence the old reconcile gave every scope. */
+        private const val ATTACHMENT_RETRY_MS = 15_000L
+
+        /** How long a settled attachment goes unasked-about before a timed round checks the spool still has it. */
+        private const val ATTACHMENT_RECHECK_MS = 10 * 60_000L
         private const val MAX_RATE_WAIT_MS = 5_000L
 
         /** How long a scope the spool refused (`quota`, `pow`) waits before it is SUBbed again — the floor and the cap. */

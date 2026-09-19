@@ -51,6 +51,18 @@ class AndroidInternetGate(
 
     override fun isOnline(): Boolean = currentNetwork() != null
 
+    override fun routeKind(): InternetGate.RouteKind {
+        val cm = connectivity ?: return InternetGate.RouteKind.NONE
+        val network = cm.activeNetwork ?: return InternetGate.RouteKind.NONE
+        val capabilities = cm.getNetworkCapabilities(network) ?: return InternetGate.RouteKind.NONE
+        if (!reachesTheInternet(capabilities)) return InternetGate.RouteKind.NONE
+        return when {
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> InternetGate.RouteKind.WIFI
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> InternetGate.RouteKind.CELLULAR
+            else -> InternetGate.RouteKind.OTHER
+        }
+    }
+
     override fun isDataRestricted(): Boolean {
         val cm = connectivity ?: return false
         return cm.isActiveNetworkMetered && cm.restrictBackgroundStatus == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED

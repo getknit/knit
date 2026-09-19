@@ -217,7 +217,11 @@ val meshModule =
         // LAN daemon (which terminates no TLS of its own); release and staging accept `wss://` only, so a
         // shipped build cannot be pointed at a plaintext relay. The plane itself stays dark until the user
         // opts in AND configures a spool — see SettingsStore.spoolEnabled.
-        single<SpoolDialer> { OkHttpSpoolDialer(allowCleartext = BuildConfig.DEBUG) }
+        // The socket's keepalive follows the route: a 25 s ping on Wi-Fi, four minutes on cellular, chosen per
+        // dial off the gate's snapshot (net/AndroidInternetGate is the one reader of NetworkCapabilities).
+        single<SpoolDialer> {
+            OkHttpSpoolDialer(allowCleartext = BuildConfig.DEBUG, clientFor = OkHttpSpoolDialer.clientFor(get<InternetGate>()::routeKind))
+        }
         // Constructor order: transport, messages, receipts, groups, reactions, peers, metPeers, identity,
         // settings, blobs, imageScreening, blobStore, forwardStore, notifier, textModeration, messageCrypto,
         // ratchet, groupRatchet, groupRoots, scope, metrics, ledger, db, spoolDialer.
@@ -254,6 +258,8 @@ val meshModule =
                 // The platform's validated-default-network stream (net/AndroidInternetGate): a new route
                 // re-dials a relay the plane is backing off from at once (work item 50).
                 routeChanges = get<InternetGate>().routeChanges,
+                // ...and the snapshot the plane reads before each dial: no validated route, no dial.
+                online = get<InternetGate>()::isOnline,
                 publicChannel = { body -> get<PublicChannelSink>().postToPublicChannel(body) },
                 onTransferSignal = { sender, payload, sentAt -> get<TransferManager>().onSignal(sender, payload, sentAt) },
             )

@@ -943,6 +943,152 @@ class ScopeSyncTest {
      * dial: open for [aliveMs], then closed with the dialer's `unreachable` verdict. Records when each
      * dial happened and when each socket died, so the reconnect backoff is observable.
      */
+    @Test
+    fun `an idle converged relay reads custody once per tick, not per reconcile`() =
+        runTest {
+            // The 15 s reconcile used to wake every worker whether or not its scope table changed, and each
+            // wake ran a full custody read per scope: four rounds a minute on a converged, idle relay.
+            val spool = FakeSpool()
+            val member = member(spool, alice, bob)
+            member.custody.store(dmFrame("m1", from = alice, to = bob, sentAt = now), ForwardStore.ORIGIN_SELF, now)
+            member.sync.start(backgroundScope)
+            pump(rounds = 8)
+            assertTrue(
+                member.sync
+                    .status()
+                    .single()
+                    .scopes
+                    .single()
+                    .converged,
+            )
+
+            val reads = member.custody.liveFramesReads
+            pump(rounds = 120) // two ticks; eight of the old reconcile wakes
+            assertEquals("one custody read per 60 s tick", reads + 2, member.custody.liveFramesReads)
+            member.sync.stop()
+        }
+
+    @Test
+    fun `one custody read serves every scope in a round`() =
+        runTest {
+            val spool = FakeSpool()
+            val group = GroupScopeRoots("g-00112233445566778899aabb", setOf(alice, bob, carol), groupRoot, rootVersion = 1)
+            val member = member(spool, alice, bob, groups = listOf(group))
+            member.sync.start(backgroundScope)
+            pump(rounds = 8)
+            assertEquals(
+                2,
+                member.sync
+                    .status()
+                    .single()
+                    .scopes.size,
+            )
+
+            val reads = member.custody.liveFramesReads
+            pump(rounds = 60) // one tick, two scopes
+            assertEquals("the round reads custody once, not once per scope", reads + 1, member.custody.liveFramesReads)
+            member.sync.stop()
+        }
+
+    @Test
+    fun `an unchanged digest does not wake the heal, a changed one heals at once`() =
+        runTest {
+            val spool = FakeSpool()
+            val member = member(spool, alice, bob)
+            member.custody.store(dmFrame("m1", from = alice, to = bob, sentAt = now), ForwardStore.ORIGIN_SELF, now)
+            member.sync.start(backgroundScope)
+            pump(rounds = 8)
+            val reads = member.custody.liveFramesReads
+
+            // The spool's unsolicited fan-out repeats an anchor we already hold: nothing to look at.
+            spool.announce(scopeHex(alice, bob))
+            pump(rounds = 3)
+            assertEquals("a repeated digest is not a reason to heal", reads, member.custody.liveFramesReads)
+
+            // A digest that moved is — the round runs on the digest, not on the tick.
+            spool.expire(scopeHex(alice, bob), spool.liveIds(scopeHex(alice, bob)).single())
+            pump(rounds = 3)
+            assertTrue("a moved digest heals inside the tick", member.custody.liveFramesReads > reads)
+            member.sync.stop()
+        }
+
+    @Test
+    fun `a dead relay backs off to fifteen minutes and a new network starts it over`() =
+        runTest {
+            // ~1,440 dials a day at the old 60 s ceiling, each a DNS lookup, a TCP connect and a TLS handshake
+            // on a radio that could sleep; the long tier makes it ~100 and a route change still dials at once.
+            val relay = DeadRelay(this)
+            val sync = lone(relay)
+            sync.start(backgroundScope)
+            pump(rounds = 3_200)
+
+            val gaps = relay.gaps()
+            assertEquals("the first tier is the curve it always was", listOf(2_000L, 4_000L, 8_000L), gaps.take(3))
+            assertTrue("the first tier's ceiling is a minute", 60_000L in gaps)
+            assertTrue("then the long tier doubles on", gaps.containsAll(listOf(120_000L, 240_000L, 480_000L)))
+            assertEquals("to a quarter of an hour", 900_000L, gaps.last())
+
+            val before = relay.dialedAt.size
+            sync.onRouteChanged()
+            pump(rounds = 1)
+            assertEquals("a new network dials at once", before + 1, relay.dialedAt.size)
+            pump(rounds = 3)
+            assertEquals("and the backoff is the first step again", 2_000L, relay.gaps().last())
+            sync.stop()
+        }
+
+    @Test
+    fun `Retry-After still floors the long tier`() =
+        runTest {
+            val log = DialLog(retryAfterMs = 30_000L)
+            val sync = busyRelay(log)
+            sync.start(backgroundScope)
+            pump(rounds = 3_600)
+            sync.stop()
+
+            val gaps = log.at.zipWithNext { a, b -> b - a }
+            assertEquals(30_250L, gaps.first())
+            assertTrue("never sooner than the spool asked", gaps.all { it >= 30_000L })
+            assertEquals("and the long tier runs above the floor", 900_250L, gaps.last())
+        }
+
+    @Test
+    fun `no route means no dial until one appears`() =
+        runTest {
+            // A dial with no validated route can only fail, and would count against a relay that did nothing.
+            val relay = DeadRelay(this)
+            var online = false
+            val sync = lone(relay, online = { online })
+            sync.start(backgroundScope)
+            pump(rounds = 90)
+            assertTrue("dialled with no route: ${relay.dialedAt}", relay.dialedAt.isEmpty())
+            assertNull("no verdict was invented", sync.status().single().lastError)
+
+            online = true
+            sync.onRouteChanged()
+            pump(rounds = 1)
+            assertEquals("the new route is dialled at once", 1, relay.dialedAt.size)
+            sync.stop()
+        }
+
+    @Test
+    fun `an offline phone keeps the relay's last verdict`() =
+        runTest {
+            val relay = DeadRelay(this)
+            var online = true
+            val sync = lone(relay, online = { online })
+            sync.start(backgroundScope)
+            pump(rounds = 2)
+            assertEquals(ScopeSync.UNREACHABLE, sync.status().single().lastError)
+            val dials = relay.dialedAt.size
+
+            online = false
+            pump(rounds = 300)
+            assertEquals("no dial while offline", dials, relay.dialedAt.size)
+            assertEquals("the verdict is the relay's, not the phone's", ScopeSync.UNREACHABLE, sync.status().single().lastError)
+            sync.stop()
+        }
+
     private inner class BlackHole(
         private val scope: TestScope,
         private val aliveMs: Long,
@@ -982,6 +1128,7 @@ class ScopeSyncTest {
     private fun TestScope.lone(
         dialer: SpoolDialer,
         urls: List<String> = listOf(url),
+        online: () -> Boolean = { true },
     ): ScopeSync =
         ScopeSync(
             registry = ScopeRegistry({ alice }, { listOf(ScopeRoots(bob, pairwiseRoot)) }),
@@ -991,9 +1138,26 @@ class ScopeSyncTest {
             urls = { urls },
             canCarry = { _, _ -> true },
             deliver = { _, _, _ -> },
+            online = online,
             clock = { now },
             jitter = { 0L },
         )
+
+    /** A relay nobody answers at: every dial is the dialer's `unreachable` verdict, logged by the clock. */
+    private inner class DeadRelay(
+        private val scope: TestScope,
+    ) : SpoolDialer {
+        val dialedAt = mutableListOf<Long>()
+
+        override suspend fun dial(url: String): SpoolSocket? {
+            dialedAt += scope.testScheduler.currentTime
+            return null
+        }
+
+        override suspend fun fetchSoftware(url: String): SpoolSoftware? = null
+
+        fun gaps(): List<Long> = dialedAt.zipWithNext { a, b -> b - a }
+    }
 
     @Test
     fun `a socket that dies before the hello is unreachable and never counts as connected`() =
@@ -1794,10 +1958,12 @@ class ScopeSyncTest {
             val aid = aidHex(alice, bob, aHash)
             assertEquals(3, spool.chunkCount(scopeHex(alice, bob), aid))
 
-            // The spool loses the middle chunk. The bitmap is what tells the client which one.
+            // The spool loses the middle chunk. The bitmap is what tells the client which one — asked again on
+            // the next session (or a timed round ten minutes on): a pushed-whole attachment is settled against
+            // the connection it was pushed over, and nothing on the wire says a spool dropped a chunk.
             spool.dropChunk(scopeHex(alice, bob), aid, index = 1)
             spool.chunksPut.clear()
-            sender.sync.onCustodyChanged()
+            spool.dropSockets()
             pump(rounds = 12)
 
             assertEquals(3, spool.chunkCount(scopeHex(alice, bob), aid))
@@ -1859,10 +2025,12 @@ class ScopeSyncTest {
             assertEquals(1, receiver.metrics.snapshot().spoolInvalid)
             assertFalse(receiver.blobs.stored.containsKey(aHash))
 
-            // The spool's copy is mended (a member re-uploads the chunk it now lacks) — which within the
+            // The spool's copy is mended (a member re-uploads the chunk it now lacks, on its next session —
+            // a pushed-whole attachment is settled for the connection it went over) — which within the
             // horizon changes nothing, because a bad chunk is permanent for a copy's life (S-6.5-7) and a
             // retry against a hostile spool buys nothing at all.
             spool.dropChunk(scope, aid, index = 0)
+            spool.dropSockets()
             pump(rounds = 70)
             assertEquals(3, spool.chunkCount(scope, aid))
             val gets = spool.chunkGets.size

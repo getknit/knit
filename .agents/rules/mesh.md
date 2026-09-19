@@ -56,7 +56,17 @@ free). Two invariants that are easy to break:
   said hello is dropped through `abort(NO_HELLO)` like every other client-side close (ADR 2026-09.amzn),
   and both hold in `lastError` until a hello completes. A new validated default network
   (`InternetGate.routeChanges`) re-dials a worker with no live hello at once, with its backoff reset — but
-  never inside a spool's `Retry-After`, which is the spool's ask about its own load.
+  never inside a spool's `Retry-After`, which is the spool's ask about its own load. With **no** validated
+  route (`InternetGate.isOnline`, the `online` seam) a worker does not dial at all and keeps the last real
+  verdict — the relay row already says the phone is offline — and a relay that stays unreached backs off
+  past the minute to fifteen (`SpoolBackoffPolicy`, ADR 2026-09.wa79).
+- **A heal round runs when something changed, and every scope once a minute** (ADR 2026-09.wa79). The 15 s
+  reconcile re-derives the scope table and wakes a worker only when that table differs; a scope is healed
+  when its spool digest *moved*, it took a delivery or a direct push, or local custody changed (every
+  scope), else on the 60 s tick — one custody read per round, shared by every due scope. `republishPresence`
+  stays first in every round because the tick is what lets a stamp lapse. A pushed-whole, fetched or dead
+  attachment is settled for the connection and asked about again only on a timed round ten minutes on (or a
+  new session); one still in flight re-marks its scope every 15 s. Don't add a wake that carries no change.
 - **Only frames matching the scope frame-set rule may be sealed into a scope, in *both* directions**
   (`ScopeFrames.eligibleFor`, spec §4.4) — a scope is not a general-purpose upload channel. The group
   half has two traps: a `groupleave` carries its group id in the **payload** (never in

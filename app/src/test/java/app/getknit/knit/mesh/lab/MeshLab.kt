@@ -456,7 +456,7 @@ class MeshLab {
 
     /**
      * Waits until [node]'s relay lists the DM scope it shares with [peer] as converged — derived on the 15 s
-     * reconcile once the session is confirmed.
+     * reconcile once the session is confirmed, healed on the SUB's digest.
      */
     suspend fun awaitDmScope(
         node: LabNode,
@@ -535,7 +535,8 @@ class MeshLab {
         node: LabNode,
         peer: LabNode,
     ) {
-        // The scope is derived on the 15 s reconcile once the session is confirmed, then the profiles cross.
+        // The scope is derived on the 15 s reconcile once the session is confirmed, healed on its SUB's
+        // digest, then the profiles cross.
         val ok = tryAwait(1, timeoutMs = SPOOL_AWAIT_MS) { if (node.spoolPresent(peer)) 1 else 0 }
         assertTrue("${node.name} never saw ${peer.name} on the spool", ok)
     }

@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.spool
 
 import android.util.Log
+import app.getknit.knit.net.InternetGate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ReceiveChannel
@@ -25,8 +26,15 @@ import java.util.concurrent.TimeUnit
  */
 class OkHttpSpoolDialer(
     private val allowCleartext: Boolean,
-    private val client: OkHttpClient = defaultClient(),
+    // The client for the route the phone is on right now, chosen per dial — see [clientFor]. A test that
+    // wants one fixed client uses the secondary constructor.
+    private val clientFor: () -> OkHttpClient,
 ) : SpoolDialer {
+    constructor(
+        allowCleartext: Boolean,
+        client: OkHttpClient = defaultClient(),
+    ) : this(allowCleartext, clientFor = { client })
+
     override suspend fun dial(url: String): SpoolSocket? {
         if (!SpoolUrl.isAcceptable(url, allowCleartext)) {
             Log.w(TAG, "refusing spool url (scheme not allowed): ${SpoolUrl.redact(url)}")
@@ -42,7 +50,7 @@ class OkHttpSpoolDialer(
         // loop is the recovery path for exactly this kind of loss.
         val channel = Channel<ByteArray>(INBOX_CAPACITY)
         val socket = OkHttpSpoolSocket(channel)
-        socket.attach(client.newWebSocket(request, socket.listener))
+        socket.attach(clientFor().newWebSocket(request, socket.listener))
         return socket
     }
 
@@ -63,7 +71,7 @@ class OkHttpSpoolDialer(
                 ?: return null
         return withContext(Dispatchers.IO) {
             runCatching {
-                client.newCall(request).execute().use { response ->
+                clientFor().newCall(request).execute().use { response ->
                     // Bounded like every other read from a spool: this body is written by a machine we do
                     // not run, and `peekBody` is what stops an endless one being materialized to render a
                     // single row.
@@ -159,23 +167,40 @@ class OkHttpSpoolDialer(
         }
     }
 
-    private companion object {
-        const val TAG = "ScopeSync"
-        const val INBOX_CAPACITY = 256
-        const val RETRY_AFTER = "Retry-After"
+    companion object {
+        private const val TAG = "ScopeSync"
+        private const val INBOX_CAPACITY = 256
+        private const val RETRY_AFTER = "Retry-After"
 
         fun defaultClient(): OkHttpClient =
             OkHttpClient
                 .Builder()
                 .connectTimeout(CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
-                // Client-side keepalive: the daemon pings every 30 s and OkHttp answers automatically, but
-                // pinging outward is what detects a silently-dead link (a NAT dropping an idle connection)
-                // instead of waiting for the next heal round to time out.
+                // Client-side keepalive: pinging outward is what detects a silently-dead link (a NAT
+                // dropping an idle connection) instead of waiting for the next request to time out. The
+                // reference daemon pings on its own too (not a spec clause — its choice) and OkHttp answers
+                // that automatically; the cellular client below only slows OUR half, so the modem still
+                // wakes for the daemon's until knit-spool takes a keepalive hint.
                 .pingInterval(PING_INTERVAL_S, TimeUnit.SECONDS)
                 .build()
 
+        /**
+         * Two clients off one base — one pool, one dispatcher — differing only in how often they ping, picked
+         * by the route the phone is on at dial time. On Wi-Fi a 25 s ping is free; on cellular it keeps the
+         * modem in its connected state around the clock (LTE's inactivity timers are 10–20 s), so that client
+         * pings every four minutes and lets a dead link be noticed by the next request instead. A live
+         * session is not re-dialled on a route switch: the OS tears the old network down and the socket dies
+         * within a ping, and the reconnect picks the right client.
+         */
+        fun clientFor(routeKind: () -> InternetGate.RouteKind): () -> OkHttpClient {
+            val base = defaultClient()
+            val cellular = base.newBuilder().pingInterval(CELLULAR_PING_S, TimeUnit.SECONDS).build()
+            return { if (routeKind() == InternetGate.RouteKind.CELLULAR) cellular else base }
+        }
+
         const val CONNECT_TIMEOUT_S = 15L
         const val PING_INTERVAL_S = 25L
+        const val CELLULAR_PING_S = 240L
 
         /** Room for the five short strings `/source` answers with, and nothing like room for a page. */
         const val MAX_SOURCE_BYTES = 4L * 1024
@@ -230,6 +255,9 @@ internal fun retryAfterMillis(header: String?): Long? =
         ?.coerceAtMost(MAX_RETRY_AFTER_S)
         ?.let(TimeUnit.SECONDS::toMillis)
 
-/** Ceiling on an honoured `Retry-After`, matching the reconnect loop's own longest wait. */
+/**
+ * Ceiling on an honoured `Retry-After`: the reconnect loop's first-tier ceiling. Its long tier waits up to
+ * fifteen minutes of its own accord (`SpoolBackoffPolicy`); a spool's ask is a floor under that, never above.
+ */
 private const val MAX_RETRY_AFTER_S = 60L
 private const val HTTP_SWITCHING_PROTOCOLS = 101
