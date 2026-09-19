@@ -561,7 +561,7 @@ internal class MeshtasticSession(
             return null
         }
         return when (cmd.spec.mode) {
-            ProvisionMode.Setup, ProvisionMode.SetupDedicated -> runSetup(channel, myNode, cmd)
+            ProvisionMode.Setup, ProvisionMode.SetupDedicated, ProvisionMode.SetupShared -> runSetup(channel, myNode, cmd)
             ProvisionMode.Restore -> runRestore(channel, myNode, cmd)
         }
     }
@@ -598,10 +598,12 @@ internal class MeshtasticSession(
     }
 
     /**
-     * The radio write that pins the board to the RF slot [LoraSlot] derives for its region and preset, and
-     * the raw `Config.LoRaConfig` it was spliced from — which is also the only thing that knows the board's
-     * own `channel_num`, for the restore to put back. [SlotWrite.NONE] for the ordinary shared-frequency
-     * setup, which never reads or writes the radio at all (ADR 045).
+     * The radio half of a setup, by mode. [ProvisionMode.SetupDedicated] pins the board to the RF slot
+     * [LoraSlot] derives for its region and preset, and keeps the raw `Config.LoRaConfig` it was spliced from
+     * — which is also the only thing that knows the board's own `channel_num`, for the restore to put back.
+     * [ProvisionMode.SetupShared] is the same write in the other direction, through [slotRestore] — toward
+     * the recorded prior, nothing recorded, and empty when the board is already there. [SlotWrite.NONE] for
+     * the ordinary setup, which never reads or writes the radio at all (ADR 045).
      *
      * Null means the request has been refused and [cmd] already answered: either the region has no slot Knit
      * will place ([ProvisionResult.NoDedicatedSlot]) or the board would not return its radio config.
@@ -610,8 +612,29 @@ internal class MeshtasticSession(
         channel: GattChannel,
         myNode: UInt,
         cmd: Cmd.Provision,
+    ): SlotWrite? =
+        when (cmd.spec.mode) {
+            ProvisionMode.SetupDedicated -> {
+                slotPin(channel, myNode, cmd)
+            }
+
+            ProvisionMode.SetupShared -> {
+                slotRestore(channel, myNode, cmd)?.let { steps ->
+                    SlotWrite(steps = steps, raw = null, label = "back on the shared slot".takeIf { steps.isNotEmpty() }.orEmpty())
+                }
+            }
+
+            ProvisionMode.Setup, ProvisionMode.Restore -> {
+                SlotWrite.NONE
+            }
+        }
+
+    /** [slotWrite] for [ProvisionMode.SetupDedicated]: refuse-before-read, then read-splice-pin. */
+    private suspend fun slotPin(
+        channel: GattChannel,
+        myNode: UInt,
+        cmd: Cmd.Provision,
     ): SlotWrite? {
-        if (cmd.spec.mode != ProvisionMode.SetupDedicated) return SlotWrite.NONE
         val cfg = radio
         val slot = cfg?.let { LoraSlot.forRegion(it.region, it.modemPreset) }
         if (slot == null) {
@@ -629,7 +652,7 @@ internal class MeshtasticSession(
                 failProvision(cmd, MALFORMED_CONFIG)
                 return null
             }
-        return SlotWrite(steps = listOf(configStep(BoardConfig.LORA, spliced)), raw = raw, slot = slot)
+        return SlotWrite(steps = listOf(configStep(BoardConfig.LORA, spliced)), raw = raw, label = "on dedicated slot $slot")
     }
 
     /**
@@ -667,7 +690,7 @@ internal class MeshtasticSession(
             channel = channel,
             myNode = myNode,
             steps = steps,
-            label = "set up ch$index '${cmd.spec.name}'${slot.label}",
+            label = listOfNotNull("set up ch$index '${cmd.spec.name}'", slot.label.takeIf { it.isNotEmpty() }).joinToString(" "),
             reply = cmd.reply,
             result =
                 ProvisionResult.Provisioned(
@@ -733,24 +756,23 @@ internal class MeshtasticSession(
     }
 
     /**
-     * The dedicated-slot half of a setup: the steps that pin `lora.channel_num`, the raw radio config they
-     * were spliced from, and the slot itself for the log line. [NONE] is the shared-frequency setup, which
-     * carries no steps and reads nothing — so every board that never asked for a dedicated slot goes through
-     * exactly the writes ADR 045 always made.
+     * The radio half of a setup: the steps that move `lora.channel_num`, the raw radio config a *pinning*
+     * write was spliced from — kept only there, because it is the board's own slot and the record must not
+     * learn Knit's dedicated one on the way back — and a fragment for the log line. [NONE] is the ordinary
+     * setup, which carries no steps and reads nothing — so every board that never asked for a dedicated slot
+     * goes through exactly the writes ADR 045 always made.
      */
     private class SlotWrite(
         val steps: List<AdminStep>,
         val raw: ByteArray?,
-        val slot: Int?,
+        val label: String,
     ) {
-        /** The board's own `channel_num`, or null when the radio config was never read. */
+        /** The board's own `channel_num`, or null when this write has nothing to record. */
         val recordedChannelNum: Int?
             get() = raw?.let { readVarintField(it, MeshtasticProto.LORA_CHANNEL_NUM)?.toInt() ?: 0 }
 
-        val label: String get() = slot?.let { "on dedicated slot $it" }.orEmpty()
-
         companion object {
-            val NONE = SlotWrite(steps = emptyList(), raw = null, slot = null)
+            val NONE = SlotWrite(steps = emptyList(), raw = null, label = "")
         }
     }
 
@@ -796,7 +818,8 @@ internal class MeshtasticSession(
      * The radio write that puts `lora.channel_num` back to what the board had before Knit pinned it — 0 on
      * every board the plain setup touched, which is why this is **empty unless the board's current slot
      * differs from the recorded one**. A restore of a board that was never dedicated therefore reads and
-     * writes no radio config at all, exactly as before ADR 067.
+     * writes no radio config at all, exactly as before ADR 067. Shared with [ProvisionMode.SetupShared],
+     * which is this write and nothing else.
      *
      * Null means the read failed and [cmd] has been answered.
      */

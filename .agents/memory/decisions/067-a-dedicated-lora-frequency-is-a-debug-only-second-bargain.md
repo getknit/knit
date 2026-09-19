@@ -65,3 +65,11 @@ safety factor still stands in for the flood amplification `LoraAirtime` does not
 and carried but never costed), which on a dedicated slot is the one place that estimate is *too*
 conservative rather than not enough. The shared frequency remains the default and the only thing a release
 build offers, because ADR 045's bargain is still the right one wherever there is a neighbourhood to borrow.
+
+*Amendment (2026-09-19).* The way back off a slot was Restore and a second setup — two reboots, and the
+board's Knit identity torn down and rebuilt in between for a change that is one varint. `ProvisionMode.SetupShared`
+is that varint on its own: `runSetup`'s radio half runs `slotRestore` (the same write Restore makes, toward the
+recorded prior) and nothing else, the record is handed back untouched so a later Restore still puts the
+*user's* slot back, and a board already there is a reported no-op. Debug-only like the setup it reverses; the
+screen's dedicated button gives way to it while the board is pinned (`lora_setup_shared`), and the bridge takes
+`--es mode shared`.

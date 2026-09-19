@@ -96,7 +96,8 @@ internal data class ProvisionSpec(
  *
  * [SetupDedicated] is the debug-only third (ADR 067), and it is a different bargain rather than a lighter
  * one — see its doc. Both setups produce the same channel table; they differ only in whether the radio is
- * pinned off the shared public slot, and [Restore] undoes either.
+ * pinned off the shared public slot, [SetupShared] moves a pinned board back without undoing the setup, and
+ * [Restore] undoes either.
  */
 internal enum class ProvisionMode {
     /**
@@ -117,6 +118,15 @@ internal enum class ProvisionMode {
      * Refused as [ProvisionResult.NoDedicatedSlot] when Knit will not place a slot in the board's region.
      */
     SetupDedicated,
+
+    /**
+     * [Setup], with `lora.channel_num` put back to the slot the board had before [SetupDedicated] pinned it
+     * — the recorded prior, which is the shared public slot on every board the user never pinned by hand.
+     * The Knit channel, the name and the quieting stay exactly as they are, so this is the one-step way off a
+     * dedicated slot that does not go through [Restore] and a second setup. **Debug builds only**, like the
+     * setup it reverses; a no-op on a board that is already where it would be put.
+     */
+    SetupShared,
 
     /**
      * Undoes either setup: the Knit channel is disabled, the board's own intervals and name come back, and

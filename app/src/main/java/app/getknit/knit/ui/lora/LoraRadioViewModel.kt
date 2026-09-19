@@ -66,6 +66,9 @@ enum class LoraProvisionOutcome {
     Provisioned,
     AlreadyPresent,
     Restored,
+
+    /** A pinned board is back on the shared public frequency, still set up for Knit (ADR 067, debug builds). */
+    Shared,
     NoFreeSlot,
 
     /** The dedicated setup was refused: Knit will not place an RF slot in this board's region (ADR 067). */
@@ -396,6 +399,18 @@ internal class LoraRadioViewModel(
     }
 
     /**
+     * Moves a board off its dedicated RF slot and back onto the shared public frequency in one step, leaving
+     * the setup itself alone (ADR 067). Unconfirmed, like [restoreBoard], which moves the radio the same way
+     * and more: nothing here is lost, and the shared frequency is the bargain the board was offered first.
+     * Inert in a release build, checked here rather than only in the UI so the action cannot be reached by
+     * any route.
+     */
+    fun switchToShared() {
+        if (!BuildConfig.DEBUG) return
+        provision(ProvisionMode.SetupShared)
+    }
+
+    /**
      * Puts the board back the way it was. It carries no Knit channel afterwards, so the plane goes off with
      * it — left on, it would fan Knit's frames out over whatever channel the board landed back on.
      */
@@ -412,7 +427,10 @@ internal class LoraRadioViewModel(
                 is ProvisionResult.Provisioned -> {
                     settings.setLoraChannelIndex(result.index)
                     settings.rememberSetup(result)
-                    provisionState.value = ProvisionState(outcome = result.toOutcome())
+                    // The board's channel table is unchanged either way, so the result cannot say which
+                    // direction the radio moved; the mode can.
+                    val outcome = if (mode == ProvisionMode.SetupShared) LoraProvisionOutcome.Shared else result.toOutcome()
+                    provisionState.value = ProvisionState(outcome = outcome)
                 }
 
                 ProvisionResult.Restored -> {

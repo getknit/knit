@@ -76,6 +76,7 @@ fun LoraRadioScreen(onBack: () -> Unit) {
         onDismissProvision = viewModel::dismissProvisionOutcome,
         onAskSetup = viewModel::askSetup,
         onAskSetupDedicated = viewModel::askSetupDedicated,
+        onSwitchToShared = viewModel::switchToShared,
         onDismissSetup = viewModel::dismissSetup,
         onSetUp = viewModel::setUpBoard,
         onRestore = viewModel::restoreBoard,
@@ -97,6 +98,7 @@ internal fun LoraRadioScreenContent(
     onDismissProvision: () -> Unit = {},
     onAskSetup: () -> Unit = {},
     onAskSetupDedicated: () -> Unit = {},
+    onSwitchToShared: () -> Unit = {},
     onDismissSetup: () -> Unit = {},
     onSetUp: () -> Unit = {},
     onRestore: () -> Unit = {},
@@ -187,6 +189,7 @@ internal fun LoraRadioScreenContent(
                 state = state,
                 onAskSetup = onAskSetup,
                 onAskSetupDedicated = onAskSetupDedicated,
+                onSwitchToShared = onSwitchToShared,
                 onSetUp = onSetUp,
                 onRestore = onRestore,
                 onDismissProvision = onDismissProvision,
@@ -391,6 +394,7 @@ private fun SetupSection(
     state: LoraRadioUiState,
     onAskSetup: () -> Unit,
     onAskSetupDedicated: () -> Unit,
+    onSwitchToShared: () -> Unit,
     onSetUp: () -> Unit,
     onRestore: () -> Unit,
     onDismissProvision: () -> Unit,
@@ -472,7 +476,7 @@ private fun SetupSection(
                 }
             }
         }
-        DedicatedSetupAction(state = state, onAskSetupDedicated = onAskSetupDedicated)
+        DedicatedSetupAction(state = state, onAskSetupDedicated = onAskSetupDedicated, onSwitchToShared = onSwitchToShared)
         state.provisionOutcome?.let { outcome ->
             val (message, isError) = outcome.messageAndSeverity()
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -497,17 +501,27 @@ private fun SetupSection(
  * Offered whether or not the board is already set up on the shared frequency: the session applies the slot
  * write to a board that already carries the Knit channel, so making the user Restore first would be a
  * limitation of this screen rather than of the thing underneath it. Once the board *is* on its slot
- * ([LoraRadioUiState.dedicated]) the button has nothing left to do and goes — Restore is the way back — and
- * only the line stays, saying so and that the Meshtastic room is hidden while it lasts. Otherwise the line
- * says which slot the button would pin.
+ * ([LoraRadioUiState.dedicated]) the button gives way to its reverse — one tap back onto the shared
+ * frequency with the setup kept, so the way back is not Restore and a second setup — and the line says
+ * where the board is and that the Meshtastic room is hidden while it lasts. Otherwise the line says which
+ * slot the button would pin.
  */
 @Composable
 private fun DedicatedSetupAction(
     state: LoraRadioUiState,
     onAskSetupDedicated: () -> Unit,
+    onSwitchToShared: () -> Unit,
 ) {
     if (!state.dedicatedOffered) return
-    if (!state.dedicated) {
+    if (state.dedicated) {
+        OutlinedButton(
+            onClick = onSwitchToShared,
+            enabled = !state.provisioning,
+            modifier = Modifier.testTag("lora_setup_shared"),
+        ) {
+            Text(stringResource(R.string.lora_setup_shared_button))
+        }
+    } else {
         OutlinedButton(
             onClick = onAskSetupDedicated,
             enabled = !state.provisioning && state.dedicatedSlot != null,
@@ -574,6 +588,7 @@ private fun LoraProvisionOutcome.messageAndSeverity(): Pair<Int, Boolean> =
         LoraProvisionOutcome.Provisioned -> R.string.lora_provisioned to false
         LoraProvisionOutcome.AlreadyPresent -> R.string.lora_provision_already to false
         LoraProvisionOutcome.Restored -> R.string.lora_restored to false
+        LoraProvisionOutcome.Shared -> R.string.lora_provision_shared to false
         LoraProvisionOutcome.NoFreeSlot -> R.string.lora_provision_no_slot to true
         LoraProvisionOutcome.NoDedicatedSlot -> R.string.lora_provision_no_dedicated_slot to true
         LoraProvisionOutcome.Failed -> R.string.lora_provision_failed to true

@@ -1522,6 +1522,10 @@ class DebugBridgeReceiver :
                 // exactly like the shared-frequency one.
                 "dedicated" -> ProvisionMode.SetupDedicated
 
+                // Its reverse: back onto the shared slot with the setup kept, so a trial can flip a board
+                // between the two bargains without a restore between.
+                "shared" -> ProvisionMode.SetupShared
+
                 else -> ProvisionMode.Setup
             }
         val recorded = settings.loraBoardSetup.first()

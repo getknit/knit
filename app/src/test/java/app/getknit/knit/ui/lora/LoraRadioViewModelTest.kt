@@ -544,6 +544,37 @@ class LoraRadioViewModelTest {
         }
 
     @Test
+    fun `switching back to the shared frequency keeps the setup and says the board moved`() =
+        runTest {
+            val recorded =
+                KnitBoardSetup(
+                    address = "AA:BB:CC:DD:EE:01",
+                    nodeInfoSecs = 900,
+                    positionSecs = 600,
+                    smartPosition = true,
+                    telemetrySecs = 1_800,
+                    rebroadcastMode = 3,
+                    longName = "Meshtastic abcd",
+                    shortName = "abcd",
+                )
+            boardSetup.value = recorded
+            // The session hands the caller's own record back, so the switch never touches what a restore
+            // would put back — and the channel table is unchanged, which is why the result reads "already".
+            val previous = BoardSettings(900, 600, true, 1_800, rebroadcastMode = 3, owner = BoardOwner("Meshtastic abcd", "abcd"))
+            provisionResult = ProvisionResult.Provisioned(index = 1, alreadyPresent = true, previous = previous)
+            val vm = start()
+
+            vm.switchToShared()
+            advanceUntilIdle()
+
+            assertEquals(ProvisionMode.SetupShared to previous, provisionCalls.single())
+            assertEquals(LoraProvisionOutcome.Shared, vm.state.value.provisionOutcome)
+            io.mockk.coVerify { settings.setLoraBoardSetup(recorded) }
+            io.mockk.coVerify(exactly = 0) { settings.clearLoraBoardSetup() }
+            io.mockk.coVerify(exactly = 0) { settings.setLoraEnabled(false) }
+        }
+
+    @Test
     fun `a restore hands the recorded intervals back, forgets the setup, and switches the plane off`() =
         runTest {
             val recorded =

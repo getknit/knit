@@ -952,10 +952,12 @@
     <!-- Debug builds only (ADR 067): the dedicated-frequency setup. Not shown in any release build. -->
     <string name="lora_setup_dedicated_button">Set up on a dedicated frequency</string>
     <string name="lora_setup_dedicated_body">Debug only. Pins the radio to slot %1$d instead of the public Meshtastic frequency.</string>
-    <string name="lora_setup_dedicated_active">Debug only. This board is on a dedicated frequency, so Knit is using the full airtime allowance your region permits. The Meshtastic room is hidden while it stays there, because no public radio can hear it. Restore the board to go back.</string>
+    <string name="lora_setup_shared_button">Go back to the shared frequency</string>
+    <string name="lora_setup_dedicated_active">Debug only. This board is on a dedicated frequency, so Knit is using the full airtime allowance your region permits. The Meshtastic room is hidden while it stays there, because no public radio can hear it. Going back moves only the radio; the board stays set up for Knit.</string>
     <string name="lora_setup_dedicated_unavailable">Debug only. Knit has no dedicated slot for this board\'s region, so this setup is unavailable here.</string>
     <string name="lora_setup_dedicated_confirm_title">Set this board up on its own frequency?</string>
     <string name="lora_setup_dedicated_confirm_body">Everything the normal setup does, plus the radio moves to a frequency only Knit boards use.\n\nThis is for places with no Meshtastic community nearby. You gain the whole airtime allowance your region permits instead of the tenth Knit normally limits itself to \u2014 but no stranger\'s radio will relay your messages any more, so only your own boards carry them.\n\nEvery board in your fleet must be set up this way to talk to the others. You can undo this at any time.</string>
+    <string name="lora_provision_shared">Board back on the shared Meshtastic frequency. It may reboot to apply this — it will reconnect on its own.</string>
     <string name="lora_provision_no_dedicated_slot">Knit won\'t pick a dedicated frequency for this board\'s region. Nothing was changed.</string>
     <string name="lora_provision_failed">Couldn\'t configure the board. Make sure it\'s connected and try again.</string>
     <string name="lora_provision_not_ready">Connect to the board first, then set it up.</string>

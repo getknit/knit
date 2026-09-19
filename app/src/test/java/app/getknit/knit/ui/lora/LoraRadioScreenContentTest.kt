@@ -40,6 +40,7 @@ class LoraRadioScreenContentTest {
         onAskSetup: () -> Unit = {},
         onSetUp: () -> Unit = {},
         onRestore: () -> Unit = {},
+        onSwitchToShared: () -> Unit = {},
     ) {
         compose.setContent {
             KnitTheme {
@@ -53,6 +54,7 @@ class LoraRadioScreenContentTest {
                     onAskSetup = onAskSetup,
                     onSetUp = onSetUp,
                     onRestore = onRestore,
+                    onSwitchToShared = onSwitchToShared,
                 )
             }
         }
@@ -251,17 +253,35 @@ class LoraRadioScreenContentTest {
     }
 
     @Test
-    fun aBoardAlreadyOnItsOwnFrequencyIsNotOfferedItAgainAndSaysTheRoomIsHidden() {
+    fun aBoardAlreadyOnItsOwnFrequencyIsOfferedTheWayBackAndSaysTheRoomIsHidden() {
         // ADR 067: the setup ends in a reboot, and after it the button had kept showing over a board that
-        // was already pinned. Restore is the way back; the room switch is parked because no room exists.
+        // was already pinned. Its place is taken by the one-tap way back onto the shared frequency, which
+        // keeps the setup — Restore still stands beside it; the room switch is parked because no room exists.
         var restored = 0
-        render(connected().copy(dedicatedOffered = true, dedicatedSlot = 5, dedicated = true), onRestore = { restored++ })
+        var shared = 0
+        render(
+            connected().copy(dedicatedOffered = true, dedicatedSlot = 5, dedicated = true),
+            onRestore = { restored++ },
+            onSwitchToShared = { shared++ },
+        )
         compose.onNodeWithTag("lora_setup_dedicated").assertDoesNotExist()
         compose.onNodeWithText("The Meshtastic room is hidden while it stays there", substring = true).performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("lora_room_switch").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithText("Hidden while this board is on a dedicated frequency", substring = true).assertIsDisplayed()
+        compose
+            .onNodeWithTag("lora_setup_shared")
+            .performScrollTo()
+            .assertIsEnabled()
+            .performClick()
+        assertEquals(1, shared)
         compose.onNodeWithTag("lora_restore").performScrollTo().performClick()
         assertEquals(1, restored)
+    }
+
+    @Test
+    fun aBoardOnTheSharedFrequencyIsNotOfferedTheWayBack() {
+        render(connected().copy(dedicatedOffered = true, dedicatedSlot = 5))
+        compose.onNodeWithTag("lora_setup_shared").assertDoesNotExist()
     }
 
     @Test

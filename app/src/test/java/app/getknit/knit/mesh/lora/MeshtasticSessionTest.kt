@@ -1148,6 +1148,57 @@ class MeshtasticSessionTest {
         }
 
     @Test
+    fun switchingBackToSharedMovesOnlyTheRadioAndKeepsTheSetup() =
+        runTest {
+            val ch = FakeGattChannel()
+            scriptBoard(
+                ch,
+                channels = listOf(Triple(0, "", 1), Triple(1, "Knit", 2)),
+                configs = boardConfigs + (BoardConfig.LORA to boardLoraConfig),
+                user = knitUser,
+                radio = BoardBytes.loraConfig(LoraRegion.US, channelNum = 10),
+            )
+            val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+
+            val spec = provisionSpec.copy(mode = ProvisionMode.SetupShared, previous = boardIntervals)
+            val result = async { session.provisionChannel(spec) }.await()
+            // The record comes back with the *recorded* slot, never the dedicated one the board is leaving:
+            // a restore after this must still hand back the board's own.
+            assertEquals(ProvisionResult.Provisioned(1, alreadyPresent = true, previous = boardIntervals), result)
+            val written = ch.writes.mapNotNull { BoardBytes.adminSetConfigRaw(it) }
+            assertEquals("the radio, and nothing else", 1, written.size)
+            assertNull("back on the shared slot", readVarintField(written.single(), MeshtasticProto.LORA_CHANNEL_NUM))
+            assertEquals("the rest of the radio is untouched", 27L, readVarintField(written.single(), 10))
+            assertTrue("the channel table is left alone", ch.writes.none { BoardBytes.isAdminSet(it) })
+            assertTrue("the name is left alone", ch.writes.none { BoardBytes.isAdminSetOwner(it) })
+            session.stop()
+        }
+
+    @Test
+    fun switchingBackToSharedOnABoardAlreadyThereIsANoOp() =
+        runTest {
+            val ch = FakeGattChannel()
+            scriptBoard(
+                ch,
+                channels = listOf(Triple(0, "", 1), Triple(1, "Knit", 2)),
+                configs = boardConfigs + (BoardConfig.LORA to boardLoraConfig),
+                user = knitUser,
+                radio = BoardBytes.loraConfig(LoraRegion.US),
+            )
+            val session = session(FakeGattDialer(ch), backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+
+            val spec = provisionSpec.copy(mode = ProvisionMode.SetupShared, previous = boardIntervals)
+            assertEquals(ProvisionResult.Provisioned(1, alreadyPresent = true), async { session.provisionChannel(spec) }.await())
+            assertTrue(ch.writes.none { BoardBytes.adminGetConfigType(it) == BoardConfig.LORA })
+            assertTrue("nothing written", ch.writes.none { BoardBytes.isAdminSet(it) || BoardBytes.isAdminSetConfig(it) })
+            session.stop()
+        }
+
+    @Test
     fun restoreHandsAPinnedRadioBackToTheSharedSlot() =
         runTest {
             val ch = FakeGattChannel()
