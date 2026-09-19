@@ -368,21 +368,42 @@ class MeshService : LifecycleService() {
          * A refusal is **not** a dropped start: the caller records it (`MeshStartGate`) and `KnitApp`'s
          * `ON_RESUME` observer retries from a state where the foreground is guaranteed. Swallowing it
          * silently would leave a messenger with no transport and a "searching" notification that never
-         * resolves. Work item #32; ADR 043.
+         * resolves. Work item #32; ADR 043. A start from the boot receiver goes through [startFromBoot]
+         * instead — the pre-check reads process state, and a receiver's is one it would refuse.
          */
         fun start(context: Context): Boolean {
             if (!canReclaimForegroundService(context)) {
                 Log.w(TAG, "mesh start refused (backgrounded, unexempted) — deferred to the next resume")
                 return false
             }
-            return try {
+            return request(context)
+        }
+
+        /**
+         * [start] for `BootReceiver`, which skips [canReclaimForegroundService] on purpose.
+         *
+         * `ACTION_BOOT_COMPLETED` is a listed exemption to the Android 12+ background start restriction —
+         * the system delivers it with the uid on the temporary foreground-service allowlist — but that is
+         * the *platform's* exemption, honoured inside `startForegroundService`, and the pre-check cannot see
+         * it. What the pre-check sees is process state: a process running a broadcast receiver is at
+         * `PROCESS_STATE_RECEIVER`, which `RunningAppProcessInfo` reports as `IMPORTANCE_SERVICE`, well
+         * above the `IMPORTANCE_FOREGROUND` bar. So on any phone without the battery exemption the pre-check
+         * refused every boot start before it reached the system, and the mesh stayed down after a reboot
+         * until Knit was next opened (work item #76). The call-site `catch` in [request] is the guard here:
+         * the allowlist window is short (10 s from delivery), so a boot start that lands late is refused
+         * like any other, reported rather than thrown. ADR 2026-09.29dw.
+         */
+        fun startFromBoot(context: Context): Boolean = request(context)
+
+        /** The binder call itself, with the call-site guard both entry points share. */
+        private fun request(context: Context): Boolean =
+            try {
                 ContextCompat.startForegroundService(context, Intent(context, MeshService::class.java))
                 true
             } catch (e: IllegalStateException) {
                 Log.w(TAG, "mesh start refused at the call site — deferred to the next resume", e)
                 false
             }
-        }
 
         fun stop(context: Context) {
             context.startService(
@@ -444,6 +465,10 @@ fun meshForegroundServiceTypes(sdkInt: Int = Build.VERSION.SDK_INT): Int {
  *   only ever reaches the weaker `IMPORTANCE_FOREGROUND_SERVICE`, so this can't self-satisfy.
  * - **The battery-optimization exemption**, offered on the onboarding permission screen. Opt-in, so most
  *   installs won't have it; that is exactly why the background case has to be handled rather than assumed.
+ *
+ * What it cannot read is an exemption that rides the *event*, not the process: `BOOT_COMPLETED` puts the uid
+ * on a temporary allowlist for the delivery, while the receiver's process reads as `IMPORTANCE_SERVICE`. A
+ * caller that holds such an exemption must not ask this — see [MeshService.startFromBoot] (work item #76).
  *
  * A top-level function (like [shouldStartMeshOnBoot]) so the transports can consult it without depending on
  * the service class.

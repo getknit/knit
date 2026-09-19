@@ -94,3 +94,10 @@ so it can only ever be a diagnostic. No Diagnostics-screen row: the refusal is t
 system still agreed the service was foreground. A background-restricted app is silently demoted on leaving
 the screen, and a start into that instance armed the `startForeground()` deadline against an
 `onStartCommand` that never called it. The service now re-claims the state on every non-Stop start.
+
+*Amendment (2026-09-19, ADR 2026-09.29dw).* "`BootReceiver` keeps ignoring the result — `ACTION_BOOT_COMPLETED`
+is a listed exemption" conflated two exemptions. The boot one is the platform's, honoured inside
+`startForegroundService`; `canReclaimForegroundService` reads process state, and a receiver's process is
+`IMPORTANCE_SERVICE`, so on every phone without the battery exemption the pre-check refused the boot start
+before it reached the system. The receiver now goes through `MeshService.startFromBoot`, which skips the
+pre-check and keeps the call-site catch, and records the outcome in `MeshStartGate` like the other callers.

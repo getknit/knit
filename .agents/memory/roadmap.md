@@ -16,9 +16,10 @@ doc). **Don't start a deferred item without explicit direction.**
   Play upload check that the manifest's `location` attribute alone raises no location-FGS declaration, and a
   re-run of ADR 2026-09.kb68's lonely-node trial on the P3, which this masked (every re-attach reset
   `lonelySince`). Two suspects it surfaced, filed as #76 and #77: `canReclaimForegroundService` reads
-  `PROCESS_STATE_RECEIVER` as `IMPORTANCE_SERVICE`, so `BootReceiver`'s start is refused on an unexempted
-  phone despite ADR 043 calling it exempt; and the NAN responder's `onUnavailable` re-file has no backoff
-  (174 re-files in 130 ms on the P3).
+  `PROCESS_STATE_RECEIVER` as `IMPORTANCE_SERVICE`, so `BootReceiver`'s start was refused on an unexempted
+  phone despite ADR 043 calling it exempt — **fixed 2026-09-19** (ADR 2026-09.29dw, `MeshService.startFromBoot`
+  skips the pre-check; the reboot-without-opening device run is still owed); and the NAN responder's
+  `onUnavailable` re-file has no backoff (174 re-files in 130 ms on the P3).
 
 - **Supervised and managed phones are named SHIPPED** (2026-09-16, ADR 2026-09.a8ud) —
   `ui/DeviceSupervision.kt` reads Family Link's supervision profile owner or any other management signal

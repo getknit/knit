@@ -63,6 +63,8 @@ document:
   like any other chat.
 - On Android 10, 11 and 12, Knit stopped looking for phones over Wi-Fi as soon as you left the app. It
   keeps looking in the background now, and tells you when Android will only allow that with Knit open.
+- Unless you had turned off battery optimisation for Knit, the mesh stayed down after a reboot until you
+  next opened the app. It now comes back at boot either way.
 
 ## [2.6.0](https://github.com/getknit/knit/releases/tag/v2.6.0) — 2026-09-16T07:24:35Z
 

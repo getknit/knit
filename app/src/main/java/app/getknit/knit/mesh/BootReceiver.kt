@@ -23,15 +23,20 @@ import org.koin.core.component.inject
  * and true whenever it starts), the radio permissions, and `!SEED_DEMO`. Registered for
  * `BOOT_COMPLETED` — delivered post-unlock, so the credential-encrypted settings DataStore is readable,
  * and an exemption to the Android 12+ background foreground-service-start restrictions (the mesh's
- * `connectedDevice` type is boot-permitted). Suspending work (a DataStore read + the FGS start) is kept
- * alive with [goAsync] on the app-lifetime mesh [scope], mirroring
- * [app.getknit.knit.notifications.NotificationActionReceiver].
+ * `connectedDevice` type is boot-permitted). That exemption is the platform's, though, and
+ * [MeshService.start]'s process-state pre-check cannot read it — a receiver process reads as
+ * `IMPORTANCE_SERVICE`, which it refuses — so the start goes through [MeshService.startFromBoot], which
+ * skips the pre-check and keeps the call-site catch (ADR 2026-09.29dw). The outcome is recorded in
+ * [MeshStartGate] like every other caller's, so a boot start the system did refuse shows as deferred in
+ * `…debug.STATE`. Suspending work (a DataStore read + the FGS start) is kept alive with [goAsync] on the
+ * app-lifetime mesh [scope], mirroring [app.getknit.knit.notifications.NotificationActionReceiver].
  */
 class BootReceiver :
     BroadcastReceiver(),
     KoinComponent {
     private val settings: SettingsStore by inject()
     private val scope: CoroutineScope by inject()
+    private val startGate: MeshStartGate by inject()
 
     override fun onReceive(
         context: Context,
@@ -48,7 +53,9 @@ class BootReceiver :
         val pending = goAsync()
         scope.launch {
             runCatching {
-                if (shouldStartMeshOnBoot(appContext, settings)) MeshService.start(appContext)
+                if (shouldStartMeshOnBoot(appContext, settings)) {
+                    startGate.record(MeshService.startFromBoot(appContext))
+                }
             }.onFailure { Log.w(TAG, "boot mesh start failed", it) }
             pending.finish()
         }

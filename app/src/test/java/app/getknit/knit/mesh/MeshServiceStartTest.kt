@@ -27,6 +27,10 @@ import org.robolectric.Shadows.shadowOf
  * `getMyMemoryState`, filling from the entry whose pid is ours). `robolectric.properties` pins `sdk=36`, so
  * the API-31+ branch is the one under test. The `catch` arm can't be reached here — Robolectric never
  * throws the real `ForegroundServiceStartNotAllowedException` — and is covered on device.
+ *
+ * The last two pin the boot entry point ([MeshService.startFromBoot], work item #76): a process running a
+ * broadcast receiver reads as `IMPORTANCE_SERVICE`, which the pre-check refuses, so the receiver's start
+ * has to bypass it — `BOOT_COMPLETED` is the platform's exemption, not one the pre-check can read.
  */
 @RunWith(AndroidJUnit4::class)
 class MeshServiceStartTest {
@@ -76,5 +80,23 @@ class MeshServiceStartTest {
         // IMPORTANCE_FOREGROUND_SERVICE, which is numerically above IMPORTANCE_FOREGROUND.
         setImportance(ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE)
         assertFalse(canReclaimForegroundService(app))
+    }
+
+    @Test
+    fun `the ordinary start refuses a receiver's own importance`() {
+        // PROCESS_STATE_RECEIVER maps to IMPORTANCE_SERVICE — the state a BOOT_COMPLETED receiver runs at, and
+        // the reason the receiver cannot go through [MeshService.start] on an unexempted phone.
+        setImportance(ActivityManager.RunningAppProcessInfo.IMPORTANCE_SERVICE)
+        assertFalse(MeshService.start(app))
+        assertNull(shadowOf(app).nextStartedService)
+    }
+
+    @Test
+    fun `a boot start reaches the system at a receiver's importance with no battery exemption`() {
+        setImportance(ActivityManager.RunningAppProcessInfo.IMPORTANCE_SERVICE)
+        assertTrue(MeshService.startFromBoot(app))
+        val started = shadowOf(app).nextStartedService
+        assertNotNull(started)
+        assertEquals(MeshService::class.java.name, started.component?.className)
     }
 }
