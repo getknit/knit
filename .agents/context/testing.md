@@ -21,6 +21,17 @@
 > `FakeLoopTransport` for logic tests and two physical Wi-Fi-Aware-capable phones (e.g. Pixels) for real
 > discovery → data path → relay.
 
+> **`UncaughtExceptionsBeforeTest` names the wrong test.** kotlinx-coroutines-test's `ExceptionCollector`
+> starts catching *every* uncaught coroutine exception in the JVM the first time any `runTest` runs, never
+> turns off, and hands what it caught to the *next* `runTest` — so a Robolectric test whose service or fake
+> throws inside an unhandled `launch` (a Koin definition its module never provided, resumed on the
+> `Dispatchers.Unconfined` scope) fails whichever `runTest` class the fork runs after it, and only when a
+> `runTest` ran *before* it. A single-class run is green; CI's one fork is not. Read the failure's
+> **Suppressed:** cause for the real origin (the HTML report keeps it; the console line does not), and
+> reproduce with three classes: any `runTest` class, the suspect, the victim (the `ImageScreeningServiceTest`
+> case of 2026-09-19 was `MeshServiceForegroundReclaimTest` raising `neighborCount` without an
+> `MlTextModerator`).
+
 ## Mesh in a box (`app/src/test/…/mesh/lab/`)
 
 `MeshLab` runs **N complete, real Knit stacks in one JVM** — the real `MeshManager` (so the real

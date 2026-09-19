@@ -11,6 +11,7 @@ import app.getknit.knit.R
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.mesh.power.PowerMonitor
 import app.getknit.knit.mesh.power.PowerStateSource
+import app.getknit.knit.moderation.MlTextModerator
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineScope
@@ -67,6 +68,10 @@ class MeshServiceForegroundReclaimTest {
                     single { PowerMonitor(app, PowerStateSource()) }
                     single { settings }
                     single<CoroutineScope> { CoroutineScope(SupervisorJob() + Dispatchers.Unconfined) }
+                    // The live-status test raises neighborCount above 0, which is the cue warmModelOnFirstPeer waits
+                    // on; without a definition its lazy inject throws inside an unhandled launch, and the Unconfined
+                    // scope reports that at whichever runTest the fork runs next (CI: ImageScreeningServiceTest).
+                    single { mockk<MlTextModerator>(relaxed = true) }
                 },
             )
         }
