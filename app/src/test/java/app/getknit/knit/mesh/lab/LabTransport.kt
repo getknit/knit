@@ -291,8 +291,12 @@ class LabTransport(
         targets.forEach { pipe ->
             when {
                 pipe.lossy(wire) -> lost += wire
-                pipe.holding -> synchronized(pipe.held) { pipe.held += wire } // judged at [release]
+
+                // A held frame is judged by the memo at [release], not here.
+                pipe.holding -> synchronized(pipe.held) { pipe.held += wire }
+
                 !crosses(pipe, key, VIA_LINK) -> Unit
+
                 else -> pipe.target.deliver(wire, nodeId, VIA_LINK)
             }
         }
@@ -349,8 +353,12 @@ class LabTransport(
     ) {
         when {
             pipe.lossy(wire) -> lost += wire
-            pipe.holding -> synchronized(pipe.held) { pipe.held += wire } // judged at [release]
+
+            // A held frame is judged by the memo at [release], not here.
+            pipe.holding -> synchronized(pipe.held) { pipe.held += wire }
+
             !crosses(pipe, key, VIA_FAST) -> Unit
+
             else -> pipe.target.deliverNow(wire, nodeId, VIA_FAST)
         }
     }

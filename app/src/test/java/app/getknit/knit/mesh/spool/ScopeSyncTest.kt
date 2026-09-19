@@ -1023,6 +1023,7 @@ class ScopeSyncTest {
             pump(rounds = 3_200)
 
             val gaps = relay.gaps()
+            assertEquals("the status names when the last dial began", now, sync.status().single().lastDialAt)
             assertEquals("the first tier is the curve it always was", listOf(2_000L, 4_000L, 8_000L), gaps.take(3))
             assertTrue("the first tier's ceiling is a minute", 60_000L in gaps)
             assertTrue("then the long tier doubles on", gaps.containsAll(listOf(120_000L, 240_000L, 480_000L)))
@@ -1063,6 +1064,7 @@ class ScopeSyncTest {
             pump(rounds = 90)
             assertTrue("dialled with no route: ${relay.dialedAt}", relay.dialedAt.isEmpty())
             assertNull("no verdict was invented", sync.status().single().lastError)
+            assertNull("and no dial was stamped", sync.status().single().lastDialAt)
 
             online = true
             sync.onRouteChanged()

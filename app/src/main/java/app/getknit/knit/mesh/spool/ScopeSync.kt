@@ -153,6 +153,12 @@ class SpoolStatus(
     // about the live connection like every other field here, not a remembered one.
     val software: SpoolSoftware? = null,
     val dialFailures: Int = 0,
+    /**
+     * When this worker last began a dial, on the plane's clock (epoch ms), or null before its first. The
+     * reconnect curve's own oracle: two consecutive readings are the wait the worker actually took, which
+     * `dialFailures` alone cannot say. Diagnostics only.
+     */
+    val lastDialAt: Long? = null,
 )
 
 /**
@@ -500,6 +506,10 @@ class ScopeSync(
         @Volatile
         private var dialFailures = 0
 
+        // When the last dial began (see [SpoolStatus.lastDialAt]).
+        @Volatile
+        private var lastDialAt: Long? = null
+
         // What this spool answered at `/source` during the current session (§13 offer, [SpoolSoftware]).
         // Fetched once per handshake rather than remembered across them, because a redeploy is exactly what
         // drops the connection — so a build shown beside "connected" is the build that is connected.
@@ -598,6 +608,7 @@ class ScopeSync(
                 powBits = connection?.powBits ?: 0,
                 lastError = lastError,
                 dialFailures = dialFailures,
+                lastDialAt = lastDialAt,
                 // Gated on the whole capability, not the single field: §7.3's three limits arrive
                 // together or not at all, and a partial set means we must send no attachment record.
                 maxAttachBytes = connection?.limits?.takeIf { it.attachments }?.maxAttachBytes,
@@ -666,6 +677,7 @@ class ScopeSync(
         /** One connection lifetime. Returns whether the handshake completed — that drives the backoff. */
         private suspend fun session(): Boolean {
             val host = this@ScopeSync.session ?: return false
+            lastDialAt = clock()
             val socket = dialer.dial(url)
             if (socket == null) {
                 lastError = UNREACHABLE

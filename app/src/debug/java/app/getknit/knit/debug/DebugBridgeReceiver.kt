@@ -1253,6 +1253,10 @@ class DebugBridgeReceiver :
                     // Sessions in a row that never reached a hello; 0 once one does. Twelve of these under
                     // `unreachable` is the dead-route signature, one is a missed reconnect.
                     .put("dialFailures", spool.dialFailures)
+                    // The reconnect curve's oracle: poll this and the gaps between readings are the waits the
+                    // worker actually took (dialFailures alone says how many, never how far apart).
+                    .put("lastDialAt", spool.lastDialAt ?: JSONObject.NULL)
+                    .put("lastDialAgeMs", spool.lastDialAt?.let { System.currentTimeMillis() - it } ?: JSONObject.NULL)
                     // null ⇒ this spool advertised no attachment support at all (spec §7.3), which is
                     // also what makes the UI mark a photo "nearby only" — worth being able to confirm
                     // from the bridge when a field test sees that marker.

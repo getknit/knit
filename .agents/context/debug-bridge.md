@@ -80,7 +80,9 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
   a dead route stays `unreachable` through the next dial. `connected` is a **completed hello** on an open
   socket, never a socket that merely exists, and `dialFailures` counts the sessions in a row that never
   reached one (0 once one does): twelve under `unreachable` is the dead-route signature, one is a missed
-  reconnect. `accounted` is how
+  reconnect. `lastDialAt` (epoch ms, plus `lastDialAgeMs`) is when the worker last began a dial: poll it
+  and the gaps between readings are the reconnect waits actually taken — the oracle for the backoff curve
+  (ADR 2026-09.wa79: 1 s doubling to 60 s, then on to 15 min), which `dialFailures` alone cannot show. `accounted` is how
   much of `local` is the §9.6 band — blobs the spool still holds that our custody has aged out, counted
   as held on purpose (ADR 062) so `local == spool` keeps meaning converged; a scope stuck unconverged
   with a large `accounted` means the fold or the prune is broken, not the network.
