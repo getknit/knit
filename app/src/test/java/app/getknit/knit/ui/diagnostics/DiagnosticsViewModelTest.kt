@@ -168,6 +168,40 @@ class DiagnosticsViewModelTest {
             assertEquals(1, controller.restartCount)
         }
 
+    /** ADR 2026-09.m8kc: "Try again" on a held Wi-Fi Aware initiator goes straight to the controller, with feedback. */
+    @Test
+    fun releasingTheInitiatorHoldRoutesToTheControllerAndSaysSo() =
+        runTest {
+            val controller = FakeMeshController()
+            val settings = mockk<SettingsStore>(relaxed = true)
+            every { settings.spoolEnabled } returns MutableStateFlow(false)
+            every { settings.spoolUrls } returns MutableStateFlow(emptySet())
+            every { settings.activeSpoolUrls } returns MutableStateFlow(emptySet())
+            val vm =
+                DiagnosticsViewModel(
+                    peers = mockk(relaxed = true),
+                    meshManager = controller,
+                    identity = mockk(relaxed = true),
+                    settings = settings,
+                    metrics = MeshMetrics(),
+                    relayStatus = RelayStatusRepository(settings, controller),
+                    crashes = mockk(relaxed = true),
+                    modelGuard = unlatchedGuard(),
+                    radios = RadioSupport.ALL,
+                    loraFacts = MutableStateFlow(LoraFacts()),
+                )
+            val seen = mutableListOf<Int>()
+            val events = backgroundScope.launch { vm.events.collect { seen += it } }
+            runCurrent() // the collector has to be running before the one-shot emit
+
+            vm.releaseInitiatorHold()
+            runCurrent()
+
+            assertEquals(1, controller.releaseInitiatorHoldCount)
+            assertEquals(listOf(R.string.diagnostics_nan_hold_retry_done), seen)
+            events.cancel()
+        }
+
     @Test
     fun lastCrashSurfacesTheNewestReportAndClearsAfterADelete() =
         runTest {

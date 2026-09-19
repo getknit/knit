@@ -43,6 +43,9 @@ document:
 
 ### Fixed
 
+- On some phones the Wi-Fi dropped every time Knit tried to open a Wi-Fi Aware connection to a neighbour.
+  After the third drop Knit stops opening them from that phone and says so in Diagnostics, where you can let
+  it try again; nearby phones can still connect to it.
 - A public Wi-Fi that Android accepted but that silently blocked your relay left it showing as connected
   while nothing got through. The relay now reads as unreachable, and Knit reconnects as soon as your phone
   moves to another network.

@@ -726,6 +726,13 @@
     <string name="diagnostics_tag_lora">LoRa</string>
     <string name="diagnostics_tag_spool">Relay</string>
     <string name="diagnostics_transport_audio">audio</string>
+    <!-- The Wi-Fi Aware initiator hold (ADR 2026-09.m8kc): the row tag, and the section under Transports with
+         the way back. The plane itself is healthy — only this phone's own connection attempts are stopped. -->
+    <string name="diagnostics_transport_held">on hold</string>
+    <string name="diagnostics_nan_hold_label">Wi-Fi Aware connections are on hold</string>
+    <string name="diagnostics_nan_hold_body">This phone\'s Wi-Fi dropped each time Knit tried to open a Wi-Fi Aware connection to a nearby phone, so Knit stopped opening them from here. Nearby phones can still connect to this one, and Knit tries again once a day.</string>
+    <string name="diagnostics_nan_hold_retry_action">Try again now</string>
+    <string name="diagnostics_nan_hold_retry_done">Trying Wi-Fi Aware connections again</string>
 
     <!-- Your mesh (ui/yourmesh): what keeping Knit running has done for the people around this phone, in
          plain words. Every number is counted on this phone and never leaves it. "Passed along" is a message

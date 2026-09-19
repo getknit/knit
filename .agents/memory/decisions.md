@@ -131,6 +131,7 @@ carries; never renumber an old one.
 | [2026-09.k68y](decisions/2026-09-k68y-diagnostics-reads-a-relay-s-build-from-its-source-offer.md) | Diagnostics reads a relay's build from its /source offer, not from HELLO | spool, diagnostics, ui |
 | [2026-09.kb68](decisions/2026-09-kb68-a-lonely-node-relaxes-its-discovery-cadence.md) | A lonely node relaxes its discovery cadence | wifi-aware, battery, reliability |
 | [2026-09.m7vn](decisions/2026-09-m7vn-settings-and-your-profile-are-two-screens.md) | Settings and your profile are two screens | ui, navigation, settings, profile |
+| [2026-09.m8kc](decisions/2026-09-m8kc-an-initiate-that-costs-the-phone-its-wi-fi-is-given-up-on.md) | An initiate that costs the phone its Wi-Fi is given up on | wifi-aware, reliability, mesh |
 | [2026-09.m9h8](decisions/2026-09-m9h8-material-you-is-opt-in.md) | Material You is opt-in, and green stays green | ui, theme, settings |
 | [2026-09.mhs5](decisions/2026-09-mhs5-a-lora-packet-is-padded-past-the-firmware-s-signature-cliff.md) | A LoRa packet is padded past the firmware's signature cliff | lora, airtime, link |
 | [2026-09.mjaj](decisions/2026-09-mjaj-the-group-seed-carries-the-founding-roster.md) | The group seed carries the founding roster | groups, roster, spool, wire |

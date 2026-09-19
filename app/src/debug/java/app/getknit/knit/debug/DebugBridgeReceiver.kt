@@ -169,6 +169,11 @@ import java.nio.ByteBuffer
  * - [ACTION_NANDIAL] — `--es to <peerNodeId>` initiates a Wi-Fi Aware data path to a discovered peer regardless
  *   of the id tie-break, so the smaller node can knock on the larger node's responder. The far side's HELLO
  *   check still closes the socket; the NDP forming (`onDataPathRequest` there, a 15 s timeout here) is the trial.
+ * - [ACTION_NANINIT] — the Wi-Fi Aware **initiator failsafe** (work item #78, ADR 2026-09.m8kc). No extra dumps
+ *   `strikes` / `latched` / `probeInMs` / `lastInitiateAgoMs` / `lossPendingMs`; `--ez blip true` injects one Wi-Fi
+ *   drop-and-return through the transport's own handlers (a strike only if an initiate of ours went out in the
+ *   last two minutes with no link since — pair it with [ACTION_NANDIAL]); `--ez reset true` is Diagnostics' "Try
+ *   again"; `--ez probe true` makes a held role's daily probe due on the next tick.
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  *
  * Each action replies as a one-line JSON object: it is returned via the ordered-broadcast result
@@ -326,6 +331,10 @@ class DebugBridgeReceiver :
 
                         ACTION_NANREFUSE -> {
                             handleNanRefuse(intent)
+                        }
+
+                        ACTION_NANINIT -> {
+                            handleNanInit(intent)
                         }
 
                         ACTION_NANDIAL -> {
@@ -712,6 +721,7 @@ class DebugBridgeReceiver :
                                 .put("health", it.health.name)
                                 .put("linked", it.linked)
                                 .put("nearby", it.nearby)
+                                .put("initiatorHeld", it.initiatorHeld)
                         },
                     ),
                 ).put("neighborCount", mesh.neighborCount.value)
@@ -1760,6 +1770,43 @@ class DebugBridgeReceiver :
             .put("armed", r?.armed ?: -1)
     }
 
+    private fun handleNanInit(intent: Intent): JSONObject {
+        if (!NanFaultInjector.bound) return reply("error", "Wi-Fi Aware transport is not running")
+        val what =
+            when {
+                intent.getBooleanExtra("blip", false) -> {
+                    NanFaultInjector.blipWifi()
+                    "injected a Wi-Fi drop and return"
+                }
+
+                intent.getBooleanExtra("reset", false) -> {
+                    NanFaultInjector.resetInitiator()
+                    "initiator hold released"
+                }
+
+                intent.getBooleanExtra("probe", false) -> {
+                    if (NanFaultInjector.forceInitiatorProbe() ==
+                        true
+                    ) {
+                        "daily probe due on the next tick"
+                    } else {
+                        "not held — nothing to probe"
+                    }
+                }
+
+                else -> {
+                    "initiator failsafe state"
+                }
+            }
+        val i = NanFaultInjector.initiatorStatus()
+        return reply("ok", what)
+            .put("strikes", i?.strikes ?: -1)
+            .put("latched", i?.latched ?: false)
+            .put("probeInMs", i?.probeInMs ?: -1)
+            .put("lastInitiateAgoMs", i?.lastInitiateAgoMs ?: -1)
+            .put("lossPendingMs", i?.lossPendingMs ?: -1)
+    }
+
     /**
      * Folds the attach budget and this process's Binder-object counts into a reply. The local count is the
      * closest in-process proxy for what AMS is actually watching, which is the count *system_server* holds
@@ -1795,6 +1842,7 @@ class DebugBridgeReceiver :
         const val ACTION_NANREFUSE = "app.getknit.knit.debug.NANREFUSE"
         const val ACTION_NANICM = "app.getknit.knit.debug.NANICM"
         const val ACTION_NANDIAL = "app.getknit.knit.debug.NANDIAL"
+        const val ACTION_NANINIT = "app.getknit.knit.debug.NANINIT"
         const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
         const val ACTION_MSGNOTIF = "app.getknit.knit.debug.MSGNOTIF"
         const val ACTION_FLAGMSG = "app.getknit.knit.debug.FLAGMSG"

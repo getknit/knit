@@ -125,6 +125,42 @@ responder's `onAvailable`. Before this the re-file was immediate and the Pixel 3
 (work item #77). Never count the contended case: a hub serving a long sync collects knocks for the life
 of the link.
 
+## An initiate that knocks the phone off its Wi-Fi is given up on (ADR 2026-09.m8kc)
+
+On the Pixel 3 (blueline, API 31) every NDP we initiate ends in a firmware REJECT that also tears the phone's
+own STA down (`DEAUTH_LEAVING`, eight drops in two hours, band-independent), and each drop silently kills the
+Aware client; the request never reaches the peer (a byte-swapped publish id inside `system_server`). The
+largest node id initiates to everyone and `NanConnectPolicy` never gives up, so that was a Wi-Fi drop a minute.
+`mesh/wifiaware/NanInitiatorPolicy` (pure, JVM-tested) is the failsafe: the transport keeps a **passive**
+`registerNetworkCallback` on `TRANSPORT_WIFI`, a loss followed by an available within 15 s is a **blip**, and a
+blip whose loss fell within 120 s *after* an initiate of ours with no link since is a **strike** — never a
+`NanConnectPolicy` streak (the P7/P8/P9 fleet runs long streaks against a wedged responder with no STA harm).
+Three strikes **hold the initiator role**: `driveSync` stops initiating, and the responder, discovery, cues and
+the fast plane keep running, so nearby phones still connect to this one and Bluetooth carries custody. The hold
+acts through **one choke point** — `digestSyncWanted` / `bulkSyncWanted`, where the BLE `suppressed` set already
+lives — so every admission *and* recovery site (the wedge watchdog's owed clock included; Tier-2 is a process
+kill, and the hold is journaled) stops seeing a sync it would have to initiate; `PeerFacts.initiator` stays the
+tie-break so `needsIcmRelight` is unaffected; `expectBulkTransfer` refuses a held peer so a photo goes to BLE
+without the composite's 10 s grace. Refunded by **exactly one** field event — an initiator link forming —
+plus the user's "Try again" (Diagnostics, `MeshTransport.releaseInitiatorHold()` through the controller and
+composite) and the build+ROM stamp (`data/settings/NanInitiatorJournal`, the ADR 055 shape). Never by the Aware
+edge, `heal()`, `stop()` or a fresh session; `pause()` and a genuine Aware-off void the initiate in flight as
+not evidence, but our own session cycle's NAN-down does not (on the Pixel 3 that cycle is bgk3's recovery from
+the very drop being judged). A held role takes **one probe initiate a day** (wall clock, journaled) through
+`driveSync` alone — `syncWantedForProbe`; the recovery sites keep the held view. Surface:
+`MeshTransport.initiatorHeld` → `TransportStatus.initiatorHeld` → an "on hold" tag and a section under
+Transports; `TransportHealth` unchanged, the plane is healthy. Oracles on the transport tag: `Wi-Fi dropped and
+came back … — strike n/3`, `holding the initiator role`, `daily initiator probe`, `initiator link formed under
+the hold — releasing it`; `init=` on the state line; `…debug.NANINIT` (`context/debug-bridge.md`).
+
+Device-verified 2026-09-19 on the P3 (the ADR has the log): one natural strike through the real `NetworkCallback`
+(the drop is rarer than the issue's night — 1 in 26 initiates), two injected, the hold, a force-stop restore, the
+forced probe and its `AlreadyHeld` verdict, the Diagnostics tag + section, and "Try again now". Two traps for the
+next run: the P3 in deep Doze without the battery exemption has Aware **disabled by the framework**
+(`dumpsys wifiaware` → `mUsageEnabled: false`, Knit reads `Unavailable`) — lift Doze first; and a real STA drop
+takes network adb with it, so a `logcat` pipe dies at exactly the moment you want it — loop the reconnect. Still
+owed: the initiator-link refund on hardware (needs a phone that can actually link), and the P9-side injected leg.
+
 ## Three sets, and only one of them means *nearby*
 
 `MeshTransport.neighbors` is live links; `MeshTransport.reachable` is sightings. Above the composite the

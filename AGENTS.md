@@ -94,6 +94,15 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   counted; a verdict with the interface free is about the request — counted, backed off, and at five in a row
   given up for a session cycle, three per episode, refunded only by the responder's `onAvailable` (never a
   fresh session or the availability edge: the cycle produces both). The tests are in `NanResponderPolicyTest`.
+- **When touching `NanInitiatorPolicy`, the `TRANSPORT_WIFI` watch in `WifiAwareTransport` (`onStaLost` /
+  `onStaAvailable`), `initiatorHeld` / `releaseInitiatorHold`, `NanInitiatorJournal`, or what `digestSyncWanted`
+  / `bulkSyncWanted` gate on:** READ ADR 2026-09.m8kc. A Wi-Fi blip (lost → available in 15 s) within two minutes
+  *after* an unlinked initiate of ours is a strike; three hold the initiator role — the responder, discovery,
+  cues and the fast plane keep running — refunded only by an initiator link, the user's Try again, or the
+  build+ROM stamp, never by `stop`, `heal`, a session cycle or the Aware edge; one probe initiate a day on the
+  wall clock. The hold lives in those two gates so the wedge watchdog never counts a held peer as owed (Tier-2 is
+  a process kill and the hold is journaled): never read `reconcileWanted` / `bulkWanted.isWanted` around them.
+  Not a `NanConnectPolicy` streak. Tests: `NanInitiatorPolicyTest`.
 - **When touching `legal/`, `ui/about/`, `app/src/main/assets/legal/`, `THIRD-PARTY-NOTICES.md`, or a shipped
   dependency:** READ ADR 2026-09.6eb6. The in-app Open-source licenses list is `legal/ThirdPartyNotices.kt`,
   pinned to the notices table by `ThirdPartyNoticesSyncTest` and to `app/gradle.lockfile`'s

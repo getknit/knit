@@ -3,10 +3,13 @@ package app.getknit.knit.ui.diagnostics
 import android.content.Context
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.R
@@ -240,6 +243,86 @@ class DiagnosticsScreenContentTest {
         }
 
         compose.onNodeWithText(context.getString(R.string.diagnostics_moderation_latched_label)).assertDoesNotExist()
+    }
+
+    /** ADR 2026-09.m8kc: a Wi-Fi Aware plane holding its initiator role is tagged, explained, and releasable. */
+    @Test
+    fun aHeldInitiatorIsTaggedAndReleasable() {
+        var releases = 0
+        compose.setContent {
+            KnitTheme {
+                DiagnosticsScreenContent(
+                    state =
+                        state().copy(
+                            transports =
+                                listOf(
+                                    TransportRow.Live(
+                                        TransportStatus(TransportKind.Bluetooth, TransportHealth.Healthy, linked = 1, nearby = 2),
+                                    ),
+                                    TransportRow.Live(
+                                        TransportStatus(
+                                            TransportKind.WifiAware,
+                                            TransportHealth.Healthy,
+                                            linked = 0,
+                                            nearby = 2,
+                                            initiatorHeld = true,
+                                        ),
+                                    ),
+                                ),
+                        ),
+                    health = TransportHealth.Healthy,
+                    lastCrash = null,
+                    now = 0L,
+                    snackbarHostState = SnackbarHostState(),
+                    onBack = {},
+                    onRestartMesh = {},
+                    onScan = {},
+                    onOpenCrashLog = {},
+                    moderationLatched = false,
+                    onResetModeration = {},
+                    onReleaseInitiatorHold = { releases++ },
+                )
+            }
+        }
+
+        compose.onNodeWithText(context.getString(R.string.diagnostics_transport_held)).assertExists()
+        compose.onNodeWithText(context.getString(R.string.diagnostics_nan_hold_label)).assertExists()
+        // Below Transports, past Robolectric's viewport: scroll the list to it before the tap.
+        compose.onNode(hasScrollAction()).performScrollToNode(hasTestTag("nan_hold_release"))
+        compose.onNodeWithTag("nan_hold_release").performClick()
+        assertEquals(1, releases)
+    }
+
+    @Test
+    fun anOpenInitiatorShowsNoHoldRow() {
+        compose.setContent {
+            KnitTheme {
+                DiagnosticsScreenContent(
+                    state =
+                        state().copy(
+                            transports =
+                                listOf(
+                                    TransportRow.Live(
+                                        TransportStatus(TransportKind.WifiAware, TransportHealth.Healthy, linked = 1, nearby = 2),
+                                    ),
+                                ),
+                        ),
+                    health = TransportHealth.Healthy,
+                    lastCrash = null,
+                    now = 0L,
+                    snackbarHostState = SnackbarHostState(),
+                    onBack = {},
+                    onRestartMesh = {},
+                    onScan = {},
+                    onOpenCrashLog = {},
+                    moderationLatched = false,
+                    onResetModeration = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText(context.getString(R.string.diagnostics_transport_held)).assertDoesNotExist()
+        compose.onNodeWithText(context.getString(R.string.diagnostics_nan_hold_label)).assertDoesNotExist()
     }
 
     /** Work item 18: a plane the phone cannot run is a row that says so, not a row that is missing. */

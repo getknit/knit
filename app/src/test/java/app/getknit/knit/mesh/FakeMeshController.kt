@@ -89,6 +89,12 @@ class FakeMeshController : MeshController {
         restartCount++
     }
 
+    var releaseInitiatorHoldCount = 0
+
+    override fun releaseInitiatorHold() {
+        releaseInitiatorHoldCount++
+    }
+
     override suspend fun sendChat(
         text: String,
         attachment: AttachmentStore.Ingested?,

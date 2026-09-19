@@ -6,6 +6,15 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Already shipped (was deferred)
 
+- **A phone whose Wi-Fi drops when it initiates stops initiating BUILT** (2026-09-19, ADR 2026-09.m8kc, work
+  item #78) — `NanInitiatorPolicy` counts a Wi-Fi blip within two minutes of an unlinked initiate of ours as a
+  strike, holds the initiator role at three, journals it by build+ROM stamp, probes once a day, and Diagnostics
+  says so with a Try again. Device-verified the same day on the P3 (one natural strike, the rest injected; the ADR
+  has the log). **Still owed:** the initiator-link refund on hardware. **Deferred from it:** bgk3's follow-up, re-attaching directly on the STA drop
+  that silently kills the Aware client — `onStaLost` is now the signal, but it is a recovery for a blueline-only
+  fault, and a session cycle on every healthy phone that walks out of AP range is the price; build it only if a
+  second device class shows the silent death.
+
 - **The mesh service asks for the location foreground type on API 29–32 BUILT** (2026-09-18, ADR
   2026-09.535d, work item #62) — `meshForegroundServiceTypes` claims `connectedDevice|location` on the tiers
   where `requiredRadioPermissions` rides the location grant, `NanSessionFault` tells a location refusal from

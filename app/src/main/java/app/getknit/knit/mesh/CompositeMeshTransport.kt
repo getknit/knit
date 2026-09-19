@@ -148,8 +148,9 @@ class CompositeMeshTransport(
                         child.reachable,
                         child.health,
                         child.radioContended,
-                    ) { linked, nearby, health, contended ->
-                        TransportStatus(child.kind, health, linked.size, nearby.size, contended)
+                        child.initiatorHeld,
+                    ) { linked, nearby, health, contended, held ->
+                        TransportStatus(child.kind, health, linked.size, nearby.size, contended, held)
                     }
                 },
             ) { it.toList() }.stateIn(scope, SharingStarted.Eagerly, emptyList())
@@ -236,6 +237,10 @@ class CompositeMeshTransport(
 
     override fun heal() {
         children.forEach { it.heal() }
+    }
+
+    override fun releaseInitiatorHold() {
+        children.forEach { it.releaseInitiatorHold() }
     }
 
     override fun pause() {

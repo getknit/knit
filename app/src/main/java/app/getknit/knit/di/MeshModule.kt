@@ -116,7 +116,9 @@ val meshModule =
                         // explicit SDK_INT guard — redundant with isSupported()'s own — is what lint reads to
                         // clear the @RequiresApi companion/constructor calls on this pre-31-reachable line.
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && WifiAwareTransport.isSupported(ctx)) {
-                            add(WifiAwareTransport(ctx, get(), get(), get(), get(), get(), get<SettingsStore>()))
+                            // SettingsStore is both journals (the attach give-up and the initiator hold, ADR 055 / 2026-09.m8kc).
+                            val settings = get<SettingsStore>()
+                            add(WifiAwareTransport(ctx, get(), get(), get(), get(), get(), settings, settings))
                         }
                         // The LoRa (Meshtastic) plane rides LAST — lowest send-preference, fast-plane only.
                         // Gated on the flag; the classes stay in the APK but are never resolved when off.

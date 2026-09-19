@@ -34,6 +34,8 @@ import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.settings.NanAttachJournal
+import app.getknit.knit.data.settings.NanInitiatorJournal
+import app.getknit.knit.data.settings.NanInitiatorLatch
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.DigestTracker
 import app.getknit.knit.mesh.FastPathDrop
@@ -131,15 +133,17 @@ class WifiAwareTransport(
     private val powerState: PowerStateSource,
     private val storeDigest: StoreDigest,
     private val attachJournal: NanAttachJournal,
+    private val initiatorJournal: NanInitiatorJournal,
 ) : MeshTransport {
     private val appContext = context.applicationContext
     private val awareManager = appContext.getSystemService(Context.WIFI_AWARE_SERVICE) as WifiAwareManager?
     private val connectivity =
         appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-    // What a give-up is recorded under ([NanAttachJournal]): both halves are resets. A new app version may
-    // change the attach path, and a ROM update is exactly the event that can fix a vendor HAL that publishes no
-    // STA+NAN interface combination — getknit/Knit#9 is a LineageOS device.
+    // What a give-up is recorded under ([NanAttachJournal], and the initiator hold of [NanInitiatorJournal]):
+    // both halves are resets. A new app version may change the attach or data-path sequence, and a ROM update
+    // is exactly the event that can fix a vendor HAL that publishes no STA+NAN interface combination
+    // (getknit/Knit#9 is a LineageOS device) or a firmware whose NDP negotiation tears the STA down (#78).
     private val giveUpStamp = "${BuildConfig.VERSION_CODE}:${Build.FINGERPRINT}"
 
     /** False on hardware without Wi-Fi Aware — the transport stays [TransportHealth.Unavailable] and the UI gates. */
@@ -281,6 +285,25 @@ class WifiAwareTransport(
     @Volatile private var responderRefusals = 0
 
     @Volatile private var responderCycles = 0
+
+    // The initiator failsafe (work item #78, ADR 2026-09.m8kc): our own Wi-Fi dropping within two minutes of an
+    // initiate of ours, three times with no initiator link between, holds the initiator role. Windows on the
+    // monotonic clock like the rest of this file; the daily probe on the wall clock because it is journaled.
+    private val initiatorPolicy = NanInitiatorPolicy(now = SystemClock::elapsedRealtime, wallNow = System::currentTimeMillis)
+
+    private val _initiatorHeld = MutableStateFlow(false)
+    override val initiatorHeld = _initiatorHeld.asStateFlow()
+
+    // Passive watch on the phone's own Wi-Fi (STA) network — `registerNetworkCallback`, never a request, so it
+    // holds nothing and asks for nothing. A plain TRANSPORT_WIFI request: the NDP is TRANSPORT_WIFI_AWARE and
+    // never matches, and no capability is named because a capability change would masquerade as lost/available.
+    @Volatile private var wifiWatchRegistered = false
+    private val wifiWatch =
+        object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = onStaAvailable(network)
+
+            override fun onLost(network: Network) = onStaLost(network)
+        }
 
     // The single live data-path link, keyed by peer nodeId (at most one entry — one NDI). [NanLink] wraps the
     // shared [FramedLink] (socket I/O) with the NAN-specific per-peer network callback + quiescence supervisor.
@@ -533,7 +556,15 @@ class WifiAwareTransport(
                 attachAbandoned = true
                 Log.w(TAG, "Wi-Fi Aware was abandoned under this build/ROM; not attaching until availability changes")
             }
+            // Same durability for the initiator hold (#78): ORs with memory rather than replacing it, because the
+            // latch write is asynchronous and a restart() may re-read the journal before it has landed.
+            runCatching { initiatorJournal.initiatorLatch() }.getOrNull()?.takeIf { it.stamp == giveUpStamp }?.let {
+                initiatorPolicy.restore(it.probedAt)
+                _initiatorHeld.value = true
+                Log.w(TAG, "initiator role held under this build/ROM (Wi-Fi dropped on our initiates); probing daily")
+            }
             registerAvailability()
+            registerWifiWatch()
             NanFaultInjector.bind(
                 onAvailability = ::handleAvailabilityChanged,
                 status = {
@@ -566,6 +597,23 @@ class WifiAwareTransport(
                     instantSupported
                 },
                 onDial = ::debugDial,
+                initiatorHooks =
+                    NanInitiatorHooks(
+                        // `…debug.NANINIT --ez blip true`: the STA lost and back, through the real handlers.
+                        blip = {
+                            onHandler {
+                                onStaLost(null)
+                                onStaAvailable(null)
+                            }
+                        },
+                        reset = ::releaseInitiatorHold,
+                        forceProbe = {
+                            // A probe stamp of 0 is a day old by any wall clock; the next driveSync takes it.
+                            if (initiatorPolicy.latched) initiatorPolicy.restore(probedAt = 0L)
+                            initiatorPolicy.latched
+                        },
+                        status = initiatorPolicy::snapshot,
+                    ),
             )
             attach()
             loopJob = scope.launch { discoveryLoop() }
@@ -633,7 +681,8 @@ class WifiAwareTransport(
             "state ver=$v live=${peers.keys} inbound=$inbound acc=$acc cap=$serveCap pin=$responderPinsNdi " +
                 "refused=$responderRefusals/$responderCycles disc=$disc cue=$cues wanted=$wanted initiable=$initiable " +
                 "reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}] " +
-                "bulk[${bulkWanted.debug()}] lonely=${lonelyForMs(now)}ms offscreen=$offScreenBlocked",
+                "bulk[${bulkWanted.debug()}] lonely=${lonelyForMs(now)}ms offscreen=$offScreenBlocked " +
+                "init=${initiatorPolicy.snapshot()}",
         )
     }
 
@@ -695,7 +744,7 @@ class WifiAwareTransport(
                 linked = peers.containsKey(id),
                 discovered = id in disc,
                 digestWanted = digestSyncWanted(id, v),
-                bulkWanted = bulkWanted.isWanted(id),
+                bulkWanted = bulkSyncWanted(id),
                 lingerReachable = peers.containsKey(id) || (lastSeenAt[id]?.let { now - it <= REACHABLE_LINGER_MS } == true),
                 corroborated = corroboratedPresent(id),
             )
@@ -804,6 +853,8 @@ class WifiAwareTransport(
         diagJob?.cancel()
         watchdogJob?.cancel()
         unregisterAvailability()
+        unregisterWifiWatch()
+        initiatorPolicy.noteWatchStopped() // a blip cannot span the watch; the strikes and the hold stay (ADR 055)
         NanFaultInjector.bind(onAvailability = null, status = null)
         peers.keys.toList().forEach { teardownPeer(it) }
         stopResponder()
@@ -879,6 +930,7 @@ class WifiAwareTransport(
         if (!hasHardware || paused) return
         paused = true
         Log.i(TAG, "pausing Wi-Fi Aware: radio lent to a same-app role")
+        initiatorPolicy.noteRadioOff() // our own P2P group may blip the STA; that is not the firmware's doing
         onHandler {
             peers.keys.toList().forEach { teardownPeer(it) }
             stopResponder()
@@ -953,6 +1005,11 @@ class WifiAwareTransport(
             return false
         }
         if (peers.containsKey(nodeId)) return true // already linked — nothing to arm
+        if (initiatorHeld(nodeId)) {
+            // We will not raise the link, so don't let the composite wait its grace for one (#78).
+            Log.d(TAG, "bulk arm $nodeId: refused (initiator held)")
+            return false
+        }
         val ageMs = lastSeenAt[nodeId]?.let { SystemClock.elapsedRealtime() - it }
         if (ageMs == null || ageMs > BULK_FRESH_MS || !cueTarget.containsKey(nodeId)) {
             Log.d(TAG, "bulk arm $nodeId: refused (sighting ${ageMs ?: "never"}ms old, cue=${cueTarget.containsKey(nodeId)})")
@@ -1026,7 +1083,7 @@ class WifiAwareTransport(
 
             else -> {
                 onHandler { initiateTo(peer, found.advert, found.peerHandle) }
-                "initiating"
+                if (initiatorPolicy.latched) "initiating (initiator held — this dial is today's probe)" else "initiating"
             }
         }
     }
@@ -1615,7 +1672,20 @@ class WifiAwareTransport(
     private fun syncWanted(
         nodeId: String,
         localVersion: Long,
-    ): Boolean = bulkWanted.isWanted(nodeId) || digestSyncWanted(nodeId, localVersion)
+    ): Boolean = bulkSyncWanted(nodeId) || digestSyncWanted(nodeId, localVersion)
+
+    /** The bulk half of [syncWanted], under the same initiator hold as [digestSyncWanted]. */
+    private fun bulkSyncWanted(nodeId: String): Boolean = bulkWanted.isWanted(nodeId) && !initiatorHeld(nodeId)
+
+    /**
+     * [syncWanted] with the initiator hold lifted — the daily probe's view ([NanInitiatorPolicy.probeDue]).
+     * Read by [driveSync] alone: the recovery sites keep the held view, or the probe window would run the
+     * watchdog's owed clock for a sync the hold is about to refuse again.
+     */
+    private fun syncWantedForProbe(
+        nodeId: String,
+        localVersion: Long,
+    ): Boolean = bulkWanted.isWanted(nodeId) || (nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion))
 
     /**
      * The digest-pure sync gate: [nodeId]'s advertised digest differs from ours
@@ -1631,11 +1701,16 @@ class WifiAwareTransport(
      * Tier-2 process kill), [needsRediscovery] (subscribe re-arm churn is that session's own wedge trigger), [needsIcmRelight],
      * and [rediscoverDelayMs] (no fast-tick cadence for a mark whose wake is the [expectBulkTransfer]
      * healSignal poke).
+     *
+     * The **initiator hold** ([NanInitiatorPolicy], #78) is folded in here for the same reason as [suppressed]:
+     * a peer we have stopped initiating to is not a sync we owe, so the watchdog never runs an owed episode
+     * toward the Tier-2 kill for it, the loop never re-arms subscribe hunting a handle it will not dial, and
+     * the tick relaxes. The tracker is consulted first so its convergence-observed reset still runs.
      */
     private fun digestSyncWanted(
         nodeId: String,
         localVersion: Long,
-    ): Boolean = nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion)
+    ): Boolean = nodeId !in suppressed && digestTracker.reconcileWanted(nodeId, localVersion) && !initiatorHeld(nodeId)
 
     /**
      * Brings up an NDP to the next peer we're the initiator for (`localNodeId > nodeId`, the tie-break), not
@@ -1649,24 +1724,29 @@ class WifiAwareTransport(
     private fun driveSync(): Boolean {
         val localVersion = storeDigest.current()
         val now = SystemClock.elapsedRealtime()
+        // A held role's daily probe sees the un-held gates for this one pass; [initiateTo] consumes the probe.
+        val probe = initiatorPolicy.probeDue()
+        val wanted: (String) -> Boolean =
+            if (probe) ({ syncWantedForProbe(it, localVersion) }) else ({ syncWanted(it, localVersion) })
         val target =
             synchronized(lock) {
                 discovered.entries
                     .filter { (nodeId, _) ->
                         localNodeId > nodeId && nodeId !in peers.keys &&
                             (retryAfter[nodeId]?.let { now >= it } ?: true) &&
-                            syncWanted(nodeId, localVersion)
+                            wanted(nodeId)
                     }
                     // Custody (digest-divergence) syncs outrank bulk-only marks — a photo burst must never
                     // starve store-and-forward anti-entropy — and within a class the least-recently-attempted
                     // peer goes first, so HashMap iteration order can't starve one under contention.
                     .minWithOrNull(
                         compareBy(
-                            { if (digestSyncWanted(it.key, localVersion)) 0 else 1 },
+                            { if (digestSyncWanted(it.key, localVersion) || probe) 0 else 1 },
                             { lastInitiateAttemptAt[it.key] ?: 0L },
                         ),
                     )?.let { it.key to it.value }
             } ?: return false
+        if (probe) Log.i(TAG, "daily initiator probe: one initiate to ${target.first} under the hold")
         initiateTo(target.first, target.second.advert, target.second.peerHandle)
         return true
     }
@@ -2186,6 +2266,9 @@ class WifiAwareTransport(
             Log.w(TAG, "client requestNetwork failed for $peerNodeId")
             return
         }
+        // An initiate of ours is in the air: the firmware's negotiation it starts is what a Wi-Fi drop in the
+        // next two minutes is charged to (#78). Under the hold this is the daily probe — re-journal its time.
+        if (initiatorPolicy.noteInitiate()) journalInitiatorLatch(NanInitiatorLatch(giveUpStamp, System.currentTimeMillis()))
         // Watchdog against a *half-open* NDP: onCapabilitiesChanged can fire with the network "available" but
         // no peer IPv6 yet, so we return and wait for a later callback — but if the IPv6 never arrives, the
         // framework considers the request fulfilled (so its onUnavailable timeout never fires) while the NDP
@@ -2471,6 +2554,13 @@ class WifiAwareTransport(
             inFlight.remove(peerNodeId)
             retryAfter.remove(peerNodeId)
             failStreak.remove(peerNodeId) // link formed → reset the fast-fail streak
+        }
+        // An initiator link is the one thing that refunds the initiator failsafe: the NDP path works on this
+        // hardware, so every Wi-Fi coincidence so far was noise (#78, the ADR 055 rule).
+        if (callback != null && initiatorPolicy.noteInitiatorLink()) {
+            Log.w(TAG, "initiator link formed under the hold — releasing it; this phone initiates again")
+            _initiatorHeld.value = false
+            journalInitiatorLatch(NanInitiatorLatch.NONE)
         }
         bulkWanted.clear(peerNodeId) // the mark's job is done; the next transfer re-marks if needed
         framed.start() // launches read + write loops; stamps linkStartedAt/lastActivityAt at link-up
@@ -2834,7 +2924,14 @@ class WifiAwareTransport(
             }
         } else {
             onHandler {
-                if (sessionCycleSettleStartedAt != 0L) Log.i(TAG, "session cycle: NAN down broadcast observed")
+                if (sessionCycleSettleStartedAt != 0L) {
+                    Log.i(TAG, "session cycle: NAN down broadcast observed")
+                } else {
+                    // The radio went off under us (Wi-Fi off / airplane mode): the STA blip that goes with it is the
+                    // user's, not evidence against our initiate. Not on our own session cycle, though — on the
+                    // Pixel 3 that cycle is the responder's recovery from the very STA drop being judged.
+                    initiatorPolicy.noteRadioOff()
+                }
                 _health.value = TransportHealth.Unavailable // Wi-Fi Aware switched off (Wi-Fi off / airplane mode)
                 peers.keys.toList().forEach { teardownPeer(it) }
                 ++attachGen // invalidate in-flight discovery callbacks from the torn-down generation
@@ -2891,6 +2988,89 @@ class WifiAwareTransport(
         runCatching { appContext.unregisterReceiver(availabilityReceiver) }
         availabilityRegistered = false
     }
+
+    /**
+     * The STA watch behind [NanInitiatorPolicy] (#78). Passive — `registerNetworkCallback` holds no request
+     * and keeps nothing up — and best-effort: a registration the framework refuses (the per-process callback
+     * cap, a ROM quirk) leaves the failsafe inert and the plane exactly as it was.
+     */
+    private fun registerWifiWatch() {
+        if (wifiWatchRegistered) return
+        val request = NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build()
+        wifiWatchRegistered =
+            runCatching { connectivity.registerNetworkCallback(request, wifiWatch, handler) }
+                .onFailure { Log.w(TAG, "Wi-Fi watch registration failed; initiator failsafe inert", it) }
+                .isSuccess
+    }
+
+    private fun unregisterWifiWatch() {
+        if (!wifiWatchRegistered) return
+        runCatching { connectivity.unregisterNetworkCallback(wifiWatch) }
+        wifiWatchRegistered = false
+    }
+
+    /** Our Wi-Fi network went away. Handler thread. [network] is null only from the debug injector. */
+    private fun onStaLost(network: Network?) {
+        Log.i(TAG, "Wi-Fi network lost${network?.let { " ($it)" } ?: ""}")
+        initiatorPolicy.noteWifiLost()
+    }
+
+    /** A Wi-Fi network is up — the registration echo, a reconnect, or the second half of a blip. Handler thread. */
+    private fun onStaAvailable(network: Network?) {
+        when (initiatorPolicy.noteWifiAvailable()) {
+            NanInitiatorPolicy.Verdict.None -> {}
+
+            NanInitiatorPolicy.Verdict.Strike -> {
+                Log.w(
+                    TAG,
+                    "Wi-Fi dropped and came back${network?.let { " ($it)" } ?: ""} within two minutes of an initiate of ours " +
+                        "with no link between — strike ${initiatorPolicy.strikes}/${NanInitiatorPolicy.STRIKES_TO_LATCH}",
+                )
+            }
+
+            NanInitiatorPolicy.Verdict.Latched -> {
+                latchInitiator()
+            }
+
+            NanInitiatorPolicy.Verdict.AlreadyHeld -> {
+                Log.i(TAG, "Wi-Fi dropped again during the daily initiator probe — staying held")
+            }
+        }
+    }
+
+    /**
+     * Three coincidences: hold the initiator role. Nothing is torn down — the responder, discovery, cues and
+     * the fast plane keep running, and the hold acts only through [digestSyncWanted]/[bulkSyncWanted], so every
+     * admission and recovery site stops seeing a sync it would have to initiate. Journaled under [giveUpStamp]
+     * so a restart does not re-learn it by dropping the Wi-Fi three more times (ADR 2026-09.m8kc).
+     */
+    private fun latchInitiator() {
+        Log.w(
+            TAG,
+            "holding the initiator role: our Wi-Fi dropped ${NanInitiatorPolicy.STRIKES_TO_LATCH} times while we initiated " +
+                "— no more data paths from this phone; the responder and discovery stay up, probing once a day",
+        )
+        _initiatorHeld.value = true
+        journalInitiatorLatch(NanInitiatorLatch(giveUpStamp, System.currentTimeMillis()))
+        healSignal.trySend(Unit) // the loop re-derives its cadence and owed set without the held peers
+    }
+
+    private fun journalInitiatorLatch(latch: NanInitiatorLatch) {
+        scope.launch { runCatching { initiatorJournal.setInitiatorLatch(latch) } }
+    }
+
+    /** Diagnostics' "Try again" ([MeshTransport.releaseInitiatorHold]): everything to zero, memory and journal. */
+    override fun releaseInitiatorHold() {
+        val wasHeld = initiatorPolicy.latched
+        initiatorPolicy.reset()
+        _initiatorHeld.value = false
+        journalInitiatorLatch(NanInitiatorLatch.NONE)
+        if (wasHeld) Log.i(TAG, "initiator hold released by the user; the next owed sync initiates")
+        healSignal.trySend(Unit)
+    }
+
+    /** The hold gates a peer we would have to **initiate** to; a larger peer initiating to us is unaffected. */
+    private fun initiatorHeld(nodeId: String): Boolean = initiatorPolicy.latched && localNodeId > nodeId
 
     /**
      * NAN-specific wrapper around a shared [FramedLink]: the per-peer initiator network callback (null for a

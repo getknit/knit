@@ -175,6 +175,16 @@ class DiagnosticsViewModel(
         _events.tryEmit(R.string.diagnostics_scanning)
     }
 
+    /**
+     * Lets a Wi-Fi Aware plane that stopped initiating data paths (its Wi-Fi dropped each time it tried, ADR
+     * 2026-09.m8kc) initiate again. Immediate, unlike [resetModerationLatch]: the transport forgets the
+     * coincidences and re-evaluates on the spot, and the row's tag clears as its status flow follows.
+     */
+    fun releaseInitiatorHold() {
+        meshManager.releaseInitiatorHold()
+        _events.tryEmit(R.string.diagnostics_nan_hold_retry_done)
+    }
+
     private val metricsTicker: Flow<MeshMetrics.Snapshot> =
         flow {
             while (true) {

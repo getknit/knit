@@ -52,6 +52,14 @@ class CompositeMeshTransportTest {
         override val reachable = _reachable.asStateFlow()
         private val healthState = MutableStateFlow(TransportHealth.Healthy)
         override val health = healthState.asStateFlow()
+        private val heldState = MutableStateFlow(false)
+        override val initiatorHeld = heldState.asStateFlow()
+        var releases = 0
+
+        override fun releaseInitiatorHold() {
+            releases++
+        }
+
         private val inboundFlow = MutableSharedFlow<InboundFrame>(extraBufferCapacity = 16)
         override val inbound = inboundFlow.asSharedFlow()
         private val filesFlow = MutableSharedFlow<ReceivedFile>(extraBufferCapacity = 16)
@@ -165,6 +173,10 @@ class CompositeMeshTransportTest {
 
         fun setHealth(h: TransportHealth) {
             healthState.value = h
+        }
+
+        fun setInitiatorHeld(held: Boolean) {
+            heldState.value = held
         }
 
         fun emitInbound(frame: InboundFrame) {
@@ -787,6 +799,34 @@ class CompositeMeshTransportTest {
                 TransportStatus(TransportKind.WifiAware, TransportHealth.Degraded, linked = 1, nearby = 2),
                 statuses.first { it.kind == TransportKind.WifiAware },
             )
+        }
+
+    /** ADR 2026-09.m8kc: a child's initiator hold rides its status line, and the release fans out to every child. */
+    @Test
+    fun statusesCarryTheInitiatorHoldAndTheReleaseFansOut() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild(kind = TransportKind.Bluetooth)
+            val nan = FakeChild(hasFastPlane = true, kind = TransportKind.WifiAware)
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+            nan.setInitiatorHeld(true)
+            advanceUntilIdle()
+
+            val statuses = composite.statuses.value
+            assertTrue(statuses.first { it.kind == TransportKind.WifiAware }.initiatorHeld)
+            assertTrue(!statuses.first { it.kind == TransportKind.Bluetooth }.initiatorHeld)
+            assertEquals(
+                "the hold is a flag, never a health",
+                TransportHealth.Healthy,
+                statuses.first { it.kind == TransportKind.WifiAware }.health,
+            )
+
+            composite.releaseInitiatorHold()
+            assertEquals(1, bt.releases)
+            assertEquals(1, nan.releases)
+
+            nan.setInitiatorHeld(false)
+            advanceUntilIdle()
+            assertTrue(composite.statuses.value.none { it.initiatorHeld })
         }
 
     @Test

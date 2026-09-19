@@ -86,6 +86,14 @@ interface MeshController {
     fun restart()
 
     /**
+     * Diagnostics' "Try again" for a Wi-Fi Aware plane that stopped initiating data paths because doing so
+     * kept dropping the phone's Wi-Fi (`TransportStatus.initiatorHeld`, ADR 2026-09.m8kc). Forwarded to the
+     * transport whether or not the mesh is started — the durable half must clear either way. Default no-op
+     * for fakes.
+     */
+    fun releaseInitiatorHold() {}
+
+    /**
      * The Internet (spool) plane's live state — one entry per configured spool, each carrying its scopes'
      * convergence. Empty when the plane is off, unconfigured, or absent from the build. Read-only
      * observability for Diagnostics and the debug bridge; the digests here are the only way to see a

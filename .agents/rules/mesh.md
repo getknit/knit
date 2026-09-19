@@ -8,7 +8,8 @@ behind each lives in `context/mesh-transport.md`, `context/wire-format.md`, and
 
 - Nothing outside `mesh/wifiaware/` may import `android.net.wifi.aware.*`. `ConnectivityManager` /
   `NetworkRequest` / `NetworkCapabilities` have exactly two importers: `mesh/wifiaware/` for the NAN data
-  path, and `net/AndroidInternetGate.kt`, the validated-Internet seam (ADR: link previews) that answers "is
+  path (and its passive `TRANSPORT_WIFI` watch behind `NanInitiatorPolicy`, ADR 2026-09.m8kc — a
+  `registerNetworkCallback`, never a request), and `net/AndroidInternetGate.kt`, the validated-Internet seam (ADR: link previews) that answers "is
   the *default* network a route to the Internet right now" and hands that `Network` out for a fetch to bind
   to. Nothing may call `bindProcessToNetwork`: it is process-global and would move the mesh sockets onto the
   default network.

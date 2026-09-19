@@ -25,6 +25,7 @@ class SettingsStore(
 ) : InboundSettings,
     ModelLoadJournal,
     NanAttachJournal,
+    NanInitiatorJournal,
     ContributionJournal {
     override val displayName: Flow<String> = dataStore.data.map { it[KEY_NAME] ?: "" }
     val status: Flow<String> = dataStore.data.map { it[KEY_STATUS] ?: "" }
@@ -766,6 +767,22 @@ class SettingsStore(
         dataStore.edit { it[KEY_AWARE_GIVE_UP_STAMP] = stamp }
     }
 
+    override suspend fun initiatorLatch(): NanInitiatorLatch =
+        dataStore.data
+            .map {
+                NanInitiatorLatch(
+                    stamp = it[KEY_NAN_INITIATOR_HOLD_STAMP].orEmpty(),
+                    probedAt = it[KEY_NAN_INITIATOR_HOLD_PROBED_AT] ?: 0L,
+                )
+            }.first()
+
+    override suspend fun setInitiatorLatch(latch: NanInitiatorLatch) {
+        dataStore.edit {
+            it[KEY_NAN_INITIATOR_HOLD_STAMP] = latch.stamp
+            it[KEY_NAN_INITIATOR_HOLD_PROBED_AT] = latch.probedAt
+        }
+    }
+
     private fun Preferences.modelLoadState(model: String) =
         ModelLoadState(
             stamp = this[modelStampKey(model)].orEmpty(),
@@ -788,6 +805,8 @@ class SettingsStore(
         const val MODEL_LOAD_PREFIX = "model_load_"
 
         val KEY_AWARE_GIVE_UP_STAMP = stringPreferencesKey("aware_give_up_stamp")
+        val KEY_NAN_INITIATOR_HOLD_STAMP = stringPreferencesKey("nan_initiator_hold_stamp")
+        val KEY_NAN_INITIATOR_HOLD_PROBED_AT = longPreferencesKey("nan_initiator_hold_probed_at")
         val KEY_NAME = stringPreferencesKey("display_name")
         val KEY_STATUS = stringPreferencesKey("status")
         val KEY_AVATAR_UPDATED_AT = longPreferencesKey("avatar_updated_at")

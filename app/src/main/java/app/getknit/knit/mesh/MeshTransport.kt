@@ -66,7 +66,9 @@ enum class TransportKind { Bluetooth, WifiAware, LoRa, Other }
  * A per-radio status line for the Diagnostics screen, produced by [CompositeMeshTransport.statuses]. [linked]
  * is the count of live data-path links right now (≤1 for Wi-Fi Aware's ephemeral NDP, up to the link budget
  * for Bluetooth); [nearby] is the smoothed coordination-plane [MeshTransport.reachable] count. [contended] is
- * this radio's [MeshTransport.radioContended] hint (Bluetooth ↔ A2DP audio), shown as a diagnostic flag.
+ * this radio's [MeshTransport.radioContended] hint (Bluetooth ↔ A2DP audio), shown as a diagnostic flag;
+ * [initiatorHeld] is its [MeshTransport.initiatorHeld] (Wi-Fi Aware has stopped starting data paths from this
+ * phone), shown as a flag and a Diagnostics section with the way back.
  */
 data class TransportStatus(
     val kind: TransportKind,
@@ -74,11 +76,15 @@ data class TransportStatus(
     val linked: Int,
     val nearby: Int,
     val contended: Boolean = false,
+    val initiatorHeld: Boolean = false,
 )
 
 /** Shared "never contended" default for [MeshTransport.radioContended], so a transport without the signal
  *  allocates nothing (only the Bluetooth plane overrides it). */
 internal val NOT_CONTENDED: StateFlow<Boolean> = MutableStateFlow(false)
+
+/** Shared "never held" default for [MeshTransport.initiatorHeld] (only the Wi-Fi Aware plane overrides it). */
+internal val NEVER_HELD: StateFlow<Boolean> = MutableStateFlow(false)
 
 /**
  * A frame received from a neighbor: the verbatim [wire] (its [WireEnvelope.signed]/[WireEnvelope.sig]
@@ -220,6 +226,15 @@ interface MeshTransport {
      */
     val radioContended: StateFlow<Boolean> get() = NOT_CONTENDED
 
+    /**
+     * Whether this transport has stopped **initiating** data paths because doing so kept costing the phone
+     * its own Wi-Fi (`mesh/wifiaware/NanInitiatorPolicy`, ADR 2026-09.m8kc, work item #78). Diagnostic-only:
+     * the plane is still [TransportHealth.Healthy] — discovery, cues, the responder and the fast plane run,
+     * and nearby phones can still connect to this one. Surfaced in the Diagnostics transport row with
+     * [releaseInitiatorHold] as the way back. Defaults to never held ([NEVER_HELD]); only Wi-Fi Aware overrides it.
+     */
+    val initiatorHeld: StateFlow<Boolean> get() = NEVER_HELD
+
     /** Frames received from neighbors (after transport-level decode, before mesh dedup/relay). */
     val inbound: Flow<InboundFrame>
 
@@ -275,6 +290,13 @@ interface MeshTransport {
 
     /** Reverse of [pause]: takes the radio back and attaches again at once, clearing any attach backoff. */
     fun resume() {}
+
+    /**
+     * The user's "Try again" for [initiatorHeld]: forgets the coincidences that held the initiator role and
+     * lets the next owed sync initiate. Three more Wi-Fi drops re-hold it. Default no-op — only Wi-Fi Aware
+     * has the role; [CompositeMeshTransport] fans it out to every child.
+     */
+    fun releaseInitiatorHold() {}
 
     /**
      * Reverse of [suppressDataPath]: hints that [peers] (by nodeId) are currently reachable over some **other**

@@ -113,12 +113,14 @@ fun DiagnosticsScreen(
     val restartedMsg = stringResource(R.string.diagnostics_mesh_restarted)
     val scanningMsg = stringResource(R.string.diagnostics_scanning)
     val moderationResetMsg = stringResource(R.string.diagnostics_moderation_reset_done)
-    LaunchedEffect(restartedMsg, scanningMsg, moderationResetMsg) {
+    val holdReleasedMsg = stringResource(R.string.diagnostics_nan_hold_retry_done)
+    LaunchedEffect(restartedMsg, scanningMsg, moderationResetMsg, holdReleasedMsg) {
         viewModel.events.collect { resId ->
             snackbarHostState.showSnackbar(
                 when (resId) {
                     R.string.diagnostics_mesh_restarted -> restartedMsg
                     R.string.diagnostics_moderation_reset_done -> moderationResetMsg
+                    R.string.diagnostics_nan_hold_retry_done -> holdReleasedMsg
                     else -> scanningMsg
                 },
             )
@@ -138,6 +140,7 @@ fun DiagnosticsScreen(
         onScan = viewModel::rescan,
         onOpenCrashLog = onOpenCrashLog,
         onResetModeration = { confirmingModerationReset = true },
+        onReleaseInitiatorHold = viewModel::releaseInitiatorHold,
     )
 
     if (confirmingModerationReset) {
@@ -170,6 +173,9 @@ internal fun DiagnosticsScreenContent(
     onScan: () -> Unit,
     onOpenCrashLog: () -> Unit,
     onResetModeration: () -> Unit,
+    // Diagnostics' "Try again" for a Wi-Fi Aware plane holding its initiator role (ADR 2026-09.m8kc). Defaulted:
+    // the section only renders when a transport row says so, and most callers describe phones that never do.
+    onReleaseInitiatorHold: () -> Unit = {},
 ) {
     Scaffold(
         modifier = Modifier.testTag("screen_diagnostics"),
@@ -224,6 +230,10 @@ internal fun DiagnosticsScreenContent(
 
             item { SectionHeader(stringResource(R.string.diagnostics_transports)) }
             item { TransportsSection(state.transports) }
+            // Under the rows it explains: the one plane that can put itself on hold says so with the way back.
+            if (state.transports.any { it is TransportRow.Live && it.status.initiatorHeld }) {
+                item { InitiatorHoldSection(onRelease = onReleaseInitiatorHold) }
+            }
 
             item { SectionHeader(stringResource(R.string.diagnostics_metrics)) }
             item { MetricsSection(state.metrics) }
@@ -579,6 +589,12 @@ private fun LiveTransportRow(row: TransportRow.Live) {
             TransportTag(stringResource(R.string.diagnostics_transport_audio))
             Spacer(Modifier.width(8.dp))
         }
+        // Diagnostic flag: this radio has stopped initiating data paths (Wi-Fi Aware, ADR 2026-09.m8kc). The
+        // dot stays whatever its health is — discovery, cues and the responder still run.
+        if (status.initiatorHeld) {
+            TransportTag(stringResource(R.string.diagnostics_transport_held))
+            Spacer(Modifier.width(8.dp))
+        }
         // A long-range plane has no links by design and its count is *authors heard*, not people nearby —
         // a gateway relays for peers whose own radio is nowhere near. Saying "nearby · linked" there read
         // as two facts that were both false. (The board count itself is on the LoRa settings screen.) And
@@ -796,6 +812,37 @@ private fun ModerationLatchSection(onReset: () -> Unit) {
             Icon(Icons.Filled.RestartAlt, contentDescription = null)
             Spacer(Modifier.width(8.dp))
             Text(stringResource(R.string.diagnostics_moderation_reset_action))
+        }
+    }
+}
+
+/**
+ * Why the Wi-Fi Aware row above says "on hold", and the way back (ADR 2026-09.m8kc, work item #78). The same
+ * shape as [ModerationLatchSection], but no confirm dialog: the release is instant, costs nothing, and three
+ * more Wi-Fi drops put the hold straight back. The label is not error-coloured — the plane is healthy and the
+ * hold is Knit protecting the phone's Wi-Fi, not a fault to alarm over.
+ */
+@Composable
+private fun InitiatorHoldSection(onRelease: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("nan_hold_section"),
+    ) {
+        Text(
+            text = stringResource(R.string.diagnostics_nan_hold_label),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+        )
+        Text(
+            text = stringResource(R.string.diagnostics_nan_hold_body),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(onClick = onRelease, modifier = Modifier.fillMaxWidth().testTag("nan_hold_release")) {
+            Icon(Icons.Filled.RestartAlt, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(stringResource(R.string.diagnostics_nan_hold_retry_action))
         }
     }
 }

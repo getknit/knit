@@ -206,6 +206,14 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
   closes the socket; the NDP forming (`onDataPathRequest` there) is the trial. It answers `peer not in
   discovered ([…])` when the handle is gone, which on API 33+ happens seconds after the last SDF
   (`onServiceLost`), so poll it rather than wait.
+- `…debug.NANINIT` — the Wi-Fi Aware **initiator failsafe** (work item #78, ADR 2026-09.m8kc). No extra dumps
+  `strikes` / `latched` / `probeInMs` / `lastInitiateAgoMs` / `lossPendingMs`. `--ez blip true` injects one Wi-Fi
+  drop-and-return through the transport's own `onStaLost` / `onStaAvailable`, so it is a strike only under the
+  field's rule — an initiate of ours in the last 120 s (`NANDIAL` is the way to make one on demand) with no link
+  since; three in a row with no link → `latched:true`, `init=held` on the state line, the Diagnostics tag and
+  section. `--ez reset true` is Diagnostics' "Try again"; `--ez probe true` makes a held role's daily probe due on
+  the next `driveSync` (the log says `daily initiator probe`). The negative control is a blip right after a
+  *linked* initiate: `strikes` stays 0. Nothing here reproduces the STA drop itself — that needs the Pixel 3.
 - `…debug.FLAGMSG` — injects one inbound message **the text moderator flagged** (the UI collapses it behind a
   tap-to-reveal) as the newest row of `--es conv <id>` (default `nearby`), from `--es from <peerNodeId>`
   (default a synthetic sender) with body `--es text <body>`. The radio-less build never receives a real

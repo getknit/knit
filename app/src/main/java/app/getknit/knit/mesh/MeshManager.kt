@@ -818,6 +818,9 @@ class MeshManager(
         transport.start()
     }
 
+    // No `started` gate: the hold is journaled, and the user may release it with the mesh off.
+    override fun releaseInitiatorHold() = transport.releaseInitiatorHold()
+
     /**
      * Composes a chat message (optionally with an already-ingested image [attachment]), stores it
      * locally (unacked), and floods it to the mesh. The sender already holds the blob, so direct

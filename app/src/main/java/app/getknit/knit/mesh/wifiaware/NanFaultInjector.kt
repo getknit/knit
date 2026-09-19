@@ -20,6 +20,19 @@ internal data class NanResponderSnapshot(
 )
 
 /**
+ * The initiator failsafe's hooks (`…debug.NANINIT`, work item #78): [blip] runs the transport's own Wi-Fi
+ * lost-then-available handlers so a strike can be earned on a phone whose Wi-Fi never drops, [reset] is the
+ * user's "Try again", [forceProbe] makes a held role's daily probe due now (false when not held), [status] is
+ * the policy's snapshot.
+ */
+internal data class NanInitiatorHooks(
+    val blip: () -> Unit,
+    val reset: () -> Unit,
+    val forceProbe: () -> Boolean,
+    val status: () -> NanInitiatorSnapshot,
+)
+
+/**
  * Debug-only fault injection for [WifiAwareTransport]'s attach path, so getknit/Knit#9 can be reproduced on
  * hardware that does not have the bug — and, since work item #77, for its responder's `onUnavailable`, so the
  * re-file pacing of [NanResponderPolicy] can be driven on a device whose framework fulfils the request just fine.
@@ -67,6 +80,9 @@ internal object NanFaultInjector {
     // `…debug.NANDIAL`: initiate an NDP to a discovered peer regardless of the id tie-break. Returns a verdict.
     @Volatile private var dial: ((String) -> String)? = null
 
+    // `…debug.NANINIT`: the initiator failsafe (work item #78) — one bundle, so `bind` stays under detekt's arity.
+    @Volatile private var initiator: NanInitiatorHooks? = null
+
     /** Whether a transport is running and has bound its hooks — false in release, and before `start()`. */
     val bound: Boolean get() = BuildConfig.DEBUG && availability != null
 
@@ -78,6 +94,7 @@ internal object NanFaultInjector {
         responderStatus: (() -> NanResponderSnapshot)? = null,
         onInstantMode: ((Boolean) -> Boolean)? = null,
         onDial: ((String) -> String)? = null,
+        initiatorHooks: NanInitiatorHooks? = null,
     ) {
         if (!BuildConfig.DEBUG) return
         availability = onAvailability
@@ -86,6 +103,7 @@ internal object NanFaultInjector {
         responderSnapshot = responderStatus
         instantMode = onInstantMode
         dial = onDial
+        initiator = initiatorHooks
         if (onAvailability == null) {
             failuresLeft = 0
             refusalsLeft = 0
@@ -159,4 +177,35 @@ internal object NanFaultInjector {
     fun dial(peerNodeId: String): String? = if (BuildConfig.DEBUG) dial?.invoke(peerNodeId) else null
 
     fun responderStatus(): NanResponderSnapshot? = if (BuildConfig.DEBUG) responderSnapshot?.invoke()?.copy(armed = refusalsLeft) else null
+
+    /**
+     * Injects one Wi-Fi blip — the STA lost and back — through the transport's own handlers, so a strike is
+     * earned exactly as the field earns it (an initiate of ours within the window, no link since). `null` when no
+     * transport is bound.
+     */
+    fun blipWifi(): Boolean? =
+        if (BuildConfig.DEBUG) {
+            initiator?.let {
+                it.blip()
+                true
+            }
+        } else {
+            null
+        }
+
+    /** The user's "Try again" for the initiator hold, from the shell. `null` when no transport is bound. */
+    fun resetInitiator(): Boolean? =
+        if (BuildConfig.DEBUG) {
+            initiator?.let {
+                it.reset()
+                true
+            }
+        } else {
+            null
+        }
+
+    /** Makes a held role's daily probe due on the next tick. False when the role is not held; `null` when unbound. */
+    fun forceInitiatorProbe(): Boolean? = if (BuildConfig.DEBUG) initiator?.forceProbe?.invoke() else null
+
+    fun initiatorStatus(): NanInitiatorSnapshot? = if (BuildConfig.DEBUG) initiator?.status?.invoke() else null
 }
