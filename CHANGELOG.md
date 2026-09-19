@@ -31,6 +31,16 @@ document:
   for them again. The permissions page and Settings now show that switch beside the battery row, with a
   button to the page where it turns off.
 
+### Changed
+
+- Your phone spends less battery on a quiet mesh. Each message crosses a Bluetooth link once rather than
+  twice, and a phone left alone with the screen off stops waking its Wi-Fi Aware radio every few seconds.
+- A relay you have set up asks for far less while nothing is happening, and one that has gone quiet is
+  tried every fifteen minutes rather than every minute. On mobile data your phone now checks in with it
+  every four minutes, though the relay still checks in on its own schedule.
+- Knit loads its on-device content filter when you open the app or someone comes into range, rather than
+  on every background restart. A message that arrives twice is checked once.
+
 ### Fixed
 
 - A public Wi-Fi that Android accepted but that silently blocked your relay left it showing as connected
