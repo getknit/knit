@@ -117,6 +117,15 @@ class SettingsViewModel(
             .map { RelaySummary(it.enabled, it.configured, it.active, it.connected) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RelaySummary())
 
+    /**
+     * Whether this identity was seen running on another phone since the user last dismissed the notice
+     * (`SettingsStore.cloneSeenAt` past `cloneDismissedAt`, ADR 2026-09.ypcc) — the sign-out row, shown
+     * exactly while the chat list's banner would be.
+     */
+    val cloneVisible: StateFlow<Boolean> =
+        combine(settings.cloneSeenAt, settings.cloneDismissedAt) { seen, dismissed -> seen > dismissed }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
     /** Summary of the LoRa plane for the row that navigates to its own screen: settings + the live link. */
     val loraSummary: StateFlow<LoraSummary> =
         combine(settings.loraEnabled, settings.loraDeviceName, loraFacts) { enabled, name, lora ->

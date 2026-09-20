@@ -102,6 +102,9 @@ data class ChatListUiState(
     val loraPlane: LoraPlane = LoraPlane.Off,
     // The radio-off warning banner to show (or null), already accounting for the user's dismissal.
     val radioWarning: RadioWarning? = null,
+    // This identity was seen running on another phone since the user last dismissed the notice
+    // (`SettingsStore.cloneSeenAt` past `cloneDismissedAt`, ADR 2026-09.ypcc): the sign-out banner.
+    val cloneVisible: Boolean = false,
     // First run: show the getting-started hint under the Nearby row. True only while there is nothing on
     // this screen to open — see the flag's computation in [state] for what retires it.
     val showGettingStarted: Boolean = false,
@@ -125,7 +128,7 @@ data class ChatListUiState(
 class ChatListViewModel(
     private val messages: MessageRepository,
     peers: PeerRepository,
-    settings: SettingsStore,
+    private val settings: SettingsStore,
     identity: Identity,
     private val meshManager: MeshController,
     private val groups: GroupRepository,
@@ -167,6 +170,8 @@ class ChatListViewModel(
         val neighborCount: Int,
         val health: TransportHealth,
         val warning: RadioWarning?,
+        /** See [ChatListUiState.cloneVisible]. */
+        val cloneVisible: Boolean,
         val relayPlane: RelayPlane,
         val loraPlane: LoraPlane,
         /** The board's primary channel as the Meshtastic room names it, while live — the row's title. */
@@ -229,15 +234,21 @@ class ChatListViewModel(
     private val loraRoom =
         loraFacts.map { Triple(it.plane, it.primaryChannel, it.room) }.distinctUntilChanged()
 
+    // The clone notice is two persisted stamps, so it survives a restart and a mesh that is off; paired with
+    // the relay plane to keep the combine below on its typed five-flow overload.
+    private val cloneVisible =
+        combine(settings.cloneSeenAt, settings.cloneDismissedAt) { seen, dismissed -> seen > dismissed }
+            .distinctUntilChanged()
+
     private val meshStatus =
         combine(
             meshManager.neighborCount,
             meshManager.transportHealth,
-            visibleWarning,
+            combine(visibleWarning, cloneVisible) { warning, clone -> warning to clone },
             relayPlane,
             loraRoom,
-        ) { count, health, warning, plane, (loraPlane, channel, room) ->
-            MeshStatus(count, health, warning, plane, loraPlane, channel, room)
+        ) { count, health, (warning, clone), plane, (loraPlane, channel, room) ->
+            MeshStatus(count, health, warning, clone, plane, loraPlane, channel, room)
         }
 
     /** Everything one emission of [state] is built from — the five combined sources, named. */
@@ -294,6 +305,15 @@ class ChatListViewModel(
         state.value.radioWarning
             ?.takeIf { it != RadioWarning.AllRadiosOff }
             ?.let { dismissed.value = it }
+    }
+
+    /**
+     * Hides the "also active on another phone" banner — the user says the other phone is gone. Persisted:
+     * only a twin frame stamped after this moment brings it back (`mesh/CloneWatch`), so a custody re-serve
+     * of what the other phone published before it was wiped stays quiet.
+     */
+    fun dismissClone() {
+        viewModelScope.launch { settings.setCloneDismissedAt(System.currentTimeMillis()) }
     }
 
     /**

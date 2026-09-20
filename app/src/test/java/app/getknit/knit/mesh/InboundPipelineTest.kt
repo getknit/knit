@@ -244,6 +244,9 @@ class InboundPipelineTest {
 
         // What the direct-transfer hook saw, and what it answers (true = a live incoming offer was admitted).
         val transferSignals = mutableListOf<Triple<String, TransferPayload, Long>>()
+
+        // The publish stamps of our own profile looping back — what the clone watch is handed (ADR 2026-09.ypcc).
+        val selfProfileStamps = mutableListOf<Long>()
         var admitTransfer = true
         val forwardSync = ForwardSync(transport, forwardStore, clock = { 0L })
         val blobExchange = BlobExchange(transport, blobStore, selfId = { self.nodeId }, onObtained = { _, _ -> })
@@ -406,6 +409,7 @@ class InboundPipelineTest {
                         transferSignals += Triple(sender, xf, at)
                         admitTransfer
                     },
+                    onSelfProfile = { selfProfileStamps += it },
                 )
         }
 
@@ -1481,6 +1485,19 @@ class InboundPipelineTest {
             assertTrue("the reconverge still re-carries it", rig.forwardStore.has(profile.id))
             assertTrue("no group seeds are flushed toward ourselves", rig.groupKeysFlushed.none { it.first == rig.self.nodeId })
             assertTrue("nothing is originated in answer", rig.originated.isEmpty())
+            assertEquals("the clone watch is handed its stamp, and only ours", listOf(profile.sentAt), rig.selfProfileStamps)
+        }
+
+    /** A peer's profile is theirs to pin; it is never mistaken for evidence about our own identity. */
+    @Test
+    fun aPeersProfileNeverReachesTheCloneWatch() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val bob = party()
+            rig.deliver(bob, rig.profile(bob, name = "Bob"))
+
+            assertNotNull("pinned like any first contact", rig.peerMap[bob.nodeId])
+            assertTrue(rig.selfProfileStamps.isEmpty())
         }
 
     /**

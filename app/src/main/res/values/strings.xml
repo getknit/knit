@@ -145,6 +145,11 @@
     <string name="chatlist_radio_banner_all_off">Knit can\'t connect — turn on Wi-Fi or Bluetooth to reach people nearby</string>
     <string name="chatlist_radio_banner_all_off_airplane">Airplane mode is on — turn it off or turn on Wi-Fi/Bluetooth to connect</string>
     <string name="chatlist_radio_banner_dismiss">Dismiss</string>
+    <!-- Chat-list clone banner: this identity was seen running on another phone (one backup restored twice,
+         ADR 2026-09.ypcc). The dismiss means "the other phone is gone"; it comes back on fresh evidence. -->
+    <string name="chatlist_clone_banner_message">This account is also active on another phone. Messages reach only one of them at a time.</string>
+    <string name="chatlist_clone_banner_action">Sign out here</string>
+    <string name="chatlist_clone_banner_dismiss">The other phone is gone</string>
     <string name="chat_empty">No messages yet.\nSay hello to nearby devices.</string>
     <!-- Shown above the oldest loaded message while more of the conversation is being read in. -->
     <string name="chat_loading_older">Loading earlier messages…</string>
@@ -783,6 +788,14 @@
          and the Knit version that wrote it; `backup_progress` two sizes already formatted for the locale. -->
     <string name="settings_backup_title">Backup and restore</string>
     <string name="settings_backup_subtitle">Keep your identity, contacts and messages in a file you control</string>
+    <!-- The clone notice's Settings row, shown only while the chat-list banner would show. -->
+    <string name="settings_clone_title">This account is also active on another phone</string>
+    <string name="settings_clone_subtitle">Two phones on one identity keep resetting each other\'s conversations. Keep one: sign out here, or stop using Knit on the other.</string>
+    <!-- "Sign out here" (both doors): ActivityManager.clearApplicationUserData — the app closes, everything
+         it holds on this phone goes, and the next open is a fresh install's onboarding. -->
+    <string name="signout_confirm_title">Sign out on this phone?</string>
+    <string name="signout_confirm_body">Knit closes and clears everything it holds on this phone: this identity, its contacts, groups, messages and photos. The other phone keeps all of it. When you open Knit here again it sets up a new identity and asks for its permissions again.</string>
+    <string name="signout_confirm_action">Sign out and clear</string>
     <string name="backup_title">Backup and restore</string>
     <string name="backup_restore_title">Restore from a backup</string>
     <string name="backup_section_backup">Back up this phone</string>

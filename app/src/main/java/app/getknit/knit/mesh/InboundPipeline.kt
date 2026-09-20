@@ -180,6 +180,10 @@ class InboundPipeline(
     // seal a pending contact-card intro (MeshManager → IntroSync.onProfilePinned), lambda-mediated like
     // the rest so the pipeline stays free of the driver. Fires for every plane the profile arrives on.
     private val onProfilePinned: suspend (senderId: String) -> Unit = {},
+    // A verified `profile` under OUR OWN node id arrived, with its publish stamp (`sentAt`) — the clone
+    // watch's one input (mesh/CloneWatch, ADR 2026-09.ypcc): a stamp this phone never minted proves the
+    // identity is running elsewhere. Lambda-mediated like the rest; the pipeline itself keeps dropping the frame.
+    private val onSelfProfile: suspend (sentAt: Long) -> Unit = {},
     // A v2 DM from this sender opened and committed; `carriesInit` says its ratchet header still carried the
     // X3DH init, i.e. the sender has not yet seen a frame of ours (IntroSync.onPeerFrameOpened). Runs
     // post-commit, outside the ratchet lock, since the answer it may trigger seals a frame of its own.
@@ -2956,7 +2960,7 @@ class InboundPipeline(
      * past detekt's threshold of 15. The body is a straight-line sequence of null-coalesced field resolutions
      * and guards — not genuinely complex — and the guard is load-bearing, so suppress rather than reshuffle it.
      */
-    @Suppress("CyclomaticComplexMethod", "LongMethod") // LongMethod: the self guard's one line tipped it to 61
+    @Suppress("CyclomaticComplexMethod", "LongMethod") // LongMethod: the self guard tipped it past 60
     private suspend fun handleProfile(
         env: RelayEnvelope,
         wire: WireEnvelope,
@@ -2970,7 +2974,12 @@ class InboundPipeline(
         // opened and trips the reset heuristic, the reset re-flushes the seeds — a self-sustaining loop of
         // sealed self-addressed frames, one every hour or two on every phone, each flooded, custodied and
         // carried over LoRa airtime (found via the Your mesh screen's custody count, 2026-09-13).
-        if (env.senderId == identity.nodeId()) return
+        // Still dropped, but first noted: the stamp is the one thing a re-served self profile can tell us —
+        // whether this phone ever minted it (mesh/CloneWatch, ADR 2026-09.ypcc).
+        if (env.senderId == identity.nodeId()) {
+            onSelfProfile(env.sentAt)
+            return
+        }
         val content = WireCodec.decodePayload<ProfileContent>(env.payload) ?: return
         // Self-certifying identity: a peer's nodeId IS the hash of its public-key bundle, so a profile
         // is only trustworthy if the advertised key actually derives back to the claimed senderId.

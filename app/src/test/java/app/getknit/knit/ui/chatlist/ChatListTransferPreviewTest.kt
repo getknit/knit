@@ -83,6 +83,9 @@ class ChatListTransferPreviewTest {
         every { peers.observeDirectory() } returns peersFlow.map { directoryOf(it) }
         every { settings.lastReadAll } returns MutableStateFlow(emptyMap())
         every { settings.acceptedConversations } returns MutableStateFlow(emptySet())
+        // The clone notice's stamps (ADR 2026-09.ypcc): a relaxed mock's Flow never emits and stalls the combine.
+        every { settings.cloneSeenAt } returns MutableStateFlow(0L)
+        every { settings.cloneDismissedAt } returns MutableStateFlow(0L)
         // A relaxed mock hands back a Flow that never emits, and one silent arm stalls the whole combine.
         every { drafts.all } returns draftsFlow
         every { transfers.states } returns transfersFlow

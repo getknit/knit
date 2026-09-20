@@ -110,6 +110,8 @@ import app.getknit.knit.ui.invite.launchApkShareChooser
 import app.getknit.knit.ui.invite.prepareKnitApk
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
+import app.getknit.knit.ui.signout.SignOut
+import app.getknit.knit.ui.signout.SignOutDialog
 import app.getknit.knit.ui.theme.KnitMotion
 import app.getknit.knit.ui.util.compactTimeAgo
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
@@ -132,6 +134,8 @@ fun ChatListScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var showShareApp by remember { mutableStateOf(false) }
+    // The clone banner's "Sign out here": one confirmation, then the wipe (ui/signout/SignOut).
+    var showSignOut by remember { mutableStateOf(false) }
     // A Play (App Bundle) install is merged into one shareable APK on the fly — several seconds — so we
     // gate the share sheet behind a spinner. Flashes instantly for a single-APK install (fast copy path).
     var preparingShare by remember { mutableStateOf(false) }
@@ -157,8 +161,20 @@ fun ChatListScreen(
         onShareApp = { showShareApp = true },
         onOpenRadioSettings = { warning -> openRadioSettings(context, warning) },
         onDismissRadioWarning = viewModel::dismissRadioWarning,
+        onSignOut = { showSignOut = true },
+        onDismissClone = viewModel::dismissClone,
         onDeleteConversation = viewModel::deleteConversation,
     )
+
+    if (showSignOut) {
+        SignOutDialog(
+            onConfirm = {
+                showSignOut = false
+                SignOut.here(context)
+            },
+            onDismiss = { showSignOut = false },
+        )
+    }
 
     if (showShareApp) {
         ShareKnitDialog(
@@ -222,6 +238,8 @@ internal fun ChatListScreenContent(
     onOpenAddContact: () -> Unit,
     onOpenRadioSettings: (RadioWarning) -> Unit,
     onDismissRadioWarning: () -> Unit,
+    onSignOut: () -> Unit,
+    onDismissClone: () -> Unit,
     onDeleteConversation: (conversationId: String) -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -376,6 +394,10 @@ internal fun ChatListScreenContent(
             // lets the list below slide down and back instead of jumping the banner's height in one frame,
             // and needs no retained copy of a dismissed warning to draw while it collapses.
             Column(modifier = Modifier.animateContentSize(KnitMotion.spatial())) {
+                // Above the radio banner: an identity on two phones outranks a radio that is off.
+                if (state.cloneVisible) {
+                    CloneBanner(onSignOut = onSignOut, onDismiss = onDismissClone)
+                }
                 state.radioWarning?.let { warning ->
                     RadioWarningBanner(
                         warning = warning,
@@ -973,6 +995,8 @@ fun ChatListScreenPopulatedPreview() =
             onShareApp = {},
             onOpenRadioSettings = {},
             onDismissRadioWarning = {},
+            onSignOut = {},
+            onDismissClone = {},
             onDeleteConversation = {},
         )
     }
@@ -1003,6 +1027,41 @@ fun ChatListScreenRadioWarningPreview() =
             onShareApp = {},
             onOpenRadioSettings = {},
             onDismissRadioWarning = {},
+            onSignOut = {},
+            onDismissClone = {},
+            onDeleteConversation = {},
+        )
+    }
+
+// The identity was seen on another phone (ADR 2026-09.ypcc): the sign-out banner, above a radio warning.
+@Preview(showBackground = true)
+@Composable
+fun ChatListScreenClonePreview() =
+    KnitPreview {
+        ChatListScreenContent(
+            state =
+                ChatListUiState(
+                    conversations = previewConversations(),
+                    neighborCount = 1,
+                    radioWarning = RadioWarning.BluetoothOff,
+                    cloneVisible = true,
+                ),
+            now = PREVIEW_NOW,
+            onOpenConversation = {},
+            onSearch = {},
+            onNewMessage = {},
+            onOpenSettings = {},
+            onOpenYourMesh = {},
+            onOpenDiagnostics = {},
+            onOpenBlockedUsers = {},
+            onOpenMessageRequests = {},
+            onOpenDonate = {},
+            onOpenAddContact = {},
+            onShareApp = {},
+            onOpenRadioSettings = {},
+            onDismissRadioWarning = {},
+            onSignOut = {},
+            onDismissClone = {},
             onDeleteConversation = {},
         )
     }
@@ -1028,6 +1087,8 @@ fun ChatListScreenLoadingPreview() =
             onShareApp = {},
             onOpenRadioSettings = {},
             onDismissRadioWarning = {},
+            onSignOut = {},
+            onDismissClone = {},
             onDeleteConversation = {},
         )
     }
@@ -1071,6 +1132,8 @@ fun ChatListScreenFirstRunPreview() =
             onShareApp = {},
             onOpenRadioSettings = {},
             onDismissRadioWarning = {},
+            onSignOut = {},
+            onDismissClone = {},
             onDeleteConversation = {},
         )
     }
@@ -1102,6 +1165,8 @@ fun ChatListScreenQuietPreview() =
             onShareApp = {},
             onOpenRadioSettings = {},
             onDismissRadioWarning = {},
+            onSignOut = {},
+            onDismissClone = {},
             onDeleteConversation = {},
         )
     }

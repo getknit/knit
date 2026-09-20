@@ -174,6 +174,7 @@ carries; never renumber an old one.
 | [2026-09.xmte](decisions/2026-09-xmte-radio-evidence-for-an-attachment-deferral-must-name-a-short-range-plane.md) | Radio evidence for an attachment deferral must name a short-range plane | spool, attachments, receipts |
 | [2026-09.y5f3](decisions/2026-09-y5f3-a-ride-hold-has-a-deadline.md) | A ride hold has a deadline, and the spool is the room tick's first way home | receipts, mesh, lora, spool |
 | [2026-09.y8pu](decisions/2026-09-y8pu-a-lora-fan-out-nobody-heard-does-not-suppress-its-own-backfill.md) | A LoRa fan-out nobody heard does not suppress its own backfill | lora, custody, reliability |
+| [2026-09.ypcc](decisions/2026-09-ypcc-a-cloned-identity-is-detected-from-its-own-profile-stamp.md) | A cloned identity is detected from its own profile stamp, and sign-out is a wipe | mesh, ui, backup |
 | [2026-09.ywzn](decisions/2026-09-ywzn-a-blob-obtained-off-the-radios-serves-the-neighbours-that-asked-for-it.md) | A blob obtained off the radios serves the neighbours that asked for it | mesh, attachments, spool |
 | [2026-09.z58t](decisions/2026-09-z58t-the-chat-list-reads-per-thread-summaries.md) | The chat list reads per-thread summaries, and an accepted thread has no retention cap | data, ui, perf |
 | [2026-09.zapp](decisions/2026-09-zapp-a-photo-less-group-avatar-is-its-members-faces.md) | A photo-less group avatar is its members' faces, drawn the same in the shade | ui, identity, notifications |

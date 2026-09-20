@@ -21,10 +21,12 @@ object SettingsKeys {
      * initiator-hold journals, the model poison-pill latch), and the paired LoRa board's address, names and
      * pre-setup values — the BLE bond is per phone, so the user pairs the board again and those come back
      * with it. The board's node number and key stay: they ride the profile and are worth keeping. Matched
-     * as prefixes against the key name.
+     * as prefixes against the key name. The clone watch's two stamps (`clone_seen_at`, `clone_dismissed_at`)
+     * are about this phone too: a backup taken while its banner showed must not plant it on the next one.
      */
     val TRANSIENT_PREFIXES: List<String> =
         listOf(
+            "clone_",
             "aware_give_up_stamp",
             "nan_initiator_hold_",
             "model_load_",

@@ -87,6 +87,10 @@ class ChatListViewModelTest {
     private val acceptedFlow = MutableStateFlow(emptySet<String>())
     private val draftsFlow = MutableStateFlow(emptyMap<String, DraftEntity>())
 
+    // The clone notice's two stamps (ADR 2026-09.ypcc); seen past dismissed lights the banner.
+    private val cloneSeenFlow = MutableStateFlow(0L)
+    private val cloneDismissedFlow = MutableStateFlow(0L)
+
     // A finite stand-in for the production poller, which never idles under a virtual clock.
     private val relayFlow = MutableStateFlow(RelayFacts())
     private val loraFlow = MutableStateFlow(LoraFacts())
@@ -105,6 +109,8 @@ class ChatListViewModelTest {
         // whole combine — every assertion in this class would then read the loading seed.
         every { drafts.all } returns draftsFlow
         every { commons.observeAll() } returns commonsFlow
+        every { settings.cloneSeenAt } returns cloneSeenFlow
+        every { settings.cloneDismissedAt } returns cloneDismissedFlow
     }
 
     @After
@@ -349,6 +355,32 @@ class ChatListViewModelTest {
                     .first { it.id == Conversations.NEARBY }
             assertTrue(nearby.isRoom)
             assertEquals(context.getString(R.string.nearby_title), nearby.title)
+        }
+
+    /** The clone banner (ADR 2026-09.ypcc) is the two persisted stamps compared, and a dismissal writes the second. */
+    @Test
+    fun theCloneBannerFollowsTheSeenStampPastTheDismissal() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+            assertFalse(vm.state.value.cloneVisible)
+
+            cloneSeenFlow.value = 5_000
+            advanceUntilIdle()
+            assertTrue(vm.state.value.cloneVisible)
+
+            vm.dismissClone()
+            advanceUntilIdle()
+            coVerify { settings.setCloneDismissedAt(more(5_000L)) }
+            cloneDismissedFlow.value = 6_000
+            advanceUntilIdle()
+            assertFalse(vm.state.value.cloneVisible)
+
+            // The other phone published again after the dismissal: back up.
+            cloneSeenFlow.value = 7_000
+            advanceUntilIdle()
+            assertTrue(vm.state.value.cloneVisible)
         }
 
     @Test

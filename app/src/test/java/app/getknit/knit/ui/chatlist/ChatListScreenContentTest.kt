@@ -1,5 +1,8 @@
 package app.getknit.knit.ui.chatlist
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertContentDescriptionContains
 import androidx.compose.ui.test.assertIsDisplayed
@@ -83,6 +86,8 @@ class ChatListScreenContentTest {
                     onShareApp = {},
                     onOpenRadioSettings = {},
                     onDismissRadioWarning = {},
+                    onSignOut = {},
+                    onDismissClone = {},
                     onDeleteConversation = {},
                 )
             }
@@ -122,6 +127,8 @@ class ChatListScreenContentTest {
                     onShareApp = {},
                     onOpenRadioSettings = {},
                     onDismissRadioWarning = {},
+                    onSignOut = {},
+                    onDismissClone = {},
                     onDeleteConversation = {},
                 )
             }
@@ -159,6 +166,8 @@ class ChatListScreenContentTest {
                     onShareApp = {},
                     onOpenRadioSettings = {},
                     onDismissRadioWarning = {},
+                    onSignOut = {},
+                    onDismissClone = {},
                     onDeleteConversation = {},
                 )
             }
@@ -192,6 +201,8 @@ class ChatListScreenContentTest {
                     onShareApp = {},
                     onOpenRadioSettings = {},
                     onDismissRadioWarning = {},
+                    onSignOut = {},
+                    onDismissClone = {},
                     onDeleteConversation = {},
                 )
             }
@@ -227,6 +238,8 @@ class ChatListScreenContentTest {
                     onShareApp = {},
                     onOpenRadioSettings = {},
                     onDismissRadioWarning = {},
+                    onSignOut = {},
+                    onDismissClone = {},
                     onDeleteConversation = {},
                 )
             }
@@ -261,6 +274,8 @@ class ChatListScreenContentTest {
                     onShareApp = {},
                     onOpenRadioSettings = {},
                     onDismissRadioWarning = {},
+                    onSignOut = {},
+                    onDismissClone = {},
                     onDeleteConversation = {},
                 )
             }
@@ -295,6 +310,8 @@ class ChatListScreenContentTest {
                     onShareApp = {},
                     onOpenRadioSettings = {},
                     onDismissRadioWarning = {},
+                    onSignOut = {},
+                    onDismissClone = {},
                     onDeleteConversation = {},
                 )
             }
@@ -327,6 +344,8 @@ class ChatListScreenContentTest {
                     onShareApp = {},
                     onOpenRadioSettings = {},
                     onDismissRadioWarning = {},
+                    onSignOut = {},
+                    onDismissClone = {},
                     onDeleteConversation = {},
                 )
             }
@@ -368,6 +387,8 @@ class ChatListScreenContentTest {
                     onShareApp = {},
                     onOpenRadioSettings = {},
                     onDismissRadioWarning = {},
+                    onSignOut = {},
+                    onDismissClone = {},
                     onDeleteConversation = {},
                 )
             }
@@ -387,5 +408,47 @@ class ChatListScreenContentTest {
                 .joinToString()
         assertTrue(lena.contains("Lena"))
         assertFalse(lena.contains("Sent"))
+    }
+
+    /** The clone notice (ADR 2026-09.ypcc): shown on the flag, its two actions routed, absent otherwise. */
+    @Test
+    fun theCloneBannerOffersSignOutAndDismissOnlyWhileTheFlagIsUp() {
+        var signOuts = 0
+        var dismissals = 0
+        var visible by mutableStateOf(true)
+        compose.setContent {
+            KnitTheme {
+                ChatListScreenContent(
+                    state = ChatListUiState(conversations = listOf(row("nearby", "Nearby", isRoom = true)), cloneVisible = visible),
+                    now = now,
+                    onOpenConversation = {},
+                    onSearch = {},
+                    onNewMessage = {},
+                    onOpenSettings = {},
+                    onOpenYourMesh = {},
+                    onOpenDiagnostics = {},
+                    onOpenBlockedUsers = {},
+                    onOpenMessageRequests = {},
+                    onOpenDonate = {},
+                    onOpenAddContact = {},
+                    onShareApp = {},
+                    onOpenRadioSettings = {},
+                    onDismissRadioWarning = {},
+                    onSignOut = { signOuts++ },
+                    onDismissClone = { dismissals++ },
+                    onDeleteConversation = {},
+                )
+            }
+        }
+
+        compose.onNodeWithTag("chatlist_clone_banner").assertIsDisplayed()
+        compose.onNodeWithTag("chatlist_clone_banner_signout").performClick()
+        assertEquals(1, signOuts)
+        compose.onNodeWithTag("chatlist_clone_banner_dismiss").performClick()
+        assertEquals(1, dismissals)
+
+        visible = false
+        compose.waitForIdle()
+        compose.onNodeWithTag("chatlist_clone_banner").assertDoesNotExist()
     }
 }

@@ -37,6 +37,8 @@ class SettingsSnapshotTest {
                     stringPreferencesKey("lora_device_address") to "AA:BB",
                     stringPreferencesKey("lora_prior_long_name") to "board",
                     stringPreferencesKey("lora_plane_state") to "{}",
+                    longPreferencesKey("clone_seen_at") to 5L,
+                    longPreferencesKey("clone_dismissed_at") to 3L,
                     longPreferencesKey("lora_board_node") to 42L,
                     booleanPreferencesKey("lora_enabled") to true,
                 )
@@ -57,6 +59,8 @@ class SettingsSnapshotTest {
                 "lora_device_address",
                 "lora_prior_long_name",
                 "lora_plane_state",
+                "clone_seen_at",
+                "clone_dismissed_at",
             )) {
                 assertFalse(dropped, restored.asMap().keys.any { it.name == dropped })
             }

@@ -18,12 +18,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PhonelinkErase
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -35,6 +37,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -69,6 +72,8 @@ import app.getknit.knit.ui.openUnusedAppPauseSettings
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.rememberOnResume
 import app.getknit.knit.ui.requestIgnoreBatteryOptimizations
+import app.getknit.knit.ui.signout.SignOut
+import app.getknit.knit.ui.signout.SignOutDialog
 import app.getknit.knit.ui.theme.DYNAMIC_COLOR_SUPPORTED
 import app.getknit.knit.ui.theme.THEME_MODE_SUPPORTED
 import app.getknit.knit.ui.theme.ThemeMode
@@ -84,6 +89,8 @@ internal data class SettingsFormState(
     val dynamicColor: Boolean = false,
     val relay: RelaySummary = RelaySummary(),
     val lora: LoraSummary = LoraSummary(),
+    /** The "also active on another phone" row (ADR 2026-09.ypcc), shown while the chat list's banner is. */
+    val cloneVisible: Boolean = false,
 )
 
 /**
@@ -108,8 +115,20 @@ fun SettingsScreen(
     val dynamicColor by viewModel.dynamicColor.collectAsStateWithLifecycle()
     val relay by viewModel.relaySummary.collectAsStateWithLifecycle()
     val lora by viewModel.loraSummary.collectAsStateWithLifecycle()
+    val cloneVisible by viewModel.cloneVisible.collectAsStateWithLifecycle()
+    // The clone row's "Sign out here": one confirmation, then the wipe (ui/signout/SignOut).
+    var showSignOut by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
+    if (showSignOut) {
+        SignOutDialog(
+            onConfirm = {
+                showSignOut = false
+                SignOut.here(context)
+            },
+            onDismiss = { showSignOut = false },
+        )
+    }
     SettingsScreenContent(
         form =
             SettingsFormState(
@@ -120,6 +139,7 @@ fun SettingsScreen(
                 dynamicColor = dynamicColor,
                 relay = relay,
                 lora = lora,
+                cloneVisible = cloneVisible,
             ),
         battery = rememberOnResume { backgroundBattery(context) },
         unusedPause = rememberOnResume { unusedAppPause(context) },
@@ -135,6 +155,7 @@ fun SettingsScreen(
         onOpenAbout = onOpenAbout,
         onOpenLicenses = onOpenLicenses,
         onOpenBackup = onOpenBackup,
+        onSignOut = { showSignOut = true },
         onAllowBattery = { requestIgnoreBatteryOptimizations(context) },
         onOpenBatterySettings = { openAppSettings(context) },
         onOpenUnusedPauseSettings = { openUnusedAppPauseSettings(context) },
@@ -157,6 +178,8 @@ internal fun SettingsScreenContent(
     onOpenAbout: () -> Unit = {},
     onOpenLicenses: () -> Unit = {},
     onOpenBackup: () -> Unit = {},
+    // The clone row's action — opens the confirmation in the stateful wrapper, never the wipe itself.
+    onSignOut: () -> Unit = {},
     // Whether the Internet-relay plane is introduced at all in this build. A parameter rather than a
     // bare BuildConfig read so the hidden case is previewable and testable; see app/build.gradle.kts.
     showInternetRelays: Boolean = BuildConfig.INTERNET_PLANE,
@@ -233,6 +256,12 @@ internal fun SettingsScreenContent(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             ProfileHeaderRow(header = form.header, onClick = onOpenProfile)
+
+            // First, above every switch: an identity on two phones is the most consequential thing this
+            // screen can say, and the row goes with the chat list's banner.
+            if (form.cloneVisible) {
+                CloneNoticeRow(onClick = onSignOut)
+            }
 
             ToggleRow(
                 title = stringResource(R.string.settings_content_filtering_title),
@@ -511,6 +540,50 @@ private fun LoraRadioRow(
     )
 }
 
+/**
+ * The "also active on another phone" row (ADR 2026-09.ypcc): the screen's one danger row, in the chat-list
+ * banner's colours, whose tap is "Sign out here". Not a [NavigatingRow] — it leads to a confirmation, not a screen.
+ */
+@Composable
+private fun CloneNoticeRow(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        tonalElevation = 3.dp,
+        modifier = modifier.fillMaxWidth().testTag("settings_clone_row"),
+    ) {
+        Row(
+            modifier =
+                Modifier
+                    .clickable(onClick = onClick, role = Role.Button)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Filled.PhonelinkErase, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.settings_clone_title),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = stringResource(R.string.settings_clone_subtitle),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Text(
+                text = stringResource(R.string.chatlist_clone_banner_action),
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+    }
+}
+
 /** A titled row that hands off to another screen: title, live subtitle, chevron. One tap target. */
 @Composable
 private fun NavigatingRow(
@@ -737,6 +810,21 @@ fun SettingsScreenPreview() =
                     lora = LoraSummary(enabled = true, boardName = "Meshtastic_1a2b", plane = LoraPlane.Live),
                 ),
             battery = BackgroundBattery.Optimized,
+            onBack = {},
+            onToggleContentFiltering = {},
+            onOpenRelays = {},
+            onAllowBattery = {},
+        )
+    }
+
+// The identity was seen on another phone (ADR 2026-09.ypcc): the sign-out row leads the column.
+@Preview(showBackground = true)
+@Composable
+fun SettingsScreenClonePreview() =
+    KnitPreview {
+        SettingsScreenContent(
+            form = SettingsFormState(header = ProfileHeader(name = "Ada Lovelace", alias = "GentlyRustlingRabbit"), cloneVisible = true),
+            battery = BackgroundBattery.Unrestricted,
             onBack = {},
             onToggleContentFiltering = {},
             onOpenRelays = {},

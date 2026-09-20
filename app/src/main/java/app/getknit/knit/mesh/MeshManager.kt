@@ -252,6 +252,12 @@ class MeshManager(
             metrics = metrics,
         )
 
+    // The same-identity clone watch (ADR 2026-09.ypcc): a `profile` under our own node id whose stamp this
+    // phone never minted lights the "also active on another phone" state in the settings store. Its one
+    // side effect is the counter-flood — a fresh stamp so the other phone sees us within a contact — fired
+    // once per not-visible → visible edge; `broadcastProfile` bumps the version too, harmlessly (same content).
+    private val cloneWatch = CloneWatch(settings, clock) { broadcastProfile() }
+
     // The contact-card intro driver (docs/CONTACT_CARD.md): turns a peer pinned from an out-of-band card
     // into a confirmed ratchet session by sealing a CTL_PROFILE DM as soon as the peer's prekey is known,
     // re-sending on a floor while unconfirmed, and answering an unconfirmed peer. Its pending/grace peers
@@ -409,6 +415,7 @@ class MeshManager(
             adoptGroupRoot = ::adoptGroupRoot,
             onGroupRootCtl = ::onGroupRootCtl,
             onProfilePinned = { introSync.onProfilePinned(it) },
+            onSelfProfile = { cloneWatch.onSelfProfile(it) },
             onPeerFrameOpened = { senderId, carriesInit -> introSync.onPeerFrameOpened(senderId, carriesInit) },
             onTransferCtl = onTransferSignal,
             commonsTitle = { commons?.find(it)?.name },

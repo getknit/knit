@@ -15,7 +15,9 @@ secrets under a key the user holds instead.
 
 A restore is a **move**, never a copy. The mesh has no multi-device concept: two phones running one
 identity each hold a different ratchet session per peer and keep resetting each other's conversations.
-The UI says so; the format does nothing to prevent it.
+The UI says so; the format does nothing to prevent it. The app does notice it after the fact — a profile
+frame under its own node id carrying a publish stamp it never minted (`mesh/CloneWatch`, ADR
+2026-09.ypcc) — and offers "Sign out here", which clears the phone so the next open is a fresh identity.
 
 ## Layout
 

@@ -153,8 +153,25 @@ class MeshLab {
         // The BLE side channel's air (ADR 2026-09.sjaa): the node's radio grows the fast plane the shipped
         // Bluetooth plane has — the link copy plus a page every member in range hears. Null keeps the radio bare.
         pages: LabPages? = null,
+        // A second phone on ANOTHER node's identity — one backup restored twice (ADR 2026-09.ypcc). Same key,
+        // same node id, its own database and settings; the two can never link (`LabTransport.connect` refuses
+        // its own node id, as the radios do), they only meet each other's frames through a third node.
+        sameIdentityAs: LabNode? = null,
     ): LabNode {
-        val node = LabNode(name, context, File(dir, name).apply { mkdirs() }, limits, air, spool, spoolOptIn, commons, clock, pages)
+        val node =
+            LabNode(
+                name,
+                context,
+                File(dir, name).apply { mkdirs() },
+                limits,
+                air,
+                spool,
+                spoolOptIn,
+                commons,
+                clock,
+                pages,
+                seedIdentity = sameIdentityAs?.identityBytes(),
+            )
         nodes += node
         node.boot()
         return node
@@ -205,6 +222,16 @@ class MeshLab {
     fun close() {
         nodes.forEach { it.shutdown() }
         dir.deleteRecursively()
+    }
+
+    /**
+     * Takes a node out of the mesh for good — the phone signed out, was wiped or lost. Its links drop as a
+     * shutdown's do; [close] no longer sees it. A lab identity cannot change in place ([LabNode.nodeId] is
+     * fixed at construction), so this is what "Sign out here" (ADR 2026-09.ypcc) is to a scenario.
+     */
+    fun retire(node: LabNode) {
+        node.shutdown()
+        nodes -= node
     }
 
     /**
@@ -682,6 +709,8 @@ class LabNode internal constructor(
     private val withCommons: Boolean,
     clock: LabClock,
     private val pages: LabPages? = null,
+    // Another node's identity file, for a twin (`MeshLab.node(sameIdentityAs)`); null mints a fresh one.
+    seedIdentity: ByteArray? = null,
 ) {
     /** This node's clock: the lab's shared calendar, plus its own skew if a scenario gave it one. */
     val now: () -> Long = clock.forNode(name)
@@ -689,7 +718,7 @@ class LabNode internal constructor(
     // --- persistent across restarts ---
 
     // The keystore-wrapped identity file, held as bytes: IdentityKeyStore only ever calls load()/store().
-    private var secretBytes: ByteArray? = null
+    private var secretBytes: ByteArray? = seedIdentity?.copyOf()
     private val secret =
         mockk<KeystoreSecret> {
             every { exists() } answers { secretBytes != null }
@@ -751,6 +780,9 @@ class LabNode internal constructor(
 
     /** The self-certifying id, computed once from the bundle exactly as [Identity.nodeId] does. */
     val nodeId: String = NodeId.fromPublicKeyBundle(identity.publicKeyBundle())
+
+    /** This node's identity file, for a twin built over it. Minted by the [nodeId] read above, so never null. */
+    internal fun identityBytes(): ByteArray = checkNotNull(secretBytes) { "$name has no identity" }.copyOf()
 
     @Suppress("LongMethod") // the DI module's wiring, mirrored in one place on purpose
     internal suspend fun boot() {

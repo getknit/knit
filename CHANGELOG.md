@@ -35,6 +35,8 @@ document:
 - Settings now has Backup and restore: your identity, contacts, groups and messages go into one encrypted
   file locked by a recovery key Knit shows once. Restore it on a new phone from the welcome screen, and use
   the backup on one phone at a time.
+- If the same backup ends up on two phones, each one now says so and offers Sign out here, which clears this
+  phone so it starts over with a new identity. Dismiss the notice instead if the other phone is already gone.
 
 ### Changed
 

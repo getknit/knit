@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.map
 class SettingsStore(
     private val dataStore: DataStore<Preferences>,
 ) : InboundSettings,
+    CloneWatchSettings,
     ModelLoadJournal,
     NanAttachJournal,
     NanInitiatorJournal,
@@ -49,7 +50,7 @@ class SettingsStore(
      * `MeshManager` re-publishes on a cadence inside the custody TTL and records the stamp here so the
      * cadence survives restarts. 0 until the first publish.
      */
-    val profilePublishedAt: Flow<Long> = dataStore.data.map { it[KEY_PROFILE_PUBLISHED_AT] ?: 0L }
+    override val profilePublishedAt: Flow<Long> = dataStore.data.map { it[KEY_PROFILE_PUBLISHED_AT] ?: 0L }
 
     /**
      * Content hash of the device's own avatar, or null if none is set. The avatar bytes live in the
@@ -339,7 +340,21 @@ class SettingsStore(
      * (`data/backup/SettingsSnapshot`), never by this class; cleared by [clearRestorePending] once the
      * hooks ran.
      */
-    val restorePending: Flow<Boolean> = dataStore.data.map { it[KEY_RESTORE_PENDING] ?: false }
+    override val restorePending: Flow<Boolean> = dataStore.data.map { it[KEY_RESTORE_PENDING] ?: false }
+
+    /**
+     * When this phone last saw proof that its identity is running elsewhere — a `profile` frame under its
+     * own node id carrying a publish stamp it never minted (`mesh/CloneWatch`, ADR 2026-09.ypcc). 0 = never.
+     * The "also active on another phone" banner shows while this beats [cloneDismissedAt]. Both are about
+     * *this phone*, not the person, so `SettingsKeys.TRANSIENT_PREFIXES` keeps them out of a backup.
+     */
+    override val cloneSeenAt: Flow<Long> = dataStore.data.map { it[KEY_CLONE_SEEN_AT] ?: 0L }
+
+    /**
+     * When the user last dismissed that banner ("I've stopped using the other phone"). Only evidence
+     * stamped *after* this moment brings it back — a custody re-serve of the twin's older frames does not.
+     */
+    override val cloneDismissedAt: Flow<Long> = dataStore.data.map { it[KEY_CLONE_DISMISSED_AT] ?: 0L }
 
     /**
      * Whether the user has dismissed the Nearby room's "never sent over the Internet" notice. Sticky by
@@ -706,6 +721,13 @@ class SettingsStore(
     /** The restore's first-start hooks ran — see [restorePending]. */
     suspend fun clearRestorePending() = dataStore.edit { it.remove(KEY_RESTORE_PENDING) }
 
+    override suspend fun setCloneSeenAt(value: Long) {
+        dataStore.edit { it[KEY_CLONE_SEEN_AT] = value }
+    }
+
+    /** The user dismissed the clone banner at [value] — see [cloneDismissedAt]. */
+    suspend fun setCloneDismissedAt(value: Long) = dataStore.edit { it[KEY_CLONE_DISMISSED_AT] = value }
+
     /**
      * Seeds the shipped default spools (`res/values/spools.xml`) into [spoolUrls] exactly once, marking
      * the install as seeded so a **removal sticks**. A default the app kept re-adding would not be a
@@ -854,6 +876,8 @@ class SettingsStore(
         val KEY_DIRECT_TRANSFER_CONSENTED = booleanPreferencesKey("direct_transfer_consented")
         val KEY_ONBOARDING_SEEN = booleanPreferencesKey(SettingsKeys.ONBOARDING_SEEN)
         val KEY_RESTORE_PENDING = booleanPreferencesKey(SettingsKeys.RESTORE_PENDING)
+        val KEY_CLONE_SEEN_AT = longPreferencesKey("clone_seen_at")
+        val KEY_CLONE_DISMISSED_AT = longPreferencesKey("clone_dismissed_at")
         val KEY_RELAY_ROOM_NOTICE_DISMISSED = booleanPreferencesKey("relay_room_notice_dismissed")
         val KEY_LORA_ENABLED = booleanPreferencesKey("lora_enabled")
         val KEY_LORA_DM_ENABLED = booleanPreferencesKey("lora_dm_enabled")

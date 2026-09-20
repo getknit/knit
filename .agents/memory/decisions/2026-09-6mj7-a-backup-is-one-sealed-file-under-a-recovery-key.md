@@ -70,7 +70,8 @@ phone, from a file *I* hold — it is the wrong shape. So: a manual, user-driven
 
 **What it costs, and the traps.** A restore is a **move**: two phones on one identity keep resetting
 each other's sessions, and nothing in the format prevents it — the confirm dialog and the onboarding copy
-say so. DMs sent to the phone *between* the backup and the restore arrive only through the peer's
+say so, and since ADR 2026-09.ypcc each phone notices the other from its profile stamp and offers to sign
+out. DMs sent to the phone *between* the backup and the restore arrive only through the peer's
 re-seal (≤ 24 h custody, the last 24 h of unacked DMs); older ones are gone with the session. The
 transient LoRa keys are dropped (the bond is per phone) — the user pairs the board again. A backup whose
 database is newer than the reading build is refused (`NEWER_APP`); Room has no way down. The

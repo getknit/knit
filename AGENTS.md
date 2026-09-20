@@ -221,6 +221,17 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   A restore is a **move** — the mesh has no clone tolerance — and the copy says so. The database copy goes
   through a raw single-connection driver on purpose (`ATTACH` is read-only to SQLite and lands on a pool
   reader; the SQLCipher layer rewrites `BEGIN` to `EXCLUSIVE`) — don't move it onto the Room connection.
+- **When touching `mesh/CloneWatch`, the self branch of `InboundPipeline.handleProfile`, the `clone_`
+  settings keys, `ui/chatlist/CloneBanner`, the Settings clone row, or `ui/signout/`:** READ ADR
+  2026-09.ypcc. One backup restored onto two phones is detected from the **profile stamp alone** — a
+  `profile` under our own node id whose `sentAt` is past `SettingsStore.profilePublishedAt` was minted
+  elsewhere; chat frames are not evidence (a `DatabaseKey` wipe empties the record they would be judged
+  against) — gated on `restorePending`, undone by a dismissal only for frames stamped before it, and
+  answered by one `broadcastProfile` per not-visible → visible edge so the other phone sees us too (never
+  while lit: no ping-pong). "Sign out here" is `ActivityManager.clearApplicationUserData()` — the whole
+  phone, grants included, so the next open is onboarding — not a file list and not the restore trampoline.
+  A twin heard only over LoRa is invisible (the plane drops its own node id at ingest). Regression:
+  `CloneWatchTest`, `CloneLabTest` (`MeshLab.node(sameIdentityAs)`, `MeshLab.retire`), `SignOutTest`.
 - **When touching contact cards, the Add-by-link / share-link flow, deep links (`getknit.app/c`,
   `knit://`), or `mesh/IntroSync`:** READ `docs/CONTACT_CARD.md` (the card layout + golden vectors, the
   intro driver's rules, the assetlinks prerequisite) and `docs/SPOOL_PROTOCOL.md` §3.5 (the pair scope);

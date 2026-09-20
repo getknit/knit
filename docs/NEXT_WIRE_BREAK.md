@@ -233,6 +233,28 @@ stored and signed form).
 keys on the full id. `ScopeFrames.seal` seals `signed` opaquely, so the spool plane is unaffected — but
 `docs/SPOOL_PROTOCOL.md` §13 vectors carry frame bytes and move with `GoldenVectorTest`.
 
+### 9. Multi-device: a device id under the identity
+
+**What.** Let one person run one identity on two phones: a device id in the profile beside the key, one
+ratchet session per (peer, device) instead of per node id, group sender keys minted per device, and
+custody that can tell "this phone sent it" from "the other phone did".
+
+**Why it is parked.** Nothing on the wire names a device. A node id *is* the hash of the key, every session
+and sender key is keyed on it, and every transport drops its own node id at discovery — so two phones on
+one identity never link, meet each other's frames only as self frames through a third node, and keep
+resetting each other's DM sessions. ADR 2026-09.ypcc detects the state after the fact from the profile
+stamp and offers a sign-out; it does not make the state work, because a session keyed on anything but the
+node id is a different ratchet header, which is a different `EncEnvelope`, which is the break.
+
+**At the break.** A device id in `ProfileContent` and the ratchet header; sessions and sender keys keyed
+on (node, device); `finishRestore` stops resetting every peer, since a restore then adds a device instead
+of replacing one. Retire the clone watch with it — the stamp comparison is only sound while one node id is
+one phone.
+
+**Watch out.** The self-frame paths (`verifierBundle`'s self branch, `handleProfile`'s self guard,
+`handleChat`'s self-to-self drop) all assume "our node id" means "this phone"; each becomes "our node id,
+another device" and has to deliver rather than drop.
+
 ---
 
 ## Deliberately *not* on this list

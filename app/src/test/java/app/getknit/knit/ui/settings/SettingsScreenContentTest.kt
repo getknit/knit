@@ -69,6 +69,8 @@ class SettingsScreenContentTest {
         supervision: DeviceSupervision = DeviceSupervision.None,
         unusedPause: UnusedAppPause? = null,
         onOpenUnusedPauseSettings: () -> Unit = {},
+        cloneVisible: Boolean = false,
+        onSignOut: () -> Unit = {},
     ) {
         compose.setContent {
             KnitTheme {
@@ -82,6 +84,7 @@ class SettingsScreenContentTest {
                             dynamicColor = dynamicColor,
                             relay = relay,
                             lora = lora,
+                            cloneVisible = cloneVisible,
                         ),
                     battery = battery,
                     supervision = supervision,
@@ -101,6 +104,7 @@ class SettingsScreenContentTest {
                     onOpenAbout = onOpenAbout,
                     onOpenLicenses = onOpenLicenses,
                     onOpenBackup = onOpenBackup,
+                    onSignOut = onSignOut,
                     unusedPause = unusedPause,
                     onOpenUnusedPauseSettings = onOpenUnusedPauseSettings,
                 )
@@ -359,5 +363,20 @@ class SettingsScreenContentTest {
         render(onOpenBackup = { backup++ })
         compose.onNodeWithTag("settings_backup").performScrollTo().performClick()
         assertEquals(1, backup)
+    }
+
+    /** The clone row (ADR 2026-09.ypcc) exists only while the flag is up, and its tap is "Sign out here". */
+    @Test
+    fun theCloneRowShowsOnTheFlagAndAsksToSignOut() {
+        var signOuts = 0
+        render(cloneVisible = true, onSignOut = { signOuts++ })
+        compose.onNodeWithTag("settings_clone_row").assertIsDisplayed().performClick()
+        assertEquals(1, signOuts)
+    }
+
+    @Test
+    fun theCloneRowIsAbsentByDefault() {
+        render()
+        compose.onNodeWithTag("settings_clone_row").assertDoesNotExist()
     }
 }
