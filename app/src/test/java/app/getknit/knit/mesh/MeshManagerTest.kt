@@ -469,6 +469,21 @@ class MeshManagerTest {
                 .filter { it.type == FrameType.PROFILE }
                 .distinctBy { it.id }
 
+        /** Every flood copy of the PROFILE frame [id] put on the wire — NOT collapsed, so a re-flood counts. */
+        fun profileCopiesOnWire(id: String): Int =
+            transport.sent.count { (wire, to) -> to == null && WireCodec.decodeEnvelope(wire.signed)?.id == id }
+
+        /**
+         * Takes [peer] out of the sighted set and brings it back — a Wi-Fi Aware edge peer across the linger.
+         * `reachable` is a StateFlow and the manager's collector runs on a real thread, so two writes back to
+         * back conflate into no change at all; the departure is given time to land before the return.
+         */
+        suspend fun flap(peer: Peer) {
+            transport.sighted.value = transport.sighted.value - peer
+            withContext(Dispatchers.Default) { delay(200) }
+            transport.sighted.value = transport.sighted.value + peer
+        }
+
         /**
          * Polls [have] until it reaches [count]. [MeshManager.start] builds its session scope on
          * [Dispatchers.Default] rather than the injected [scope]'s dispatcher, so the profile watcher runs
@@ -2156,6 +2171,73 @@ class MeshManagerTest {
             rig.status.emit("out walking")
             rig.await(1) { rig.floodedProfiles().size }
             assertEquals("out walking", WireCodec.decodePayload<ProfileContent>(rig.floodedProfiles().single().payload)?.status)
+        }
+
+    /**
+     * The first-sighting reflood (#73): a peer flapping in and out of `reachable` — a Wi-Fi Aware edge peer
+     * across the 150 s linger — re-enters as a newcomer every time, but the frame id is stable and every
+     * receiver drops a copy inside its SeenSet window, so re-flooding for it is airtime nobody keeps. One
+     * flood per (frame, peer) per window; a genuinely new peer still floods, and a lapsed window floods again.
+     */
+    @Test
+    fun aLingerFlapDoesNotRefloodTheProfileInsideTheSeenWindow() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size } // the startup custody seed
+            val id = rig.custodiedProfiles().single().id
+
+            rig.transport.sighted.value = setOf(Peer(rig.bob.nodeId)) // first sighting: the bootstrap flood
+            rig.await(1) { rig.profileCopiesOnWire(id) }
+
+            // Out past the linger and back, well past the 30 s floor: a newcomer again, but one that holds the id.
+            rig.clockNow += 40_000
+            rig.flap(Peer(rig.bob.nodeId))
+            withContext(Dispatchers.Default) { delay(300) }
+            assertEquals("a flap inside the seen window is not a flood", 1, rig.profileCopiesOnWire(id))
+
+            // A peer never flooded for is still owed the frame on first sighting.
+            rig.clockNow += 40_000
+            rig.transport.sighted.value = setOf(Peer(rig.bob.nodeId), Peer("stranger"))
+            rig.await(2) { rig.profileCopiesOnWire(id) }
+
+            // Once the receivers' window has lapsed, a returning peer would keep a copy again — so it gets one.
+            rig.clockNow += SeenSet.DEFAULT_TTL_MS + 1
+            rig.flap(Peer(rig.bob.nodeId))
+            rig.await(3) { rig.profileCopiesOnWire(id) }
+        }
+
+    /** The memo is keyed on the frame too: an edit's fresh id is owed to a flapping peer whatever it held before. */
+    @Test
+    fun aProfileEditIsRefloodedToAFlappingPeerOnce() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val displayName = rig.stubProfileState(MutableStateFlow(0L))
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size }
+            val seeded = rig.custodiedProfiles().single().id
+            rig.awaitProfileWatcher()
+
+            rig.transport.sighted.value = setOf(Peer(rig.bob.nodeId))
+            rig.await(1) { rig.profileCopiesOnWire(seeded) }
+
+            rig.clockNow = rig.now + 26_000
+            displayName.value = "Alex"
+            rig.await(2) { rig.floodedProfiles().size } // the edit floods under a fresh id, to everyone
+            val edited = rig.floodedProfiles().map { it.id }.single { it != seeded }
+            assertEquals(1, rig.profileCopiesOnWire(edited))
+
+            // Bob flaps: it was memoed for the seeded frame, never for this one — so it floods, once.
+            rig.clockNow += 40_000
+            rig.flap(Peer(rig.bob.nodeId))
+            rig.await(2) { rig.profileCopiesOnWire(edited) }
+
+            rig.clockNow += 40_000
+            rig.flap(Peer(rig.bob.nodeId))
+            withContext(Dispatchers.Default) { delay(300) }
+            assertEquals("the second flap is inside the window", 2, rig.profileCopiesOnWire(edited))
+            assertEquals("and the seeded frame was never re-flooded", 1, rig.profileCopiesOnWire(seeded))
         }
 
     @Test

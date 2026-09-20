@@ -2240,13 +2240,24 @@ class MeshManager(
      * fast plane immediately, and a larger one is already in custody (seeded above) where its digest
      * divergence pulls a link up. Coalesced to one origination per [PROFILE_REFLOOD_MIN_MS] no matter how
      * many newcomers arrive (receivers dedupe by the stable frame id + SeenSet, and the custody path covers
-     * anyone the flood missed). A peer's departure from `reachable` and later return is the epoch boundary —
-     * it re-enters as a newcomer and gets one fresh flood. BLE-driven newcomers trigger it too, harmlessly.
+     * anyone the flood missed). BLE-driven newcomers trigger it too, harmlessly.
+     *
+     * A peer's departure from `reachable` and later return re-enters it as a newcomer, but not one worth a
+     * flood inside the window it would be dropped in (#73): the frame id is stable, so a copy re-flooded within
+     * the receivers' [SeenSet.DEFAULT_TTL_MS] is dropped by every one of them, and a Wi-Fi Aware edge peer
+     * flapping across the 150 s linger used to cost the whole mesh a flood every 30 s that nobody kept. The
+     * `flooded` memo — keyed on the frame id *and* the peer — lets one flood per (id, peer) through per window,
+     * so a profile edit's fresh id makes every peer owed again, a peer that missed the window is served again
+     * once it lapses, and a genuinely new peer floods on first sighting as before. A newcomer the 30 s floor
+     * skipped is never memoed: it stays owed on its next epoch, exactly as it was.
      */
     private fun watchReachable(session: CoroutineScope) {
         session.launch {
             var known = emptySet<String>()
             var lastFloodAt = 0L
+            // One flood per (frame id, peer) per receivers' SeenSet window: every send this suppresses is one
+            // the far end's router would have dropped (the same invariant as ADR 2026-09.6nmy's link memo).
+            val flooded = SeenSet(ttlMillis = SeenSet.DEFAULT_TTL_MS, clock = clock)
             transport.reachable.collect { current ->
                 val ids = current.mapTo(HashSet()) { it.nodeId }
                 val newcomers = ids - known
@@ -2257,12 +2268,21 @@ class MeshManager(
                 newcomers.forEach { ackSync.onReachable(Peer(it)) }
                 val now = clock()
                 if (now - lastFloodAt < PROFILE_REFLOOD_MIN_MS) return@collect
-                lastFloodAt = now
                 val (wire, env) = ownProfile()
+                val owed = newcomers.filter { !flooded.contains(refloodKey(env.id, it)) }
+                if (owed.isEmpty()) return@collect // every newcomer already holds this id — a linger flap
+                lastFloodAt = now
+                owed.forEach { flooded.add(refloodKey(env.id, it)) }
                 originateWire(wire, env)
             }
         }
     }
+
+    /** The `flooded` memo's key in [watchReachable]: this profile frame, flooded for this peer. */
+    private fun refloodKey(
+        frameId: String,
+        peerId: String,
+    ): String = "$frameId|$peerId"
 
     /**
      * Records every phone that enters the nearby set as met (the Your mesh screen's "people this phone has
@@ -2412,7 +2432,7 @@ class MeshManager(
      * key, and a frame that never reaches [InboundPipeline.handleProfile] never gets to present it.
      *
      * Callers that re-send **unchanged** content deliberately do NOT come through here — [watchReachable]'s
-     * per-epoch reflood and [pushProfileTo]'s first-contact push both read [ownProfile], because reusing the
+     * first-sighting reflood and [pushProfileTo]'s first-contact push both read [ownProfile], because reusing the
      * id is precisely what lets a receiver dedupe a copy it already holds. Only a content change earns a
      * new stamp — and the version bump, the stamp and the signing happen under [profileLock] as one step,
      * so nothing reads the new stamp with the old version (or the old stamp with the new one) and signs that.
@@ -3059,7 +3079,9 @@ class MeshManager(
         const val NEIGHBOR_REOFFER_INTERVAL_MS = 60_000L
 
         // Min spacing between first-contact profile floods (watchReachable): a burst of newcomers costs one
-        // origination; custody + the per-link pushProfileTo cover anyone the coalesced flood skipped.
+        // origination; custody + the per-link pushProfileTo cover anyone the coalesced flood skipped. Behind
+        // it sits the per-(frame, peer) memo that keeps a linger flap from re-flooding inside the SeenSet
+        // window at all (#73).
         const val PROFILE_REFLOOD_MIN_MS = 30_000L
 
         // How often the profile frame is re-stamped and re-seeded (republishProfileIfStale). Must stay

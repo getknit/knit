@@ -83,6 +83,9 @@ document:
   resets the radio itself after a few.
 - On a slower phone, Knit could hang for twenty seconds after a reboot or a background restart, and Android
   offered to close it. The mesh now starts without holding up the app.
+- A phone drifting at the edge of Wi-Fi range made yours resend your profile every half minute, and the
+  phones that heard it threw every copy away. It now goes out to each phone once, and again only after ten
+  minutes.
 
 ## [2.6.0](https://github.com/getknit/knit/releases/tag/v2.6.0) — 2026-09-16T07:24:35Z
 
