@@ -151,6 +151,7 @@ carries; never renumber an old one.
 | [2026-09.t8t8](decisions/2026-09-t8t8-an-offer-is-not-backfill-and-must-not-compete-with-it.md) | An OFFER is not backfill and must not compete with it | lora, airtime, reliability |
 | [2026-09.tmbq](decisions/2026-09-tmbq-a-relay-invite-is-a-bearer-link.md) | A relay invite is a bearer link, applied on consent and never silently | spool, relays, ui, contacts |
 | [2026-09.tss4](decisions/2026-09-tss4-a-shared-location-is-a-geo-uri-in-the-body.md) | A shared location is a geo URI in the body, read only when you send it | location, privacy, ui, permissions, moderation |
+| [2026-09.u8qj](decisions/2026-09-u8qj-the-ble-side-scan-is-off-while-every-capable-peer-is-linked-and-nothing-streams.md) | The BLE side scan is off while every capable peer is linked and nothing streams | mesh, bluetooth |
 | [2026-09.un9n](decisions/2026-09-un9n-a-never-drawn-window-is-recovered-by-recreating-it.md) | A never-drawn window is recovered by recreating it | ui, android, resilience, back |
 | [2026-09.ursc](decisions/2026-09-ursc-the-nearby-room-says-when-lora-airtime-is-spent.md) | The Nearby room says when LoRa airtime is spent | lora, ui |
 | [2026-09.v5ck](decisions/2026-09-v5ck-light-and-dark-are-a-per-app-night-mode.md) | Light and dark are a per-app night mode | ui, theme, settings |

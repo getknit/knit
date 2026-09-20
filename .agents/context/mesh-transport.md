@@ -326,7 +326,11 @@ a 30 s linger when nothing waits, fewer-part frames first, a started frame finis
 coalesced per sender, 30 s freshness, capacity 32. The gate is a BLE-local **flags byte** the presence
 advert grew (`BleAdvertPayload` 23 → 24 B, the last byte of the 31-byte budget; `FLAG_SIDE_CHANNEL` set
 only while the controller passed its extended-advertising probe), tracked by `SideCapableTracker` with a
-10-min linger *or* a live link, since presence prunes at 90 s. A page carries no hop id and is never
+10-min linger *or* a live link (restamped at the link's end), since presence prunes at 90 s. The receive
+scan is the channel's battery cost, so `SideScanPolicy` runs it only while a page could say something the
+links will not — a flagged peer is sighted but **unlinked**, or a file is streaming on one of our links — and
+is Off for an all-linked clique with nothing streaming (ADR 2026-09.u8qj; `SideCapableTracker.audience`
+tells the two apart, and the sender's page offer still keys on `anyCapable`). A page carries no hop id and is never
 presence (each set has its own RPA; `fromNodeId` is the author, ADR 038's rule); fragments reassemble by
 fragment id, seeded at random per process. Grep `ble-side` (bring-up probe, `offer`, `heard`, `rx →`);
 counters `bleSide*` on `…debug.STATE`. In the JVM, `mesh/lab/LabPages` is the pages' air and

@@ -82,7 +82,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   so they bypass a file transfer head-of-line-blocking a stream and reach a sighted-but-unlinked peer.
  *   [fastFanout] keeps the link copy the composite used to send for us and adds the page; [fastSend] is the
  *   link only — nothing DM-form rides a broadcast carrier. Gated per peer on the advert flag
- *   ([SideCapableTracker]); the receive scan runs only while such a peer is around ([SideScanPolicy]).
+ *   ([SideCapableTracker]); the receive scan runs only while such a peer is sighted but unlinked, or a file is
+ *   streaming on one of our links ([SideScanPolicy]) — linked peers already get the link copy.
  *
  * Insecure/pairless L2CAP (no system pairing dialog): real authentication is the per-frame Ed25519 signature +
  * E2E layer above the transport, so link-layer bonding is redundant. Permissions are gated at onboarding and
@@ -201,7 +202,8 @@ class BluetoothMeshTransport(
     private val sideCapable = SideCapableTracker()
     private val sideWake = Channel<Unit>(Channel.CONFLATED)
 
-    @Volatile private var sideTierLogged: SideScanPolicy.Tier? = null
+    // The last decision and why, as one string: logged on change (a new reason for Off counts), shown on the state line.
+    @Volatile private var sideDecision: String = "-"
 
     private var acceptJob: Job? = null
     private var scanJob: Job? = null
@@ -250,6 +252,7 @@ class BluetoothMeshTransport(
 
             override fun onFile(file: ReceivedFile) {
                 _incomingFiles.tryEmit(file)
+                wakeSide() // the one stream edge a link reports: rxInProgress just cleared, the side scan may go Off
             }
 
             override fun onLinkDown(nodeId: String) {
@@ -545,9 +548,10 @@ class BluetoothMeshTransport(
         )
         publishReachable()
         if (sideChannel != null) {
-            val before = sideCapable.anyCapable(elapsed(), links.keys)
+            // The audience, not anyCapable: a flagged peer appearing beside an all-linked clique must wake the loop.
+            val before = sideCapable.audience(elapsed(), links.keys)
             sideCapable.note(parsed.nodeId, parsed.sideChannel, elapsed())
-            if (sideCapable.anyCapable(elapsed(), links.keys) != before) wakeSide()
+            if (sideCapable.audience(elapsed(), links.keys) != before) wakeSide()
         }
         healSignal.trySend(Unit) // connectLoop: react to every sighting to drive promotion
         // scanLoop: wake ONLY for a genuine boost trigger. Waking on every sighting (incl. already-linked peers)
@@ -774,8 +778,12 @@ class BluetoothMeshTransport(
         val fl = links.remove(nodeId) ?: return
         fl.close()
         crossings.forget(nodeId)
+        // The peer was here until now: its side-channel flag lingers from the link's end, not from a sighting the
+        // floored scan may have made hours ago — a dropped or evicted flagged peer is exactly whom a page reaches.
+        sideCapable.touch(nodeId, elapsed())
         refreshNeighbors()
         publishReachable() // drop the peer from reachable too, unless it's still being scan-sighted
+        wakeSide() // the audience may have gone unlinked (the eviction path has no other side wake)
         Log.i(TAG, "bt link down: $nodeId ($reason)")
     }
 
@@ -951,23 +959,27 @@ class BluetoothMeshTransport(
      * Keeps the side channel's scan at the tier [SideScanPolicy] wants. Its own loop, not [scanLoop]'s: that
      * one sleeps for minutes at the floor, while this one must react to a connect starting (scanning starves
      * connects) and to a flagged peer appearing. Re-asks every [SIDE_TICK_MS] regardless, which is also how a
-     * start deferred by the shared scan budget gets retried and the periodic restart lands.
+     * start deferred by the shared scan budget gets retried and the periodic restart lands — and how a file
+     * starting to stream on a link is noticed: [FramedLink]'s in-progress flags raise no event, and a BLE-paced
+     * blob runs tens of seconds, so the tick is soon enough (a few-KB avatar is over before it and blocks nothing).
      */
     private suspend fun sideScanLoop(side: BleSideChannel) {
         while (scope.isActive) {
             val inputs =
                 SideScanPolicy.Inputs(
                     live = side.live && adapter?.isEnabled == true,
-                    capableNearby = sideCapable.anyCapable(elapsed(), links.keys),
+                    audience = sideCapable.audience(elapsed(), links.keys),
+                    streamInFlight = links.values.any { it.txInProgress || it.rxInProgress },
                     connectBusy = inFlightSnapshot().isNotEmpty() || arbiter.busy.value,
                     audioContended = audioMonitor.contended.value,
                     power = powerState.state.value,
                 )
             val tier = SideScanPolicy.decide(inputs)
             side.applyScanTier(tier)
-            if (sideTierLogged != tier) {
-                sideTierLogged = tier
-                Log.d(TAG, "ble-side want=$tier applied=${side.scanTier} capable=${inputs.capableNearby} busy=${inputs.connectBusy}")
+            val decision = "want=$tier audience=${inputs.audience} stream=${inputs.streamInFlight} busy=${inputs.connectBusy}"
+            if (sideDecision != decision) {
+                sideDecision = decision
+                Log.d(TAG, "ble-side $decision applied=${side.scanTier}")
             }
             withTimeoutOrNull(SIDE_TICK_MS) { sideWake.receive() }
         }
@@ -1018,7 +1030,7 @@ class BluetoothMeshTransport(
             TAG,
             "bt state links=${links.keys} reach=${_reachable.value.map { it.nodeId }} " +
                 "inFlight=${inFlightSnapshot()} backoff=[$backoffStr] a2dp=${audioMonitor.state.value} psm=$currentPsm" +
-                (sideChannel?.let { " ${it.diag()}" } ?: ""),
+                (sideChannel?.let { " ${it.diag()} $sideDecision" } ?: ""),
         )
     }
 

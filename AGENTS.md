@@ -42,7 +42,8 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   channel carries `shouldFastFanout` frames on non-connectable extended-advertising pages — one
   `FastFrameCodec` unit per 236-B page, never a chain, never presence, never a DM-form frame — gated per
   peer on the advert's flags byte and dark in release behind `BuildConfig.BLE_SIDE_PLANE` until its device
-  trial (CHECK `.agents/memory/roadmap.md`). `hasFastPlane` is now true for Bluetooth: the link copy the
+  trial (CHECK `.agents/memory/roadmap.md`). The receive scan is Off for an all-linked clique with nothing
+  streaming (ADR 2026-09.u8qj) — the link copy already reaches every linked peer; don't widen that gate. `hasFastPlane` is now true for Bluetooth: the link copy the
   composite used to send lives inside the transport's `fastFanout`/`fastSend`; don't add it back upstream.
 - **When touching `mesh/lora/` or `mesh/bluetooth/meshtastic/` (the LoRa/Meshtastic bridge):** READ
   `.agents/context/lora-bridge.md` — a Meshtastic board over BLE GATT extends the **Nearby room and 1:1
