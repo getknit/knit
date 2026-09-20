@@ -13,6 +13,8 @@ import android.hardware.SensorManager
 import android.hardware.TriggerEvent
 import android.hardware.TriggerEventListener
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
@@ -31,10 +33,12 @@ import app.getknit.knit.notifications.NotificationChannels
 import app.getknit.knit.ui.isIgnoringBatteryOptimizations
 import app.getknit.knit.ui.requiredRadioPermissions
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.koin.android.ext.android.inject
 
 /**
@@ -69,6 +73,20 @@ class MeshService : LifecycleService() {
      */
     private var graphless = false
 
+    /**
+     * The graph is resolved and the mesh is running on this instance — set by [startMesh], on the main thread,
+     * and read by every later callback. Until then `onStartCommand` and `onDestroy` touch nothing behind a
+     * `by inject()` above: the build is in flight on a worker (see [onCreate]), and a read would block the main
+     * thread on Koin's single lock for exactly the seconds the build was moved off it to save.
+     */
+    private var meshStarted = false
+
+    /**
+     * `onDestroy` ran. A graph build still in flight checks it when it comes back to the main thread, so a
+     * service the system took down mid-build never starts a mesh that nothing will stop.
+     */
+    private var destroyed = false
+
     private val motionListener =
         object : TriggerEventListener() {
             override fun onTrigger(event: TriggerEvent?) {
@@ -101,10 +119,49 @@ class MeshService : LifecycleService() {
             stopSelf()
             return
         }
+        // The first read of each `by inject()` lazy builds its subtree of the graph — the keystore identity,
+        // the Tink keysets (an Ed25519 table precompute, interpreted on a cold process), the transports, the
+        // database — which is seconds on a slow phone and longer behind a busy keystore after boot. onCreate
+        // and the onStartCommand right behind it run under the 20 s "executing service" ANR timer, a separate
+        // deadline from the startForeground() one claimed above, and Play reported it lapsing (2.6.0, API 34)
+        // in a process born for this service: the Activity path builds the same graph during KnitApp's first
+        // composition, so the service's read there is a cache hit and only a boot, heartbeat or sticky restart
+        // ever paid it here. So the build rides the app scope and only the start comes back to the main thread.
+        // The app scope, not lifecycleScope: a built graph is process-wide and never wasted, and [destroyed]
+        // covers the one thing cancellation would have. ADR 2026-09.vztn.
+        scope.launch {
+            val graph = runCatching { resolveGraph() }
+            withContext(Dispatchers.Main.immediate) {
+                graph
+                    .onSuccess { if (!destroyed) startMesh() }
+                    // A graph that cannot be built was a crash out of onCreate and still is one: re-thrown as
+                    // an uncaught exception on the main thread — past the scope's handler, which would only
+                    // log it and leave a "searching" notification that never resolves — so CrashHandler
+                    // records it exactly as before.
+                    .onFailure { failure -> Handler(Looper.getMainLooper()).post { throw failure } }
+            }
+        }
+    }
+
+    /**
+     * Resolve the injected roots the start path reads, off the main thread. Each is a lazy whose first read
+     * builds its subtree, so the values are the side effect; the log line is the one place the build's cost
+     * and thread are visible on a device.
+     */
+    private fun resolveGraph(): List<Any> {
+        val began = SystemClock.elapsedRealtime()
+        val roots = listOf(meshManager, powerMonitor, settings)
+        Log.i(TAG, "mesh graph resolved in ${SystemClock.elapsedRealtime() - began} ms on ${Thread.currentThread().name}")
+        return roots
+    }
+
+    /** The second half of [onCreate], on the main thread, once [resolveGraph] has made every read below cheap. */
+    private fun startMesh() {
         observeStatus()
         warmModelOnFirstPeer()
         powerMonitor.start() // seed power state before the discovery loop first reads it
         meshManager.start()
+        meshStarted = true
         // Remember the mesh is running so BootReceiver restores it after a reboot; a later manual Stop
         // flips this off. Guarded to skip the redundant write on the common already-enabled start.
         scope.launch { if (!settings.meshEnabled.first()) settings.setMeshEnabled(true) }
@@ -134,7 +191,8 @@ class MeshService : LifecycleService() {
             }
 
             ACTION_HEAL -> {
-                meshManager.heal()
+                // A mesh still coming up (see [onCreate]) starts fresh, which is all a heal would do.
+                if (meshStarted) meshManager.heal()
             }
         }
         // Re-claim the foreground state on every start, not only the first. The system can take it from a
@@ -147,7 +205,17 @@ class MeshService : LifecycleService() {
         // call `observeStatus` makes on every update, so it is idempotent and cheap; a refusal means the state
         // is gone for this session, and stopping here (the mesh comes down in `onDestroy`) beats running a
         // service the system is about to stop anyway. ADR 2026-09.f69x.
-        if (!postForeground(buildNotification(meshManager.neighborCount.value, meshManager.transportHealth.value))) {
+        //
+        // The start that created this instance lands here in the same main-thread batch as onCreate, while the
+        // graph is still building on a worker: until [meshStarted] the claim re-posts the "searching" seed
+        // rather than reading a count that would block on the build (ADR 2026-09.vztn).
+        val notification =
+            if (meshStarted) {
+                buildNotification(meshManager.neighborCount.value, meshManager.transportHealth.value)
+            } else {
+                buildNotification(count = 0, health = null)
+            }
+        if (!postForeground(notification)) {
             Log.w(TAG, "foreground state refused on restart — stopping until the app is next opened")
             stopSelf()
             return START_NOT_STICKY
@@ -156,6 +224,7 @@ class MeshService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        destroyed = true
         // Nothing was ever started (see [onCreate]); touching the injected fields here would build the very
         // Koin graph the stillbirth path exists to skip. The heartbeat alarm is still cancelled: it needs no
         // graph, and a live one left armed by an earlier ungraceful death would otherwise keep waking the
@@ -163,6 +232,14 @@ class MeshService : LifecycleService() {
         // instance keeps it: that start was never refused, only landed in the wrong process.
         if (!foregrounded) {
             if (!graphless) cancelHeartbeat()
+            super.onDestroy()
+            return
+        }
+        // Taken down while the graph was still building on a worker: nothing is running yet, and the build's
+        // return to the main thread reads [destroyed] and starts nothing. Reading the injected fields here
+        // would block on that build.
+        if (!meshStarted) {
+            cancelHeartbeat()
             super.onDestroy()
             return
         }
@@ -209,8 +286,9 @@ class MeshService : LifecycleService() {
      * through Android 14, 30 s on 15) and kills the process with
      * `ForegroundServiceDidNotStartInTimeException` when it lapses, so on slow
      * hardware that graph build was a launch-time crash. Now the foreground state is claimed first and the
-     * graph is built after, where it can take as long as it needs; [observeStatus] replaces this text with
-     * the live count/health as soon as the first value arrives.
+     * graph is built after — and off the main thread, because `onCreate` also has the 20 s "executing
+     * service" ANR timer to meet (see [onCreate]); [observeStatus] replaces this text with the live
+     * count/health as soon as the first value arrives.
      *
      * Returns whether the foreground state was actually claimed — it can be refused, see [postForeground].
      */

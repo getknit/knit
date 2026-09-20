@@ -78,12 +78,16 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `canReclaimForegroundService`, or the `KnitApp` effects that start the mesh:** READ ADR 043 (a refused claim
   makes a stillbirth; the caller-side guard and the resume retry) and ADR 2026-09.f69x (every non-Stop start
   re-claims the foreground state — the system demotes a background-restricted app's service silently, and a
-  `startForegroundService` into that instance arms a deadline nothing else would meet). `onCreate` claims the
-  state before it resolves the graph; keep it that way. The deadline is 30 s on Android 15 (10 s before), and
+  `startForegroundService` into that instance arms a deadline nothing else would meet) and ADR 2026-09.vztn
+  (`onCreate` claims the state before anything, then resolves the graph on the **app scope**, never on the main
+  thread — `onCreate` + the `onStartCommand` behind it share a separate 20 s "executing service" ANR budget, and a
+  process born for the service is the one the UI never pre-built the graph for; every later callback keys on
+  `meshStarted`, never on an injected field). The foreground deadline is 30 s on Android 15 (10 s before), and
   `getForegroundServiceType()` cannot tell you it was lost. `BootReceiver` starts through
   `MeshService.startFromBoot`, never `start` — ADR 2026-09.29dw: the pre-check reads process state, a
   receiver's is `IMPORTANCE_SERVICE`, and the boot exemption is the platform's. Regression:
-  `MeshServiceForegroundReclaimTest`, `GraphlessProcessTest`, `MeshServiceStartTest`, `BootReceiverTest`.
+  `MeshServiceForegroundReclaimTest`, `MeshServiceGraphOffMainTest`, `GraphlessProcessTest`,
+  `MeshServiceStartTest`, `BootReceiverTest`.
   **Before touching the type bitmask `postForeground` claims (`meshForegroundServiceTypes`), the manifest's
   `<service>`, or `TransportHealth.ForegroundOnly` / `NanSessionFault` in `mesh/wifiaware/`:** READ ADR
   2026-09.535d. The service claims `location` on exactly the tiers where `requiredRadioPermissions` rides the

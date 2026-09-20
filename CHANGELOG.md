@@ -73,6 +73,8 @@ document:
 - Now and then Android refused to let a phone accept Wi-Fi connections from its neighbours, and Knit asked
   again hundreds of times a second until something else reset the radio. It now waits between tries and
   resets the radio itself after a few.
+- On a slower phone, Knit could hang for twenty seconds after a reboot or a background restart, and Android
+  offered to close it. The mesh now starts without holding up the app.
 
 ## [2.6.0](https://github.com/getknit/knit/releases/tag/v2.6.0) — 2026-09-16T07:24:35Z
 
