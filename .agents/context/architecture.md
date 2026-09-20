@@ -79,7 +79,9 @@ data/          Room (messages, peers, reactions, blobs, groups, blob_verdicts, f
                moderation/ImageScreeningService) · message/Conversations (DM keys) · crypto/ DatabaseKey +
                IdentityKeyStore (AndroidKeyStore-wrapped secrets) + KeystoreSecret · message/MessageFtsEntity
                (the FTS4 index over bodies, ADR 2026-09.wdfz) + search/ SearchQuery + Snippets (the query
-               fold/tokeniser/`MATCH` builder and the result snippet, pure)
+               fold/tokeniser/`MATCH` builder and the result snippet, pure) · backup/ (ADR 2026-09.6mj7,
+               docs/BACKUP_FORMAT.md: BackupArchive + BackupKeys, the sealed file, pure; DatabaseExport
+               the scratch-DB copy; RestoreStager → RestoreApplier, the staged-then-pre-Koin apply)
 identity/      Identity (stable nodeId + E2E keypair) · NodeId (derive) · DeviceIdSource · DeviceTag · Alias
                · PeerLabels (NameKey + the collision-aware `Name (Alias)` label, ADR 058)
 crash/         CrashHandler (uncaught-exception capture, installed pre-Koin) · CrashStore (noBackupFilesDir,

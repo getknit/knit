@@ -148,6 +148,9 @@ class InboundPipeline(
     // Re-seals our recent unacked DMs to a peer whose ratchet session was just replaced (the recovery
     // half of an inbound reset) — MeshManager.resealRecentDmsTo, lambda-mediated like originate.
     private val resealUnacked: suspend (String) -> Unit = {},
+    // Lets the sender's re-seal of an unopenable DM (same id, fresh seal) past the router's dedup — see
+    // `MeshRouter.reopen`. Default no-op for tests that build the pipeline without a router.
+    private val reopenFrame: (String) -> Unit = {},
     // Answers a member's CTL_GROUP_KEY_REQ by re-sealing our current group seeds to them —
     // MeshManager.redistributeGroupKey (lands with the hardening phase), lambda-mediated like originate.
     private val redistributeGroupKey: suspend (String, String) -> Unit = { _, _ -> },
@@ -1725,6 +1728,11 @@ class InboundPipeline(
         // it is exactly why it may never feed the heuristic: three forged frames with distinct ids would
         // otherwise buy an attacker a session reset per pair — a purge, a re-root, a day of re-seals.
         if (authenticated && reason in RESET_TRIGGERING_DROPS) {
+            // The frame is addressed to us and we could not open it. If a reset is on its way (ours, sent
+            // already or about to be), the sender answers with a fresh seal of this very frame under the
+            // same id — which the router would otherwise dedup for ten minutes, since the copy custody just
+            // served us is what put the id in its set. Let that one copy through.
+            reopenFrame(env.id)
             maybeRequestReset(env, me, now)
         }
     }

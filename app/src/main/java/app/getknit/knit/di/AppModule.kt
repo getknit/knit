@@ -22,6 +22,8 @@ import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.backup.BackupWriter
+import app.getknit.knit.data.backup.RestoreStager
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.crypto.IdentityKeyStore
@@ -35,6 +37,7 @@ import app.getknit.knit.data.ratchet.GroupRatchetRepository
 import app.getknit.knit.data.ratchet.GroupRootRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.data.relay.RelayInviteApplier
+import app.getknit.knit.data.settings.SettingsKeys
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.demo.DemoComposer
 import app.getknit.knit.identity.AndroidDeviceIdSource
@@ -76,7 +79,7 @@ val appModule =
     module {
         single<DataStore<Preferences>> {
             PreferenceDataStoreFactory.create {
-                androidContext().preferencesDataStoreFile("knit_settings")
+                androidContext().preferencesDataStoreFile(SettingsKeys.DATASTORE_NAME)
             }
         }
         single { SettingsStore(get()) }
@@ -99,7 +102,7 @@ val appModule =
         // Stable per-device id (ANDROID_ID) — seeds the soft block-continuity DeviceTag, not the nodeId.
         single<DeviceIdSource> { AndroidDeviceIdSource(androidContext()) }
         // E2E identity keypair, wrapped under a hardware AndroidKeyStore key in filesDir (outside the DB).
-        single { IdentityKeyStore(KeystoreSecret(androidContext(), "knit_identity_key", "identity.key")) }
+        single { IdentityKeyStore(KeystoreSecret(androidContext(), IdentityKeyStore.KEYSTORE_ALIAS, IdentityKeyStore.FILE_NAME)) }
         // nodeId is derived from the keypair's public bundle; the device id only feeds the block tag.
         single { Identity(get(), get()) }
         single { AvatarStore(androidContext(), get()) }
@@ -155,6 +158,12 @@ val appModule =
 
         single { DatabaseKey(androidContext()) }
         single { KnitDatabase.build(androidContext(), get<DatabaseKey>().getOrCreate()) }
+        // Backup and restore (docs/BACKUP_FORMAT.md). The writer reads the identity file through its own
+        // KeystoreSecret over the same alias and file IdentityKeyStore uses; the stager verifies a staged
+        // database by opening it with the SQLCipher driver alone. Neither touches the live database's
+        // write lock; the apply itself runs pre-Koin in KnitApplication (data/backup/RestoreApplier).
+        single { BackupWriter(androidContext(), get(), BackupWriter.identitySecret(androidContext()), get(), get(), get()) }
+        single { RestoreStager(androidContext(), BackupWriter::openSqlCipher) }
         single { get<KnitDatabase>().messageDao() }
         single { get<KnitDatabase>().peerDao() }
         single { get<KnitDatabase>().reactionDao() }

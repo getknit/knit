@@ -97,6 +97,16 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Knit">
+        <!-- The backup-restore trampoline: a second process that kills the main one and relaunches it, so the
+             staged restore is applied by a process that has nothing open (ui/backup/RestartActivity). It is
+             never shown — no UI, translucent, out of recents — and KnitApplication.onCreate returns at once in
+             a process with this name, so no Koin graph or DataStore is ever opened here. -->
+        <activity
+            android:name=".ui.backup.RestartActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:process=":restart"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

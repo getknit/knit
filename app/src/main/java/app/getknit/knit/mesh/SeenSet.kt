@@ -36,6 +36,31 @@ class SeenSet(
     }
 
     /**
+     * Lets **one** more copy of [id] through inside its window, for a frame this node took and could not
+     * use: a sealed DM addressed to us whose session we no longer hold. The sender's answer to our reset
+     * is a fresh seal under the *same* id — by design, so every other node dedups it — and it lands
+     * seconds after the copy custody just served us, well inside the window. Once per id per window:
+     * a second reopen is refused, so a peer re-serving an unopenable frame can buy at most one extra
+     * relay of it from us. Returns whether the id was reopened.
+     */
+    @Synchronized
+    fun reopen(id: String): Boolean {
+        val now = clock()
+        val last = seen[id] ?: return false
+        if (now - last >= ttlMillis) return false
+        val reopenedAt = reopened[id]
+        if (reopenedAt != null && now - reopenedAt < ttlMillis) return false
+        seen.remove(id)
+        reopened[id] = now
+        return true
+    }
+
+    private val reopened =
+        object : LinkedHashMap<String, Long>(16, 0.75f, false) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean = size > REOPENED_MAX
+        }
+
+    /**
      * The live entries, oldest first — for a set whose window outlives the process that keeps it. Expired
      * ones are left out: they are new again by definition, so persisting them would only cost bytes.
      *
@@ -62,5 +87,8 @@ class SeenSet(
     companion object {
         /** Default flood-suppression window: an id counts as new again after 10 minutes. */
         const val DEFAULT_TTL_MS = 10 * 60_000L
+
+        /** Ids reopened once are remembered so they cannot be reopened twice; a small LRU, like [seen]. */
+        private const val REOPENED_MAX = 256
     }
 }

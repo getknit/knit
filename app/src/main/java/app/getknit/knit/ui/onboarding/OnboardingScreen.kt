@@ -62,6 +62,7 @@ import org.koin.androidx.compose.koinViewModel
 @Composable
 fun OnboardingScreen(
     onReady: () -> Unit,
+    onRestore: () -> Unit = {},
     viewModel: OnboardingViewModel = koinViewModel(),
 ) {
     val context = LocalContext.current
@@ -95,6 +96,7 @@ fun OnboardingScreen(
         onOpenUnusedPauseSettings = permissions.openUnusedPauseSettings,
         onOpenSettings = permissions.openSettings,
         onReady = onReady,
+        onRestore = onRestore,
     )
 }
 
@@ -124,6 +126,7 @@ internal fun OnboardingScreenContent(
     onOpenSettings: () -> Unit,
     onReady: () -> Unit,
     onOpenUnusedPauseSettings: () -> Unit = {},
+    onRestore: () -> Unit = {},
 ) {
     BackHandler(enabled = step != OnboardingStep.WELCOME, onBack = onBack)
     val enterForward = KnitMotion.enterStep(forward = true)
@@ -158,7 +161,7 @@ internal fun OnboardingScreenContent(
         ) { current ->
             when (current) {
                 OnboardingStep.WELCOME -> {
-                    WelcomePage()
+                    WelcomePage(onRestore = onRestore)
                 }
 
                 OnboardingStep.NAME -> {

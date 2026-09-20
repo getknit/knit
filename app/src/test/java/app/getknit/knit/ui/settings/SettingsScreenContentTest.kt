@@ -65,6 +65,7 @@ class SettingsScreenContentTest {
         onOpenBatterySettings: () -> Unit = {},
         onOpenAbout: () -> Unit = {},
         onOpenLicenses: () -> Unit = {},
+        onOpenBackup: () -> Unit = {},
         supervision: DeviceSupervision = DeviceSupervision.None,
         unusedPause: UnusedAppPause? = null,
         onOpenUnusedPauseSettings: () -> Unit = {},
@@ -99,6 +100,7 @@ class SettingsScreenContentTest {
                     onOpenBatterySettings = onOpenBatterySettings,
                     onOpenAbout = onOpenAbout,
                     onOpenLicenses = onOpenLicenses,
+                    onOpenBackup = onOpenBackup,
                     unusedPause = unusedPause,
                     onOpenUnusedPauseSettings = onOpenUnusedPauseSettings,
                 )
@@ -348,5 +350,14 @@ class SettingsScreenContentTest {
         compose.onNodeWithText(context.getString(R.string.settings_menu_licenses)).performClick()
         assertEquals(1, licenses)
         assertEquals(1, about)
+    }
+
+    /** Backup and restore is a row, not a menu item: it changes what happens to your data, so it sits with the settings. */
+    @Test
+    fun theBackupRowOpensTheBackupScreen() {
+        var backup = 0
+        render(onOpenBackup = { backup++ })
+        compose.onNodeWithTag("settings_backup").performScrollTo().performClick()
+        assertEquals(1, backup)
     }
 }

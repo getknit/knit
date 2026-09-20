@@ -1,6 +1,7 @@
 package app.getknit.knit.data.crypto
 
 import android.util.Log
+import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
 import app.getknit.knit.mesh.crypto.cryptoCbor
@@ -103,6 +104,17 @@ class IdentityKeyStore(
         return true
     }
 
+    /**
+     * Mints a fresh signed prekey now, whatever the newest one's age — the first start after a backup
+     * restore, where the phone this identity came from may have minted prekeys after the snapshot and a
+     * peer may hold one of those ids against a different public key. The caller bumps `profileVersion`
+     * (a restore does, unconditionally) so the fresh prekey outranks any the old phone published.
+     */
+    @Synchronized
+    fun rotatePrekey(now: Long) {
+        mint(loaded(), now)
+    }
+
     /** The private half of prekey [id], or null when it has been pruned (initiator must re-init). */
     @Synchronized
     fun prekeyPrivFor(id: Int): ByteArray? =
@@ -201,20 +213,39 @@ class IdentityKeyStore(
         val createdAt: Long,
     )
 
-    private companion object {
-        const val TAG = "IdentityKeyStore"
+    companion object {
+        private const val TAG = "IdentityKeyStore"
+
+        /** The AndroidKeyStore alias the identity file is wrapped under, and the file's name in `filesDir`. */
+        const val KEYSTORE_ALIAS = "knit_identity_key"
+        const val FILE_NAME = "identity.key"
+
+        /**
+         * The node id the identity in [blob] (a [KeystoreSecret]'s plaintext, as [keys] would load it)
+         * certifies — parsed without persisting anything, so a backup restore can check the identity it is
+         * about to install against its manifest. Throws on a blob that is not an identity; [loaded] would
+         * regenerate, which is exactly what a verification must never do.
+         */
+        @OptIn(ExperimentalSerializationApi::class)
+        fun nodeIdOf(blob: ByteArray): String {
+            TinkInit.ensure()
+            val stored = cryptoCbor.decodeFromByteArray<Stored>(blob)
+            val hybrid = TinkProtoKeysetFormat.parseKeyset(stored.hybridPriv, InsecureSecretKeyAccess.get(), RegistryConfiguration.get())
+            val sig = TinkProtoKeysetFormat.parseKeyset(stored.sigPriv, InsecureSecretKeyAccess.get(), RegistryConfiguration.get())
+            return NodeId.fromPublicKeyBundle(PublicKeyBundle.fromPrivate(hybrid, sig).encoded)
+        }
 
         // HPKE with X25519 + HKDF-SHA256 + AES-256-GCM (Tink's own impl; works on minSdk 29). The _RAW
         // (NO_PREFIX) variants emit bare RFC 9180 wrapped keys (`enc‖ct`) and RFC 8032 signatures (64 B) —
         // no 5-byte Tink output prefix — so the wire is Tink-free and iOS-interoperable (the launch-baseline
         // wire layout; see PublicKeyBundle + docs/WIRE_COMPAT.md). Changing these re-mints every nodeId.
-        const val HYBRID_TEMPLATE = "DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW"
-        const val SIG_TEMPLATE = "ED25519_RAW"
+        private const val HYBRID_TEMPLATE = "DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW"
+        private const val SIG_TEMPLATE = "ED25519_RAW"
 
         /** Signed-prekey rotation cadence; the PFS horizon of session *initiations* (design doc §prekeys). */
-        const val SPK_ROTATE_MS = 7 * 24 * 60 * 60_000L
+        private const val SPK_ROTATE_MS = 7 * 24 * 60 * 60_000L
 
         /** Prekey privates retained (current + 4 predecessors ≈ 35 days of initiation lateness). */
-        const val SPK_KEEP = 5
+        private const val SPK_KEEP = 5
     }
 }

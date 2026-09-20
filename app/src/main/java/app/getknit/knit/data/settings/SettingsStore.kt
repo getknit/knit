@@ -333,6 +333,15 @@ class SettingsStore(
     val onboardingSeen: Flow<Boolean> = dataStore.data.map { it[KEY_ONBOARDING_SEEN] ?: false }
 
     /**
+     * Whether this settings file was installed by a backup restore and the mesh has not yet run its
+     * first-start hooks against it (`MeshManager.finishRestore`: a fresh prekey, a profile bump, a session
+     * reset toward every DM peer). Written into the file by the restore stager
+     * (`data/backup/SettingsSnapshot`), never by this class; cleared by [clearRestorePending] once the
+     * hooks ran.
+     */
+    val restorePending: Flow<Boolean> = dataStore.data.map { it[KEY_RESTORE_PENDING] ?: false }
+
+    /**
      * Whether the user has dismissed the Nearby room's "never sent over the Internet" notice. Sticky by
      * design: the notice states a permanent structural fact (the room is not scope-eligible, spec §4.4),
      * so it is the one relay notice that will never retire itself — a dismissal that came back on the next
@@ -694,6 +703,9 @@ class SettingsStore(
     /** Records that onboarding's welcome and name pages have been shown — see [onboardingSeen]. */
     suspend fun markOnboardingSeen() = dataStore.edit { it[KEY_ONBOARDING_SEEN] = true }
 
+    /** The restore's first-start hooks ran — see [restorePending]. */
+    suspend fun clearRestorePending() = dataStore.edit { it.remove(KEY_RESTORE_PENDING) }
+
     /**
      * Seeds the shipped default spools (`res/values/spools.xml`) into [spoolUrls] exactly once, marking
      * the install as seeded so a **removal sticks**. A default the app kept re-adding would not be a
@@ -840,7 +852,8 @@ class SettingsStore(
         val KEY_MESHTASTIC_POST_CONSENTED = booleanPreferencesKey("meshtastic_post_consented")
         val KEY_LOCATION_SHARE_CONSENTED = booleanPreferencesKey("location_share_consented")
         val KEY_DIRECT_TRANSFER_CONSENTED = booleanPreferencesKey("direct_transfer_consented")
-        val KEY_ONBOARDING_SEEN = booleanPreferencesKey("onboarding_seen")
+        val KEY_ONBOARDING_SEEN = booleanPreferencesKey(SettingsKeys.ONBOARDING_SEEN)
+        val KEY_RESTORE_PENDING = booleanPreferencesKey(SettingsKeys.RESTORE_PENDING)
         val KEY_RELAY_ROOM_NOTICE_DISMISSED = booleanPreferencesKey("relay_room_notice_dismissed")
         val KEY_LORA_ENABLED = booleanPreferencesKey("lora_enabled")
         val KEY_LORA_DM_ENABLED = booleanPreferencesKey("lora_dm_enabled")

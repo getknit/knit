@@ -107,6 +107,13 @@ class MeshRouter(
         scheduleRelay(wire, envelope, fromNodeId)
     }
 
+    /**
+     * Admits one more copy of [id] through the dedup gate — for a sealed DM addressed to us that we could
+     * not open, whose sender will answer our session reset with a fresh seal under the same id
+     * (`MeshManager.resealRecentDmsTo`). See [SeenSet.reopen] for the bound.
+     */
+    fun reopen(id: String): Boolean = seen.reopen(id)
+
     /** Sends a locally-originated frame ([id] = its dedup key) to the whole mesh, immediately. */
     suspend fun originate(
         wire: WireEnvelope,

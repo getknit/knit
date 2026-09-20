@@ -50,6 +50,7 @@ class OnboardingScreenContentTest {
         var settings = 0
         var unused = 0
         var ready = 0
+        var restore = 0
         var typed = ""
     }
 
@@ -81,6 +82,7 @@ class OnboardingScreenContentTest {
                     onOpenSettings = { calls.settings++ },
                     onReady = { calls.ready++ },
                     onOpenUnusedPauseSettings = { calls.unused++ },
+                    onRestore = { calls.restore++ },
                 )
             }
         }
@@ -93,6 +95,19 @@ class OnboardingScreenContentTest {
         compose.onNodeWithText(context.getString(R.string.onboarding_title)).assertIsDisplayed()
         compose.onNodeWithTag("onboarding_next").performClick()
         assertEquals(1, calls.next)
+    }
+
+    /** The second way in: a phone replacing another one restores from a backup instead of minting itself. */
+    @Test
+    fun welcomeOffersARestoreFromABackup() {
+        val calls = render(OnboardingStep.WELCOME)
+        compose
+            .onNodeWithTag("onboarding_restore")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .performClick()
+        assertEquals(1, calls.restore)
+        assertEquals(0, calls.next)
     }
 
     @Test

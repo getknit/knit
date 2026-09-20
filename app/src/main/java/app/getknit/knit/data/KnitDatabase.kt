@@ -43,6 +43,12 @@ import app.getknit.knit.data.receipt.MessageReceiptDao
 import app.getknit.knit.data.receipt.MessageReceiptEntity
 import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
 
+/**
+ * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
+ * one number (an annotation argument cannot name the class's own companion).
+ */
+internal const val KNIT_DB_SCHEMA_VERSION = 14
+
 @Database(
     entities = [
         MessageEntity::class, PeerEntity::class, ReactionEntity::class, BlobEntity::class,
@@ -146,7 +152,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
     //     keep a met contact counted. Local only — never framed, never in custody, no digest folds over it —
     //     and in this database rather than the DataStore because it is a list of node ids. Empty on arrival;
     //     the count starts at zero for everyone. Migrated by KnitMigrations.MIGRATION_13_14.
-    version = 14,
+    version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
     // the migration test's MigrationTestHelper. Room also errors at compile time if an entity changes without
@@ -183,20 +189,31 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun metPeerDao(): MetPeerDao
 
     companion object {
+        /** The schema version the annotation above declares, for code that must compare against it. */
+        const val SCHEMA_VERSION = KNIT_DB_SCHEMA_VERSION
+
+        /** The live database's file name (`context.getDatabasePath(DB_NAME)`). */
+        const val DB_NAME = "knit.db"
+
         /**
          * Builds the encrypted database. [passphrase] is the SQLCipher key (see
          * [app.getknit.knit.data.crypto.DatabaseKey]); the driver holds the array for the life of the
          * database — nothing zeroes it, so that class stays its owner. The native
          * `libsqlcipher.so` must be loaded explicitly before the driver is constructed.
+         *
+         * [name] is the live [DB_NAME] for the app's one database; the backup export passes an absolute
+         * path (which `getDatabasePath` hands back as is) to build the scratch copy it fills through the
+         * same schema, identity hash and FTS triggers Room would create for the real one.
          */
         @Suppress("SpreadOperator") // vararg Room migrations API; a one-time DB-init copy
         fun build(
             context: Context,
             passphrase: ByteArray,
+            name: String = DB_NAME,
         ): KnitDatabase {
             System.loadLibrary("sqlcipher")
             return Room
-                .databaseBuilder(context, KnitDatabase::class.java, "knit.db")
+                .databaseBuilder(context, KnitDatabase::class.java, name)
                 // SQLCipher rides in as a SQLiteDriver, not the old SupportOpenHelperFactory: Room 3 deletes
                 // `openHelperFactory` outright, and `setDriver` is the one seam left for a custom engine
                 // (net.zetetic:sqlcipher-android 4.18.0 added SQLCipherDriver for exactly this). The hook and

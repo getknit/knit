@@ -3,7 +3,10 @@ package app.getknit.knit.mesh.lab
 import android.content.Context
 import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
 import androidx.room3.Room
+import androidx.room3.executeSQL
 import androidx.room3.withWriteTransaction
 import androidx.test.core.app.ApplicationProvider
 import app.getknit.knit.TextLimits
@@ -18,6 +21,7 @@ import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.backup.BackupTables
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.crypto.KeystoreSecret
@@ -36,6 +40,7 @@ import app.getknit.knit.data.ratchet.GroupRootRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.data.relay.RelayInviteApplier
 import app.getknit.knit.data.settings.ContributionTotals
+import app.getknit.knit.data.settings.SettingsKeys
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.NodeId
@@ -702,7 +707,8 @@ class LabNode internal constructor(
             .build()
 
     private val settingsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    val settings = SettingsStore(PreferenceDataStoreFactory.create(scope = settingsScope) { File(dir, "settings.preferences_pb") })
+    private val dataStore = PreferenceDataStoreFactory.create(scope = settingsScope) { File(dir, "settings.preferences_pb") }
+    val settings = SettingsStore(dataStore)
 
     // --- the live stack, rebuilt by boot() ---
 
@@ -894,6 +900,22 @@ class LabNode internal constructor(
     suspend fun restart() {
         val peers = shutdownLive()
         peers.forEach { it.awaitNeighborsObserved() }
+        withContext(Dispatchers.Default) { delay(MeshLab.SETTLE_MS) }
+        boot()
+    }
+
+    /**
+     * Process death and relaunch **from a backup of this node**: the live stack goes, and what comes back is
+     * what `data/backup` restores — the identity and settings as they were, the database with its
+     * [BackupTables.TRANSIENT] tables (custody, both ratchets) emptied exactly as the export leaves them, and
+     * the settings carrying the restore mark that makes the next `MeshManager.start` run `finishRestore`.
+     * The snapshot is taken at the moment of the call; nothing this node held in memory survives.
+     */
+    suspend fun restoreFromBackup() {
+        val peers = shutdownLive()
+        peers.forEach { it.awaitNeighborsObserved() }
+        db.withWriteTransaction { BackupTables.TRANSIENT.forEach { executeSQL("DELETE FROM $it") } }
+        dataStore.edit { it[booleanPreferencesKey(SettingsKeys.RESTORE_PENDING)] = true }
         withContext(Dispatchers.Default) { delay(MeshLab.SETTLE_MS) }
         boot()
     }

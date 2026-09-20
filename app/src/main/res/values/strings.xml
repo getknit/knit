@@ -776,6 +776,51 @@
          for, and the open-source licenses list behind it (legal/ThirdPartyNotices.kt), each row opening its
          bundled license text. Reached from Settings' overflow menu. The SPDX ids and license names come from
          the `License` enum, not from here — they are identifiers, not prose. -->
+    <!-- Backup and restore (ui/backup/BackupScreen, docs/BACKUP_FORMAT.md). One screen, two halves: make a
+         backup file locked by a recovery key the app mints and never keeps, and restore one — which replaces
+         everything on the phone and restarts Knit. The onboarding door shows the restore half alone.
+         `backup_restore_confirm_named` / `_unnamed` take the backup's owner name (when it had one), its date
+         and the Knit version that wrote it; `backup_progress` two sizes already formatted for the locale. -->
+    <string name="settings_backup_title">Backup and restore</string>
+    <string name="settings_backup_subtitle">Keep your identity, contacts and messages in a file you control</string>
+    <string name="backup_title">Backup and restore</string>
+    <string name="backup_restore_title">Restore from a backup</string>
+    <string name="backup_section_backup">Back up this phone</string>
+    <string name="backup_section_backup_body">Your identity, contacts, groups, messages and photos go into one encrypted file, saved wherever you choose. A recovery key locks it; Knit shows the key once and doesn\'t keep a copy, so nobody — Knit included — can open the file without it.</string>
+    <string name="backup_action_create">Create backup</string>
+    <string name="backup_key_intro">Your recovery key. Write it down or store it in a password manager before saving the file — it\'s the only way to open this backup.</string>
+    <string name="backup_key_copy">Copy recovery key</string>
+    <string name="backup_key_saved">I\'ve saved this key somewhere safe</string>
+    <string name="backup_action_save_file">Save backup file</string>
+    <string name="backup_writing">Writing the backup…</string>
+    <string name="backup_progress">%1$s of %2$s</string>
+    <string name="backup_written">Backup saved (%1$s). Keep the file and the key together with whoever will restore it — usually you, on your next phone.</string>
+    <string name="backup_failed">The backup wasn\'t saved: %1$s</string>
+    <string name="backup_section_restore">Restore a backup</string>
+    <string name="backup_section_restore_body">Bring an identity and its history onto this phone from a Knit backup file. Restoring replaces everything Knit has here and restarts the app. Use a backup on one phone at a time: two phones on the same identity keep resetting each other\'s conversations.</string>
+    <string name="backup_section_restore_body_onboarding">Moving from another phone? Pick the backup file you saved there and enter its recovery key. Knit restarts with your identity, contacts and messages in place. Use the backup on this phone only, and stop using Knit on the old one.</string>
+    <string name="backup_action_choose_file">Choose backup file</string>
+    <string name="backup_key_label">Recovery key</string>
+    <string name="backup_key_hint">30 digits; spaces don\'t matter</string>
+    <string name="backup_key_not_a_key">A recovery key is 30 digits</string>
+    <string name="backup_action_unlock">Open backup</string>
+    <string name="backup_restoring_reading">Checking the backup…</string>
+    <string name="backup_restore_ready">The backup opened and checks out.</string>
+    <string name="backup_restore_confirm_title">Restore this backup?</string>
+    <string name="backup_restore_confirm_named">Backup of %1$s from %2$s, made with Knit %3$s.</string>
+    <string name="backup_restore_confirm_unnamed">Backup from %1$s, made with Knit %2$s.</string>
+    <string name="backup_restore_confirm_body">Everything Knit holds on this phone — its identity, contacts, groups and messages — is replaced by the backup, and the app restarts. Your contacts see you as the same person; conversations with them pick up again as their phones reconnect. If the old phone still runs Knit, stop using it there.</string>
+    <string name="backup_action_restore">Restore and restart</string>
+    <string name="backup_restore_failed">The backup wasn\'t restored: %1$s</string>
+    <string name="backup_restarting">Restarting Knit…</string>
+    <string name="backup_problem_not_a_backup">this isn\'t a Knit backup file</string>
+    <string name="backup_problem_newer_app">it was made by a newer version of Knit — update Knit and try again</string>
+    <string name="backup_problem_wrong_key">the recovery key doesn\'t open it, or the file has changed since it was saved</string>
+    <string name="backup_problem_damaged">the file is incomplete or damaged</string>
+    <string name="backup_problem_no_space">this phone doesn\'t have enough free space</string>
+    <string name="backup_problem_io">the file couldn\'t be read or written</string>
+    <string name="onboarding_restore">Restore from a backup</string>
+
     <string name="settings_menu_about">About Knit</string>
     <string name="settings_menu_licenses">Open-source licenses</string>
     <string name="about_title">About Knit</string>
@@ -859,6 +904,7 @@
     <string name="action_save">Save</string>
     <string name="action_copy">Copy</string>
     <string name="action_copied">Copied</string>
+    <string name="action_done">Done</string>
 
     <!-- Content moderation (on-device) -->
     <string name="moderation_text_blocked">Message not sent: it may contain abusive language</string>

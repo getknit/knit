@@ -211,6 +211,16 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   by your own signed rejoin — nobody can add or remove anyone else. The seed carries the founding roster, so a
   member with no row pins the group from the seed through `reconcileGroup`'s one door (the relay-only case,
   #47); a seed without one (an older build's) is parked, never consumed.
+- **When touching `data/backup/`, `ui/backup/`, `RestartActivity`, `KnitApplication.onCreate`'s pre-Koin
+  block, `MeshManager.finishRestore`, `SeenSet.reopen`, `SettingsKeys.TRANSIENT_PREFIXES`, or adding a table
+  or a DataStore key:** READ `docs/BACKUP_FORMAT.md` and ADR 2026-09.6mj7. A backup is one file sealed by a
+  recovery key the app shows once and never keeps; custody and both ratchets are never carried
+  (`BackupTables`, test-pinned to the schema — a new table must be classified), a restore is staged and
+  verified in full before `READY` (both readers on the other side fail destructively), applied by the
+  relaunched process before Koin, and finished by one session reset per DM peer on the first mesh start.
+  A restore is a **move** — the mesh has no clone tolerance — and the copy says so. The database copy goes
+  through a raw single-connection driver on purpose (`ATTACH` is read-only to SQLite and lands on a pool
+  reader; the SQLCipher layer rewrites `BEGIN` to `EXCLUSIVE`) — don't move it onto the Room connection.
 - **When touching contact cards, the Add-by-link / share-link flow, deep links (`getknit.app/c`,
   `knit://`), or `mesh/IntroSync`:** READ `docs/CONTACT_CARD.md` (the card layout + golden vectors, the
   intro driver's rules, the assetlinks prerequisite) and `docs/SPOOL_PROTOCOL.md` §3.5 (the pair scope);

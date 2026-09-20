@@ -12,6 +12,7 @@ import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.lora.LoraStatusRepository
 import app.getknit.knit.transfer.TransferManager
 import app.getknit.knit.ui.addcontact.AddContactViewModel
+import app.getknit.knit.ui.backup.BackupViewModel
 import app.getknit.knit.ui.blocked.BlockedUsersViewModel
 import app.getknit.knit.ui.chat.ChatViewModel
 import app.getknit.knit.ui.chat.MessageDetailsViewModel
@@ -117,6 +118,7 @@ val uiModule =
         viewModel {
             SettingsViewModel(get(), get(), get<RelayStatusRepository>().facts, get<LoraStatusRepository>().facts)
         }
+        viewModel { BackupViewModel(androidContext(), get(), get()) }
         // ProfileDetailsViewModel takes the tapped peer's node id as a runtime param.
         viewModel { params ->
             ProfileDetailsViewModel(

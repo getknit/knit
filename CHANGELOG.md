@@ -32,6 +32,9 @@ document:
   button to the page where it turns off.
 - A Meshtastic user who messages your Knit board directly now gets one automatic reply saying nobody reads
   it and where to find Knit. The board answers each person once a day, and only if you set it up for Knit.
+- Settings now has Backup and restore: your identity, contacts, groups and messages go into one encrypted
+  file locked by a recovery key Knit shows once. Restore it on a new phone from the welcome screen, and use
+  the backup on one phone at a time.
 
 ### Changed
 

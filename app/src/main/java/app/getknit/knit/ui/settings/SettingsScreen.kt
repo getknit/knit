@@ -98,6 +98,7 @@ fun SettingsScreen(
     onOpenLora: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenLicenses: () -> Unit = {},
+    onOpenBackup: () -> Unit = {},
     viewModel: SettingsViewModel = koinViewModel(),
 ) {
     val header by viewModel.header.collectAsStateWithLifecycle()
@@ -133,6 +134,7 @@ fun SettingsScreen(
         onOpenLora = onOpenLora,
         onOpenAbout = onOpenAbout,
         onOpenLicenses = onOpenLicenses,
+        onOpenBackup = onOpenBackup,
         onAllowBattery = { requestIgnoreBatteryOptimizations(context) },
         onOpenBatterySettings = { openAppSettings(context) },
         onOpenUnusedPauseSettings = { openUnusedAppPauseSettings(context) },
@@ -154,6 +156,7 @@ internal fun SettingsScreenContent(
     onOpenLora: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenLicenses: () -> Unit = {},
+    onOpenBackup: () -> Unit = {},
     // Whether the Internet-relay plane is introduced at all in this build. A parameter rather than a
     // bare BuildConfig read so the hidden case is previewable and testable; see app/build.gradle.kts.
     showInternetRelays: Boolean = BuildConfig.INTERNET_PLANE,
@@ -275,6 +278,13 @@ internal fun SettingsScreenContent(
             if (showInternetRelays) InternetRelayRow(summary = form.relay, onClick = onOpenRelays)
 
             if (showLoraRadio) LoraRadioRow(summary = form.lora, onClick = onOpenLora)
+
+            NavigatingRow(
+                title = stringResource(R.string.settings_backup_title),
+                subtitle = stringResource(R.string.settings_backup_subtitle),
+                onClick = onOpenBackup,
+                modifier = Modifier.testTag("settings_backup"),
+            )
 
             BatteryOptimizationRow(battery = battery, onAllow = onAllowBattery, onOpenSettings = onOpenBatterySettings)
             UnusedAppPauseRow(unusedPause = unusedPause, onOpenSettings = onOpenUnusedPauseSettings)

@@ -34,6 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -75,7 +76,10 @@ import app.getknit.knit.ui.theme.knitColors
  * (say hello, add a contact); the chat list's Getting-started card does that right after Start.
  */
 @Composable
-internal fun WelcomePage(modifier: Modifier = Modifier) {
+internal fun WelcomePage(
+    modifier: Modifier = Modifier,
+    onRestore: () -> Unit = {},
+) {
     // A finite reveal on arrival, never an infinite one: the page must settle for tests and screenshots.
     val shown = remember { MutableTransitionState(false).apply { targetState = true } }
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -130,6 +134,12 @@ internal fun WelcomePage(modifier: Modifier = Modifier) {
                         body = stringResource(R.string.onboarding_how_carry_body),
                     )
                 }
+            }
+            // The second way in: a phone that is replacing another one. Quiet on purpose — a text button
+            // under the pitch, since most first launches have nothing to restore.
+            Spacer(Modifier.height(16.dp))
+            TextButton(onClick = onRestore, modifier = Modifier.testTag("onboarding_restore")) {
+                Text(stringResource(R.string.onboarding_restore))
             }
         }
     }

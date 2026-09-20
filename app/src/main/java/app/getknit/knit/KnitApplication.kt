@@ -5,6 +5,7 @@ import app.getknit.knit.crash.CrashHandler
 import app.getknit.knit.crash.crashStore
 import app.getknit.knit.crash.currentCrashEnvironment
 import app.getknit.knit.data.LinkCardStore
+import app.getknit.knit.data.backup.RestoreApplier
 import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.appModule
@@ -15,6 +16,7 @@ import app.getknit.knit.di.startDemoDirectorIfEnabled
 import app.getknit.knit.di.uiModule
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.transfer.DirectWifi
+import app.getknit.knit.ui.backup.RestartActivity
 import app.getknit.knit.ui.image.BlobFetcher
 import app.getknit.knit.ui.image.BlobKeyer
 import app.getknit.knit.ui.image.LinkCardFetcher
@@ -41,6 +43,9 @@ class KnitApplication :
 
     override fun onCreate() {
         super.onCreate()
+        // The restore trampoline's process (ui/backup/RestartActivity) exists to kill this one and relaunch
+        // it; it must not build a Koin graph, open the DataStore a second time or seed anything of its own.
+        if (getProcessName().endsWith(RestartActivity.PROCESS_SUFFIX)) return
         // Before startKoin, deliberately. The crashes worth capturing most are the ones in startup itself:
         // an AndroidKeyStore fault in KeystoreSecret/DatabaseKey, a SQLCipher or tflite .so that won't load,
         // a Koin graph that throws while building KnitDatabase. Every one of those kills the app before any
@@ -48,6 +53,10 @@ class KnitApplication :
         // Chains to whatever handler was already default, so the "Knit keeps stopping" dialog and the
         // process kill still happen exactly as before.
         CrashHandler.install(crashStore(this), currentCrashEnvironment())
+        // A backup restore staged before the relaunch lands here, while nothing has the database, the
+        // identity file or the DataStore open — the one window in which those files can be replaced. After
+        // the crash handler, so a failure in the move is captured like any other startup fault.
+        RestoreApplier.applyPending(this)
         val koinApp =
             startKoin {
                 androidLogger()

@@ -54,4 +54,20 @@ class SeenSetTest {
         assertTrue("the oldest was evicted, as it would have been while running", seen.add("oldest"))
         assertTrue("the newest is what a bounded set keeps", seen.contains("newest"))
     }
+
+    @Test
+    fun anIdCanBeReopenedOnceInsideItsWindowAndNotAgain() {
+        var now = 1_000L
+        val set = SeenSet(ttlMillis = 10_000L, clock = { now })
+        assertTrue(set.add("dm"))
+        assertFalse("the copy custody served is a duplicate", set.add("dm"))
+        assertTrue("the first reopen admits the sender's re-seal", set.reopen("dm"))
+        assertTrue(set.add("dm"))
+        assertFalse("a second reopen inside the window is refused", set.reopen("dm"))
+        assertFalse(set.add("dm"))
+        assertFalse("an id the set never saw has nothing to reopen", set.reopen("other"))
+        now += 10_001L
+        assertTrue("a new window, a new reopen", set.add("dm"))
+        assertTrue(set.reopen("dm"))
+    }
 }

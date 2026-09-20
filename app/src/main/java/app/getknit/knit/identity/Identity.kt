@@ -46,4 +46,7 @@ class Identity(
 
     /** Rotates the signed prekey when due; on true the caller must bump `profileVersion` so it re-floods. */
     fun rotatePrekeyIfDue(now: Long): Boolean = keyStore.rotatePrekeyIfDue(now)
+
+    /** Rotates the signed prekey now, due or not (the first start after a restore); the caller bumps the version. */
+    fun rotatePrekey(now: Long) = keyStore.rotatePrekey(now)
 }

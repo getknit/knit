@@ -19,15 +19,19 @@ import javax.crypto.spec.GCMParameterSpec
  * long-lived secrets (e.g. the E2E identity private keysets in
  * [app.getknit.knit.data.crypto.IdentityKeyStore]) can reuse it.
  *
- * Each instance owns its own Keystore [alias] and on-disk [fileName] under `filesDir`. Opening is
+ * Each instance owns its own Keystore [alias] and on-disk [fileName] under [dir] — `filesDir` unless a
+ * caller says otherwise, which only the backup restore does: it wraps the secrets it is about to install
+ * into its staging directory under the *live* aliases, so the files it later moves into place are exactly
+ * what [IdentityKeyStore] and [DatabaseKey] read (`iv ‖ ciphertext`, one alias per file). Opening is
  * transparent (no user-auth requirement on the Keystore key).
  */
 class KeystoreSecret(
     private val context: Context,
     private val alias: String,
     private val fileName: String,
+    private val dir: File = context.filesDir,
 ) {
-    private val file: File get() = File(context.filesDir, fileName)
+    private val file: File get() = File(dir, fileName)
 
     fun exists(): Boolean = file.exists()
 

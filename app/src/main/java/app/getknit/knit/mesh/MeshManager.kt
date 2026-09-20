@@ -400,6 +400,8 @@ class MeshManager(
             flushPending = ::flushPendingFor,
             classifyText = ::isTextFlagged,
             resealUnacked = ::resealRecentDmsTo,
+            // `router` is rebuilt per session (declared below); the lambda reads the current one.
+            reopenFrame = { router.reopen(it) },
             redistributeGroupKey = ::redistributeGroupKey,
             flushGroupKeys = ::flushPendingGroupKeysFor,
             replayGroupCustody = ::replayCustodiedGroupFrames,
@@ -806,6 +808,41 @@ class MeshManager(
     private suspend fun rotatePrekeyIfDue() {
         if (!identity.rotatePrekeyIfDue(clock())) return
         broadcastProfile()
+    }
+
+    /**
+     * The first mesh start after a backup restore (`SettingsStore.restorePending`, set into the settings
+     * file by the restore itself). The database came back with its ratchet and sender-key tables empty and
+     * the identity with the prekeys it had when the backup was made, so three things put this phone back
+     * on speaking terms with everyone it knows:
+     *
+     * - a **fresh signed prekey**, whatever the newest one's age — the phone the backup came from may have
+     *   minted ids past these since, and a peer holding one of those against a different public key would
+     *   initiate to a key we do not have;
+     * - a **profile bump** ([broadcastProfile]), so the fresh prekey and the restored name outrank whatever
+     *   version the old phone last published — peers order profiles on that number, never on the frame's
+     *   own time;
+     * - a **session reset toward every DM peer** ([InboundPipeline.sendSessionReset]): the receiver adopts
+     *   the fresh init, re-seals its still-unacked DMs of the last 24 h under it and force-flushes its group
+     *   seeds (`docs/FORWARD_SECRECY_RATCHET.md` §7). Without it a peer notices nothing until three of its
+     *   frames fail to open and its own heuristic fires, six hours apart — for a device that just lost
+     *   *every* session, that is the slow path. Peers we hold no prekey for decline here as they would
+     *   anywhere; their next profile bootstraps the session the ordinary way.
+     *
+     * Runs once: the flag is cleared at the end, and the group chains re-mint on the next group send by
+     * themselves (advance rule 5 in `docs/GROUP_FORWARD_SECRECY.md`).
+     */
+    private suspend fun finishRestore() {
+        if (!settings.restorePending.first()) return
+        val me = identity.nodeId()
+        Log.i(TAG, "finishing a backup restore: fresh prekey, profile bump, session resets")
+        identity.rotatePrekey(clock())
+        broadcastProfile()
+        val dmPeers = messages.distinctConversations().filter { Conversations.kindFor(it) == ConversationKind.DM }
+        for (peer in dmPeers) {
+            pipeline.sendSessionReset(peer, me, clock())?.let { Log.i(TAG, "no session reset to $peer: $it") }
+        }
+        settings.clearRestorePending()
     }
 
     /** Tears down and re-establishes the transport (e.g. after Bluetooth toggles back on). */
@@ -2174,6 +2211,7 @@ class MeshManager(
             // Rotation check BEFORE seeding, so a due prekey mints now and the seeded frame (and any
             // first-contact push) already carries it; also the startup ratchet retention sweep.
             rotatePrekeyIfDue()
+            finishRestore()
             ratchet.sweep(clock())
             groupRatchet.sweep(clock())
             groupRoots.sweep(clock())

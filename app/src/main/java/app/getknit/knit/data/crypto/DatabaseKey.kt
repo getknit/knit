@@ -27,6 +27,11 @@ import javax.crypto.spec.GCMParameterSpec
  * or the wrap file corrupt), we fall back to wipe-and-recreate: the unreadable database is deleted
  * and a fresh encrypted one is provisioned. The same wipe runs on first encryption to drop any
  * pre-existing plaintext `knit.db` (which SQLCipher cannot open).
+ *
+ * The wrap file's layout (`iv ‖ AES-256-GCM ciphertext` under [KEY_ALIAS]) is the same one [KeystoreSecret]
+ * writes, on purpose: a backup restore installs a passphrase it carried by writing it through
+ * `KeystoreSecret(context, KEY_ALIAS, KEY_FILE, dir)` and moving that file into place, and this class
+ * reads it as its own (`app.getknit.knit.data.backup.RestoreStager`).
  */
 class DatabaseKey(
     private val context: Context,
@@ -117,13 +122,15 @@ class DatabaseKey(
         }
     }
 
-    private companion object {
+    internal companion object {
         const val TAG = "DatabaseKey"
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val KEY_ALIAS = "knit_db_key"
         const val KEY_FILE = "db.key"
         const val DB_NAME = "knit.db"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
+
+        /** The passphrase is 32 random bytes — what a backup carries and a restore hands back to [KeystoreSecret]. */
         const val PASSPHRASE_BYTES = 32
         const val KEY_SIZE_BITS = 256
         const val GCM_TAG_BITS = 128

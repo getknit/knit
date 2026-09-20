@@ -42,6 +42,7 @@ import app.getknit.knit.ui.about.LicenseTextScreen
 import app.getknit.knit.ui.about.LicensesScreen
 import app.getknit.knit.ui.addcontact.AddContactScreen
 import app.getknit.knit.ui.addcontact.ContactCardInbox
+import app.getknit.knit.ui.backup.BackupScreen
 import app.getknit.knit.ui.blocked.BlockedUsersScreen
 import app.getknit.knit.ui.chat.ChatScreen
 import app.getknit.knit.ui.chat.MessageDetailsScreen
@@ -94,6 +95,11 @@ private object Routes {
     const val SEARCH = "search"
     const val ABOUT = "about"
     const val LICENSES = "licenses"
+
+    // Backup and restore; `restore=true` is the onboarding door, which shows the restore half alone.
+    const val BACKUP = "backup?restore={restore}"
+
+    fun backup(restoreOnly: Boolean = false) = "backup?restore=$restoreOnly"
 
     // The optional `messageId` is how a search hit opens a thread ON a message; everywhere else — the
     // notification route, the pickers, `demo_route` — the path alone still matches, and the thread opens
@@ -324,6 +330,16 @@ fun KnitApp(startRoute: String? = null) {
                         popUpTo(Routes.ONBOARDING) { inclusive = true }
                     }
                 },
+                onRestore = { navController.navigate(Routes.backup(restoreOnly = true)) },
+            )
+        }
+        composable(
+            Routes.BACKUP,
+            arguments = listOf(navArgument("restore") { defaultValue = "false" }),
+        ) { entry ->
+            BackupScreen(
+                onBack = { navController.popBackStack() },
+                restoreOnly = entry.arguments?.getString("restore") == "true",
             )
         }
         composable(Routes.CHAT_LIST) {
@@ -474,6 +490,7 @@ fun KnitApp(startRoute: String? = null) {
                 onOpenLora = { navController.navigate(Routes.LORA_RADIO) },
                 onOpenAbout = { navController.navigate(Routes.ABOUT) },
                 onOpenLicenses = { navController.navigate(Routes.LICENSES) },
+                onOpenBackup = { navController.navigate(Routes.backup()) },
             )
         }
         composable(Routes.PROFILE) {
