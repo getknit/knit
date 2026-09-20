@@ -86,3 +86,22 @@ Location parent-denied: Settings and Diagnostics carry the Family Link line, and
 straight from the consent sheet to the dialog with the parent sentence, whose Open settings lands on
 Android's "Disabled by admin" page. The ATF suite passed 25/25 on a rooted API 34 AVD carrying a user
 restriction, with the Managed lines rendered and no finding on them.
+
+**Addendum, 2026-09-19 — the restriction sweep is gone.** The lab Pixel 3 (blueline, Android 12, nobody
+managing it, no profile owner, `Device managed: false`) read as Managed: its user-0 bundle carried
+`no_oem_unlock=true`, the system's own record that the bootloader is locked with OEM unlocking off
+(`ro.boot.flash.locked=1`, `sys.oem_unlock_allowed=0`). That key is in the platform's `IMMUTABLE_BY_OWNERS`
+set, so no device or profile owner could have put it there — the second time in three days the bundle
+carried something that was not an admin's (the Pixel 9's `no_record_audio=false` was the first), and the
+"a consumer phone reports none" premise above is wrong. What the bundle holds is whatever the *system*
+records there: OEM-lock state, a background user's audio hold, a Guest user's defaults. Only a device owner
+or a profile owner can add a restriction through the public API, so a bundle read can never find a manager
+the owner probe misses; it can only misname a phone that has none.
+
+`isManaged` now asks the platform's own question: is any active admin a device owner or a profile owner
+(`getActiveAdmins` × `isDeviceOwnerApp` / `isProfileOwnerApp`, all public, any app may call them), plus the
+two work-profile reads that were already there for the personal side of a COPE device. A plain device
+admin — Find My Device — is still not a signal, now pinned by a test. What this does not see: a device
+owner on the system user, read from a *secondary* user, where the owner's global restrictions apply but the
+owner is not among that user's admins; a secondary user on a fully-managed device is rare enough to leave.
+Family Link is unchanged — it is a profile owner and is read first.

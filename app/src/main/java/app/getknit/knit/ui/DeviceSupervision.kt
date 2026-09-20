@@ -61,8 +61,14 @@ private fun isManaged(context: Context): Boolean =
                     userManager?.isManagedProfile == true ||
                         devicePolicy?.isOrganizationOwnedDeviceWithManagedProfile == true
                 )
-        // A restriction is "in force" only when its value is true. The bundle also carries keys whose value is
-        // false — a Pixel 9 with nobody managing it reported `no_record_audio=false` — and `dumpsys user` hides
-        // those, so an emptiness check misnames a plain phone as Managed.
-        profileOrOrgOwned || userManager?.userRestrictions?.let { r -> r.keySet().any { r.getBoolean(it) } } == true
+        // Only a device owner or a profile owner can hold a switch. A plain device admin (Find My Device is one
+        // on most phones) cannot, and the user-restriction bundle is not a signal either: the system keeps its
+        // own keys there — an unmanaged Pixel 3 with its bootloader locked carried `no_oem_unlock=true`, a key
+        // no owner may even set — so any read of it names a consumer phone as Managed sooner or later.
+        val ownerPresent =
+            devicePolicy != null &&
+                devicePolicy.activeAdmins.orEmpty().any { admin ->
+                    devicePolicy.isDeviceOwnerApp(admin.packageName) || devicePolicy.isProfileOwnerApp(admin.packageName)
+                }
+        profileOrOrgOwned || ownerPresent
     }.getOrNull() == true

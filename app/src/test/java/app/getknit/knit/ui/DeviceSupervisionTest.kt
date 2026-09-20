@@ -15,8 +15,9 @@ import org.robolectric.Shadows.shadowOf
 /**
  * [deviceSupervision] folds the platform's policy probes into the one fact the copy needs: who, besides the
  * user, holds this phone's switches. Family Link is pinned by the package the Pixel 8 trial found as profile
- * owner (ADR 2026-09.a8ud), and it wins over the generic "some restriction is in force" read that any
- * supervised phone also satisfies.
+ * owner (ADR 2026-09.a8ud), and it wins over the generic "some other owner holds policy" read that any
+ * supervised phone also satisfies. The user-restriction bundle is deliberately not read: the system keeps
+ * its own keys there.
  */
 @RunWith(AndroidJUnit4::class)
 class DeviceSupervisionTest {
@@ -54,9 +55,24 @@ class DeviceSupervisionTest {
     }
 
     @Test
-    fun `a user restriction alone is Managed`() {
-        restrict(UserManager.DISALLOW_CONFIG_WIFI)
+    fun `a device owner is Managed`() {
+        devicePolicy.setDeviceOwner(ComponentName("com.example.emm", "Admin"))
         assertEquals(DeviceSupervision.Managed, deviceSupervision(app))
+    }
+
+    @Test
+    fun `a plain device admin is not Managed`() {
+        // Find My Device is an active admin on most consumer phones; only an owner can hold a switch.
+        devicePolicy.setActiveAdmin(ComponentName("com.google.android.gms", "FindMyDevice"))
+        assertEquals(DeviceSupervision.None, deviceSupervision(app))
+    }
+
+    @Test
+    fun `a user restriction with no owner behind it is the system's, not Managed`() {
+        // An unmanaged Pixel 3 with its bootloader locked carried `no_oem_unlock=true` (2026-09-19): the key is
+        // immutable by owners, so a restriction sweep can only misname a consumer phone.
+        restrict("no_oem_unlock") // DISALLOW_OEM_UNLOCK left the SDK; the key still lives in the bundle.
+        assertEquals(DeviceSupervision.None, deviceSupervision(app))
     }
 
     @Test
