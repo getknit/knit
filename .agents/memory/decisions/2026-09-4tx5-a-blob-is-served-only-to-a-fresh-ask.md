@@ -76,5 +76,10 @@ the tick: two asks, one copy per (hash, link), nothing pushed — fails on the p
 Carol's push), `InternetPlaneLabTest.aPhotoTheRelayDeliveredIsServedToTheNeighbourWhoAskedWhileWeLackedItOnItsNextAsk`
 (#53's shape, now served on the re-ask and never before), `BlobExchangeTest` (`aWantForAnArrivingBlobIsSilent`,
 `theTickReAskSkipsAnArrivingBlob`, `aReAskWhileTheCopyIsQueuedOnTheLinkShipsNothing`,
-`aRequesterWeLackForIsServedOnItsNextAskNotPushed`) and `FramedLinkTest` (`rxKey…`, `aPendingFile…`). Device
-re-run owed: the trial's shape, with the holders' `file ATTACHMENT/<hash>` lines as the oracle — one per link.
+`aRequesterWeLackForIsServedOnItsNextAskNotPushed`) and `FramedLinkTest` (`rxKey…`, `aPendingFile…`).
+**Device-verified 2026-09-19 22:15** on the trial's own shape (P3 → Moto G, 700 183 B, P9 linked to both):
+P3 served the Moto and P9 once each at 22:15:17 (24.4 s each at the pace) and nothing else moved for six
+minutes — the Moto's stream ran 22:15:26–22:16:23 and P9's 22:15:29–22:17:01, so both phones' 60 s ticks
+(22:16:02, 22:16:13) fell inside their own streams, exactly where the old build re-asked, and no re-ask, no
+carrier push and no push back reached any link. The holders' `file ATTACHMENT/<hash>` lines are the oracle:
+two on P3, none on the Moto, none on P9.
