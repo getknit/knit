@@ -464,19 +464,23 @@ opaque SHA-256-addressed bytes with a MIME string beside them, which is why voic
   else's content address.
 - **`BlobExchange`** (with the `BlobStore` interface `has`/`fileFor`/`mimeFor`/`saveIncoming`,
   adapted over `AttachmentStore`) implements a hop-by-hop pull:
-  - `want(hash)` — returns early if held or already in flight (`fetching` set); otherwise sends a
-    `blobreq` frame (`relay = false`) to **every direct neighbor**.
+  - `want(hash)` — returns early if held, already in flight (`fetching` set), or already **arriving**
+    on a link (`MeshTransport.arrivingFiles()`: a `FILE_HEADER` in, no `FILE_END` yet — read off
+    `FramedLink.rxKey`, never a memo); otherwise sends a `blobreq` frame (`relay = false`) to **every
+    direct neighbor**.
   - `onRequest(hash, fromNodeId)` — if we hold the blob, send it straight back over the file channel
-    (`FileKind.ATTACHMENT`); if not, record the requester in `wanters[hash]` and **recurse** by
-    calling `want(hash)` (re-originating the request to our own neighbors). A per-(hash, peer) **serve
-    memo** (45 s, un-stamped if the enqueue is refused) dedupes the re-ask storm around a transfer
-    slower than the requester's re-ask cadence (the 60 s re-offer, or the `onNeighborAdded` re-ask
-    when a new link comes up mid-stream) so a peer is never shipped a second full copy.
+    (`FileKind.ATTACHMENT`), unless a copy is already queued or streaming to that peer
+    (`MeshTransport.fileInFlightTo`) or was enqueued inside the per-(hash, peer) **serve memo** (45 s,
+    un-stamped if the enqueue is refused). If not, **recurse** by calling `want(hash)` on the asker's
+    behalf, and remember nothing about the asker (ADR 2026-09.4tx5): the asker re-asks on its own 60 s
+    tick while it still lacks the bytes, and only it can tell whether they are already on the way.
   - `onReceived(...)` — save the blob, clear `fetching`, fire `onObtained`
     (`MessageRepository.setAttachmentPath`, filling the local path on every message referencing the
-    hash), then forward it to any recorded `wanters` (excluding the giver). So a blob walks back
-    hop-by-hop over direct-neighbor file transfers.
-  - `onNeighborAdded(peer)` re-asks a new neighbor for everything still missing (catches late joiners).
+    hash). Nothing is pushed to anyone: a blob walks hop-by-hop over direct-neighbor file transfers,
+    one hop per re-ask.
+  - `onNeighborAdded(peer)` re-asks a neighbor for everything still missing and not arriving — on a new
+    link (catches late joiners) and on the 60 s re-offer tick for every linked neighbor, re-armed from the
+    database first (`MeshManager.rewantMissingBlobs`, ADR 2026-09.ptv8).
   - **Storm/loop control:** the `fetching` dedup set, the non-relaying request frame (`relay = false`,
     never flooded — each hop mints a fresh request id), and never bouncing a blob back to its giver.
 

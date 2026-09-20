@@ -33,6 +33,12 @@ class FakeLoopTransport(
 
     private val links = mutableMapOf<String, FakeLoopTransport>()
 
+    /** Keys a test declares as streaming in right now (a real link reads them off its `FILE_HEADER`). */
+    val arriving = mutableSetOf<String>()
+
+    /** `nodeId to key` pairs a test declares as queued or streaming toward that peer. */
+    val inFlight = mutableSetOf<Pair<String, String>>()
+
     /** Bidirectionally links this transport with [other] so they become neighbors. */
     fun connect(other: FakeLoopTransport) {
         if (other.nodeId == nodeId) return
@@ -74,6 +80,13 @@ class FakeLoopTransport(
         target._incomingFiles.emit(ReceivedFile(nodeId, file.absolutePath, meta.kind, meta.key, meta.mime))
         return true
     }
+
+    override fun arrivingFiles(): Set<String> = arriving.toSet()
+
+    override fun fileInFlightTo(
+        nodeId: String,
+        key: String,
+    ): Boolean = (nodeId to key) in inFlight
 
     override suspend fun sendDigest(
         to: Peer,

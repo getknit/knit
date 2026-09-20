@@ -477,12 +477,9 @@ class MeshManager(
                 onPresenceChanged = ::onSpoolPresenceChanged,
                 blobs = scopeBlobs(),
                 // The same hook a radio pull fires, so NSFW screening, the message rows, and the UI all
-                // run unchanged for a spool-delivered image (§9.5) — then serve the neighbors that asked us
-                // for these bytes while we lacked them, which only the radio arrival used to do.
-                onAttachmentObtained = { hash ->
-                    pipeline.onObtained(hash)
-                    blobExchange.onObtainedOffMesh(hash)
-                },
+                // run unchanged for a spool-delivered image (§9.5). A neighbor that asked us for these bytes
+                // while we lacked them asks again on its own tick and is served then (ADR 2026-09.4tx5).
+                onAttachmentObtained = { hash -> pipeline.onObtained(hash) },
                 deferAttachment = attachmentDefer::defer,
                 deliver = { wire, env, from -> router.handleInbound(wire, env, from) },
                 metrics = metrics,
@@ -2329,7 +2326,7 @@ class MeshManager(
                         // the evidence the row's plane only stands in for — a heal round that finds these
                         // bytes in hand must never find them unexplained, whatever order the row lands in.
                         attachmentDefer.noteRadioArrival(file.key)
-                        blobExchange.onReceived(file.key, file.mime, file.path, file.fromNodeId)
+                        blobExchange.onReceived(file.key, file.mime, file.path)
                     }
                 }
             }

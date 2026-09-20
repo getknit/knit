@@ -93,6 +93,7 @@ carries; never renumber an old one.
 | [2026-09.37ce](decisions/2026-09-37ce-a-direct-transfer-s-bytes-are-sealed.md) | A direct transfer's bytes are sealed, not just sent over WPA2 | transfer, crypto |
 | [2026-09.3yje](decisions/2026-09-3yje-the-open-to-chat-cue-introduces-strangers-only.md) | The open-to-chat cue introduces strangers only, gated on a two-way exchange | notifications, presence, data |
 | [2026-09.4n5p](decisions/2026-09-4n5p-a-knit-board-answers-a-meshtastic-dm-once.md) | A Knit board answers a Meshtastic DM once | lora, meshtastic, provisioning |
+| [2026-09.4tx5](decisions/2026-09-4tx5-a-blob-is-served-only-to-a-fresh-ask.md) | A blob is served only to a fresh ask, and never asked for while it is arriving | mesh, attachments, blob-exchange, bluetooth |
 | [2026-09.535d](decisions/2026-09-535d-the-mesh-service-asks-for-the-location-foreground-type-on-the-location-tiers.md) | The mesh service asks for the location foreground type on the location tiers | reliability, service, android, permissions |
 | [2026-09.54xg](decisions/2026-09-54xg-the-unused-app-switch-is-shown-where-the-battery-exemption-is.md) | The unused-app switch is shown where the battery exemption is | ui, onboarding, settings, permissions |
 | [2026-09.5bqu](decisions/2026-09-5bqu-the-lora-plane-is-fully-quiescent-until-a-board-is-configured.md) | The LoRa plane is fully quiescent until a board is configured | lora, mesh, performance |

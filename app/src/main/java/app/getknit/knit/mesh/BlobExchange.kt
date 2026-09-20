@@ -10,15 +10,22 @@ import app.getknit.knit.mesh.protocol.WireEnvelope
 /**
  * Demand-driven, content-addressed image fetch over the mesh. A node that needs a blob it lacks asks
  * its direct neighbors ([want]); a neighbor that holds it serves it back over the file channel, and
- * one that doesn't recurses the request and forwards the bytes on once obtained ([onRequest] /
- * [onReceived]). The blob therefore walks hop-by-hop to any requester using only direct-neighbor file
- * transfer — no file-relay-by-destination is needed.
+ * one that doesn't pulls it on the asker's behalf ([onRequest] → [want]) so the asker's *next* ask finds
+ * a holder one hop closer. The blob therefore walks hop-by-hop to any requester using only direct-neighbor
+ * file transfer — no file-relay-by-destination is needed. The re-ask is the 60 s neighbor re-offer
+ * ([onNeighborAdded], re-armed from the database by `MeshManager.rewantMissingBlobs`, ADR 2026-09.ptv8);
+ * nothing is ever pushed to a peer that did not just ask, because the serving side cannot tell a peer
+ * that still lacks the bytes from one whose copy is already on the way from somebody else — a clique
+ * that pushed bought every recipient a copy per neighbor (work item #79, ADR 2026-09.4tx5).
+ *
+ * A blob whose bytes are already streaming in on a link ([MeshTransport.arrivingFiles]) is neither
+ * wanted nor re-asked for; a re-ask for one already queued toward that peer ([MeshTransport.fileInFlightTo])
+ * ships nothing. Both are reads of the link, not memos here — a torn link clears its own state.
  *
  * The `blobreq` that drives [onRequest] is **unsigned** (see `MeshManager.verifyInbound`), so, like
- * [KeyExchange]/[PendingInbound], the bookkeeping is **bounded**: [fetching] and [wanters] are capped
- * (oldest-first eviction) and [fetching] is TTL-swept ([sweepExpired]); the [recentlyServed] serve-memo
- * keeps its 45 s TTL plus a size cap. A peer flooding requests for hashes we don't hold therefore costs
- * bounded memory and work.
+ * [KeyExchange]/[PendingInbound], the bookkeeping is **bounded**: [fetching] is capped (oldest-first
+ * eviction) and TTL-swept ([sweepExpired]); the [recentlyServed] serve-memo keeps its 45 s TTL plus a size
+ * cap. A peer flooding requests for hashes we don't hold therefore costs bounded memory and work.
  *
  * Pure (no Android/Room): the transport, blob storage, and identity are injected, so the recursion
  * can be unit-tested with [FakeLoopTransport] and a fake [BlobStore].
@@ -32,20 +39,12 @@ class BlobExchange(
     private val now: () -> Long = System::currentTimeMillis,
     // Bounds (overridable so tests can exercise eviction with small values).
     private val maxFetching: Int = MAX_FETCHING,
-    private val maxWanters: Int = MAX_WANTERS,
     private val maxServeMemo: Int = MAX_SERVE_MEMO,
     private val fetchTtlMs: Long = FETCH_TTL_MS,
 ) {
-    // Guards fetching + wanters + recentlyServed (all mutated across coroutines); held only for short map
-    // ops, never across a suspend send (the send-outside-the-lock methods below).
+    // Guards fetching + recentlyServed (both mutated across coroutines); held only for short map ops, never
+    // across a suspend send (the send-outside-the-lock methods below).
     private val lock = Any()
-
-    // hash -> neighbors awaiting the blob from us (forwarded to once we obtain it). Key-capped oldest-first;
-    // peers-per-key is naturally bounded by the direct-neighbor count. Guarded by [lock].
-    private val wanters =
-        object : LinkedHashMap<String, MutableSet<Peer>>(64, 0.75f, false) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, MutableSet<Peer>>): Boolean = size > maxWanters
-        }
 
     // hash -> last time we (re)wanted it — dedups outbound requests and orders eviction. Insertion-ordered so
     // eviction is oldest-wanted-first; TTL-swept so a never-arriving fetch is reclaimed. Guarded by [lock].
@@ -54,25 +53,33 @@ class BlobExchange(
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean = size > maxFetching
         }
 
-    // "hash|nodeId" -> when we last enqueued that blob to that peer. A transfer slower than the requester's
-    // re-ask cadence (the 60 s re-offer, or the onNeighborAdded re-ask when a new link — e.g. an on-demand
-    // fast-plane NDP — comes up mid-transfer) would otherwise queue a second full copy behind the first.
-    // The memo TTL is deliberately shorter than the 60 s re-offer so a genuinely lost serve still retries;
-    // a size cap bounds it against a request flood between prunes. Guarded by [lock].
+    // "hash|nodeId" -> when we last enqueued that blob to that peer. The bound on an unsigned request flood
+    // for a blob we hold, and the cover for the composite's fast-link grace, when a serve is held for the
+    // NDP and sits on no link yet. A copy already queued or streaming on the link is refused by
+    // [MeshTransport.fileInFlightTo] instead, whatever its age. The memo TTL is deliberately shorter than
+    // the 60 s re-offer so a serve whose bytes were lost (link died mid-stream) still retries on the next
+    // round; a size cap bounds it against a request flood between prunes. Guarded by [lock].
     private val recentlyServed =
         object : LinkedHashMap<String, Long>(64, 0.75f, false) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean = size > maxServeMemo
         }
 
-    /** Requests [hash] from every direct neighbor, unless we already hold it or are already fetching it. */
+    /**
+     * Requests [hash] from every direct neighbor, unless we already hold it, are already fetching it, or its
+     * bytes are streaming in on a link right now. An arriving hash is not even marked: if the transfer dies
+     * the database re-arms it on the next tick (`rewantMissingBlobs`), and the memo is never the source.
+     */
     suspend fun want(hash: String) {
-        if (store.has(hash)) return
+        if (store.has(hash) || hash in transport.arrivingFiles()) return
         if (!recordFetch(hash, now())) return // already fetching — don't re-broadcast (onNeighborAdded re-asks)
         val req = blobRequest(selfId(), hash)
         transport.neighbors.value.forEach { transport.send(req, it) } // outside the lock
     }
 
-    /** A new neighbor appeared: re-ask it for everything we're still missing (handles late-joining holders). */
+    /**
+     * A neighbor appeared, or the 60 s re-offer tick came round for one: re-ask it for everything we're still
+     * missing (handles late-joining holders, and is the re-ask that makes the hop-by-hop walk move).
+     */
     suspend fun onNeighborAdded(peer: Peer) {
         // Drop the marks whose bytes we have since obtained, then ask for the rest. [onReceived] clears its
         // own, but the mesh is not the only plane that can satisfy a want: the spool saves an attachment and
@@ -80,7 +87,13 @@ class BlobExchange(
         // `InboundPipeline.onAvatarReceived` — neither routes through [onReceived], so without this the blob
         // is re-requested on every link-up for the whole [FETCH_TTL_MS] window and the neighbor re-serves
         // bytes we already hold. Asking the store here is the same guard [want] applies before it broadcasts.
-        val missing = snapshotFetching().filterNot { hash -> store.has(hash).also { if (it) clearFetching(hash) } }
+        // A hash whose bytes are on the way stays in the memo (the transfer may still die) but is not asked
+        // for: the re-ask against a slow BLE transfer is what bought a second copy from every holder (#79).
+        val arriving = transport.arrivingFiles()
+        val missing =
+            snapshotFetching()
+                .filterNot { hash -> store.has(hash).also { if (it) clearFetching(hash) } }
+                .filterNot { it in arriving }
         if (missing.isEmpty()) return
         val me = selfId()
         missing.forEach { hash -> transport.send(blobRequest(me, hash), peer) }
@@ -105,7 +118,11 @@ class BlobExchange(
         return WireEnvelope(relay = false, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env))
     }
 
-    /** A neighbor asked us for [hash]: serve it if held, else record the wanter and pull it ourselves. */
+    /**
+     * A neighbor asked us for [hash]: serve it if held, else pull it ourselves so its next ask finds us
+     * holding it. Nothing is remembered about the asker — it asks again on its own 60 s tick while it
+     * still lacks the bytes, and stops the moment they arrive from anyone.
+     */
     suspend fun onRequest(
         hash: String,
         fromNodeId: String,
@@ -113,71 +130,34 @@ class BlobExchange(
         val peer = Peer(fromNodeId)
         val file = store.fileFor(hash)
         if (file != null) {
-            // Holding the bytes is what decides a serve; a missing mime row only costs us the type. Gating on
-            // both stranded the wanter it then recorded: [want] returns at once for a hash the store has, so
-            // nothing was in flight and no arrival path would ever drain the entry.
+            // Holding the bytes is what decides a serve; a missing mime row only costs us the type.
             val mime = store.mimeFor(hash) ?: FALLBACK_MIME
-            if (servedRecently(hash, fromNodeId)) return // its copy is (still) in flight — don't ship a second
+            // Its copy is still on the link (queued or streaming) — an older build's 60 s re-ask, or one
+            // whose serve waits behind a multi-minute blob to the same peer — or was enqueued inside the
+            // memo: don't ship a second.
+            if (transport.fileInFlightTo(fromNodeId, hash) || servedRecently(hash, fromNodeId)) return
             if (!transport.sendFile(file, peer, FileMeta(FileKind.ATTACHMENT, hash, mime))) {
                 forgetServed(hash, fromNodeId) // nothing went out — let the next ask retry at once
             }
             return
         }
-        recordWanter(hash, peer)
         want(hash)
     }
 
-    /** A blob we wanted arrived from [fromNodeId]: persist it, notify, and forward to any other wanters. */
+    /** A blob we wanted arrived over a link: persist it and notify. */
     suspend fun onReceived(
         hash: String,
         mime: String,
         srcPath: String,
-        fromNodeId: String,
     ) {
         val stored = store.saveIncoming(hash, mime, srcPath) ?: return
-        // Forward what we actually stored, not what the server claimed — [mime] is an unauthenticated
-        // header from whoever happened to hold the bytes, and the store resolves it against our own row.
-        // Same read [onRequest] does when serving from cold, so a blob names the same type on every hop.
-        val servedMime = store.mimeFor(hash) ?: mime
         clearFetching(hash)
         onObtained(hash, stored.absolutePath)
-        val targets = removeWanters(hash) ?: return // detached set — safe to iterate outside the lock
-        // Don't bounce the blob back to whoever just gave it to us.
-        targets
-            .filter { it.nodeId != fromNodeId }
-            .forEach {
-                if (!servedRecently(hash, it.nodeId)) {
-                    transport.sendFile(stored, it, FileMeta(FileKind.ATTACHMENT, hash, servedMime))
-                }
-            }
-    }
-
-    /**
-     * Bytes for [hash] landed **off the radios** — the spool (`ScopeSync.fetchAttachment`) or a direct avatar
-     * push (`InboundPipeline.onAvatarReceived`) — so serve anyone still waiting on us for them, exactly as
-     * [onReceived] does for a radio arrival. There is no `fromNodeId` to filter out here: no neighbor handed
-     * us these bytes. Without this the entry sat in [wanters] until the requester happened to ask again — a
-     * *new* link, its own restart, or its [FETCH_TTL_MS] sweep, so ~30–40 minutes for a pair that stays
-     * linked — while occupying a slot in a cap that evicts oldest-first.
-     *
-     * Deliberately **not** called from `InboundPipeline.onObtained`, the hook both planes share: re-entering
-     * from there would drain [wanters] before [onReceived] reaches its own [removeWanters], losing the filter
-     * that keeps the blob from bouncing straight back at whoever just served it.
-     */
-    suspend fun onObtainedOffMesh(hash: String) {
-        val file = store.fileFor(hash) ?: return
-        val mime = store.mimeFor(hash) ?: FALLBACK_MIME
-        clearFetching(hash)
-        val targets = removeWanters(hash) ?: return // detached set — safe to iterate outside the lock
-        targets.forEach {
-            if (!servedRecently(hash, it.nodeId)) {
-                transport.sendFile(file, it, FileMeta(FileKind.ATTACHMENT, hash, mime))
-            }
-        }
     }
 
     /** Drops fetches whose last-want time has aged past the TTL — a never-arriving blob is reclaimed and
-     *  re-added on the next [want]. The cap, not this, is the security bound. Returns the number reclaimed. */
+     *  re-armed from the database on the next tick. The cap, not this, is the security bound. Returns the
+     *  number reclaimed. */
     fun sweepExpired(): Int =
         synchronized(lock) {
             val cutoff = now() - fetchTtlMs
@@ -212,15 +192,6 @@ class BlobExchange(
     /** Removes [hash] from the fetching set (its blob arrived). */
     private fun clearFetching(hash: String) = synchronized(lock) { fetching.remove(hash) }
 
-    /** Records [peer] as awaiting [hash] (new-key insert fires the oldest-first key-cap eviction). */
-    private fun recordWanter(
-        hash: String,
-        peer: Peer,
-    ) = synchronized(lock) { wanters.getOrPut(hash) { HashSet() }.add(peer) }
-
-    /** Detaches and returns the peers awaiting [hash] (a fresh set, so it's safe to iterate unlocked). */
-    private fun removeWanters(hash: String): Set<Peer>? = synchronized(lock) { wanters.remove(hash) }
-
     /**
      * True if we already enqueued [hash] to [nodeId] within [SERVE_MEMO_MS]; otherwise stamps the pair and
      * returns false (the caller serves). Prunes expired pairs first; the map's size cap bounds it against a
@@ -252,9 +223,6 @@ class BlobExchange(
 
         // Cap on distinct outstanding fetches — the memory bound on unsigned-blobreq-driven growth.
         private const val MAX_FETCHING = 256
-
-        // Cap on distinct hashes we're relaying to wanters (same scale/rationale).
-        private const val MAX_WANTERS = 256
 
         // Size cap on the in-flight serve memo (on top of its 45 s TTL).
         private const val MAX_SERVE_MEMO = 512

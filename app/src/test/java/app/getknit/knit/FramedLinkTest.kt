@@ -122,6 +122,16 @@ class FramedLinkTest {
         return Harness(link, toLink, fromLink, callbacks)
     }
 
+    /** Polls [cond] for up to two seconds (the loops run on Dispatchers.IO). */
+    private fun awaitUntil(cond: () -> Boolean): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (System.nanoTime() < deadline) {
+            if (cond()) return true
+            Thread.sleep(5)
+        }
+        return cond()
+    }
+
     private fun writeRecord(
         out: OutputStream,
         type: LinkFraming.Type,
@@ -173,6 +183,51 @@ class FramedLinkTest {
         assertEquals(FileKind.ATTACHMENT, got!!.kind)
         assertEquals(key, got.key)
         assertArrayEquals(body, File(got.path).readBytes())
+    }
+
+    @Test
+    fun rxKeyNamesTheFileStreamingInFromItsHeaderToItsEnd() {
+        // What MeshTransport.arrivingFiles reads: exactly "a FILE_HEADER is in and its FILE_END is not", so
+        // BlobExchange can keep a blob already on the way from being asked for again (#79).
+        val h = harness()
+        val key = "d".repeat(64)
+        assertNull(h.link.rxKey)
+        writeRecord(h.toLink, LinkFraming.Type.FILE_HEADER, LinkFraming.encodeFileHeader(hdr("ATTACHMENT", key)))
+        assertTrue("the header names the arriving file", awaitUntil { h.link.rxKey == key })
+        writeRecord(h.toLink, LinkFraming.Type.FILE_CHUNK, ByteArray(100))
+        assertEquals("still arriving between chunks", key, h.link.rxKey)
+        writeRecord(h.toLink, LinkFraming.Type.FILE_END)
+        assertNotNull(h.callbacks.files.poll(2, TimeUnit.SECONDS))
+        assertTrue("cleared at the end", awaitUntil { h.link.rxKey == null })
+    }
+
+    @Test
+    fun rxKeyClearsWhenTheLinkCloses() {
+        // A torn link clears its own state — the read above needs no abort callback and no TTL.
+        val h = harness()
+        val key = "e".repeat(64)
+        writeRecord(h.toLink, LinkFraming.Type.FILE_HEADER, LinkFraming.encodeFileHeader(hdr("ATTACHMENT", key)))
+        assertTrue(awaitUntil { h.link.rxKey == key })
+        h.link.close()
+        assertNull("nothing is arriving on a closed link", h.link.rxKey)
+    }
+
+    @Test
+    fun aPendingFileIsKnownFromEnqueueToTheEndOfItsStream() {
+        // What MeshTransport.fileInFlightTo reads: the enqueue side's view of a file queued on, or streaming
+        // over, the link — so a re-ask never queues a second copy behind the first (#79). A small out-pipe
+        // back-pressures the writer mid-file so the streaming phase is observable.
+        val h = harness(fromLinkBuffer = 16 * 1024)
+        val key = "f".repeat(64)
+        val file = tmp.newFile("pending.bin").apply { writeBytes(ByteArray(80 * 1024)) }
+        assertFalse(h.link.hasPendingFile(key))
+        assertTrue(h.link.sendFile(file, FileMeta(FileKind.ATTACHMENT, key, "image/jpeg")))
+        assertTrue("pending from the enqueue", h.link.hasPendingFile(key))
+        var rec = LinkFraming.read(h.fromLink)
+        assertEquals(LinkFraming.Type.FILE_HEADER, rec!!.type)
+        assertTrue("pending while streaming", h.link.hasPendingFile(key))
+        while (rec != null && rec.type != LinkFraming.Type.FILE_END) rec = LinkFraming.read(h.fromLink)
+        assertTrue("released once the stream ends", awaitUntil { !h.link.hasPendingFile(key) })
     }
 
     @Test

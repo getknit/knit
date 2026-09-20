@@ -45,6 +45,9 @@ document:
 
 ### Fixed
 
+- A photo sent over Bluetooth could cross the air three times, because every nearby phone offered its copy
+  while the first was still arriving. A phone now asks for a picture only while nothing is on the way, and a
+  neighbour sends one only when asked.
 - On some phones the Wi-Fi dropped every time Knit tried to open a Wi-Fi Aware connection to a neighbour.
   After the third drop Knit stops opening them from that phone and says so in Diagnostics, where you can let
   it try again; nearby phones can still connect to it.

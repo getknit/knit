@@ -321,6 +321,27 @@ interface MeshTransport {
      */
     fun expectBulkTransfer(nodeId: String): Boolean = false
 
+    /**
+     * The keys of files whose bytes are streaming **in** on a live link right now — a `FILE_HEADER` has
+     * arrived and its `FILE_END` has not. Read by `BlobExchange` so a blob already on the way is neither
+     * wanted again nor re-asked for on the 60 s tick: a re-ask against a slow BLE transfer bought a second
+     * full copy from every holder (work item #79). A pull, like the side scan's `streamInFlight` (ADR
+     * 2026-09.u8qj), so there is no memo to expire or abort to signal — a torn link clears its own state and
+     * the next tick asks again. Default empty: a plane with no data path (LoRa) carries no files.
+     */
+    fun arrivingFiles(): Set<String> = emptySet()
+
+    /**
+     * True while a file under [key] is queued on, or streaming over, a live link toward [nodeId] — from the
+     * enqueue [sendFile] accepted to the end of the stream. Read by `BlobExchange.onRequest` so a re-ask
+     * (an older build's, or one whose serve is still queued behind a multi-minute blob to the same peer)
+     * never queues a second copy behind the first (#79). Default false.
+     */
+    fun fileInFlightTo(
+        nodeId: String,
+        key: String,
+    ): Boolean = false
+
     /** Sends [wire] to one neighbor, or to all neighbors when [to] is null. */
     suspend fun send(
         wire: WireEnvelope,

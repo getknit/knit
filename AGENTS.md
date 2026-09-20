@@ -168,6 +168,13 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   is a live-link send and is never worded "delivered". "Nearby" and "met" both derive from
   `MeshController.neighbors` (ADR 2026-09.2ajk) — don't add a second gate. Counters flush on the 60 s tick,
   never per frame, and nothing here leaves the phone.
+- **When touching `mesh/BlobExchange`, `FramedLink`'s `rxKey` / pending-file count, `MeshTransport.arrivingFiles`
+  / `fileInFlightTo`, or what re-asks for a blob (`rewantMissingBlobs`, the tick's `onNeighborAdded`):** READ
+  ADR 2026-09.4tx5 (and 2026-09.ptv8 for the database re-arm). A blob is served only to a fresh ask — nothing
+  is pushed to a peer that did not just ask, there is no wanter set — and "is it on the way" is a read of the
+  link, never a memo with a TTL: the receiver stays quiet for a hash whose header is in, the holder refuses a
+  re-ask for a key still queued or streaming to that peer. The lab pins it with `LabTransport.holdFiles` and
+  the `files` recorder (one copy per (hash, link)).
 - **When touching a presence dot or an online / offline label** (Profile Details, Diagnostics' node
   sections, the Contacts dot): the three evidence tiers live in `ui/Reach.kt` — `Direct` is
   `MeshController.neighbors` (a short-range radio saw the peer's own radio), `Relay` is the long-range reach

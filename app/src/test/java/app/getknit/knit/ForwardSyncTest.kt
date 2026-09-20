@@ -727,7 +727,7 @@ class ForwardSyncTest {
             }
             scope.launch { transport.incomingDigests.collect { sync.onDigest(it.fromNodeId, it.ids) } }
             scope.launch {
-                transport.incomingFiles.collect { blobExchange.onReceived(it.key, it.mime, it.path, it.fromNodeId) }
+                transport.incomingFiles.collect { blobExchange.onReceived(it.key, it.mime, it.path) }
             }
         }
 

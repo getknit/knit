@@ -88,8 +88,24 @@ class FramedLink(
     var txInProgress = false
         private set
 
+    // The key (the content hash) of the file streaming *in* right now — set at its header,
+    // cleared at its end, abort or the link's close, so it is exactly "a FILE_HEADER is in and no FILE_END
+    // yet". `BlobExchange` reads it through `MeshTransport.arrivingFiles` to keep a blob whose bytes are
+    // already on the way from being asked for again (a 60 s re-ask against a slow BLE transfer bought a
+    // second full copy, work item #79). Read only — a torn link clears its own state.
+    @Volatile
+    var rxKey: String? = null
+        private set
+
     // Files queued behind an in-progress file transfer (only one streams at a time).
     private val stash = ArrayDeque<Outbound.FileSend>()
+
+    // key -> how many sends of it are queued or streaming toward this peer, from the enqueue in [sendFile]
+    // to the end of [streamFile]. [stash] is the writer loop's own, so this count is what the enqueue side
+    // can see; `MeshTransport.fileInFlightTo` reads it so a re-ask never queues a second copy behind one
+    // already on the link (#79). Guarded by [pendingLock]; touched on the enqueue and writer threads.
+    private val pendingFileKeys = HashMap<String, Int>()
+    private val pendingLock = Any()
 
     // Inbound file reassembly (one active file per socket, so no per-file id needed).
     private var rxOut: OutputStream? = null
@@ -128,13 +144,30 @@ class FramedLink(
     fun sendFile(
         file: File,
         meta: FileMeta,
-    ): Boolean = outbound.trySend(Outbound.FileSend(file, meta)).isSuccess
+    ): Boolean {
+        // Counted before the enqueue so a reader between the two never sees the file as neither queued nor
+        // streaming; a refused enqueue (closed link) takes it straight back.
+        notePending(meta.key, +1)
+        return outbound.trySend(Outbound.FileSend(file, meta)).isSuccess.also { if (!it) notePending(meta.key, -1) }
+    }
+
+    /** True while a file under [key] is queued on, or streaming over, this link. */
+    fun hasPendingFile(key: String): Boolean = synchronized(pendingLock) { pendingFileKeys.containsKey(key) }
+
+    private fun notePending(
+        key: String,
+        delta: Int,
+    ) = synchronized(pendingLock) {
+        val n = (pendingFileKeys[key] ?: 0) + delta
+        if (n > 0) pendingFileKeys[key] = n else pendingFileKeys.remove(key)
+    }
 
     fun close() {
         readerJob?.cancel()
         writerJob?.cancel()
         outbound.close()
         closeRx()
+        synchronized(pendingLock) { pendingFileKeys.clear() } // whatever was queued died with the link
         socket.close()
     }
 
@@ -302,6 +335,7 @@ class FramedLink(
             log("file ${item.meta.kind.wire}/${item.meta.key} ${bytes}B in ${now() - startedAt}ms → $nodeId")
         } finally {
             txInProgress = false
+            notePending(item.meta.key, -1)
         }
     }
 
@@ -356,6 +390,7 @@ class FramedLink(
             )
         rxBytes = 0L
         rxAborted = false
+        rxKey = header.key
         rxInProgress = true
     }
 
@@ -384,6 +419,7 @@ class FramedLink(
         rxOut = null
         rxTemp = null
         rxMeta = null
+        rxKey = null
         rxInProgress = false
         runCatching { out?.close() }
         if (rxAborted || temp == null || meta == null) {
@@ -395,6 +431,7 @@ class FramedLink(
 
     private fun abortRx() {
         rxAborted = true
+        rxKey = null
         rxInProgress = false
         runCatching { rxOut?.close() }
         rxOut = null
@@ -403,6 +440,7 @@ class FramedLink(
     }
 
     private fun closeRx() {
+        rxKey = null
         rxInProgress = false
         runCatching { rxOut?.close() }
         rxOut = null

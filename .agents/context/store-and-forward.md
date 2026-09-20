@@ -163,8 +163,8 @@ bookkeeping is **bounded** exactly like `PendingInbound`: `missing` and `wanters
 oldest-first eviction and `missing` is TTL-swept (`sweepExpired`, on the `heal()`/prune ticks); an outbound
 batch is **chunked** (`MAX_IDS_PER_REQ`) so it can never exceed the link's 512 KiB payload ceiling and crash
 the writer coroutine; and an inbound request's id list is **capped** (`MAX_REQUEST_IDS`) so it can't drive
-unbounded recursion. `BlobExchange` (whose `blobreq` is unsigned) bounds its `fetching`/`wanters`/serve-memo
-the same way. Backstopping all of it, both mesh scopes (the app-lifetime scope in `di/MeshModule.kt` and
+unbounded recursion. `BlobExchange` (whose `blobreq` is unsigned) bounds its `fetching`/serve-memo the same
+way (it keeps no wanter set since ADR 2026-09.4tx5 — a blob is served only to a fresh ask). Backstopping all of it, both mesh scopes (the app-lifetime scope in `di/MeshModule.kt` and
 `MeshManager`'s session scope) carry a shared `meshExceptionHandler`, and a `FramedLink` writer drops (never
 dies on) a record the codec rejects. Recovery is visible in Diagnostics
 (`keyRequestsSent`/`keysServed`/`keysRecovered`) and JVM-tested with `FakeLoopTransport` (`KeyExchangeTest`).

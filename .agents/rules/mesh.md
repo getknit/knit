@@ -181,19 +181,24 @@ free). Two invariants that are easy to break:
   and a drop ahead of distinct made the second identical emission look like an edit — a fresh stamp on every
   launch. Its first value is compared against the custodied frame instead (`custodyPresentsOtherThan`, after
   the seed), which is also what publishes an edit made while the mesh was stopped.
-- **A blob obtained off the radios still serves the neighbors that asked for it** (`BlobExchange`, ADR
-  2026-09.ywzn). `wanters` is the set of peers that asked us for bytes we lacked, and `onReceived` — the
-  radio arrival — is not the only way we come by them: the spool saves an attachment and a neighbor pushes
-  its avatar directly. Both call `onObtainedOffMesh`, which drains the set exactly as `onReceived` does.
-  The trap is the tidier-looking seam: `InboundPipeline.onObtained` is the hook **both** planes share, and
-  `onReceived` awaits it *before* its own `removeWanters` — drain from there and the radio path finds an
-  empty set and bounces the blob back at whoever just served it.
+- **A blob is served only to a fresh ask, and never asked for while it is arriving** (`BlobExchange`, ADR
+  2026-09.4tx5, superseding 2026-09.ywzn). Nothing is pushed to a peer that did not just ask: a neighbour
+  that asked while we lacked the bytes is served on its next ask (its own 60 s tick), because the serving
+  side cannot tell an asker that still lacks them from one whose copy is already arriving from somebody else
+  — in a clique that push bought every recipient a copy per neighbour (#79). Whether bytes are on the way
+  is a **read of the link**, never a set with a TTL here: `MeshTransport.arrivingFiles()` (a `FILE_HEADER`
+  in, no `FILE_END` yet, off `FramedLink.rxKey`) keeps `want` and the tick's re-ask quiet for that hash,
+  and `fileInFlightTo(peer, key)` (queued or streaming, counted from the enqueue) refuses a second copy on
+  a re-ask whatever the 45 s memo says. A transfer's length is the receiver's controller's, so no constant
+  covers it. Don't add a `noteIncoming` memo or a wanter TTL back.
 - **The database says which attachments are missing; `BlobExchange`'s `fetching` set is a swept memo of it**
   (ADR 2026-09.ptv8). A `want` parked with no neighbor (a frame heard over the board alone) is reclaimed by
   the 30-min `FETCH_TTL_MS` sweep, and `onNeighborAdded` re-asks only from the memo — so
   `MeshManager.rewantMissingBlobs()` re-reads `messages.hashesNeedingFetch()` (+ the carrier-only custody
   hashes under budget) on every neighbor join and 60 s re-offer tick, not only at startup. Any new "what do
-  we still need" path reads the database the same way; never make the memo the source.
+  we still need" path reads the database the same way; never make the memo the source. The re-ask itself is
+  the tick's `onNeighborAdded` per linked neighbour (`want` is a no-op for a hash already in the set), and it
+  is what moves a hop-by-hop pull since ADR 2026-09.4tx5 — gate it on `arrivingFiles()`, never remove it.
 - **Group-root minting is damped; group-root adoption is not** (`GroupRootPolicy`, spec §3.2). Several
   members minting version 1 at once is normal and self-healing — `(version, minter)` collapses the
   lineages. Refusing to *adopt* a strictly-greater root is the failure mode: the device keeps gossiping

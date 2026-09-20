@@ -1043,6 +1043,13 @@ class WifiAwareTransport(
         return accepted
     }
 
+    override fun arrivingFiles(): Set<String> = peers.values.mapNotNullTo(HashSet()) { it.link.rxKey }
+
+    override fun fileInFlightTo(
+        nodeId: String,
+        key: String,
+    ): Boolean = peers[nodeId]?.link?.hasPendingFile(key) ?: false
+
     override suspend fun sendDigest(
         to: Peer,
         ids: List<String>,

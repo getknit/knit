@@ -402,6 +402,13 @@ class BluetoothMeshTransport(
         return accepted
     }
 
+    override fun arrivingFiles(): Set<String> = links.values.mapNotNullTo(HashSet()) { it.rxKey }
+
+    override fun fileInFlightTo(
+        nodeId: String,
+        key: String,
+    ): Boolean = links[nodeId]?.hasPendingFile(key) ?: false
+
     override suspend fun sendDigest(
         to: Peer,
         ids: List<String>,

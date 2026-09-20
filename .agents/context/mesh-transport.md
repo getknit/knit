@@ -254,6 +254,10 @@ inbound collector — a suspension there stalls both radios) then falls back to 
 instead of silently dropping the file, and `BlobExchange` keeps a per-(hash, peer) 45 s serve memo so
 the re-ask storm around a slow transfer (60 s re-offer, post-link-up `onNeighborAdded`) can't ship a
 second full copy (field-verified: the late-NDP re-ask after a BLE fallback is real, and the memo ate it).
+Since ADR 2026-09.4tx5 (#79) the link itself answers the two questions the memo could not: a receiver
+reads `MeshTransport.arrivingFiles()` (off `FramedLink.rxKey`) and does not ask for a blob whose header is
+already in, and a holder reads `fileInFlightTo(peer, key)` (the link's pending-file count, from the enqueue
+to the end of the stream) and refuses a re-ask for a copy still queued or streaming to that peer.
 Frames, digests, avatars, and (when no NAN link is already up) sub-128 KiB blobs keep the BLE-first
 route byte-for-byte. Every routing decision logs `file route: <kind>/<key> <N>B → <peer> <choice+why>`
 (tag `CompositeMeshTransport`) and every arm accept/reject logs `bulk arm <peer> …` (tag

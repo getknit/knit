@@ -320,21 +320,22 @@ class InternetPlaneLabTest {
         }
 
     /**
-     * Issue #53, the other half of #51's asymmetry: `BlobExchange.wanters` is drained in exactly one place,
-     * [app.getknit.knit.mesh.BlobExchange.onReceived], so a neighbour that asked us for bytes we lacked was
-     * never served once a plane other than the radio handed them over. It waited for its own next ask — a
-     * *new* link, its own restart, or the 30-minute fetch TTL — which for a pair that stays linked is half an
-     * hour, not seconds.
+     * Issue #53 as ADR 2026-09.4tx5 (#79) leaves it: a neighbour that asked us for bytes we lacked is served on
+     * its **next ask**, once whichever plane hands them to us has — and is never pushed them. The push #53 added
+     * (ADR 2026-09.ywzn's wanter drain) could not tell an asker that still lacks the bytes from one whose copy
+     * is already arriving from somebody else, and in a clique it bought every recipient a copy per neighbour.
+     * The asker re-asks on its own 60 s tick while it still lacks them (`rewantMissingBlobs`, ADR 2026-09.ptv8),
+     * so the wait is a minute at most, not the half hour #53 saw.
      *
      * Carol is the asker and holds the frame only as a carrier: she is linked to Bob alone, has no relay, and
      * Alice is off the radios entirely, so Bob is the one node that can ever hand her these bytes. The relay
      * starts out as a frames-only one (no attachment limits in its HELLO, so a conforming client sends it no
      * attachment record at all), which is what makes the order the case needs a fact rather than a race:
      * Carol necessarily asks while the picture exists nowhere but on Alice. Growing the support mid-run —
-     * the spool re-advertises on the next dial — is then the only thing that moves.
+     * the spool re-advertises on the next dial — is what lands the bytes on Bob; the re-link is Carol's tick.
      */
     @Test
-    fun aPhotoTheRelayDeliveredIsServedToTheNeighbourWhoAskedWhileWeLackedIt() =
+    fun aPhotoTheRelayDeliveredIsServedToTheNeighbourWhoAskedWhileWeLackedItOnItsNextAsk() =
         runBlocking {
             val spool = FakeSpool(attachments = false) // frames only, until the picture has been asked for
             val alice = lab.node("alice", spool = spool).apply { setDisplayName("Alice") }
@@ -378,12 +379,17 @@ class InternetPlaneLabTest {
                 lab.tryAwait(1, timeoutMs = MeshLab.SPOOL_AWAIT_MS) { if (bob.blobs.exists(hash)) 1 else 0 },
             )
 
-            // No new link and no restart, so nothing can make Carol ask again inside the wait: the only way
-            // she holds the picture is Bob serving the wanter he recorded when the bytes were not his yet.
+            // Bob remembers nothing about Carol's ask and pushes nothing: she may hold the bytes by now, or be
+            // receiving them from someone Bob cannot see. Her own next ask is what says she still lacks them.
+            val fileToCarol = "${carol.nodeId} ATTACHMENT $hash"
+            assertTrue("bob pushed the picture unasked", bob.transport.files.none { it == fileToCarol })
+            lab.unlink(bob, carol)
+            lab.link(bob, carol) // the 60 s re-offer: Carol re-arms from the database and re-asks her one neighbour
             assertTrue(
                 "carol was never served the picture bob pulled off the relay",
                 lab.tryAwait(1) { if (carol.blobs.exists(hash)) 1 else 0 },
             )
+            assertEquals("served once, to the fresh ask", 1, bob.transport.files.count { it == fileToCarol })
             // Carol carries the sealed blob and cannot read it; Bob, the addressee, is who the picture is for.
             assertArrayEquals(bob.blobs.bytes(hash), carol.blobs.bytes(hash))
             assertArrayEquals(picture, bob.attachmentPlain(bob.dmWith(alice), id))

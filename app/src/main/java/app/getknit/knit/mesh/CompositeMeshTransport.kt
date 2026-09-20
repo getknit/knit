@@ -278,6 +278,15 @@ class CompositeMeshTransport(
         return armed
     }
 
+    /** The union over every plane: a blob arriving on any link is arriving. */
+    override fun arrivingFiles(): Set<String> = children.flatMapTo(HashSet()) { it.arrivingFiles() }
+
+    /** Any plane: the serve went to whichever child held the link, and a re-ask must see it wherever it sits. */
+    override fun fileInFlightTo(
+        nodeId: String,
+        key: String,
+    ): Boolean = children.any { it.fileInFlightTo(nodeId, key) }
+
     /**
      * Files route like frames — preference-order link holder — EXCEPT attachment blobs, which prefer the
      * [highThroughput] plane: ANY attachment rides its live link when one exists (a link that's already up

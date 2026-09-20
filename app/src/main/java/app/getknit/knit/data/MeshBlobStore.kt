@@ -48,7 +48,7 @@ class MeshBlobStore(
 
     /**
      * Ingests a received file into the encrypted store, deletes the decrypted staging copy, and returns
-     * a temp file (re-materialized from the DB) the transport can forward on to any other wanters.
+     * a temp file (re-materialized from the DB) whose path the obtained hook hands on.
      */
     override suspend fun saveIncoming(
         hash: String,

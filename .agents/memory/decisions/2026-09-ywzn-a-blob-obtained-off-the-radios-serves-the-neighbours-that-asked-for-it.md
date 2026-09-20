@@ -8,7 +8,10 @@ topics: [mesh, attachments, spool]
 
 # ADR 2026-09.ywzn — A blob obtained off the radios serves the neighbours that asked for it
 
-Status: Accepted (2026-09-15). GitLab work item #53. The second half of the asymmetry #51 opened
+Status: **Superseded by ADR 2026-09.4tx5 (2026-09-19, #79)** — `wanters` and `onObtainedOffMesh` are gone; a
+neighbour that asked while we lacked the bytes is served on its next ask (its 60 s tick, ADR 2026-09.ptv8) and
+never pushed, because the push could not tell an asker that still lacks the bytes from one whose copy is already
+arriving from somebody else. Was: Accepted (2026-09-15). GitLab work item #53. The second half of the asymmetry #51 opened
 (`cdab7b5c`), which fixed the `fetching` mark and deliberately left `wanters` alone.
 
 **What was observed.** `BlobExchange` has two pieces of bookkeeping for a blob it does not hold:

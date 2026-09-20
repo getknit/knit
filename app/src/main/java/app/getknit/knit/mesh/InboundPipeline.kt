@@ -3231,10 +3231,6 @@ class InboundPipeline(
         val oldHash = existing?.avatarHash
         peers.upsert((existing ?: PeerEntity(nodeId)).copy(avatarHash = hash))
         if (oldHash != hash) blobs.deleteIfUnreferenced(oldHash)
-        // These bytes never passed through [BlobExchange.onReceived], so serve whoever asked us for them while
-        // we were still pulling this avatar ourselves. Only on this path: the flagged branch above deleted the
-        // blob, so there is nothing left to hand over.
-        blobExchange.onObtainedOffMesh(hash)
     }
 
     /**

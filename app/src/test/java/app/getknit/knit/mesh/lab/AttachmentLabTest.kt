@@ -3,6 +3,7 @@ package app.getknit.knit.mesh.lab
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.mesh.lora.FakeMeshtasticAir
+import app.getknit.knit.mesh.protocol.FrameType
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -169,6 +170,57 @@ class AttachmentLabTest {
             )
             assertTrue(picture.contentEquals(bob.attachmentPlain(Conversations.NEARBY, id)))
             lab.assertConverged(listOf(alice, bob), atLeast = 1) { Conversations.NEARBY }
+        }
+
+    /**
+     * Work item #79 (ADR 2026-09.4tx5): three phones linked over BLE, a 700 KB picture Alice sends Bob, and
+     * the Moto G's slow controller — Bob's copy takes minutes to land. In that window the 60 s re-offer
+     * re-asked every neighbour for it, Alice served it again, and Carol — who carries the frame, pulled the
+     * bytes for it, and had Bob's first ask on file as a *wanter* — pushed him a third copy the moment hers
+     * landed; Bob then pushed Carol one she held. Here Alice's link to Bob is the slow one (her serve is
+     * parked with its header across), the re-link Bob ↔ Carol is the tick, and the file recorder on every
+     * transport is the phone's `file …` line: exactly one copy per (hash, link), asked for once.
+     */
+    @Test
+    fun aPictureAlreadyStreamingInIsNeitherAskedForAgainNorServedTwice() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            lab.linkAll(alice to bob, bob to carol, alice to carol)
+            lab.awaitAcquainted(alice, bob, carol)
+
+            alice.transport.holdFiles(bob.transport) // Bob's link is the Moto's: the header lands, the bytes take their time
+            val picture = Random(7).nextBytes(4_096)
+            assertTrue(alice.sendImage(picture, "for bob", to = bob))
+            val id = alice.ownMessageId(alice.dmWith(bob), "for bob")
+            val hash = checkNotNull(alice.attachmentHash(alice.dmWith(bob), id))
+            val fileToBob = "${bob.nodeId} ATTACHMENT $hash"
+
+            // Alice's serve to Bob is on the link; Carol, carrying the frame, pulled her copy whole and at once.
+            lab.await(1) { alice.transport.heldFiles(bob.transport).count { it == hash } }
+            lab.await(1) { if (carol.blobs.exists(hash)) 1 else 0 }
+            assertTrue("the header across is what Bob reads as arriving", hash in bob.transport.arrivingFiles())
+            assertTrue("Carol holds the bytes and had Bob's ask — and pushes nothing", carol.transport.files.none { it == fileToBob })
+
+            // The 60 s re-offer, for the link that is not busy: Bob re-arms from the database and re-asks each
+            // neighbour for what he still lacks — unless its bytes are already on the way.
+            val digests = bob.transport.digestsSent.count { it == carol.nodeId }
+            lab.unlink(bob, carol)
+            lab.link(bob, carol)
+            lab.await(digests + 1) { bob.transport.digestsSent.count { it == carol.nodeId } } // the batch's last hook
+            val asks = bob.transport.sent.filter { it.contains(" ${FrameType.BLOB_REQ} ") }
+            assertEquals("one ask per neighbour, and none while the bytes stream in:\n$asks", 2, asks.size)
+            assertEquals(1, asks.count { it.contains(" ${alice.nodeId.take(6)} ") })
+            assertEquals(1, asks.count { it.contains(" ${carol.nodeId.take(6)} ") })
+            assertEquals("Alice served Bob once", 1, alice.transport.files.count { it == fileToBob })
+
+            alice.transport.releaseFiles(bob.transport) // the bytes land
+            lab.assertConverged(listOf(alice, bob), atLeast = 1, carriers = listOf(carol)) { it.dmWith(if (it === alice) bob else alice) }
+            assertTrue(picture.contentEquals(bob.attachmentPlain(bob.dmWith(alice), id)))
+            assertEquals("Alice served Bob once", 1, alice.transport.files.count { it == fileToBob })
+            assertTrue("Carol never pushed Bob a copy", carol.transport.files.none { it == fileToBob })
+            assertTrue("Bob never pushed Carol the copy she holds", bob.transport.files.none { it.startsWith(carol.nodeId) })
         }
 
     private companion object {

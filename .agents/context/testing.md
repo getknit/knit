@@ -147,6 +147,13 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   emitting it: `MeshBlobStore.saveIncoming` deletes what it reads, and two receivers of one blob handed the
   sender's single temp path raced for it, the loser dropping the blob silently. It also has a per-pipe loss
   knob (`lossy(to) { drop }`) and a `held(to)` peek so a scenario can wait for a relayed frame before releasing.
+  Files have their own hold (`holdFiles(to)` / `heldFiles(to)` / `releaseFiles(to)`, ADR 2026-09.4tx5): a
+  parked file is staged with its header across, so the receiver reports it in `arrivingFiles()` and the
+  sender in `fileInFlightTo` — the slow BLE transfer a scenario can hold a re-ask against. Every `sendFile`
+  is logged in `files` as `to kind key` (the phone's `file …` line: one copy per (hash, link)), and
+  `digestsSent` names whom a node advertised its digest to — the newcomer batch's last hook, so a re-link
+  "as the 60 s re-offer would" waits on it before asserting what the batch did not send. `sent` records the
+  peer as `nodeId.take(6)`, not the full id.
 - **Wait for the frame, not for the state that precedes it.** A settings or DB write the scenario can see
   lands *before* the frame it triggers reaches the transport (`broadcastProfile` bumps the version, then
   stamps, signs and floods), so "the version moved" is not "the frame is parked": `ProfileUpdateLabTest`

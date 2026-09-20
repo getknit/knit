@@ -161,6 +161,12 @@ class LabTransport(
 
         @Volatile
         var lossy: (WireEnvelope) -> Boolean = { false }
+
+        // A file whose header has crossed and whose bytes have not: staged at the receiver, parked here. The
+        // receiver reports its key as arriving and the sender as in flight, exactly as a slow BLE link would.
+        @Volatile
+        var holdingFiles = false
+        val heldFiles = mutableListOf<ReceivedFile>()
     }
 
     /** Every frame a lossy pipe dropped, for a scenario that asserts on what the air ate. */
@@ -168,6 +174,18 @@ class LabTransport(
 
     /** Every frame this transport handed a peer, as `to type id` in send order — the diagnosis of "who served that". */
     val sent = CopyOnWriteArrayList<String>()
+
+    /**
+     * Every file this transport handed a peer, as `to kind key` in send order — the phone's `file …` log line,
+     * the oracle for "one copy per (hash, link)" (#79). A held file is recorded when it is sent, not released.
+     */
+    val files = CopyOnWriteArrayList<String>()
+
+    /**
+     * Whom this node advertised its custody digest to, in send order — the newcomer hooks run it last, so a
+     * scenario that re-links "as the 60 s re-offer would" waits on it to know the whole batch has run.
+     */
+    val digestsSent = CopyOnWriteArrayList<String>()
 
     /** Every write [crossings] skipped, as `to key via`: the second copy of a frame for one pipe, or an echo. */
     val dupSkipped = CopyOnWriteArrayList<String>()
@@ -246,6 +264,38 @@ class LabTransport(
 
     /** What is parked for [to] right now, in send order — for a scenario that waits for a frame to be held. */
     fun held(to: LabTransport): List<WireEnvelope> = pipe(to).let { synchronized(it.held) { it.held.toList() } }
+
+    /**
+     * From now on, a file this node sends [to] is staged and parked with its header across — the receiver
+     * sees it [arrivingFiles], the sender [fileInFlightTo] — until [releaseFiles]. The slow BLE transfer of
+     * work item #79, made a state a scenario can hold a re-ask against.
+     */
+    fun holdFiles(to: LabTransport) {
+        pipe(to).holdingFiles = true
+    }
+
+    /** The keys of the files parked for [to] right now, in send order. */
+    fun heldFiles(to: LabTransport): List<String> = pipe(to).let { synchronized(it.heldFiles) { it.heldFiles.map { f -> f.key } } }
+
+    /** Lands everything parked for [to] and stops holding files (frames held by [hold] are untouched). */
+    suspend fun releaseFiles(to: LabTransport) {
+        val pipe = pipe(to)
+        val batch = synchronized(pipe.heldFiles) { pipe.heldFiles.toList().also { pipe.heldFiles.clear() } }
+        pipe.holdingFiles = false
+        batch.forEach { pipe.target._incomingFiles.emit(it) }
+    }
+
+    /** What every linked sender has parked toward this node: the headers are in, the bytes are not. */
+    override fun arrivingFiles(): Set<String> =
+        pipes.values.flatMapTo(HashSet()) { link ->
+            link.target.pipes[nodeId]?.let { toMe -> synchronized(toMe.heldFiles) { toMe.heldFiles.map { it.key } } } ?: emptyList()
+        }
+
+    /** Queued on the link: a file parked toward [nodeId] under [key]. An unheld lab file lands at once. */
+    override fun fileInFlightTo(
+        nodeId: String,
+        key: String,
+    ): Boolean = pipes[nodeId]?.let { p -> synchronized(p.heldFiles) { p.heldFiles.any { it.key == key } } } ?: false
 
     /**
      * Delivers everything parked for [to], in the order [reorder] returns (default: as sent), and stops holding
@@ -382,11 +432,18 @@ class LabTransport(
         to: Peer,
         meta: FileMeta,
     ): Boolean {
-        val target = pipes[to.nodeId]?.target ?: return false
+        val pipe = pipes[to.nodeId] ?: return false
+        val target = pipe.target
         // The receiver ingests and then deletes the staged copy; it must be the receiver's own copy.
         val staged = File(target.stagingDir.apply { mkdirs() }, "${meta.key}-${UUID.randomUUID()}")
         file.copyTo(staged, overwrite = true)
-        target._incomingFiles.emit(ReceivedFile(nodeId, staged.absolutePath, meta.kind, meta.key, meta.mime))
+        files += "${to.nodeId} ${meta.kind.wire} ${meta.key}"
+        val received = ReceivedFile(nodeId, staged.absolutePath, meta.kind, meta.key, meta.mime)
+        if (pipe.holdingFiles) {
+            synchronized(pipe.heldFiles) { pipe.heldFiles += received }
+            return true
+        }
+        target._incomingFiles.emit(received)
         return true
     }
 
@@ -394,6 +451,7 @@ class LabTransport(
         to: Peer,
         ids: List<String>,
     ) {
+        digestsSent += to.nodeId
         pipes[to.nodeId]?.target?._incomingDigests?.emit(ReceivedDigest(nodeId, ids))
     }
 
