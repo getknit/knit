@@ -175,11 +175,14 @@ class AttachmentLabTest {
     /**
      * Work item #79 (ADR 2026-09.4tx5): three phones linked over BLE, a 700 KB picture Alice sends Bob, and
      * the Moto G's slow controller — Bob's copy takes minutes to land. In that window the 60 s re-offer
-     * re-asked every neighbour for it, Alice served it again, and Carol — who carries the frame, pulled the
-     * bytes for it, and had Bob's first ask on file as a *wanter* — pushed him a third copy the moment hers
-     * landed; Bob then pushed Carol one she held. Here Alice's link to Bob is the slow one (her serve is
-     * parked with its header across), the re-link Bob ↔ Carol is the tick, and the file recorder on every
-     * transport is the phone's `file …` line: exactly one copy per (hash, link), asked for once.
+     * re-asked every neighbour for it, Alice served it again, and Carol — who had Bob's first ask on file as
+     * a *wanter* and pulled the bytes for it — pushed him a third copy the moment hers landed; Bob then pushed
+     * Carol one she held. Here Alice's link to Bob is the slow one (her serve is parked with its header
+     * across), and Alice's frame to Carol is parked too, so Bob's ask is the first Carol hears of the picture
+     * and she pulls her copy *for* it: the wanter shape, pinned rather than raced. Left to the race, Carol's
+     * own pull can land before Bob's ask reaches her, and her serve of that fresh ask — correct under the ADR —
+     * reads as the push (CI job 4939, one slow core). The re-link Bob ↔ Carol is the tick, and the file
+     * recorder on every transport is the phone's `file …` line: exactly one copy per (hash, link), asked for once.
      */
     @Test
     fun aPictureAlreadyStreamingInIsNeitherAskedForAgainNorServedTwice() =
@@ -191,17 +194,21 @@ class AttachmentLabTest {
             lab.awaitAcquainted(alice, bob, carol)
 
             alice.transport.holdFiles(bob.transport) // Bob's link is the Moto's: the header lands, the bytes take their time
+            alice.transport.hold(carol.transport) // Carol hears of the picture from Bob, never from Alice's frame
             val picture = Random(7).nextBytes(4_096)
             assertTrue(alice.sendImage(picture, "for bob", to = bob))
             val id = alice.ownMessageId(alice.dmWith(bob), "for bob")
             val hash = checkNotNull(alice.attachmentHash(alice.dmWith(bob), id))
             val fileToBob = "${bob.nodeId} ATTACHMENT $hash"
 
-            // Alice's serve to Bob is on the link; Carol, carrying the frame, pulled her copy whole and at once.
+            // Alice's serve to Bob is on the link. Bob's ask is emitted before his relay is even scheduled, so it
+            // is the first frame at Carol to name the hash: she processes it holding nothing, asks for the picture
+            // herself, and pulls her copy whole and at once — Bob's ask on file behind it.
             lab.await(1) { alice.transport.heldFiles(bob.transport).count { it == hash } }
             lab.await(1) { if (carol.blobs.exists(hash)) 1 else 0 }
             assertTrue("the header across is what Bob reads as arriving", hash in bob.transport.arrivingFiles())
             assertTrue("Carol holds the bytes and had Bob's ask — and pushes nothing", carol.transport.files.none { it == fileToBob })
+            alice.transport.release(carol.transport) // Alice's copy of the frame lands on Carol, behind Bob's relay of it
 
             // The 60 s re-offer, for the link that is not busy: Bob re-arms from the database and re-asks each
             // neighbour for what he still lacks — unless its bytes are already on the way.

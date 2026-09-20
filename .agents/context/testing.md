@@ -212,6 +212,14 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   before `sendOwn` counts it, so a link cut in the microseconds before `transport.send` strands nothing the
   next exchange cannot serve (a transport-level dispatch counter would not do — the composite fans a flood
   per neighbour and never hands a board node's flood to the child at all).
+- **Two legitimate orderings are not a state to await.** `AttachmentLabTest`'s #79 scenario awaited Carol's
+  copy of the blob and then asserted she never served Bob — but Bob asks every neighbour at once, and whether
+  Carol holds the bytes when his ask reaches her is a race the mesh does not decide (her pull is two hops and
+  a file write; his ask is one hop behind a DM decrypt). On one slow core her serve of that *fresh* ask —
+  correct under ADR 2026-09.4tx5 — read as the wanter push (GitLab job 4939). Where a scenario's assertion
+  presumes an order, pin it: `hold` the frame that would let the other order happen (Alice's frame to Carol,
+  so Bob's ask is the first Carol hears of the hash — the ask is emitted inside `onDeliver`, before the relay
+  is scheduled), and release it once the assertion is in.
 - **A held frame that is filtered out at `release` is lost, like a dropped packet** — and the digest exchange
   repairs it only on the next link-up or the 60 s re-offer. A scenario that drops held frames re-links before
   the oracle (`KeyExchangeLabTest`, `SessionLabTest`'s key request), as `RoomTickPlanesLabTest` already did.
