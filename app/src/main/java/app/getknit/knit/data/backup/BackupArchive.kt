@@ -70,9 +70,9 @@ object BackupArchive {
 
     /**
      * Writes one backup: the plaintext prefix for [header], then the sealed container carrying [manifest]
-     * (rebuilt here with the sizes and hashes of [sources], in their order) and the sources' bytes.
-     * [onProgress] is called with the sealed plaintext bytes written so far. Closes nothing but its own
-     * encrypting stream; the caller owns [out].
+     * (rebuilt here with the sizes and hashes of [sources], in their order — the rebuilt one is returned)
+     * and the sources' bytes. [onProgress] is called with the sealed plaintext bytes written so far.
+     * Closes nothing but its own encrypting stream; the caller owns [out].
      */
     fun write(
         out: OutputStream,
@@ -81,11 +81,12 @@ object BackupArchive {
         manifest: BackupManifest,
         sources: List<BackupSource>,
         onProgress: (Long) -> Unit = {},
-    ) {
+    ): BackupManifest {
         val prefix = encodePrefix(header)
         out.write(prefix)
         val entries = sources.map { BackupEntry(it.name, it.size, sha256(it.open())) }
-        val manifestBytes = encodeManifest(manifest.withEntries(entries))
+        val built = manifest.withEntries(entries)
+        val manifestBytes = encodeManifest(built)
         val sealed = BackupKeys.streamingAead(recoveryKey, header.salt).newEncryptingStream(out, prefix)
         val data = DataOutputStream(sealed)
         var written = 0L
@@ -111,6 +112,7 @@ object BackupArchive {
         // Tink writes the final, tagged segment on close — an archive whose encrypting stream was never
         // closed reads as truncated.
         sealed.close()
+        return built
     }
 
     /** The plaintext prefix and, parsed, its header; reads exactly the prefix's bytes from [input]. */

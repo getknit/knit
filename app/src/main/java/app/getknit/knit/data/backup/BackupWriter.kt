@@ -85,7 +85,7 @@ class BackupWriter(
                         BackupSource(BackupFormat.ENTRY_DATABASE, dbCopy.length()) { FileInputStream(dbCopy) },
                     )
                 val total = sources.sumOf { it.size }
-                BackupArchive.write(
+                return BackupArchive.write(
                     out,
                     recoveryKey,
                     BackupHeader(salt = BackupKeys.newSalt(), createdAt = createdAt),
@@ -93,7 +93,6 @@ class BackupWriter(
                     sources,
                     onProgress = { onProgress(it, total) },
                 )
-                return manifest
             } finally {
                 identityBytes.fill(0)
             }

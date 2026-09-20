@@ -207,6 +207,8 @@ class DebugBridgeReceiver :
     private val lora: app.getknit.knit.mesh.lora.LoraMeshTransport by inject()
     private val loraLink: app.getknit.knit.mesh.lora.MeshtasticLink by inject()
     private val transfers: TransferManager by inject()
+    private val backupWriter: app.getknit.knit.data.backup.BackupWriter by inject()
+    private val restoreStager: app.getknit.knit.data.backup.RestoreStager by inject()
     private val directWifi: app.getknit.knit.transfer.DirectWifi by inject()
 
     override fun onReceive(
@@ -299,6 +301,10 @@ class DebugBridgeReceiver :
 
                         ACTION_INTRO -> {
                             handleIntro(intent)
+                        }
+
+                        ACTION_BACKUP -> {
+                            handleBackup(context, intent)
                         }
 
                         ACTION_COMMONS -> {
@@ -1593,6 +1599,86 @@ class DebugBridgeReceiver :
             .put("state", lora.status.value.state::class.simpleName)
     }
 
+    /**
+     * Drives the **backup** half of Backup and restore (ADR 2026-09.6mj7, `docs/BACKUP_FORMAT.md`) on a locked
+     * lab phone, where the document picker cannot be reached. No extras writes a backup under a fresh
+     * recovery key to `files/backup-test.knitbackup` (`--es path <file>` for another) through the real
+     * `BackupWriter` — the live SQLCipher database, the Keystore-wrapped identity, the settings — and replies
+     * with the key, the manifest and the byte count. `--es verify <file> --es key <key>` runs the restore's
+     * verification (`RestoreStager.stage`: decrypt, per-entry hashes, identity re-wrap, node id, database
+     * open under the passphrase, settings parse) and then **discards** the staging, so nothing on the phone
+     * changes and no restart is armed; the reply carries the manifest it proved. The write and the verify
+     * are the two halves a device trial needs to see; applying a restore is the UI's job.
+     */
+    private suspend fun handleBackup(
+        context: Context,
+        intent: Intent,
+    ): JSONObject {
+        val verify = intent.getStringExtra("verify")
+        if (verify != null) {
+            val key =
+                app.getknit.knit.data.backup.BackupKeys
+                    .parse(intent.getStringExtra("key").orEmpty())
+                    ?: return reply("error", "--es key must be the 30-digit recovery key")
+            val file = java.io.File(verify)
+            if (!file.exists()) return reply("error", "no such file: $verify")
+            val started = System.currentTimeMillis()
+            val manifest =
+                try {
+                    file.inputStream().buffered().use { restoreStager.stage(it, key) }
+                } catch (e: app.getknit.knit.data.backup.BackupException) {
+                    return reply("refused", "${e.problem}: ${e.message}")
+                } finally {
+                    // Never leave a READY behind: the next process start would apply it.
+                    restoreStager.discard()
+                }
+            return reply("ok", "backup verified and staging discarded")
+                .put("elapsedMs", System.currentTimeMillis() - started)
+                .put("manifest", manifestJson(manifest))
+        }
+        val path = intent.getStringExtra("path") ?: java.io.File(context.filesDir, "backup-test.knitbackup").absolutePath
+        val file = java.io.File(path)
+        val key =
+            app.getknit.knit.data.backup.BackupKeys
+                .generate()
+        val started = System.currentTimeMillis()
+        var phases = 0
+        val manifest =
+            try {
+                file.outputStream().buffered().use { out -> backupWriter.write(out, key) { _, _ -> phases++ } }
+            } catch (e: app.getknit.knit.data.backup.BackupException) {
+                file.delete()
+                return reply("refused", "${e.problem}: ${e.message}")
+            }
+        return reply("ok", "backup written")
+            .put("path", file.absolutePath)
+            .put("bytes", file.length())
+            .put("key", key)
+            .put(
+                "keyDisplay",
+                app.getknit.knit.data.backup.BackupKeys
+                    .display(key),
+            ).put("elapsedMs", System.currentTimeMillis() - started)
+            .put("progressCallbacks", phases)
+            .put("manifest", manifestJson(manifest))
+    }
+
+    private fun manifestJson(manifest: app.getknit.knit.data.backup.BackupManifest): JSONObject =
+        JSONObject()
+            .put("v", manifest.v)
+            .put("schemaVersion", manifest.schemaVersion)
+            .put("appVersionCode", manifest.appVersionCode)
+            .put("appVersionName", manifest.appVersionName)
+            .put("createdAt", manifest.createdAt)
+            .put("nodeId", manifest.nodeId)
+            .put("displayName", manifest.displayName)
+            .put(
+                "entries",
+                org.json.JSONArray().also { arr ->
+                    manifest.entries.forEach { arr.put(JSONObject().put("name", it.name).put("size", it.size)) }
+                },
+            )
+
     private fun reply(
         status: String,
         message: String,
@@ -1868,6 +1954,7 @@ class DebugBridgeReceiver :
         const val ACTION_LORATX = "app.getknit.knit.debug.LORATX"
         const val ACTION_LORAPROV = "app.getknit.knit.debug.LORAPROV"
         const val ACTION_XFER = "app.getknit.knit.debug.XFER"
+        const val ACTION_BACKUP = "app.getknit.knit.debug.BACKUP"
 
         const val EXTRA_TEXT = "text"
         const val EXTRA_ADDRESS = "address"

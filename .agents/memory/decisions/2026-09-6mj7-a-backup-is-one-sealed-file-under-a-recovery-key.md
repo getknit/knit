@@ -75,5 +75,12 @@ re-seal (≤ 24 h custody, the last 24 h of unacked DMs); older ones are gone wi
 transient LoRa keys are dropped (the bond is per phone) — the user pairs the board again. A backup whose
 database is newer than the reading build is refused (`NEWER_APP`); Room has no way down. The
 `SettingsKeys.TRANSIENT_PREFIXES` list and `BackupTables` are the two places a new persistent thing must
-be classified; the second is test-enforced, the first is not. Device trial owed: a real backup with
-photos, restored on a second phone from onboarding, then the Settings door on the same phone.
+be classified; the second is test-enforced, the first is not.
+
+**Device run, 2026-09-20 (Pixel 9 Pro XL, the backup half).** The live 14.3 MB SQLCipher database with
+the mesh up (two BLE links, spool connected) exported and sealed to a 14.76 MB file in 2.5 s through the
+`…debug.BACKUP` bridge, and again in ~2 s through the real screen and document picker into Downloads; both
+files verified on the phone under their keys in under a second (`RestoreStager.stage` then `discard`), a
+wrong key was refused as `WRONG_KEY_OR_DAMAGED`, neither the node id nor the name appears in the file's
+bytes, the live `-wal` was untouched and no lock or busy error was logged. Still owed: the restore half
+on a second phone from onboarding, then the Settings door on the same phone.

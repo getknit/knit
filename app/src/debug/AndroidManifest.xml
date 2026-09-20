@@ -48,6 +48,7 @@
                 <action android:name="app.getknit.knit.debug.LORATX" />
                 <action android:name="app.getknit.knit.debug.LORAPROV" />
                 <action android:name="app.getknit.knit.debug.XFER" />
+                <action android:name="app.getknit.knit.debug.BACKUP" />
             </intent-filter>
         </receiver>
     </application>

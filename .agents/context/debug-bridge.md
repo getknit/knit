@@ -101,6 +101,15 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
   convergence trial; and there is no `unsub` record, so the daemon's `knit_spool_commons_subscribers` still
   counts a member that left until its connection drops. Refused with `error` in a build that hides the
   commons (`BuildConfig.COMMONS` — off in release, and in a `-Pcommons=false` debug build).
+- `…debug.BACKUP` — drives the **backup** half of Backup and restore (ADR 2026-09.6mj7, `docs/BACKUP_FORMAT.md`)
+  where the document picker is out of reach. No extras writes a backup under a fresh recovery key to
+  `files/backup-test.knitbackup` (`--es path <file>` for another) through the real `BackupWriter` and replies with
+  the `key`, the manifest and `bytes`; `--es verify <file> --es key <key>` runs the restore's whole verification
+  (`RestoreStager.stage`: decrypt, per-entry hashes, identity re-wrap under the live Keystore alias, node id,
+  database open under the passphrase, settings parse) and then **discards** the staging, so nothing on the phone
+  changes and no restart is armed. A wrong key replies `refused` with `WRONG_KEY_OR_DAMAGED`. Verify a file the UI
+  saved to Downloads by copying it in first (`cat /sdcard/Download/x | run-as app.getknit.knit sh -c 'cat >
+  files/x'`) — the app cannot read `/sdcard` paths. Applying a restore is the UI's job (it kills the process).
 - `…debug.LORA` — configures and inspects the **LoRa (Meshtastic-over-BLE) plane** (ADR 038,
   `context/lora-bridge.md`), off by default and needing a paired board, so this is how you drive it on a
   locked lab device. `--es address <MAC>` (+ `--es name <n>`) binds a bonded board, `--ei channel <idx>`
