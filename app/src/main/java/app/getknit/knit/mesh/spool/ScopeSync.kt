@@ -104,11 +104,14 @@ class ScopeStatus(
     val label: String,
     val localCount: Int,
     val spoolCount: Int,
+    /** The anchor this spool last answered for the scope matches ours; false until it has answered one. */
     val converged: Boolean,
     val invalidCount: Int,
     val retiring: Boolean,
     val accountedCount: Int = 0,
     val peerSeenAt: Long? = null,
+    /** A pair scope (spec §3.5) — it shares its [label] with the DM scope that supersedes it. */
+    val pair: Boolean = false,
 )
 
 /**
@@ -243,6 +246,15 @@ class ScopeSync(
     @Volatile
     private var scopes: List<Scope> = emptyList()
 
+    /**
+     * Serializes [reconcile]: derivations now run on every input event as well as the poll, and two in
+     * flight could adopt tables in the wrong order — the older one's `forgetScopesNotIn` dropping the anchors
+     * a newer scope had just earned. Events that land while one runs collapse into one queued re-derivation
+     * ([reconcileQueued]), which starts only after the running one and so reads the inputs it may have missed.
+     */
+    private val reconcileLock = Mutex()
+    private val reconcileQueued = AtomicBoolean(false)
+
     /** Starts the plane on the mesh session scope. Restart-safe, like the other services under `MeshManager`. */
     fun start(session: CoroutineScope) {
         if (supervisor?.isActive == true) return
@@ -250,7 +262,7 @@ class ScopeSync(
         supervisor =
             session.launch {
                 while (isActive) {
-                    reconcile()
+                    reconcileLock.withLock { reconcile() }
                     delay(RECONCILE_INTERVAL_MS)
                 }
             }
@@ -332,11 +344,25 @@ class ScopeSync(
     }
 
     /**
-     * The scope table's inputs changed under us (a commons joined or left): re-derive it now instead of at
-     * the next 15 s tick, so a freshly pasted invite is subscribed while the user is still looking at it.
+     * A scope-table input landed: re-derive the table now instead of on the [RECONCILE_INTERVAL_MS] poll,
+     * so a freshly pasted invite is subscribed while the user is still looking at it and a session that
+     * just confirmed finds its scope at once. Every input with an event calls this (ADR 2026-09.dcah): a
+     * DM session confirmed, replaced or forgotten (`RatchetSessions.rootChanges`), a pair peer named,
+     * evicted, lapsed or pinned (`IntroSync.onPairsChanged`), a group root minted or adopted, a commons
+     * joined or left, and the relay list edited (`MeshController.refreshRelays`). Cheap and idempotent: an
+     * unchanged table wakes nobody, so a spurious call costs the derivation and nothing else.
      */
     fun onScopeTableChanged() {
-        session?.launch { reconcile() }
+        val host = session ?: return
+        // One queued derivation absorbs every event that lands before it starts; it clears the flag as it
+        // takes the lock, so an event during its run queues the next one rather than being lost.
+        if (!reconcileQueued.compareAndSet(false, true)) return
+        host.launch {
+            reconcileLock.withLock {
+                reconcileQueued.set(false)
+                reconcile()
+            }
+        }
     }
 
     /** Starts a worker per configured URL, stops the ones that fell out of the config, refreshes scopes. */
@@ -349,14 +375,15 @@ class ScopeSync(
             return
         }
         scopes = registry.scopes(clock())
+        metrics.onSpoolTableDerived()
         val live = scopes.mapTo(HashSet()) { it.idHex }
         wanted.forEach { url ->
             val worker = workers.computeIfAbsent(url) { Worker(it) }
             val changed = worker.adoptScopes(live)
             worker.ensureRunning(host)
             // Only a changed table wakes the heal loop — a scope that appeared needs its SUB now. An
-            // unchanged one used to wake every worker every 15 s regardless, and each wake ran a full
-            // custody round per scope: four times the 60 s tick, idle or converged, for nothing.
+            // unchanged one used to wake every worker on every reconcile regardless, and each wake ran a
+            // full custody round per scope: four times the 60 s tick, idle or converged, for nothing.
             if (changed) worker.wake()
         }
     }
@@ -621,11 +648,17 @@ class ScopeSync(
                             label = scope.label,
                             localCount = localCounts[scope.idHex] ?: 0,
                             spoolCount = spoolCounts[scope.idHex] ?: 0,
-                            converged = spoolDigests[scope.idHex] == localDigests[scope.idHex],
+                            // An anchor we hold from the spool that matches ours. Unknown on both sides — a
+                            // scope derived before its SUB is answered, or between sessions (the anchors go
+                            // with the connection) — is not agreement: the lab's `awaitScope` and the row read
+                            // "converged" for a scope no relay had ever heard of once the table started
+                            // deriving on events (ADR 2026-09.dcah) rather than after a poll the dial beat.
+                            converged = spoolDigests[scope.idHex]?.let { it == localDigests[scope.idHex] } == true,
                             invalidCount = invalid[scope.idHex]?.size ?: 0,
                             retiring = scope.retiring,
                             accountedCount = accountedFor(scope.idHex).size,
                             peerSeenAt = peerSeenAt[scope.idHex],
+                            pair = scope.pair,
                         )
                     },
             )
@@ -1946,7 +1979,13 @@ class ScopeSync(
          */
         fun isSpoolSource(fromNodeId: String): Boolean = fromNodeId.startsWith(SPOOL_SOURCE_PREFIX)
 
-        private const val RECONCILE_INTERVAL_MS = 15_000L
+        /**
+         * The scope-table poll. Since ADR 2026-09.dcah every input with an event re-derives the table through
+         * [onScopeTableChanged]; this is the net under the transitions only the calendar makes — a retiring DM
+         * or group root's drain window closing, a pair scope's grace lapsing, a swept root. It was 15 s when
+         * it was the only way a new scope was found.
+         */
+        private const val RECONCILE_INTERVAL_MS = 60_000L
         private const val TICK_INTERVAL_MS = 60_000L
         private const val HANDSHAKE_TIMEOUT_MS = 20_000L
         private const val RECONNECT_JITTER_MS = 750L

@@ -280,6 +280,9 @@ class MeshManager(
             canSeal = { peerId -> canSealTickTo(peerId) && ratchetPrekeyOf(peers.find(peerId)) != null },
             sendIntro = ::sendIntroTo,
             sessionConfirmed = { peerId -> ratchet.sessionFor(peerId)?.confirmed == true },
+            // A pair peer named, evicted, lapsed or pinned is a scope-table input landing (ADR 2026-09.dcah).
+            // `scopeSync` is declared below; the lambda reads it at call time, like `reopenFrame`.
+            onPairsChanged = { scopeSync?.onScopeTableChanged() },
             metrics = metrics,
             clock = clock,
         )
@@ -624,6 +627,18 @@ class MeshManager(
         session.launch { introSync.prime() }
         scopeSync?.start(session)
         watchRoute(session)
+        watchScopeInputs(session)
+    }
+
+    /**
+     * A confirmed, replaced or forgotten DM session is a scope-table input landing (`RatchetSessions.rootChanges`):
+     * re-derive the table now rather than on the 60 s poll. The other inputs report through their own doors —
+     * `IntroSync.onPairsChanged`, the group-root mint and adoption, a commons join, the relay editor. Armed only
+     * with a plane to arm (ADR 2026-09.dcah).
+     */
+    private fun watchScopeInputs(session: CoroutineScope) {
+        val sync = scopeSync ?: return
+        session.launch { ratchet.rootChanges.collect { sync.onScopeTableChanged() } }
     }
 
     /**
@@ -1322,6 +1337,8 @@ class MeshManager(
                 GroupRootPolicy.rotated(state, group.groupId, GroupRootPolicy.newRoot(), version, me, now),
             )
             metrics.onGroupRootMinted()
+            // Our own mint is a root landing like an adopted one: the scope it derives subscribes now.
+            scopeSync?.onScopeTableChanged()
             gossipGroupRoot(group.groupId)
         }
     }
@@ -1395,7 +1412,7 @@ class MeshManager(
     ) {
         if (adopted) {
             // A root just landed, so a group scope may exist that the table does not derive yet: re-derive
-            // it now rather than on the 15 s tick (the same reason a pasted invite subscribes at once) — for
+            // it now rather than on the 60 s poll (the same reason a pasted invite subscribes at once) — for
             // a member whose only plane is the relay, this is the pull that fetches the founding frame.
             scopeSync?.onScopeTableChanged()
             scopeSync?.onCustodyChanged()

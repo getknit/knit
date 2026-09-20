@@ -272,6 +272,7 @@ class MeshMetrics {
     private val bleSideDeduped = AtomicLong()
     private val bleSideDrops: Map<BleSideDrop, AtomicLong> = BleSideDrop.entries.associateWith { AtomicLong() }
     private val bleLinkDupSkipped = AtomicLong()
+    private val spoolTablesDerived = AtomicLong()
     private val spoolPushed = AtomicLong()
     private val spoolPulled = AtomicLong()
     private val spoolBridged = AtomicLong()
@@ -735,6 +736,15 @@ class MeshMetrics {
         nanBulkGraceTimeouts.incrementAndGet()
     }
 
+    /**
+     * The spool plane re-derived its scope table (ADR 2026-09.dcah): once per input event — a session
+     * confirmed, a pair peer named or pinned, a root minted or adopted, a room joined — and once a minute as
+     * the net. The device oracle for the event hooks: a burst of events is a few, an idle hour is sixty.
+     */
+    fun onSpoolTableDerived() {
+        spoolTablesDerived.incrementAndGet()
+    }
+
     /** A sealed custody frame was accepted by a spool (the Internet plane's outbound work). */
     fun onSpoolPushed() {
         spoolPushed.incrementAndGet()
@@ -1101,6 +1111,7 @@ class MeshMetrics {
             bleSideDeduped = bleSideDeduped.get(),
             bleSideDropsByReason = bleSideDrops.mapValues { it.value.get() }.filterValues { it > 0 },
             bleLinkDupSkipped = bleLinkDupSkipped.get(),
+            spoolTablesDerived = spoolTablesDerived.get(),
             spoolPushed = spoolPushed.get(),
             spoolPulled = spoolPulled.get(),
             spoolBridged = spoolBridged.get(),
@@ -1222,6 +1233,7 @@ class MeshMetrics {
         val bleSideDeduped: Long = 0,
         val bleSideDropsByReason: Map<BleSideDrop, Long> = emptyMap(),
         val bleLinkDupSkipped: Long = 0,
+        val spoolTablesDerived: Long = 0,
         val spoolPushed: Long = 0,
         val spoolPulled: Long = 0,
         val spoolBridged: Long = 0,

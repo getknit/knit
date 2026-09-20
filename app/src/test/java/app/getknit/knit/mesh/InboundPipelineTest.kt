@@ -89,6 +89,7 @@ import io.mockk.coVerify
 import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -284,6 +285,13 @@ class InboundPipelineTest {
                 spkPrivFor = { id -> if (id == SPK_ID) selfSpk.priv else null },
                 mutex = ratchetMutex,
             )
+
+        /** Every peer the ratchet reported a scope-root change for (ADR 2026-09.dcah), in order. */
+        val rootChanges = mutableListOf<String>()
+
+        init {
+            scope.launch(Dispatchers.Unconfined) { ratchet.rootChanges.collect { rootChanges += it } }
+        }
 
         // The group-ratchet facade over the REAL Room-backed store, sharing the DM facade's mutex exactly
         // as production wiring does (seed adoption runs inside a DM commit under that one lock).
@@ -3747,6 +3755,13 @@ class InboundPipelineTest {
             assertEquals(1, rig.ratchetStore.recvEpoch(alice.nodeId, 1)?.next)
             // The DM ack flooded back as usual.
             assertTrue(rig.originated.any { it.type == FrameType.RECEIPT })
+            // The confirmed session is a scope-table input landing — reported once, to the spool plane.
+            assertEquals(listOf(alice.nodeId), rig.rootChanges)
+
+            // A second frame on the same session steps the chain and moves no root: nothing to report.
+            rig.deliver(alice, author.dm("v2-2", "still here"))
+            assertEquals("still here", rig.msgMap["v2-2"]?.body)
+            assertEquals(listOf(alice.nodeId), rig.rootChanges)
         }
 
     @Test
@@ -3788,6 +3803,7 @@ class InboundPipelineTest {
             assertEquals(acksAfterFirst + 1, rig.originated.count { it.type == FrameType.RECEIPT })
             assertEquals(0L, rig.drops(DropReason.RATCHET_NO_SESSION))
             assertEquals(0L, rig.drops(DropReason.DECRYPT_FAILED))
+            assertEquals("the establishment reported once; the re-serve never reached the ratchet", listOf(alice.nodeId), rig.rootChanges)
         }
 
     @Test
@@ -4253,11 +4269,37 @@ class InboundPipelineTest {
             assertEquals(60_000L, rig.ratchetStore.session(alice.nodeId)?.establishedAt)
             assertEquals(listOf(alice.nodeId), rig.resealed)
             assertFalse("a control frame is never persisted", rig.msgMap.containsKey("reset-1"))
+            assertEquals("the establishment and the replacement each moved the root", listOf(alice.nodeId, alice.nodeId), rig.rootChanges)
             val ackedIds =
                 rig.originated
                     .filter { it.type == FrameType.RECEIPT }
                     .mapNotNull { WireCodec.decodePayload<ReceiptContent>(it.payload)?.ackId }
             assertFalse("a control frame is never acked (the pre-wipe DM's ack is fine)", "reset-1" in ackedIds)
+        }
+
+    /**
+     * The other writer of the root (ADR 2026-09.dcah): a reset request WE send replaces a confirmed session
+     * with an unconfirmed one, so `exportedRoots` drops the peer until it answers — the peer's scopes leave
+     * the table, and that is a change to report. A reset toward a peer we hold no session with mints an
+     * unconfirmed session out of nothing, which the table never saw: nothing to report.
+     */
+    @Test
+    fun ourOwnResetRequestTakesAConfirmedPeerOffTheScopeTable() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            rig.pinRatchetCapable(carol, RatchetCrypto.generateKeyPair().pub)
+            rig.deliver(alice, V2Author(alice, rig, at = 5L).dm("est", "hello"))
+            assertEquals(listOf(alice.nodeId), rig.rootChanges)
+
+            assertNull(rig.pipeline.sendSessionReset(alice.nodeId, rig.self.nodeId, rig.nowMs))
+            assertFalse(checkNotNull(rig.ratchetStore.session(alice.nodeId)).confirmed)
+            assertEquals(listOf(alice.nodeId, alice.nodeId), rig.rootChanges)
+
+            assertNull(rig.pipeline.sendSessionReset(carol.nodeId, rig.self.nodeId, rig.nowMs))
+            assertEquals("an initiation from nothing was never on the table", 2, rig.rootChanges.size)
         }
 
     @Test
@@ -4275,6 +4317,7 @@ class InboundPipelineTest {
 
             assertEquals(60_000L, rig.ratchetStore.session(alice.nodeId)?.establishedAt)
             assertEquals(listOf(alice.nodeId), rig.resealed)
+            assertEquals("a refused replacement moves no root", 2, rig.rootChanges.size)
         }
 
     // --- profile prekey pinning ---

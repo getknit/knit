@@ -97,7 +97,8 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   is stamped only on a frame the spool *pulls*, and both nodes already hold each other's link-phase frames,
   so `meetOnTheRelay` DMs once more with the air made lossy (`air.lossy`) — the relay is then the only path;
   a both-initiate DM race can leave a responder's session unconfirmed for a long time, so the fixture waits
-  for the first DM to land before the reply; the DM scope derives on the 15 s reconcile and a worker that
+  for the first DM to land before the reply; the DM scope derives on the confirmation itself (ADR
+  2026-09.dcah — a scope a scenario waits more than the 60 s poll for is a missing hook) and a worker that
   missed an event waits for its own 60 s tick, hence `MeshLab.SPOOL_AWAIT_MS`; and the oracle found a real
   divergence — the LoRa beacon re-signing the node's own profile under the same id while a settings write
   was landing (two blobs, one id, a scope that never converges; `MeshManager.ownProfile()` is the fix).

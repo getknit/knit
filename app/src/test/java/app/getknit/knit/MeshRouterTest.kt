@@ -18,6 +18,7 @@ import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import app.getknit.knit.mesh.spool.ScopeSync
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -474,6 +475,39 @@ class MeshRouterTest {
 
             assertEquals(setOf("c", "d"), transport.sent.mapNotNull { it.second?.nodeId }.toSet())
             assertEquals(1, metrics.snapshot().framesRelayed)
+            assertEquals(0, metrics.snapshot().framesSuppressed)
+        }
+
+    /**
+     * A copy that came off a spool is not an overhear either (ADR 2026-09.dcah): it says a relay holds the
+     * frame, not that any radio neighbour heard it — and it is routinely our own push echoed back. Once the
+     * DM scope derived on the session's confirmation, that echo landed inside the jitter window and cancelled
+     * the one radio hop a carrier behind us depended on (`InternetPlaneLabTest`'s photo-to-the-neighbour case).
+     */
+    @Test
+    fun doesNotSuppressOnADuplicateOffASpool() =
+        runTest {
+            val transport = RecordingTransport(setOf("b", "c", "d"))
+            val metrics = MeshMetrics()
+            val router =
+                MeshRouter(
+                    transport,
+                    this,
+                    metrics = metrics,
+                    jitterWindowMs = 150L,
+                    suppressThreshold = 2,
+                    jitter = { 100L },
+                ) { _, _, _, _ -> }
+
+            val (wire, env) = frame("m1")
+            router.handleInbound(wire, env, fromNodeId = "b")
+            advanceTimeBy(40)
+            router.handleInbound(wire, env, fromNodeId = "${ScopeSync.SPOOL_SOURCE_PREFIX}wss://relay.example") // the echo
+            advanceUntilIdle()
+
+            assertEquals(setOf("c", "d"), transport.sent.mapNotNull { it.second?.nodeId }.toSet())
+            assertEquals(1, metrics.snapshot().framesRelayed)
+            assertEquals(1, metrics.snapshot().framesDeduped)
             assertEquals(0, metrics.snapshot().framesSuppressed)
         }
 

@@ -101,13 +101,13 @@ doc). **Don't start a deferred item without explicit direction.**
   `ScopeCrypto`/`SpoolPow`, `mesh/spool/` `SpoolRecords`; API-only, zero runtime consumers). Names
   committed: spool / scope / `ScopeSync` / `knit-spool` (AGPL-3.0).
 
-- **The spool heal is dirty-driven; the scope derivation still polls** (2026-09-18, ADR 2026-09.wa79). A
+- **The spool heal is dirty-driven, and so is the scope derivation** (2026-09-18, ADR 2026-09.wa79). A
   round now runs on a moved digest, a delivery, a direct push, a custody change or the 60 s tick, with one
   custody read per round; a dead relay backs off to 15 min, no dial with no route, and the socket pings
-  every 4 min on cellular. **Deferred:** moving `ScopeSync.reconcile`'s 15 s scope derivation onto events —
-  a `RatchetSessions` confirmations flow, an `IntroSync` pairs-changed callback and `onProfilePinned` are
-  the three missing hooks (a group-root adoption and a commons join already notify), after which the poll
-  can drop to 60 s; the lab scenarios that ride the poll would need `refreshRelays()` pokes. And in
+  every 4 min on cellular. ~~**Deferred:** moving `ScopeSync.reconcile`'s 15 s scope derivation onto
+  events~~ — **done 2026-09-20** (work item #75, ADR 2026-09.dcah): `RatchetSessions.rootChanges`,
+  `IntroSync.onPairsChanged` (the pair set and a pending peer's pin), the own group-root mint, and the poll
+  at 60 s as the net under the calendar-only transitions; no lab poke was needed. **Still deferred**, in
   `knit-spool`: the daemon's own 30 s ping still wakes a cellular modem; an additive client→spool hello
   hint (`pingS`, spool clamps, absent = today) plus a spec line would let the client's four-minute cadence
   hold end to end.

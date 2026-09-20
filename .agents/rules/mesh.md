@@ -61,13 +61,23 @@ free). Two invariants that are easy to break:
   route (`InternetGate.isOnline`, the `online` seam) a worker does not dial at all and keeps the last real
   verdict — the relay row already says the phone is offline — and a relay that stays unreached backs off
   past the minute to fifteen (`SpoolBackoffPolicy`, ADR 2026-09.wa79).
-- **A heal round runs when something changed, and every scope once a minute** (ADR 2026-09.wa79). The 15 s
-  reconcile re-derives the scope table and wakes a worker only when that table differs; a scope is healed
-  when its spool digest *moved*, it took a delivery or a direct push, or local custody changed (every
-  scope), else on the 60 s tick — one custody read per round, shared by every due scope. `republishPresence`
-  stays first in every round because the tick is what lets a stamp lapse. A pushed-whole, fetched or dead
-  attachment is settled for the connection and asked about again only on a timed round ten minutes on (or a
-  new session); one still in flight re-marks its scope every 15 s. Don't add a wake that carries no change.
+- **A heal round runs when something changed, and every scope once a minute** (ADR 2026-09.wa79). The
+  scope table is re-derived on its inputs' events — a DM session confirmed, replaced or forgotten
+  (`RatchetSessions.rootChanges`), a pair peer named, evicted, lapsed or pinned (`IntroSync.onPairsChanged`),
+  a group root minted or adopted, a commons joined or left, the relay list edited — through
+  `ScopeSync.onScopeTableChanged`, with a 60 s poll under the calendar-only transitions (a drain window or
+  a pair grace lapsing, a swept root; ADR 2026-09.dcah); `reconcile` wakes a worker only when that table
+  differs. A scope is healed when its spool digest *moved*, it took a delivery or a direct push, or local
+  custody changed (every scope), else on the 60 s tick — one custody read per round, shared by every due
+  scope. `republishPresence` stays first in every round because the tick is what lets a stamp lapse. A
+  pushed-whole, fetched or dead attachment is settled for the connection and asked about again only on a
+  timed round ten minutes on (or a new session); one still in flight re-marks its scope every 15 s. Don't
+  add a wake that carries no change, and don't add a table hook that fires on an unchanged input — the
+  before/after view compare in `RatchetSessions` and the `lastPairs` diff in `IntroSync` are the gate.
+  Two things the event-driven table exposed: `ScopeStatus.converged` is false until the spool has answered
+  an anchor (two absent digests are not agreement), and `MeshRouter` never counts a `spool:`-sourced
+  duplicate toward overhear suppression — the echo of our own push lands inside the relay jitter now, and
+  a spool copy says nothing about what a radio neighbour heard.
 - **Only frames matching the scope frame-set rule may be sealed into a scope, in *both* directions**
   (`ScopeFrames.eligibleFor`, spec §4.4) — a scope is not a general-purpose upload channel. The group
   half has two traps: a `groupleave` carries its group id in the **payload** (never in

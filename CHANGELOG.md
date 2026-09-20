@@ -47,12 +47,18 @@ document:
   every four minutes, though the relay still checks in on its own schedule.
 - Knit loads its on-device content filter when you open the app or someone comes into range, rather than
   on every background restart. A message that arrives twice is checked once.
+- A relay you have set up now learns about a new contact, or a chat that just connected, as it happens
+  rather than up to fifteen seconds later. Idle, your phone looks over what it shares with the relay once
+  a minute instead of four times.
 
 ### Fixed
 
 - A photo sent over Bluetooth could cross the air three times, because every nearby phone offered its copy
   while the first was still arriving. A phone now asks for a picture only while nothing is on the way, and a
   neighbour sends one only when asked.
+- A phone on a relay with nearby phones could get a message by radio and from the relay a split second
+  apart, and took the second copy as proof a neighbour had passed it on. It then skipped its own hop, and
+  the phone behind it waited for the next re-offer.
 - On some phones the Wi-Fi dropped every time Knit tried to open a Wi-Fi Aware connection to a neighbour.
   After the third drop Knit stops opening them from that phone and says so in Diagnostics, where you can let
   it try again; nearby phones can still connect to it.

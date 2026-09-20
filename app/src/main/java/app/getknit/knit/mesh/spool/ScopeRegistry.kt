@@ -127,6 +127,7 @@ class ScopeRegistry(
                 bounds = bounds,
                 retiring = false,
                 peerId = entry.peerId,
+                pair = true,
             )
         }
 

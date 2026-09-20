@@ -75,6 +75,11 @@ class IntroSync(
     private val sendIntro: suspend (String) -> Boolean,
     // Whether our ratchet session with the peer is confirmed — the "connected" fact this driver reports.
     private val sessionConfirmed: suspend (String) -> Boolean,
+    // The pair-scope inputs moved: the set [pairPeers] names differs from the last publish, or a pending
+    // peer's bundle was just pinned (the one pair input this driver does not hold — `ScopeRegistry` derives
+    // a pair scope only once the peer's key is known). The spool plane re-derives its table on it instead
+    // of on its poll. May fire under [lock], so the callback must not block or call back into this driver.
+    private val onPairsChanged: () -> Unit = {},
     private val metrics: MeshMetrics = MeshMetrics(),
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val resendFloorMs: Long = RESEND_FLOOR_MS,
@@ -91,6 +96,10 @@ class IntroSync(
 
     /** The UI's view — re-published after every transition so `state(peer)` reacts without polling the store. */
     private val states = MutableStateFlow<Map<String, IntroState>>(emptyMap())
+
+    /** The [pairPeers] set as of the last publish; null until [prime] seeds it, so a restart fires nothing. */
+    @Volatile
+    private var lastPairs: Set<String>? = null
 
     /**
      * Registers an intro with [peerId] (the import seam). Idempotent; a peer whose session is already
@@ -132,6 +141,8 @@ class IntroSync(
     /** A profile for [peerId] was pinned on some plane: if an intro to it is pending, it can be sealed now. */
     suspend fun onProfilePinned(peerId: String) {
         if (peerId !in lock.withLock { store.pending() }) return
+        // A pair scope needs the bundle the pipeline just pinned; the table can derive it now.
+        onPairsChanged()
         if (!settle(peerId)) trySend(peerId, clock())
     }
 
@@ -173,17 +184,22 @@ class IntroSync(
     }
 
     /** The peers a pair scope exists for: every pending intro plus every confirmed one still in grace. */
-    suspend fun pairPeers(): Set<String> =
-        lock.withLock {
-            val now = clock()
-            store.pending().keys + store.grace().filterValues { it > now }.keys
-        }
+    suspend fun pairPeers(): Set<String> = lock.withLock { pairKeys(store.pending(), store.grace()) }
 
     /** Where the intro with [peerId] stands, or null when none is pending or recently confirmed. */
     fun state(peerId: String): Flow<IntroState?> = states.map { it[peerId] }.distinctUntilChanged()
 
-    /** Loads the store into the published view — call once after construction so the UI sees restarts. */
-    suspend fun prime() = lock.withLock { publish(store.pending(), store.grace()) }
+    /**
+     * Loads the store into the published view — call once after construction so the UI sees restarts. Seeds
+     * the pair set silently: the plane's own start derives the table, so the first publish is not a change.
+     */
+    suspend fun prime() =
+        lock.withLock {
+            val pending = store.pending()
+            val grace = store.grace()
+            lastPairs = pairKeys(pending, grace)
+            publish(pending, grace)
+        }
 
     /**
      * Moves [peerId] from pending into grace when our session with it has confirmed. Returns true when
@@ -230,6 +246,21 @@ class IntroSync(
         for (peerId in pending.keys) view[peerId] = if (lastSentAt.containsKey(peerId)) IntroState.SENT else IntroState.AWAITING_PREKEY
         for ((peerId, until) in grace) if (until > now) view[peerId] = IntroState.CONNECTED
         states.value = view
+        // A registration, an eviction or a lapsed grace moves the pair set; a settle (pending → grace) and a
+        // send do not, and neither is a reason to re-derive the table.
+        val pairs = pairKeys(pending, grace)
+        val last = lastPairs
+        if (last != null && pairs != last) onPairsChanged()
+        if (last != null) lastPairs = pairs
+    }
+
+    /** The [pairPeers] rule over one snapshot of the two maps. */
+    private fun pairKeys(
+        pending: Map<String, Long>,
+        grace: Map<String, Long>,
+    ): Set<String> {
+        val now = clock()
+        return pending.keys + grace.filterValues { it > now }.keys
     }
 
     companion object {

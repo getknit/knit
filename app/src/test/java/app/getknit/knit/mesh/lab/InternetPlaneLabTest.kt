@@ -27,10 +27,12 @@ import kotlin.random.Random
  * same DM scope (ADR 032), a photo the radio already carried not being uploaded until the peers part
  * (ADR 021), a planted blob quarantined without breaking convergence (spec §9.3), two card holders meeting
  * at the pair scope with no radio (ADR 042), a relay that drops every socket, and a sealed profile update
- * crossing the relay (ADR 020). Slow by nature: the scope reconcile is 15 s, a round runs on a change (a
- * moved digest, a delivery, a custody change) and a worker that missed one waits for its own 60 s tick
- * (ADR 2026-09.wa79), hence [MeshLab.SPOOL_AWAIT_MS]. A clock jump moves no round by itself:
- * `manager.refreshRelays()` is the poke that makes a worker look now.
+ * crossing the relay (ADR 020). Slow by nature: the scope table derives on its inputs' events (a confirmed
+ * session, a pair peer named or pinned, a root minted or adopted, a room joined — ADR 2026-09.dcah) with a
+ * 60 s poll under the calendar-only transitions, a round runs on a change (a moved digest, a delivery, a
+ * custody change) and a worker that missed one waits for its own 60 s tick (ADR 2026-09.wa79), hence
+ * [MeshLab.SPOOL_AWAIT_MS]. A clock jump moves no round by itself: `manager.refreshRelays()` is the poke
+ * that makes a worker look now. A scope a scenario waits more than a minute for is a missing hook.
  */
 @RunWith(RobolectricTestRunner::class)
 class InternetPlaneLabTest {

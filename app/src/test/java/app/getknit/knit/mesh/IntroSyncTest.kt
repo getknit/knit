@@ -41,6 +41,7 @@ class IntroSyncTest {
         val confirmed = mutableSetOf<String>()
         val sent = mutableListOf<String>()
         var refuseSend = false
+        var pairsChanged = 0
         val metrics = MeshMetrics()
         val sync =
             IntroSync(
@@ -55,6 +56,7 @@ class IntroSyncTest {
                     }
                 },
                 sessionConfirmed = { it in confirmed },
+                onPairsChanged = { pairsChanged++ },
                 metrics = metrics,
                 clock = { now },
                 maxPending = maxPending,
@@ -238,6 +240,62 @@ class IntroSyncTest {
             second.sealable += BOB
             second.sync.retry()
             assertEquals(listOf(BOB), second.sent)
+        }
+
+    /**
+     * The spool plane's cue (ADR 2026-09.dcah): the pair set it derives scopes from moved, or a pending
+     * peer's bundle landed. Fired on exactly those, never on a settle or a send — a hook that fires on an
+     * unchanged input is the poll it replaced under another name.
+     */
+    @Test
+    fun `the pair set reports each move to the scope table and nothing else`() =
+        runTest {
+            val rig = Rig(maxPending = 2)
+            rig.sync.prime()
+            assertEquals("a restart is not a change", 0, rig.pairsChanged)
+
+            rig.sync.want(BOB)
+            assertEquals("a registration names a new pair peer", 1, rig.pairsChanged)
+            rig.sync.want(BOB)
+            assertEquals("an idempotent repeat is not a change", 1, rig.pairsChanged)
+
+            rig.sealable += BOB
+            rig.sync.onProfilePinned(BOB)
+            assertEquals("the pinned bundle is what lets the pair scope derive", 2, rig.pairsChanged)
+            rig.sync.onProfilePinned(CAROL)
+            assertEquals("a stranger's profile is not a pair input", 2, rig.pairsChanged)
+            rig.sync.retry()
+            assertEquals("a re-send sweep with nothing to settle moves no peer", 2, rig.pairsChanged)
+
+            rig.confirmed += BOB
+            rig.sync.onPeerFrameOpened(BOB, carriesInit = false)
+            assertEquals(setOf(BOB), rig.sync.pairPeers())
+            assertEquals("pending → grace keeps the same pair set", 2, rig.pairsChanged)
+
+            rig.now += IntroSync.GRACE_MS
+            rig.sync.retry()
+            assertEquals(emptySet<String>(), rig.sync.pairPeers())
+            assertEquals("a lapsed grace drops the pair peer", 3, rig.pairsChanged)
+
+            rig.sync.want("a-peer")
+            rig.now += 1
+            rig.sync.want("b-peer")
+            rig.now += 1
+            rig.sync.want("c-peer")
+            assertEquals(setOf("b-peer", "c-peer"), rig.sync.pairPeers())
+            assertEquals("each registration is one change, the eviction rides the third", 6, rig.pairsChanged)
+        }
+
+    @Test
+    fun `before prime the pair set is unknown, so nothing reports`() =
+        runTest {
+            val rig = Rig()
+            rig.sync.want(BOB)
+            assertEquals(0, rig.pairsChanged)
+            rig.sync.prime()
+            assertEquals("priming onto a populated store is still not a change", 0, rig.pairsChanged)
+            rig.sync.want(CAROL)
+            assertEquals(1, rig.pairsChanged)
         }
 
     private companion object {

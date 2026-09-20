@@ -773,7 +773,13 @@ private fun SpoolSection(spool: SpoolStatus) {
         if (spool.powBits > 0) MetricRow("   proof-of-work", "${spool.powBits} bits")
     }
     spool.scopes.forEach { scope ->
-        val suffix = if (scope.retiring) " (retiring)" else ""
+        // A pair scope shares its label with the DM scope it precedes, so two rows for one peer are not a bug.
+        val suffix =
+            when {
+                scope.retiring -> " (retiring)"
+                scope.pair -> " (pair)"
+                else -> ""
+            }
         MetricRow(
             "   ${scope.label.take(SCOPE_LABEL_CHARS)}$suffix",
             "${scope.localCount} local / ${scope.spoolCount} spool" +

@@ -487,8 +487,8 @@ class MeshLab {
     ): String = nodes.map { n -> "  ${n.name}: ${n.decrypted(conversation(n)).map { it.second }}" }.joinToString("\n")
 
     /**
-     * Waits until [node]'s relay lists the DM scope it shares with [peer] as converged — derived on the 15 s
-     * reconcile once the session is confirmed, healed on the SUB's digest.
+     * Waits until [node]'s relay lists the DM scope it shares with [peer] as converged — derived the moment
+     * the session confirms (`RatchetSessions.rootChanges`, ADR 2026-09.dcah), healed on the SUB's digest.
      */
     suspend fun awaitDmScope(
         node: LabNode,
@@ -543,7 +543,7 @@ class MeshLab {
         link(alice, bob)
         awaitAcquainted(alice, bob)
         // A reply, not a both-initiate race: bob answers the session alice opened, so both sides confirm it
-        // at once and the scope derives on the next reconcile.
+        // at once and each derives the scope on its own confirmation.
         assertTrue(alice.sendDm(bob, "hello"))
         await(1) { bob.decrypted(bob.dmWith(alice)).size }
         assertTrue(bob.sendDm(alice, "hi"))
@@ -567,8 +567,8 @@ class MeshLab {
         node: LabNode,
         peer: LabNode,
     ) {
-        // The scope is derived on the 15 s reconcile once the session is confirmed, healed on its SUB's
-        // digest, then the profiles cross.
+        // The scope is derived the moment the session confirms, healed on its SUB's digest, then the
+        // profiles cross.
         val ok = tryAwait(1, timeoutMs = SPOOL_AWAIT_MS) { if (node.spoolPresent(peer)) 1 else 0 }
         assertTrue("${node.name} never saw ${peer.name} on the spool", ok)
     }
@@ -1395,11 +1395,18 @@ class LabNode internal constructor(
     /** Whether a connected spool has heard from [peer] within the mesh's cover window (ADR 2026-09.y5f3). */
     fun spoolPresent(peer: LabNode): Boolean = peer.nodeId in spoolPresentPeers(manager.spoolStatus(), now(), SPOOL_COVER_MS)
 
-    /** The DM scope this node shares with [peer] on its spool, as the relay editor would list it. */
-    fun dmScopeStatus(peer: LabNode): ScopeStatus? = scopeStatus(peer.nodeId)
+    /**
+     * The DM scope this node shares with [peer] on its spool, as the relay editor would list it — the live
+     * one, never the pair scope, which carries the same label for its 48 h grace (spec §3.5) and converges
+     * *before* the session does now that the table derives on each side's own confirmation (ADR
+     * 2026-09.dcah): the responder holds a DM scope while the initiator still has only the pair scope, and a
+     * lookup by label alone compared the two.
+     */
+    fun dmScopeStatus(peer: LabNode): ScopeStatus? =
+        manager.spoolStatus().flatMap { it.scopes }.firstOrNull { it.label == peer.nodeId && !it.pair && !it.retiring }
 
     /** The scope labelled [label] (a peer id for a DM scope, a group id for a group scope) on this node's spool. */
-    fun scopeStatus(label: String): ScopeStatus? = manager.spoolStatus().flatMap { it.scopes }.firstOrNull { it.label == label }
+    fun scopeStatus(label: String): ScopeStatus? = manager.spoolStatus().flatMap { it.scopes }.firstOrNull { it.label == label && !it.pair }
 
     /** How many DM-form chat frames this node custodies that it authored toward [peer] — a room tick must add none. */
     suspend fun custodiedChatsTo(peer: LabNode): Int =

@@ -34,6 +34,10 @@ class Scope(
     // one spool that runs it — the only scope that is not subscribed at every relay.
     val commonsId: String? = null,
     val spoolUrl: String? = null,
+    // A pair scope (spec §3.5): DM-form, the same [peerId] as the DM scope that supersedes it, keyed by the
+    // identity pair secret rather than a session root. Kept apart here so a reader of the status list can
+    // tell the two scopes of one peer apart — nothing downstream treats them differently.
+    val pair: Boolean = false,
 ) {
     /** The spec's display form — lowercase hex — and this scope's identity in maps/logs/diagnostics. */
     val idHex: String = hex(id)

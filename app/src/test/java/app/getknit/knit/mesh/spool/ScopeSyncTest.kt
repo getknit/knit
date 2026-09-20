@@ -569,9 +569,12 @@ class ScopeSyncTest {
             assertEquals(setOf("pa", "intro"), receiver.delivered.map { it.id }.toSet())
             assertEquals(3, spool.liveIds(pairHex).size)
 
-            // Both sessions confirmed: the driver stops naming the peer and the pair scope leaves the table.
+            // Both sessions confirmed and the grace lapsed: the driver stops naming the peer and reports it
+            // (`IntroSync.onPairsChanged`, ADR 2026-09.dcah); the pair scope leaves the table on that cue.
             alicePairs = emptyList()
             bobPairs = emptyList()
+            sender.sync.onScopeTableChanged()
+            receiver.sync.onScopeTableChanged()
             pump()
             assertTrue(
                 sender.sync
@@ -587,6 +590,36 @@ class ScopeSyncTest {
             )
             sender.sync.stop()
             receiver.sync.stop()
+        }
+
+    /**
+     * The table derives on its inputs' events (ADR 2026-09.dcah), and a burst of them — every DM session on a
+     * phone confirming as it comes back online — is one re-derivation, not one per event: a request that lands
+     * while one is queued folds into it, and one that lands while one *runs* queues exactly one more, since the
+     * running one may have read its inputs before the change.
+     */
+    @Test
+    fun `a burst of table changes is one queued re-derivation`() =
+        runTest {
+            val spool = FakeSpool()
+            var derivations = 0
+            val member =
+                member(spool, alice, bob, roots = {
+                    derivations++
+                    listOf(ScopeRoots(bob, pairwiseRoot))
+                })
+            member.sync.start(backgroundScope)
+            pump()
+            assertEquals("the start derives once", 1, derivations)
+
+            repeat(5) { member.sync.onScopeTableChanged() }
+            pump()
+            assertEquals("five events before any ran are one derivation", 2, derivations)
+
+            pump(rounds = 60)
+            assertEquals("the poll is a minute, not fifteen seconds", 3, derivations)
+            assertEquals("the device oracle counts the same derivations", 3L, member.metrics.snapshot().spoolTablesDerived)
+            member.sync.stop()
         }
 
     @Test
@@ -1437,8 +1470,8 @@ class ScopeSyncTest {
             spool.plantGarbage(scopeHex(alice, bob), "never served".toByteArray())
 
             holder.sync.start(backgroundScope)
-            // The 15 s reconcile wake keeps the heal loop asking; each LIST times out at 30 s, so the
-            // third strike lands at 90 s and the redial two seconds later.
+            // An unanswered LIST re-marks its scope, so the heal loop keeps asking; each LIST times out at
+            // 30 s, so the third strike lands at 90 s and the redial two seconds later.
             pump(rounds = 120)
 
             assertEquals("the first socket was dropped and a second dialled", 2, log.dialedAt.size)

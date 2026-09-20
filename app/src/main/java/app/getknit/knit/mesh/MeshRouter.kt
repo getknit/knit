@@ -3,6 +3,7 @@ package app.getknit.knit.mesh
 import app.getknit.knit.mesh.protocol.DEFAULT_TTL
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import app.getknit.knit.mesh.spool.ScopeSync
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -97,9 +98,13 @@ class MeshRouter(
         }
         if (!seen.add(envelope.id)) {
             // Duplicate: never re-deliver or start a second relay, but it IS evidence the frame is
-            // already propagating — count it against any relay we still have pending.
+            // already propagating — count it against any relay we still have pending. A copy off a spool
+            // is not that evidence: it says a relay holds the frame, not that any radio neighbour of ours
+            // heard it, and it is routinely our own push echoed back. Once the DM scope derived on the
+            // session's confirmation (ADR 2026-09.dcah) that echo landed inside the jitter window and
+            // cancelled the one radio hop a carrier behind us depended on.
             metrics.onDeduped()
-            countOverheard(envelope.id, fromNodeId)
+            if (!ScopeSync.isSpoolSource(fromNodeId)) countOverheard(envelope.id, fromNodeId)
             return
         }
         metrics.onDelivered()

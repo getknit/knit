@@ -3,6 +3,10 @@ package app.getknit.knit.mesh.crypto.ratchet
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.RatchetInit
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -44,6 +48,51 @@ class RatchetSessions(
      * un-forgettable.
      */
     private suspend fun <T> locked(block: suspend () -> T): T = transact.transact { mutex.withLock { block() } }
+
+    private val rootChangesFlow =
+        MutableSharedFlow<String>(extraBufferCapacity = ROOT_CHANGES_BUFFER, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+
+    /**
+     * A peer whose [exportedRoots] entry just appeared, changed or vanished — the spool plane's cue to
+     * re-derive its scope table now rather than on its poll. Emitted after the critical section that made
+     * the change, never under [mutex]; the collector runs on its own coroutine and reads through [locked],
+     * so what it sees is the state the enclosing write transaction committed. Every writer of the session
+     * row reports here except [sealDm] (an initiation is unconfirmed, and a seal never moves the root — the
+     * initiator confirms in [commitOpen], when the peer's reply seals against one of our epochs) and
+     * [sweep] (a drain window lapsing is the calendar's, which the poll covers). The emitted value is the
+     * peer id; a collector that only wants "something moved" may ignore it.
+     */
+    val rootChanges: SharedFlow<String> = rootChangesFlow.asSharedFlow()
+
+    /**
+     * What [exportedRoots] would report for one session: null when there is none or it is unconfirmed,
+     * else the roots the scope table keys on. Comparing before and after a commit is what keeps
+     * [rootChanges] honest — a re-delivered frame, a chain step or a presentation update leaves it equal.
+     */
+    private class ScopeView(
+        val root: ByteArray,
+        val prevRoot: ByteArray?,
+        val prevRootExpiresAt: Long,
+    ) {
+        fun sameAs(other: ScopeView?): Boolean =
+            other != null &&
+                root.contentEquals(other.root) &&
+                (prevRoot?.contentEquals(other.prevRoot) ?: (other.prevRoot == null)) &&
+                prevRootExpiresAt == other.prevRootExpiresAt
+    }
+
+    private fun scopeView(state: RatchetEngine.SessionState?): ScopeView? =
+        state?.takeIf { it.confirmed }?.let { ScopeView(it.root, it.prevRoot, it.prevRootExpiresAt) }
+
+    /** Reports [peerId] on [rootChanges] when its scope view moved between [before] and [after]. */
+    private fun reportRootChange(
+        peerId: String,
+        before: ScopeView?,
+        after: ScopeView?,
+    ) {
+        val same = if (before == null) after == null else before.sameAs(after)
+        if (!same) rootChangesFlow.tryEmit(peerId)
+    }
 
     /** Per-peer reset heuristic state: the distinct undecryptable frame ids seen (bounded LRU). */
     private val undecryptable = HashMap<String, LinkedHashSet<String>>()
@@ -138,21 +187,30 @@ class RatchetSessions(
         aad: ByteArray,
         now: Long,
         onOpened: suspend () -> Unit,
-    ): Boolean =
-        locked {
-            val header = headerOf(wireHeader)
-            val outcome = engine.open(contextFor(selfNodeId, peerId, peerIkPub, header, now), header, nonce, ct, aad, now)
-            if (outcome !is RatchetEngine.OpenOutcome.Opened) return@locked false
-            store.applyOpen(peerId, outcome.delta, headerSe = header.se, headerN = header.n)
-            if (outcome.delta.purgePeerRecvState) {
-                // A replacement was adopted: start its rate-limit window and clear the reset heuristic —
-                // the session is fresh, old failures are moot.
-                synchronized(lastReplacementAt) { lastReplacementAt[peerId] = now }
-                synchronized(undecryptable) { undecryptable.remove(peerId) }
+    ): Boolean {
+        var before: ScopeView? = null
+        var after: ScopeView? = null
+        val committed =
+            locked {
+                val header = headerOf(wireHeader)
+                val ctx = contextFor(selfNodeId, peerId, peerIkPub, header, now)
+                val outcome = engine.open(ctx, header, nonce, ct, aad, now)
+                if (outcome !is RatchetEngine.OpenOutcome.Opened) return@locked false
+                store.applyOpen(peerId, outcome.delta, headerSe = header.se, headerN = header.n)
+                if (outcome.delta.purgePeerRecvState) {
+                    // A replacement was adopted: start its rate-limit window and clear the reset heuristic —
+                    // the session is fresh, old failures are moot.
+                    synchronized(lastReplacementAt) { lastReplacementAt[peerId] = now }
+                    synchronized(undecryptable) { undecryptable.remove(peerId) }
+                }
+                onOpened()
+                before = scopeView(ctx.session)
+                after = scopeView(outcome.delta.session)
+                true
             }
-            onOpened()
-            true
-        }
+        if (committed) reportRootChange(peerId, before, after)
+        return committed
+    }
 
     /**
      * Seals one outbound DM under the peer's session, creating it (X3DH against [peerSpk]) on first
@@ -261,46 +319,54 @@ class RatchetSessions(
         plaintext: ByteArray,
         aad: ByteArray,
         now: Long,
-    ): EncEnvelope? =
-        locked {
-            peerSpk ?: return@locked null
-            val old = store.session(peerId)
-            val initiation = engine.initiate(peerId, dhIdentityPriv(), peerIkPub, peerSpk, now)
-            val session =
-                initiation.session.copy(
-                    prevRoot = old?.root,
-                    prevRootWeAreInitiator = old?.weAreInitiator ?: false,
-                    prevRootExpiresAt = if (old != null) now + RatchetEngine.PREV_ROOT_TTL_MS else 0L,
-                    lastResetSentAt = now,
+    ): EncEnvelope? {
+        var before: ScopeView? = null
+        val env =
+            locked {
+                peerSpk ?: return@locked null
+                val old = store.session(peerId)
+                before = scopeView(old)
+                val initiation = engine.initiate(peerId, dhIdentityPriv(), peerIkPub, peerSpk, now)
+                val session =
+                    initiation.session.copy(
+                        prevRoot = old?.root,
+                        prevRootWeAreInitiator = old?.weAreInitiator ?: false,
+                        prevRootExpiresAt = if (old != null) now + RatchetEngine.PREV_ROOT_TTL_MS else 0L,
+                        lastResetSentAt = now,
+                    )
+                val sealed = engine.seal(session, plaintext, aad, peerSpk.pub, now) ?: return@locked null
+                // Abandon our receive side along with the root. The peer purges its stale rows when it adopts
+                // this init; nothing was doing the same for ours, so a recv epoch from the dead era survived and
+                // the peer's post-replacement frames — whose epoch numbers may reuse the old ones — were judged
+                // against its stale chain index and dropped as DUPLICATE. That is unrecoverable by construction:
+                // a duplicate is benign, so it drives no reset, and the pair deadlocks in the one direction.
+                store.purgePeerRecvState(peerId)
+                store.commitSend(sealed.session, initiation.epoch)
+                synchronized(lastResetSentAt) { lastResetSentAt[peerId] = now }
+                synchronized(undecryptable) { undecryptable.remove(peerId) }
+                val h = sealed.header
+                EncEnvelope(
+                    v = EncEnvelope.VERSION_RATCHET,
+                    // A reset always seals v2 — the most compatible form toward a peer that may have reinstalled.
+                    nonce = checkNotNull(sealed.nonce),
+                    ct = sealed.ct,
+                    keys = emptyList(),
+                    r =
+                        RatchetHeader(
+                            se = h.se,
+                            ek = h.ek,
+                            pe = h.pe,
+                            n = h.n,
+                            init = h.init?.let { RatchetInit(eph = it.eph, pkid = it.pkid, at = it.at) },
+                            flags = RatchetHeader.FLAG_RESET,
+                        ),
                 )
-            val sealed = engine.seal(session, plaintext, aad, peerSpk.pub, now) ?: return@locked null
-            // Abandon our receive side along with the root. The peer purges its stale rows when it adopts
-            // this init; nothing was doing the same for ours, so a recv epoch from the dead era survived and
-            // the peer's post-replacement frames — whose epoch numbers may reuse the old ones — were judged
-            // against its stale chain index and dropped as DUPLICATE. That is unrecoverable by construction:
-            // a duplicate is benign, so it drives no reset, and the pair deadlocks in the one direction.
-            store.purgePeerRecvState(peerId)
-            store.commitSend(sealed.session, initiation.epoch)
-            synchronized(lastResetSentAt) { lastResetSentAt[peerId] = now }
-            synchronized(undecryptable) { undecryptable.remove(peerId) }
-            val h = sealed.header
-            EncEnvelope(
-                v = EncEnvelope.VERSION_RATCHET,
-                // A reset always seals v2 — the most compatible form toward a peer that may have reinstalled.
-                nonce = checkNotNull(sealed.nonce),
-                ct = sealed.ct,
-                keys = emptyList(),
-                r =
-                    RatchetHeader(
-                        se = h.se,
-                        ek = h.ek,
-                        pe = h.pe,
-                        n = h.n,
-                        init = h.init?.let { RatchetInit(eph = it.eph, pkid = it.pkid, at = it.at) },
-                        flags = RatchetHeader.FLAG_RESET,
-                    ),
-            )
-        }
+            }
+        // The replacement we just minted is unconfirmed, so the peer's scopes leave the table until it
+        // answers — a view change like any other.
+        if (env != null) reportRootChange(peerId, before, after = null)
+        return env
+    }
 
     /**
      * Read-only snapshot of one peer's session row (no mutation). Drives the bridge's ratchet
@@ -322,12 +388,18 @@ class RatchetSessions(
      * own: builds before 2026-09-13 opened a session with themselves off a self-pinned `peers` row, and
      * `PeerRepository.forgetSelf` takes the row but not the session behind it.
      */
-    suspend fun forget(peerId: String): Boolean =
-        locked {
-            val had = store.session(peerId) != null
-            if (had) store.deletePeer(peerId)
-            had
-        }
+    suspend fun forget(peerId: String): Boolean {
+        var before: ScopeView? = null
+        val had =
+            locked {
+                val state = store.session(peerId)
+                before = scopeView(state)
+                if (state != null) store.deletePeer(peerId)
+                state != null
+            }
+        if (had) reportRootChange(peerId, before, after = null)
+        return had
+    }
 
     /**
      * The spool plane's key material for every confirmed session: `pairwiseRoot` exports, never raw
@@ -394,5 +466,8 @@ class RatchetSessions(
          * that floor can cost us.
          */
         const val RESET_REPLACEMENT_MIN_INTERVAL_MS = 60_000L
+
+        /** Pending [rootChanges] a slow collector may lag by before the oldest is dropped; it only needs the newest. */
+        private const val ROOT_CHANGES_BUFFER = 64
     }
 }
