@@ -51,6 +51,7 @@
                 <action android:name="app.getknit.knit.debug.LORAPROV" />
                 <action android:name="app.getknit.knit.debug.XFER" />
                 <action android:name="app.getknit.knit.debug.BACKUP" />
+                <action android:name="app.getknit.knit.debug.PURGE" />
             </intent-filter>
         </receiver>
     </application>

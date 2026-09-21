@@ -182,6 +182,15 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
   `…debug.LEAVE --es conv <g-…>` is the group-details "Leave" (the signed `groupleave` floods, then the local
   tombstone). Together they drive the leave → re-create → send flow of ADR 2026-09.v6fu headlessly: on the
   receiver expect `holding group key … sender departed`, a `rejoin:` notice, then the message.
+- `…debug.PURGE --es prefix 'soak |burst '` — removes **injected soak traffic** from this phone: every message
+  whose body starts with one of the `|`-separated prefixes, in every thread, through the chat's own local delete
+  (row, reactions, receipt rows, the attachment blob once unreferenced) **plus the frame's custody row**
+  (`ForwardStore.remove`, digest kept in lockstep) — custody lives 24 h and the SeenSet 10 min, so a purge that
+  left it would watch the message walk back in from a peer's carry set; run it on every phone in one pass
+  (`.private/scripts/soak/cleanup.sh` does). `--ez dry true` counts only, `--ei limit` bounds the newest-N
+  window scanned per thread (default 5000), `--es group <g-…>` also drops that group row locally (no leave
+  frame). Nothing goes over the mesh; a reaction's own custody frame is left to its TTL. The reply's
+  `matched` / `deleted` / `custodyRemoved` / `byConversation` are the accounting.
 - `…debug.NANFAIL` / `…debug.NANSTORM` — reproduce **getknit/Knit#9** (ADR 052 + 055) on hardware that does
   not have the bug. `NANFAIL --ei count N` arms N Wi-Fi Aware attaches to take their failure path without
   reaching `mgr.attach` (0 disarms) — the stand-in for a vendor HAL with no STA+NAN interface combination.

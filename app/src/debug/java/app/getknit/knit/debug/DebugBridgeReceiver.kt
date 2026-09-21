@@ -20,6 +20,7 @@ import app.getknit.knit.crash.ProcessExitReasons
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GroupRepository
+import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
@@ -195,6 +196,8 @@ class DebugBridgeReceiver :
     private val attachments: AttachmentStore by inject()
     private val messages: MessageRepository by inject()
     private val reactions: ReactionRepository by inject()
+    private val receipts: MessageReceiptRepository by inject()
+    private val forward: ForwardStore by inject()
     private val peers: PeerRepository by inject()
     private val groups: GroupRepository by inject()
     private val blobs: BlobRepository by inject()
@@ -295,6 +298,10 @@ class DebugBridgeReceiver :
 
                         ACTION_LEAVE -> {
                             handleLeave(intent)
+                        }
+
+                        ACTION_PURGE -> {
+                            handlePurge(intent)
                         }
 
                         ACTION_REVIEW -> {
@@ -1849,6 +1856,76 @@ class DebugBridgeReceiver :
     }
 
     /**
+     * Purges soak-harness traffic from this phone: every message whose body starts with one of the
+     * `|`-separated `--es prefix` alternatives (the harness stamps `soak …` and `burst …`), in every thread,
+     * through the same local delete the chat's long-press runs — the row, its reactions, its receipt rows, the
+     * attachment blob once nothing references it — plus the frame's custody row via [ForwardStore.remove],
+     * which keeps the content digest in lockstep with the table. The custody half is the point: a message id
+     * is its frame id, and custody (24 h) outlives the SeenSet window (10 min), so a purge that left it would
+     * watch the message walk back in from a peer's carry set. Run it on every phone in one pass; a phone
+     * that was off adb re-supplies until its rows expire. `--ez dry true` counts without deleting; `--ei limit`
+     * bounds the newest-N window scanned per thread (default [PURGE_SCAN_LIMIT]); `--es group <g-…>` also
+     * drops that group row locally afterwards (no leave frame — the harness's throwaway group). Nothing here
+     * is sent over the mesh, and a reaction's own custody frame is left to its TTL.
+     */
+    private suspend fun handlePurge(intent: Intent): JSONObject {
+        val prefixes =
+            intent
+                .getStringExtra(EXTRA_PREFIX)
+                ?.split('|')
+                ?.filter { it.isNotEmpty() }
+                .orEmpty()
+        if (prefixes.isEmpty()) return reply("error", "missing --es prefix 'soak |burst '")
+        val dry = intent.getBooleanExtra(EXTRA_DRY, false)
+        val limit = intent.getIntExtra(EXTRA_LIMIT, PURGE_SCAN_LIMIT)
+        val byConversation = JSONObject()
+        var matched = 0
+        var deleted = 0
+        var custodyRemoved = 0
+        var blobsChecked = 0
+        messages.distinctConversations().forEach { conv ->
+            val hits =
+                messages
+                    .observeNewestMessages(conv, limit)
+                    .first()
+                    .filter { m -> prefixes.any { m.body.startsWith(it) } }
+            if (hits.isEmpty()) return@forEach
+            matched += hits.size
+            byConversation.put(conv, hits.size)
+            if (dry) return@forEach
+            hits.forEach { m ->
+                // Custody first: the blob's unreferenced check counts carried frames too.
+                if (forward.has(m.id)) {
+                    forward.remove(m.id)
+                    custodyRemoved++
+                }
+                messages.delete(m.id)
+                reactions.deleteForMessage(m.id)
+                receipts.deleteForMessage(m.id)
+                m.attachmentHash?.let {
+                    blobs.deleteIfUnreferenced(it)
+                    blobsChecked++
+                }
+                deleted++
+            }
+        }
+        val group = intent.getStringExtra(EXTRA_GROUP)?.trim()
+        var groupDropped = false
+        if (!dry && group != null && group.startsWith(Conversations.GROUP_ID_PREFIX) && groups.find(group) != null) {
+            groups.delete(group)
+            groupDropped = true
+        }
+        return reply("ok", if (dry) "would purge $matched" else "purged $deleted")
+            .put("dry", dry)
+            .put("matched", matched)
+            .put("deleted", deleted)
+            .put("custodyRemoved", custodyRemoved)
+            .put("blobsChecked", blobsChecked)
+            .put("byConversation", byConversation)
+            .put("groupDropped", groupDropped)
+    }
+
+    /**
      * Arms (or disarms, with `count` 0 or absent) forced Wi-Fi Aware attach failures — the lab stand-in for
      * getknit/Knit#9's chipset. Pair it with [ACTION_NANSTORM]: the failures are what make the attach path
      * reachable at all, since a transport that is attached returns from `attach()` before any of it.
@@ -2005,6 +2082,7 @@ class DebugBridgeReceiver :
         const val ACTION_LORAPROV = "app.getknit.knit.debug.LORAPROV"
         const val ACTION_XFER = "app.getknit.knit.debug.XFER"
         const val ACTION_BACKUP = "app.getknit.knit.debug.BACKUP"
+        const val ACTION_PURGE = "app.getknit.knit.debug.PURGE"
 
         const val EXTRA_TEXT = "text"
         const val EXTRA_MINUTES = "minutes"
@@ -2031,6 +2109,9 @@ class DebugBridgeReceiver :
         const val EXTRA_PARK = "park"
         const val EXTRA_UNPARK = "unpark"
         const val EXTRA_RESET_PEER = "reset"
+        const val EXTRA_PREFIX = "prefix"
+        const val EXTRA_DRY = "dry"
+        const val EXTRA_GROUP = "group"
 
         /** Default sender + hidden body for [ACTION_FLAGMSG]'s synthetic flagged inbound message. */
         const val FLAGGED_SENDER_ID = "flagger0"
@@ -2058,6 +2139,9 @@ class DebugBridgeReceiver :
         const val WEBP_CHECK_MOD_DIM = 640
 
         const val DEFAULT_MESSAGE_LIMIT = 20
+
+        /** Newest-N window [handlePurge] scans per thread — far past a night of injected traffic, still bounded. */
+        const val PURGE_SCAN_LIMIT = 5000
 
         /** Default cap on per-row detail in the [ACTION_STORE] dump (`allIds`/`expiredIds` are always complete). */
         const val DEFAULT_STORE_LIMIT = 100
