@@ -45,10 +45,11 @@ object PowerPolicy {
      *
      * With neighbors, the connected mesh duty-cycles and backs off as it grows (the original
      * `baseIntervalMs * (1 + neighborCount)`). An **isolated** node instead prioritizes rejoining and
-     * scans on a short [LONELY_IDLE_MS] gap; while interactive or charging it does so for as
-     * long as it stays alone, but a screen-off-on-battery node caps that aggressive phase to
-     * [LONELY_AGGRESSIVE_WINDOW_MS] and then relaxes to the power-policy idle to bound drain when no
-     * peers are around at all.
+     * scans on a short [LONELY_IDLE_MS] gap for [LONELY_AGGRESSIVE_WINDOW_MS], then — unless it is
+     * charging — relaxes to bound drain when no peers are around at all: a screen-on node to
+     * [LONELY_RELAXED_ACTIVE_IDLE_MS] (its 12 s BALANCED window is unchanged; the gap is what grows), a
+     * screen-off node to the power-policy idle. The screen-on case is the common one — a phone in use with
+     * nobody around — and used to hunt at the 12 s gap for as long as it stayed alone (ADR 2026-09.w3xk).
      */
     fun idleAfterScan(
         state: PowerState,
@@ -56,18 +57,24 @@ object PowerPolicy {
         lonelyForMs: Long,
     ): Long {
         if (neighborCount > 0) return dutyCycle(state).baseIntervalMs * (1 + neighborCount)
-        return if (lonelyRelaxed(state, lonelyForMs)) dutyCycle(state).baseIntervalMs else LONELY_IDLE_MS
+        return when {
+            !lonelyRelaxed(state, lonelyForMs) -> LONELY_IDLE_MS
+            state.interactive -> LONELY_RELAXED_ACTIVE_IDLE_MS
+            else -> dutyCycle(state).baseIntervalMs
+        }
     }
 
     /**
-     * Whether an isolated node has been alone long enough, on battery with the screen off, to stop hunting
-     * aggressively: the rule [idleAfterScan] applies to the BLE scan and `NanLonelyPolicy` to the Wi-Fi Aware
-     * subscribe re-arm, so the two radios relax together. Interactive or charging never relaxes.
+     * Whether an isolated node has been alone long enough — [LONELY_AGGRESSIVE_WINDOW_MS], on battery — to
+     * stop hunting aggressively. This is the shared *rule*; each radio picks its own relaxed cadence:
+     * [idleAfterScan] for the BLE scan (screen on and off), `NanLonelyPolicy` for the Wi-Fi Aware subscribe
+     * re-arm, which keeps a screen-on node aggressive on its own (ADR 2026-09.kb68 — a re-arm tick short
+     * enough to matter there would still keep ICM lit). Charging never relaxes: the wall pays.
      */
     fun lonelyRelaxed(
         state: PowerState,
         lonelyForMs: Long,
-    ): Boolean = !(state.interactive || state.charging || lonelyForMs < LONELY_AGGRESSIVE_WINDOW_MS)
+    ): Boolean = !state.charging && lonelyForMs >= LONELY_AGGRESSIVE_WINDOW_MS
 
     /**
      * Idle gap when the node is **settled** — it holds links to every peer it can currently see, so there is no
@@ -104,9 +111,17 @@ object PowerPolicy {
     // radio contention" in AGENTS.md.
     private const val LONELY_IDLE_MS = 12_000L
 
-    // On battery with the screen off, only stay in the aggressive isolated cadence this long before
-    // relaxing — bounds drain for a node that is simply alone (e.g. left in a drawer).
+    // On battery — screen on or off — only stay in the aggressive isolated cadence this long before
+    // relaxing — bounds drain for a node that is simply alone (e.g. left in a drawer, or in use with
+    // nobody around).
     const val LONELY_AGGRESSIVE_WINDOW_MS = 3 * 60_000L
+
+    // Screen on, on battery, alone past the window: the 12 s BALANCED window every 72 s, ~4 % receiver
+    // duty where 12 s / 12 s was ~12.5 %, for as long as the phone stays alone. A walk-up is found within
+    // one gap at worst; the advert is always-on, so a smaller-id peer connects to us regardless, and a
+    // heal, a power edge, the adapter coming on or a NAN sighting (`onForeignReachable`) each wake an
+    // immediate scan through the transport's `scanWake` (ADR 2026-09.w3xk).
+    private const val LONELY_RELAXED_ACTIVE_IDLE_MS = 60_000L
 
     // Discovery floor once a node is settled (links to everyone it sees, nothing to promote) or audio-contended:
     // scan no more often than this so a settled clique idles instead of scanning continuously. ~2 min balances

@@ -197,6 +197,10 @@ class BluetoothMeshTransport(
 
     @Volatile private var scanFloored: Boolean? = null
 
+    // Whether the last scan idle was the relaxed lonely gap (`PowerPolicy.lonelyRelaxed`, ADR 2026-09.w3xk):
+    // logged once per transition, the BLE twin of WifiAwareTransport's `lonely: relaxed …` line. Loop thread only.
+    private var lonelyRelaxedLogged = false
+
     // Side channel: which sighted/linked peers advertise the flag, the loop that keeps its scan tier right,
     // and the tier last logged. [sideWake] is its own conflated channel for the same reason [scanWake] is.
     private val sideCapable = SideCapableTracker()
@@ -486,13 +490,30 @@ class BluetoothMeshTransport(
             scanner.start(if (power.interactive || power.charging) ScanSettings.SCAN_MODE_BALANCED else ScanSettings.SCAN_MODE_LOW_POWER)
             delay(duty.scanWindowMs)
             scanner.stop()
+            val lonelyFor = lonelyForMs()
             val idle =
                 if (floorScan()) {
-                    PowerPolicy.settledIdleAfterScan(power, links.size, lonelyForMs())
+                    PowerPolicy.settledIdleAfterScan(power, links.size, lonelyFor)
                 } else {
-                    PowerPolicy.idleAfterScan(power, links.size, lonelyForMs())
+                    PowerPolicy.idleAfterScan(power, links.size, lonelyFor)
                 }
+            logLonelyTransition(links.isEmpty() && PowerPolicy.lonelyRelaxed(power, lonelyFor), idle, lonelyFor)
             withTimeoutOrNull(idle) { scanWake.receive() }
+        }
+    }
+
+    /** One line per edge of the lonely cadence, so a device trial can grep when the scan relaxed and why. */
+    private fun logLonelyTransition(
+        relaxed: Boolean,
+        idleMs: Long,
+        lonelyForMs: Long,
+    ) {
+        if (relaxed == lonelyRelaxedLogged) return
+        lonelyRelaxedLogged = relaxed
+        if (relaxed) {
+            Log.i(TAG, "bt scan lonely: relaxed idle=${idleMs}ms (alone ${lonelyForMs}ms)")
+        } else {
+            Log.i(TAG, "bt scan lonely: aggressive again")
         }
     }
 
@@ -1036,7 +1057,8 @@ class BluetoothMeshTransport(
         Log.d(
             TAG,
             "bt state links=${links.keys} reach=${_reachable.value.map { it.nodeId }} " +
-                "inFlight=${inFlightSnapshot()} backoff=[$backoffStr] a2dp=${audioMonitor.state.value} psm=$currentPsm" +
+                "inFlight=${inFlightSnapshot()} backoff=[$backoffStr] a2dp=${audioMonitor.state.value} " +
+                "lonely=${lonelyForMs()}ms psm=$currentPsm" +
                 (sideChannel?.let { " ${it.diag()} $sideDecision" } ?: ""),
         )
     }

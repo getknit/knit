@@ -64,6 +64,9 @@ document:
 - Walking with your phone used to make Knit look for contacts and tidy up every thirty seconds or so; now it
   does that once a minute at most. The quarter-hour tidy-up skips the parts it already did within the hour, so
   an idle phone has less to do in the background.
+- With the screen on and nobody around, your phone used to keep searching for Bluetooth neighbours at full
+  tilt for as long as it stayed alone. After three minutes it now looks about once a minute, unless it is
+  plugged in.
 
 ### Fixed
 

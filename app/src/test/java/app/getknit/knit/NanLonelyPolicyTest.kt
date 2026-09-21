@@ -31,6 +31,10 @@ class NanLonelyPolicyTest {
     @Test
     fun interactiveOrChargingNeverRelaxes() {
         val hour = 60 * 60_000L
+        // The shared rule relaxes a screen-on node past the window since ADR 2026-09.w3xk (the BLE scan opens its
+        // gap to 60 s); this loop keeps it aggressive on purpose — a 30 s tick would still keep ICM lit — so the
+        // clause is pinned on this side, and dropping it is a decision (kb68's trial again), not a cleanup.
+        assertTrue(PowerPolicy.lonelyRelaxed(PowerState(interactive = true), hour))
         assertEquals(NanLonelyPolicy.Cadence(8_000L, 15_000L, relaxed = false), cadence(PowerState(interactive = true), hour))
         assertEquals(
             NanLonelyPolicy.Cadence(8_000L, 15_000L, relaxed = false),

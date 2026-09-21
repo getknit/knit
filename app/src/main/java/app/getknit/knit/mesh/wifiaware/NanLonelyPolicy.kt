@@ -13,7 +13,12 @@ import app.getknit.knit.mesh.power.PowerState
  * ICM at 30 s per config *because* of what it costs, and a 15 s re-arm cadence kept it lit around the clock
  * for a phone alone in a bag. The Bluetooth plane has had the answer since its own lonely-node fix
  * (`PowerPolicy.idleAfterScan`): hunt hard for [PowerPolicy.LONELY_AGGRESSIVE_WINDOW_MS], then relax to the
- * screen-off duty cycle unless the screen is on or the charger is in. This is that rule for the NAN loop.
+ * screen-off duty cycle unless the charger is in. This is that rule for the NAN loop — with one exception
+ * of its own: **a screen-on node stays aggressive here.** [PowerPolicy.lonelyRelaxed] is true for a screen-on
+ * node past the window since ADR 2026-09.w3xk (the BLE scan relaxes it to a 60 s gap), but the only relaxed
+ * tick this policy has for it is the interactive duty cycle's 30 s, and ICM is lit 30 s per re-arm — that
+ * tick would cost a subscribe cycle every 30 s and save nothing. A relaxed interactive cadence for NAN needs
+ * its own tick (≥ 60–120 s) and a re-run of ADR 2026-09.kb68's device trial; it is deferred, not implied.
  *
  * What it deliberately does not do: change the tick or the cooldown while a cue target exists (the sync,
  * watchdog and ICM-relight paths are untouched), add a subscribe variant, or share a clock with the wedge
@@ -57,7 +62,9 @@ object NanLonelyPolicy {
         lonelyTickMs: Long,
         rearmCooldownMs: Long,
     ): Cadence {
-        if (!PowerPolicy.lonelyRelaxed(power, lonelyForMs)) {
+        // Screen on never relaxes here (see the class comment): the shared rule stopped saying so in
+        // ADR 2026-09.w3xk, so the clause lives on this side now. `NanLonelyPolicyTest` pins the divergence.
+        if (power.interactive || !PowerPolicy.lonelyRelaxed(power, lonelyForMs)) {
             val tick = if (power.interactive || power.charging) lonelyTickMs else lonelyTickMs * 2
             return Cadence(tickMs = tick, rearmCooldownMs = rearmCooldownMs, relaxed = false)
         }

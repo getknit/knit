@@ -91,9 +91,12 @@ With no cue targets `NanSyncPolicy.needsRediscovery` is true on every tick (an e
 the loop re-armed subscribe every `REARM_COOLDOWN_MS` for as long as the phone was alone, and every re-arm
 relights Instant Communication Mode for the framework's 30 s — a phone in a drawer kept ICM lit around the
 clock. `mesh/wifiaware/NanLonelyPolicy` gives the loop its cadence while lonely: the old 8 s / 15 s for the
-first three minutes and whenever the screen is on or the charger is in, then — the same
-`PowerPolicy.lonelyRelaxed` rule the BLE scan uses — the duty cycle's base interval as the tick (120 s / 300 s)
-with the cooldown 15 s under it (ICM 25 % / 10 %). `lonelySince` is observed by the loop, never maintained at
+first three minutes and whenever the screen is on or the charger is in, then — the shared
+`PowerPolicy.lonelyRelaxed` rule, "alone ≥ 3 min on battery", which the BLE scan also reads — the duty
+cycle's base interval as the tick (120 s / 300 s) with the cooldown 15 s under it (ICM 25 % / 10 %). The
+screen-on exception is NAN's own since ADR 2026-09.w3xk (the shared rule stopped carrying it when the BLE scan
+learned to relax a screen-on node): a 30 s tick would leave ICM at ~100 %, so a relaxed interactive cadence
+here needs its own tick and a trial — deferred, and `NanLonelyPolicyTest` pins the clause. `lonelySince` is observed by the loop, never maintained at
 the cue-target removal sites; it resets on `onAttached` and on a BLE sighting of a peer we hold no cue target
 for (`onForeignReachable` rising edge, which also pokes the loop). `heal()` buys exactly one re-arm at the
 aggressive cooldown (`healRearmOwed`), so walking re-arms once per motion trigger. Nothing else in the loop
@@ -276,8 +279,12 @@ adaptive throttle (`ScanDemandPolicy`) fixes this by driving Boost/Floor from an
 check and splitting a dedicated `scanWake` channel (only `scanLoop` drains it; `connectLoop` keeps
 `healSignal`) that `onScanResult` pokes **only for a genuine boost trigger** (a peer we'd initiate to,
 above the RSSI floor, unlinked, off backoff). Floor (`settledIdleAfterScan`, ~2 min) engages only with
-≥1 link and no candidate/chase — an isolated node still scans aggressively — or while A2DP audio contends
-the radio. NAN acts as an **early-warning**: `CompositeMeshTransport.onForeignReachable` (the reverse of
+≥1 link and no candidate/chase — or while A2DP audio contends the radio. An isolated node never floors; it
+hunts at `PowerPolicy.idleAfterScan`'s 12 s gap for three minutes, then — on battery — relaxes: screen on
+to a 60 s gap between its 12 s BALANCED windows (ADR 2026-09.w3xk, ≈ 4 % receiver duty from 12.5 %), screen
+off to the duty cycle (120 s / 300 s); charging never. Every wake below (heal, a power edge, the adapter
+coming on, a NAN sighting) ends the gap early with an immediate scan. Oracle: `bt scan lonely: relaxed
+idle=…ms (alone …ms)` / `aggressive again`, and `lonely=` on the 60 s `bt state` line. NAN acts as an **early-warning**: `CompositeMeshTransport.onForeignReachable` (the reverse of
 `suppressDataPath`) tells BLE which peers another plane can see, and BLE boosts to chase them onto a link,
 bounded by `PROMOTE_CHASE_MS` so a NAN-only / out-of-range peer can't pin Boost. Advertising is untouched
 (always-on) so BLE-only devices still discover us. **Load-bearing invariant: `reachable ⊇ neighbors`.**

@@ -6,6 +6,14 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Already shipped (was deferred)
 
+- **A screen-on lonely node relaxes its Bluetooth scan BUILT** (2026-09-21, ADR 2026-09.w3xk, work item #65) —
+  past the three-minute window a screen-on node on battery idles 60 s between its 12 s BALANCED windows
+  (≈ 4 % receiver duty from 12.5 %); charging never relaxes. **Still owed:** the device trial in the ADR (the
+  `bt scan lonely:` lines are its oracle). **Deferred from it:** the same for the Wi-Fi Aware re-arm —
+  `NanLonelyPolicy` keeps a screen-on lonely node at 8 s / 15 s (ICM ≈ 100 %) on purpose, because the only
+  relaxed tick it has for that case is the 30 s duty cycle and ICM is lit 30 s per re-arm; it needs a tick of its
+  own (≥ 60–120 s) and a re-run of ADR 2026-09.kb68's trial.
+
 - **The mesh pauses from its notification BUILT** (2026-09-20, ADR 2026-09.wz99) — `Pause 15 min · Pause 1 hour
   · Stop` on the running notification, `Resume · Stop` on the paused one, a "Mesh paused until …" banner on the
   chat list; the service stays foreground, `MeshManager` goes down, and two inexact alarms plus every start

@@ -167,6 +167,7 @@ carries; never renumber an old one.
 | [2026-09.vej5](decisions/2026-09-vej5-a-spool-is-connected-once-it-says-hello.md) | A spool is connected once it says hello, and a route that swallows the socket is unreachable | spool, ui, diagnostics |
 | [2026-09.vybk](decisions/2026-09-vybk-a-room-flood-is-bounded-by-the-link-it-came-over-and-displaces-strangers-before.md) | A room flood is bounded by the link it came over and displaces strangers before contacts | mesh, retention, sybil |
 | [2026-09.vztn](decisions/2026-09-vztn-the-mesh-graph-is-built-off-the-main-thread.md) | The mesh graph is built off the main thread; the service only starts it there | reliability, service, android |
+| [2026-09.w3xk](decisions/2026-09-w3xk-a-screen-on-lonely-node-relaxes-its-bluetooth-scan-after-three-minutes.md) | A screen-on lonely node relaxes its Bluetooth scan after three minutes | bluetooth, battery |
 | [2026-09.wa79](decisions/2026-09-wa79-a-scope-heals-when-something-changed.md) | A scope heals when something changed | spool, battery, reliability |
 | [2026-09.wdfz](decisions/2026-09-wdfz-message-search-is-an-external-content-fts4-index-over-messages-body.md) | Message search is an external-content FTS4 index over messages.body | data, room, search, perf |
 | [2026-09.wkbk](decisions/2026-09-wkbk-a-gateway-hands-a-targeted-tick-the-last-hop.md) | A gateway hands a targeted tick the last hop | receipts, mesh, lora |

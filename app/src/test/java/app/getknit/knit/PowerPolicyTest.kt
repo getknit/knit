@@ -83,7 +83,8 @@ class PowerPolicyTest {
 
     @Test
     fun lonelyRelaxedIsTheRuleIdleAfterScanApplies() {
-        // The Wi-Fi Aware loop reads the same predicate (NanLonelyPolicy), so the two radios relax together.
+        // The Wi-Fi Aware loop reads the same predicate (NanLonelyPolicy) and adds its own screen-on exception on
+        // top (NanLonelyPolicyTest pins that); here, relaxed is exactly "not the 12 s gap".
         val states =
             listOf(
                 PowerState(interactive = true),
@@ -111,11 +112,41 @@ class PowerPolicyTest {
     }
 
     @Test
-    fun isolatedWhileInteractiveOrChargingStaysAggressiveEvenWhenStale() {
-        val stale = 10 * 60_000L // long past the window, but the cap only applies on battery
-        val charging = PowerState(interactive = false, charging = true)
-        assertEquals(12_000L, PowerPolicy.idleAfterScan(PowerState(interactive = true), neighborCount = 0, lonelyForMs = stale))
-        assertEquals(12_000L, PowerPolicy.idleAfterScan(charging, neighborCount = 0, lonelyForMs = stale))
+    fun isolatedWhileChargingStaysAggressiveEvenWhenStale() {
+        // The cap applies on battery only: the wall pays for the 12 s gap, screen on or off.
+        val stale = 10 * 60_000L
+        assertEquals(12_000L, PowerPolicy.idleAfterScan(PowerState(interactive = false, charging = true), 0, stale))
+        assertEquals(12_000L, PowerPolicy.idleAfterScan(PowerState(interactive = true, charging = true), 0, stale))
+    }
+
+    @Test
+    fun isolatedTooLongWhileInteractiveRelaxesToTheMinuteGap() {
+        // Screen on, on battery, alone past the window: a phone in use with nobody around used to hunt at the
+        // 12 s gap forever (work item #65). The window is the 12 s BALANCED one still; only the gap grows.
+        val stale = 10 * 60_000L
+        assertEquals(60_000L, PowerPolicy.idleAfterScan(PowerState(interactive = true), neighborCount = 0, lonelyForMs = stale))
+        assertEquals(12_000L, PowerPolicy.dutyCycle(PowerState(interactive = true)).scanWindowMs)
+        // Interactive wins over a low battery, as it does in dutyCycle — the screen is the bigger draw anyway.
+        assertEquals(60_000L, PowerPolicy.idleAfterScan(PowerState(interactive = true, batteryLow = true), 0, stale))
+    }
+
+    @Test
+    fun theInteractiveWindowBoundaryIsExact() {
+        val window = PowerPolicy.LONELY_AGGRESSIVE_WINDOW_MS
+        val screenOn = PowerState(interactive = true)
+        assertEquals(12_000L, PowerPolicy.idleAfterScan(screenOn, neighborCount = 0, lonelyForMs = window - 1))
+        assertEquals(60_000L, PowerPolicy.idleAfterScan(screenOn, neighborCount = 0, lonelyForMs = window))
+        assertEquals(false, PowerPolicy.lonelyRelaxed(screenOn, window - 1))
+        assertEquals(true, PowerPolicy.lonelyRelaxed(screenOn, window))
+    }
+
+    @Test
+    fun lonelyRelaxedIsAloneOnBatteryPastTheWindowScreenOnOrOff() {
+        val hour = 60 * 60_000L
+        assertEquals(true, PowerPolicy.lonelyRelaxed(PowerState(interactive = true), hour))
+        assertEquals(true, PowerPolicy.lonelyRelaxed(PowerState(interactive = false, charging = false), hour))
+        assertEquals(false, PowerPolicy.lonelyRelaxed(PowerState(interactive = false, charging = true), hour))
+        assertEquals(false, PowerPolicy.lonelyRelaxed(PowerState(interactive = true, charging = true), hour))
     }
 
     // --- settledIdleAfterScan: the discovery floor when a node has nothing to promote ---

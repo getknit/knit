@@ -116,6 +116,13 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `heal()` whole; the motion trigger is floored at its source (60 s), one basket runs at a time, and the retention
   sweeps and the custody replay run once an hour off the start's stamp. The replay reads the store's group-chat query,
   never `liveFrames`. Regression: `MeshServiceMotionTest`, `MeshManagerTest`'s heal cases, `ForwardDaoTest`.
+- **When touching `mesh/power/PowerPolicy` (`idleAfterScan` / `lonelyRelaxed` / the `LONELY_*` constants),
+  `mesh/wifiaware/NanLonelyPolicy`, or the cadence in `BluetoothMeshTransport.scanLoop`:** READ ADR
+  2026-09.kb68 and ADR 2026-09.w3xk. The shared rule is "alone ≥ 3 min, not charging"; each radio picks its
+  relaxed cadence — the BLE scan opens a screen-on node's gap to 60 s (12 s BALANCED window kept), the NAN
+  re-arm keeps a screen-on node aggressive on purpose (a 30 s tick leaves ICM lit) — so don't flip one radio's
+  interactive case without the other's device trial. Charging never relaxes. Tests: `PowerPolicyTest`,
+  `NanLonelyPolicyTest`.
 - **When touching the responder's `onUnavailable`, `refileResponder`, `NanResponderPolicy`, or what refunds
   `responderRefusals` / `responderCycles` in `WifiAwareTransport`:** READ ADR 2026-09.bgk3. A verdict with a
   link, handshake or accept of ours live is the documented knock refusal — re-filed after the floor, never
