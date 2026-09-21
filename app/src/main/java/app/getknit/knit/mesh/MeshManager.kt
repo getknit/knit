@@ -795,31 +795,68 @@ class MeshManager(
 
     override suspend fun forceRatchetReset(peerId: String): String? = pipeline.sendSessionReset(peerId, identity.nodeId(), clock())
 
-    /** Triggers an immediate rescan/reconnect (heartbeat alarm, device motion) and sweeps stale carry. */
+    /**
+     * The maintenance basket launched by [heal], or null before the first; a heal that finds it still running pokes
+     * the radios and leaves the rest to it (two baskets at once — the pocket's motion trigger a second ahead of the
+     * open app's resume — would run the check-then-act steps, a root mint or a prekey rotation, twice). Volatile:
+     * the callers are the service's main thread, a ViewModel scope and the app scope.
+     */
+    @Volatile
+    private var healBasket: Job? = null
+
+    /** When [heal] last ran the three retention sweeps, on [clock]; stamped by the start's own sweep. */
+    @Volatile
+    private var lastRetentionSweepAt = 0L
+
+    /** When [heal] last replayed the group frames in custody, on [clock]; stamped by the start's own replay. */
+    @Volatile
+    private var lastGroupReplayAt = 0L
+
+    /**
+     * Triggers an immediate rescan/reconnect (heartbeat alarm, device motion, an app resume) and runs the maintenance
+     * basket. The radio poke is never withheld: a resume is what lifts the location app-op a Wi-Fi Aware plane is
+     * waiting on (ADR 2026-09.535d) and buys the lonely discovery loop its one aggressive re-arm (ADR 2026-09.kb68).
+     * The basket runs one at a time, and its two heaviest steps — the retention sweeps and the custody replay — only
+     * once their hourly floors have passed: they enforce windows measured in hours and days, and the events they back
+     * stop (a seed adopted, a roster pinned) have their own instant path (work item #63).
+     */
     override fun heal() {
         if (!started) return
         transport.heal()
+        if (healBasket?.isActive == true) return
         // Piggyback the forward-store TTL sweep on the 15-min heartbeat so it runs while backgrounded.
         // Also re-ask neighbors for any key we're still missing, in case the holder is reachable now but
         // never arrived as a fresh neighbor (so onNeighborAdded didn't fire) — belt-and-suspenders for the
         // ongoing-drops retry already driven by want()'s cooldown.
-        sessionScope?.launch {
-            sweepExpired()
-            keyExchange.retryMissing()
-            ackSync.retryPending() // re-send broadcast/group ticks we still owe absent authors (+ age out old ones)
-            dmAcks.flushDue() // tick the LoRa-held DM receipts whose hold has run out (ADR 054)
-            ratchet.sweep(clock()) // retire epoch privs / skipped keys — the ratchet's PFS window enforcement
-            groupRatchet.sweep(clock()) // retire group chains / skipped keys — the group PFS window
-            groupRoots.sweep(clock()) // drop rotated-away group roots past their drain window
-            replayUndeliveredGroupCustody() // re-try own-custody group frames whose seed arrived late
-            rotatePrekeyIfDue()
-            republishProfileIfStale() // refresh the publish stamp before custody would refuse the frame
-            broadcastSealedProfile() // catch sessions that only confirmed after the edit fired
-            bootstrapCommonsSessions() // a session with every commons member, eight intros at a time (§7.4)
-            introSync.retry() // re-send stale contact-card intros, settle confirmed ones, expire pair-scope grace
-            mintGroupRootsIfDue() // mint a group's spool root when it is our turn (spec §3.2)
-            metrics.onHealCompleted() // the lab's "the basket ran" signal; nothing above may be observed from outside
-        }
+        healBasket =
+            sessionScope?.launch {
+                sweepExpired()
+                keyExchange.retryMissing()
+                ackSync.retryPending() // re-send broadcast/group ticks we still owe absent authors (+ age out old ones)
+                dmAcks.flushDue() // tick the LoRa-held DM receipts whose hold has run out (ADR 054)
+                if (clock() - lastRetentionSweepAt >= HealFloors.RETENTION_SWEEP_MS) sweepKeyRetention()
+                if (clock() - lastGroupReplayAt >= HealFloors.GROUP_REPLAY_MS) replayUndeliveredGroupCustody()
+                rotatePrekeyIfDue()
+                republishProfileIfStale() // refresh the publish stamp before custody would refuse the frame
+                broadcastSealedProfile() // catch sessions that only confirmed after the edit fired
+                bootstrapCommonsSessions() // a session with every commons member, eight intros at a time (§7.4)
+                introSync.retry() // re-send stale contact-card intros, settle confirmed ones, expire pair-scope grace
+                mintGroupRootsIfDue() // mint a group's spool root when it is our turn (spec §3.2)
+                metrics.onHealCompleted() // the lab's "the basket ran" signal; nothing above may be observed from outside
+            }
+    }
+
+    /**
+     * The three retention sweeps — epoch privs and skipped keys past the DM ratchet's PFS window, group chains and
+     * skipped keys past the group window, rotated-away group roots past their drain — nine statements that used to run
+     * on every heal. Their windows are 48 h and up, so once an hour ([HealFloors.RETENTION_SWEEP_MS]) keeps every guarantee;
+     * the start runs them unconditionally and stamps the floor with everyone else.
+     */
+    private suspend fun sweepKeyRetention() {
+        lastRetentionSweepAt = clock()
+        ratchet.sweep(clock())
+        groupRatchet.sweep(clock())
+        groupRoots.sweep(clock())
     }
 
     /**
@@ -1515,14 +1552,13 @@ class MeshManager(
         senderId: String?,
     ) {
         val me = identity.nodeId()
+        // The store answers the group-chat-from-others question itself (an indexed read, zero rows on a phone in no
+        // group); what is left to filter here is the instant path's (group, sender) narrowing.
         forwardStore
-            .liveFrames(clock())
+            .liveGroupChatFrames(me, clock())
             .filter { frame ->
                 val env = frame.envelope
-                env.type == FrameType.CHAT &&
-                    env.group != null &&
-                    env.senderId != me &&
-                    (groupId == null || env.group.id == groupId) &&
+                (groupId == null || env.group?.id == groupId) &&
                     (senderId == null || env.senderId == senderId)
             }.forEach { frame ->
                 if (messages.exists(frame.envelope.id)) return@forEach
@@ -1536,8 +1572,14 @@ class MeshManager(
             }
     }
 
-    /** The heal/startup backstop: every undelivered group frame in custody, any group, any sender. */
-    private suspend fun replayUndeliveredGroupCustody() = replayCustodiedGroupFrames(groupId = null, senderId = null)
+    /**
+     * The heal/startup backstop: every undelivered group frame in custody, any group, any sender. The start runs it
+     * once; a heal only past [HealFloors.GROUP_REPLAY_MS] — it is the net under the instant replays, not their trigger.
+     */
+    private suspend fun replayUndeliveredGroupCustody() {
+        lastGroupReplayAt = clock()
+        replayCustodiedGroupFrames(groupId = null, senderId = null)
+    }
 
     /**
      * The DM half of [replayCustodiedGroupFrames], fired on **first sight** of a group: re-enters every
@@ -2236,9 +2278,7 @@ class MeshManager(
             // first-contact push) already carries it; also the startup ratchet retention sweep.
             rotatePrekeyIfDue()
             finishRestore()
-            ratchet.sweep(clock())
-            groupRatchet.sweep(clock())
-            groupRoots.sweep(clock())
+            sweepKeyRetention()
             replayUndeliveredGroupCustody()
             // At startup too, not only on the 15-min heartbeat: this is where a device that just enabled
             // the Internet plane (or just finished its mint grace while the app was closed) actually mints.
@@ -2521,11 +2561,14 @@ class MeshManager(
     private suspend fun broadcastSealedProfile() {
         val version = settings.profileVersion.first()
         if (version <= 0L) return
+        // Who is owed this version comes first: on every heal with nobody owed — the common case — the payload's
+        // five settings reads and its build are skipped, not just the sends.
+        val owed = ratchet.exportedRoots().filter { sentProfileVersions[it.peerId] != version }
+        if (owed.isEmpty()) return
         val me = identity.nodeId()
         val avatarHash = settings.ownAvatarHash.first()
         val payload = currentProfilePayload(version, avatarHash)
-        ratchet.exportedRoots().forEach { session ->
-            if (sentProfileVersions[session.peerId] == version) return@forEach
+        owed.forEach { session ->
             if (sendCtlDm(session.peerId, payload, avatarHash, me)) sentProfileVersions[session.peerId] = version
         }
     }
@@ -3124,6 +3167,17 @@ class MeshManager(
         /** Payload for a frame whose content lives entirely in the routing envelope (e.g. a group update). */
         val EMPTY_PAYLOAD = ByteArray(0)
     }
+}
+
+/**
+ * The heal basket's two hourly floors (work item #63). The retention sweeps enforce windows of 48 h and up, and the
+ * custody replay is the net under the instant seed-adoption replays; every 15 min was nine statements and a full
+ * custody decode for nothing. Outside the private companion so `MeshManagerTest` and the lab can step a clock past
+ * them.
+ */
+internal object HealFloors {
+    const val RETENTION_SWEEP_MS = 60 * 60_000L
+    const val GROUP_REPLAY_MS = 60 * 60_000L
 }
 
 /** The own-profile fields whose edit republishes the profile (`watchProfileChanges`). */

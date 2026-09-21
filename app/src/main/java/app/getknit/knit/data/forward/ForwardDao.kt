@@ -46,6 +46,19 @@ interface ForwardDao {
         limit: Int,
     ): List<ForwardEntity>
 
+    /**
+     * The live group chat frames authored by anyone but [me] — the custody replay's set (`ForwardStore.liveGroupChatFrames`).
+     * Filtered here rather than after a decode of every live row: a phone in no group answers with nothing.
+     */
+    @Query(
+        "SELECT * FROM forward_store WHERE groupId IS NOT NULL AND type = 'chat' AND senderId != :me " +
+            "AND expiresAt >= :now ORDER BY receivedAt DESC",
+    )
+    suspend fun liveGroupChatRows(
+        me: String,
+        now: Long,
+    ): List<ForwardEntity>
+
     @Query("SELECT EXISTS(SELECT 1 FROM forward_store WHERE id = :id)")
     suspend fun exists(id: String): Boolean
 

@@ -109,6 +109,13 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   it). The manifest's `FOREGROUND_SERVICE_LOCATION` lint is suppressed on purpose (Play's declaration form). A
   location refusal off screen is held as `ForegroundOnly` and retried on `heal()`, never torn down through
   `onSessionDead`.
+- **When touching `MeshManager.heal` (the basket, `healBasket`, `HealFloors`, `sweepKeyRetention`,
+  `replayUndeliveredGroupCustody`), `MeshService.onSignificantMotion` / `MOTION_HEAL_FLOOR_MS`, or
+  `ForwardStore.liveGroupChatFrames`:** READ ADR 2026-09.6st4. The radio poke (`transport.heal()`) runs on every call —
+  a resume is what lifts the NAN location app-op (535d) and buys the lonely loop its re-arm (kb68) — so never floor
+  `heal()` whole; the motion trigger is floored at its source (60 s), one basket runs at a time, and the retention
+  sweeps and the custody replay run once an hour off the start's stamp. The replay reads the store's group-chat query,
+  never `liveFrames`. Regression: `MeshServiceMotionTest`, `MeshManagerTest`'s heal cases, `ForwardDaoTest`.
 - **When touching the responder's `onUnavailable`, `refileResponder`, `NanResponderPolicy`, or what refunds
   `responderRefusals` / `responderCycles` in `WifiAwareTransport`:** READ ADR 2026-09.bgk3. A verdict with a
   link, handshake or accept of ours live is the documented knock refusal — re-filed after the floor, never

@@ -111,11 +111,32 @@ class MeshService : LifecycleService() {
 
     private val motionListener =
         object : TriggerEventListener() {
-            override fun onTrigger(event: TriggerEvent?) {
-                meshManager.heal()
-                armSignificantMotion() // one-shot sensor; re-arm for the next move
-            }
+            override fun onTrigger(event: TriggerEvent?) = onSignificantMotion()
         }
+
+    /** When the motion trigger last healed, on [clock]; 0 (always past the floor) until the first one. */
+    private var lastMotionHealAt = 0L
+
+    /**
+     * A significant-motion trigger. The sensor is one-shot and re-armed after every fire, so a walk fires it every
+     * 30-60 s, and each fire used to run the whole heal — a BLE scan window, a NAN re-arm and the maintenance basket's
+     * database reads — for as long as the phone was carried (work item #63). One heal a minute is what a move can
+     * usefully buy: a peer that came into range mid-walk is found by the next one, and the heartbeat and the app's
+     * resume keep their own unfloored path. The sensor is re-armed either way. `internal` for the Robolectric test;
+     * the shadow has no trigger-sensor delivery.
+     */
+    internal fun onSignificantMotion() {
+        val now = clock()
+        val since = now - lastMotionHealAt
+        if (since >= MOTION_HEAL_FLOOR_MS) {
+            lastMotionHealAt = now
+            Log.d(TAG, "motion: heal")
+            meshManager.heal()
+        } else {
+            Log.d(TAG, "motion: heal floored, last ${since}ms ago")
+        }
+        armSignificantMotion() // one-shot sensor; re-arm for the next move
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -651,6 +672,9 @@ class MeshService : LifecycleService() {
 
         /** The windowed resume alarm's window: the floor the platform applies to a non-exact `setWindow` anyway. */
         private const val RESUME_WINDOW_MS = 10 * 60_000L
+
+        /** The least time between two heals the motion trigger may fire ([onSignificantMotion]). */
+        internal const val MOTION_HEAL_FLOOR_MS = 60_000L
 
         /**
          * Ask the system to run the mesh in the foreground, reporting whether the request was **accepted**.

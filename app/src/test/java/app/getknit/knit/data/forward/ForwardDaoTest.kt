@@ -207,6 +207,21 @@ class ForwardDaoTest : RoomDbTest() {
             assertEquals(4, dao.observeCarriedForOthers(me = "me", now = 100L).first())
         }
 
+    @Test
+    fun `liveGroupChatRows is the group chat from others, live, newest arrival first (work item #63)`() =
+        runTest {
+            dao.insert(fwd("g_old", senderId = "alice", recipientId = null, groupId = "g1", sentAt = 1L))
+            dao.insert(fwd("g_new", senderId = "bob", recipientId = null, groupId = "g2", sentAt = 5L))
+            dao.insert(fwd("g_mine", senderId = "me", recipientId = null, groupId = "g1", sentAt = 6L)) // own send
+            dao.insert(fwd("g_gone", senderId = "alice", recipientId = null, groupId = "g1", sentAt = 7L, expiresAt = 50L))
+            dao.insert(fwd("g_update", senderId = "alice", recipientId = null, groupId = "g1", sentAt = 8L).copy(type = "groupupdate"))
+            dao.insert(fwd("dm", senderId = "alice", recipientId = "me", sentAt = 9L))
+            dao.insert(fwd("room", senderId = "alice", recipientId = null, sentAt = 10L))
+
+            assertEquals(listOf("g_new", "g_old"), dao.liveGroupChatRows(me = "me", now = 100L).map { it.id })
+            assertTrue(dao.liveGroupChatRows(me = "me", now = 10_001L).isEmpty())
+        }
+
     /** Builds a [ForwardEntity] with convergence-relevant fields caller-set and the rest defaulted. */
     private fun fwd(
         id: String,

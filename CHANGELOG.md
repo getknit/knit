@@ -61,6 +61,9 @@ document:
 - An open chat now looks up the sizes of just the pictures and files on screen, where it used to read every
   one stored on the phone each time an image arrived anywhere. A chat with no attachments skips the lookup
   entirely.
+- Walking with your phone used to make Knit look for contacts and tidy up every thirty seconds or so; now it
+  does that once a minute at most. The quarter-hour tidy-up skips the parts it already did within the hour, so
+  an idle phone has less to do in the background.
 
 ### Fixed
 

@@ -299,7 +299,12 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   pipeline rig pins the ADR 023–027 era semantics against a fixed clock and eleven of its cases read the
   ratchet's real time. The cost is a bound on the jump: **keep it under 48 h**, or `heal()`'s
   `ratchet.sweep(clock())` reaps receive epochs and skipped keys stamped a real day ago as though they
-  were two days stale. A profile republish seeds custody rather than flooding, so a scenario that `heal()`s
+  were two days stale. Two of the basket's steps are themselves behind a floor on that clock (ADR 2026-09.6st4):
+  the three key-retention sweeps and the group-custody replay run on a `heal()` only once
+  `HealFloors.RETENTION_SWEEP_MS` / `GROUP_REPLAY_MS` (an hour) has passed since the last run, and the node's start
+  stamps both — so a scenario that wants either from a heal jumps the clock past the hour first (every existing
+  `heal()` caller already jumps ≥ 12 h; `LabNode.heal()` still returns on `healsCompleted`, floored or not). A
+  profile republish seeds custody rather than flooding, so a scenario that `heal()`s
   past `PROFILE_REPUBLISH_MS` re-links before its oracle. `LabClock.skew(name, ms)` is the one seam to a *disagreeing*
   clock, for a far-future-frame scenario (a skew past `Protocol.MAX_FUTURE_SKEW_MS` trips the custody
   refusal and `clampFuture`). Side effects of a long jump: `IngressBudget` refills, the send epoch rotates

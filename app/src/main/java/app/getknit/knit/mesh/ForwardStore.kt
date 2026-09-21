@@ -60,6 +60,20 @@ interface ForwardStore {
             .take(limit)
 
     /**
+     * The non-expired carried **group chat** frames (at [now]) authored by anyone but [excludingSender] — what the
+     * custody replay re-enters once a late seed lands (`MeshManager.replayCustodiedGroupFrames`). The default derives
+     * it from [liveFrames]; the Room implementation queries the indexed `groupId` column, so a phone in no group
+     * answers with zero rows and decodes nothing.
+     */
+    suspend fun liveGroupChatFrames(
+        excludingSender: String,
+        now: Long,
+    ): List<CarriedFrame> =
+        liveFrames(now).filter {
+            it.envelope.group != null && it.envelope.type == FrameType.CHAT && it.envelope.senderId != excludingSender
+        }
+
+    /**
      * Content hashes referenced by a carried chat frame whose blob we don't yet hold — the carrier's side of
      * the "still-missing blobs" set. Re-requested on startup / neighbor-join so a carrier keeps pulling the
      * image it is custodying until it (or the frame's TTL) resolves.

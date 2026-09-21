@@ -103,6 +103,7 @@ carries; never renumber an old one.
 | [2026-09.6gtm](decisions/2026-09-6gtm-the-lora-plane-is-introduced-at-2-5-0.md) | The LoRa plane is introduced at 2.5.0 | lora, release, mesh |
 | [2026-09.6mj7](decisions/2026-09-6mj7-a-backup-is-one-sealed-file-under-a-recovery-key.md) | A backup is one sealed file under a recovery key, and a restore is a move | data, crypto, ui, backup |
 | [2026-09.6nmy](decisions/2026-09-6nmy-a-frame-crosses-a-bluetooth-link-at-most-once.md) | A frame crosses a Bluetooth link at most once | bluetooth, fast-path, battery |
+| [2026-09.6st4](decisions/2026-09-6st4-the-heal-basket-runs-what-is-due.md) | The heal basket runs what is due | mesh, battery |
 | [2026-09.6ww7](decisions/2026-09-6ww7-a-group-chat-says-lora-will-not-carry-it.md) | A group chat says LoRa will not carry it | lora, ui |
 | [2026-09.7463](decisions/2026-09-7463-sealed-dm-form-chat-rides-the-targeted-coordination-plane-arm.md) | Sealed DM-form chat rides the targeted coordination-plane arm | mesh, nan, fanout |
 | [2026-09.74fq](decisions/2026-09-74fq-open-to-chat-is-a-carried-profile-flag.md) | Open to chat is a carried profile flag, and the nearby cue is batched with per-person and hourly cooldowns | profile, wire, notifications, ui |

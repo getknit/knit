@@ -62,6 +62,7 @@ import app.getknit.knit.mesh.spool.CommonsMember
 import app.getknit.knit.mesh.spool.CommonsRoom
 import app.getknit.knit.mesh.spool.CommonsRoots
 import app.getknit.knit.mesh.spool.CommonsStore
+import app.getknit.knit.mesh.spool.GroupRootStore
 import app.getknit.knit.mesh.spool.hex
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.moderation.ScopedTextModerator
@@ -72,6 +73,7 @@ import com.google.crypto.tink.KeysetHandle
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -103,6 +105,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Drives the **real** [MeshManager] outbound send-and-originate workflow — `sendChat` and the origination
@@ -163,7 +166,12 @@ class MeshManagerTest {
 
         override fun stop() = Unit
 
-        override fun heal() = Unit
+        /** How often the manager poked the radios — every [MeshManager.heal], basket or no basket. */
+        val heals = AtomicInteger()
+
+        override fun heal() {
+            heals.incrementAndGet()
+        }
 
         override suspend fun send(
             wire: WireEnvelope,
@@ -223,6 +231,17 @@ class MeshManagerTest {
 
         override suspend fun liveFrames(now: Long): List<CarriedFrame> = frames()
 
+        /** How often the custody replay asked for the group chat — the heal basket's hourly step (work item #63). */
+        val groupChatReads = AtomicInteger()
+
+        override suspend fun liveGroupChatFrames(
+            excludingSender: String,
+            now: Long,
+        ): List<CarriedFrame> {
+            groupChatReads.incrementAndGet()
+            return super.liveGroupChatFrames(excludingSender, now)
+        }
+
         override suspend fun liveIds(now: Long): List<String> = synchronized(frames) { frames.keys.toList() }
 
         override suspend fun attachmentHashesNeedingFetch(): List<String> = emptyList()
@@ -235,10 +254,30 @@ class MeshManagerTest {
             synchronized(frames) { frames.remove(id) }
         }
 
-        override suspend fun sweepExpired(now: Long): Int = 0
+        /** How often the TTL sweep — the heal basket's first step — ran; set [holdSweep] to park a basket there. */
+        val sweeps = AtomicInteger()
+        var holdSweep: CompletableDeferred<Unit>? = null
+
+        override suspend fun sweepExpired(now: Long): Int {
+            sweeps.incrementAndGet()
+            holdSweep?.await()
+            return 0
+        }
 
         /** Insertion-ordered view of everything custodied, for asserting what a re-serve would hand over. */
         fun frames(): List<CarriedFrame> = synchronized(frames) { frames.values.toList() }
+    }
+
+    /** The real [GroupRootRepository] with its retention sweep counted — the heal basket's hourly step (work item #63). */
+    private class CountingGroupRoots(
+        private val delegate: GroupRootStore,
+    ) : GroupRootStore by delegate {
+        val sweeps = AtomicInteger()
+
+        override suspend fun sweep(now: Long) {
+            sweeps.incrementAndGet()
+            delegate.sweep(now)
+        }
     }
 
     /** An in-memory [CommonsStore]: one joined room, everything the manager writes to it recorded. */
@@ -351,6 +390,9 @@ class MeshManagerTest {
         // manager's own send/flush paths — same instance the manager is wired with below.
         val groupRatchet = GroupRatchetSessions(store = GroupRatchetRepository(db.groupRatchetDao()))
 
+        /** The group-root store with its retention sweep counted; the manager is wired with this instance. */
+        val groupRoots = CountingGroupRoots(GroupRootRepository(db.groupRootDao()))
+
         /**
          * The user's display name, live so a test can set it before a send reads it. Stubbed for every rig
          * rather than only the profile ones, since a relaxed mock hands back a Flow that never emits and a
@@ -400,7 +442,7 @@ class MeshManagerTest {
                             spkPrivFor = { null },
                         ),
                     groupRatchet = groupRatchet,
-                    groupRoots = GroupRootRepository(db.groupRootDao()),
+                    groupRoots = groupRoots,
                     scope = scope,
                     metrics = metrics,
                     // The relaxed settings mock is the journal: nothing here collects the totals, and a flush's
@@ -457,6 +499,26 @@ class MeshManagerTest {
             coEvery { identity.deviceTag() } returns "tag"
             coEvery { identity.currentPrekey(any()) } returns SignedPrekey(1, ByteArray(32), ByteArray(64), now)
             return displayName
+        }
+
+        /**
+         * What the start's seeding pass and [MeshManager.heal]'s basket read beyond [stubProfileState]: the
+         * restore flag (`finishRestore`, ahead of the start's sweeps — on a relaxed mock's empty flow `.first()`
+         * throws there, the seeding coroutine dies, and the profile watcher's `ownProfile()` seeds the row in its
+         * place, which is why the other rigs never noticed) and the intro driver's two settings sets, which the
+         * basket reads before its completion counter.
+         */
+        fun stubHealState() {
+            coEvery { settings.restorePending } returns MutableStateFlow(false)
+            coEvery { settings.pendingIntros } returns MutableStateFlow(emptySet())
+            coEvery { settings.introGrace } returns MutableStateFlow(emptySet())
+        }
+
+        /** Runs [MeshManager.heal] and waits for its basket to run to the end (`healsCompleted`), as the lab does. */
+        suspend fun healAndAwait() {
+            val before = metrics.snapshot().healsCompleted.toInt()
+            manager.heal()
+            await(before + 1) { metrics.snapshot().healsCompleted.toInt() }
         }
 
         /** Every PROFILE frame that reached custody, oldest first — what a late joiner would be re-served. */
@@ -2102,6 +2164,73 @@ class MeshManagerTest {
                     .firstMetAt,
             )
             assertEquals(2, rig.db.metPeerDao().count())
+        }
+
+    // --- the heal basket (work item #63) ---
+
+    @Test
+    fun healRunsTheRetentionSweepsAndTheCustodyReplayOncePastTheirHourNotOnEveryCall() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size } // the start's own pass sweeps and replays before it seeds
+            assertEquals(1, rig.groupRoots.sweeps.get())
+            assertEquals(1, rig.forwardStore.groupChatReads.get())
+
+            rig.clockNow += HealFloors.RETENTION_SWEEP_MS / 4 // the first heartbeat, a quarter of an hour on
+            rig.healAndAwait()
+            assertEquals("a heal inside the hour leaves the retention sweep to the next", 1, rig.groupRoots.sweeps.get())
+            assertEquals("a heal inside the hour leaves the custody replay to the next", 1, rig.forwardStore.groupChatReads.get())
+
+            rig.clockNow += HealFloors.RETENTION_SWEEP_MS
+            rig.healAndAwait()
+            assertEquals(2, rig.groupRoots.sweeps.get())
+            assertEquals(2, rig.forwardStore.groupChatReads.get())
+
+            rig.clockNow += HealFloors.GROUP_REPLAY_MS - 1
+            rig.healAndAwait()
+            assertEquals("the floor is measured from the last run, not the last heal", 2, rig.groupRoots.sweeps.get())
+            assertEquals(2, rig.forwardStore.groupChatReads.get())
+        }
+
+    @Test
+    fun aHealWhileTheBasketIsStillRunningPokesTheRadiosAndLaunchesNoSecondBasket() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+            rig.manager.start()
+            rig.await(1) { rig.custodiedProfiles().size }
+            val healsBefore =
+                rig.metrics
+                    .snapshot()
+                    .healsCompleted
+                    .toInt()
+            val sweepsBefore = rig.forwardStore.sweeps.get()
+
+            val hold = CompletableDeferred<Unit>()
+            rig.forwardStore.holdSweep = hold
+            rig.manager.heal() // the basket parks on its first step
+            rig.await(sweepsBefore + 1) { rig.forwardStore.sweeps.get() }
+            rig.manager.heal() // the pocket's motion trigger a second ahead of the open app's resume
+            rig.manager.heal()
+            assertEquals("every heal reaches the radios", 3, rig.transport.heals.get())
+
+            hold.complete(Unit)
+            rig.await(healsBefore + 1) {
+                rig.metrics
+                    .snapshot()
+                    .healsCompleted
+                    .toInt()
+            }
+            assertEquals("one basket ran for the three heals", sweepsBefore + 1, rig.forwardStore.sweeps.get())
+
+            rig.forwardStore.holdSweep = null
+            rig.healAndAwait() // the finished basket no longer stands in the way of the next
+            assertEquals(sweepsBefore + 2, rig.forwardStore.sweeps.get())
         }
 
     // --- profile propagation ---
