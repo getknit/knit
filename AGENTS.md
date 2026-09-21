@@ -89,6 +89,13 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   receiver's is `IMPORTANCE_SERVICE`, and the boot exemption is the platform's. Regression:
   `MeshServiceForegroundReclaimTest`, `MeshServiceGraphOffMainTest`, `GraphlessProcessTest`,
   `MeshServiceStartTest`, `BootReceiverTest`.
+  **When touching the notification's Pause / Resume actions, `SettingsStore.meshPausedUntil`, `mesh/MeshPause`,
+  `MeshService.applyPause`, or the resume alarms:** READ ADR 2026-09.wz99. A pause is one DataStore deadline
+  the service applies idempotently in place — the service stays foreground, `MeshManager` goes down, every
+  surface reads the key through `MeshPause.activeDeadline` — never `MeshTransport.pause` (that is the Wi-Fi
+  Direct hand-over) and never a stop-and-restart (an alarm cannot start a foreground service from the
+  background). Every plain start re-claims without resuming; the two resume alarms are inexact and bounded, not
+  `SCHEDULE_EXACT_ALARM`; Stop cancels the store collector before `stopSelf()`. Regression: `MeshServicePauseTest`.
   **Before touching the type bitmask `postForeground` claims (`meshForegroundServiceTypes`), the manifest's
   `<service>`, or `TransportHealth.ForegroundOnly` / `NanSessionFault` in `mesh/wifiaware/`:** READ ADR
   2026-09.535d. The service claims `location` on exactly the tiers where `requiredRadioPermissions` rides the

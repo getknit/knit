@@ -22,11 +22,13 @@ object SettingsKeys {
      * pre-setup values — the BLE bond is per phone, so the user pairs the board again and those come back
      * with it. The board's node number and key stay: they ride the profile and are worth keeping. Matched
      * as prefixes against the key name. The clone watch's two stamps (`clone_seen_at`, `clone_dismissed_at`)
-     * are about this phone too: a backup taken while its banner showed must not plant it on the next one.
+     * are about this phone too: a backup taken while its banner showed must not plant it on the next one, and
+     * so is the mesh pause deadline (`mesh_pause_until`): a backup taken mid-pause must not pause the other phone.
      */
     val TRANSIENT_PREFIXES: List<String> =
         listOf(
             "clone_",
+            "mesh_pause_",
             "aware_give_up_stamp",
             "nan_initiator_hold_",
             "model_load_",

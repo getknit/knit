@@ -60,6 +60,7 @@ class MeshServiceForegroundReclaimTest {
     fun setUp() {
         val settings = mockk<SettingsStore>(relaxed = true)
         every { settings.meshEnabled } returns flowOf(true)
+        every { settings.meshPausedUntil } returns flowOf(null)
         startKoin {
             androidContext(app)
             modules(
@@ -158,8 +159,7 @@ class MeshServiceForegroundReclaimTest {
         val shadow = shadowOf(service)
         service.stopForeground(Service.STOP_FOREGROUND_DETACH)
 
-        // The action string the ongoing notification's Stop button carries (MeshService.ACTION_STOP is private).
-        val stop = Intent(app, MeshService::class.java).setAction("app.getknit.knit.STOP_MESH")
+        val stop = Intent(app, MeshService::class.java).setAction(MeshService.ACTION_STOP)
         assertEquals(Service.START_NOT_STICKY, service.onStartCommand(stop, 0, 2))
 
         assertTrue(shadow.isForegroundStopped)

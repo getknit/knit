@@ -172,6 +172,7 @@ carries; never renumber an old one.
 | [2026-09.wtmz](decisions/2026-09-wtmz-a-large-file-goes-off-the-mesh.md) | A large file goes off the mesh, over a Wi-Fi group the two phones raise | transfer, mesh, wifi |
 | [2026-09.wuqj](decisions/2026-09-wuqj-an-alias-is-a-word-encoded-digest-prefix-that-grows-when-matched.md) | An alias is a word-encoded digest prefix that grows when matched | identity, ui, security |
 | [2026-09.wx8e](decisions/2026-09-wx8e-the-commons-is-a-private-spool-s-group-chat.md) | The commons is a private spool's group chat | spool, commons |
+| [2026-09.wz99](decisions/2026-09-wz99-the-mesh-pauses-in-place-for-a-fixed-span-and-resumes-itself-from-an-inexact-ala.md) | The mesh pauses in place for a fixed span and resumes itself from an inexact alarm | service, android, ui, settings |
 | [2026-09.x52a](decisions/2026-09-x52a-the-meshtastic-room-is-a-switch.md) | The Meshtastic room is a switch, and off means unread | lora, ui, settings |
 | [2026-09.xdm2](decisions/2026-09-xdm2-a-queued-snapshot-is-replaced-by-its-own-newer-copy.md) | A queued snapshot is replaced by its own newer copy | lora, airtime, mesh |
 | [2026-09.xmte](decisions/2026-09-xmte-radio-evidence-for-an-attachment-deferral-must-name-a-short-range-plane.md) | Radio evidence for an attachment deferral must name a short-range plane | spool, attachments, receipts |

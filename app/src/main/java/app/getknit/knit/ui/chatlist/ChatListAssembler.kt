@@ -70,6 +70,7 @@ internal class ChatListAssembler(
             loraPlane = s.mesh.loraPlane,
             radioWarning = s.mesh.warning,
             cloneVisible = s.mesh.cloneVisible,
+            pausedUntil = s.mesh.pausedUntil,
             showGettingStarted = gettingStarted,
         )
     }

@@ -172,6 +172,10 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
   (a real fault → latched on the next launch); `kill` is the **negative control** — SIGKILL is recorded
   exactly as a force-stop is, so it must never latch no matter how often it fires.
 - `…debug.REACT` — `--es id <messageId> --es emoji <emoji>`. `…debug.HEAL` — nudge rescan/re-advertise.
+- `…debug.PAUSE --ei minutes 15|60` / `…debug.RESUME` — the notification's Pause / Resume by their store
+  write alone (`SettingsStore.meshPausedUntil`, which `MeshService` follows), so it is the chat list banner's
+  path and works with the service down (its next start comes up paused). `…debug.STATE` reports
+  `meshPausedUntil` / `meshPaused`; `adb shell dumpsys alarm | grep -A3 RESUME_MESH` shows the two resume alarms.
 - `…debug.MKGROUP --es members <nodeId,…>` — creates (or re-opens a left) group with those members plus
   this device, **locally only** (no frame; members learn of it on its first `SEND`), and prints its id — the
   contacts UI cannot make a 2-member group (one selection = DM), and a locked device cannot drive it anyway.

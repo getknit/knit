@@ -79,6 +79,7 @@ class MeshServiceGraphOffMainTest {
     ) {
         val settings = mockk<SettingsStore>(relaxed = true)
         every { settings.meshEnabled } returns flowOf(true)
+        every { settings.meshPausedUntil } returns flowOf(null)
         startKoin {
             androidContext(app)
             modules(

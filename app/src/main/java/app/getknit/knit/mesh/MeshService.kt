@@ -34,6 +34,7 @@ import app.getknit.knit.ui.isIgnoringBatteryOptimizations
 import app.getknit.knit.ui.requiredRadioPermissions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -76,10 +77,11 @@ class MeshService : LifecycleService() {
     private var graphless = false
 
     /**
-     * The graph is resolved and the mesh is running on this instance — set by [startMesh], on the main thread,
+     * The graph is resolved and the start tail ran on this instance — set by [startMesh], on the main thread,
      * and read by every later callback. Until then `onStartCommand` and `onDestroy` touch nothing behind a
      * `by inject()` above: the build is in flight on a worker (see [onCreate]), and a read would block the main
-     * thread on Koin's single lock for exactly the seconds the build was moved off it to save.
+     * thread on Koin's single lock for exactly the seconds the build was moved off it to save. Whether the
+     * mesh itself is up is [meshRunning]: a started service holds it down for the length of a pause.
      */
     private var meshStarted = false
 
@@ -88,6 +90,24 @@ class MeshService : LifecycleService() {
      * service the system took down mid-build never starts a mesh that nothing will stop.
      */
     private var destroyed = false
+
+    /**
+     * The pause this instance is honouring — the deadline [applyPause] last applied, main thread only — and
+     * whether [meshManager] is up. The two are what every apply converges on, so the seed read on the worker,
+     * the store collector's first emission, a notification tap and the banner's write can land in any order,
+     * or twice, and the mesh ends in the state the store says. ADR 2026-09.wz99.
+     */
+    private var pausedUntil: Long? = null
+    private var meshRunning = false
+
+    /** The store collector ([observePause]); cancelled by Stop so its own null write cannot restart the mesh. */
+    private var pauseJob: Job? = null
+
+    /** The service's last write to the pause key, joined by the next so two of ours cannot land out of order. */
+    private var lastPauseWrite: Job? = null
+
+    /** Wall clock, replaceable by tests (`SystemClock` is shadowed under Robolectric; `System` is not). */
+    internal var clock: () -> Long = System::currentTimeMillis
 
     private val motionListener =
         object : TriggerEventListener() {
@@ -132,10 +152,11 @@ class MeshService : LifecycleService() {
         // The app scope, not lifecycleScope: a built graph is process-wide and never wasted, and [destroyed]
         // covers the one thing cancellation would have. ADR 2026-09.vztn.
         scope.launch {
-            val graph = runCatching { resolveGraph() }
+            // The pause deadline rides the same worker hop: a suspend read the main thread would otherwise wait on.
+            val graph = runCatching { resolveGraph().let { settings.meshPausedUntil.first() } }
             withContext(Dispatchers.Main.immediate) {
                 graph
-                    .onSuccess { if (!destroyed) startMesh() }
+                    .onSuccess { pausedSeed -> if (!destroyed) startMesh(pausedSeed) }
                     // A graph that cannot be built was a crash out of onCreate and still is one: re-thrown as
                     // an uncaught exception on the main thread — past the scope's handler, which would only
                     // log it and leave a "searching" notification that never resolves — so CrashHandler
@@ -157,18 +178,103 @@ class MeshService : LifecycleService() {
         return roots
     }
 
-    /** The second half of [onCreate], on the main thread, once [resolveGraph] has made every read below cheap. */
-    private fun startMesh() {
+    /**
+     * The second half of [onCreate], on the main thread, once [resolveGraph] has made every read below cheap.
+     * [pausedSeed] is the store's pause deadline as read on the worker: a live one brings the service up
+     * paused — radios down, resume alarms armed — instead of raising the links a pause exists to keep down.
+     */
+    private fun startMesh(pausedSeed: Long?) {
         observeStatus()
         warmModelOnFirstPeer()
         powerMonitor.start() // seed power state before the discovery loop first reads it
-        meshManager.start()
+        applyPause(MeshPause.activeDeadline(pausedSeed, clock()))
+        // observeStatus may have posted the running text before the seed was applied; say "paused" now.
+        if (pausedUntil != null) refreshNotification()
         meshStarted = true
         // Remember the mesh is running so BootReceiver restores it after a reboot; a later manual Stop
         // flips this off. Guarded to skip the redundant write on the common already-enabled start.
         scope.launch { if (!settings.meshEnabled.first()) settings.setMeshEnabled(true) }
         scheduleHeartbeat()
         armSignificantMotion()
+        observePause()
+    }
+
+    /**
+     * Converge on [until]: null runs the mesh, a deadline holds it down with the resume alarms armed for it.
+     * Idempotent on [pausedUntil] and [meshRunning] rather than edge-triggered, so every caller — the seed,
+     * the store collector, a notification tap — can apply what it knows without caring who applied it first.
+     * Returns whether anything changed; posting the notification is the caller's, since [onStartCommand]
+     * re-claims at its tail anyway. Never runs after [destroyed]: a stopped service starts nothing.
+     */
+    private fun applyPause(until: Long?): Boolean {
+        if (destroyed) return false
+        val changed = until != pausedUntil
+        pausedUntil = until
+        if (until == null) {
+            if (changed) cancelResume()
+            if (!meshRunning) {
+                meshRunning = true
+                meshManager.start()
+            }
+        } else {
+            if (meshRunning) {
+                meshRunning = false
+                meshManager.stop()
+            }
+            if (changed) armResume(until)
+        }
+        return changed
+    }
+
+    /**
+     * Follow the store: the chat list's Resume and the debug bridge write the key and nothing else, and this
+     * is how the write reaches the radios. A deadline already in the past applies as "not paused".
+     */
+    private fun observePause() {
+        pauseJob =
+            lifecycleScope.launch {
+                settings.meshPausedUntil.collect { raw ->
+                    if (applyPause(MeshPause.activeDeadline(raw, clock()))) refreshNotification()
+                }
+            }
+    }
+
+    /** A pause whose deadline has passed while no alarm reached us (a late inexact delivery) ends on any start. */
+    private fun expirePauseIfDue() {
+        val until = pausedUntil ?: return
+        if (until <= clock()) resumeNow()
+    }
+
+    /**
+     * The notification's Pause: applied inline first, so the re-claim at the tail of [onStartCommand] posts the
+     * paused text in the same call (no flicker through the running one), then written. Before [meshStarted]
+     * only the store is written and the seed or the collector reconciles. An unoffered span is ignored — the
+     * value rides a `PendingIntent` extra.
+     */
+    private fun pauseFor(minutes: Int) {
+        val until = MeshPause.deadline(clock(), minutes) ?: return
+        if (meshStarted) applyPause(until)
+        writePause(until)
+    }
+
+    /** The notification's Resume, the resume alarms and an expired deadline: back up, inline, then written. */
+    private fun resumeNow() {
+        if (meshStarted) applyPause(null)
+        writePause(null)
+    }
+
+    /** On the app scope so it outlives a Stop; serialised so an expiry's null cannot land over a newer Pause. */
+    private fun writePause(value: Long?) {
+        val previous = lastPauseWrite
+        lastPauseWrite =
+            scope.launch {
+                previous?.join()
+                settings.setMeshPausedUntil(value)
+            }
+    }
+
+    private fun refreshNotification() {
+        postForeground(buildNotification(meshManager.neighborCount.value, meshManager.transportHealth.value))
     }
 
     override fun onStartCommand(
@@ -183,18 +289,39 @@ class MeshService : LifecycleService() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_STOP) {
+            // User tapped Stop on the ongoing notification: remember it so we don't auto-restart on
+            // the next reboot. On the app-lifetime scope so the write outlives stopSelf()/onDestroy().
+            // A pause ends with it — stopped is stopped, and the next start must not come up paused — but the
+            // collector goes first: stopSelf() is asynchronous and lifecycleScope outlives onDestroy, so its
+            // own null write would otherwise raise the radios for the moment before they come down again.
+            pauseJob?.cancel()
+            scope.launch { settings.setMeshEnabled(false) }
+            writePause(null)
+            stopSelf()
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
-            ACTION_STOP -> {
-                // User tapped Stop on the ongoing notification: remember it so we don't auto-restart on
-                // the next reboot. On the app-lifetime scope so the write outlives stopSelf()/onDestroy().
-                scope.launch { settings.setMeshEnabled(false) }
-                stopSelf()
-                return START_NOT_STICKY
+            ACTION_HEAL -> {
+                // A mesh still coming up (see [onCreate]) starts fresh, which is all a heal would do; a paused
+                // one is not running, and heal() is a no-op on it.
+                expirePauseIfDue()
+                if (meshStarted) meshManager.heal()
             }
 
-            ACTION_HEAL -> {
-                // A mesh still coming up (see [onCreate]) starts fresh, which is all a heal would do.
-                if (meshStarted) meshManager.heal()
+            // A new pause supersedes an expired one outright: expiring first would raise the radios for the
+            // instant before this took them down again.
+            ACTION_PAUSE -> {
+                pauseFor(intent.getIntExtra(EXTRA_PAUSE_MINUTES, 0))
+            }
+
+            ACTION_RESUME -> {
+                resumeNow()
+            }
+
+            // A plain start — KnitApp on every navigation and resume, a sticky restart's first command.
+            else -> {
+                expirePauseIfDue()
             }
         }
         // Re-claim the foreground state on every start, not only the first. The system can take it from a
@@ -232,8 +359,13 @@ class MeshService : LifecycleService() {
         // graph, and a live one left armed by an earlier ungraceful death would otherwise keep waking the
         // device every 15 minutes to attempt a background service start the system will refuse. A [graphless]
         // instance keeps it: that start was never refused, only landed in the wrong process.
+        // The resume alarms go with the heartbeat, for the same reason: left armed past a death, one would
+        // create a service the system refuses (a stillbirth) or, on 29-30, a mesh nobody asked for.
         if (!foregrounded) {
-            if (!graphless) cancelHeartbeat()
+            if (!graphless) {
+                cancelHeartbeat()
+                cancelResume()
+            }
             super.onDestroy()
             return
         }
@@ -242,13 +374,15 @@ class MeshService : LifecycleService() {
         // would block on that build.
         if (!meshStarted) {
             cancelHeartbeat()
+            cancelResume()
             super.onDestroy()
             return
         }
         powerMonitor.stop()
         significantMotion?.let { sensorManager.cancelTriggerSensor(motionListener, it) }
         cancelHeartbeat()
-        meshManager.stop()
+        cancelResume()
+        if (meshRunning) meshManager.stop()
         super.onDestroy()
     }
 
@@ -276,6 +410,37 @@ class MeshService : LifecycleService() {
 
     private fun cancelHeartbeat() {
         getSystemService(AlarmManager::class.java).cancel(heartbeatIntent())
+    }
+
+    /** The Resume action and both resume alarms carry this; the notification shares the while-idle token. */
+    private fun resumeIntent(requestCode: Int): PendingIntent =
+        PendingIntent.getService(
+            this,
+            requestCode,
+            Intent(this, MeshService::class.java).setAction(ACTION_RESUME),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    /**
+     * Two inexact alarms for one deadline, because neither alone is enough without `SCHEDULE_EXACT_ALARM`
+     * (a Settings trip on 14+, for a messenger): `setAndAllowWhileIdle` reaches a dozing phone but its
+     * delivery window is 0.75 × the span (`AlarmManagerService.maxTriggerTime` — 45 min late on a one-hour
+     * pause is legal); `setWindow` is bounded to ten minutes on an awake phone (the floor our targetSdk gets)
+     * but is held to a maintenance window in Doze. Same action, different tokens, armed and cancelled as one.
+     * The alarms' `startService` lands on a running foreground service, like the heartbeat's; they never
+     * create one on purpose. Late is still covered: every start runs [expirePauseIfDue].
+     */
+    private fun armResume(until: Long) {
+        val at = SystemClock.elapsedRealtime() + (until - clock()).coerceAtLeast(0L)
+        val alarms = getSystemService(AlarmManager::class.java)
+        alarms.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, resumeIntent(REQUEST_RESUME_IDLE))
+        alarms.setWindow(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, RESUME_WINDOW_MS, resumeIntent(REQUEST_RESUME_WINDOW))
+    }
+
+    private fun cancelResume() {
+        val alarms = getSystemService(AlarmManager::class.java)
+        alarms.cancel(resumeIntent(REQUEST_RESUME_IDLE))
+        alarms.cancel(resumeIntent(REQUEST_RESUME_WINDOW))
     }
 
     /**
@@ -331,10 +496,13 @@ class MeshService : LifecycleService() {
         }
     }
 
+    /** The ongoing notification for the state [pausedUntil] says: the live line while running, else the pause. */
     private fun buildNotification(
         count: Int,
         health: TransportHealth?,
-    ): Notification {
+    ): Notification = pausedUntil?.let { pausedNotification(it) } ?: runningNotification(count, health)
+
+    private fun notificationBuilder(): NotificationCompat.Builder {
         val openApp =
             PendingIntent.getActivity(
                 this,
@@ -342,23 +510,56 @@ class MeshService : LifecycleService() {
                 Intent(this, MainActivity::class.java),
                 PendingIntent.FLAG_IMMUTABLE,
             )
-        val stop =
-            PendingIntent.getService(
-                this,
-                1,
-                Intent(this, MeshService::class.java).setAction(ACTION_STOP),
-                PendingIntent.FLAG_IMMUTABLE,
-            )
         return NotificationCompat
             .Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.mesh_notification_title))
-            .setContentText(contentText(count, health))
             .setSmallIcon(R.drawable.ic_stat_mesh)
             .setOngoing(true)
             .setContentIntent(openApp)
-            .addAction(0, getString(R.string.mesh_notification_stop), stop)
-            .build()
     }
+
+    private fun stopIntent(): PendingIntent =
+        PendingIntent.getService(
+            this,
+            REQUEST_STOP,
+            Intent(this, MeshService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    /**
+     * One token per offered span: `PendingIntent` identity ignores extras, so two of these on one request
+     * code would be the same token and both buttons would pause for whichever was minted first.
+     */
+    private fun pauseIntent(
+        requestCode: Int,
+        minutes: Int,
+    ): PendingIntent =
+        PendingIntent.getService(
+            this,
+            requestCode,
+            Intent(this, MeshService::class.java).setAction(ACTION_PAUSE).putExtra(EXTRA_PAUSE_MINUTES, minutes),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+    /** Pause first, Stop last: the shade caps a notification at three actions, so the 12 h span is not offered. */
+    private fun runningNotification(
+        count: Int,
+        health: TransportHealth?,
+    ): Notification =
+        notificationBuilder()
+            .setContentTitle(getString(R.string.mesh_notification_title))
+            .setContentText(contentText(count, health))
+            .addAction(0, getString(R.string.mesh_notification_pause_short), pauseIntent(REQUEST_PAUSE_SHORT, MeshPause.SHORT_MINUTES))
+            .addAction(0, getString(R.string.mesh_notification_pause_long), pauseIntent(REQUEST_PAUSE_LONG, MeshPause.LONG_MINUTES))
+            .addAction(0, getString(R.string.mesh_notification_stop), stopIntent())
+            .build()
+
+    private fun pausedNotification(until: Long): Notification =
+        notificationBuilder()
+            .setContentTitle(getString(R.string.mesh_notification_paused_title))
+            .setContentText(getString(R.string.mesh_notification_paused_until, pausedUntilLabel(this, until, clock())))
+            .addAction(0, getString(R.string.mesh_notification_resume), resumeIntent(REQUEST_RESUME_IDLE))
+            .addAction(0, getString(R.string.mesh_notification_stop), stopIntent())
+            .build()
 
     /**
      * The ongoing notification's status line — the non-Compose twin of the chat screens'
@@ -434,8 +635,22 @@ class MeshService : LifecycleService() {
         private const val TAG = "MeshService"
         private const val CHANNEL_ID = NotificationChannels.STATUS
         private const val NOTIFICATION_ID = 1
-        private const val ACTION_STOP = "app.getknit.knit.STOP_MESH"
-        private const val ACTION_HEAL = "app.getknit.knit.HEAL_MESH"
+        internal const val ACTION_STOP = "app.getknit.knit.STOP_MESH"
+        internal const val ACTION_HEAL = "app.getknit.knit.HEAL_MESH"
+        internal const val ACTION_PAUSE = "app.getknit.knit.PAUSE_MESH"
+        internal const val ACTION_RESUME = "app.getknit.knit.RESUME_MESH"
+        internal const val EXTRA_PAUSE_MINUTES = "minutes"
+
+        // PendingIntent request codes: 0 is the open-app activity, 2 the heartbeat. Distinct on purpose —
+        // the system tells tokens apart by code and filter, never by extras.
+        private const val REQUEST_STOP = 1
+        private const val REQUEST_PAUSE_SHORT = 3
+        private const val REQUEST_PAUSE_LONG = 4
+        private const val REQUEST_RESUME_IDLE = 5
+        private const val REQUEST_RESUME_WINDOW = 6
+
+        /** The windowed resume alarm's window: the floor the platform applies to a non-exact `setWindow` anyway. */
+        private const val RESUME_WINDOW_MS = 10 * 60_000L
 
         /**
          * Ask the system to run the mesh in the foreground, reporting whether the request was **accepted**.

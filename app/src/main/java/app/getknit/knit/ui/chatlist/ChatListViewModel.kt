@@ -23,6 +23,7 @@ import app.getknit.knit.data.relay.planeFor
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.MeshController
+import app.getknit.knit.mesh.MeshPause
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
@@ -105,6 +106,9 @@ data class ChatListUiState(
     // This identity was seen running on another phone since the user last dismissed the notice
     // (`SettingsStore.cloneSeenAt` past `cloneDismissedAt`, ADR 2026-09.ypcc): the sign-out banner.
     val cloneVisible: Boolean = false,
+    // The mesh is paused from its notification until this wall-clock deadline (`SettingsStore.meshPausedUntil`,
+    // still ahead of now): the paused banner with its Resume. Null while the mesh runs.
+    val pausedUntil: Long? = null,
     // First run: show the getting-started hint under the Nearby row. True only while there is nothing on
     // this screen to open — see the flag's computation in [state] for what retires it.
     val showGettingStarted: Boolean = false,
@@ -172,6 +176,8 @@ class ChatListViewModel(
         val warning: RadioWarning?,
         /** See [ChatListUiState.cloneVisible]. */
         val cloneVisible: Boolean,
+        /** See [ChatListUiState.pausedUntil]. */
+        val pausedUntil: Long?,
         val relayPlane: RelayPlane,
         val loraPlane: LoraPlane,
         /** The board's primary channel as the Meshtastic room names it, while live — the row's title. */
@@ -240,15 +246,29 @@ class ChatListViewModel(
         combine(settings.cloneSeenAt, settings.cloneDismissedAt) { seen, dismissed -> seen > dismissed }
             .distinctUntilChanged()
 
+    // The pause deadline the service is honouring, read by the one rule every surface shares: a value already
+    // behind the clock is not a pause. Folded with the two banners above; while paused the radio warning is
+    // withheld, because a stopped transport keeps the last health it reported and "Bluetooth is off" under
+    // "Mesh paused" would be stale twice over.
+    private val pausedUntil =
+        settings.meshPausedUntil
+            .map { MeshPause.activeDeadline(it, System.currentTimeMillis()) }
+            .distinctUntilChanged()
+
+    private val banners =
+        combine(visibleWarning, cloneVisible, pausedUntil) { warning, clone, paused ->
+            Triple(if (paused != null) null else warning, clone, paused)
+        }
+
     private val meshStatus =
         combine(
             meshManager.neighborCount,
             meshManager.transportHealth,
-            combine(visibleWarning, cloneVisible) { warning, clone -> warning to clone },
+            banners,
             relayPlane,
             loraRoom,
-        ) { count, health, (warning, clone), plane, (loraPlane, channel, room) ->
-            MeshStatus(count, health, warning, clone, plane, loraPlane, channel, room)
+        ) { count, health, (warning, clone, paused), plane, (loraPlane, channel, room) ->
+            MeshStatus(count, health, warning, clone, paused, plane, loraPlane, channel, room)
         }
 
     /** Everything one emission of [state] is built from — the five combined sources, named. */
@@ -314,6 +334,14 @@ class ChatListViewModel(
      */
     fun dismissClone() {
         viewModelScope.launch { settings.setCloneDismissedAt(System.currentTimeMillis()) }
+    }
+
+    /**
+     * Ends a pause early — the banner's Resume. Only the store is written: `MeshService` follows the key and
+     * raises the radios itself, and a service that is not running comes up unpaused on its next start.
+     */
+    fun resumeMesh() {
+        viewModelScope.launch { settings.setMeshPausedUntil(null) }
     }
 
     /**

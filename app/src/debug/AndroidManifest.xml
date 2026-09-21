@@ -24,6 +24,8 @@
                 <action android:name="app.getknit.knit.debug.TYPING" />
                 <action android:name="app.getknit.knit.debug.SHAREAPK" />
                 <action android:name="app.getknit.knit.debug.HEAL" />
+                <action android:name="app.getknit.knit.debug.PAUSE" />
+                <action android:name="app.getknit.knit.debug.RESUME" />
                 <action android:name="app.getknit.knit.debug.NANFAIL" />
                 <action android:name="app.getknit.knit.debug.NANSTORM" />
                 <action android:name="app.getknit.knit.debug.NANREFUSE" />

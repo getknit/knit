@@ -222,6 +222,17 @@ class SettingsStoreTest {
         }
 
     @Test
+    fun `mesh pause deadline defaults null and round-trips a value then null`() =
+        runTest {
+            val store = newStore()
+            assertNull(store.meshPausedUntil.first())
+            store.setMeshPausedUntil(1_700_000_000_000L)
+            assertEquals(1_700_000_000_000L, store.meshPausedUntil.first())
+            store.setMeshPausedUntil(null)
+            assertNull(store.meshPausedUntil.first())
+        }
+
+    @Test
     fun `profile version and avatar timestamp round-trip`() =
         runTest {
             val store = newStore()

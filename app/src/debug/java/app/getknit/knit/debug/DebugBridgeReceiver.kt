@@ -43,6 +43,7 @@ import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.mesh.ForwardStore
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshMetrics
+import app.getknit.knit.mesh.MeshPause
 import app.getknit.knit.mesh.MeshStartGate
 import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.StoreDigest
@@ -178,6 +179,10 @@ import java.nio.ByteBuffer
  *   last two minutes with no link since — pair it with [ACTION_NANDIAL]); `--ez reset true` is Diagnostics' "Try
  *   again"; `--ez probe true` makes a held role's daily probe due on the next tick.
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
+ * - [ACTION_PAUSE] / [ACTION_RESUME] — the notification's Pause and Resume, by their store write alone
+ *   (`--ei minutes 15|60`, the two offered spans): `MeshService` follows `SettingsStore.meshPausedUntil`, so
+ *   this drives the same path as the chat list's banner and also lands on a service that is not running
+ *   (its next start comes up paused). [ACTION_STATE] reports `meshPausedUntil` / `meshPaused`.
  *
  * Each action replies as a one-line JSON object: it is returned via the ordered-broadcast result
  * (`am broadcast` prints `Broadcast completed: result=0, data="…"`) and also logged under the [TAG] tag
@@ -383,6 +388,22 @@ class DebugBridgeReceiver :
                         ACTION_HEAL -> {
                             mesh.heal()
                             reply("ok", "healed")
+                        }
+
+                        ACTION_PAUSE -> {
+                            val minutes = intent.getIntExtra(EXTRA_MINUTES, MeshPause.SHORT_MINUTES)
+                            val until = MeshPause.deadline(System.currentTimeMillis(), minutes)
+                            if (until == null) {
+                                reply("error", "minutes must be ${MeshPause.SHORT_MINUTES} or ${MeshPause.LONG_MINUTES}")
+                            } else {
+                                settings.setMeshPausedUntil(until)
+                                reply("ok", "paused until $until")
+                            }
+                        }
+
+                        ACTION_RESUME -> {
+                            settings.setMeshPausedUntil(null)
+                            reply("ok", "resumed")
                         }
 
                         else -> {
@@ -704,6 +725,7 @@ class DebugBridgeReceiver :
     private suspend fun handleState(intent: Intent): JSONObject {
         val selfId = identity.nodeId()
         val selfName = settings.displayName.first()
+        val pausedUntil = settings.meshPausedUntil.first()
         val nameByNode = peers.observePeers().first().associate { it.nodeId to it.name }
 
         val reachable = JSONArray()
@@ -740,6 +762,9 @@ class DebugBridgeReceiver :
                 // retry KnitApp's ON_RESUME observer performs — otherwise a dead mesh is indistinguishable
                 // from a live one with no peers. Work item #32.
                 .put("meshStartDeferred", startGate.deferred.value)
+                // The pause deadline as stored, and whether it is still a pause (the service reads it the same way).
+                .put("meshPausedUntil", pausedUntil ?: JSONObject.NULL)
+                .put("meshPaused", MeshPause.activeDeadline(pausedUntil, System.currentTimeMillis()) != null)
                 .put("reachable", reachable)
                 .put("typing", typing)
                 .put("metrics", metricsJson(metrics.snapshot()))
@@ -1953,6 +1978,8 @@ class DebugBridgeReceiver :
         const val ACTION_WEBPCONV = "app.getknit.knit.debug.WEBPCONV"
         const val ACTION_WEBPCHECK = "app.getknit.knit.debug.WEBPCHECK"
         const val ACTION_HEAL = "app.getknit.knit.debug.HEAL"
+        const val ACTION_PAUSE = "app.getknit.knit.debug.PAUSE"
+        const val ACTION_RESUME = "app.getknit.knit.debug.RESUME"
         const val ACTION_NANFAIL = "app.getknit.knit.debug.NANFAIL"
         const val ACTION_NANSTORM = "app.getknit.knit.debug.NANSTORM"
         const val ACTION_NANREFUSE = "app.getknit.knit.debug.NANREFUSE"
@@ -1977,6 +2004,7 @@ class DebugBridgeReceiver :
         const val ACTION_BACKUP = "app.getknit.knit.debug.BACKUP"
 
         const val EXTRA_TEXT = "text"
+        const val EXTRA_MINUTES = "minutes"
         const val EXTRA_ADDRESS = "address"
         const val EXTRA_CONV = "conv"
         const val EXTRA_TO = "to"

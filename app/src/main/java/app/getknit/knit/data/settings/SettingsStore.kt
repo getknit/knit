@@ -190,6 +190,15 @@ class SettingsStore(
     val meshEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_MESH_ENABLED] ?: true }
 
     /**
+     * Wall-clock deadline (epoch ms) of a mesh pause the user asked for from the ongoing notification, or null.
+     * The one source of truth for "is the mesh paused": the service, the chat list's banner and the debug
+     * bridge all read it through `MeshPause.activeDeadline`, so a value in the past is simply not a pause — no
+     * reader has to notice the clock passing it, and a stale value is swept by the service's next start.
+     * Phone-bound (`SettingsKeys.TRANSIENT_PREFIXES`): a backup taken mid-pause must not plant one elsewhere.
+     */
+    val meshPausedUntil: Flow<Long?> = dataStore.data.map { it[KEY_MESH_PAUSED_UNTIL] }
+
+    /**
      * Local-clock time the first peer message was observed (0 until then) — the start of the
      * review-prompt engagement window (see [app.getknit.knit.review.ReviewPromptPolicy]). Deliberately a
      * locally-stamped watermark rather than anything derived from a message's `sentAt`, which is the
@@ -575,6 +584,12 @@ class SettingsStore(
 
     suspend fun setMeshEnabled(value: Boolean) = dataStore.edit { it[KEY_MESH_ENABLED] = value }
 
+    /** Sets or (null) clears the mesh pause deadline — see [meshPausedUntil]. */
+    suspend fun setMeshPausedUntil(value: Long?) =
+        dataStore.edit {
+            if (value != null) it[KEY_MESH_PAUSED_UNTIL] = value else it.remove(KEY_MESH_PAUSED_UNTIL)
+        }
+
     suspend fun setReviewEngagementStartedAt(value: Long) = dataStore.edit { it[KEY_REVIEW_ENGAGEMENT_STARTED_AT] = value }
 
     /** Stamps the attempt time and bumps the lifetime count in one transaction (mirrors [setProfile]). */
@@ -860,6 +875,7 @@ class SettingsStore(
         val KEY_OPEN_TO_CHAT_NAMED = stringSetPreferencesKey("open_to_chat_named")
         val KEY_OPEN_TO_CHAT_LAST_POST_AT = longPreferencesKey("open_to_chat_last_post_at")
         val KEY_MESH_ENABLED = booleanPreferencesKey("mesh_enabled")
+        val KEY_MESH_PAUSED_UNTIL = longPreferencesKey("mesh_pause_until")
         val KEY_REVIEW_ENGAGEMENT_STARTED_AT = longPreferencesKey("review_engagement_started_at")
         val KEY_REVIEW_LAST_ATTEMPT_AT = longPreferencesKey("review_last_attempt_at")
         val KEY_REVIEW_ATTEMPT_COUNT = longPreferencesKey("review_attempt_count")

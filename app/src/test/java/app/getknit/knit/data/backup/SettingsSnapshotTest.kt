@@ -39,6 +39,7 @@ class SettingsSnapshotTest {
                     stringPreferencesKey("lora_plane_state") to "{}",
                     longPreferencesKey("clone_seen_at") to 5L,
                     longPreferencesKey("clone_dismissed_at") to 3L,
+                    longPreferencesKey("mesh_pause_until") to 9L,
                     longPreferencesKey("lora_board_node") to 42L,
                     booleanPreferencesKey("lora_enabled") to true,
                 )
@@ -61,6 +62,7 @@ class SettingsSnapshotTest {
                 "lora_plane_state",
                 "clone_seen_at",
                 "clone_dismissed_at",
+                "mesh_pause_until",
             )) {
                 assertFalse(dropped, restored.asMap().keys.any { it.name == dropped })
             }

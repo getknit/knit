@@ -23,6 +23,9 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.FakeMeshController
+import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.TransportKind
+import app.getknit.knit.mesh.TransportStatus
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.ui.InMemoryMessages
@@ -90,6 +93,7 @@ class ChatListViewModelTest {
     // The clone notice's two stamps (ADR 2026-09.ypcc); seen past dismissed lights the banner.
     private val cloneSeenFlow = MutableStateFlow(0L)
     private val cloneDismissedFlow = MutableStateFlow(0L)
+    private val pausedUntilFlow = MutableStateFlow<Long?>(null)
 
     // A finite stand-in for the production poller, which never idles under a virtual clock.
     private val relayFlow = MutableStateFlow(RelayFacts())
@@ -111,6 +115,7 @@ class ChatListViewModelTest {
         every { commons.observeAll() } returns commonsFlow
         every { settings.cloneSeenAt } returns cloneSeenFlow
         every { settings.cloneDismissedAt } returns cloneDismissedFlow
+        every { settings.meshPausedUntil } returns pausedUntilFlow
     }
 
     @After
@@ -381,6 +386,40 @@ class ChatListViewModelTest {
             cloneSeenFlow.value = 7_000
             advanceUntilIdle()
             assertTrue(vm.state.value.cloneVisible)
+        }
+
+    /**
+     * The paused banner is the store's deadline while it is ahead of the clock; Resume writes it away, and a
+     * radio-off warning is withheld under it (a stopped transport's last health is stale).
+     */
+    @Test
+    fun theMeshPausedBannerFollowsTheDeadlineAndResumeClearsIt() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            mesh.transportStatuses.value = listOf(TransportStatus(TransportKind.Bluetooth, TransportHealth.Unavailable, 0, 0))
+            advanceUntilIdle()
+            assertNull(vm.state.value.pausedUntil)
+            assertEquals(RadioWarning.AllRadiosOff, vm.state.value.radioWarning)
+
+            // A deadline already behind the clock is not a pause.
+            pausedUntilFlow.value = System.currentTimeMillis() - 1_000
+            advanceUntilIdle()
+            assertNull(vm.state.value.pausedUntil)
+
+            val until = System.currentTimeMillis() + 15 * 60_000L
+            pausedUntilFlow.value = until
+            advanceUntilIdle()
+            assertEquals(until, vm.state.value.pausedUntil)
+            assertNull(vm.state.value.radioWarning)
+
+            vm.resumeMesh()
+            advanceUntilIdle()
+            coVerify { settings.setMeshPausedUntil(null) }
+            pausedUntilFlow.value = null
+            advanceUntilIdle()
+            assertNull(vm.state.value.pausedUntil)
+            assertEquals(RadioWarning.AllRadiosOff, vm.state.value.radioWarning)
         }
 
     @Test

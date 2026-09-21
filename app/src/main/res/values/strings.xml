@@ -18,6 +18,14 @@
         <item quantity="other">Connected to %d nearby devices</item>
     </plurals>
     <string name="mesh_notification_stop">Stop</string>
+    <!-- The two pause spans name MeshPause.SHORT_MINUTES / LONG_MINUTES; the shade shows three actions at most,
+         so Pause, Pause, Stop is the whole running set. -->
+    <string name="mesh_notification_pause_short">Pause 15 min</string>
+    <string name="mesh_notification_pause_long">Pause 1 hour</string>
+    <string name="mesh_notification_resume">Resume</string>
+    <string name="mesh_notification_paused_title">Knit mesh is paused</string>
+    <!-- %1$s is a clock time ("3:15 PM"), or "Tue 3:15 PM" once the pause ends on another day -->
+    <string name="mesh_notification_paused_until">Until %1$s</string>
 
     <!-- Connection &amp; error alerts (App group) -->
     <string name="channel_alerts_name">Connection &amp; alerts</string>
@@ -150,6 +158,10 @@
     <string name="chatlist_clone_banner_message">This account is also active on another phone. Messages reach only one of them at a time.</string>
     <string name="chatlist_clone_banner_action">Sign out here</string>
     <string name="chatlist_clone_banner_dismiss">The other phone is gone</string>
+    <!-- Chat-list mesh-paused banner: the user paused the mesh from its notification. %1$s is the same clock
+         time the notification shows ("3:15 PM" / "Tue 3:15 PM"). -->
+    <string name="chatlist_mesh_paused_banner">Mesh paused until %1$s</string>
+    <string name="chatlist_mesh_paused_resume">Resume</string>
     <string name="chat_empty">No messages yet.\nSay hello to nearby devices.</string>
     <!-- Shown above the oldest loaded message while more of the conversation is being read in. -->
     <string name="chat_loading_older">Loading earlier messages…</string>

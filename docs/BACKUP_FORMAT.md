@@ -108,9 +108,10 @@ classified.
 ## Settings
 
 Every key is carried except the phone's own (`SettingsKeys.TRANSIENT_PREFIXES`): the Wi-Fi Aware
-give-up and initiator-hold journals, the model poison-pill latch, and the paired LoRa board's address,
-names, pre-setup values and airtime ledger (the Bluetooth bond is per phone; pairing the board again
-brings them back). The board's node number and key stay — they ride the profile. Relay URLs are carried
+give-up and initiator-hold journals, the model poison-pill latch, the clone-watch stamps, a mesh pause's
+deadline (`mesh_pause_until` — a backup taken mid-pause must not pause the other phone), and the paired LoRa
+board's address, names, pre-setup values and airtime ledger (the Bluetooth bond is per phone; pairing the
+board again brings them back). The board's node number and key stay — they ride the profile. Relay URLs are carried
 *with* their bearer tokens: they are the user's, and the file is sealed.
 
 Two keys are written **at restore time**, not at backup time: `onboarding_seen = true` (or the name page

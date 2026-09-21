@@ -6,6 +6,15 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Already shipped (was deferred)
 
+- **The mesh pauses from its notification BUILT** (2026-09-20, ADR 2026-09.wz99) — `Pause 15 min · Pause 1 hour
+  · Stop` on the running notification, `Resume · Stop` on the paused one, a "Mesh paused until …" banner on the
+  chat list; the service stays foreground, `MeshManager` goes down, and two inexact alarms plus every start
+  bring it back. Device-verified the same day on the Pixel 3 (resume 32 s past the deadline on an awake phone;
+  reinstall mid-pause, banner Resume and Stop-while-paused all as designed). **Still owed:** the resume delay
+  from deep Doze and a reboot mid-pause. **Deferred from it:** a 12 h / "until tomorrow" span — the shade shows three
+  actions and Stop keeps its seat, so a third span needs an in-app surface (a Settings row or the banner's
+  menu); a "Paused until …" line on Diagnostics' status (it still reads the transports' last health).
+
 - **A phone whose Wi-Fi drops when it initiates stops initiating BUILT** (2026-09-19, ADR 2026-09.m8kc, work
   item #78) — `NanInitiatorPolicy` counts a Wi-Fi blip within two minutes of an unlinked initiate of ours as a
   strike, holds the initiator role at three, journals it by build+ROM stamp, probes once a day, and Diagnostics

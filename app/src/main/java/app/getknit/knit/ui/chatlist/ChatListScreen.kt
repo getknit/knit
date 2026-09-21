@@ -163,6 +163,7 @@ fun ChatListScreen(
         onDismissRadioWarning = viewModel::dismissRadioWarning,
         onSignOut = { showSignOut = true },
         onDismissClone = viewModel::dismissClone,
+        onResumeMesh = viewModel::resumeMesh,
         onDeleteConversation = viewModel::deleteConversation,
     )
 
@@ -240,6 +241,7 @@ internal fun ChatListScreenContent(
     onDismissRadioWarning: () -> Unit,
     onSignOut: () -> Unit,
     onDismissClone: () -> Unit,
+    onResumeMesh: () -> Unit,
     onDeleteConversation: (conversationId: String) -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -397,6 +399,11 @@ internal fun ChatListScreenContent(
                 // Above the radio banner: an identity on two phones outranks a radio that is off.
                 if (state.cloneVisible) {
                     CloneBanner(onSignOut = onSignOut, onDismiss = onDismissClone)
+                }
+                // The user's own pause, from the notification; the view model withholds the radio warning
+                // under it (a stopped radio's last health is stale).
+                state.pausedUntil?.let { until ->
+                    MeshPausedBanner(until = until, now = now, onResume = onResumeMesh)
                 }
                 state.radioWarning?.let { warning ->
                     RadioWarningBanner(
@@ -997,6 +1004,7 @@ fun ChatListScreenPopulatedPreview() =
             onDismissRadioWarning = {},
             onSignOut = {},
             onDismissClone = {},
+            onResumeMesh = {},
             onDeleteConversation = {},
         )
     }
@@ -1029,6 +1037,7 @@ fun ChatListScreenRadioWarningPreview() =
             onDismissRadioWarning = {},
             onSignOut = {},
             onDismissClone = {},
+            onResumeMesh = {},
             onDeleteConversation = {},
         )
     }
@@ -1062,6 +1071,7 @@ fun ChatListScreenClonePreview() =
             onDismissRadioWarning = {},
             onSignOut = {},
             onDismissClone = {},
+            onResumeMesh = {},
             onDeleteConversation = {},
         )
     }
@@ -1089,6 +1099,7 @@ fun ChatListScreenLoadingPreview() =
             onDismissRadioWarning = {},
             onSignOut = {},
             onDismissClone = {},
+            onResumeMesh = {},
             onDeleteConversation = {},
         )
     }
@@ -1134,6 +1145,7 @@ fun ChatListScreenFirstRunPreview() =
             onDismissRadioWarning = {},
             onSignOut = {},
             onDismissClone = {},
+            onResumeMesh = {},
             onDeleteConversation = {},
         )
     }
@@ -1167,6 +1179,7 @@ fun ChatListScreenQuietPreview() =
             onDismissRadioWarning = {},
             onSignOut = {},
             onDismissClone = {},
+            onResumeMesh = {},
             onDeleteConversation = {},
         )
     }

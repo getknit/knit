@@ -11,10 +11,12 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.mesh.pausedUntilLabel
 import app.getknit.knit.ui.chat.DeliveryStatus
 import app.getknit.knit.ui.theme.KnitTheme
 import org.junit.Assert.assertEquals
@@ -88,6 +90,7 @@ class ChatListScreenContentTest {
                     onDismissRadioWarning = {},
                     onSignOut = {},
                     onDismissClone = {},
+                    onResumeMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -129,6 +132,7 @@ class ChatListScreenContentTest {
                     onDismissRadioWarning = {},
                     onSignOut = {},
                     onDismissClone = {},
+                    onResumeMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -168,6 +172,7 @@ class ChatListScreenContentTest {
                     onDismissRadioWarning = {},
                     onSignOut = {},
                     onDismissClone = {},
+                    onResumeMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -203,6 +208,7 @@ class ChatListScreenContentTest {
                     onDismissRadioWarning = {},
                     onSignOut = {},
                     onDismissClone = {},
+                    onResumeMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -240,6 +246,7 @@ class ChatListScreenContentTest {
                     onDismissRadioWarning = {},
                     onSignOut = {},
                     onDismissClone = {},
+                    onResumeMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -276,6 +283,7 @@ class ChatListScreenContentTest {
                     onDismissRadioWarning = {},
                     onSignOut = {},
                     onDismissClone = {},
+                    onResumeMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -312,6 +320,7 @@ class ChatListScreenContentTest {
                     onDismissRadioWarning = {},
                     onSignOut = {},
                     onDismissClone = {},
+                    onResumeMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -346,6 +355,7 @@ class ChatListScreenContentTest {
                     onDismissRadioWarning = {},
                     onSignOut = {},
                     onDismissClone = {},
+                    onResumeMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -389,6 +399,7 @@ class ChatListScreenContentTest {
                     onDismissRadioWarning = {},
                     onSignOut = {},
                     onDismissClone = {},
+                    onResumeMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -436,6 +447,7 @@ class ChatListScreenContentTest {
                     onDismissRadioWarning = {},
                     onSignOut = { signOuts++ },
                     onDismissClone = { dismissals++ },
+                    onResumeMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -450,5 +462,48 @@ class ChatListScreenContentTest {
         visible = false
         compose.waitForIdle()
         compose.onNodeWithTag("chatlist_clone_banner").assertDoesNotExist()
+    }
+
+    /** The paused banner: the deadline's clock time, Resume routed, absent once the deadline is gone. */
+    @Test
+    fun theMeshPausedBannerShowsTheDeadlineAndRoutesResume() {
+        var resumes = 0
+        val until = now + 15 * 60_000L
+        var pausedUntil by mutableStateOf<Long?>(until)
+        compose.setContent {
+            KnitTheme {
+                ChatListScreenContent(
+                    state = ChatListUiState(conversations = listOf(row("nearby", "Nearby", isRoom = true)), pausedUntil = pausedUntil),
+                    now = now,
+                    onOpenConversation = {},
+                    onSearch = {},
+                    onNewMessage = {},
+                    onOpenSettings = {},
+                    onOpenYourMesh = {},
+                    onOpenDiagnostics = {},
+                    onOpenBlockedUsers = {},
+                    onOpenMessageRequests = {},
+                    onOpenDonate = {},
+                    onOpenAddContact = {},
+                    onShareApp = {},
+                    onOpenRadioSettings = {},
+                    onDismissRadioWarning = {},
+                    onSignOut = {},
+                    onDismissClone = {},
+                    onResumeMesh = { resumes++ },
+                    onDeleteConversation = {},
+                )
+            }
+        }
+
+        compose.onNodeWithTag("chatlist_mesh_paused_banner").assertIsDisplayed()
+        val label = pausedUntilLabel(ApplicationProvider.getApplicationContext(), until, now)
+        compose.onNodeWithText("Mesh paused until $label").assertIsDisplayed()
+        compose.onNodeWithTag("chatlist_mesh_paused_banner_resume").performClick()
+        assertEquals(1, resumes)
+
+        pausedUntil = null
+        compose.waitForIdle()
+        compose.onNodeWithTag("chatlist_mesh_paused_banner").assertDoesNotExist()
     }
 }

@@ -37,6 +37,9 @@ document:
   the backup on one phone at a time.
 - If the same backup ends up on two phones, each one now says so and offers Sign out here, which clears this
   phone so it starts over with a new identity. Dismiss the notice instead if the other phone is already gone.
+- The mesh notification now offers Pause 15 min and Pause 1 hour beside Stop, so another app can have
+  Bluetooth for a while without you switching Knit off. The chat list shows when the pause ends, and the mesh
+  comes back by itself.
 
 ### Changed
 

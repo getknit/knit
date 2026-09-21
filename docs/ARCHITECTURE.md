@@ -712,7 +712,14 @@ A typed foreground service hosts `MeshManager` so the mesh survives backgroundin
 `location` on API 29–32 where Wi-Fi Aware discovery is gated on the foreground-only location app-op
 (`meshForegroundServiceTypes`, tiered with `requiredRadioPermissions`; ADR 2026-09.535d):
 
-- **Foreground notification** (`knit_mesh` channel, `IMPORTANCE_MIN`) with a Stop action.
+- **Foreground notification** (`knit_mesh` channel, `IMPORTANCE_MIN`) with Pause 15 min / Pause 1 hour / Stop
+  actions; while paused it reads "Knit mesh is paused — Until 3:15 PM" with Resume / Stop.
+- **Pause** (ADR 2026-09.wz99): the service stays foreground and takes `MeshManager` down until a wall-clock
+  deadline held in `SettingsStore.meshPausedUntil`, which the service, the chat list's banner and the debug
+  bridge all read through `MeshPause.activeDeadline`. `applyPause` converges idempotently on the key, so the
+  notification's buttons, the banner's Resume (a store write alone) and a service created mid-pause all end
+  where the store says. Two inexact resume alarms (`setAndAllowWhileIdle` + a 10-min `setWindow`, both
+  `ACTION_RESUME`) plus an expiry check on every start bring it back; no exact-alarm permission.
 - **Heartbeat:** inexact ~15-min `AlarmManager` alarm → `ACTION_HEAL` → `MeshManager.heal()`.
 - **Significant motion:** a `TriggerEventListener` (re-armed after each fire) → `heal()` (moving
   likely means new peers in range).
