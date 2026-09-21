@@ -1,23 +1,29 @@
 package app.getknit.knit.moderation
 
 import android.content.Context
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.MappedByteBuffer
 
 /**
  * On-device toxicity classifier backed by a bundled TFLite model — runs fully offline (no network).
  *
  * Layered into [HybridTextModerator] as the ML pass behind the deterministic [LexicalTextFilter]; it
  * only sees text the word list let through. Mirrors [NsfwImageModerator]: a bare TFLite [Interpreter]
- * (no MediaPipe/LiteRT), lazy load, inference serialized behind [mutex] off the main thread, and
- * **graceful degradation** — if any asset is missing or fails to load, [classify] returns
+ * (no MediaPipe/LiteRT) mapped straight out of the APK, held on a [ModelLease] — loaded on first use,
+ * inference serialized off the main thread, released after ten idle minutes and reloaded on the next use —
+ * and **graceful degradation**: if any asset is missing or fails to load, [classify] returns
  * [TextVerdict.ALLOWED], so the lexical pass still runs and the app never hard-fails on a bad asset.
+ *
+ * The cost of the lease is the reload: a message after a quiet stretch pays the map + build + first
+ * inference again, once, and on the inbound path that is inline in the router's collector
+ * (`MeshManager.isTextFlagged`). It used to be paid once per process; now it is once per idle cycle. The
+ * warm-ups (`KnitApp` on resume, `MeshService` when a peer appears) hide it where they can.
  *
  * **Model:** Detoxify "unbiased-small" (ALBERT) exported to TFLite — inputs `input_ids` and
  * `attention_mask` (`[1, maxLen]` int), output `[1, N]` sigmoid probabilities over the labels in
@@ -37,6 +43,8 @@ class MlTextModerator(
     private val blockThresholds: Map<String, Float> = DEFAULT_BLOCK_THRESHOLDS,
     private val maxLen: Int = DEFAULT_MAX_LEN,
     private val guard: ModelLoadGuard? = null,
+    scope: CoroutineScope,
+    idleMs: Long = ModelLease.DEFAULT_IDLE_MS,
 ) : TextModerator {
     private class BlockRule(
         val index: Int,
@@ -44,38 +52,47 @@ class MlTextModerator(
         val threshold: Float,
     )
 
+    /** [model] is the mapping the interpreter reads in place; it has to live exactly as long as [interpreter]. */
     private class Engine(
         val tokenizer: SentencePieceTokenizer,
+        val model: MappedByteBuffer,
         val interpreter: Interpreter,
         val rules: List<BlockRule>,
     )
 
-    private val mutex = Mutex()
+    private val lease =
+        ModelLease(
+            scope = scope,
+            idleMs = idleMs,
+            load = ::buildEngine,
+            close = { it.interpreter.close() },
+        )
 
-    @Volatile
-    private var loaded = false
-    private var engine: Engine? = null
+    /** Whether the engine is in memory right now (Diagnostics / the debug bridge). */
+    val isResident: Boolean get() = lease.isResident
+
+    /** The last time [classify] or [warmUp] touched the engine, on the wall clock; `0` before the first. */
+    val lastUsedAt: Long get() = lease.lastUsedAt
 
     override suspend fun classify(text: String): TextVerdict =
         withContext(Dispatchers.Default) {
-            mutex.withLock {
-                if (!loaded) {
-                    loaded = true
-                    engine = buildEngine()
-                }
-                val e = engine ?: return@withContext TextVerdict.ALLOWED
-                runCatching { infer(e, text) }.getOrDefault(TextVerdict.ALLOWED)
+            lease.use { e ->
+                e?.let { runCatching { infer(it, text) }.getOrDefault(TextVerdict.ALLOWED) } ?: TextVerdict.ALLOWED
             }
         }
 
+    /** Release the engine now; the next [classify] reloads it. The debug bridge's shortcut through the idle cycle. */
+    suspend fun unload() = lease.unload()
+
     /**
-     * The first — and only — touch of the model, run under [ModelLoadGuard] so a **native** crash in
-     * there cannot become an unrecoverable launch loop (ADR 037). A latched model yields `null` and
-     * [classify] degrades to [TextVerdict.ALLOWED], exactly as it already does when the assets are
-     * missing; nothing else in this class knows the difference.
+     * Every touch of the model — the first, and each reload after an idle release — runs under
+     * [ModelLoadGuard] so a **native** crash in there cannot become an unrecoverable launch loop (ADR 037).
+     * A latched model yields `null` and [classify] degrades to [TextVerdict.ALLOWED], exactly as it already
+     * does when the assets are missing; nothing else in this class knows the difference, and the lease
+     * keeps that empty result for the rest of the process rather than asking the journal again.
      *
-     * Stays inside [mutex]: two racing first callers must not both mark an attempt, and the load must
-     * still happen at most once. The guard's two DataStore round-trips are paid once per process.
+     * Serialised by the lease: two racing callers must not both mark an attempt, and the load must still
+     * happen at most once per residency.
      *
      * The probe inference belongs **inside** the guarded region. `Interpreter(model)` is mostly a
      * flatbuffer parse; tensor allocation and kernel selection land on the first `run`, so closing the
@@ -85,8 +102,8 @@ class MlTextModerator(
 
     /**
      * runCatching, not just [loadEngine]'s own catch: it also absorbs Errors (TFLite's JNI load can throw
-     * UnsatisfiedLinkError; the ~30 MB direct buffer can OOM). [classify] sits on the no-throw inbound
-     * path (`MeshManager.onDeliver`) and must never throw — and the guard counts process deaths, not
+     * UnsatisfiedLinkError; the arena can OOM). [classify] sits on the no-throw inbound path
+     * (`MeshManager.onDeliver`) and must never throw — and the guard counts process deaths, not
      * exceptions, so a Java-level failure has to be swallowed here rather than reach it.
      */
     private fun loadAndProbe(): Engine? =
@@ -95,19 +112,19 @@ class MlTextModerator(
         }.getOrNull()
 
     /**
-     * Load the model and run one throwaway inference *off* the send path — call this at startup so the
-     * first real [classify] (the first outgoing send, or an inbound flagged-check) hits a warm engine
-     * instead of paying the ~16 MB asset read + [Interpreter] build + first-inference tensor/graph
-     * allocation on the send coroutine. Reuses [classify], so [mutex]/[loaded] dedupe it against a
-     * first real send that races it (no double-load), and the verdict is discarded. Never throws:
-     * [classify] already degrades to [TextVerdict.ALLOWED] on any load/inference failure.
+     * Load the model *off* the send path — from `KnitApp` on resume and `MeshService` when a peer appears —
+     * so the first real [classify] (the first outgoing send, or an inbound flagged-check) hits a warm engine
+     * instead of paying the map + [Interpreter] build + first-inference tensor/graph allocation on the send
+     * coroutine. The lease dedupes it against a real send that races it (no double-load), the probe
+     * inference is the one [loadAndProbe] already runs, and after an idle release it warms again. Never
+     * throws: the load already degrades to allow-all on any failure.
      */
     suspend fun warmUp() {
-        // Cheap once the engine is in: every foreground resume and every first peer sighting calls this,
-        // and neither should queue behind the mutex a real classify may be holding. `loaded` is set under
-        // the mutex before the load starts, so the racy read can only send a caller through the lock path.
-        if (loaded) return
-        classify(WARMUP_PROBE)
+        // Cheap while the engine is in, or once a load has failed: every foreground resume and every peer
+        // arrival calls this, and none should queue behind the lease a real classify may be holding. The
+        // flag flips under the lease's mutex, so the racy read can only send a caller through the lock path.
+        if (lease.isLoaded) return
+        withContext(Dispatchers.Default) { lease.use { } }
     }
 
     private fun loadEngine(): Engine? =
@@ -130,16 +147,11 @@ class MlTextModerator(
                 blockThresholds.mapNotNull { (label, threshold) ->
                     labels.indexOf(label).takeIf { it >= 0 }?.let { BlockRule(it, label, threshold) }
                 }
-            val bytes = context.assets.open(modelAsset).use { it.readBytes() }
-            val model =
-                ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).apply {
-                    put(bytes)
-                    rewind()
-                }
-            Engine(tokenizer, Interpreter(model), rules)
+            val model = TfLiteModels.mapAsset(context, modelAsset)
+            Engine(tokenizer, model, Interpreter(model, TfLiteModels.interpreterOptions()), rules)
         } catch (_: Exception) {
-            // Missing asset (IOException), corrupt flatbuffer (Interpreter throws IllegalArgument /
-            // IllegalState), bad tokenizer JSON (SerializationException) -> degrade to allow-all.
+            // Missing or compressed asset (FileNotFoundException), corrupt flatbuffer (Interpreter throws
+            // IllegalArgument / IllegalState), bad tokenizer JSON (SerializationException) -> allow-all.
             null
         }
 
@@ -215,7 +227,7 @@ class MlTextModerator(
         const val DEFAULT_LABELS_ASSET = "moderation/labels.txt"
         const val DEFAULT_MAX_LEN = 128
 
-        // A short non-blank probe for warmUp(): non-blank so it forces a real infer() (which is where
+        // A short non-blank probe for loadAndProbe(): non-blank so it forces a real infer() (which is where
         // first-inference graph/tensor allocation is paid), not just the model load.
         const val WARMUP_PROBE = "knit"
 

@@ -164,7 +164,10 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
 - `…debug.MODEL` — dumps the on-device model **poison-pill** (ADR 037): the current build stamp, and per
   model its stored stamp, `pendingSince` marker, unexplained-death count and whether it is latched — plus
   what the platform recorded about the **previous process exit**, which is what decides a 1-strike latch.
-  `--ez reset true` clears every model. The fault itself is a build flag, not a bridge op
+  Also each model's lease (ADR 2026-09.cq9z): `resident` (the interpreter is in memory) and `lastUsedAt`,
+  with `idleMs` at the top. `--ez reset true` clears every model; `--ez unload true` releases both engines
+  now — the shortcut through the ten-minute idle cycle, so a memory trial can watch `dumpsys meminfo`
+  drop and the next classify reload through the guard (`pendingSince` cycles back to 0). The fault itself is a build flag, not a bridge op
   (`-PmodelFaultOnLoad=segv|kill`), so `src/main` carries no arming seam. `segv` is the positive test
   (a real fault → latched on the next launch); `kill` is the **negative control** — SIGKILL is recorded
   exactly as a force-stop is, so it must never latch no matter how often it fires.

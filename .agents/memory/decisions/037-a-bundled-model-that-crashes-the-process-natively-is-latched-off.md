@@ -81,7 +81,10 @@ evidence supports. And the honest cost of a latch: the Nearby room keeps its wor
 and images lose NSFW screening. That is not a new hole — a missing asset already produces it — but it is
 now a sticky, user-chosen-recoverable state rather than a transient one, so Diagnostics says which
 screening stopped, and the reset dialog says it takes effect on the next start (the moderator latches
-`loaded` in memory, so nothing reloads inside a running app).
+`loaded` in memory, so nothing reloads inside a running app). *Amended by ADR 2026-09.cq9z (2026-09-20): a
+loaded engine is now released after ten idle minutes and re-acquired through this same guard, so every
+load brackets a marker, not only the first; a latched or failed attempt is still permanent for the process,
+which is what keeps the reset's "next start" true.*
 
 Verification is a build flag, not a runtime seam: `-PmodelFaultOnLoad=segv|kill` raises the fault inside
 the guard, defaults off in build-script source (so F-Droid's `-P`-less rebuild stays byte-identical) and is

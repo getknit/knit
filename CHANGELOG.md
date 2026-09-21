@@ -47,6 +47,9 @@ document:
   every four minutes, though the relay still checks in on its own schedule.
 - Knit loads its on-device content filter when you open the app or someone comes into range, rather than
   on every background restart. A message that arrives twice is checked once.
+- Knit unloads its on-device content filter after ten minutes without a message and loads it again for the
+  next one, so the app holds about thirty megabytes less while nothing is happening. The first check after
+  a quiet spell takes a second longer.
 - A relay you have set up now learns about a new contact, or a chat that just connected, as it happens
   rather than up to fifteen seconds later. Idle, your phone looks over what it shares with the relay once
   a minute instead of four times.

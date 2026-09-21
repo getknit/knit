@@ -14,6 +14,7 @@ import app.getknit.knit.moderation.NsfwImageModerator
 import app.getknit.knit.moderation.ScopedTextModerator
 import app.getknit.knit.moderation.WordList
 import app.getknit.knit.moderation.modelGuardStamp
+import kotlinx.coroutines.CoroutineScope
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
 
@@ -38,8 +39,10 @@ val moderationModule =
                 stamp = modelGuardStamp(BuildConfig.VERSION_CODE, Build.FINGERPRINT.orEmpty()),
             )
         }
-        // Shared so the heavy toxicity model is loaded at most once across both moderation scopes.
-        single { MlTextModerator(androidContext(), guard = get()) }
+        // Shared so the heavy toxicity model is loaded at most once across both moderation scopes. Both
+        // models ride the app scope: that is where their idle reaper lives (ModelLease), and it outlives
+        // any screen or service that asked for a verdict.
+        single { MlTextModerator(androidContext(), guard = get(), scope = get<CoroutineScope>()) }
         single {
             ScopedTextModerator(
                 // Nearby broadcast room: profanity word-list, then ML toxicity on what it clears.
@@ -52,7 +55,9 @@ val moderationModule =
                 direct = get<MlTextModerator>(),
             )
         }
-        single<ImageModerator> { NsfwImageModerator(androidContext(), guard = get()) }
+        // Bound concretely as well as behind the interface so the debug bridge can read its residency.
+        single { NsfwImageModerator(androidContext(), guard = get(), scope = get<CoroutineScope>()) }
+        single<ImageModerator> { get<NsfwImageModerator>() }
         // Screens attachment blobs — images against the classifier, a link-preview card's picture and text
         // against both — and caches the verdict by content hash (blobVerdictDao). Extracted from BlobRepository
         // so the data layer no longer invokes the classifier.

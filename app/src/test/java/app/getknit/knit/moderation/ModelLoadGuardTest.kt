@@ -4,7 +4,6 @@ import app.getknit.knit.crash.ProcessExitEvidence
 import app.getknit.knit.data.settings.ModelLoadJournal
 import app.getknit.knit.data.settings.ModelLoadState
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -20,37 +19,12 @@ import org.junit.Test
  * The side-effect half of the poison-pill (ADR 037) — ordering, cancellation, and failing open. The
  * decision table itself is [ModelLoadPolicyTest].
  *
- * A fake journal rather than a real DataStore: what these assert is *when* writes happen relative to the
- * load, which a map records exactly and a Preferences file only obscures.
+ * [FakeModelLoadJournal] rather than a real DataStore: what these assert is *when* writes happen relative to
+ * the load, which a map records exactly and a Preferences file only obscures.
  */
 class ModelLoadGuardTest {
     private val stamp = "16|Pixel/rel/1"
     private val model = ModelLoadGuard.TOXICITY
-
-    private class FakeJournal(
-        var failOn: String? = null,
-    ) : ModelLoadJournal {
-        val states = mutableMapOf<String, MutableStateFlow<ModelLoadState>>()
-        val writes = mutableListOf<ModelLoadState>()
-
-        private fun slot(model: String) = states.getOrPut(model) { MutableStateFlow(ModelLoadState.NONE) }
-
-        override fun observeModelLoad(model: String): Flow<ModelLoadState> = slot(model)
-
-        override suspend fun modelLoadState(model: String): ModelLoadState {
-            if (failOn == "read") error("datastore unreadable")
-            return slot(model).value
-        }
-
-        override suspend fun setModelLoadState(
-            model: String,
-            state: ModelLoadState,
-        ) {
-            if (failOn == "write") error("datastore unwritable")
-            writes += state
-            slot(model).value = state
-        }
-    }
 
     private fun guard(
         journal: ModelLoadJournal,
@@ -61,7 +35,7 @@ class ModelLoadGuardTest {
     @Test
     fun `marks the attempt before the load runs and clears it after`() =
         runTest {
-            val journal = FakeJournal()
+            val journal = FakeModelLoadJournal()
             var markedWhenLoadRan: Long? = null
             val result =
                 guard(journal).guard(model) {
@@ -84,7 +58,7 @@ class ModelLoadGuardTest {
         runTest {
             // Every build shipped without the models takes this path on every launch. Counting it would
             // latch the classifier off on a phone where nothing is wrong.
-            val journal = FakeJournal()
+            val journal = FakeModelLoadJournal()
             assertNull(guard(journal).guard(model) { null })
             assertEquals(
                 0L,
@@ -103,7 +77,7 @@ class ModelLoadGuardTest {
     @Test
     fun `a load that throws still clears the marker`() =
         runTest {
-            val journal = FakeJournal()
+            val journal = FakeModelLoadJournal()
             val thrown =
                 runCatching {
                     guard(journal).guard<String>(model) { error("interpreter refused the flatbuffer") }
@@ -118,11 +92,44 @@ class ModelLoadGuardTest {
         }
 
     @Test
+    fun `a caller cancelled while the marker is being written still clears it`() =
+        runTest {
+            // The pending write is awaited (it is the durability barrier), so a caller can be cancelled with
+            // the marker committed and the load never started. Before the write moved inside the try, that
+            // marker outlived the attempt — and now that a model reloads inside one process, the next load
+            // would read its own leftover as an unexplained death and count it.
+            val parked = CompletableDeferred<Unit>()
+            val journal = FakeModelLoadJournal(parkWrite = parked)
+            var loads = 0
+            val job =
+                launch {
+                    guard(journal).guard(model) {
+                        loads++
+                        "engine"
+                    }
+                }
+            yield()
+            job.cancel()
+            journal.parkWrite = null
+            parked.complete(Unit)
+            job.join()
+
+            assertEquals(0, loads)
+            assertEquals(
+                listOf(
+                    ModelLoadState(stamp, pendingSince = 1_700_000_000_000L, fails = 0),
+                    ModelLoadState(stamp, pendingSince = 0L, fails = 0),
+                ),
+                journal.writes,
+            )
+        }
+
+    @Test
     fun `a cancelled load still clears the marker`() =
         runTest {
             // Back out of a chat while the 17 MB image model is loading and viewModelScope cancels
             // mid-flight. Ordinary use, and it must not read as evidence.
-            val journal = FakeJournal()
+            val journal = FakeModelLoadJournal()
             val started = CompletableDeferred<Unit>()
             val job =
                 launch {
@@ -145,7 +152,7 @@ class ModelLoadGuardTest {
     @Test
     fun `a native fault recorded against the marker latches the model, and the load never runs again`() =
         runTest {
-            val journal = FakeJournal()
+            val journal = FakeModelLoadJournal()
             journal.states[model] = MutableStateFlow(ModelLoadState(stamp, pendingSince = 1_699_999_999_000L, fails = 0))
             var ran = false
             val result =
@@ -163,7 +170,7 @@ class ModelLoadGuardTest {
     @Test
     fun `a latched model is skipped without touching the loader`() =
         runTest {
-            val journal = FakeJournal()
+            val journal = FakeModelLoadJournal()
             journal.states[model] = MutableStateFlow(ModelLoadState(stamp, 0L, ModelLoadPolicy.MAX_FAILS))
             var ran = false
             assertNull(
@@ -178,7 +185,7 @@ class ModelLoadGuardTest {
     @Test
     fun `clear un-latches the model`() =
         runTest {
-            val journal = FakeJournal()
+            val journal = FakeModelLoadJournal()
             journal.states[model] = MutableStateFlow(ModelLoadState(stamp, 0L, ModelLoadPolicy.MAX_FAILS))
             val guard = guard(journal)
             guard.clear(model)
@@ -188,7 +195,7 @@ class ModelLoadGuardTest {
     @Test
     fun `a latch earned under a different build does not read as latched`() =
         runTest {
-            val journal = FakeJournal()
+            val journal = FakeModelLoadJournal()
             journal.states[model] = MutableStateFlow(ModelLoadState("15|old", 0L, ModelLoadPolicy.MAX_FAILS))
             assertFalse(guard(journal).observeLatched(model).first())
         }
@@ -197,19 +204,19 @@ class ModelLoadGuardTest {
     fun `an unreadable journal fails open and still loads`() =
         runTest {
             // classify sits on the no-throw inbound path; a DataStore hiccup must not disable moderation.
-            assertEquals("engine", guard(FakeJournal(failOn = "read")).guard(model) { "engine" })
+            assertEquals("engine", guard(FakeModelLoadJournal(failOn = "read")).guard(model) { "engine" })
         }
 
     @Test
     fun `an unwritable journal fails open and still loads`() =
         runTest {
-            assertEquals("engine", guard(FakeJournal(failOn = "write")).guard(model) { "engine" })
+            assertEquals("engine", guard(FakeModelLoadJournal(failOn = "write")).guard(model) { "engine" })
         }
 
     @Test
     fun `models latch independently`() =
         runTest {
-            val journal = FakeJournal()
+            val journal = FakeModelLoadJournal()
             journal.states[ModelLoadGuard.NSFW] = MutableStateFlow(ModelLoadState(stamp, 0L, ModelLoadPolicy.MAX_FAILS))
             val guard = guard(journal)
             yield()

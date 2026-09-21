@@ -71,8 +71,9 @@ location/      "Send location" (ADR 2026-09.tss4): GeoUri (the `geo:` body token
 moderation/    on-device TextModerator (LexicalTextFilter + MlTextModerator) + ImageModerator
                (NsfwImageModerator) + ImageScreeningService (screens image blobs, caches NSFW
                verdicts — pulled out of BlobRepository) · ModelLoadGuard/ModelLoadPolicy (poison-pill:
-               a model whose load crashes the process natively is latched off, ADR 037)
-               — see docs/CONTENT_MODERATION.md
+               a model whose load crashes the process natively is latched off, ADR 037) · ModelLease +
+               TfLiteModels (each interpreter is mmapped from the APK, released after 10 idle minutes and
+               reloaded through the guard, ADR 2026-09.cq9z) — see docs/CONTENT_MODERATION.md
 data/          Room (messages, peers, reactions, blobs, groups, blob_verdicts, forward_store) + repositories
                · settings/SettingsStore (DataStore) · AvatarStore + AttachmentStore + BlobRepository
                (content-addressed image bytes + cross-table GC; NSFW screening now in

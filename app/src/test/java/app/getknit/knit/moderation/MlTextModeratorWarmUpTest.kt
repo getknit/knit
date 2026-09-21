@@ -5,9 +5,15 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.data.settings.ModelLoadJournal
 import app.getknit.knit.data.settings.ModelLoadState
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -19,16 +25,19 @@ import org.junit.runner.RunWith
  * (Robolectric-hosted only for the `Context`; the assets are pointed at non-existent paths so the test
  * stays off the real ~15 MB model and native TFLite.)
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class MlTextModeratorWarmUpTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
 
-    private fun moderatorWithMissingAssets() =
+    private fun TestScope.moderatorWithMissingAssets(guard: ModelLoadGuard? = null) =
         MlTextModerator(
             context,
             modelAsset = "moderation/does-not-exist.tflite",
             tokenizerAsset = "moderation/does-not-exist.json",
             labelsAsset = "moderation/does-not-exist.txt",
+            guard = guard,
+            scope = backgroundScope,
         )
 
     @Test
@@ -38,8 +47,30 @@ class MlTextModeratorWarmUpTest {
 
             moderator.warmUp() // must return normally even though the engine can't load
 
-            // Engine failed to load → classify allow-alls (and the `loaded` flag means it won't retry).
+            // Engine failed to load → classify allow-alls (and the lease's attempted flag means it won't retry).
             assertTrue(moderator.classify("anything at all").allowed)
+            assertFalse(moderator.isResident)
+        }
+
+    /**
+     * A failed load is spent for the process: the idle reaper only ever releases a *real* engine, so
+     * nothing here comes back through the guard after ten minutes — the journal sees the one attempt.
+     */
+    @Test
+    fun aFailedLoadIsNotRetriedAfterTheIdleWindow() =
+        runTest {
+            val journal = CountingJournal()
+            val moderator = moderatorWithMissingAssets(guard = ModelLoadGuard(journal, { null }, STAMP))
+
+            moderator.warmUp()
+            val attemptsAfterFirst = journal.writes.count { it.pendingSince != 0L }
+            advanceTimeBy(3 * ModelLease.DEFAULT_IDLE_MS)
+            runCurrent()
+            moderator.warmUp()
+            assertTrue(moderator.classify("still nothing to load").allowed)
+
+            assertEquals(1, attemptsAfterFirst)
+            assertEquals(1, journal.writes.count { it.pendingSince != 0L })
         }
 
     /**
@@ -58,6 +89,7 @@ class MlTextModeratorWarmUpTest {
                     tokenizerAsset = "moderation/does-not-exist.json",
                     labelsAsset = "moderation/does-not-exist.txt",
                     guard = ModelLoadGuard(journal, { null }, STAMP),
+                    scope = backgroundScope,
                 )
 
             moderator.warmUp()
@@ -66,6 +98,23 @@ class MlTextModeratorWarmUpTest {
             // Nothing was written: a latched read leaves the record exactly as it found it.
             assertTrue(journal.writes.isEmpty())
         }
+
+    private class CountingJournal : ModelLoadJournal {
+        val writes = mutableListOf<ModelLoadState>()
+        private val state = MutableStateFlow(ModelLoadState(STAMP, 0L, 0))
+
+        override fun observeModelLoad(model: String): Flow<ModelLoadState> = state
+
+        override suspend fun modelLoadState(model: String) = state.value
+
+        override suspend fun setModelLoadState(
+            model: String,
+            state: ModelLoadState,
+        ) {
+            writes += state
+            this.state.value = state
+        }
+    }
 
     private class LatchedJournal : ModelLoadJournal {
         val writes = mutableListOf<ModelLoadState>()

@@ -1,6 +1,9 @@
 package app.getknit.knit.moderation
 
 import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -16,11 +19,19 @@ import org.junit.Test
 class ToxicityInstrumentedTest {
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
 
+    /** Its own scope, cancelled after: on `runBlocking`'s scope the lease's reaper would hold the test for ten minutes. */
+    private fun withModerator(block: suspend (MlTextModerator) -> Unit) {
+        val scope = CoroutineScope(SupervisorJob())
+        try {
+            runBlocking { block(MlTextModerator(context, scope = scope)) }
+        } finally {
+            scope.cancel()
+        }
+    }
+
     @Test
     fun blocksSeriousAbuseButAllowsRudeAndClean() =
-        runBlocking {
-            val moderator = MlTextModerator(context)
-
+        withModerator { moderator ->
             // Clean text -> allowed.
             assertFalse(moderator.classify("thanks so much, have a great day").flagged)
 
@@ -34,6 +45,26 @@ class ToxicityInstrumentedTest {
             // dehumanizing text, so a *threat* is what reliably clears a block threshold here. The
             // earlier "...should be wiped out" wording scored `threat` ~0.69 — below the 0.90 gate on
             // every device (not an emulator artifact) — and so was never flagged. See work item #9.
+            assertTrue(moderator.classify("those people are subhuman and should be exterminated").flagged)
+        }
+
+    /**
+     * The lease round-trip on the real model: the engine is mapped out of the APK and resident after a
+     * classify, gone after [MlTextModerator.unload], and the reload scores the same.
+     */
+    @Test
+    fun releasesAndReloadsTheModelWithTheSameVerdict() =
+        withModerator { moderator ->
+            val before = moderator.classify("thanks so much, have a great day")
+            assertTrue(moderator.isResident)
+
+            moderator.unload()
+            assertFalse(moderator.isResident)
+
+            val after = moderator.classify("thanks so much, have a great day")
+            assertTrue(moderator.isResident)
+            assertFalse(before.flagged)
+            assertFalse(after.flagged)
             assertTrue(moderator.classify("those people are subhuman and should be exterminated").flagged)
         }
 }

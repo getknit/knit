@@ -52,8 +52,11 @@ import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.spool.CommonsInvite
 import app.getknit.knit.mesh.wifiaware.NanFaultInjector
+import app.getknit.knit.moderation.MlTextModerator
+import app.getknit.knit.moderation.ModelLease
 import app.getknit.knit.moderation.ModelLoadGuard
 import app.getknit.knit.moderation.ModelLoadPolicy
+import app.getknit.knit.moderation.NsfwImageModerator
 import app.getknit.knit.moderation.modelGuardStamp
 import app.getknit.knit.notifications.NotifConversation
 import app.getknit.knit.notifications.NotifFace
@@ -201,6 +204,8 @@ class DebugBridgeReceiver :
     private val digest: StoreDigest by inject()
     private val reviewPrompter: ReviewPrompter by inject()
     private val modelGuard: ModelLoadGuard by inject()
+    private val textModel: MlTextModerator by inject()
+    private val imageModel: NsfwImageModerator by inject()
     private val exits: ProcessExitReasons by inject()
     private val notifier: Notifier by inject()
     private val scope: CoroutineScope by inject()
@@ -888,10 +893,21 @@ class DebugBridgeReceiver :
      */
     private suspend fun handleModel(intent: Intent): JSONObject {
         if (intent.getBooleanExtra(EXTRA_RESET, false)) ModelLoadGuard.ALL.forEach { modelGuard.clear(it) }
+        // The shortcut through the ten-minute idle cycle: close both engines now, so the next classify
+        // reloads through the guard — what the memory trial and the reload check watch.
+        if (intent.getBooleanExtra(EXTRA_UNLOAD, false)) {
+            textModel.unload()
+            imageModel.unload()
+        }
         val stamp = modelGuardStamp(BuildConfig.VERSION_CODE, Build.FINGERPRINT.orEmpty())
         val models = JSONArray()
         for (model in ModelLoadGuard.ALL) {
             val state = settings.modelLoadState(model)
+            val (resident, lastUsedAt) =
+                when (model) {
+                    ModelLoadGuard.TOXICITY -> textModel.isResident to textModel.lastUsedAt
+                    else -> imageModel.isResident to imageModel.lastUsedAt
+                }
             models.put(
                 JSONObject()
                     .put("model", model)
@@ -899,7 +915,9 @@ class DebugBridgeReceiver :
                     .put("stale", state.stamp != stamp)
                     .put("pendingSince", state.pendingSince)
                     .put("fails", state.fails)
-                    .put("latched", modelGuard.observeLatched(model).first()),
+                    .put("latched", modelGuard.observeLatched(model).first())
+                    .put("resident", resident)
+                    .put("lastUsedAt", lastUsedAt),
             )
         }
         val exit = exits.lastExit()
@@ -908,6 +926,7 @@ class DebugBridgeReceiver :
             .put("stamp", stamp)
             .put("maxFails", ModelLoadPolicy.MAX_FAILS)
             .put("faultOnLoad", BuildConfig.MODEL_FAULT_ON_LOAD)
+            .put("idleMs", ModelLease.DEFAULT_IDLE_MS)
             .put("models", models)
             .put(
                 "lastExit",
@@ -1970,6 +1989,7 @@ class DebugBridgeReceiver :
         const val EXTRA_COUNT = "count"
         const val EXTRA_FROM = "from"
         const val EXTRA_RESET = "reset"
+        const val EXTRA_UNLOAD = "unload"
         const val EXTRA_ARM = "arm"
         const val EXTRA_URL = "url"
         const val EXTRA_CARD = "card"

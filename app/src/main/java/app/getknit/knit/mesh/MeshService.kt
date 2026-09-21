@@ -36,7 +36,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.koin.android.ext.android.inject
@@ -310,16 +312,22 @@ class MeshService : LifecycleService() {
     }
 
     /**
-     * Load the toxicity model the first time a peer is in range, off the inbound path. The first classify()
-     * otherwise pays a ~16 MB model load inline in the router's single inbound collector, stalling both radios
-     * for the duration; a peer nearby is the one signal that a message may be about to need it. A phone alone
-     * in a drawer never loads it (the warm-up used to run 5 s into every process start). The wait rides
-     * [lifecycleScope] so a stopped service drops it; the load itself rides the app scope so it finishes.
+     * Load the toxicity model each time a peer comes into range after none was, off the inbound path. The
+     * first classify() otherwise pays the model load inline in the router's single inbound collector,
+     * stalling both radios for the duration; a peer nearby is the one signal that a message may be about to
+     * need it. A phone alone in a drawer never loads it (the warm-up used to run 5 s into every process
+     * start), and one that let the model go after ten idle minutes alone gets it back when company arrives —
+     * if this beats their first message; a peer that stays through the idle release is not an edge, and that
+     * message reloads inline (`ModelLease`). The watch rides [lifecycleScope] so a stopped service drops it;
+     * the load itself rides the app scope so it finishes.
      */
     private fun warmModelOnFirstPeer() {
         lifecycleScope.launch {
-            meshManager.neighborCount.first { it > 0 }
-            scope.launch { textModel.warmUp() }
+            meshManager.neighborCount
+                .map { it > 0 }
+                .distinctUntilChanged()
+                .filter { it }
+                .collect { scope.launch { textModel.warmUp() } }
         }
     }
 

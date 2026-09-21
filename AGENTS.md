@@ -112,6 +112,15 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   wall clock. The hold lives in those two gates so the wedge watchdog never counts a held peer as owed (Tier-2 is
   a process kill and the hold is journaled): never read `reconcileWanted` / `bulkWanted.isWanted` around them.
   Not a `NanConnectPolicy` streak. Tests: `NanInitiatorPolicyTest`.
+- **When touching `moderation/MlTextModerator`, `NsfwImageModerator`, `ModelLease`, `TfLiteModels`,
+  `ModelLoadGuard`, the `…debug.MODEL` bridge, or `noCompress` in `app/build.gradle.kts`:** READ ADR 037 and
+  ADR 2026-09.cq9z. Each interpreter is mmapped from the APK's **Stored** `.tflite` entry (`noCompress "tflite"`
+  is load-bearing; no `tensorflow-lite-support`), built with explicit options (2 threads, XNNPACK), and held
+  on a `ModelLease`: the lease owns the mutex, the ten-minute idle reaper and the attempted/resident split — a
+  load that returned nothing is spent for the process (that is how the poison-pill survives an unload), a
+  reload goes through `ModelLoadGuard` again, and `Interpreter.close()` is never called outside the lease.
+  Never put `NsfwImageModerator` on a warm-up path. Regression: `ModelLeaseTest`, `ModelLoadGuardTest`,
+  `MlTextModeratorWarmUpTest`; on hardware `ToxicityInstrumentedTest` / `NsfwInstrumentedTest`.
 - **When touching `legal/`, `ui/about/`, `app/src/main/assets/legal/`, `THIRD-PARTY-NOTICES.md`, or a shipped
   dependency:** READ ADR 2026-09.6eb6. The in-app Open-source licenses list is `legal/ThirdPartyNotices.kt`,
   pinned to the notices table by `ThirdPartyNoticesSyncTest` and to `app/gradle.lockfile`'s

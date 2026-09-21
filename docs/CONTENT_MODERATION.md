@@ -88,6 +88,16 @@ on-demand model delivery (`ai-delivery`), no manifest permissions — so it can'
 Kotlin-2.4 graph or the no-`INTERNET` offline design. (See the version catalog for the full rationale,
 including why not LiteRT 2.x.)
 
+**Lifecycle (ADR 2026-09.cq9z).** Each model is mapped straight out of the APK's stored entry
+(`moderation/TfLiteModels.mapAsset` — `openFd` + `FileChannel.map`, no `tensorflow-lite-support`; the
+`noCompress "tflite"` line is what makes it work) into an `Interpreter` built with explicit options (two
+threads, XNNPACK), and held on a `moderation/ModelLease`: loaded on first use, inference serialised behind
+the lease's mutex off the main thread, **released after ten minutes without a classify** and reloaded on
+the next one — through `ModelLoadGuard` again, so a reload that faults natively latches like a first load.
+A load that returned nothing (missing asset, Java failure, latched) is *spent* for the process and never
+retried. The price is one cold reload per quiet stretch; the warm-ups (`KnitApp` on resume, `MeshService`
+when a peer arrives after none) hide it on the send path.
+
 **Hook points** (`BlobRepository` is the hub; verdicts cached by SHA-256 in `blob_verdicts`, so
 identical bytes are scanned once across send/receive):
 
@@ -294,12 +304,12 @@ therefore route a blob *into* the stricter screen, never around one.
 Both classifiers degrade to allow-all on any **Java** failure — a missing asset, a corrupt flatbuffer,
 `UnsatisfiedLinkError`, OOM. A **native** crash inside TFLite (SIGSEGV/SIGILL on an unfamiliar SoC, an
 XNNPACK path on the first inference) is different in kind: it takes the process, and nothing in the app can
-catch it. Because the toxicity warm-up runs from `KnitApplication.onCreate` on every launch, a device where
+catch it. Because the toxicity warm-up runs on every app resume and every peer arrival, a device where
 that reproduces is in a launch loop with no way out and no crash report.
 
-`moderation/ModelLoadGuard` (ADR 037) closes that. Before the first touch of a model it durably records a
-marker in `SettingsStore`, and clears it in a `finally` once the load *and* one inference have both come
-back alive. A launch that finds the marker still set therefore knows one thing only: **the process died in
+`moderation/ModelLoadGuard` (ADR 037) closes that. Before every touch of a model — the first in a process
+and, since ADR 2026-09.cq9z, each reload after the ten-minute idle release — it durably records a marker in
+`SettingsStore`, and clears it in a `finally` once the load *and* one inference have both come back alive. A launch that finds the marker still set therefore knows one thing only: **the process died in
 there.** It then asks the platform how (`crash/ProcessExitReasons` →
 `ActivityManager.getHistoricalProcessExitReasons`, API 30+):
 
@@ -324,8 +334,9 @@ This is the part worth being precise about, because it is **not** symmetrical:
 None of that is new — a build whose model assets fail to load has always behaved this way — but it becomes
 a *sticky* state rather than a transient one, so the app says so rather than implying coverage it does not
 have. Diagnostics grows a row under "Problem reports" naming which screening stopped, with a reset that
-takes effect on the next start (each moderator latches `loaded` in memory on its first attempt, so nothing
-reloads inside a running process). The row is keyed on the latch, **not** on there being a crash report:
+takes effect on the next start (a latched model was never loaded, so its `ModelLease` is *spent* — an
+attempt that returned nothing is permanent for the process; only a real engine is ever released and
+reloaded). The row is keyed on the latch, **not** on there being a crash report:
 a native crash captures none, which is the whole premise.
 
 Deliberately **not** done: routing `direct` through the word list when latched. Profanity screening that
@@ -346,7 +357,8 @@ status=11`, latched on the next launch; `kill` → `reason=2 (SIGNALED) status=9
 
 ```
 ./gradlew installDebug -PmodelFaultOnLoad=segv
-adb shell am broadcast -a app.getknit.knit.debug.MODEL -p app.getknit.knit   # journal + last exit record
+adb shell am broadcast -a app.getknit.knit.debug.MODEL -p app.getknit.knit   # journal, residency + last exit record
 adb shell am broadcast -a app.getknit.knit.debug.MODEL -p app.getknit.knit --ez reset true
+adb shell am broadcast -a app.getknit.knit.debug.MODEL -p app.getknit.knit --ez unload true   # release both engines now
 adb shell dumpsys activity exit-info app.getknit.knit                        # what the ROM actually reports
 ```

@@ -121,6 +121,7 @@ carries; never renumber an old one.
 | [2026-09.bgk3](decisions/2026-09-bgk3-an-unfulfillable-responder-request-is-re-filed-on-a-curve-and-given-up-on.md) | An unfulfillable responder request is re-filed on a curve and given up on | wifi-aware, reliability, mesh |
 | [2026-09.bts9](decisions/2026-09-bts9-the-block-list-never-enters-custody.md) | The block list never enters custody: a blocker carries a blocked sender's frames like every other node | custody, convergence, moderation, privacy |
 | [2026-09.cf7a](decisions/2026-09-cf7a-a-meshtastic-public-post-is-a-signed-attribution-in-its-own-room.md) | A Meshtastic public post is a signed attribution in its own room | lora, meshtastic, mesh |
+| [2026-09.cq9z](decisions/2026-09-cq9z-bundled-models-are-leased.md) | Bundled models are leased, not held resident | moderation, ml, battery, reliability |
 | [2026-09.dcah](decisions/2026-09-dcah-the-scope-table-derives-on-its-inputs-events.md) | The scope table derives on its inputs' events | spool, battery |
 | [2026-09.e8yw](decisions/2026-09-e8yw-the-bytes-own-radio-arrival-is-the-recipient-s-deferral-evidence.md) | The bytes' own radio arrival is the recipient's deferral evidence, noted before they are stored | spool, attachments |
 | [2026-09.emd7](decisions/2026-09-emd7-a-knit-board-tells-the-mesh-it-is-unmonitored.md) | A Knit board tells the mesh it is unmonitored | lora, meshtastic, provisioning |

@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
 /**
- * Wraps a bundled TFLite model's first touch so a **native** crash inside it cannot become an
+ * Wraps every load of a bundled TFLite model so a **native** crash inside it cannot become an
  * unrecoverable launch loop. [ModelLoadPolicy] holds the reasoning; this holds the three side effects it
  * needs — the durable journal write, reading how the last process died, and a clock.
  *
@@ -46,6 +46,10 @@ class ModelLoadGuard(
      * inference. First-inference tensor allocation and kernel selection is a plausible crash site of its
      * own, so closing the journal entry after the load alone would call success before the risky part had
      * run. It must also swallow its own Java-level failures: this counts process deaths, not exceptions.
+     *
+     * Every load runs here, not only the first in a process: [ModelLease] releases an engine after ten idle
+     * minutes and re-acquires it through the same [load], so a reload that faults latches exactly as a first
+     * load does. A `completed` record simply gets a fresh marker.
      */
     suspend fun <T : Any> guard(
         model: String,
@@ -53,12 +57,18 @@ class ModelLoadGuard(
     ): T? {
         val stored = tolerating { journal.modelLoadState(model) } ?: return load()
         val decision = ModelLoadPolicy.decide(stored, stamp, now(), exits())
-        // Awaited on purpose: this is the durability barrier. DataStore's edit {} fsyncs and renames
-        // before it resumes, so a native crash inside load() still finds the marker on disk next launch.
-        if (decision.next != stored) tolerating { journal.setModelLoadState(model, decision.next) }
-        if (!decision.load) return null
-        injectDebugFaultIfArmed()
+        if (!decision.load) {
+            if (decision.next != stored) tolerating { journal.setModelLoadState(model, decision.next) }
+            return null
+        }
         return try {
+            // Awaited on purpose: this is the durability barrier. DataStore's edit {} fsyncs and renames
+            // before it resumes, so a native crash inside load() still finds the marker on disk next launch.
+            // Inside the try, also on purpose: a caller cancelled after the write committed must still reach
+            // the finally, or the marker outlives this process and the next load — in this process, now
+            // that models reload — reads it as an unexplained death and counts it.
+            tolerating { journal.setModelLoadState(model, decision.next) }
+            injectDebugFaultIfArmed()
             load()
         } finally {
             // In a finally, and NonCancellable, deliberately. The marker must mean "the process died in
@@ -74,7 +84,11 @@ class ModelLoadGuard(
     /** Whether [model] is latched off right now, as a stream — Diagnostics can reset it while it watches. */
     fun observeLatched(model: String): Flow<Boolean> = journal.observeModelLoad(model).map(::isLatched)
 
-    /** The Diagnostics reset: give [model] another chance. Takes effect on the next process start. */
+    /**
+     * The Diagnostics reset: give [model] another chance. Takes effect on the next process start — a latched
+     * model was never loaded, so its moderator has nothing to release and never comes back through [guard]
+     * until the process restarts (the attempted-but-empty state in [ModelLease] is permanent by design).
+     */
     suspend fun clear(model: String) {
         tolerating { journal.setModelLoadState(model, ModelLoadPolicy.completed(stamp)) }
     }

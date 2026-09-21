@@ -198,9 +198,9 @@ fun KnitApp(startRoute: String? = null) {
                     // Warm the toxicity model now that someone can send: the first classify() loads a ~16 MB
                     // TFLite model, which on the send path freezes the composer. It used to run 5 s into
                     // every process start — including the foreground service's background restarts with no
-                    // user and nobody nearby — so it lives here (and on the first peer sighting, in
-                    // MeshService) instead. A no-op once loaded; on the app scope so leaving mid-load doesn't
-                    // cancel it.
+                    // user and nobody nearby — so it lives here (and on a peer's arrival, in MeshService)
+                    // instead. A no-op while the model is resident; it loads again after the ten-minute idle
+                    // release. On the app scope so leaving mid-load doesn't cancel it.
                     appScope.launch { textModel.warmUp() }
                     // Foreground state is guaranteed here, so this is where a refused start gets its retry.
                     // Unconditional rather than gated on [MeshStartGate], because a refusal isn't the only
