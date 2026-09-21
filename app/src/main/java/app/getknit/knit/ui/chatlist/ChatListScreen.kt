@@ -164,6 +164,7 @@ fun ChatListScreen(
         onSignOut = { showSignOut = true },
         onDismissClone = viewModel::dismissClone,
         onResumeMesh = viewModel::resumeMesh,
+        onStartMesh = viewModel::startMesh,
         onDeleteConversation = viewModel::deleteConversation,
     )
 
@@ -242,6 +243,7 @@ internal fun ChatListScreenContent(
     onSignOut: () -> Unit,
     onDismissClone: () -> Unit,
     onResumeMesh: () -> Unit,
+    onStartMesh: () -> Unit,
     onDeleteConversation: (conversationId: String) -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -400,10 +402,14 @@ internal fun ChatListScreenContent(
                 if (state.cloneVisible) {
                     CloneBanner(onSignOut = onSignOut, onDismiss = onDismissClone)
                 }
-                // The user's own pause, from the notification; the view model withholds the radio warning
-                // under it (a stopped radio's last health is stale).
-                state.pausedUntil?.let { until ->
-                    MeshPausedBanner(until = until, now = now, onResume = onResumeMesh)
+                // The user's own Stop or pause, from the notification; the view model withholds the radio
+                // warning under either (a stopped radio's last health is stale).
+                if (state.meshStopped) {
+                    MeshOffBanner(pausedUntil = null, now = now, onAction = onStartMesh)
+                } else {
+                    state.pausedUntil?.let { until ->
+                        MeshOffBanner(pausedUntil = until, now = now, onAction = onResumeMesh)
+                    }
                 }
                 state.radioWarning?.let { warning ->
                     RadioWarningBanner(
@@ -1005,6 +1011,7 @@ fun ChatListScreenPopulatedPreview() =
             onSignOut = {},
             onDismissClone = {},
             onResumeMesh = {},
+            onStartMesh = {},
             onDeleteConversation = {},
         )
     }
@@ -1038,6 +1045,7 @@ fun ChatListScreenRadioWarningPreview() =
             onSignOut = {},
             onDismissClone = {},
             onResumeMesh = {},
+            onStartMesh = {},
             onDeleteConversation = {},
         )
     }
@@ -1072,6 +1080,7 @@ fun ChatListScreenClonePreview() =
             onSignOut = {},
             onDismissClone = {},
             onResumeMesh = {},
+            onStartMesh = {},
             onDeleteConversation = {},
         )
     }
@@ -1100,6 +1109,7 @@ fun ChatListScreenLoadingPreview() =
             onSignOut = {},
             onDismissClone = {},
             onResumeMesh = {},
+            onStartMesh = {},
             onDeleteConversation = {},
         )
     }
@@ -1146,6 +1156,7 @@ fun ChatListScreenFirstRunPreview() =
             onSignOut = {},
             onDismissClone = {},
             onResumeMesh = {},
+            onStartMesh = {},
             onDeleteConversation = {},
         )
     }
@@ -1180,6 +1191,7 @@ fun ChatListScreenQuietPreview() =
             onSignOut = {},
             onDismissClone = {},
             onResumeMesh = {},
+            onStartMesh = {},
             onDeleteConversation = {},
         )
     }

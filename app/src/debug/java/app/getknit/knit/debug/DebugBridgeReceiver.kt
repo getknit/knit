@@ -726,6 +726,7 @@ class DebugBridgeReceiver :
         val selfId = identity.nodeId()
         val selfName = settings.displayName.first()
         val pausedUntil = settings.meshPausedUntil.first()
+        val meshEnabled = settings.meshEnabled.first()
         val nameByNode = peers.observePeers().first().associate { it.nodeId to it.name }
 
         val reachable = JSONArray()
@@ -765,6 +766,8 @@ class DebugBridgeReceiver :
                 // The pause deadline as stored, and whether it is still a pause (the service reads it the same way).
                 .put("meshPausedUntil", pausedUntil ?: JSONObject.NULL)
                 .put("meshPaused", MeshPause.activeDeadline(pausedUntil, System.currentTimeMillis()) != null)
+                // False after the notification's Stop: KnitApp and BootReceiver then start nothing until Start.
+                .put("meshEnabled", meshEnabled)
                 .put("reachable", reachable)
                 .put("typing", typing)
                 .put("metrics", metricsJson(metrics.snapshot()))

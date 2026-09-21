@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PauseCircle
+import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -30,21 +31,34 @@ import app.getknit.knit.ui.preview.KnitPreview
 import java.util.concurrent.TimeUnit
 
 /**
- * "Mesh paused until 3:15 PM" with a Resume, pinned above the chat list like [RadioWarningBanner]. One row,
- * everything centred on the text line: the icon, the message, the button. The colour is the primary
- * container — the app's own coral, so it reads as a notice with weight — not the error container, which the
- * clone and all-radios-off banners keep for things that are actually wrong; this one the user asked for.
- * Not dismissible: the deadline is the dismissal, and Resume is the early one. [until] is the wall-clock
- * deadline (`ChatListUiState.pausedUntil`); [now] fixes the label's "today or later" reading.
+ * The mesh is off because the user said so from its notification: "Mesh paused until 3:15 PM — Resume"
+ * while a pause runs ([pausedUntil] set), "Mesh stopped — Start" after a Stop ([pausedUntil] null). Pinned
+ * above the chat list like [RadioWarningBanner], one row with the icon, the message and the button centred
+ * on the text line. The colour is the primary container — the app's own coral, so it reads as a notice with
+ * weight — not the error container, which the clone and all-radios-off banners keep for things that are
+ * actually wrong; this one the user asked for. Not dismissible: the button is the way out. [now] fixes the
+ * pause label's "today or later" reading. ADR 2026-09.wz99.
  */
 @Composable
-fun MeshPausedBanner(
-    until: Long,
+fun MeshOffBanner(
+    pausedUntil: Long?,
     now: Long,
-    onResume: () -> Unit,
+    onAction: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
+    val message =
+        if (pausedUntil != null) {
+            stringResource(R.string.chatlist_mesh_paused_banner, pausedUntilLabel(context, pausedUntil, now))
+        } else {
+            stringResource(R.string.chatlist_mesh_stopped_banner)
+        }
+    val action =
+        if (pausedUntil != null) {
+            stringResource(R.string.chatlist_mesh_paused_resume)
+        } else {
+            stringResource(R.string.chatlist_mesh_stopped_start)
+        }
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.primaryContainer,
@@ -54,26 +68,30 @@ fun MeshPausedBanner(
             modifier
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 8.dp)
-                .semantics { testTag = "chatlist_mesh_paused_banner" },
+                .semantics { testTag = "chatlist_mesh_off_banner" },
     ) {
         Row(
             modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 6.dp, end = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Filled.PauseCircle, contentDescription = null, modifier = Modifier.size(24.dp))
+            Icon(
+                if (pausedUntil != null) Icons.Filled.PauseCircle else Icons.Filled.StopCircle,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp),
+            )
             Spacer(Modifier.width(12.dp))
             Text(
-                text = stringResource(R.string.chatlist_mesh_paused_banner, pausedUntilLabel(context, until, now)),
+                text = message,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width(8.dp))
             TextButton(
-                onClick = onResume,
+                onClick = onAction,
                 colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onPrimaryContainer),
-                modifier = Modifier.semantics { testTag = "chatlist_mesh_paused_banner_resume" },
+                modifier = Modifier.semantics { testTag = "chatlist_mesh_off_banner_action" },
             ) {
-                Text(stringResource(R.string.chatlist_mesh_paused_resume))
+                Text(action)
             }
         }
     }
@@ -81,8 +99,15 @@ fun MeshPausedBanner(
 
 @Preview(showBackground = true)
 @Composable
-fun MeshPausedBannerPreview() =
+fun MeshOffBannerPausedPreview() =
     KnitPreview {
         val now = System.currentTimeMillis()
-        MeshPausedBanner(until = now + TimeUnit.MINUTES.toMillis(15), now = now, onResume = {})
+        MeshOffBanner(pausedUntil = now + TimeUnit.MINUTES.toMillis(15), now = now, onAction = {})
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun MeshOffBannerStoppedPreview() =
+    KnitPreview {
+        MeshOffBanner(pausedUntil = null, now = System.currentTimeMillis(), onAction = {})
     }

@@ -31,6 +31,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.legal.License
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshService
@@ -69,6 +70,7 @@ import app.getknit.knit.ui.theme.KnitMotion
 import app.getknit.knit.ui.theme.LocalReduceMotion
 import app.getknit.knit.ui.yourmesh.YourMeshScreen
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.koin.compose.koinInject
 
@@ -167,15 +169,21 @@ fun KnitApp(startRoute: String? = null) {
         startRoute
             ?: if (onboarded) Routes.CHAT_LIST else Routes.ONBOARDING
 
-    // Start the mesh service whenever the user is past onboarding (guard kept broad on purpose). Demo
-    // builds never start it — there is no real mesh and the seeded data needs no transport.
+    // Start the mesh service whenever the user is past onboarding and has not stopped it from the
+    // notification. The flag is read from the store at each decision, never from a collected copy — see
+    // [shouldStartMeshFromUi] for the stale-on-resume trap. The collected copy below only re-keys this
+    // effect when the flag flips back on (the chat list's Start), which is how that button starts the
+    // service without a second starter. Demo builds never start it — there is no real mesh and the seeded
+    // data needs no transport.
     val backStackEntry by navController.currentBackStackEntryAsState()
+    val settings = koinInject<SettingsStore>()
+    val meshEnabledKey by settings.meshEnabled.collectAsStateWithLifecycle(initialValue = null)
     // Read by the ON_RESUME observer below, whose DisposableEffect keys only on the lifecycle owner and
     // would otherwise capture whichever route happened to be current when it was set up.
     val currentRoute by rememberUpdatedState(backStackEntry?.destination?.route)
-    LaunchedEffect(backStackEntry?.destination?.route) {
+    LaunchedEffect(backStackEntry?.destination?.route, meshEnabledKey) {
         val route = backStackEntry?.destination?.route
-        if (!BuildConfig.SEED_DEMO && route != null && route != Routes.ONBOARDING) {
+        if (shouldStartMeshFromUi(route != null && route != Routes.ONBOARDING, settings.meshEnabled.first())) {
             // The start can be refused outright when this lands after the app has been backgrounded — a task
             // switch, a screen-off, an incoming call — so it reports rather than throws, and the refusal is
             // recorded for [MeshStartGate] and retried on resume below. Work item #32.
@@ -210,8 +218,14 @@ fun KnitApp(startRoute: String? = null) {
                     // already-running service is one binder call, and the service re-claims its foreground
                     // state on that start — which is not a no-op when the system has quietly demoted it
                     // (ADR 2026-09.f69x).
+                    // On the app scope for the store read; the pre-check and the call-site catch in
+                    // MeshService.start cover the foreground lapsing during that hop.
                     val route = currentRoute
-                    if (route != null && route != Routes.ONBOARDING) startGate.record(MeshService.start(context))
+                    appScope.launch {
+                        if (shouldStartMeshFromUi(route != null && route != Routes.ONBOARDING, settings.meshEnabled.first())) {
+                            startGate.record(MeshService.start(context))
+                        }
+                    }
                     meshManager.heal()
                 }
             lifecycleOwner.lifecycle.addObserver(observer)

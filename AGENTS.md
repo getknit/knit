@@ -95,7 +95,12 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   surface reads the key through `MeshPause.activeDeadline` — never `MeshTransport.pause` (that is the Wi-Fi
   Direct hand-over) and never a stop-and-restart (an alarm cannot start a foreground service from the
   background). Every plain start re-claims without resuming; the two resume alarms are inexact and bounded, not
-  `SCHEDULE_EXACT_ALARM`; Stop cancels the store collector before `stopSelf()`. Regression: `MeshServicePauseTest`.
+  `SCHEDULE_EXACT_ALARM`; Stop cancels the store collector before `stopSelf()`. **Stop is sticky** (the
+  amendment): `KnitApp`'s route effect and `ON_RESUME` observer both ask `ui/MeshStartPolicy.kt`'s
+  `shouldStartMeshFromUi` with `SettingsStore.meshEnabled` read from the store at that moment (a
+  lifecycle-collected copy is stale on the resume after a Stop — device-observed) — and the chat list's Start
+  only writes the flag back; don't add a second starter or decide on a cached value.
+  Regression: `MeshServicePauseTest`, `MeshStartPolicyTest`.
   **Before touching the type bitmask `postForeground` claims (`meshForegroundServiceTypes`), the manifest's
   `<service>`, or `TransportHealth.ForegroundOnly` / `NanSessionFault` in `mesh/wifiaware/`:** READ ADR
   2026-09.535d. The service claims `location` on exactly the tiers where `requiredRadioPermissions` rides the

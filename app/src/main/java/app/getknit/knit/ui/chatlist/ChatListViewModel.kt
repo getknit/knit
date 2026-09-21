@@ -107,8 +107,11 @@ data class ChatListUiState(
     // (`SettingsStore.cloneSeenAt` past `cloneDismissedAt`, ADR 2026-09.ypcc): the sign-out banner.
     val cloneVisible: Boolean = false,
     // The mesh is paused from its notification until this wall-clock deadline (`SettingsStore.meshPausedUntil`,
-    // still ahead of now): the paused banner with its Resume. Null while the mesh runs.
+    // still ahead of now): the off banner in its paused form, with Resume. Null while the mesh runs or is stopped.
     val pausedUntil: Long? = null,
+    // The user stopped the mesh from its notification (`SettingsStore.meshEnabled` false) and nothing starts it
+    // until they say so: the off banner in its stopped form, with Start. Outranks a pause.
+    val meshStopped: Boolean = false,
     // First run: show the getting-started hint under the Nearby row. True only while there is nothing on
     // this screen to open — see the flag's computation in [state] for what retires it.
     val showGettingStarted: Boolean = false,
@@ -178,6 +181,8 @@ class ChatListViewModel(
         val cloneVisible: Boolean,
         /** See [ChatListUiState.pausedUntil]. */
         val pausedUntil: Long?,
+        /** See [ChatListUiState.meshStopped]. */
+        val meshStopped: Boolean,
         val relayPlane: RelayPlane,
         val loraPlane: LoraPlane,
         /** The board's primary channel as the Meshtastic room names it, while live — the row's title. */
@@ -247,17 +252,29 @@ class ChatListViewModel(
             .distinctUntilChanged()
 
     // The pause deadline the service is honouring, read by the one rule every surface shares: a value already
-    // behind the clock is not a pause. Folded with the two banners above; while paused the radio warning is
-    // withheld, because a stopped transport keeps the last health it reported and "Bluetooth is off" under
-    // "Mesh paused" would be stale twice over.
+    // behind the clock is not a pause. The stop flag is the notification's Stop, which `KnitApp` honours by
+    // not starting the service. Folded with the two banners above; while the mesh is off either way the radio
+    // warning is withheld, because a stopped transport keeps the last health it reported and "Bluetooth is
+    // off" under "Mesh paused" would be stale twice over.
     private val pausedUntil =
         settings.meshPausedUntil
             .map { MeshPause.activeDeadline(it, System.currentTimeMillis()) }
             .distinctUntilChanged()
 
+    private val meshStopped = settings.meshEnabled.map { !it }.distinctUntilChanged()
+
+    /** The four banner inputs, named, so the status combine below keeps its typed five-flow overload. */
+    private data class Banners(
+        val warning: RadioWarning?,
+        val cloneVisible: Boolean,
+        val pausedUntil: Long?,
+        val meshStopped: Boolean,
+    )
+
     private val banners =
-        combine(visibleWarning, cloneVisible, pausedUntil) { warning, clone, paused ->
-            Triple(if (paused != null) null else warning, clone, paused)
+        combine(visibleWarning, cloneVisible, pausedUntil, meshStopped) { warning, clone, paused, stopped ->
+            val off = stopped || paused != null
+            Banners(if (off) null else warning, clone, if (stopped) null else paused, stopped)
         }
 
     private val meshStatus =
@@ -267,8 +284,19 @@ class ChatListViewModel(
             banners,
             relayPlane,
             loraRoom,
-        ) { count, health, (warning, clone, paused), plane, (loraPlane, channel, room) ->
-            MeshStatus(count, health, warning, clone, paused, plane, loraPlane, channel, room)
+        ) { count, health, banners, plane, (loraPlane, channel, room) ->
+            MeshStatus(
+                count,
+                health,
+                banners.warning,
+                banners.cloneVisible,
+                banners.pausedUntil,
+                banners.meshStopped,
+                plane,
+                loraPlane,
+                channel,
+                room,
+            )
         }
 
     /** Everything one emission of [state] is built from — the five combined sources, named. */
@@ -342,6 +370,15 @@ class ChatListViewModel(
      */
     fun resumeMesh() {
         viewModelScope.launch { settings.setMeshPausedUntil(null) }
+    }
+
+    /**
+     * Turns the mesh back on after the notification's Stop — the banner's Start. Only the flag is written:
+     * `KnitApp`'s route effect keys on it and starts the service, so there is one starter, and a reboot
+     * honours the same flag through `BootReceiver`.
+     */
+    fun startMesh() {
+        viewModelScope.launch { settings.setMeshEnabled(true) }
     }
 
     /**

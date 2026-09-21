@@ -71,6 +71,7 @@ internal class ChatListAssembler(
             radioWarning = s.mesh.warning,
             cloneVisible = s.mesh.cloneVisible,
             pausedUntil = s.mesh.pausedUntil,
+            meshStopped = s.mesh.meshStopped,
             showGettingStarted = gettingStarted,
         )
     }

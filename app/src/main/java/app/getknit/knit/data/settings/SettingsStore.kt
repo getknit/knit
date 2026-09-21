@@ -183,9 +183,11 @@ class SettingsStore(
 
     /**
      * Whether the mesh foreground service should be running — the persisted twin of "is the mesh on".
-     * Defaults to on. Flipped to false when the user manually stops the service from its ongoing
-     * notification, and back to true whenever the service (re)starts, so [app.getknit.knit.mesh.BootReceiver]
-     * can restore the mesh after a device reboot **unless** the user had stopped it beforehand.
+     * Defaults to on. Flipped to false when the user stops the service from its ongoing notification, and
+     * back to true whenever the service (re)starts or the chat list's Start is tapped. Every starter honours
+     * it: [app.getknit.knit.mesh.BootReceiver] after a reboot, and `KnitApp`'s route and resume effects on
+     * every open (`shouldStartMeshFromUi`, ADR 2026-09.wz99) — a stopped mesh stays stopped until the user
+     * says otherwise. Sign-out and a restore stop the service *without* writing it, on purpose.
      */
     val meshEnabled: Flow<Boolean> = dataStore.data.map { it[KEY_MESH_ENABLED] ?: true }
 

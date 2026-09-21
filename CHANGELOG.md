@@ -43,6 +43,8 @@ document:
 
 ### Changed
 
+- Stop on the mesh notification now keeps the mesh off until you start it again, where opening Knit used to
+  switch it back on. The chat list says the mesh is stopped and offers Start.
 - Your phone spends less battery on a quiet mesh. Each message crosses a Bluetooth link once rather than
   twice, and a phone left alone with the screen off stops waking its Wi-Fi Aware radio every few seconds.
 - A relay you have set up asks for far less while nothing is happening, and one that has gone quiet is

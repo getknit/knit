@@ -162,6 +162,10 @@
          time the notification shows ("3:15 PM" / "Tue 3:15 PM"). -->
     <string name="chatlist_mesh_paused_banner">Mesh paused until %1$s</string>
     <string name="chatlist_mesh_paused_resume">Resume</string>
+    <!-- Chat-list mesh-stopped banner: the user stopped the mesh from its notification, and it stays stopped
+         until this Start (or a reboot with the flag on). -->
+    <string name="chatlist_mesh_stopped_banner">Mesh stopped</string>
+    <string name="chatlist_mesh_stopped_start">Start</string>
     <string name="chat_empty">No messages yet.\nSay hello to nearby devices.</string>
     <!-- Shown above the oldest loaded message while more of the conversation is being read in. -->
     <string name="chat_loading_older">Loading earlier messages…</string>

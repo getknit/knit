@@ -101,3 +101,7 @@ is a listed exemption" conflated two exemptions. The boot one is the platform's,
 `IMPORTANCE_SERVICE`, so on every phone without the battery exemption the pre-check refused the boot start
 before it reached the system. The receiver now goes through `MeshService.startFromBoot`, which skips the
 pre-check and keeps the call-site catch, and records the outcome in `MeshStartGate` like the other callers.
+
+*Amendment (2026-09-20, ADR 2026-09.wz99).* "Recovery is the next foreground app open" holds only while
+`SettingsStore.meshEnabled` is on: the notification's Stop is now sticky, and `KnitApp`'s two starters ask
+`shouldStartMeshFromUi` first. A *refused* start never clears the flag, so the resume retry above is untouched.

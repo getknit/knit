@@ -91,6 +91,7 @@ class ChatListScreenContentTest {
                     onSignOut = {},
                     onDismissClone = {},
                     onResumeMesh = {},
+                    onStartMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -133,6 +134,7 @@ class ChatListScreenContentTest {
                     onSignOut = {},
                     onDismissClone = {},
                     onResumeMesh = {},
+                    onStartMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -173,6 +175,7 @@ class ChatListScreenContentTest {
                     onSignOut = {},
                     onDismissClone = {},
                     onResumeMesh = {},
+                    onStartMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -209,6 +212,7 @@ class ChatListScreenContentTest {
                     onSignOut = {},
                     onDismissClone = {},
                     onResumeMesh = {},
+                    onStartMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -247,6 +251,7 @@ class ChatListScreenContentTest {
                     onSignOut = {},
                     onDismissClone = {},
                     onResumeMesh = {},
+                    onStartMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -284,6 +289,7 @@ class ChatListScreenContentTest {
                     onSignOut = {},
                     onDismissClone = {},
                     onResumeMesh = {},
+                    onStartMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -321,6 +327,7 @@ class ChatListScreenContentTest {
                     onSignOut = {},
                     onDismissClone = {},
                     onResumeMesh = {},
+                    onStartMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -356,6 +363,7 @@ class ChatListScreenContentTest {
                     onSignOut = {},
                     onDismissClone = {},
                     onResumeMesh = {},
+                    onStartMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -400,6 +408,7 @@ class ChatListScreenContentTest {
                     onSignOut = {},
                     onDismissClone = {},
                     onResumeMesh = {},
+                    onStartMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -448,6 +457,7 @@ class ChatListScreenContentTest {
                     onSignOut = { signOuts++ },
                     onDismissClone = { dismissals++ },
                     onResumeMesh = {},
+                    onStartMesh = {},
                     onDeleteConversation = {},
                 )
             }
@@ -491,19 +501,64 @@ class ChatListScreenContentTest {
                     onSignOut = {},
                     onDismissClone = {},
                     onResumeMesh = { resumes++ },
+                    onStartMesh = {},
                     onDeleteConversation = {},
                 )
             }
         }
 
-        compose.onNodeWithTag("chatlist_mesh_paused_banner").assertIsDisplayed()
+        compose.onNodeWithTag("chatlist_mesh_off_banner").assertIsDisplayed()
         val label = pausedUntilLabel(ApplicationProvider.getApplicationContext(), until, now)
         compose.onNodeWithText("Mesh paused until $label").assertIsDisplayed()
-        compose.onNodeWithTag("chatlist_mesh_paused_banner_resume").performClick()
+        compose.onNodeWithTag("chatlist_mesh_off_banner_action").performClick()
         assertEquals(1, resumes)
 
         pausedUntil = null
         compose.waitForIdle()
-        compose.onNodeWithTag("chatlist_mesh_paused_banner").assertDoesNotExist()
+        compose.onNodeWithTag("chatlist_mesh_off_banner").assertDoesNotExist()
+    }
+
+    /** The stopped form of the same banner: its own text, Start routed, and it outranks a pause. */
+    @Test
+    fun theMeshStoppedBannerShowsStartAndOutranksAPause() {
+        var starts = 0
+        var resumes = 0
+        compose.setContent {
+            KnitTheme {
+                ChatListScreenContent(
+                    state =
+                        ChatListUiState(
+                            conversations = listOf(row("nearby", "Nearby", isRoom = true)),
+                            pausedUntil = now + 15 * 60_000L,
+                            meshStopped = true,
+                        ),
+                    now = now,
+                    onOpenConversation = {},
+                    onSearch = {},
+                    onNewMessage = {},
+                    onOpenSettings = {},
+                    onOpenYourMesh = {},
+                    onOpenDiagnostics = {},
+                    onOpenBlockedUsers = {},
+                    onOpenMessageRequests = {},
+                    onOpenDonate = {},
+                    onOpenAddContact = {},
+                    onShareApp = {},
+                    onOpenRadioSettings = {},
+                    onDismissRadioWarning = {},
+                    onSignOut = {},
+                    onDismissClone = {},
+                    onResumeMesh = { resumes++ },
+                    onStartMesh = { starts++ },
+                    onDeleteConversation = {},
+                )
+            }
+        }
+
+        compose.onNodeWithTag("chatlist_mesh_off_banner").assertIsDisplayed()
+        compose.onNodeWithText("Mesh stopped").assertIsDisplayed()
+        compose.onNodeWithTag("chatlist_mesh_off_banner_action").performClick()
+        assertEquals(1, starts)
+        assertEquals(0, resumes)
     }
 }

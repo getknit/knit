@@ -94,6 +94,7 @@ class ChatListViewModelTest {
     private val cloneSeenFlow = MutableStateFlow(0L)
     private val cloneDismissedFlow = MutableStateFlow(0L)
     private val pausedUntilFlow = MutableStateFlow<Long?>(null)
+    private val meshEnabledFlow = MutableStateFlow(true)
 
     // A finite stand-in for the production poller, which never idles under a virtual clock.
     private val relayFlow = MutableStateFlow(RelayFacts())
@@ -116,6 +117,7 @@ class ChatListViewModelTest {
         every { settings.cloneSeenAt } returns cloneSeenFlow
         every { settings.cloneDismissedAt } returns cloneDismissedFlow
         every { settings.meshPausedUntil } returns pausedUntilFlow
+        every { settings.meshEnabled } returns meshEnabledFlow
     }
 
     @After
@@ -420,6 +422,31 @@ class ChatListViewModelTest {
             advanceUntilIdle()
             assertNull(vm.state.value.pausedUntil)
             assertEquals(RadioWarning.AllRadiosOff, vm.state.value.radioWarning)
+        }
+
+    /** The stopped banner is the flag the notification's Stop flips; it outranks a pause, and Start writes it back. */
+    @Test
+    fun theMeshStoppedBannerFollowsTheFlagOutranksAPauseAndStartWritesItBack() =
+        runTest {
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            mesh.transportStatuses.value = listOf(TransportStatus(TransportKind.Bluetooth, TransportHealth.Unavailable, 0, 0))
+            advanceUntilIdle()
+            assertFalse(vm.state.value.meshStopped)
+
+            meshEnabledFlow.value = false
+            pausedUntilFlow.value = System.currentTimeMillis() + 15 * 60_000L
+            advanceUntilIdle()
+            assertTrue(vm.state.value.meshStopped)
+            assertNull(vm.state.value.pausedUntil)
+            assertNull(vm.state.value.radioWarning)
+
+            vm.startMesh()
+            advanceUntilIdle()
+            coVerify { settings.setMeshEnabled(true) }
+            meshEnabledFlow.value = true
+            advanceUntilIdle()
+            assertFalse(vm.state.value.meshStopped)
         }
 
     @Test

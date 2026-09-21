@@ -79,3 +79,24 @@ killed, `am start`) came up paused with the alarms re-armed for the same deadlin
 the shade's Resume both raised the radios and cancelled the alarms; Stop on the paused notification stopped
 the service with no radio bring-up on the way out, the key cleared and all three alarms cancelled. Not
 measured: the resume delay from deep Doze (the P3 needs Doze lifted for Aware anyway) and a reboot mid-pause.
+
+*Amendment (2026-09-20, the same day — Stop is sticky).* With a pause on offer, Stop's old shape — undone by the
+next open, because `KnitApp`'s route effect and `ON_RESUME` observer started the service on every navigation
+and `startMesh` wrote `meshEnabled` back to true — stopped making sense: the user now has a way to say "for
+a while", so Stop can mean "until I say otherwise". Both starters now ask one pure rule,
+`ui/MeshStartPolicy.kt`'s `shouldStartMeshFromUi(pastOnboarding, meshEnabled)`, with the flag **read from the
+store at the moment of each decision** (`settings.meshEnabled.first()`, on the effect's own coroutine and, for
+the resume observer, a hop on the app scope). The first cut collected it with `collectAsStateWithLifecycle`
+and the Pixel 3 showed why that cannot work: the collection stops while the activity is off screen, which is
+exactly where the Stop tap lands, so the resume that followed read the old `true`, started the service, and
+the service wrote the flag back to true as it came up — Stop undone in six seconds. The hop costs the resume
+start a few milliseconds off the guaranteed-foreground moment; the pre-check and the call-site catch in
+`MeshService.start` exist for that gap. The chat list shows the same banner in its stopped form
+("Mesh stopped — Start", `MeshOffBanner` with `pausedUntil = null`, outranking a pause), and Start only writes
+`setMeshEnabled(true)`: the route effect keys on the flag and starts the service, so there is one starter and
+`BootReceiver` reads the same switch after a reboot. What this amends in ADR 043: "recovery is the next
+foreground app open" now holds only while the flag is on — the resume retry that ADR relies on for a
+*refused* start is untouched, since a refusal never clears the flag. Sign-out and a restore still stop the
+service without writing it. Pinned by `MeshStartPolicyTest` and the two chat list tests' stopped cases;
+device-verified on the Pixel 3 the same evening (Stop, open → no service, no radio bring-up, the banner;
+Start → service and both radios back within a second).

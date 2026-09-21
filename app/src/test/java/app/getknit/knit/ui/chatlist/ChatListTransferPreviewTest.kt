@@ -87,6 +87,7 @@ class ChatListTransferPreviewTest {
         every { settings.cloneSeenAt } returns MutableStateFlow(0L)
         every { settings.cloneDismissedAt } returns MutableStateFlow(0L)
         every { settings.meshPausedUntil } returns MutableStateFlow(null)
+        every { settings.meshEnabled } returns MutableStateFlow(true)
         // A relaxed mock hands back a Flow that never emits, and one silent arm stalls the whole combine.
         every { drafts.all } returns draftsFlow
         every { transfers.states } returns transfersFlow

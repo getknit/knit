@@ -9,7 +9,8 @@ doc). **Don't start a deferred item without explicit direction.**
 - **The mesh pauses from its notification BUILT** (2026-09-20, ADR 2026-09.wz99) — `Pause 15 min · Pause 1 hour
   · Stop` on the running notification, `Resume · Stop` on the paused one, a "Mesh paused until …" banner on the
   chat list; the service stays foreground, `MeshManager` goes down, and two inexact alarms plus every start
-  bring it back. Device-verified the same day on the Pixel 3 (resume 32 s past the deadline on an awake phone;
+  bring it back. Stop is sticky the same day (the ADR's amendment): opening the app no longer restarts a
+  stopped mesh, and the banner's stopped form carries Start. Device-verified the same day on the Pixel 3 (resume 32 s past the deadline on an awake phone;
   reinstall mid-pause, banner Resume and Stop-while-paused all as designed). **Still owed:** the resume delay
   from deep Doze and a reboot mid-pause. **Deferred from it:** a 12 h / "until tomorrow" span — the shade shows three
   actions and Stop keeps its seat, so a third span needs an in-app surface (a Settings row or the banner's
