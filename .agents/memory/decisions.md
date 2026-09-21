@@ -126,6 +126,7 @@ carries; never renumber an old one.
 | [2026-09.e8yw](decisions/2026-09-e8yw-the-bytes-own-radio-arrival-is-the-recipient-s-deferral-evidence.md) | The bytes' own radio arrival is the recipient's deferral evidence, noted before they are stored | spool, attachments |
 | [2026-09.emd7](decisions/2026-09-emd7-a-knit-board-tells-the-mesh-it-is-unmonitored.md) | A Knit board tells the mesh it is unmonitored | lora, meshtastic, provisioning |
 | [2026-09.f69x](decisions/2026-09-f69x-a-start-into-a-demoted-foreground-service-re-claims-the-state-instead-of-timing.md) | A start into a demoted foreground service re-claims the state instead of timing out | reliability, service, android |
+| [2026-09.fjcw](decisions/2026-09-fjcw-the-chat-reads-blob-sizes-for-its-window.md) | The chat reads blob sizes for its window, not the table | chat, blobs, battery |
 | [2026-09.fq6b](decisions/2026-09-fq6b-overscroll-and-ripple-take-their-colour-from-the-theme.md) | Overscroll and ripple take their colour from the theme | ui, theme |
 | [2026-09.gc3m](decisions/2026-09-gc3m-battery-use-set-to-restricted-is-its-own-state.md) | Battery use set to Restricted is its own state, shown where the exemption is | ui, onboarding, settings, reliability |
 | [2026-09.gdhp](decisions/2026-09-gdhp-every-sender-supplied-last-writer-wins-clock-is-clamped-to-the-skew-window.md) | Every sender-supplied last-writer-wins clock is clamped to the skew window | mesh, groups, profile, reactions |

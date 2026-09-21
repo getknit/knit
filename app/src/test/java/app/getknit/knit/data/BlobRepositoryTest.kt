@@ -1,5 +1,6 @@
 package app.getknit.knit.data
 
+import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictEntity
 import app.getknit.knit.data.forward.ForwardEntity
@@ -29,9 +30,9 @@ import org.junit.Test
 class BlobRepositoryTest : RoomDbTest() {
     private val settings = mockk<SettingsStore>(relaxed = true)
 
-    private fun repo() =
+    private fun repo(blobs: BlobDao = db.blobDao()) =
         BlobRepository(
-            blobs = db.blobDao(),
+            blobs = blobs,
             messages = db.messageDao(),
             peers = db.peerDao(),
             settings = settings,
@@ -179,11 +180,23 @@ class BlobRepositoryTest : RoomDbTest() {
         }
 
     @Test
-    fun `observeSizes reflects stored blobs and their sizes`() =
+    fun `observeSizes reflects the asked blobs and their sizes`() =
         runTest {
             val repo = repo()
             repo.insert("h1", "image/jpeg", byteArrayOf(1))
             repo.insert("h2", "image/jpeg", byteArrayOf(2, 3))
-            assertEquals(mapOf("h1" to 1, "h2" to 2), repo.observeSizes().first())
+            repo.insert("h3", "image/jpeg", byteArrayOf(4, 5, 6))
+            assertEquals(mapOf("h1" to 1, "h2" to 2), repo.observeSizes(setOf("h1", "h2", "absent")).first())
+        }
+
+    @Test
+    fun `observeSizes answers an empty ask without a query`() =
+        runTest {
+            // A thread with nothing to size must not hold a subscription to the blobs table at all — the
+            // repository answers the empty set itself rather than asking Room for `IN ()`. A DAO that
+            // refuses every ask proves the query was never built.
+            val dao = mockk<BlobDao>()
+            every { dao.observeSizes(any()) } throws AssertionError("queried the blobs table for nothing")
+            assertEquals(emptyMap<String, Int>(), repo(blobs = dao).observeSizes(emptySet()).first())
         }
 }

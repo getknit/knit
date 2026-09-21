@@ -208,6 +208,12 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   per (frame id, peer) per `SeenSet.DEFAULT_TTL_MS` — the receivers' own window, so every copy it withholds is
   one they would drop — and a newcomer the 30 s floor skipped is never memoed. Keep `ackSync.onReachable` ahead
   of every throttle (ADR 2026-09.y5f3). Regression: `MeshManagerTest.aLingerFlap…` / `aProfileEditIsReflooded…`.
+- **When touching `BlobDao.observeSizes`, `BlobRepository.observeSizes`, or `ChatViewModel`'s `heldHashes` /
+  `heldSizes`:** READ ADR 2026-09.fjcw. The chat's one blob-table subscription is keyed to the window's
+  attachment hashes plus the staged one (`IN (:hashes)`, primary-key seeks), and an empty ask never builds a
+  query — don't bring back the whole-table `observeSizes()` or a second subscriber; Room invalidates per table,
+  so either one re-runs on every blob write anywhere while a chat is open. Regression:
+  `ChatViewModelTest.blobSizesAreAskedForTheWindowsAttachmentsAndTheStagedOneOnly`.
 - **When touching how a Nearby-room post's ✓✓ gets home** — `AckSync`'s ride hold / `RIDE_HOLD_MS`,
   `MeshTransport.coveredByInternet`, `ScopeSync.pushDirect` / `presentPeers`, `MeshRouter.handOn`, or
   `MeshManager.ownProfile`:

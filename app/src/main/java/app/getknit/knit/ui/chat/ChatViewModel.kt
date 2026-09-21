@@ -605,6 +605,31 @@ class ChatViewModel(
                 messages.observeNewestMessages(conversationId, limit).map { Window(limit, it) }
             }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    // The hashes this screen can show a size for: every attachment in the window plus the one staged in the
+    // composer. The raw window rather than the blocked-filtered rows — a superset costs nothing and keeps the
+    // derivation off the block list. Distinct, so a message write that leaves the set alone (most of them)
+    // never re-subscribes the blob read below.
+    private val heldHashes: Flow<Set<String>> =
+        combine(
+            windowed.filterNotNull().map { window -> window.messages.mapNotNull { it.attachmentHash }.toSet() },
+            _pendingAttachment.map { it?.hash },
+        ) { window, staged -> if (staged == null) window else window + staged }.distinctUntilChanged()
+
+    /**
+     * Hash → held byte length for [heldHashes]. **The screen's only subscription to the blobs table** — the
+     * row fold, the link-card walk and the staged attachment's reach all read this one. Two collectors of
+     * the old whole-table `observeSizes()` meant Room decrypted every leaf page of the largest table in the
+     * database twice per blob write anywhere in the app (an attachment or avatar landing, a send) for as
+     * long as any chat was open; bounded to the window it is one primary-key seek per shown attachment, and
+     * a thread with nothing to size holds no subscription at all. Shaped like [windowed]: null until the
+     * first emission, which every consumer drops with `filterNotNull()`.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val heldSizes: StateFlow<Map<String, Int>?> =
+        heldHashes
+            .flatMapLatest { blobs.observeSizes(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     // Held blob sizes + moderation-flagged hashes plus the content-filtering setting, and the decoded
     // link-preview cards, combined upstream so the main bundle stays at the typed 5-flow combine overload.
     // The setting only gates receive-side *hiding* (the chat blur + toxic-text collapse below), so toggling
@@ -612,7 +637,7 @@ class ChatViewModel(
     // enforced elsewhere regardless.
     private val blobState =
         combine(
-            blobs.observeSizes(),
+            heldSizes.filterNotNull(),
             imageScreening.observeFlaggedHashes(),
             settings.contentFilteringEnabled,
             linkCards.cards,
@@ -653,9 +678,9 @@ class ChatViewModel(
 
     // Bundles the four message-related streams so the outer combine below stays at the 5-flow typed
     // overload (a 6th flow falls back to unchecked Array<*> casts). Blocked senders' messages are
-    // filtered out here, so they also drop out of rows and mention candidates. Observing the blob
-    // sizes here is what flips an attachment from "loading" to shown when its bytes arrive — and, since
-    // the same rows carry the byte length, what tells the UI whether those bytes can cross a relay.
+    // filtered out here, so they also drop out of rows and mention candidates. Carrying the window's
+    // blob sizes here is what flips an attachment from "loading" to shown when its bytes arrive — and,
+    // since the same rows carry the byte length, what tells the UI whether those bytes can cross a relay.
     private data class MessagesBundle(
         val messages: List<MessageEntity>,
         // Everyone who has ever posted here, straight from the table rather than from [messages] — the
@@ -1136,12 +1161,13 @@ class ChatViewModel(
      * the only consumer.
      *
      * The size comes from the blob table, not from [AttachmentStore.Ingested] — ingestion has already
-     * stored the bytes by the time an image is staged, so the row is there to be read.
+     * stored the bytes by the time an image is staged, so the row is there to be read, through the same
+     * [heldSizes] the rows use ([heldHashes] folds the staged hash in).
      */
     val stagedAttachmentRelay: StateFlow<AttachmentRelay> =
         combine(
             _pendingAttachment,
-            blobs.observeSizes(),
+            heldSizes.filterNotNull(),
             relayFacts,
         ) { staged, sizes, relay ->
             if (staged?.link != null) return@combine AttachmentRelay.Silent // a card's reach is never a marker

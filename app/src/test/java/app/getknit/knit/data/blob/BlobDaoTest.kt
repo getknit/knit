@@ -45,14 +45,17 @@ class BlobDaoTest : RoomDbTest() {
         }
 
     @Test
-    fun `observeSizes emits every stored hash with its byte length`() =
+    fun `observeSizes reports the asked hashes we hold, with their byte lengths`() =
         runTest {
             dao.insert(BlobEntity(hash = "A", mime = "image/jpeg", bytes = byteArrayOf(1)))
             dao.insert(BlobEntity(hash = "B", mime = "image/jpeg", bytes = byteArrayOf(2, 3, 4)))
-            val rows = dao.observeSizes().first().associate { it.hash to it.size }
+            dao.insert(BlobEntity(hash = "C", mime = "image/jpeg", bytes = byteArrayOf(5, 6)))
+            val rows = dao.observeSizes(listOf("A", "C", "missing")).first().associate { it.hash to it.size }
             // The size is what decides whether an attachment can cross an Internet relay, so the
-            // projection has to report the real byte length, not merely that the row exists.
-            assertEquals(mapOf("A" to 1, "B" to 3), rows)
+            // projection has to report the real byte length, not merely that the row exists. B was not
+            // asked for and "missing" is not held: neither gets a row, which is how the chat tells an
+            // attachment still on its way from one whose bytes have landed.
+            assertEquals(mapOf("A" to 1, "C" to 2), rows)
         }
 
     @Test

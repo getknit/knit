@@ -29,14 +29,18 @@ interface BlobDao {
     suspend fun exists(hash: String): Boolean
 
     /**
-     * Hash and byte length of every stored blob — drives both the chat's "attachment present yet?" state
-     * (key membership) and its "can this attachment cross a relay?" state (the size).
+     * Hash and byte length of the stored blobs among [hashes] — drives both the chat's "attachment present
+     * yet?" state (key membership) and its "can this attachment cross a relay?" state (the size). A hash we
+     * do not hold simply has no row.
      *
-     * No BLOB read: like [carrierOnlyBlobBytes], `length(bytes)` reads the row's length varint rather
+     * Keyed rather than the whole table on purpose: Room invalidates per table, so this re-runs on every
+     * blob write anywhere in the app while a chat is open, and a table walk decrypted every leaf page of
+     * the largest table in the database each time. Against the primary key it is one seek per asked hash.
+     * No BLOB read either: like [carrierOnlyBlobBytes], `length(bytes)` reads the row's length varint rather
      * than decrypting the payload, so widening this from a bare hash list costs nothing per row.
      */
-    @Query("SELECT hash, length(bytes) AS size FROM blobs")
-    fun observeSizes(): Flow<List<BlobSize>>
+    @Query("SELECT hash, length(bytes) AS size FROM blobs WHERE hash IN (:hashes)")
+    fun observeSizes(hashes: List<String>): Flow<List<BlobSize>>
 
     /**
      * Blob hashes referenced by no message attachment, no peer avatar, no group photo, and no carried

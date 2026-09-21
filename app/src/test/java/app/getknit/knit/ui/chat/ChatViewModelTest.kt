@@ -155,7 +155,8 @@ class ChatViewModelTest {
         every { reactions.observeReactionsIn(any()) } returns reactionsFlow
         every { settings.blockedNodeIds } returns blockedFlow
         every { settings.recentReactions } returns recentsFlow
-        every { blobs.observeSizes() } returns sizesFlow
+        // Keyed by the window's hashes in production; the test map simply holds every hash a test names.
+        every { blobs.observeSizes(any()) } returns sizesFlow
         every { imageScreening.observeFlaggedHashes() } returns flaggedFlow
         every { settings.contentFilteringEnabled } returns filteringFlow
         every { groups.observeGroup(Conversations.NEARBY) } returns groupFlow
@@ -1279,6 +1280,34 @@ class ChatViewModelTest {
             coVerify(exactly = 1) { blobs.deleteIfUnreferenced(null) }
             assertEquals(listOf(R.string.chat_message_deleted, R.string.chat_message_deleted), events)
             assertTrue("nothing about a local delete reaches the mesh", mesh.sentChats.isEmpty() && mesh.sentReactions.isEmpty())
+        }
+
+    @Test
+    fun blobSizesAreAskedForTheWindowsAttachmentsAndTheStagedOneOnly() =
+        runTest {
+            val ingested = AttachmentStore.Ingested(hash = "staged", mime = "image/jpeg")
+            coEvery { attachments.ingest(any<Uri>()) } returns AttachmentStore.IngestResult.Success(ingested, flagged = false)
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.stagedAttachmentRelay.collect {} }
+            advanceUntilIdle()
+            // A thread with nothing to size asks for nothing — the repository answers that without a query.
+            verify { blobs.observeSizes(emptySet()) }
+            verify(exactly = 0) { blobs.observeSizes(match { it.isNotEmpty() }) }
+
+            messagesFlow.value =
+                listOf(
+                    msg(senderId = "bob", id = "m1", conversationId = Conversations.NEARBY, attachmentHash = "h1"),
+                    msg(senderId = "bob", id = "m2", conversationId = Conversations.NEARBY),
+                )
+            advanceUntilIdle()
+            verify { blobs.observeSizes(setOf("h1")) }
+
+            vm.attach(Uri.parse("content://images/1"))
+            advanceUntilIdle()
+            // The composer's staged attachment rides the same subscription as the rows: one read, not two.
+            verify { blobs.observeSizes(setOf("h1", "staged")) }
+            verify(exactly = 0) { blobs.observeSizes(match { "h1" !in it && it.isNotEmpty() }) }
         }
 
     @Test

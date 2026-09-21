@@ -11,6 +11,7 @@ import app.getknit.knit.data.peer.PeerDao
 import app.getknit.knit.data.settings.SettingsStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 
 /**
@@ -44,11 +45,20 @@ class BlobRepository(
     suspend fun exists(hash: String): Boolean = blobs.exists(hash)
 
     /**
-     * Hash → byte length for every stored blob. The chat observes this to flip attachments from loading
-     * to shown (a hash being present at all) and to decide whether one can cross an Internet relay
-     * (its size against the relays' advertised budget).
+     * Hash → byte length for the stored blobs among [hashes]; a hash not held is absent. The chat observes
+     * this for the attachments in its window plus the one staged in its composer, to flip an attachment
+     * from loading to shown (a hash being present at all) and to decide whether one can cross an Internet
+     * relay (its size against the relays' advertised budget).
+     *
+     * An empty set is answered without a query, so a thread with nothing to size holds no subscription to
+     * the blobs table at all — the common case, and the one Room would otherwise re-run on every blob write.
      */
-    fun observeSizes(): Flow<Map<String, Int>> = blobs.observeSizes().map { rows -> rows.associate { it.hash to it.size } }
+    fun observeSizes(hashes: Set<String>): Flow<Map<String, Int>> =
+        if (hashes.isEmpty()) {
+            flowOf(emptyMap())
+        } else {
+            blobs.observeSizes(hashes.toList()).map { rows -> rows.associate { it.hash to it.size } }
+        }
 
     /**
      * Deletes the blob for [hash] only if nothing references it any more — no message attachment, no

@@ -58,6 +58,9 @@ document:
 - A relay you have set up now learns about a new contact, or a chat that just connected, as it happens
   rather than up to fifteen seconds later. Idle, your phone looks over what it shares with the relay once
   a minute instead of four times.
+- An open chat now looks up the sizes of just the pictures and files on screen, where it used to read every
+  one stored on the phone each time an image arrived anywhere. A chat with no attachments skips the lookup
+  entirely.
 
 ### Fixed
 
