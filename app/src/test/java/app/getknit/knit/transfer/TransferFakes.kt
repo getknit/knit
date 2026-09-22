@@ -12,6 +12,7 @@ import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
+import java.net.Socket
 import java.util.Collections
 
 /** A shared, ordered log of what a side did — signals sent and radio calls — for ordering assertions. */
@@ -87,9 +88,24 @@ class FakeDirectWifi(
         /**
          * Whether this JVM can listen on IPv6 loopback at all. Some CI hosts boot with IPv6 off at the kernel,
          * and there `::1` binds with "Protocol family unavailable" — the host then only ever listens on IPv4
-         * and a receiver dialling `::1` is refused, which is the environment, not the code.
+         * and a receiver dialling `::1` is refused, which is the environment, not the code. A bind alone is not
+         * proof — a runner has bound `::1` and still stalled the transfer — so the probe makes a round trip.
          */
-        fun ipv6LoopbackUsable(): Boolean = runCatching { ServerSocket().use { it.bind(InetSocketAddress(V6, 0)) } }.isSuccess
+        fun ipv6LoopbackUsable(): Boolean =
+            runCatching {
+                ServerSocket().use { server ->
+                    server.bind(InetSocketAddress(V6, 0))
+                    server.soTimeout = 1_000
+                    Socket().use { client ->
+                        client.connect(InetSocketAddress(V6, server.localPort), 1_000)
+                        server.accept().use { accepted ->
+                            client.getOutputStream().write(1)
+                            accepted.soTimeout = 1_000
+                            check(accepted.getInputStream().read() == 1)
+                        }
+                    }
+                }
+            }.isSuccess
     }
 }
 

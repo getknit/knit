@@ -14,13 +14,14 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -37,6 +38,7 @@ import kotlin.random.Random
 class TransferManagerTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val clock = { System.currentTimeMillis() }
+    private val sides = Collections.synchronizedList(mutableListOf<Side>())
     private val fast =
         TransferTimings(
             offerTtlMs = 400,
@@ -64,6 +66,8 @@ class TransferManagerTest {
         val signals: FakeTransferSignals,
         val rows: MutableList<MessageEntity>,
         val manager: TransferManager,
+        /** The manager's own log lines, kept apart from [log] so the ordering assertions on it stay exact. */
+        val trace: MutableList<String>,
     ) {
         var nearby = true
 
@@ -85,6 +89,7 @@ class TransferManagerTest {
         timings: TransferTimings = fast,
     ): Side {
         val log = SideLog(name)
+        val trace = Collections.synchronizedList(mutableListOf<String>())
         val wifi = FakeDirectWifi(log)
         val files = FakeTransferFiles()
         val signals = FakeTransferSignals(log, scope, clock)
@@ -103,8 +108,10 @@ class TransferManagerTest {
                 peerNearby = { side.nearby },
                 timings = timings,
                 clock = clock,
+                log = { trace += "${clock()} $it" },
             )
-        side = Side(name, log, wifi, files, signals, rows, manager)
+        side = Side(name, log, wifi, files, signals, rows, manager, trace)
+        sides += side
         return side
     }
 
@@ -130,11 +137,21 @@ class TransferManagerTest {
         timeoutMs: Long = 8_000,
         condition: () -> Boolean,
     ) {
-        withTimeout(timeoutMs) {
-            while (!condition()) delay(10)
-        }
-        assertTrue(what, condition())
+        val met =
+            withTimeoutOrNull(timeoutMs) {
+                while (!condition()) delay(10)
+                true
+            }
+        if (met == null) fail("$what (timed out after $timeoutMs ms)\n${dump()}")
     }
+
+    /** Everything both sides did, for a case that timed out on CI where only the report survives. */
+    private fun dump(): String =
+        sides.toList().joinToString("\n") { s ->
+            val rows = synchronized(s.rows) { s.rows.mapNotNull { TransferRecord.decode(it.body)?.phase } }
+            val trace = synchronized(s.trace) { s.trace.joinToString("\n    ") }
+            "${s.name}: rows=$rows events=${synchronized(s.log.events) { s.log.events.toList() }}\n    $trace"
+        }
 
     private suspend fun awaitPhase(
         side: Side,
@@ -183,7 +200,9 @@ class TransferManagerTest {
                 listOf(TransferPhase.Offered, TransferPhase.Connecting, TransferPhase.Transferring, TransferPhase.Done),
                 b.phases(id),
             )
-            // READY leaves before the radio is taken: the offer, then READY, then host, then release.
+            // READY leaves before the radio is taken: the offer, then READY, then host, then release. The radio is
+            // handed back in finish(), after Done is written, so wait for that event rather than the phase.
+            await("both sides hand the radio back") { a.wifi.released.isNotEmpty() && b.wifi.released.isNotEmpty() }
             assertEquals(listOf("signal:1", "signal:5", "host", "release"), a.log.events)
             assertEquals(listOf("signal:2", "join", "release"), b.log.events)
             await("terminal transfers leave the live map") {
