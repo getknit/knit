@@ -1,6 +1,6 @@
 # Toolchain (bleeding-edge — do not "fix" these without reading why)
 
-This project intentionally runs on very new tooling (AGP 9.4.0, Gradle 9.7.1, Kotlin 2.4.20,
+This project intentionally runs on very new tooling (AGP 9.4.1, Gradle 9.7.1, Kotlin 2.4.20,
 Compose BOM 2026.09.00, compileSdk 37.1). That forces several non-obvious choices. **Read this before
 changing build config, dependencies, or the DI graph.**
 
@@ -35,7 +35,7 @@ Bumping `compileSdk` means installing that exact platform everywhere the build r
 of the package name (`platforms;android-37.1` ≠ `platforms;android-37`), and three files name it
 literally: `.gitlab-ci.yml`'s `ANDROID_COMPILE_SDK`, `qodana.yaml`'s bootstrap `sdkmanager` line, and the
 F-Droid-image reproducibility job in `.github/workflows/release.yml`. Build-tools is pinned next to it
-(`buildToolsVersion = "37.0.0"` in `app/build.gradle.kts`, above AGP 9.4.0's 36.0.0 default — it decides
+(`buildToolsVersion = "37.0.0"` in `app/build.gradle.kts`, above AGP 9.4.1's 36.0.0 default — it decides
 no packaged byte, it is pinned so every builder installs the package the build uses) and the same three
 files carry that pin. Both packages must resolve in F-Droid's buildserver image before either moves;
 `context/distribution.md` has the check.
@@ -50,7 +50,7 @@ notes, the two linter/CI pins and the READMEs are the places to re-grep after an
   (dagger#5083 / #5099). Koin is pure-Kotlin runtime DI with no Gradle plugin / no annotation
   processor, so it can't be broken by AGP. Koin is started in `KnitApplication`; modules live in
   `app/src/main/java/app/getknit/knit/di/`.
-- **Built-in Kotlin is overridden to 2.4.20, not AGP's bundled 2.2.10.** AGP 9.4.0 ships KGP 2.2.10,
+- **Built-in Kotlin is overridden to 2.4.20, not AGP's bundled 2.2.10.** AGP 9.4.1 ships KGP 2.2.10,
   whose Kotlin-2.2 compiler cannot read class metadata produced by Kotlin 2.4 (this is what used to
   pin Coil to 3.3.0). The root `build.gradle.kts` puts KGP 2.4.20 on the buildscript classpath
   (`classpath(libs.kotlin.gradle.plugin)`) so built-in Kotlin compiles with 2.4.20 — a supported combo
@@ -79,7 +79,7 @@ notes, the two linter/CI pins and the READMEs are the places to re-grep after an
 - **Stable releases only**, with one standing exception: `detekt` 2.0.0-alpha.x, because the 1.23.x
   stable line cannot run on Gradle 9 at all. So `cameraX` stays on 1.6.2 (1.7.0 is alpha), `datastore`
   on 1.2.1 (1.3.0 is alpha), `lifecycle` on 2.11.0 (2.12.0 is alpha), `activity-compose` on 1.13.0
-  (1.14.0 is alpha), `kotlinx-serialization` on 1.11.0 (1.12.0 is an RC), and AGP on 9.4.0 (9.5.0 is
+  (1.14.0 is alpha), `kotlinx-serialization` on 1.11.0 (1.12.0 is an RC), and AGP on 9.4.1 (9.5.0 is
   alpha). `navigation-compose` was held at 2.9.8 by this rule until 2.10.0 went stable, `robolectric`
   at 4.16.1 until 4.17 did, and `benchmark` at 1.5.0-rc02 until 1.5.0 did.
 

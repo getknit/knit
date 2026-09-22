@@ -151,7 +151,7 @@ android {
                 minorApiLevel = 1
             }
     }
-    // Build-tools 37.0.0, above AGP 9.4.0's 36.0.0 default. AGP takes aapt2, d8/r8 and apksig from Maven,
+    // Build-tools 37.0.0, above AGP 9.4.1's 36.0.0 default. AGP takes aapt2, d8/r8 and apksig from Maven,
     // so this revision decides no packaged byte (verified: the unsigned release APK is identical under
     // 36.0.0 and 37.0.0); it is pinned so every builder — both CIs, Qodana and F-Droid's image — installs
     // the one package the build will use instead of whatever AGP would auto-download.

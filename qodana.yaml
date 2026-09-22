@@ -20,7 +20,7 @@
 # │ AGP FORWARD-COMPAT WORKAROUND — load-bearing, do not remove.                                 │
 # │                                                                                              │
 # │ Qodana 2026.2's Android plugin refuses to sync anything past AGP 9.1.0:                      │
-# │   "The project is using an incompatible version (AGP 9.4.0) ... Latest supported is 9.1.0"   │
+# │   "The project is using an incompatible version (AGP 9.4.x) ... Latest supported is 9.1.0"   │
 # │ and this project is deliberately ahead of that (AGENTS.md: bleeding-edge toolchain). 2026.2  │
 # │ is the newest image there is — `latest` is byte-identical to it, `2026.2-eap` is OLDER, and  │
 # │ no 2026.3 image exists. So without the property below, the run cannot start at all.          │
@@ -40,7 +40,7 @@ version: "1.0"
 linter: qodana-jvm-android
 image: jetbrains/qodana-jvm-android:2026.2
 
-# See the banner above — without this the scan cannot start on AGP 9.4.0.
+# See the banner above — without this the scan cannot start on AGP 9.4.x.
 properties:
   gradle.ide.support.future.agp.versions: "true"
 

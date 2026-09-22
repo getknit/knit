@@ -1,5 +1,5 @@
 [versions]
-agp = "9.4.0"
+agp = "9.4.1"
 coreKtx = "1.19.0"
 junit = "4.13.2"
 junitVersion = "1.3.0"
@@ -111,7 +111,7 @@ zxingCore = "3.5.4"
 # its default signer 16 KB-page-aligns uncompressed lib/*.so, matching the app's own 16 KB alignment
 # requirement (see litert).
 arsclib = "1.4.0"
-apksig = "9.4.0"
+apksig = "9.4.1"
 # detekt static analysis, applied as the `dev.detekt` Gradle plugin (see [plugins] below). 2.0.0-alpha.x
 # is the first detekt line that supports Gradle 9 — 1.23.x caps at Gradle 8.12.1, and this build is on
 # 9.7.0 — and it ships the new `dev.detekt` plugin/group id (was io.gitlab.arturbosch.detekt). Runs in its

@@ -40,7 +40,7 @@ bash scripts/qodana.sh --baseline               # ...accept today's findings as 
     global findings do land (228 accepted at the 2026-09-02 baseline, `qodana.sarif.json`; a run reports
     only what is NEW against it). `--baseline` re-adopts the current result. Two traps, both already
     handled and both worth knowing before you touch the config:
-    - Qodana 2026.2 refuses AGP > 9.1.0 and this project is on 9.4.0. `qodana.yaml` sets
+    - Qodana 2026.2 refuses AGP > 9.1.0 and this project is on 9.4.1. `qodana.yaml` sets
       `gradle.ide.support.future.agp.versions` to suppress that check — load-bearing, and its banner
       explains the one blind spot it leaves (`@Preview` reads as unused; the baseline absorbs it).
     - **Never cache the IDE's project state** (`.qodana/cache/{idea,android,262}`). Restoring it drops
