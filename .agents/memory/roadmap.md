@@ -132,6 +132,14 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Still deferred (by design)
 
+- **A per-peer in-flight window on the Wi-Fi Aware coordination plane** (ADR 2026-09.jjhg, 2026-09-21, work
+  item #81). The framework's send-queue deadlock needs eight follow-ups the framework has already timed out
+  still sitting in the firmware's queue — which a burst to a peer that cannot ack fills. One message in flight
+  per peer with a short, aging FIFO would keep our traffic from ever filling it. Not built with the watchdog
+  because it is prevention for one of the two mechanisms only, it does nothing for a firmware that has stopped
+  delivering, and it serialises a fragmented frame's parts (a latency cost that wants a device measurement
+  before it is paid). Build it once a burst night with the watchdog in place still shows `mSendQueueBlocked:
+  true` in the poll's `dumpsys wifiaware` — the cycle cures it either way, but a cycle mid-burst drops the burst.
 - **Process recovery after a Family Link pause** (ADR 2026-09.a8ud, 2026-09-16). An
   `ACTION_MY_PACKAGE_UNSUSPENDED` receiver that restarts the mesh, with a "tap to reconnect" notification
   as the battery-Optimized fallback, was designed and then dropped: the trial showed `setPackagesSuspended`

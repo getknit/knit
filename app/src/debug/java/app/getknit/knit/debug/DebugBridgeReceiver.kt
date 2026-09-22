@@ -54,6 +54,7 @@ import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.spool.CommonsInvite
 import app.getknit.knit.mesh.wifiaware.NanFaultInjector
+import app.getknit.knit.mesh.wifiaware.NanMsgFault
 import app.getknit.knit.moderation.MlTextModerator
 import app.getknit.knit.moderation.ModelLease
 import app.getknit.knit.moderation.ModelLoadGuard
@@ -179,6 +180,12 @@ import java.nio.ByteBuffer
  *   drop-and-return through the transport's own handlers (a strike only if an initiate of ours went out in the
  *   last two minutes with no link since — pair it with [ACTION_NANDIAL]); `--ez reset true` is Diagnostics' "Try
  *   again"; `--ez probe true` makes a held role's daily probe due on the next tick.
+ * - [ACTION_NANMSG] — the Wi-Fi Aware **coordination-plane watchdog** (work item #81, ADR 2026-09.jjhg). No extras
+ *   dumps the ack bookkeeping: `unanswered` / `oldestUnansweredMs` / `sinceAckMs` / `failsSinceAck` / `episodeMs` /
+ *   `cycles` / `fault`. `--es fault swallow` drops every send callback from here on (the blocked framework queue),
+ *   `--es fault fail` turns every ack into a failure (dead unicast), `--es fault off` disarms; the watchdog's
+ *   verdict and its session cycle then run for real, so the trial is: arm, watch `coordination plane stalled … —
+ *   cycling the session` within ~90 s, disarm, watch `episodeMs` return to 0 on the next acked cue.
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  * - [ACTION_PAUSE] / [ACTION_RESUME] — the notification's Pause and Resume, by their store write alone
  *   (`--ei minutes 15|60`, the two offered spans): `MeshService` follows `SettingsStore.meshPausedUntil`, so
@@ -374,6 +381,10 @@ class DebugBridgeReceiver :
                                     }
                                 }
                             }
+                        }
+
+                        ACTION_NANMSG -> {
+                            handleNanMsg(intent)
                         }
 
                         ACTION_NANICM -> {
@@ -1159,6 +1170,8 @@ class DebugBridgeReceiver :
             .put("nanIcmKeepaliveFailed", snap.nanIcmKeepaliveFailed)
             .put("nanMsgsAcked", snap.nanMsgsAcked)
             .put("nanMsgSendsFailed", snap.nanMsgSendsFailed)
+            .put("nanMsgPlaneStalledPeakMs", snap.nanMsgPlaneStalledPeakMs)
+            .put("nanMsgPlaneCycles", snap.nanMsgPlaneCycles)
             .put("filesSentNan", snap.filesSentNan)
             .put("filesSentBt", snap.filesSentBt)
             .put("nanBulkGraceTimeouts", snap.nanBulkGraceTimeouts)
@@ -1991,6 +2004,27 @@ class DebugBridgeReceiver :
             .put("armed", r?.armed ?: -1)
     }
 
+    private fun handleNanMsg(intent: Intent): JSONObject {
+        if (!NanFaultInjector.bound) return reply("error", "Wi-Fi Aware transport is not running")
+        val what =
+            when (val fault = intent.getStringExtra("fault")?.trim()?.lowercase()) {
+                null -> "coordination-plane watchdog state"
+                "off", "none" -> "fault disarmed: ${NanFaultInjector.setMsgFault(NanMsgFault.NONE)}"
+                "swallow" -> "every send callback is now dropped: ${NanFaultInjector.setMsgFault(NanMsgFault.SWALLOW)}"
+                "fail" -> "every ack is now a failure: ${NanFaultInjector.setMsgFault(NanMsgFault.FAIL)}"
+                else -> return reply("error", "unknown --es fault '$fault' (swallow | fail | off)")
+            }
+        val s = NanFaultInjector.msgPlaneStatus()
+        return reply("ok", what)
+            .put("unanswered", s?.unanswered ?: -1)
+            .put("oldestUnansweredMs", s?.oldestUnansweredMs ?: -1)
+            .put("sinceAckMs", s?.sinceAckMs ?: -1)
+            .put("failsSinceAck", s?.failsSinceAck ?: -1)
+            .put("episodeMs", s?.episodeMs ?: -1)
+            .put("cycles", s?.cycles ?: -1)
+            .put("fault", s?.fault?.name?.lowercase() ?: "unbound")
+    }
+
     private fun handleNanInit(intent: Intent): JSONObject {
         if (!NanFaultInjector.bound) return reply("error", "Wi-Fi Aware transport is not running")
         val what =
@@ -2066,6 +2100,7 @@ class DebugBridgeReceiver :
         const val ACTION_NANICM = "app.getknit.knit.debug.NANICM"
         const val ACTION_NANDIAL = "app.getknit.knit.debug.NANDIAL"
         const val ACTION_NANINIT = "app.getknit.knit.debug.NANINIT"
+        const val ACTION_NANMSG = "app.getknit.knit.debug.NANMSG"
         const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
         const val ACTION_MSGNOTIF = "app.getknit.knit.debug.MSGNOTIF"
         const val ACTION_FLAGMSG = "app.getknit.knit.debug.FLAGMSG"

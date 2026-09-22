@@ -138,6 +138,16 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   wall clock. The hold lives in those two gates so the wedge watchdog never counts a held peer as owed (Tier-2 is
   a process kill and the hold is journaled): never read `reconcileWanted` / `bulkWanted.isWanted` around them.
   Not a `NanConnectPolicy` streak. Tests: `NanInitiatorPolicyTest`.
+- **When touching `NanMessagePlanePolicy`, `checkMessagePlane`, `sendCoord` / `msgInFlight`, the
+  `onMessageSendSucceeded` / `onMessageSendFailed` callbacks, or `…debug.NANMSG`:** READ ADR 2026-09.jjhg. The
+  coordination plane (cues + fast path) freezes after a burst while discovery keeps working — a blocked framework
+  send queue, or a firmware that fails every follow-up — and the one cure is a NAN restart, which our session
+  cycle is because Knit is the sole Aware client. The watchdog reads acks, not health: a send unanswered for a
+  watchdog tick with no ack since, or two heartbeats of failures with zero acks *and a fresh sighting*, cycles the
+  session under Tier 1's budget (shared `lastReattachAt`, 3 per episode, never with a live link); the episode ends
+  only on an ack after it began — never on the cycle or on its own NAN-down beat (that refund is the 9dnk
+  livelock). A send on a closed session gets no callback ever, so it is never recorded as in flight. Tests:
+  `NanMessagePlanePolicyTest`; on hardware the soak's `nan-outbound-dead` rule.
 - **When touching `moderation/MlTextModerator`, `NsfwImageModerator`, `ModelLease`, `TfLiteModels`,
   `ModelLoadGuard`, the `…debug.MODEL` bridge, or `noCompress` in `app/build.gradle.kts`:** READ ADR 037 and
   ADR 2026-09.cq9z. Each interpreter is mmapped from the APK's **Stored** `.tflite` entry (`noCompress "tflite"`

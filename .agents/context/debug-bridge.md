@@ -241,6 +241,20 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
   section. `--ez reset true` is Diagnostics' "Try again"; `--ez probe true` makes a held role's daily probe due on
   the next `driveSync` (the log says `daily initiator probe`). The negative control is a blip right after a
   *linked* initiate: `strikes` stays 0. Nothing here reproduces the STA drop itself — that needs the Pixel 3.
+- `…debug.NANMSG` — the Wi-Fi Aware **coordination-plane watchdog** (work item #81, ADR 2026-09.jjhg). No extras
+  dumps the ack bookkeeping behind `NanMessagePlanePolicy`: `unanswered` (sends still waiting for a callback),
+  `oldestUnansweredMs`, `sinceAckMs`, `failsSinceAck`, `episodeMs` (0 = no stalled episode), `cycles` (session
+  cycles spent in it) and `fault`. `--es fault swallow` drops every send callback from here on — the blocked
+  framework queue of #81's first mechanism; `--es fault fail` turns every ack into a failure — the dead unicast
+  of its second; `--es fault off` disarms. The watchdog's verdict and its session cycle then run for real, so
+  the trial on one phone with a peer in range is: arm, watch `coordination plane stalled … — cycling the
+  session (1/3 this episode)` within ~90 s (`swallow` needs one send to age 30 s; `fail` needs four failures and
+  60 s), see the second and third cycle ~20–30 s apart and then quiet, disarm, and watch `episodeMs` return to 0
+  on the next acked cue. The fault stays armed across cycles on purpose — a cure is only visible once it is off.
+  The natural trigger is a chat burst (`burst.sh --kind nearby --size long` in the soak harness); a frozen phone
+  reads `mSendQueueBlocked: true` in `dumpsys wifiaware` for the first mechanism and an idle queue with
+  `NOTIFICATION_TYPE_ON_MESSAGE_SEND_FAIL` ~4 s after each `RESPONSE_TYPE_ON_MESSAGE_SEND_QUEUED_SUCCESS` for the
+  second.
 - `…debug.FLAGMSG` — injects one inbound message **the text moderator flagged** (the UI collapses it behind a
   tap-to-reveal) as the newest row of `--es conv <id>` (default `nearby`), from `--es from <peerNodeId>`
   (default a synthetic sender) with body `--es text <body>`. The radio-less build never receives a real

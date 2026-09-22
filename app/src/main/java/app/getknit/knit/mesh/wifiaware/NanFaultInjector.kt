@@ -19,6 +19,20 @@ internal data class NanResponderSnapshot(
     val armed: Int,
 )
 
+/** What `…debug.NANMSG` injects into the coordination-plane callbacks: nothing, no callback, or a failure. */
+internal enum class NanMsgFault { NONE, SWALLOW, FAIL }
+
+/** The ack bookkeeping behind [NanMessagePlanePolicy] right now (ADR 2026-09.jjhg), for `…debug.NANMSG`'s reply. */
+internal data class NanMsgPlaneSnapshot(
+    val unanswered: Int,
+    val oldestUnansweredMs: Long,
+    val sinceAckMs: Long,
+    val failsSinceAck: Int,
+    val episodeMs: Long,
+    val cycles: Int,
+    val fault: NanMsgFault,
+)
+
 /**
  * The initiator failsafe's hooks (`…debug.NANINIT`, work item #78): [blip] runs the transport's own Wi-Fi
  * lost-then-available handlers so a strike can be earned on a phone whose Wi-Fi never drops, [reset] is the
@@ -58,6 +72,7 @@ internal data class NanInitiatorHooks(
  * is how many attaches the bounds *allow*, which is that number divided by two — the right assertion for
  * ADR 055, and not a demonstration that ADR 052's leak is gone.
  */
+@Suppress("TooManyFunctions") // one function per lab knob (arm / status / inject); folding them would only hide the knobs
 internal object NanFaultInjector {
     @Volatile private var failuresLeft = 0
 
@@ -82,6 +97,12 @@ internal object NanFaultInjector {
 
     // `…debug.NANINIT`: the initiator failsafe (work item #78) — one bundle, so `bind` stays under detekt's arity.
     @Volatile private var initiator: NanInitiatorHooks? = null
+
+    // `…debug.NANMSG`: the coordination-plane watchdog (work item #81). The fault is read on every send callback,
+    // so a lab phone can be walked into either freeze signature without a burst; bound beside [bind].
+    @Volatile private var msgFault = NanMsgFault.NONE
+
+    @Volatile private var msgPlane: (() -> NanMsgPlaneSnapshot)? = null
 
     /** Whether a transport is running and has bound its hooks — false in release, and before `start()`. */
     val bound: Boolean get() = BuildConfig.DEBUG && availability != null
@@ -208,4 +229,28 @@ internal object NanFaultInjector {
     fun forceInitiatorProbe(): Boolean? = if (BuildConfig.DEBUG) initiator?.forceProbe?.invoke() else null
 
     fun initiatorStatus(): NanInitiatorSnapshot? = if (BuildConfig.DEBUG) initiator?.status?.invoke() else null
+
+    /** Called by [WifiAwareTransport.start] with its snapshot; `null` on `stop()` also disarms the fault. */
+    fun bindMsgPlane(status: (() -> NanMsgPlaneSnapshot)?) {
+        if (!BuildConfig.DEBUG) return
+        msgPlane = status
+        if (status == null) msgFault = NanMsgFault.NONE
+    }
+
+    /** What the transport's send callbacks do with the framework's answer right now. [NanMsgFault.NONE] in release. */
+    fun msgFault(): NanMsgFault = if (BuildConfig.DEBUG) msgFault else NanMsgFault.NONE
+
+    /**
+     * Arms one of the two freeze signatures of work item #81 on the running transport: [NanMsgFault.SWALLOW] drops
+     * every send callback (the blocked framework queue), [NanMsgFault.FAIL] turns every ack into a failure (dead
+     * unicast). The watchdog's verdict and its session cycle then run for real; the fault stays armed until
+     * [NanMsgFault.NONE], so a cured cycle is only visible once it is disarmed. Returns what is now armed.
+     */
+    fun setMsgFault(fault: NanMsgFault): NanMsgFault {
+        if (!BuildConfig.DEBUG) return NanMsgFault.NONE
+        msgFault = fault
+        return fault
+    }
+
+    fun msgPlaneStatus(): NanMsgPlaneSnapshot? = if (BuildConfig.DEBUG) msgPlane?.invoke()?.copy(fault = msgFault) else null
 }

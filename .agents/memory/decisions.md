@@ -135,6 +135,7 @@ carries; never renumber an old one.
 | [2026-09.hd5n](decisions/2026-09-hd5n-the-chat-thread-reads-a-newest-anchored-window.md) | The chat thread reads a newest-anchored window, not the whole conversation | ui, data, perf |
 | [2026-09.hknx](decisions/2026-09-hknx-the-two-profile-screens-share-a-section-vocabulary.md) | The two profile screens share a section vocabulary, and Save moves to the app bar | ui, profile |
 | [2026-09.j8c7](decisions/2026-09-j8c7-a-photo-less-avatar-wears-its-node-id-s-hue.md) | A photo-less avatar wears its node id's hue, in a fixed palette shared with the notification shade | ui, identity, notifications |
+| [2026-09.jjhg](decisions/2026-09-jjhg-a-starved-coordination-plane-is-cured-by-a-nan-restart.md) | A starved coordination plane is cured by a NAN restart, and the watchdog reads acks to know | mesh, nan, recovery |
 | [2026-09.k68y](decisions/2026-09-k68y-diagnostics-reads-a-relay-s-build-from-its-source-offer.md) | Diagnostics reads a relay's build from its /source offer, not from HELLO | spool, diagnostics, ui |
 | [2026-09.kb68](decisions/2026-09-kb68-a-lonely-node-relaxes-its-discovery-cadence.md) | A lonely node relaxes its discovery cadence | wifi-aware, battery, reliability |
 | [2026-09.m7vn](decisions/2026-09-m7vn-settings-and-your-profile-are-two-screens.md) | Settings and your profile are two screens | ui, navigation, settings, profile |

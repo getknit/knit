@@ -164,6 +164,42 @@ next run: the P3 in deep Doze without the battery exemption has Aware **disabled
 takes network adb with it, so a `logcat` pipe dies at exactly the moment you want it — loop the reconnect. Still
 owed: the initiator-link refund on hardware (needs a phone that can actually link), and the P9-side injected leg.
 
+## The coordination plane can die while discovery lives, and only a NAN restart brings it back (ADR 2026-09.jjhg)
+
+Work item #81, from `soak-20260921-bursts`. After a chat burst a phone's Wi-Fi Aware follow-up plane — the cue
+heartbeat and the fast path, `DiscoverySession.sendMessage` — stops being acked: `nanMsgsAcked` flat,
+`nanMsgSendsFailed` climbing by the whole send rate, for hours, while `onServiceDiscovered` keeps re-firing,
+`disc`/`reach` stay full, `live=[]`, health `Healthy`. The frozen phone receives no follow-ups either. Chat is
+unaffected (Bluetooth and the side channel carry it) so nothing alarms. Two mechanisms, both in the forensics:
+
+- **The framework's send queue deadlocks.** `WifiAwareStateManager` blocks on a firmware `FOLLOWUP_TX_QUEUE_FULL`
+  but arms its 10 s timeout only off messages it still tracks; with none tracked nothing unblocks. The next 50
+  sends from our uid get **no callback at all**, every send after that fails instantly. `dumpsys wifiaware`:
+  `mSendQueueBlocked: true`, `mFwQueuedSendMessages: [{}]`, 50 host-queued.
+- **The firmware stops delivering unicast.** Queue idle; every follow-up queued successfully and failed ~4 s
+  later, including to a peer matched seconds earlier under its current address. Not a stale `PeerHandle`.
+
+Both clear on a **NAN restart** and on nothing else the app can do. Knit is the only Aware client on the lab
+Pixels, so `session.close()` is the framework's last-client detach (`onAwareDownCleanupSendQueueState()` + a
+firmware disable/enable with a fresh address); every recovery in the run followed one (a Doze NAN-down, a
+`reattach()`, a session cycle), and the phone that never restarted stayed frozen five hours. Addresses do not
+rotate on the 30-minute `mac_random_interval_sec`; they change only on a restart — which also means a peer's
+restart leaves our publish-side handle to it pointing at a dead address until it messages us again.
+
+`checkMessagePlane` (every `WEDGE_CHECK_MS`, beside `checkWedge`) reads the ack bookkeeping `sendCoord` keeps —
+every send by `messageId` until the framework answers, the last ack, failures since it, the last sighting — and
+`NanMessagePlanePolicy` gives one of two verdicts: **swallowed** (oldest unanswered send ≥ 30 s old, no ack since)
+or **starved** (≥ 4 failures since the last ack, no ack for 60 s, a peer sighted within 90 s — the sighting is
+what separates a dead plane from a peer that walked away, which is pruned at 150 s). The cure is Tier 1's
+`sessionCycleWithSettle()` on the shared `lastReattachAt` cooldown, 3 per episode, never with a live link, and
+the episode ends only on an ack that lands after it began — not on the cycle, not on the beat its NAN-down
+leaves the node unhealthy and alone (ADR 2026-09.9dnk's livelock). A spent episode earns a fresh set after 15
+minutes. Read it on a device from `…debug.STATE`'s `nanMsgPlaneStalledPeakMs` / `nanMsgPlaneCycles`, the state
+line's `msg=<unanswered>/<failsSinceAck>/<sinceAck>`, and `…debug.NANMSG`; `dumpsys wifiaware`'s
+`mSendQueueBlocked` tells the two mechanisms apart. Trap: a send on a discovery session we have closed is a
+silent no-op in the framework (no callback ever) — `sendCoord` refuses it and `rearmSubscribe` forgets what the
+closed subscribe strands; record one as in flight and it reads as swallowed forever.
+
 ## Three sets, and only one of them means *nearby*
 
 `MeshTransport.neighbors` is live links; `MeshTransport.reachable` is sightings. Above the composite the

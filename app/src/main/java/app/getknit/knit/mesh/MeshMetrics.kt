@@ -253,6 +253,8 @@ class MeshMetrics {
     private val nanOffScreenRefusals = AtomicLong()
     private val nanMsgsAcked = AtomicLong()
     private val nanMsgSendsFailed = AtomicLong()
+    private val nanMsgPlaneStalledPeakMs = AtomicLong()
+    private val nanMsgPlaneCycles = AtomicLong()
     private val filesSentNan = AtomicLong()
     private val filesSentBt = AtomicLong()
     private val nanBulkGraceTimeouts = AtomicLong()
@@ -624,6 +626,20 @@ class MeshMetrics {
     /** A coordination-plane message got no ACK (peer dozing/out of range, or the tx queue overflowed). */
     fun onNanMsgSendFailed() {
         nanMsgSendsFailed.incrementAndGet()
+    }
+
+    /**
+     * The coordination-plane watchdog (ADR 2026-09.jjhg) holds a stalled episode open: no ack since it began, sends
+     * swallowed or failing while peers are still sighted. Peak length, like [onNanSyncOwed]'s — a plane that never
+     * stalls reads 0, and one the cycle cured reads how long it took.
+     */
+    fun onNanMsgPlaneStalled(stalledForMs: Long) {
+        nanMsgPlaneStalledPeakMs.accumulateAndGet(stalledForMs) { a, b -> maxOf(a, b) }
+    }
+
+    /** The coordination-plane watchdog cycled the Aware session (a NAN restart) to cure a stalled plane. */
+    fun onNanMsgPlaneCycled() {
+        nanMsgPlaneCycles.incrementAndGet()
     }
 
     /** A fast frame left in the compact (`0x03`, single-message) encoding toward one target. */
@@ -1092,6 +1108,8 @@ class MeshMetrics {
             nanOffScreenRefusals = nanOffScreenRefusals.get(),
             nanMsgsAcked = nanMsgsAcked.get(),
             nanMsgSendsFailed = nanMsgSendsFailed.get(),
+            nanMsgPlaneStalledPeakMs = nanMsgPlaneStalledPeakMs.get(),
+            nanMsgPlaneCycles = nanMsgPlaneCycles.get(),
             filesSentNan = filesSentNan.get(),
             filesSentBt = filesSentBt.get(),
             nanBulkGraceTimeouts = nanBulkGraceTimeouts.get(),
@@ -1214,6 +1232,8 @@ class MeshMetrics {
         val nanOffScreenRefusals: Long = 0,
         val nanMsgsAcked: Long = 0,
         val nanMsgSendsFailed: Long = 0,
+        val nanMsgPlaneStalledPeakMs: Long = 0,
+        val nanMsgPlaneCycles: Long = 0,
         val filesSentNan: Long = 0,
         val filesSentBt: Long = 0,
         val nanBulkGraceTimeouts: Long = 0,

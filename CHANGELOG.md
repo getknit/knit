@@ -70,6 +70,9 @@ document:
 
 ### Fixed
 
+- After a busy stretch of chat, a phone's Wi-Fi Aware radio could stop getting its short messages through
+  for hours while still seeing every neighbour, so reactions and read ticks fell back to Bluetooth. The mesh
+  now notices within about a minute and restarts that radio.
 - A photo sent over Bluetooth could cross the air three times, because every nearby phone offered its copy
   while the first was still arriving. A phone now asks for a picture only while nothing is on the way, and a
   neighbour sends one only when asked.

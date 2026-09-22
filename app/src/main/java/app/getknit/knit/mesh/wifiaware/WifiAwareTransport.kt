@@ -400,6 +400,23 @@ class WifiAwareTransport(
     private val cueTarget = ConcurrentHashMap<String, CueTarget>()
     private val msgSeq = AtomicInteger()
 
+    // Coordination-plane ack bookkeeping for [checkMessagePlane] (ADR 2026-09.jjhg): every sendMessage is
+    // remembered by its messageId, with the session it went out on, until the framework answers. A closed
+    // session never answers (the framework drops callbacks for a terminated session), so a re-arm forgets the
+    // entries it strands rather than let them read as swallowed. Written on the Aware callback thread; the
+    // watchdog only reads.
+    private val msgInFlight = ConcurrentHashMap<Int, CoordSend>()
+
+    @Volatile private var lastMsgAckAt = 0L
+
+    @Volatile private var msgFailsSinceAck = 0
+
+    @Volatile private var lastSightingAt = 0L
+
+    @Volatile private var msgPlaneEpisodeSince = 0L
+
+    @Volatile private var msgPlaneCycles = 0
+
     // Compact fast-path state: one fragId per fragmented frame (shared by every fanout target), and the
     // bounded reassembly store for inbound fragments — touched only on the Aware callback thread.
     private val fragSeq = AtomicInteger()
@@ -515,6 +532,12 @@ class WifiAwareTransport(
         val session: DiscoverySession,
     )
 
+    /** One coordination-plane send awaiting its callback: when it went out, and on which session. */
+    private data class CoordSend(
+        val sentAt: Long,
+        val session: DiscoverySession,
+    )
+
     /**
      * A coordination-plane sender: the session disambiguates equal [PeerHandle] ids across the
      * publish/subscribe sessions. Keys inbound fragment reassembly (one frame's parts always arrive on one
@@ -536,6 +559,7 @@ class WifiAwareTransport(
         scope.launch {
             localNodeId = identity.nodeId()
             lastLinkOrAcceptAt = SystemClock.elapsedRealtime() // grace window before the wedge watchdog can fire
+            lastMsgAckAt = SystemClock.elapsedRealtime() // the ack-starvation clock runs from here, not from 0
             // Instant Communication Mode is API 33; on 29-32 the probe method doesn't exist, so ICM stays off
             // and Wi-Fi Aware falls back to standard discovery windows (slower, but functional).
             instantSupported = instantModeAvailable()
@@ -565,6 +589,7 @@ class WifiAwareTransport(
             }
             registerAvailability()
             registerWifiWatch()
+            NanFaultInjector.bindMsgPlane(::msgPlaneSnapshot)
             NanFaultInjector.bind(
                 onAvailability = ::handleAvailabilityChanged,
                 status = {
@@ -656,6 +681,7 @@ class WifiAwareTransport(
                     while (scope.isActive) {
                         delay(WEDGE_CHECK_MS)
                         checkWedge()
+                        checkMessagePlane()
                     }
                 }
         }
@@ -682,7 +708,7 @@ class WifiAwareTransport(
                 "refused=$responderRefusals/$responderCycles disc=$disc cue=$cues wanted=$wanted initiable=$initiable " +
                 "reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}] " +
                 "bulk[${bulkWanted.debug()}] lonely=${lonelyForMs(now)}ms offscreen=$offScreenBlocked " +
-                "init=${initiatorPolicy.snapshot()}",
+                "init=${initiatorPolicy.snapshot()} msg=${msgInFlight.size}/$msgFailsSinceAck/${now - lastMsgAckAt}ms",
         )
     }
 
@@ -845,6 +871,67 @@ class WifiAwareTransport(
         }
     }
 
+    /**
+     * The coordination-plane watchdog (ADR 2026-09.jjhg, work item #81): [NanMessagePlanePolicy] over the ack
+     * bookkeeping, every [WEDGE_CHECK_MS] beside [checkWedge]. Its cure is Tier 1's session cycle — as the only
+     * Aware client our detach is a NAN disable/enable, the one thing that clears both a blocked framework send
+     * queue and a firmware that has stopped delivering unicast — paced on the same [lastReattachAt], so the two
+     * watchdogs cannot stack cycles. Never with a live link: a deferred cycle spends no budget, and the next
+     * tick re-decides.
+     */
+    private fun checkMessagePlane() {
+        val now = SystemClock.elapsedRealtime()
+        reapLostCallbacks(now)
+        val healthy = hasHardware && _health.value == TransportHealth.Healthy && session != null
+        val cues = cueTarget.size
+        val decision =
+            NanMessagePlanePolicy.decide(
+                NanMessagePlanePolicy.Facts(
+                    healthy = healthy,
+                    cueTargets = cues,
+                    now = now,
+                    oldestUnansweredSentAt = msgInFlight.values.minOfOrNull { it.sentAt } ?: 0L,
+                    lastAckAt = lastMsgAckAt,
+                    failsSinceAck = msgFailsSinceAck,
+                    lastSightingAt = lastSightingAt,
+                    episodeSince = msgPlaneEpisodeSince,
+                    cycles = msgPlaneCycles,
+                    lastReattachAt = lastReattachAt,
+                ),
+            )
+        msgPlaneEpisodeSince = decision.nextEpisodeSince
+        if (decision.nextEpisodeSince != 0L && healthy && cues > 0) {
+            metrics.onNanMsgPlaneStalled(now - decision.nextEpisodeSince)
+        }
+        if (decision.action != NanMessagePlanePolicy.Action.CycleSession) {
+            msgPlaneCycles = decision.nextCycles
+            return
+        }
+        if (anyLinkActivity()) {
+            Log.i(TAG, "coordination plane stalled ${now - decision.nextEpisodeSince}ms — a link is live, cycle deferred")
+            return
+        }
+        msgPlaneCycles = decision.nextCycles
+        lastReattachAt = now
+        metrics.onNanMsgPlaneCycled()
+        Log.w(
+            TAG,
+            "coordination plane stalled ${now - decision.nextEpisodeSince}ms (unanswered=${msgInFlight.size} " +
+                "fails=$msgFailsSinceAck sinceAck=${now - lastMsgAckAt}ms cues=$cues) — cycling the session " +
+                "($msgPlaneCycles/${NanMessagePlanePolicy.Tuning.PRODUCTION.maxCycles} this episode)",
+        )
+        sessionCycleWithSettle()
+    }
+
+    /**
+     * A send whose callback never came while later sends were acked is a lost callback, not a wedge; left alone
+     * it would pin the oldest-unanswered age forever. Reaped once it is two watchdog ticks old.
+     */
+    private fun reapLostCallbacks(now: Long) {
+        val ackedAt = lastMsgAckAt
+        msgInFlight.entries.removeAll { it.value.sentAt < ackedAt && now - it.value.sentAt > LOST_CALLBACK_MS }
+    }
+
     override fun stop() {
         loopJob?.cancel()
         powerJob?.cancel()
@@ -856,6 +943,7 @@ class WifiAwareTransport(
         unregisterWifiWatch()
         initiatorPolicy.noteWatchStopped() // a blip cannot span the watch; the strikes and the hold stay (ADR 055)
         NanFaultInjector.bind(onAvailability = null, status = null)
+        NanFaultInjector.bindMsgPlane(null)
         peers.keys.toList().forEach { teardownPeer(it) }
         stopResponder()
         runCatching { publishSession?.close() }
@@ -884,6 +972,10 @@ class WifiAwareTransport(
         cueTarget.clear()
         hopTable.clear()
         reassembler.clear()
+        msgInFlight.clear()
+        msgFailsSinceAck = 0
+        msgPlaneEpisodeSince = 0L
+        msgPlaneCycles = 0
         lastSeenAt.clear()
         reachablePeers.clear()
         digestTracker.clear()
@@ -1287,11 +1379,11 @@ class WifiAwareTransport(
                 }
 
                 override fun onMessageSendSucceeded(messageId: Int) {
-                    metrics.onNanMsgAcked()
+                    onCoordMsgAcked(messageId)
                 }
 
                 override fun onMessageSendFailed(messageId: Int) {
-                    metrics.onNanMsgSendFailed()
+                    onCoordMsgFailed(messageId)
                 }
             }
         runCatching { s.publish(buildPublishConfig(), cb, handler) }.onFailure { onSessionFault("publish", it) }
@@ -1391,6 +1483,7 @@ class WifiAwareTransport(
             if (session == null || subscribing.get()) return@onHandler // don't stack a rearm on a pending subscribe
             if (offScreenBlocked) return@onHandler // keep whatever subscribe survived; the re-file would only throw
             synchronized(lock) { discovered.clear() }
+            forgetSendsOn(subscribeSession)
             runCatching { subscribeSession?.close() }
             subscribeSession = null
             startSubscribe()
@@ -1460,6 +1553,7 @@ class WifiAwareTransport(
         session = null
         publishSession = null
         subscribeSession = null
+        msgInFlight.clear()
         stopResponder()
         synchronized(lock) { accepting = 0 }
         _health.value =
@@ -1489,6 +1583,7 @@ class WifiAwareTransport(
             publishSession = null
             subscribeSession = null
             session = null
+            msgInFlight.clear()
             attaching.set(false)
             subscribing.set(false)
             attach() // bumps attachGen, stamping fresh callbacks and invalidating any prior-gen stragglers
@@ -1629,6 +1724,7 @@ class WifiAwareTransport(
             publishSession = null
             subscribeSession = null
             session = null
+            msgInFlight.clear()
             attaching.set(false)
             subscribing.set(false)
             sessionCycleSettleStartedAt = SystemClock.elapsedRealtime()
@@ -1900,11 +1996,11 @@ class WifiAwareTransport(
             }
 
             override fun onMessageSendSucceeded(messageId: Int) {
-                metrics.onNanMsgAcked()
+                onCoordMsgAcked(messageId)
             }
 
             override fun onMessageSendFailed(messageId: Int) {
-                metrics.onNanMsgSendFailed()
+                onCoordMsgFailed(messageId)
             }
         }
 
@@ -1985,11 +2081,83 @@ class WifiAwareTransport(
     private fun sendCue(nodeId: String) {
         val target = cueTarget[nodeId] ?: return
         val cue = NanCueCodec.encodeCue(localNodeId, storeDigest.current())
-        runCatching { target.session.sendMessage(target.handle, msgSeq.getAndIncrement(), cue) }
-            .onFailure { cueTarget.remove(nodeId) } // stale handle/session; refreshed on next discover/receive
+        sendCoord(nodeId, target, cue)
     }
 
     private fun cueAll() = cueTarget.keys.toList().forEach { sendCue(it) }
+
+    /**
+     * The one coordination-plane send. A send on a session we have since closed is a silent no-op in the
+     * framework (`sendMessage: called on terminated session`, no callback), so it is skipped rather than
+     * remembered; the target stays for the next discovery or inbound cue to refresh, as it always has. A send
+     * that throws is the stale-handle case and drops the target. True when the message went out.
+     */
+    private fun sendCoord(
+        nodeId: String,
+        target: CueTarget,
+        message: ByteArray,
+    ): Boolean {
+        val session = target.session
+        if (session !== publishSession && session !== subscribeSession) return false
+        val messageId = msgSeq.getAndIncrement()
+        val sent = runCatching { session.sendMessage(target.handle, messageId, message) }.isSuccess
+        if (sent) {
+            msgInFlight[messageId] = CoordSend(SystemClock.elapsedRealtime(), session)
+        } else {
+            cueTarget.remove(nodeId) // stale handle/session; refreshed on next discover/receive
+        }
+        return sent
+    }
+
+    /** `onMessageSendSucceeded` from either discovery session: the framework answered, the plane is alive. */
+    private fun onCoordMsgAcked(messageId: Int) {
+        when (NanFaultInjector.msgFault()) {
+            NanMsgFault.SWALLOW -> {
+                // `…debug.NANMSG`: no callback at all, as under a blocked framework queue.
+                return
+            }
+
+            NanMsgFault.FAIL -> {
+                // `…debug.NANMSG`: every send fails, as under dead unicast.
+                onCoordMsgFailed(messageId)
+                return
+            }
+
+            NanMsgFault.NONE -> {}
+        }
+        metrics.onNanMsgAcked()
+        msgInFlight.remove(messageId)
+        lastMsgAckAt = SystemClock.elapsedRealtime()
+        msgFailsSinceAck = 0
+    }
+
+    /** `onMessageSendFailed` from either discovery session. */
+    private fun onCoordMsgFailed(messageId: Int) {
+        if (NanFaultInjector.msgFault() == NanMsgFault.SWALLOW) return
+        metrics.onNanMsgSendFailed()
+        msgInFlight.remove(messageId)
+        msgFailsSinceAck++
+    }
+
+    /** `…debug.NANMSG`: the ack bookkeeping and the episode, for the lab's freeze trial. */
+    private fun msgPlaneSnapshot(): NanMsgPlaneSnapshot {
+        val now = SystemClock.elapsedRealtime()
+        return NanMsgPlaneSnapshot(
+            unanswered = msgInFlight.size,
+            oldestUnansweredMs = msgInFlight.values.minOfOrNull { now - it.sentAt } ?: 0L,
+            sinceAckMs = now - lastMsgAckAt,
+            failsSinceAck = msgFailsSinceAck,
+            episodeMs = if (msgPlaneEpisodeSince == 0L) 0L else now - msgPlaneEpisodeSince,
+            cycles = msgPlaneCycles,
+            fault = NanMsgFault.NONE,
+        )
+    }
+
+    /** Forgets the sends a closed discovery [session] can no longer answer. */
+    private fun forgetSendsOn(session: DiscoverySession?) {
+        if (session == null) return
+        msgInFlight.entries.removeAll { it.value.session === session }
+    }
 
     /**
      * Fast path (see [MeshTransport.fastFanout]): fan a small broadcast frame out to every neighbor over the
@@ -2098,11 +2266,7 @@ class WifiAwareTransport(
             return
         }
         choice.messages.forEach { msg ->
-            runCatching { target.session.sendMessage(target.handle, msgSeq.getAndIncrement(), msg) }
-                .onFailure {
-                    cueTarget.remove(nodeId) // stale handle/session; refreshed on next discover/receive
-                    return
-                }
+            if (!sendCoord(nodeId, target, msg)) return
         }
         FastFramePick.record(choice, metrics)
     }
@@ -2849,7 +3013,9 @@ class WifiAwareTransport(
 
     /** Note a peer seen over the coordination plane, keeping the best Peer we know for the reachable set. */
     private fun noteReachable(peer: Peer) {
-        lastSeenAt[peer.nodeId] = SystemClock.elapsedRealtime()
+        val now = SystemClock.elapsedRealtime()
+        lastSeenAt[peer.nodeId] = now
+        lastSightingAt = now
         // Don't downgrade a fuller Peer (from an advert) to a bare one (from a cue).
         reachablePeers.merge(peer.nodeId, peer) { old, new -> if (new.protoVersion == 0 && old.protoVersion != 0) old else new }
         recomputeReachable()
@@ -2949,6 +3115,7 @@ class WifiAwareTransport(
                 session = null
                 publishSession = null
                 subscribeSession = null
+                msgInFlight.clear()
                 attaching.set(false)
                 subscribing.set(false)
                 reattaching.set(false)
@@ -3280,6 +3447,10 @@ class WifiAwareTransport(
         // *owed with no link forming* (the owed-episode, not time-since-last-link) before self-restarting. The
         // restart window doubles as the min restart spacing so a persistently-unreachable peer can't loop us.
         const val WEDGE_CHECK_MS = 30_000L
+
+        // A coordination-plane send still unanswered this long after a later send was acked is a lost callback,
+        // not evidence: [reapLostCallbacks] drops it so it cannot pin the oldest-unanswered age.
+        const val LOST_CALLBACK_MS = 60_000L
         const val WEDGE_RESTART_MS = 180_000L
 
         // Tier-1 responder self-heal: how long a sync stays owed with no link forming before a session cycle
