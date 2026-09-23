@@ -9,11 +9,16 @@ name: Triage
 # maintainer had just removed by hand, and there is no way to distinguish "the regex was wrong" from
 # "the text changed". Hand-labeling wins after the first pass.
 #
-# Matching runs over the title plus a SCRUBBED body: issue-form headings (`### ...`) and UNCHECKED
-# checkbox lines are stripped first. The forms in .github/ISSUE_TEMPLATE render their own scaffolding
-# into every single issue ("### Scope and mesh impact", "- [ ] Changes the end-to-end crypto
-# envelope", ...), so a naive regex would tag every feature request `area: crypto` and every bug
-# `area: mesh`. Checked boxes survive the scrub on purpose — those are a real signal.
+# Bugs: matching runs over the title plus a SCRUBBED body: issue-form headings (`### ...`) and
+# UNCHECKED checkbox lines are stripped first, because the forms in .github/ISSUE_TEMPLATE render their
+# own scaffolding into every issue. Checked boxes survive the scrub on purpose — those are a signal.
+#
+# Feature requests: the body is NOT keyword-matched, only the title plus the checked "Scope and mesh
+# impact" boxes, mapped structurally. A proposal names the subsystems it leaves alone — the form's
+# scope question asks for exactly that ("no CBOR change, no custody change, no crypto envelope
+# change", "alongside Bluetooth and Wi-Fi Aware", "rather than changing encryption or
+# store-and-forward") — so body keywords tagged nearly every request `area: mesh` + `area: crypto`
+# (#5, #6, #15). A regex can't read negation; the maintainer adds the real area by hand.
 #
 # Third-party and first-party actions alike are pinned by commit SHA here because this job holds
 # `issues: write` and is triggered by anyone who can open an issue. (ci.yml / release.yml pin by
@@ -39,13 +44,22 @@ jobs:
             // GitHub delivers issue bodies with CRLF; normalize before any line-anchored matching.
             const body = (issue.body || '').replace(/\r\n?/g, '\n');
 
-            const scrubbed = [
-              issue.title || '',
-              ...body
-                .split('\n')
-                .filter((l) => !/^\s{0,3}#{1,6}\s/.test(l))        // form headings
-                .filter((l) => !/^\s*[-*]\s*\[\s*\]\s/.test(l)),   // UNCHECKED checkbox boilerplate
-            ].join('\n');
+            const isFeature =
+              (issue.labels || []).some((l) => l.name === 'enhancement') ||
+              /^\s*\[Feature\]/i.test(issue.title || '') ||
+              /^###\s*Proposed solution\s*$/m.test(body);
+
+            const checked = (re) => new RegExp(`^\\s*[-*]\\s*\\[[xX]\\]\\s.*${re.source}`, 'im').test(body);
+
+            const scrubbed = isFeature
+              ? issue.title || ''
+              : [
+                  issue.title || '',
+                  ...body
+                    .split('\n')
+                    .filter((l) => !/^\s{0,3}#{1,6}\s/.test(l))        // form headings
+                    .filter((l) => !/^\s*[-*]\s*\[\s*\]\s/.test(l)),   // UNCHECKED checkbox boilerplate
+                ].join('\n');
 
             const RULES = [
               ['area: wifi-aware', /wi-?fi[\s-]?aware|\bNAN\b|\bNDPs?\b|\bNDIs?\b|\bAware session\b/i],
@@ -61,6 +75,12 @@ jobs:
             const labels = new Set(
               RULES.filter(([, re]) => re.test(scrubbed)).map(([name]) => name),
             );
+
+            // The feature form's scope boxes, when the reporter actually ticked one.
+            if (isFeature) {
+              if (checked(/CBOR wire format/) || checked(/custody \/ convergence/)) labels.add('area: mesh');
+              if (checked(/crypto envelope/)) labels.add('area: crypto');
+            }
 
             // The bug form's "Radios involved" dropdown beats prose. "Both" means both planes.
             const radios = /^###\s*Radios involved\s*$\n+^(.+)$/m.exec(body);
