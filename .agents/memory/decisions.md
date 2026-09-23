@@ -107,6 +107,7 @@ carries; never renumber an old one.
 | [2026-09.6ww7](decisions/2026-09-6ww7-a-group-chat-says-lora-will-not-carry-it.md) | A group chat says LoRa will not carry it | lora, ui |
 | [2026-09.7463](decisions/2026-09-7463-sealed-dm-form-chat-rides-the-targeted-coordination-plane-arm.md) | Sealed DM-form chat rides the targeted coordination-plane arm | mesh, nan, fanout |
 | [2026-09.74fq](decisions/2026-09-74fq-open-to-chat-is-a-carried-profile-flag.md) | Open to chat is a carried profile flag, and the nearby cue is batched with per-person and hourly cooldowns | profile, wire, notifications, ui |
+| [2026-09.7ad3](decisions/2026-09-7ad3-a-saved-file-opens-in-the-app-that-claims-its-type.md) | A saved file opens in the app that claims its type, and a second tap opens that copy | attachments, ui |
 | [2026-09.7bu7](decisions/2026-09-7bu7-a-profile-is-custodied-wherever-it-is-delivered.md) | A profile is custodied wherever it is delivered, flooded or served | mesh, custody, profile, convergence |
 | [2026-09.7c8n](decisions/2026-09-7c8n-gossip-pays-for-its-own-air.md) | Gossip pays for its own air, and a backfill round skips what it cannot afford | lora, airtime, reliability |
 | [2026-09.7r4d](decisions/2026-09-7r4d-a-post-typed-in-the-bridged-room-is-the-same-frame-with-no-speaker.md) | A post typed in the bridged room is the same frame with no speaker | lora, meshtastic, mesh |

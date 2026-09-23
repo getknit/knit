@@ -1,9 +1,11 @@
 package app.getknit.knit.ui.chat
 
 import android.app.Activity
+import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.activity.result.contract.ActivityResultContract
 import app.getknit.knit.mesh.transferExtForMime
 
@@ -12,6 +14,12 @@ data class PendingSave(
     val hash: String,
     val key: String?,
     val name: String?,
+    val mime: String?,
+)
+
+/** A received file written to the document the user picked, with the type to open it under. */
+data class SavedFile(
+    val uri: Uri,
     val mime: String?,
 )
 
@@ -56,3 +64,17 @@ class CreateNamedDocument : ActivityResultContract<PendingSave, Uri?>() {
         const val HASH_PREFIX = 8
     }
 }
+
+/**
+ * Whether the document [uri] is still there and still ours to read. A query, not an open: opening a cloud
+ * provider's document can start a download just to answer yes. A moved or deleted copy comes back empty or
+ * throws, and so does one whose grant was pruned (the platform keeps a bounded number). Blocking; call it
+ * off the main thread.
+ */
+internal fun ContentResolver.documentExists(uri: Uri): Boolean =
+    runCatching {
+        query(uri, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, null, null)?.use { it.moveToFirst() } == true
+    }.getOrDefault(false)
+
+/** The type the provider reports for [uri], or null when it names none or cannot be asked. Blocking. */
+internal fun ContentResolver.typeOf(uri: Uri): String? = runCatching { getType(uri) }.getOrNull()

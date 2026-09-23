@@ -11,7 +11,7 @@ import org.junit.Test
 import java.io.File
 
 /**
- * Pins [BackupTables] to the exported Room schema: every table is carried, transient or derived, and no
+ * Pins [BackupTables] to the exported Room schema: every table is carried, transient, device-local or derived, and no
  * name is listed twice or invented. A new entity fails here until someone decides what a backup does
  * with it — the whole point of listing them by hand.
  */
@@ -35,7 +35,7 @@ class BackupTablesTest {
                         .getValue("tableName")
                         .jsonPrimitive.content
                 }.toSet()
-        val listed = BackupTables.CARRIED + BackupTables.TRANSIENT + BackupTables.DERIVED
+        val listed = BackupTables.CARRIED + BackupTables.TRANSIENT + BackupTables.DEVICE_LOCAL + BackupTables.DERIVED
         assertEquals("a table is listed twice", listed.size, listed.toSet().size)
         assertEquals(inSchema, listed.toSet())
     }

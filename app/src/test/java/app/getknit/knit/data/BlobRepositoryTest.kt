@@ -24,7 +24,7 @@ import org.junit.Test
 /**
  * The cross-table blob GC (the load-bearing part of [BlobRepository]) had no direct test. Exercises
  * `deleteIfUnreferenced`'s four reference checks + own-avatar guard and `deleteOrphans` against the real DB,
- * including the atomic verdict-row deletion. The image *screening* itself now lives in
+ * including the atomic verdict-row (and saved-copy row) deletion. The image *screening* itself now lives in
  * [app.getknit.knit.moderation.ImageScreeningService] (see `ImageScreeningServiceTest`).
  */
 class BlobRepositoryTest : RoomDbTest() {
@@ -40,6 +40,7 @@ class BlobRepositoryTest : RoomDbTest() {
             groups = db.groupDao(),
             forward = db.forwardDao(),
             db = db,
+            savedFiles = db.savedFileDao(),
         )
 
     private fun ownAvatar(hash: String?) {
@@ -54,11 +55,26 @@ class BlobRepositoryTest : RoomDbTest() {
             ownAvatar(null)
             blob("h1")
             db.blobVerdictDao().upsert(BlobVerdictEntity("h1", flagged = true, score = 0.9f))
+            db.savedFileDao().upsert("h1", "content://docs/document/report.pdf", 1L)
 
             repo().deleteIfUnreferenced("h1")
 
             assertFalse(db.blobDao().exists("h1"))
             assertNull(db.blobVerdictDao().find("h1"))
+            assertNull("where it was saved goes with the blob (ADR 2026-09.7ad3)", db.savedFileDao().uriFor("h1"))
+        }
+
+    @Test
+    fun `a saved copy is remembered, replaced by a later save, and forgotten on request`() =
+        runTest {
+            val repo = repo()
+
+            repo.rememberSavedCopy("h1", "content://docs/document/a.pdf", 1L)
+            repo.rememberSavedCopy("h1", "content://docs/document/b.pdf", 2L)
+            assertEquals("content://docs/document/b.pdf", repo.savedCopy("h1"))
+
+            repo.forgetSavedCopy("h1")
+            assertNull(repo.savedCopy("h1"))
         }
 
     @Test

@@ -2,7 +2,11 @@
 
 package app.getknit.knit.ui.chat
 
+import android.content.ContentProvider
+import android.content.ContentValues
 import android.content.Context
+import android.database.Cursor
+import android.database.MatrixCursor
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -73,6 +77,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -92,6 +97,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.Shadows.shadowOf
+import java.io.ByteArrayOutputStream
 
 /**
  * The richest ViewModel: a 5-way state combine plus the send double-submit guard and the attach room-vs-DM
@@ -1701,6 +1709,133 @@ class ChatViewModelTest {
 
             coVerify(exactly = 0) { gallerySaver.saveToPictures(any(), any(), any()) }
             assertTrue(events.contains(R.string.chat_image_save_failed))
+        }
+
+    /**
+     * ADR 2026-09.7ad3: a received file the user saved is handed back to the screen to open, carrying the
+     * decrypted bytes into the picked document on the way.
+     */
+    @Test
+    fun savingAFileWritesThePlaintextAndAsksToOpenIt() =
+        runTest {
+            val plain = "%PDF-1.7".toByteArray()
+            val sealed = AttachmentCrypto.seal(plain)
+            coEvery { blobs.bytes("ct") } returns sealed.blob
+            val dest = Uri.parse("content://docs/document/report.pdf")
+            val written = ByteArrayOutputStream()
+            shadowOf(context.contentResolver).registerOutputStream(dest, written)
+            val vm = vm()
+
+            vm.saveAttachmentTo(PendingSave("ct", b64(sealed.key), "report.pdf", "application/pdf"), dest)
+            val saved = vm.savedFiles.first()
+
+            assertEquals(SavedFile(dest, "application/pdf"), saved)
+            assertArrayEquals(plain, written.toByteArray())
+            coVerify { blobs.rememberSavedCopy("ct", dest.toString(), any()) }
+            assertTrue(
+                "a read grant that outlives the process",
+                context.contentResolver.persistedUriPermissions.any { it.uri == dest && it.isReadPermission },
+            )
+        }
+
+    /** The second tap on a saved file opens the copy it was saved to and never asks again (ADR 2026-09.7ad3). */
+    @Test
+    fun aFileSavedBeforeOpensFromItsCopyWithoutAsking() =
+        runTest {
+            val copy = Uri.parse("content://docs/document/report.pdf")
+            coEvery { blobs.savedCopy("ct") } returns copy.toString()
+            Robolectric.buildContentProvider(PresentDocuments::class.java).create("docs")
+            val vm = vm()
+            val asked = mutableListOf<PendingSave>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.saveNeeded.collect { asked += it } }
+
+            vm.openAttachment(PendingSave("ct", "k", "report.pdf", "application/pdf"))
+
+            assertEquals(SavedFile(copy, "application/pdf"), vm.savedFiles.first())
+            assertTrue(asked.isEmpty())
+            coVerify(exactly = 0) { blobs.forgetSavedCopy(any()) }
+        }
+
+    /** A copy that was moved or deleted since is forgotten, and the tap goes back to the picker. */
+    @Test
+    fun aSavedCopyThatIsGoneIsForgottenAndAskedForAgain() =
+        runTest {
+            val gone = Uri.parse("content://docs/document/deleted.pdf") // no cursor: the provider has no such row
+            coEvery { blobs.savedCopy("ct") } returns gone.toString()
+            val vm = vm()
+            val pending = PendingSave("ct", "k", "deleted.pdf", "application/pdf")
+
+            vm.openAttachment(pending)
+
+            assertEquals(pending, vm.saveNeeded.first())
+            coVerify { blobs.forgetSavedCopy("ct") }
+        }
+
+    /** A file never saved goes straight to the picker. */
+    @Test
+    fun aFileNeverSavedAsksWhereToSaveIt() =
+        runTest {
+            coEvery { blobs.savedCopy("ct") } returns null
+            val vm = vm()
+            val asked = mutableListOf<PendingSave>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.saveNeeded.collect { asked += it } }
+            val pending = PendingSave("ct", "k", "report.pdf", "application/pdf")
+
+            vm.openAttachment(pending) // no suspension on this path: the ask lands before a late collector could subscribe
+
+            assertEquals(listOf(pending), asked)
+            coVerify(exactly = 0) { blobs.forgetSavedCopy(any()) }
+        }
+
+    /** A documents provider that still has every document it is asked about. */
+    class PresentDocuments : ContentProvider() {
+        override fun onCreate() = true
+
+        override fun query(
+            uri: Uri,
+            projection: Array<out String>?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+            sortOrder: String?,
+        ): Cursor = MatrixCursor(projection ?: arrayOf("document_id")).apply { addRow(arrayOf<Any>(uri.lastPathSegment!!)) }
+
+        override fun getType(uri: Uri): String? = null
+
+        override fun insert(
+            uri: Uri,
+            values: ContentValues?,
+        ): Uri? = null
+
+        override fun delete(
+            uri: Uri,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ) = 0
+
+        override fun update(
+            uri: Uri,
+            values: ContentValues?,
+            selection: String?,
+            selectionArgs: Array<out String>?,
+        ) = 0
+    }
+
+    /** An archive is saved but never opened: nothing on the device can look inside it (ADR 2026-09.7ad3). */
+    @Test
+    fun savingARiskyFileDoesNotAskToOpenIt() =
+        runTest {
+            coEvery { blobs.bytes("h") } returns byteArrayOf(0x50, 0x4B, 3, 4)
+            val dest = Uri.parse("content://docs/document/stuff.zip")
+            shadowOf(context.contentResolver).registerOutputStream(dest, ByteArrayOutputStream())
+            val vm = vm()
+            val opened = mutableListOf<SavedFile>()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.savedFiles.collect { opened += it } }
+
+            vm.saveAttachmentTo(PendingSave("h", null, "stuff.zip", "application/zip"), dest)
+            assertEquals(R.string.chat_file_saved, vm.events.first())
+
+            assertTrue(opened.isEmpty())
+            coVerify(exactly = 0) { blobs.rememberSavedCopy(any(), any(), any()) }
         }
 
     /**

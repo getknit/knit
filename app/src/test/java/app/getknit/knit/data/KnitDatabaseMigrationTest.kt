@@ -46,7 +46,7 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v14) creates and opens from the exported JSON`() =
+    fun `the current schema (v15) creates and opens from the exported JSON`() =
         runTest {
             helper.createDatabase(CURRENT_VERSION).close()
         }
@@ -567,6 +567,24 @@ class KnitDatabaseMigrationTest {
         }
 
     @Test
+    fun `migrate 14 to 15 preserves existing rows and adds the empty saved_files table`() =
+        runTest {
+            helper.createDatabase(14).use { c ->
+                c.execSQL("INSERT INTO blobs (hash, mime, bytes) VALUES ('h1','application/pdf',X'01')")
+            }
+            helper.runMigrationsAndValidate(15, listOf(KnitMigrations.MIGRATION_14_15)).use { c ->
+                c.prepare("SELECT COUNT(*) FROM blobs").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(1L, s.getLong(0))
+                }
+                c.prepare("SELECT COUNT(*) FROM saved_files").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("nothing saved before this build is remembered", 0L, s.getLong(0))
+                }
+            }
+        }
+
+    @Test
     fun `migrate 11 to 12 indexes every existing message and keeps the index in step from then on`() =
         runTest {
             // A device upgrading holds history; 'rebuild' must index all of it, and the sync triggers must
@@ -621,7 +639,7 @@ class KnitDatabaseMigrationTest {
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 14
+        const val CURRENT_VERSION = 15
 
         /** The v11 column list, as MIGRATION_10_11's test seeds it. */
         const val INSERT_V11 =

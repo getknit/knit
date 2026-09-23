@@ -102,7 +102,12 @@ Carried (`BackupTables.CARRIED`): `blobs`, `blob_verdicts`, `peers`, `met_peers`
   5) was built for "wipe / reinstall", and a restore is one. Leaving them out also keeps forward-secrecy
   material out of a file that may sit on a cloud drive for years.
 
-`BackupTablesTest` pins the three lists to the exported schema: a new table fails the build until it is
+**Device-local** (`BackupTables.DEVICE_LOCAL`), also empty in the copy: `saved_files`, where each received
+file was saved on this phone. Its document URIs name this phone's storage and are readable only through
+grants this install holds (ADR 2026-09.7ad3); after a restore a file bubble asks where to save, as it did
+the first time.
+
+`BackupTablesTest` pins the four lists to the exported schema: a new table fails the build until it is
 classified.
 
 ## Settings

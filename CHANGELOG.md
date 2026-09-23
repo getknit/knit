@@ -40,6 +40,8 @@ document:
 - The mesh notification now offers Pause 15 min and Pause 1 hour beside Stop, so another app can have
   Bluetooth for a while without you switching Knit off. The chat list shows when the pause ends, and the mesh
   comes back by itself.
+- Tapping a file someone sent you now opens it. The first tap still asks where to save it and later taps open
+  that copy, though archives and app packages are only ever saved, since nothing on the phone can check them.
 
 ### Changed
 

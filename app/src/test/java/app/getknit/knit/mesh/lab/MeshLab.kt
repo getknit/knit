@@ -810,7 +810,17 @@ class LabNode internal constructor(
         val reactions = ReactionRepository(db.reactionDao(), db).also { reactionStore = it }
         receipts = MessageReceiptRepository(db.messageReceiptDao(), messages, db)
         blobs =
-            BlobRepository(db.blobDao(), db.messageDao(), db.peerDao(), settings, db.blobVerdictDao(), db.groupDao(), db.forwardDao(), db)
+            BlobRepository(
+                db.blobDao(),
+                db.messageDao(),
+                db.peerDao(),
+                settings,
+                db.blobVerdictDao(),
+                db.groupDao(),
+                db.forwardDao(),
+                db,
+                db.savedFileDao(),
+            )
         val groupRatchetStore = GroupRatchetRepository(db.groupRatchetDao())
         val groupRoots = GroupRootRepository(db.groupRootDao())
         groups = GroupRepository(db.groupDao(), messages, db, groupRatchetStore, groupRoots)

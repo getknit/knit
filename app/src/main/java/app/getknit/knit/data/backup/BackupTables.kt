@@ -47,6 +47,13 @@ object BackupTables {
             "group_key_sends",
         )
 
+    /**
+     * Left empty in the backup because it describes this phone and nothing else: `saved_files` holds document
+     * URIs into this phone's storage, readable only through grants this install holds (ADR 2026-09.7ad3). On
+     * another phone they name nothing; a restored file bubble asks where to save, as it did the first time.
+     */
+    val DEVICE_LOCAL: List<String> = listOf("saved_files")
+
     /** Never copied: an index over `messages.body` that Room's content-sync triggers refill as the rows land. */
     val DERIVED: List<String> = listOf("messages_fts")
 }

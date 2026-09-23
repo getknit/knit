@@ -388,6 +388,20 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v14 → v15: the `saved_files` table (ADR 2026-09.7ad3), empty — a file saved before this build is asked
+     * for once more, which is the honest answer since no grant to its copy was ever kept.
+     */
+    val MIGRATION_14_15 =
+        object : Migration(14, 15) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `saved_files` " +
+                        "(`hash` TEXT NOT NULL, `uri` TEXT NOT NULL, `savedAt` INTEGER NOT NULL, PRIMARY KEY(`hash`))",
+                )
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -404,5 +418,6 @@ object KnitMigrations {
             MIGRATION_11_12,
             MIGRATION_12_13,
             MIGRATION_13_14,
+            MIGRATION_14_15,
         )
 }

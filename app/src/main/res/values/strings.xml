@@ -202,6 +202,7 @@
     <string name="chat_file_loading">Waiting for the file</string>
     <string name="chat_file_unnamed">File</string>
     <string name="chat_file_save">Save</string>
+    <string name="chat_file_open">Open</string>
     <string name="chat_file_saved">File saved</string>
     <string name="chat_file_save_failed">Couldn\'t save that file</string>
     <string name="chat_file_too_large">That file is over 8 MB, and files are sent as-is</string>

@@ -198,6 +198,11 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   itself empty the moment it composes. The list shows it in place of the preview only while
   `updatedAt` beats the newest message, and never touches the row's time or sort. Text only: the staged
   attachment, the reply quote and the mention bindings stay draft-local to the screen.
+- **When touching `saved_files` / `data/blob/SavedFileEntity`, `ChatViewModel.openAttachment` /
+  `saveAttachmentTo`, or what a file bubble's tap does:** READ ADR 2026-09.7ad3. A received file opens from the
+  copy the user saved it to (a persisted read grant on the picker's document, recorded by blob hash) and never
+  from the blob store (ADR 029); a copy that is gone is forgotten and the picker comes back. A risky file is
+  only ever saved. The table is device-local — never in a backup — and goes with its blob in the GC.
 - **When touching `data/search/`, `messages_fts` / `MessageFtsEntity`, `ui/search/`, the chat route's
   `messageId` argument, or the shared list rules in `ui/ConversationTitles.kt` / `ui/contacts/ContactUniverse.kt`:**
   READ ADR 2026-09.wdfz (the FTS4 index: one bounded `MATCH` read, the `term*` builder, the rowid and

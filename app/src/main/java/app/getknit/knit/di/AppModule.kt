@@ -178,6 +178,7 @@ val appModule =
         single { get<KnitDatabase>().draftDao() }
         single { get<KnitDatabase>().commonsDao() }
         single { get<KnitDatabase>().metPeerDao() }
+        single { get<KnitDatabase>().savedFileDao() }
         single { MessageRepository(get()) }
         single { PeerRepository(get(), get<SettingsStore>(), get<Identity>()) }
         // Crash reports. The capture-side CrashStore is built by hand in KnitApplication.onCreate BEFORE
@@ -195,8 +196,9 @@ val appModule =
         // Who has acked each message — the message-details screen's per-recipient delivery split. Owns the
         // delivery write (tick + acker row in one transaction), so it wraps MessageRepository.
         single { MessageReceiptRepository(get(), get(), get()) }
-        // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, groupDao, forwardDao, db.
-        single { BlobRepository(get(), get(), get(), get(), get(), get(), get(), get()) }
+        // BlobRepository: blobDao, messageDao, peerDao, settings, blobVerdictDao, groupDao, forwardDao, db,
+        // savedFileDao.
+        single { BlobRepository(get(), get(), get(), get(), get(), get(), get(), get(), get()) }
         single { GroupRepository(get(), get(), get(), get(), get()) }
         // Store-and-forward custody for DMs, backed by the encrypted forward_store table. Takes the shared
         // StoreDigest (from meshModule) so every carry-store mutation keeps the cue-plane content digest in sync,

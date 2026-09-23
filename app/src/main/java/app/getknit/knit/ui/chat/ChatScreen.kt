@@ -341,17 +341,17 @@ fun ChatScreen(
     }
 
     // Where a received file goes: the user names the destination and Knit streams the decrypted bytes into
-    // it. There is no "open" counterpart, deliberately — handing another app a readable copy would mean
-    // either a plaintext staging file or a provider serving decrypted bytes, and ADR 029's invariant (an
-    // attachment's plaintext lives in the encrypted blob store and nowhere else) is worth more than the
-    // convenience. Saving keeps the user in charge of the one copy that leaves.
+    // it, then opens that copy, now and on every later tap (ADR 2026-09.7ad3). Nothing is opened straight from the blob store — that
+    // would mean a plaintext staging file or a provider serving decrypted bytes, against ADR 029's invariant
+    // (an attachment's plaintext lives in the encrypted blob store and nowhere else). Saving keeps the user
+    // in charge of the one copy that leaves, and the viewer reads the copy they chose.
     var savingFile by remember { mutableStateOf<PendingSave?>(null) }
     var riskyFile by remember { mutableStateOf<PendingSave?>(null) }
     val fileSaver =
         rememberLauncherForActivityResult(CreateNamedDocument()) { uri ->
             val pending = savingFile
             savingFile = null
-            if (uri != null && pending != null) viewModel.saveAttachmentTo(pending.hash, pending.key, uri)
+            if (uri != null && pending != null) viewModel.saveAttachmentTo(pending, uri)
         }
     val startSave: (PendingSave) -> Unit = { pending ->
         savingFile = pending
@@ -389,6 +389,16 @@ fun ChatScreen(
     val context = LocalContext.current
     LaunchedEffect(Unit) {
         viewModel.events.collect { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    }
+    LaunchedEffect(Unit) {
+        viewModel.saveNeeded.collect(startSave)
+    }
+    LaunchedEffect(Unit) {
+        viewModel.savedFiles.collect { saved ->
+            if (!openSavedFile(context, saved.uri.toString(), saved.mime)) {
+                Toast.makeText(context, R.string.chat_transfer_no_app, Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     // "Send location": the ViewModel says when a position may be sought (the disclosure stands accepted), and
@@ -540,8 +550,9 @@ fun ChatScreen(
         onSaveFile = { hash, key, name, mime ->
             val pending = PendingSave(hash, key, name, mime)
             // Nothing on the device can look inside an archive or an executable, so the recipient is told
-            // that before they save one rather than after. Everything else saves straight away.
-            if (FileTypes.isRisky(mime, name)) riskyFile = pending else startSave(pending)
+            // that before they save one rather than after, and it is never opened. Everything else opens: from
+            // the copy saved last time, or through the picker first (ADR 2026-09.7ad3).
+            if (FileTypes.isRisky(mime, name)) riskyFile = pending else viewModel.openAttachment(pending)
         },
         onSendFileDirectly = viewModel::sendFileDirectly,
         showTransferConsent = showTransferConsent,
@@ -2247,7 +2258,7 @@ private fun MessageBubble(
                                 )
                             } else if (row.attachmentName != null) {
                                 // A named attachment is a file: nothing here decodes, so the bubble names it
-                                // and offers to save it (ADR 2026-09.qq2r). The name is what selects this
+                                // and opens it through a saved copy (ADR 2026-09.qq2r, 2026-09.7ad3). The name is what selects this
                                 // arm, not the mime — an image sent under a wrong type still belongs in the
                                 // image arm, where it is screened and blurred.
                                 FileAttachmentBubble(
@@ -2258,7 +2269,7 @@ private fun MessageBubble(
                                     ready = row.attachmentReady,
                                     wait = row.attachmentWait,
                                     flagged = row.attachmentFlagged,
-                                    onSave = {
+                                    onOpen = {
                                         onSaveFile(
                                             row.attachmentHash,
                                             row.attachmentKey,

@@ -1,13 +1,16 @@
 package app.getknit.knit.ui.chat
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.R
 import app.getknit.knit.TextLimits
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
+import app.getknit.knit.data.FileTypes
 import app.getknit.knit.data.GallerySaver
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.LinkCardStore
@@ -415,8 +418,9 @@ data class ChatUiState(
  * `AttachmentLabels.kt`, and the reply snippet lives in `ReplyFormatting.kt`. What is left needs the same
  * repositories, the same `viewModelScope` and the same one-shot event channel; splitting it would mean two
  * owners of one screen's state, which is the shape `MeshtasticSession` avoids for the same reason.
+ * `TooManyFunctions` for the same reason: each public function is one action on that one screen.
  */
-@Suppress("LargeClass")
+@Suppress("LargeClass", "TooManyFunctions")
 class ChatViewModel(
     private val conversationId: String,
     private val messages: MessageRepository,
@@ -559,6 +563,14 @@ class ChatViewModel(
     /** One-shot UI messages (a string res id), surfaced as toasts — e.g. the result of saving an image. */
     private val _events = MutableSharedFlow<Int>(extraBufferCapacity = 1)
     val events: SharedFlow<Int> = _events.asSharedFlow()
+
+    /** A received file just saved where the user chose, for the screen to open in whatever app claims it. */
+    private val _savedFiles = MutableSharedFlow<SavedFile>(extraBufferCapacity = 1)
+    val savedFiles: SharedFlow<SavedFile> = _savedFiles.asSharedFlow()
+
+    /** A tapped file that has no saved copy to open, for the screen to send through the storage picker. */
+    private val _saveNeeded = MutableSharedFlow<PendingSave>(extraBufferCapacity = 1)
+    val saveNeeded: SharedFlow<PendingSave> = _saveNeeded.asSharedFlow()
 
     /** Emitted once the DM's peer is blocked, so the screen can close (the thread is now hidden). */
     private val _closeChat = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -2213,32 +2225,63 @@ class ChatViewModel(
     }
 
     /**
+     * A tap on a received file's bubble. A file saved before opens straight from that copy; one never saved,
+     * or whose copy has since been moved or deleted, goes to the storage picker through [saveNeeded], and
+     * [saveAttachmentTo] opens it once written (ADR 2026-09.7ad3). A risky file ([FileTypes.isRisky]) never
+     * comes here — the screen asks first and saves it, and nothing opens it.
+     */
+    fun openAttachment(pending: PendingSave) {
+        viewModelScope.launch {
+            val copy = blobs.savedCopy(pending.hash)?.toUri()
+            if (copy != null) {
+                if (withContext(Dispatchers.IO) { context.contentResolver.documentExists(copy) }) {
+                    _savedFiles.tryEmit(
+                        SavedFile(copy, pending.mime ?: withContext(Dispatchers.IO) { context.contentResolver.typeOf(copy) }),
+                    )
+                    return@launch
+                }
+                blobs.forgetSavedCopy(pending.hash)
+            }
+            _saveNeeded.tryEmit(pending)
+        }
+    }
+
+    /**
      * Writes a received **file** attachment to the document [dest] the user just picked, decrypting it on the
-     * way exactly as [saveAttachment] does.
+     * way exactly as [saveAttachment] does, then remembers the copy and asks the screen to open it (ADR
+     * 2026-09.7ad3).
      *
-     * Saving is deliberately the only exit a file has. Knit does not hand one to another app to *open*: that
-     * would need a content provider serving decrypted bytes, and ADR 029's invariant — attachment plaintext
-     * lives in the encrypted blob store and nowhere else — is worth more than the convenience. Through the
-     * storage picker the bytes go straight from the blob into the stream the user chose, still never landing
-     * in our own storage; and an app package the recipient saves still has to clear the platform's own
-     * unknown-sources gate before anything can install it.
+     * Knit never hands another app a file *from the blob store*: that would need a content provider serving
+     * decrypted bytes, and ADR 029's invariant — attachment plaintext lives in the encrypted blob store and
+     * nowhere else — is worth more than the convenience. Through the storage picker the bytes go straight from
+     * the blob into the stream the user chose, still never landing in our own storage. What gets opened, now
+     * and on every later tap, is that copy, the user's own, served by the provider that holds it under a read
+     * grant Knit persists — the same hand-off the direct-transfer card makes. A risky file
+     * ([FileTypes.isRisky]) is saved and left there: nothing on the device can look inside it, and an app
+     * package must never reach an installer through us.
      */
     fun saveAttachmentTo(
-        hash: String,
-        key: String?,
+        pending: PendingSave,
         dest: Uri,
     ) {
         viewModelScope.launch {
             val ok =
                 withContext(Dispatchers.IO) {
-                    val raw = blobs.bytes(hash)
-                    val bytes = if (key != null && raw != null) AttachmentCrypto.open(raw, b64d(key)) else raw
+                    val raw = blobs.bytes(pending.hash)
+                    val bytes =
+                        if (pending.key != null && raw != null) AttachmentCrypto.open(raw, b64d(pending.key)) else raw
                     bytes != null &&
                         runCatching {
                             context.contentResolver.openOutputStream(dest)?.use { it.write(bytes) } != null
                         }.getOrDefault(false)
                 }
             _events.tryEmit(if (ok) R.string.chat_file_saved else R.string.chat_file_save_failed)
+            if (!ok || FileTypes.isRisky(pending.mime, pending.name)) return@launch
+            // Without the persisted grant the URI works until this process dies; the next tap then finds it
+            // unreadable, forgets it and asks again, so a refused take costs one prompt and nothing else.
+            runCatching { context.contentResolver.takePersistableUriPermission(dest, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            blobs.rememberSavedCopy(pending.hash, dest.toString(), System.currentTimeMillis())
+            _savedFiles.tryEmit(SavedFile(dest, pending.mime ?: withContext(Dispatchers.IO) { context.contentResolver.typeOf(dest) }))
         }
     }
 

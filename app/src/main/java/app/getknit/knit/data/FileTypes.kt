@@ -63,7 +63,7 @@ object FileTypes {
     /**
      * Whether saving this file deserves a word first. Nothing on the device can look inside an executable or
      * an archive, so the recipient is told that rather than being handed it silently — the honest complement
-     * to the fact that Knit never offers to *open* what it cannot screen.
+     * to the fact that Knit never opens one for them after the save (ADR 2026-09.7ad3).
      */
     fun isRisky(
         mime: String?,

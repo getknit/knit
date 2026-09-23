@@ -43,7 +43,8 @@ import app.getknit.knit.data.relay.AttachmentWait
 
 /**
  * The bubble for an arbitrary-file attachment (ADR 2026-09.qq2r): a type icon, the sender's own filename,
- * and a size, with a tap that saves it through the system's document picker.
+ * and a size, with a tap that opens it — through the system's document picker the first time, and from the
+ * saved copy after that (ADR 2026-09.7ad3).
  *
  * There is no thumbnail, deliberately. A preview means decoding attacker-supplied bytes with a
  * format-specific decoder, and `PdfRenderer` additionally wants a *seekable* file descriptor, which the
@@ -63,7 +64,7 @@ fun FileAttachmentBubble(
     heldBytes: Int?,
     ready: Boolean,
     flagged: Boolean,
-    onSave: () -> Unit,
+    onOpen: () -> Unit,
     onLongClick: () -> Unit,
     // Which plane can still bring the bytes while [ready] is false (the placeholder's second line).
     wait: AttachmentWait = AttachmentWait.Nearby,
@@ -96,8 +97,10 @@ fun FileAttachmentBubble(
                     .background(MaterialTheme.colorScheme.surfaceVariant)
                     .combinedClickable(
                         enabled = ready,
-                        onClickLabel = stringResource(R.string.chat_file_save),
-                        onClick = onSave,
+                        // A tap opens the file (saving it first, the first time); a risky one is only ever saved.
+                        onClickLabel =
+                            stringResource(if (FileTypes.isRisky(mime, name)) R.string.chat_file_save else R.string.chat_file_open),
+                        onClick = onOpen,
                         onLongClick = onLongClick,
                     ).padding(10.dp)
                     // One node, one sentence: the icon is decorative and the lines are halves of the same label,

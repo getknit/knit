@@ -8,7 +8,7 @@ topics: [attachments, ui, wire, moderation]
 
 # ADR 2026-09.qq2r — A file is an ordinary attachment with an arbitrary MIME and a sealed name
 
-Status: Accepted (2026-09-02)
+Status: Accepted (2026-09-02). Point 1 amended by ADR 2026-09.7ad3 (a saved file is then opened).
 
 Knit could send a photo and a voice note and nothing else. Handing someone a PDF over the mesh meant not
 doing it. ADR 034 had already established the shape: everything below the ingest seam — the `blobs` table,

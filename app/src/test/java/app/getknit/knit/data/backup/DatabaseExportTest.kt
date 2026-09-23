@@ -80,6 +80,7 @@ class DatabaseExportTest {
                 expiresAt = 1_000L,
             ),
         )
+        live.savedFileDao().upsert("h1", "content://docs/document/report.pdf", 3L)
     }
 
     @Test
@@ -93,6 +94,7 @@ class DatabaseExportTest {
                 assertEquals(1L, c.count("blobs"))
                 assertEquals(1L, c.count("peers"))
                 for (table in BackupTables.TRANSIENT) assertEquals(table, 0L, c.count(table))
+                for (table in BackupTables.DEVICE_LOCAL) assertEquals(table, 0L, c.count(table))
                 assertEquals("ok", c.scalar("PRAGMA quick_check"))
                 assertEquals(KnitDatabase.SCHEMA_VERSION.toString(), c.scalar("PRAGMA user_version"))
             }

@@ -8,6 +8,8 @@ import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
 import app.getknit.knit.data.blob.BlobVerdictEntity
+import app.getknit.knit.data.blob.SavedFileDao
+import app.getknit.knit.data.blob.SavedFileEntity
 import app.getknit.knit.data.commons.CommonsDao
 import app.getknit.knit.data.commons.CommonsEntity
 import app.getknit.knit.data.commons.CommonsMemberEntity
@@ -47,7 +49,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 14
+internal const val KNIT_DB_SCHEMA_VERSION = 15
 
 @Database(
     entities = [
@@ -59,7 +61,7 @@ internal const val KNIT_DB_SCHEMA_VERSION = 14
         GroupSkippedKeyEntity::class, GroupKeySendEntity::class,
         GroupRootEntity::class, MessageReceiptEntity::class, DraftEntity::class,
         MessageFtsEntity::class, CommonsEntity::class, CommonsOutboxEntity::class,
-        CommonsMemberEntity::class, MetPeerEntity::class,
+        CommonsMemberEntity::class, MetPeerEntity::class, SavedFileEntity::class,
     ],
     // v1: frozen launch baseline. The pre-1.0 alpha schema churn (the old destructive v2…v22 bumps that
     //     rode the wire/crypto breaks) is collapsed; docs/WIRE_COMPAT.md keeps the historical break record.
@@ -152,6 +154,12 @@ internal const val KNIT_DB_SCHEMA_VERSION = 14
     //     keep a met contact counted. Local only — never framed, never in custody, no digest folds over it —
     //     and in this database rather than the DataStore because it is a list of node ids. Empty on arrival;
     //     the count starts at zero for everyone. Migrated by KnitMigrations.MIGRATION_13_14.
+    // v15: one `saved_files` table — the document a received file was saved to, keyed by its blob hash, so
+    //     the next tap on the bubble opens that copy rather than asking where to save it again (ADR
+    //     2026-09.7ad3). Local only, and never in a backup: the URI names this phone's storage and the read
+    //     grant behind it belongs to this install. In this database rather than the DataStore because a
+    //     document URI usually spells out the file's name. Empty on arrival — a file saved before this asks
+    //     once more. Migrated by KnitMigrations.MIGRATION_14_15.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
@@ -187,6 +195,8 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun commonsDao(): CommonsDao
 
     abstract fun metPeerDao(): MetPeerDao
+
+    abstract fun savedFileDao(): SavedFileDao
 
     companion object {
         /** The schema version the annotation above declares, for code that must compare against it. */

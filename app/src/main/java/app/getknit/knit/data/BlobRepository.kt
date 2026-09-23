@@ -4,6 +4,7 @@ import androidx.room3.withWriteTransaction
 import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.blob.BlobVerdictDao
+import app.getknit.knit.data.blob.SavedFileDao
 import app.getknit.knit.data.forward.ForwardDao
 import app.getknit.knit.data.group.GroupDao
 import app.getknit.knit.data.message.MessageDao
@@ -20,7 +21,9 @@ import kotlinx.coroutines.flow.map
  * garbage-collect an orphaned blob once nothing points at it — including dropping the blob's cached NSFW
  * verdict row ([verdicts]) as part of the same GC transaction. The image *screening* itself (invoking the
  * classifier, caching verdicts) lives in [app.getknit.knit.moderation.ImageScreeningService]; this class
- * only owns the [verdicts] DAO for verdict-row GC so it can stay atomic with the blob delete.
+ * only owns the [verdicts] DAO for verdict-row GC so it can stay atomic with the blob delete, and the
+ * [savedFiles] DAO for the same reason: where a received file was saved is a fact about the blob, and goes
+ * when it does (ADR 2026-09.7ad3).
  */
 class BlobRepository(
     private val blobs: BlobDao,
@@ -31,6 +34,7 @@ class BlobRepository(
     private val groups: GroupDao,
     private val forward: ForwardDao,
     private val db: KnitDatabase,
+    private val savedFiles: SavedFileDao,
 ) {
     suspend fun insert(
         hash: String,
@@ -43,6 +47,19 @@ class BlobRepository(
     suspend fun mimeFor(hash: String): String? = blobs.mimeFor(hash)
 
     suspend fun exists(hash: String): Boolean = blobs.exists(hash)
+
+    /** The document URI the file attachment [hash] was last saved to, or null if it never was. */
+    suspend fun savedCopy(hash: String): String? = savedFiles.uriFor(hash)
+
+    /** Records that the file attachment [hash] now has a copy at [uri], saved at [at] (our clock). */
+    suspend fun rememberSavedCopy(
+        hash: String,
+        uri: String,
+        at: Long,
+    ) = savedFiles.upsert(hash, uri, at)
+
+    /** Forgets [hash]'s saved copy — it was moved or deleted, or the grant to it is gone. */
+    suspend fun forgetSavedCopy(hash: String) = savedFiles.delete(hash)
 
     /**
      * Hash → byte length for the stored blobs among [hashes]; a hash not held is absent. The chat observes
@@ -86,6 +103,7 @@ class BlobRepository(
             if (forward.countByAttachmentHash(hash) > 0) return@withWriteTransaction
             blobs.delete(hash)
             verdicts.delete(hash)
+            savedFiles.delete(hash)
         }
     }
 
@@ -107,6 +125,7 @@ class BlobRepository(
             blobs.orphanHashes().filter { it != own }.forEach {
                 blobs.delete(it)
                 verdicts.delete(it)
+                savedFiles.delete(it)
             }
         }
     }
