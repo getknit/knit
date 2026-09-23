@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "whatsnew": {
+      "type": "http",
+      "url": "https://whatsnew.fyi/mcp"
+    }
+  }
+}

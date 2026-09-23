@@ -16,6 +16,9 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
 - **Before any build / dependency / tooling change:** READ `.agents/context/toolchain.md` — the
   bleeding-edge choices (Koin-not-Hilt, the Kotlin-2.4 override, detekt/ktlint/Kover/Room as Gradle
   plugins) are deliberate; don't "fix" them.
+- **Before changing any dependency version** (catalog, wrapper, plugin, lockfile, a CI action or image):
+  run the `upgrade-notes` skill (`.agents/skills/upgrade-notes/SKILL.md`). It reads each vendor's breaking,
+  migration and security notes for the exact interval through the `whatsnew` MCP server in `.mcp.json`.
 - **Before / after running Gradle:** obey `.agents/rules/build-and-test.md` (which task when, JDK 21,
   lockfile regen). Command list: `.agents/context/commands.md`.
 - **Before touching `app/src/main/baseline-prof.txt`, the `:baselineprofile` module, or the
