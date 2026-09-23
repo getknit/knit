@@ -1,6 +1,7 @@
 package app.getknit.knit.data.backup
 
 import android.content.Context
+import android.os.storage.StorageManager
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.sqlite.SQLiteConnection
@@ -52,7 +53,13 @@ class BackupWriter(
         scratch.mkdirs()
         val live = context.getDatabasePath(KnitDatabase.DB_NAME)
         val needed = live.length() + File(live.path + "-wal").length() + SPACE_MARGIN
-        if (context.noBackupFilesDir.usableSpace < needed) throw BackupException(BackupProblem.NO_SPACE, "need $needed B free")
+        // Allocatable counts the cache the system may clear for us; allocateBytes clears it now, not mid-export.
+        val storage = context.getSystemService(StorageManager::class.java)
+        val room =
+            runCatching { storage?.getAllocatableBytes(StorageManager.UUID_DEFAULT) }.getOrNull()
+                ?: context.noBackupFilesDir.usableSpace
+        if (room < needed) throw BackupException(BackupProblem.NO_SPACE, "need $needed B free")
+        runCatching { storage?.allocateBytes(StorageManager.UUID_DEFAULT, needed) }
         val passphrase = databaseKey.getOrCreate()
         try {
             val nodeId = identity.nodeId() // mints the identity if this phone never had one

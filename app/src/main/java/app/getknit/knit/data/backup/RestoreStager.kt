@@ -124,7 +124,8 @@ class RestoreStager(
         val prefs =
             runCatching { SettingsSnapshot.forRestore(ByteArrayInputStream(settingsBytes)) }
                 .getOrElse { BackupArchive.fail(BackupProblem.MISMATCH, "settings do not parse", it) }
-        FileOutputStream(File(staging, "${SettingsKeys.DATASTORE_NAME}.preferences_pb")).use { SettingsSnapshot.write(prefs, it) }
+        val prefsBytes = ByteArrayOutputStream().also { SettingsSnapshot.write(prefs, it) }.toByteArray()
+        File(staging, "${SettingsKeys.DATASTORE_NAME}.preferences_pb").writeBytes(prefsBytes)
     }
 
     /** Whether a staged, verified restore is waiting for the restart. */

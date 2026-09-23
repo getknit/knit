@@ -90,7 +90,7 @@ class RatchetSessions(
         before: ScopeView?,
         after: ScopeView?,
     ) {
-        val same = if (before == null) after == null else before.sameAs(after)
+        val same = before?.sameAs(after) ?: (after == null)
         if (!same) rootChangesFlow.tryEmit(peerId)
     }
 

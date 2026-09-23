@@ -1688,7 +1688,7 @@ class DebugBridgeReceiver :
                 app.getknit.knit.data.backup.BackupKeys
                     .parse(intent.getStringExtra("key").orEmpty())
                     ?: return reply("error", "--es key must be the 30-digit recovery key")
-            val file = java.io.File(verify)
+            val file = File(verify)
             if (!file.exists()) return reply("error", "no such file: $verify")
             val started = System.currentTimeMillis()
             val manifest =
@@ -1704,8 +1704,8 @@ class DebugBridgeReceiver :
                 .put("elapsedMs", System.currentTimeMillis() - started)
                 .put("manifest", manifestJson(manifest))
         }
-        val path = intent.getStringExtra("path") ?: java.io.File(context.filesDir, "backup-test.knitbackup").absolutePath
-        val file = java.io.File(path)
+        val path = intent.getStringExtra("path") ?: File(context.filesDir, "backup-test.knitbackup").absolutePath
+        val file = File(path)
         val key =
             app.getknit.knit.data.backup.BackupKeys
                 .generate()
@@ -1742,7 +1742,7 @@ class DebugBridgeReceiver :
             .put("displayName", manifest.displayName)
             .put(
                 "entries",
-                org.json.JSONArray().also { arr ->
+                JSONArray().also { arr ->
                     manifest.entries.forEach { arr.put(JSONObject().put("name", it.name).put("size", it.size)) }
                 },
             )

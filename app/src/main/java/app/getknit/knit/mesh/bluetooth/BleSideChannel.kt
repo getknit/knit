@@ -176,7 +176,7 @@ class BleSideChannel internal constructor(
     fun bringUp() {
         val a = adapter
         val extended = a != null && a.isEnabled && a.isLeExtendedAdvertisingSupported
-        val maxData = if (extended) checkNotNull(a).leMaximumAdvertisingDataLength else 0
+        val maxData = if (extended) a.leMaximumAdvertisingDataLength else 0
         val page = minOf(PAGE_BYTES, maxData - AD_OVERHEAD)
         synchronized(lock) {
             pageMax = page

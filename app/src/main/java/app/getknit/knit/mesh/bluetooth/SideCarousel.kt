@@ -70,7 +70,6 @@ internal class SideCarousel(
     enum class Drop { STALE, OVERFLOW }
 
     private class Frame(
-        val key: String,
         val kind: Kind,
         val coalesceKey: String?,
         val parts: List<ByteArray>,
@@ -111,7 +110,7 @@ internal class SideCarousel(
     ): Offer {
         require(parts.isNotEmpty()) { "a frame has at least one part" }
         if (!seen.add(key)) return Offer.DUPLICATE
-        val frame = Frame(key, kind, coalesceKey, parts, now())
+        val frame = Frame(kind, coalesceKey, parts, now())
         val coalesced = coalesceKey?.let { coalesce(it, frame) }
         return coalesced ?: enqueue(frame)
     }

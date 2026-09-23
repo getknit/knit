@@ -154,7 +154,7 @@ object BackupArchive {
         sink: (BackupEntry) -> OutputStream,
         onProgress: (Long) -> Unit = {},
     ) {
-        val buffered = if (input is BufferedInputStream) input else BufferedInputStream(input)
+        val buffered = input as? BufferedInputStream ?: BufferedInputStream(input)
         val (prefix, header) = readPrefix(buffered)
         val opened =
             try {
