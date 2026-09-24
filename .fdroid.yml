@@ -115,7 +115,7 @@ Builds:
 
   - versionName: 2.7.0
     versionCode: 24
-    commit: v2.7.0
+    commit: 7e73e891766f58e394c340961217342d16823581
     subdir: app
     gradle:
       - yes
