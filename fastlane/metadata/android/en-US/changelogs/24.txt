@@ -1,0 +1,17 @@
+Back up to one encrypted file, pause the mesh for an hour, and use less battery
+
+Settings now has Backup and restore. Your identity, contacts, groups and messages go into one encrypted
+file, locked by a recovery key Knit shows you once, and a new phone restores it from the welcome screen.
+Use it on one phone at a time; if the same backup lands on two, each one says so and offers to sign out.
+The mesh notification gains Pause 15 min and Pause 1 hour beside Stop, and the mesh comes back by itself,
+while Stop now keeps it off until you start it again.
+
+Also new: tapping a file someone sent you opens it, a long chat has a button back to the newest message,
+and a Meshtastic user who messages your board gets one automatic reply. A phone a parent or an organisation
+manages now says who can allow a permission it turned off. A quiet mesh costs less battery, with fewer
+Bluetooth sends and scans, fewer relay check-ins, and a content filter that unloads when nothing arrives.
+
+Fixed: an empty chat list for ten seconds on older phones, a Wi-Fi Aware radio that stopped passing
+messages after a busy chat, photos crossing Bluetooth three times, Wi-Fi dropping on some phones, a relay
+shown as connected behind a Wi-Fi that blocked it, missing link previews, the mesh staying down after a
+reboot, and searching over Wi-Fi stopping in the background on Android 10 to 12.

@@ -113,6 +113,13 @@ Builds:
     gradle:
       - yes
 
+  - versionName: 2.7.0
+    versionCode: 24
+    commit: v2.7.0
+    subdir: app
+    gradle:
+      - yes
+
 AllowedAPKSigningKeys: b18a283d11797c2a84a008c1fcb9e1b864e7b4c3b301408f7a4a80624b0e631c
 
 # versionCode/versionName live in gradle.properties and are read via providers.gradleProperty(), which
@@ -126,5 +133,5 @@ AllowedAPKSigningKeys: b18a283d11797c2a84a008c1fcb9e1b864e7b4c3b301408f7a4a80624
 AutoUpdateMode: Version
 UpdateCheckMode: Tags ^v[0-9.]+$
 UpdateCheckData: gradle.properties|knit\.versionCode=(\d+)|.|knit\.versionName=(.*)
-CurrentVersion: 2.6.0
-CurrentVersionCode: 22
+CurrentVersion: 2.7.0
+CurrentVersionCode: 24

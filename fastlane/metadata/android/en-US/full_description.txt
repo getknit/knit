@@ -31,11 +31,12 @@ FEATURES
 • Image sharing, including GIFs
 • Voice notes, files of any type, and big files phone to phone over Wi-Fi
 • Search every chat, contact, and message
-• Store-and-forward — messages wait and deliver when someone returns to range
+• Encrypted backup for a new phone
+• Store-and-forward: messages wait until someone is back in range
 • Add a contact from a link when you're too far apart to scan
 • Optional Meshtastic LoRa radio for far longer range (see below)
 • Optional Internet relays, off until you turn them on (see below)
-• Share the app itself to a nearby phone, offline, with no app store
+• Share the app itself to a nearby phone, no app store needed
 • Material 3, dark mode, and Material You dynamic colors
 
 SAFER SPACES
@@ -44,7 +45,7 @@ On-device filtering screens out abusive text and explicit images, offline, nothi
 Knit is funded by tips and sells nothing. Tip at ko-fi.com/knit, liberapay.com/zaventh or github.com/sponsors/getknit.
 
 HOW IT WORKS
-Knit runs two radios at once — Wi-Fi Aware and Bluetooth Low Energy — so it works on phones with only one. Best allowed to run in the background. Requires Android 10 or newer.
+Knit runs Wi-Fi Aware and Bluetooth Low Energy at once, so it works on phones with only one. Best allowed to run in the background. Requires Android 10 or newer.
 
 OPTIONAL LONG-RANGE RADIO
 Pair a Meshtastic LoRa radio over Bluetooth and the Nearby room and your direct messages ride it too, kilometres instead of metres, still with no internet or account. The radio is separate hardware you set up once; Knit works fully without one.
