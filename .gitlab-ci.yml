@@ -1,4 +1,6 @@
-# Knit — GitLab CI. Stages: build -> test -> verify.
+# Knit — GitLab CI. Stages: build -> test -> verify, but ordered by `needs:`: the test jobs wait for
+# build:debug alone (its build cache, see .android) and the verify jobs wait for nothing, so a slow
+# build:release holds up nothing but itself.
 # Bleeding-edge toolchain (AGP 9.4.1 / Kotlin 2.4.20 / JDK 21 / compileSdk 37.1).
 # Static analysis (detekt/ktlint) and coverage (Kover) run as Gradle plugins via `./gradlew` tasks.
 
@@ -37,6 +39,33 @@ workflow:
     - if: $CI_COMMIT_TAG
 
 # ---- shared setup for Gradle/Android jobs ----
+# Two caches, both pull-only unless a job says otherwise, because saving one costs ~2.5 min of zipping on
+# the small runner and same-stage jobs race for the last write. The cache is local to each runner (no
+# shared cache server), so a job only sees what a job on the SAME runner saved.
+#   * deps  — resolved jars, transforms, wrapper, SDK. Saved by both build jobs: build:release always runs
+#             on a bigmem runner and build:debug on either, so each runner's copy stays current after a
+#             version bump. Same key as before the split, so existing caches carry over.
+#   * build — Gradle's local build cache (the init script below puts it in .gradle/build-cache/), one per
+#             branch. Saved by build:debug only, which also compiles the unit-test sources, so test:unit,
+#             test:mesh-lab and test:coverage take the compile FROM-CACHE instead of each redoing it —
+#             when they land on build:debug's runner.
+.gradle-deps-cache: &gradle-deps-cache
+  key:
+    files:
+      - gradle/libs.versions.toml
+      - gradle/wrapper/gradle-wrapper.properties
+  paths:
+    - .gradle/caches/
+    - .gradle/wrapper/
+    - .android-sdk/
+  policy: pull
+
+.gradle-build-cache: &gradle-build-cache
+  key: gradle-build-$CI_COMMIT_REF_SLUG
+  paths:
+    - .gradle/build-cache/
+  policy: pull
+
 .android:
   image: eclipse-temurin:21-jdk
   before_script:
@@ -55,6 +84,20 @@ workflow:
       org.gradle.workers.max=1
       kotlin.compiler.execution.strategy=in-process
       org.gradle.daemon=false
+      org.gradle.caching=true
+      EOF
+    # Gradle's local build cache, moved out of .gradle/caches/ so it can be its own GitLab cache (below)
+    # with its own key and writer. Entries unused for a day are dropped: every reuse that pays is within
+    # one pipeline (build:debug's compile, pulled by the test jobs), so there's no point carrying more.
+    - |
+      mkdir -p "$GRADLE_USER_HOME/init.d"
+      cat > "$GRADLE_USER_HOME/init.d/ci-build-cache.gradle" <<'EOF'
+      beforeSettings { settings ->
+          settings.caches { buildCache.setRemoveUnusedEntriesAfterDays(1) }
+      }
+      settingsEvaluated { settings ->
+          settings.buildCache { local { directory = new File(settings.rootDir, '.gradle/build-cache') } }
+      }
       EOF
     - |
       if [ ! -d "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" ]; then
@@ -67,21 +110,37 @@ workflow:
     - sdkmanager "platform-tools" "platforms;android-${ANDROID_COMPILE_SDK}" "build-tools;${ANDROID_BUILD_TOOLS}" > /dev/null
     - chmod +x ./gradlew
   cache:
-    key:
-      files:
-        - gradle/libs.versions.toml
-        - gradle/wrapper/gradle-wrapper.properties
-    paths:
-      - .gradle/caches/
-      - .gradle/wrapper/
-      - .android-sdk/
+    - *gradle-deps-cache
+    - *gradle-build-cache
 
 # ----------------- build -----------------
+# Build the test classpath and RUN the tests in two separate `./gradlew` invocations. Doing both in one
+# invocation is what killed job 3500 on the 2 GB runner: in-process Kotlin grows the single-use daemon to
+# ~2 GB of anonymous pages compiling :app and the test sources, a JVM never returns that to the OS, and
+# when the Test task then forks its own JVM (~1.25 GB once Robolectric has loaded android-all + Compose +
+# Room) the two coexist. 2.0 + 1.25 + 0.1 launcher + 0.25 host services is 3.6 GB against 1.9 GB RAM +
+# 2 GB swap, so the kernel OOM-killed the daemon with 120 kB of swap left. Split, the compile daemon is
+# gone before the test JVM starts and the second daemon starts near -Xms — nothing is recompiled (33 of
+# 35 tasks come back up-to-date), so the split costs one extra configuration phase and nothing else.
+# The task list is just `testDebugUnitTest`'s graph minus the Test task itself; re-derive it with
+# `./gradlew :app:testDebugUnitTest --dry-run` if AGP renames or adds one. Shared as a plain YAML anchor
+# rather than GitLab's `!reference` tag so the repo's yamllint can still parse this file.
+.compile-unit-tests: &compile-unit-tests
+  ./gradlew :app:compileDebugUnitTestJavaWithJavac :app:packageDebugUnitTestForUnitTest :app:bundleDebugClassesToRuntimeJar :app:processDebugUnitTestJavaRes :app:processDebugJavaRes :app:generateDebugUnitTestConfig :app:koverFindJar --stacktrace --console=plain
+
+# Also compiles the unit-test sources (a second invocation, for the same memory reason as the split above)
+# so the one job that saves the build cache has the test jobs' compile in it.
 build:debug:
   extends: .android
   stage: build
   script:
     - ./gradlew :app:assembleDebug --stacktrace --console=plain
+    - *compile-unit-tests
+  cache:
+    - <<: *gradle-deps-cache
+      policy: pull-push
+    - <<: *gradle-build-cache
+      policy: pull-push
   artifacts:
     name: "knit-debug-$CI_COMMIT_SHORT_SHA"
     paths:
@@ -103,13 +162,20 @@ build:debug:
 #   * scripts/dex-bitmap-gate.sh — fails on an unbounded BitmapFactory.decode* anywhere in the dex, ours or
 #                                 a library's (ADR 051). Same reason it lives here and not in detekt: the
 #                                 risk arrives through a dependency, and only the dex shows that.
-# Builds UNSIGNED (no KNIT_UPLOAD_* creds in CI) — signing isn't needed to run R8. R8 is heap-heavy: if it
-# OOMs on the 2 GB runner (SerialGC / 1280m from .android), give this job a bigger heap or runner. Archives
-# mapping/ so mapping.txt (deobfuscation), usage.txt (removed code) and configuration.txt (merged rules) are
+# Builds UNSIGNED (no KNIT_UPLOAD_* creds in CI) — signing isn't needed to run R8. Archives mapping/ so
+# mapping.txt (deobfuscation), usage.txt (removed code) and configuration.txt (merged rules) are
 # auditable/retained per pipeline.
+# Pinned to a `bigmem` runner: on the 1 vCPU / 2 GB runner R8 alone takes ~27 min and lint-vital ~7, and
+# by 2026-09-24 the whole job ran past the 60 min timeout (jobs 5276, 5300; ~5-8 min on skuld). If it
+# must come back to the small runner, first run analyzeReleaseR8Config only when the dex gate fails and
+# move lintVitalRelease into a job of its own.
 build:release:
   extends: .android
   stage: build
+  tags: [bigmem]
+  cache:
+    - <<: *gradle-deps-cache
+      policy: pull-push
   script:
     - ./gradlew :app:assembleRelease --stacktrace --console=plain
     - ./gradlew :app:analyzeReleaseR8Config --stacktrace --console=plain
@@ -129,23 +195,10 @@ build:release:
     expire_in: 1 year
 
 # ----------------- test ------------------
-# Build the test classpath and RUN the tests in two separate `./gradlew` invocations. Doing both in one
-# invocation is what killed job 3500 on the 2 GB runner: in-process Kotlin grows the single-use daemon to
-# ~2 GB of anonymous pages compiling :app and the test sources, a JVM never returns that to the OS, and
-# when the Test task then forks its own JVM (~1.25 GB once Robolectric has loaded android-all + Compose +
-# Room) the two coexist. 2.0 + 1.25 + 0.1 launcher + 0.25 host services is 3.6 GB against 1.9 GB RAM +
-# 2 GB swap, so the kernel OOM-killed the daemon with 120 kB of swap left. Split, the compile daemon is
-# gone before the test JVM starts and the second daemon starts near -Xms — nothing is recompiled (33 of
-# 35 tasks come back up-to-date), so the split costs one extra configuration phase and nothing else.
-# The task list is just `testDebugUnitTest`'s graph minus the Test task itself; re-derive it with
-# `./gradlew :app:testDebugUnitTest --dry-run` if AGP renames or adds one. Shared as a plain YAML anchor
-# rather than GitLab's `!reference` tag so the repo's yamllint can still parse this file.
-.compile-unit-tests: &compile-unit-tests
-  ./gradlew :app:compileDebugUnitTestJavaWithJavac :app:packageDebugUnitTestForUnitTest :app:bundleDebugClassesToRuntimeJar :app:processDebugUnitTestJavaRes :app:processDebugJavaRes :app:generateDebugUnitTestConfig :app:koverFindJar --stacktrace --console=plain
-
 test:unit:
   extends: .android
   stage: test
+  needs: [{job: "build:debug", artifacts: false}]
   script:
     - *compile-unit-tests
     - ./gradlew :app:testDebugUnitTest --stacktrace --console=plain
@@ -170,6 +223,7 @@ test:unit:
 test:mesh-lab:
   extends: .android
   stage: test
+  needs: [{job: "build:debug", artifacts: false}]
   script:
     - *compile-unit-tests
     - |
@@ -198,6 +252,7 @@ test:mesh-lab:
 test:coverage:
   extends: .android
   stage: test
+  needs: [{job: "build:debug", artifacts: false}]
   allow_failure: true
   script:
     # Same compile/run split as test:unit — the Kover report tasks run the suite themselves, so this job
@@ -225,6 +280,7 @@ test:coverage:
 verify:adr-index:
   image: python:3.13-alpine
   stage: verify
+  needs: []
   script:
     - python3 scripts/adr.py index --check
 
@@ -235,6 +291,7 @@ verify:adr-index:
 verify:detekt:
   extends: .android
   stage: verify
+  needs: []
   allow_failure: true
   script:
     - ./gradlew detekt --stacktrace --console=plain
@@ -247,6 +304,7 @@ verify:detekt:
 verify:ktlint:
   extends: .android
   stage: verify
+  needs: []
   allow_failure: true
   script:
     - ./gradlew ktlintCheck --stacktrace --console=plain
@@ -262,8 +320,9 @@ verify:trivy:
     name: aquasec/trivy:latest
     entrypoint: [""]
   stage: verify
+  needs: []
   allow_failure: true
-  # No `needs:` — Trivy scans the committed app/gradle.lockfile, so it's independent of the build job.
+  # `needs: []` — Trivy scans the committed app/gradle.lockfile, so it's independent of the build job.
   variables:
     TRIVY_NO_PROGRESS: "true"
     TRIVY_CACHE_DIR: ".trivycache/"
@@ -289,10 +348,11 @@ verify:trivy:
 # it by hand when a bigger runner is available, or let the GitHub mirror's `qodana` job carry it —
 # that one runs on a 4 vCPU / 16 GB hosted runner and is the one that actually executes on each push.
 #
-# No `needs:` and no .android: the linter image brings its own JDK and Android SDK, and Qodana drives
+# `needs: []` and no .android: the linter image brings its own JDK and Android SDK, and Qodana drives
 # its own Gradle sync inside the container. It only wants the sources.
 verify:qodana:
   stage: verify
+  needs: []
   image:
     name: jetbrains/qodana-jvm-android:2026.2   # keep in lockstep with qodana.yaml `image:`
     entrypoint: [""]
