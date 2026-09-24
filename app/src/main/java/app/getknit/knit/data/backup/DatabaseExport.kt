@@ -4,6 +4,7 @@ import androidx.room3.RoomDatabase
 import androidx.room3.useReaderConnection
 import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.execSQL
+import app.getknit.knit.data.crypto.SqlCipherKey
 import java.io.File
 import java.io.IOException
 
@@ -31,8 +32,10 @@ class DatabaseExport(
 ) {
     /**
      * Exports [live] to [dest] (replaced if present; its `-wal`/`-shm`/`-journal` siblings removed).
-     * [passphrase] keys the attached live file — SQLCipher reads a bound blob as a passphrase exactly as
-     * it reads the bytes the driver was opened with; an unkeyed SQLite ignores the clause.
+     * [passphrase] keys the attached live file in its raw-key form ([SqlCipherKey.raw]) — SQLCipher reads
+     * a bound blob exactly as it reads the bytes the driver was opened with, and
+     * [app.getknit.knit.data.KnitDatabase.build] has already moved the live file onto that key; an unkeyed
+     * SQLite ignores the clause.
      */
     suspend fun export(
         live: File,
@@ -42,10 +45,16 @@ class DatabaseExport(
         clear(dest)
         buildSchema(dest)
         openRaw(dest).use { scratch ->
-            scratch.prepare("ATTACH DATABASE ? AS live KEY ?").use { attach ->
-                attach.bindText(1, live.absolutePath)
-                attach.bindBlob(2, passphrase)
-                attach.step()
+            // The statement holds the bound array by reference until it steps, so the key is wiped after.
+            val key = SqlCipherKey.raw(passphrase)
+            try {
+                scratch.prepare("ATTACH DATABASE ? AS live KEY ?").use { attach ->
+                    attach.bindText(1, live.absolutePath)
+                    attach.bindBlob(2, key)
+                    attach.step()
+                }
+            } finally {
+                key.fill(0)
             }
             try {
                 scratch.execSQL("SAVEPOINT knit_export")

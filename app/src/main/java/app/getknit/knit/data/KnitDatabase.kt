@@ -14,6 +14,7 @@ import app.getknit.knit.data.commons.CommonsDao
 import app.getknit.knit.data.commons.CommonsEntity
 import app.getknit.knit.data.commons.CommonsMemberEntity
 import app.getknit.knit.data.commons.CommonsOutboxEntity
+import app.getknit.knit.data.crypto.SqlCipherKey
 import app.getknit.knit.data.draft.DraftDao
 import app.getknit.knit.data.draft.DraftEntity
 import app.getknit.knit.data.forward.ForwardDao
@@ -43,6 +44,7 @@ import app.getknit.knit.data.reaction.ReactionDao
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.receipt.MessageReceiptDao
 import app.getknit.knit.data.receipt.MessageReceiptEntity
+import net.zetetic.database.sqlcipher.SQLiteGlobal
 import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
 
 /**
@@ -205,11 +207,15 @@ abstract class KnitDatabase : RoomDatabase() {
         /** The live database's file name (`context.getDatabasePath(DB_NAME)`). */
         const val DB_NAME = "knit.db"
 
+        /** SQLCipher's WAL pool ceiling: one writer and three readers, the framework SQLite's default. */
+        private const val WAL_CONNECTION_POOL_SIZE = 4
+
         /**
-         * Builds the encrypted database. [passphrase] is the SQLCipher key (see
-         * [app.getknit.knit.data.crypto.DatabaseKey]); the driver holds the array for the life of the
-         * database — nothing zeroes it, so that class stays its owner. The native
-         * `libsqlcipher.so` must be loaded explicitly before the driver is constructed.
+         * Builds the encrypted database. [passphrase] is [app.getknit.knit.data.crypto.DatabaseKey]'s; the
+         * driver is keyed with its raw-key form ([SqlCipherKey.raw], a copy the driver holds for the life of
+         * the database), and a file still on the old passphrase key is moved onto it first
+         * ([SqlCipherKey.upgrade]) — the caller keeps owning [passphrase]. The native `libsqlcipher.so` must be
+         * loaded explicitly before the driver is constructed.
          *
          * [name] is the live [DB_NAME] for the app's one database; the backup export passes an absolute
          * path (which `getDatabasePath` hands back as is) to build the scratch copy it fills through the
@@ -222,6 +228,10 @@ abstract class KnitDatabase : RoomDatabase() {
             name: String = DB_NAME,
         ): KnitDatabase {
             System.loadLibrary("sqlcipher")
+            // SQLCipher's WAL pool defaults to ten connections, opened lazily while the pool holds its lock;
+            // the framework's own default is four. A process-wide static, so set before the first open.
+            SQLiteGlobal.setWALConnectionPoolSize(WAL_CONNECTION_POOL_SIZE)
+            SqlCipherKey.upgrade(context.getDatabasePath(name), passphrase)
             return Room
                 .databaseBuilder(context, KnitDatabase::class.java, name)
                 // SQLCipher rides in as a SQLiteDriver, not the old SupportOpenHelperFactory: Room 3 deletes
@@ -230,7 +240,7 @@ abstract class KnitDatabase : RoomDatabase() {
                 // error-handler args stay null, matching what SupportOpenHelperFactory(passphrase) passed.
                 // It reports hasConnectionPool() = true, so Room opens ONE connection through it and lets
                 // SQLCipher pool underneath — the invariant SessionTransactor's lock ordering rests on.
-                .setDriver(SQLCipherDriver(passphrase, null, null))
+                .setDriver(SQLCipherDriver(SqlCipherKey.raw(passphrase), null, null))
                 // Production migration posture: v1 is the frozen launch baseline, with NO destructive fallback.
                 // Every schema change from here ships a tested KnitMigrations entry; a version bump with no
                 // matching migration makes Room throw at open time (caught by KnitDatabaseMigrationTest) — a loud

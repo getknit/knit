@@ -22,6 +22,10 @@ import javax.crypto.spec.GCMParameterSpec
  * and is excluded from cloud backup, so the encrypted DB cannot be decrypted off-device even if the
  * wrapped passphrase file and the database are copied elsewhere.
  *
+ * SQLCipher is keyed with these bytes as a **raw key** ([SqlCipherKey.raw]), not as a passphrase through its
+ * KDF: they are already uniformly random, and the KDF cost ~850 ms to ~4.2 s per pooled connection
+ * (ADR 2026-09.uzkm).
+ *
  * Opening is transparent — no user authentication is required ([KeyGenParameterSpec] does not set
  * `setUserAuthenticationRequired`). If the wrapped passphrase cannot be recovered (Keystore key lost
  * or the wrap file corrupt), we fall back to wipe-and-recreate: the unreadable database is deleted

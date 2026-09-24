@@ -57,7 +57,7 @@ Entries, in the order written (largest last, so a reader can refuse early):
 | `identity.key` | the plaintext `IdentityKeyStore.Stored` CBOR: the Tink hybrid and Ed25519 private keysets and the signed-prekey list |
 | `db.passphrase` | the 32 random bytes SQLCipher was keyed with (`DatabaseKey`) |
 | `settings.preferences_pb` | the preferences DataStore, as DataStore's own file serializer writes it, minus the phone-bound keys (below) |
-| `knit.db` | a SQLCipher database at `schemaVersion`, keyed with `db.passphrase`, holding the carried tables |
+| `knit.db` | a SQLCipher database at `schemaVersion`, keyed with `db.passphrase` as a raw key (`x'<64 hex>'`, no KDF — ADR 2026-09.uzkm), holding the carried tables |
 
 Nothing identifying sits outside the seal. The plaintext prefix says "a Knit backup, made on this date"
 and carries a salt; the node id, the name and the entry list are inside.
@@ -133,7 +133,9 @@ on a passphrase it cannot unwrap; `IdentityKeyStore` mints a new identity on a f
 3. the identity parses and its node id is the manifest's;
 4. the identity and the passphrase are wrapped under the **live** Keystore aliases into the staging
    directory (`KeystoreSecret(…, dir = staging)`) and read back;
-5. the staged database opens under the passphrase, is at `schemaVersion`, and passes `quick_check`;
+5. the staged database opens under the passphrase's raw key, is at `schemaVersion`, and passes `quick_check`
+   (a copy a pre-2026-09.uzkm development build keyed with the passphrase itself is rekeyed onto the raw
+   key first, by the same `SqlCipherKey.upgrade` the live database goes through);
 6. the settings parse.
 
 The plaintext identity and passphrase live in memory only. Then the app stops its mesh service, clears

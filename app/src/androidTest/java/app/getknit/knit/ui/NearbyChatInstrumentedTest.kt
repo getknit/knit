@@ -1,7 +1,9 @@
 package app.getknit.knit.ui
 
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.demo.DemoSeeder
@@ -36,8 +38,11 @@ class NearbyChatInstrumentedTest : SeededUiTest() {
     fun showsADuplicateNamedSenderWithItsAlias() {
         launch("chat/nearby")
         awaitTag("chat_input")
-        // The second Jonas's post is the second-newest seeded message, so it composes without scrolling.
-        awaitText("Jonas W. (${Alias.aliasFor(DemoSeeder.JONAS_TWO)})")
+        // Several newer posts sit below the second Jonas's (Theo's LoRa line, a photo, a link card), and on a
+        // small screen they push it above the fold, where the lazy thread never composes it. Scroll it in first.
+        val label = "Jonas W. (${Alias.aliasFor(DemoSeeder.JONAS_TWO)})"
+        compose.onNodeWithTag("chat_thread").performScrollToNode(hasText(label, substring = true))
+        awaitText(label)
     }
 
     private companion object {

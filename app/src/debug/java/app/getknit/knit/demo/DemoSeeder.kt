@@ -13,6 +13,8 @@ import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.moderation.ModelLoadGuard
 import app.getknit.knit.moderation.ModelLoadPolicy
 import app.getknit.knit.moderation.modelGuardStamp
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 import org.koin.core.Koin
 
 /**
@@ -37,8 +39,12 @@ class DemoSeeder(
     private val koin: Koin,
 ) {
     suspend fun seed() {
-        runCatching { seedInternal() }
-            .onFailure { Log.e("DemoSeeder", "demo seeding failed", it) }
+        try {
+            runCatching { seedInternal() }
+                .onFailure { Log.e("DemoSeeder", "demo seeding failed", it) }
+        } finally {
+            completed.complete(Unit)
+        }
     }
 
     private suspend fun seedInternal() {
@@ -134,6 +140,16 @@ class DemoSeeder(
         }
 
     companion object {
+        private val completed = CompletableDeferred<Unit>()
+
+        /**
+         * Completes when this process's [seed] returns, whether it succeeded or not. The seed runs detached on
+         * the IO dispatcher, and it writes the peers well before the requests or the room's newest posts, so a
+         * screen that reads fast enough can draw it half-written. The seeded UI suite waits on this before it
+         * launches anything.
+         */
+        val seeded: Deferred<Unit> get() = completed
+
         // Stable, illustrative demo node ids — short fixed slots (NOT the real 26-char base32 [NodeId]
         // format; demo peers are seeded straight into the DB and never advertised over a radio, so any
         // opaque string works). Names/avatars/messages vary by theme, but the id slots stay constant so

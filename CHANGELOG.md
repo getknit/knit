@@ -72,6 +72,9 @@ document:
 
 ### Fixed
 
+- On older phones, opening Knit after Android had closed it could leave the chat list empty for ten seconds
+  or more. A Pixel 3 now shows your chats in about two seconds, once the first launch after this update has
+  finished converting its storage.
 - After a busy stretch of chat, a phone's Wi-Fi Aware radio could stop getting its short messages through
   for hours while still seeing every neighbour, so reactions and read ticks fell back to Bluetooth. The mesh
   now notices within about a minute and restarts that radio.

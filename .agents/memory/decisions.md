@@ -163,6 +163,7 @@ carries; never renumber an old one.
 | [2026-09.uc8p](decisions/2026-09-uc8p-a-profile-is-re-flooded-to-a-peer-once-per-seen-window.md) | A profile is re-flooded to a peer once per seen window | mesh, battery |
 | [2026-09.un9n](decisions/2026-09-un9n-a-never-drawn-window-is-recovered-by-recreating-it.md) | A never-drawn window is recovered by recreating it | ui, android, resilience, back |
 | [2026-09.ursc](decisions/2026-09-ursc-the-nearby-room-says-when-lora-airtime-is-spent.md) | The Nearby room says when LoRa airtime is spent | lora, ui |
+| [2026-09.uzkm](decisions/2026-09-uzkm-sqlcipher-is-keyed-with-the-raw-key.md) | SQLCipher is keyed with the raw key, and its pool holds four connections | data, crypto, performance, backup |
 | [2026-09.v5ck](decisions/2026-09-v5ck-light-and-dark-are-a-per-app-night-mode.md) | Light and dark are a per-app night mode | ui, theme, settings |
 | [2026-09.v66c](decisions/2026-09-v66c-reactions-are-an-open-emoji-set-with-a-receive-side-length-cap.md) | Reactions are an open emoji set with a receive-side length cap | wire, ui, limits |
 | [2026-09.v6fu](decisions/2026-09-v6fu-a-founding-member-who-left-rejoins-by-their-own-signed-frame.md) | A founding member who left rejoins by their own signed frame | groups, roster, crypto |

@@ -194,6 +194,12 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   row only where Location is in it; a managed phone is named everywhere. Family Link's pauses and downtime
   leave the running foreground service alone (device-verified 2026-09-16) — don't add restart machinery
   for them; `android.app.admin.*` / `UserManager` stay confined to that one file (detekt).
+- **When touching `data/crypto/DatabaseKey`, `SqlCipherKey`, the driver or pool size in `KnitDatabase.build`, or
+  anything else that opens a SQLCipher file:** READ ADR 2026-09.uzkm. The database is keyed with the passphrase's
+  raw form (`x'<hex>'`, no KDF), and a file an older build keyed through the KDF is rekeyed once by
+  `SqlCipherKey.upgrade` before Room opens it. Never hand SQLCipher the bare passphrase: every pooled connection
+  would pay a 256,000-iteration derivation under the pool's lock (≈46 s of cold start on a 32-bit phone). The pool
+  is capped at four. Regression: `SqlCipherKeyTest`, `SqlCipherRawKeyTest`.
 - **When touching `data/draft/`, what the composer keeps between visits, or the chat list's `Draft: …`
   preview:** READ ADR 2026-09.qtg9. An unsent draft is a row in the encrypted DB (never the DataStore —
   it is message text), written debounced on the *application* scope, and handed to the composer exactly

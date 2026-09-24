@@ -7,10 +7,10 @@ import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.crypto.KeystoreSecret
+import app.getknit.knit.data.crypto.SqlCipherKey
 import app.getknit.knit.data.forward.ForwardEntity
 import app.getknit.knit.data.message.MessageEntity
 import kotlinx.coroutines.runBlocking
-import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -81,7 +81,7 @@ class DatabaseExportSqlCipherTest {
                 val dest = File(dir, "export.db")
                 DatabaseExport(
                     buildSchema = { DatabaseExport.createSchema(KnitDatabase.build(context, passphrase, it.absolutePath)) },
-                    openRaw = { SQLCipherDriver(passphrase, null, null).open(it.absolutePath) },
+                    openRaw = { SqlCipherKey.open(it, passphrase) },
                 ).export(liveFile, passphrase, dest)
 
                 val copy = KnitDatabase.build(context, passphrase, dest.absolutePath)

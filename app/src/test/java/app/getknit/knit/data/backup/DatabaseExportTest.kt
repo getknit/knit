@@ -8,6 +8,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.blob.BlobEntity
+import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.forward.ForwardEntity
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.peer.PeerEntity
@@ -88,7 +89,7 @@ class DatabaseExportTest {
         runTest {
             seed()
             val dest = File(dir, "export.db")
-            exporter().export(liveFile, "unused".encodeToByteArray(), dest)
+            exporter().export(liveFile, PASSPHRASE, dest)
             AndroidSQLiteDriver().open(dest.absolutePath).use { c ->
                 assertEquals(2L, c.count("messages"))
                 assertEquals(1L, c.count("blobs"))
@@ -109,7 +110,7 @@ class DatabaseExportTest {
         runTest {
             seed()
             val dest = File(dir, "export.db")
-            exporter().export(liveFile, ByteArray(0), dest)
+            exporter().export(liveFile, PASSPHRASE, dest)
             val copy = Room.databaseBuilder(context, KnitDatabase::class.java, dest.absolutePath).allowMainThreadQueries().build()
             try {
                 assertArrayEquals(byteArrayOf(1, 2, 3, 4), copy.blobDao().bytes("h1"))
@@ -136,7 +137,7 @@ class DatabaseExportTest {
             // first read, so it is in.
             exporter(beforeCopy = {
                 live.messageDao().upsert(MessageEntity(id = "m9", senderId = "bob", conversationId = "bob", body = "late", sentAt = 9L))
-            }).export(liveFile, ByteArray(0), dest)
+            }).export(liveFile, PASSPHRASE, dest)
             AndroidSQLiteDriver().open(dest.absolutePath).use { c ->
                 assertEquals(3L, c.count("messages"))
                 assertEquals("ok", c.scalar("PRAGMA quick_check"))
@@ -157,4 +158,9 @@ class DatabaseExportTest {
             it.step()
             it.getText(0)
         }
+
+    private companion object {
+        /** Framework SQLite ignores `ATTACH … KEY`, but the exporter still builds the raw-key form, which needs 32 bytes. */
+        val PASSPHRASE = ByteArray(DatabaseKey.PASSPHRASE_BYTES)
+    }
 }

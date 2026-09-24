@@ -15,6 +15,9 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.services.storage.TestStorage
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.MainActivity
+import app.getknit.knit.demo.DemoSeeder
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -29,8 +32,10 @@ import org.junit.rules.TestName
  *
  * Isolation is Android Test Orchestrator + `clearPackageData=true` (app/build.gradle.kts): each test runs
  * in a fresh, data-wiped process, so `KnitApplication.onCreate` regenerates a fresh identity and re-seeds
- * the DB every time. Seeding is **async**, so tests MUST await content ([awaitTag]/[awaitText]/
- * [awaitContentDescription]) before asserting — never assert on immediate launch.
+ * the DB every time. Seeding is **async**: [launch] waits for [DemoSeeder.seeded] first, because the seed
+ * writes the peers long before the requests and the room's newest posts, and a screen that reads the
+ * database quickly draws that half-written state. Tests still await content ([awaitTag]/[awaitText]/
+ * [awaitContentDescription]) before asserting — Room's flows emit after the launch, never on it.
  *
  * Each test also captures one screenshot in [captureScreenshotAndClose] (pass or fail), surfaced in FTL's
  * Results → Screenshots tab so a screen's rendering is comparable across the API 29/33/36 matrix.
@@ -77,6 +82,7 @@ abstract class SeededUiTest {
      * chat list.
      */
     protected fun launch(route: String? = null): ActivityScenario<MainActivity> {
+        runBlocking { withTimeout(SEED_TIMEOUT_MS) { DemoSeeder.seeded.await() } }
         val context = ApplicationProvider.getApplicationContext<Context>()
         val intent =
             Intent(context, MainActivity::class.java).apply {
@@ -135,6 +141,9 @@ abstract class SeededUiTest {
 
     private companion object {
         const val DEMO_ROUTE_EXTRA = "demo_route"
+
+        /** The whole seed, on the slowest FTL device (a 32-bit Galaxy A10), with room to spare. */
+        const val SEED_TIMEOUT_MS = 60_000L
 
         // PNG is lossless, so the quality arg is ignored; 100 is the conventional value.
         const val PNG_QUALITY = 100

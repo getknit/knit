@@ -10,10 +10,10 @@ import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.crypto.KeystoreSecret
+import app.getknit.knit.data.crypto.SqlCipherKey
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import kotlinx.coroutines.flow.first
-import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -69,7 +69,7 @@ class BackupWriter(
                 onProgress(0, 0)
                 DatabaseExport(
                     buildSchema = { DatabaseExport.createSchema(KnitDatabase.build(context, passphrase, it.absolutePath)) },
-                    openRaw = { SQLCipherDriver(passphrase, null, null).open(it.absolutePath) },
+                    openRaw = { SqlCipherKey.open(it, passphrase) },
                 ).export(live, passphrase, dbCopy)
                 val settingsBytes = ByteArrayOutputStream().also { SettingsSnapshot.export(dataStore.data.first(), it) }.toByteArray()
                 val createdAt = now()
@@ -120,13 +120,18 @@ class BackupWriter(
         fun identitySecret(context: Context): KeystoreSecret =
             KeystoreSecret(context, IdentityKeyStore.KEYSTORE_ALIAS, IdentityKeyStore.FILE_NAME)
 
-        /** A SQLCipher file opened with the driver alone, under [passphrase] — the stager's verifier. */
+        /**
+         * A SQLCipher file opened with the driver alone, under [passphrase]'s raw key — the stager's verifier.
+         * A copy a build before ADR 2026-09.uzkm wrote is still on the passphrase key, so it is moved onto
+         * the raw key first; the staged file is the stager's alone, so nothing else has it open.
+         */
         fun openSqlCipher(
             file: File,
             passphrase: ByteArray,
         ): SQLiteConnection {
             System.loadLibrary("sqlcipher")
-            return SQLCipherDriver(passphrase, null, null).open(file.absolutePath)
+            SqlCipherKey.upgrade(file, passphrase)
+            return SqlCipherKey.open(file, passphrase)
         }
     }
 }
