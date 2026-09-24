@@ -99,7 +99,8 @@ val bleSidePlane = (project.findProperty("bleSidePlane") as? String)?.toBoolean(
 // ABIs packaged into the **debug** APK. Debug is unminified and carries both tflite models, so it is
 // ~150 MB before native libs; the four-ABI default adds ~28 MB more, of which the two 32-bit slices are
 // dead weight — every lab Pixel is arm64-v8a and every Gradle-managed emulator image is x86_64, so
-// nothing we build for runs x86 or armeabi-v7a. Dropping them saves ~12 MB per install, which is real
+// nothing we install on locally runs x86 or armeabi-v7a (the FTL runner adds armeabi-v7a back for its
+// 32-bit API-29 device). Dropping them saves ~12 MB per install, which is real
 // time on a lab device whose adb link is slow (a phone associated to 2.4 GHz pushes ~0.5 MB/s, vs
 // ~40 MB/s on 5 GHz — that ratio is what makes debug APK size worth caring about at all).
 //

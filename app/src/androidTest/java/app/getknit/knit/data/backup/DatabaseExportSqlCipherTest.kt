@@ -18,6 +18,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.DataInputStream
 import java.io.File
 import java.security.SecureRandom
 
@@ -97,7 +98,8 @@ class DatabaseExportSqlCipherTest {
                 assertFalse(File(dest.path + "-wal").exists())
                 // Encrypted at rest: a plain SQLite file opens with its 16-byte magic; a SQLCipher file's first
                 // 16 bytes are the salt, so the magic must be absent.
-                val head = dest.inputStream().use { it.readNBytes(SQLITE_MAGIC.size) }
+                // DataInputStream.readFully, not InputStream.readNBytes: the latter is API 33 on Android.
+                val head = ByteArray(SQLITE_MAGIC.size).also { DataInputStream(dest.inputStream()).use { s -> s.readFully(it) } }
                 assertFalse(head.contentEquals(SQLITE_MAGIC))
                 // The live side kept its custody row: the export never wrote to it.
                 assertEquals(1, live.forwardDao().count(0L))
