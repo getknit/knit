@@ -75,6 +75,7 @@ import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -1725,9 +1726,12 @@ class ChatViewModelTest {
             val written = ByteArrayOutputStream()
             shadowOf(context.contentResolver).registerOutputStream(dest, written)
             val vm = vm()
+            // Subscribed before the act: the save resumes off withContext(IO) on the IO thread (Main is
+            // unconfined), so its tryEmit can land before a late first() subscribes and be dropped.
+            val opened = async(UnconfinedTestDispatcher(testScheduler)) { vm.savedFiles.first() }
 
             vm.saveAttachmentTo(PendingSave("ct", b64(sealed.key), "report.pdf", "application/pdf"), dest)
-            val saved = vm.savedFiles.first()
+            val saved = opened.await()
 
             assertEquals(SavedFile(dest, "application/pdf"), saved)
             assertArrayEquals(plain, written.toByteArray())
@@ -1748,10 +1752,11 @@ class ChatViewModelTest {
             val vm = vm()
             val asked = mutableListOf<PendingSave>()
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.saveNeeded.collect { asked += it } }
+            val opened = async(UnconfinedTestDispatcher(testScheduler)) { vm.savedFiles.first() }
 
             vm.openAttachment(PendingSave("ct", "k", "report.pdf", "application/pdf"))
 
-            assertEquals(SavedFile(copy, "application/pdf"), vm.savedFiles.first())
+            assertEquals(SavedFile(copy, "application/pdf"), opened.await())
             assertTrue(asked.isEmpty())
             coVerify(exactly = 0) { blobs.forgetSavedCopy(any()) }
         }
@@ -1764,10 +1769,11 @@ class ChatViewModelTest {
             coEvery { blobs.savedCopy("ct") } returns gone.toString()
             val vm = vm()
             val pending = PendingSave("ct", "k", "deleted.pdf", "application/pdf")
+            val asked = async(UnconfinedTestDispatcher(testScheduler)) { vm.saveNeeded.first() }
 
             vm.openAttachment(pending)
 
-            assertEquals(pending, vm.saveNeeded.first())
+            assertEquals(pending, asked.await())
             coVerify { blobs.forgetSavedCopy("ct") }
         }
 
@@ -1830,9 +1836,10 @@ class ChatViewModelTest {
             val vm = vm()
             val opened = mutableListOf<SavedFile>()
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.savedFiles.collect { opened += it } }
+            val saved = async(UnconfinedTestDispatcher(testScheduler)) { vm.events.first() }
 
             vm.saveAttachmentTo(PendingSave("h", null, "stuff.zip", "application/zip"), dest)
-            assertEquals(R.string.chat_file_saved, vm.events.first())
+            assertEquals(R.string.chat_file_saved, saved.await())
 
             assertTrue(opened.isEmpty())
             coVerify(exactly = 0) { blobs.rememberSavedCopy(any(), any(), any()) }
