@@ -12,13 +12,17 @@ import app.getknit.knit.data.message.Conversations
  * [conversations] whose peer passes the shared [Conversations.isAccepted] rule, so an unanswered stranger
  * DM stays a request); peers the user explicitly [accepted] (a contact card imported, or a request
  * accepted — a contact before a single message exists in the thread); co-members of any active (non-left)
- * group in [groups], even one with no messages yet; and [verified] peers (a QR-verified contact never
- * chatted with, who may not have a cached profile yet).
+ * group in [groups] that the same predicate accepts, given its [groupSenders] (a group we created or posted
+ * in, or one a known peer has spoken in — even with no ordinary messages yet, since the creator's
+ * "created this group" line is authored), so a stranger's unanswered group invitation stays a request and
+ * lends none of its members to this set (#82); and [verified] peers (a QR-verified contact never chatted
+ * with, who may not have a cached profile yet).
  */
 internal fun contactIds(
     conversations: Set<String>,
     authored: Set<String>,
     groups: List<GroupEntity>,
+    groupSenders: Map<String, Set<String>>,
     accepted: Set<String>,
     verified: Set<String>,
     blocked: Set<String>,
@@ -31,6 +35,9 @@ internal fun contactIds(
             .filter { Conversations.kindFor(it) == ConversationKind.DM }
             .filter { Conversations.isAccepted(it, accepted, verified, authored) }
     val explicitlyAccepted = accepted.filter { Conversations.kindFor(it) == ConversationKind.DM }
-    val groupMembers = groups.filterNot { it.left }.flatMap { GroupMembersStore.decode(it.members) }
+    val groupMembers =
+        groups
+            .filter { !it.left && Conversations.isAccepted(it.groupId, accepted, verified, authored, groupSenders[it.groupId].orEmpty()) }
+            .flatMap { GroupMembersStore.decode(it.members) }
     return (acceptedDmPeers + explicitlyAccepted + groupMembers + verified).toSet() - blocked - me
 }

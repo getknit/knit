@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -132,14 +133,15 @@ class ContactsViewModel(
         const val MAX_OTHER_MEMBERS = 7
     }
 
-    // The two facts the picker needs from the messages table — which DM threads exist, and which threads we
-    // have spoken in — read as distinct-id queries rather than as the table. Pre-combined with groups + the
-    // accepted set so the outer combine stays within the 5-flow typed overload (it then adds peers +
-    // neighbors + blocked + myNodeId).
+    // The three facts the picker needs from the messages table — which DM threads exist, which threads we
+    // have spoken in, and who has posted in each group — read as distinct-id queries rather than as the
+    // table. Pre-combined with groups + the accepted set so the outer combine stays within the 5-flow typed
+    // overload (it then adds peers + neighbors + blocked + myNodeId).
     private data class Bundle(
         val conversations: Set<String>,
         val authored: Set<String>,
         val groups: List<GroupEntity>,
+        val groupSenders: Map<String, Set<String>>,
         val accepted: Set<String>,
     )
 
@@ -151,15 +153,22 @@ class ContactsViewModel(
             if (me == null) flowOf(emptySet()) else messages.observeConversationsIAuthoredIn(me).map { it.toSet() }
         }
 
+    // Who has posted in each group, less blocked senders — the chat list's input to the group half of
+    // `Conversations.isAccepted`, so a stranger's group invitation is a request here exactly when it is there.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val groupSenders: Flow<Map<String, Set<String>>> =
+        settings.blockedNodeIds.distinctUntilChanged().flatMapLatest { messages.observeGroupSenders(it) }
+
     private val bundle =
         combine(
             messages.observeConversations(),
             authored,
             groups.observeGroups(),
+            groupSenders,
             settings.acceptedConversations,
-        ) { conversations, mine, groupList, accepted -> Bundle(conversations.toSet(), mine, groupList, accepted) }
+        ) { conversations, mine, groupList, senders, accepted -> Bundle(conversations.toSet(), mine, groupList, senders, accepted) }
 
-    /** Accepted DM peers ∪ active-group co-members ∪ verified peers, minus self and blocked; connected first, then name. */
+    /** Accepted DM peers ∪ accepted-group co-members ∪ verified peers, minus self and blocked; connected first, then name. */
     val state: StateFlow<ContactsUiState> =
         combine(
             bundle,
@@ -174,7 +183,7 @@ class ContactsViewModel(
             if (me == null) return@combine ContactsUiState(isLoading = true)
             val online = neighbors.map { it.nodeId }.toSet()
             val byNode = directory.byNode
-            val contactIds = contactIds(b.conversations, b.authored, b.groups, b.accepted, directory.verified, blocked, me)
+            val contactIds = contactIds(b.conversations, b.authored, b.groups, b.groupSenders, b.accepted, directory.verified, blocked, me)
             ContactsUiState(
                 contacts =
                     contactIds

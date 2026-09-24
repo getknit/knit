@@ -293,6 +293,38 @@ class SearchViewModelTest {
             )
         }
 
+    /**
+     * #82, the seeded demo's shape: River's DM is a request and he is also in a stranger's group we never
+     * answered, which is a request too, so neither makes him a person here — until a known peer speaks there.
+     */
+    @Test
+    fun aStrangerInARequestGroupIsNoPersonUntilTheGroupIsAccepted() =
+        runTest {
+            seedHistory()
+            groupsFlow.value = listOf(group("g-ridge", members = listOf("river", "me", "marlo"), createdBy = "river"))
+            store.add(
+                msg("river", 50, "river", body = "Salas here, saw you on the mesh", id = "r1"),
+                msg("river", 60, "g-ridge", body = "Ridge run sign-ups are open", id = "gr1"),
+            )
+            val vm = vm()
+            start(vm)
+
+            search(vm, "salas")
+            assertTrue(
+                vm.state.value.people
+                    .isEmpty(),
+            )
+
+            // Sam (an accepted contact) posts in the group: it is a chat now, and its members are people.
+            store.add(msg("sam", 70, "g-ridge", body = "Count me in", id = "gr2"))
+            search(vm, "salas")
+            assertEquals(
+                listOf("river"),
+                vm.state.value.people
+                    .map { it.nodeId },
+            )
+        }
+
     @Test
     fun aMessageHitCarriesItsThreadItsSpeakerAndTheMatch() =
         runTest {

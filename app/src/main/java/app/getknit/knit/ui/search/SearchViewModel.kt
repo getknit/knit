@@ -228,6 +228,7 @@ class SearchViewModel(
                 s.table.conversations,
                 s.table.authored,
                 s.inputs.groups,
+                s.table.groupSenders,
                 s.inputs.accepted,
                 s.directory.verified,
                 s.table.blocked,

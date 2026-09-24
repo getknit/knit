@@ -72,6 +72,8 @@ document:
 
 ### Fixed
 
+- Strangers who added you to a group you never answered no longer turn up as contacts in Search or the
+  new-message picker. They appear once you accept the group, the same moment it leaves your message requests.
 - On older phones, opening Knit after Android had closed it could leave the chat list empty for ten seconds
   or more. A Pixel 3 now shows your chats in about two seconds, once the first launch after this update has
   finished converting its storage.

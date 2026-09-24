@@ -56,6 +56,7 @@ class ContactsViewModelTest {
     private val authoredFlow = MutableStateFlow(emptyList<String>())
     private val groupsFlow = MutableStateFlow(emptyList<GroupEntity>())
     private val acceptedFlow = MutableStateFlow(emptySet<String>())
+    private val groupSendersFlow = MutableStateFlow(emptyMap<String, Set<String>>())
 
     @Before
     fun setUp() {
@@ -67,6 +68,7 @@ class ContactsViewModelTest {
         every { messages.observeConversations(any()) } returns conversationsFlow
         every { messages.observeConversationsIAuthoredIn(any()) } returns authoredFlow
         every { groups.observeGroups() } returns groupsFlow
+        every { messages.observeGroupSenders(any()) } returns groupSendersFlow
     }
 
     @After
@@ -236,16 +238,49 @@ class ContactsViewModelTest {
         runTest {
             val vm = vm()
             startCollecting(vm)
+            val ours = Conversations.groupIdFor(listOf("me", "amy", "bob"))
             groupsFlow.value =
                 listOf(
-                    group(groupId = Conversations.groupIdFor(listOf("me", "amy", "bob")), members = listOf("me", "amy", "bob")),
+                    group(groupId = ours, members = listOf("me", "amy", "bob")),
                     // A left group's members must not leak into the picker.
                     group(groupId = "g-left", members = listOf("me", "gone"), left = true),
                 )
+            // We created (or posted in) both, so neither is a request; only `left` tells them apart.
+            authoredFlow.value = listOf(ours, "g-left")
             advanceUntilIdle()
 
             assertEquals(
                 setOf("amy", "bob"),
+                vm.state.value.contacts
+                    .map { it.nodeId }
+                    .toSet(),
+            )
+        }
+
+    /**
+     * #82: a stranger's group invitation we never answered is a message request on the chat list, so its
+     * members are not contacts either — until the group is accepted the chat list's way, here by a known
+     * peer posting in it (the senders come from the messages table, like the chat list's).
+     */
+    @Test
+    fun aRequestGroupsMembersAreNotContactsUntilAKnownPeerSpeaksInIt() =
+        runTest {
+            val vm = vm()
+            startCollecting(vm)
+            groupsFlow.value = listOf(group(groupId = "g-ridge", members = listOf("river", "me", "val")))
+            groupSendersFlow.value = mapOf("g-ridge" to setOf("river"))
+            peersFlow.value = listOf(peer("val", name = "Val", verified = true))
+            advanceUntilIdle()
+            assertEquals(
+                listOf("val"),
+                vm.state.value.contacts
+                    .map { it.nodeId },
+            )
+
+            groupSendersFlow.value = mapOf("g-ridge" to setOf("river", "val"))
+            advanceUntilIdle()
+            assertEquals(
+                setOf("river", "val"),
                 vm.state.value.contacts
                     .map { it.nodeId }
                     .toSet(),
@@ -274,6 +309,7 @@ class ContactsViewModelTest {
             startCollecting(vm)
             groupsFlow.value =
                 listOf(group(groupId = "g-hike", members = listOf("me", "zoe", "amy")))
+            authoredFlow.value = listOf("g-hike")
             peersFlow.value = listOf(peer("zoe", name = "Zoe"), peer("amy", name = "Amy"))
             mesh.neighbors.value = setOf(Peer("zoe"))
             advanceUntilIdle()
