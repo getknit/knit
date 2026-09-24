@@ -218,6 +218,7 @@ class MeshMetrics {
     private val framesHeld = AtomicLong()
     private val framesReplayed = AtomicLong()
     private val healsCompleted = AtomicLong()
+    private val blobAsksHandled = AtomicLong()
     private val receiptsResent = AtomicLong()
     private val dmSealedV2 = AtomicLong()
     private val dmSealedV3 = AtomicLong()
@@ -426,6 +427,15 @@ class MeshMetrics {
      */
     fun onHealCompleted() {
         healsCompleted.incrementAndGet()
+    }
+
+    /**
+     * A neighbor's `blobreq` has been answered to its end — served, refused as already in flight, or turned
+     * into a want of our own. Frames are handled one at a time, so an ask can sit behind a slow frame for a
+     * while; this is what the mesh-in-a-box lab waits on before it lands bytes the ask would otherwise find.
+     */
+    fun onBlobAskHandled() {
+        blobAsksHandled.incrementAndGet()
     }
 
     /** A broadcast/group delivery receipt we re-sent to its author because the first best-effort tick may not
@@ -1076,6 +1086,7 @@ class MeshMetrics {
             framesHeld = framesHeld.get(),
             framesReplayed = framesReplayed.get(),
             healsCompleted = healsCompleted.get(),
+            blobAsksHandled = blobAsksHandled.get(),
             receiptsResent = receiptsResent.get(),
             dmSealedV2 = dmSealedV2.get(),
             dmSealedV3 = dmSealedV3.get(),
@@ -1200,6 +1211,7 @@ class MeshMetrics {
         val framesHeld: Long = 0,
         val framesReplayed: Long = 0,
         val healsCompleted: Long = 0,
+        val blobAsksHandled: Long = 0,
         val receiptsResent: Long = 0,
         val dmSealedV2: Long = 0,
         val dmSealedV3: Long = 0,

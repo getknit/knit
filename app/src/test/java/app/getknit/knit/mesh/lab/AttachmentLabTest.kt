@@ -208,6 +208,10 @@ class AttachmentLabTest {
             lab.await(1) { if (carol.blobs.exists(hash)) 1 else 0 }
             assertTrue("the header across is what Bob reads as arriving", hash in bob.transport.arrivingFiles())
             assertTrue("Carol holds the bytes and had Bob's ask — and pushes nothing", carol.transport.files.none { it == fileToBob })
+            // Carol's own ask reached Bob too, and Bob handles frames one at a time: it can sit behind the tail of
+            // his work on Alice's frame. Answered only after his bytes land, it is a fresh ask he rightly serves —
+            // which reads as the push this scenario pins (CI job 5268). Answered now, it finds the bytes arriving.
+            lab.await(1) { if (bob.metrics.snapshot().blobAsksHandled > 0) 1 else 0 }
             alice.transport.release(carol.transport) // Alice's copy of the frame lands on Carol, behind Bob's relay of it
 
             // The 60 s re-offer, for the link that is not busy: Bob re-arms from the database and re-asks each
@@ -227,7 +231,8 @@ class AttachmentLabTest {
             assertTrue(picture.contentEquals(bob.attachmentPlain(bob.dmWith(alice), id)))
             assertEquals("Alice served Bob once", 1, alice.transport.files.count { it == fileToBob })
             assertTrue("Carol never pushed Bob a copy", carol.transport.files.none { it == fileToBob })
-            assertTrue("Bob never pushed Carol the copy she holds", bob.transport.files.none { it.startsWith(carol.nodeId) })
+            val bobToCarol = bob.transport.files.filter { it.startsWith(carol.nodeId) }
+            assertTrue("Bob never pushed Carol the copy she holds: $bobToCarol", bobToCarol.isEmpty())
         }
 
     private companion object {

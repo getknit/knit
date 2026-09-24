@@ -330,6 +330,7 @@ class InboundPipeline(
 
             FrameType.BLOB_REQ -> {
                 WireCodec.decodePayload<BlobReqContent>(env.payload)?.let { blobExchange.onRequest(it.hash, fromNodeId) }
+                metrics.onBlobAskHandled()
             }
 
             FrameType.KEY_REQ -> {
