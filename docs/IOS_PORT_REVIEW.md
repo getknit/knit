@@ -13,6 +13,25 @@ look like so that codebase can interoperate, and what on iOS simply cannot be re
 > `mesh/protocol/GoldenVectorTest` pins the frozen v1 wire bytes an iOS/Swift codec must reproduce. The
 > marker/version numbers in the prose below reflect the pre-1.0 alpha state at review time.
 
+> **Corrections (2026-09, from the iOS port's first pass).** Where this review and the code disagree, the
+> code and `vectors/` win. These claims below are out of date:
+>
+> - **The advert is 24 bytes, not 16:** the capabilities' low byte, the node id's 16 raw bytes, the
+>   custody digest cue (u32, big-endian), the L2CAP PSM (u16, big-endian) and a flags byte
+>   (`BleAdvertPayload`). A parser accepts 23 bytes or more.
+> - **Node ids are 128 bits:** lowercase unpadded base32 of the first 16 bytes of
+>   SHA-256(`"knit-node-id-v2:"` + bundle), 26 characters. §2.1's 8-byte `[a-z0-9]` scheme is gone.
+> - **The HELLO is two-way.** The responder replies with its own HELLO (`LinkHandshake`), as §1.1's last
+>   note asked.
+> - **File chunks are 16 KiB** (`LinkFraming.FILE_CHUNK_BYTES`), not 64 KiB.
+> - **§2.2's Tink-isms are gone** (the launch baseline): the bundle holds raw keys, signatures are bare
+>   64-byte Ed25519, and wrapped keys are bare `enc ‖ ct`.
+> - **§2.3's vectors exist.** `vectors/` holds the codec fixtures, keyed vectors, and the frames the iOS
+>   port emits (`vectors/README.md`).
+> - **Android still cannot find an iPhone.** Neither fallback profile in §1.1 has shipped, and Android's
+>   responder refuses a dial from a node id that sorts below its own, so today an iPhone links to an
+>   Android phone only when the iPhone's id sorts higher.
+
 **TL;DR verdict:**
 
 - **Bluetooth LE is the cross-platform plane.** CoreBluetooth has everything the link layer needs

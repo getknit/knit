@@ -737,12 +737,15 @@ A typed foreground service hosts `MeshManager` so the mesh survives backgroundin
 
 ## 14. Encryption posture
 
-**Two layers.** (1) *In transit:* each data-path link is encrypted — the Wi-Fi Aware NDP by a fixed
-app-wide PSK, the Bluetooth LE L2CAP CoC by the Bluetooth link layer. (2) *End-to-end:* DM and group
-messages are encrypted to their recipients so relays — which flood every message hop-by-hop — only ever
-carry ciphertext. *At rest:* the Room DB is encrypted with SQLCipher (§9). The public **broadcast room is
-plaintext by design** (no fixed recipient set), so a room message takes the unencrypted path (it is still
-signed, and store-and-forward-carried).
+**Two layers.** (1) *In transit:* the Wi-Fi Aware NDP is encrypted with a fixed app-wide PSK. Every build
+ships the same one, so it is a public constant: it defeats casual capture, not an eavesdropper who has read
+the APK. The Bluetooth LE L2CAP CoC is **not** encrypted: `BluetoothMeshTransport` opens it insecure
+(`listenUsingInsecureL2capChannel` / `createInsecureL2capChannel`), with no pairing, so room posts and every
+frame's routing fields are readable over the air. Frame signatures authenticate every frame on both planes.
+(2) *End-to-end:* DM and group messages are encrypted to their recipients so relays — which flood every
+message hop-by-hop — only ever carry ciphertext. *At rest:* the Room DB is encrypted with SQLCipher (§9). The
+public **broadcast room is plaintext by design** (no fixed recipient set), so a room message takes the
+unencrypted path (it is still signed, and store-and-forward-carried).
 
 **Library.** Google **Tink** (`tink-android`) — HPKE/X25519 hybrid encryption, Ed25519 signatures,
 and AES-GCM. Originally chosen because the then-`minSdk 29` predated the platform `XDH`/`Ed25519` JCA

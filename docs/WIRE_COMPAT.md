@@ -75,6 +75,15 @@ Each evolves independently; bump the right one:
    of `onDeliver`; never gate `canCarry` on a scheme version) so a peer that *can* read it still
    receives it.
 
+## Vectors other ports test against
+
+`vectors/` holds the byte-exact fixtures every Knit port is tested against (`vectors/README.md`):
+`wire-v1.json` (the codec fixtures `GoldenVectorTest` builds), `keyed-v1.json` (fixed identities, signed
+frames, a sealed v1 DM, the safety number, the link records and the advert) and `ios-emitted-v1.json`
+(frames the iOS port signs, which Tink must verify and kotlinx must re-encode to the same bytes). An
+additive change adds vectors and moves none. A vector that moves is a break by the definition below, and
+the iOS port fails the same day.
+
 ## Wire-breaking vs. additive changes
 
 **Breaking** (needs a coordinated one-time bump of **both** discovery markers — Wi-Fi Aware

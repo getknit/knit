@@ -10,24 +10,31 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
 import kotlinx.serialization.encodeToByteArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assume.assumeFalse
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /**
  * Golden vectors for the frozen v1 wire (definite-length CBOR, raw-key bundle). Pins the exact bytes of a
  * fixed instance of every wire type so an accidental format change — a re-typed field, a codec-config flip
- * (e.g. losing `useDefiniteLengthEncoding`), a field reorder — fails loudly, and so a future iOS/Swift codec
- * has byte-exact fixtures to validate against. See docs/WIRE_COMPAT.md and docs/IOS_PORT_REVIEW.md §2.3.
+ * (e.g. losing `useDefiniteLengthEncoding`), a field reorder — fails loudly. The expected bytes live in
+ * `vectors/wire-v1.json`, which the iOS port copies and tests its own codec against byte for byte; see
+ * `vectors/README.md` and docs/WIRE_COMPAT.md.
  *
  * The map headers are definite-length (`a5` = map(5), not the indefinite `bf…ff`), which is what pins the
- * v1 `useDefiniteLengthEncoding = true` flip. To regenerate after an *intended* wire break, temporarily
- * print `vectors()` + the bundle probe and paste the new hex here.
+ * v1 `useDefiniteLengthEncoding = true` flip. To regenerate after an *intended* wire change, run this class
+ * with `KNIT_WRITE_VECTORS=1` and review the diff of the JSON: every byte that moved is in it.
  *
- * Keyed crypto known-answer vectors (a fixed-key signature / HPKE seal) need RFC 8032 / RFC 9180 test
- * keypairs and land with the iOS client bring-up; the raw-key **bundle decode + nodeId derivation** contract
- * (what an iOS client must reproduce to be recognized) is pinned here with fixed key bytes.
+ * Keyed vectors — fixed identities, signed frames, a sealed DM, the safety number — are in
+ * [KeyedVectorTest]; frames the iOS port emits are checked by [IosEmittedVectorTest].
  */
 @OptIn(ExperimentalSerializationApi::class)
 class GoldenVectorTest {
@@ -481,16 +488,35 @@ class GoldenVectorTest {
 
     @Test
     fun `every wire type matches its pinned definite-length CBOR`() {
+        assumeFalse("KNIT_WRITE_VECTORS=1 rewrites the file instead", VectorFiles.writing)
+        assertEquals("vectors/$FILE must name exactly the fixtures built here", vectors().keys, expected.keys)
         vectors().forEach { (name, encoded) ->
-            assertEquals("golden vector '$name' drifted — an unintended wire change", EXPECTED.getValue(name), encoded.toHex())
+            assertEquals("golden vector '$name' drifted — an unintended wire change", expected.getValue(name), encoded.toHex())
         }
     }
 
     @Test
+    fun `KNIT_WRITE_VECTORS=1 rewrites the vector file from the fixtures`() {
+        assumeTrue(VectorFiles.writing)
+        val bundle = probeBundle()
+        VectorFiles.write(
+            FILE,
+            buildJsonObject {
+                put("about", ABOUT)
+                putJsonObject("vectors") { vectors().forEach { (name, encoded) -> put(name, encoded.toHex()) } }
+                putJsonObject("bundle") {
+                    put("encoded", bundle)
+                    put("nodeId", NodeId.fromPublicKeyBundle(bundle))
+                }
+            },
+        )
+    }
+
+    @Test
     fun `the two envelopes decode from their pinned bytes and re-encode identically`() {
-        val wire = EXPECTED.getValue("wireEnvelope").fromHex()
+        val wire = expected.getValue("wireEnvelope").fromHex()
         assertArrayEquals(wire, WireCodec.encodeWire(requireNotNull(WireCodec.decodeWire(wire))))
-        val relay = EXPECTED.getValue("relayEnvelope").fromHex()
+        val relay = expected.getValue("relayEnvelope").fromHex()
         assertArrayEquals(relay, WireCodec.encodeEnvelope(requireNotNull(WireCodec.decodeEnvelope(relay))))
     }
 
@@ -498,11 +524,13 @@ class GoldenVectorTest {
     fun `raw-key bundle matches its pinned encoding, decodes, and derives its pinned nodeId`() {
         // An independent encoder producing the same raw-key CBOR layout (what an iOS client emits) must match
         // byte-for-byte, decode via the production path, and derive the same self-certifying nodeId.
-        val bundle = b64(cryptoCbor.encodeToByteArray(BundleProbe(sigPub = bytes(32, 10), hpkePub = bytes(32, 20))))
-        assertEquals(BUNDLE_ENCODED, bundle)
+        val bundle = probeBundle()
+        assertEquals(bundleEncoded, bundle)
         assertNotNull("raw-key bundle must decode", PublicKeyBundle.decode(bundle))
-        assertEquals(BUNDLE_NODE_ID, NodeId.fromPublicKeyBundle(bundle))
+        assertEquals(bundleNodeId, NodeId.fromPublicKeyBundle(bundle))
     }
+
+    private fun probeBundle(): String = b64(cryptoCbor.encodeToByteArray(BundleProbe(sigPub = bytes(32, 10), hpkePub = bytes(32, 20))))
 
     /** Mirror of the private `PublicKeyBundle.Proto` (same field names/order/@ByteString) for the vector. */
     @Serializable
@@ -512,198 +540,28 @@ class GoldenVectorTest {
     )
 
     private companion object {
-        fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+        const val FILE = "wire-v1.json"
+        const val ABOUT =
+            "Knit's frozen v1 wire: the definite-length CBOR of one fixed instance of every wire type, and the raw-key " +
+                "bundle probe. GoldenVectorTest builds each fixture and compares it with these bytes. See vectors/README.md."
 
-        fun String.fromHex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-
-        val EXPECTED =
-            mapOf(
-                "wireEnvelope" to
-                    "a56374746c0764686f7073036572656c6179f463736967584001080f161d242b323940474e555c636a71787f868d949ba2a9b0b7be" +
-                    "c5ccd3dae1e8eff6fd040b121920272e353c434a51585f666d747b828990979ea5acb3ba667369676e656448020910171e252c33",
-                "relayEnvelope" to
-                    "a664747970656463686174626964626d316873656e6465724964781b616c696365303030303030303030303030303030303030303061" +
-                    "616673656e74417418646b726563697069656e744964781b626f62303030303030303030303030303030303030303030306262677061" +
-                    "796c6f616444030a1118",
-                "chatContent" to
-                    "a464626f6479686869207468657265686d656e74696f6e7381a2666e6f64654964656e6f646531646e616d6563416e6e6e6174746163" +
-                    "686d656e7448617368666162633132336e6174746163686d656e744d696d656a696d6167652f77656270",
-                "profileContent" to
-                    "a7646e616d6563416e6e667374617475736668696b696e676a6176617461724861736863617631667075624b657963706b3169646576" +
-                    "696365546167636474316c70726f746f56657273696f6e016c6361706162696c69746965730f",
-                "groupInfo" to
-                    "a662696463672d31646e616d65645465616d676d656d6265727382616161626963726561746564427961616970686f746f4861736863" +
-                    "7068316e70686f746f557064617465644174182a",
-                "groupInfoDeparted" to
-                    "a462696463672d31676d656d626572738261616162696372656174656442796161686465706172746564816163",
-                "receiptContent" to "a16561636b4964626d31",
-                "reactionContent" to "a2696d6573736167654964626d3165656d6f6a6964f09f918d",
-                "reactionPayload" to "a2696d6573736167654964626d3165656d6f6a6964f09f918d",
-                "reactionPayloadRetraction" to "a1696d6573736167654964626d31",
-                "groupLeaveContent" to "a16767726f7570496463672d31",
-                "keyReqContent" to "a1676e6f64654964738261616162",
-                "blobReqContent" to "a16468617368626831",
-                "typingContent" to "a16767726f7570496463672d31",
-                "mention" to "a2666e6f64654964656e6f646531646e616d6563416e6e",
-                "replyRef" to
-                    "a5696d6573736167654964626d3068617574686f724964616166617574686f7263416e6e67736e69707065746773656520796f756d68" +
-                    "61734174746163686d656e74f5",
-                "wrappedKey" to
-                    "a262746f63626f6262776b5850040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c" +
-                    "232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7eef5fc030a11181f262d",
-                "encEnvelope" to
-                    "a3656e6f6e63654c050c131a21282f363d444b526263745830060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3ca" +
-                    "d1d8dfe6edf4fb020910171e252c333a41484f646b65797381a262746f63626f6262776b5850040b121920272e353c434a51585f666d" +
-                    "747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e7" +
-                    "eef5fc030a11181f262d",
-                "ratchetInit" to
-                    "a3636570685820070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e064706b6964036261741904d2",
-                "ratchetHeader" to
-                    "a66273650262656b5820080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5ccd3dae162706501616e0564696e6974" +
-                    "a3636570685820070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e064706b6964036261741904d265666c" +
-                    "61677301",
-                "prekeyInfo" to
-                    "a3626964076370756258200910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe26373696758400b12192027" +
-                    "2e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1" +
-                    "a8afb6bdc4",
-                "encEnvelopeV2" to
-                    "a5617602656e6f6e63654c050c131a21282f363d444b526263745830060d141b222930373e454c535a61686f767d848b9299a0a7aeb5" +
-                    "bcc3cad1d8dfe6edf4fb020910171e252c333a41484f646b657973806172a56273650162656b5820080f161d242b323940474e555c63" +
-                    "6a71787f868d949ba2a9b0b7bec5ccd3dae162706500616e0064696e6974a3636570685820070e151c232a31383f464d545b62697077" +
-                    "7e858c939aa1a8afb6bdc4cbd2d9e064706b6964036261741904d2",
-                "groupSeed" to
-                    "a36565706f6368036473656564" +
-                    "5820070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0686d696e74656441741904d2",
-                "groupKeyPayload" to
-                    "a26767726f7570496463672d31646b65797381a36565706f63680364736565645820070e151c232a31383f464d545b626970777e85" +
-                    "8c939aa1a8afb6bdc4cbd2d9e0686d696e74656441741904d2",
-                "encEnvelopeGroup" to
-                    "a5617602656e6f6e63654c050c131a21282f363d444b526263745830060d141b222930373e454c535a61686f767d848b9299a0a7aeb5" +
-                    "bcc3cad1d8dfe6edf4fb020910171e252c333a41484f646b657973806167a262736502616e1839",
-                "profileContentPrekey" to
-                    "a8646e616d6563416e6e667374617475736668696b696e676a6176617461724861736863617631667075624b657963706b3169646576" +
-                    "696365546167636474316c70726f746f56657273696f6e016c6361706162696c6974696573181f667072656b6579a362696407637075" +
-                    "6258200910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe26373696758400b121920272e353c434a51585f" +
-                    "666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4",
-                "profileContentVersion" to
-                    "a9646e616d6563416e6e667374617475736668696b696e676a6176617461724861736863617631667075624b657963706b3169646576" +
-                    "696365546167636474316c70726f746f56657273696f6e016c6361706162696c6974696573181f667072656b6579a362696407637075" +
-                    "6258200910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe26373696758400b121920272e353c434a51585f" +
-                    "666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4" +
-                    "6776657273696f6e1b0000018bcfe56800",
-                "profileContentOpenToChat" to
-                    "aa646e616d6563416e6e667374617475736668696b696e676a6176617461724861736863617631667075624b657963706b3169646576" +
-                    "696365546167636474316c70726f746f56657273696f6e016c6361706162696c6974696573181f667072656b6579a362696407637075" +
-                    "6258200910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe26373696758400b121920272e353c434a51585f" +
-                    "666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4" +
-                    "6776657273696f6e1b0000018bcfe56800" +
-                    "6a6f70656e546f43686174f5",
-                "profileContentLoraNode" to
-                    "aa646e616d6563416e6e667374617475736668696b696e676a6176617461724861736863617631667075624b657963706b3169646576" +
-                    "696365546167636474316c70726f746f56657273696f6e016c6361706162696c6974696573181f667072656b6579a362696407637075" +
-                    "6258200910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe26373696758400b121920272e353c434a51585f" +
-                    "666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4" +
-                    "6776657273696f6e1b0000018bcfe56800" +
-                    "686c6f72614e6f64651adeadbeef",
-                "profileContentLoraKey" to
-                    "ab646e616d6563416e6e667374617475736668696b696e676a6176617461724861736863617631667075624b657963706b3169646576" +
-                    "696365546167636474316c70726f746f56657273696f6e016c6361706162696c6974696573181f667072656b6579a362696407637075" +
-                    "6258200910171e252c333a41484f565d646b727980878e959ca3aab1b8bfc6cdd4dbe26373696758400b121920272e353c434a51585f" +
-                    "666d747b828990979ea5acb3bac1c8cfd6dde4ebf2f900070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4" +
-                    "6776657273696f6e1b0000018bcfe56800" +
-                    "686c6f72614e6f64651adeadbeef" +
-                    "676c6f72614b6579782c6f523632494a6d4655453054676377304763797055355a71554643516c6c56427932736e422f424b5141343d",
-                "profilePayload" to
-                    "a4646e616d6563416e6e667374617475736668696b696e676a617661746172486173" +
-                    "6863617631" +
-                    "6776657273696f6e1906a4",
-                "profilePayloadNoAvatar" to "a3646e616d6563416e6e66737461747573606776657273696f6e1906a4",
-                "profilePayloadOpenToChat" to
-                    "a5646e616d6563416e6e667374617475736668696b696e676a617661746172486173" +
-                    "6863617631" +
-                    "6776657273696f6e1906a4" +
-                    "6a6f70656e546f43686174f5",
-                "profilePayloadLoraNode" to
-                    "a5646e616d6563416e6e667374617475736668696b696e676a617661746172486173" +
-                    "6863617631" +
-                    "6776657273696f6e1906a4" +
-                    "686c6f72614e6f64651adeadbeef",
-                "profilePayloadLoraKey" to
-                    "a6646e616d6563416e6e667374617475736668696b696e676a617661746172486173" +
-                    "6863617631" +
-                    "6776657273696f6e1906a4" +
-                    "686c6f72614e6f64651adeadbeef" +
-                    "676c6f72614b6579782c6f523632494a6d4655453054676377304763797055355a71554643516c6c56427932736e422f424b5141343d",
-                "groupRootPayload" to
-                    "a364726f6f7458200d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6" +
-                    "6776657273696f6e02666d696e746572626161",
-                "groupKeyPayloadRoot" to
-                    "a26767726f7570496463672d31626772a364726f6f7458200d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3ca" +
-                    "d1d8dfe66776657273696f6e02666d696e746572626161",
-                "messageContentReceipt" to "a364626f6479606363746c056361636b626d31",
-                "messageContentReceiptBatch" to "a364626f6479606363746c056461636b7382626d31626d32",
-                "messageContentTransferOffer" to
-                    "a364626f6479606363746c09627866a56269647641776f524742386d4c545137516b6c515631356c624165706861736501646e616d656863" +
-                    "6c69702e6d70346473697a651a075bcd15646d696d6569766964656f2f6d7034",
-                "encEnvelopeV3" to
-                    "a5617603656e6f6e6365406263745830060d141b222930373e454c535a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe6edf4fb0209" +
-                    "10171e252c333a41484f646b657973806172a46273650262656b5820080f161d242b323940474e555c636a71787f868d949ba2a9b0b7" +
-                    "bec5ccd3dae162706501616e05",
-                "wireEnvelopeUnsigned" to "a36572656c6179f46373696740667369676e656448020910171e252c33",
-                "messageContentV2Plain" to "a101686869207468657265",
-                "messageContentV2Receipt" to "a20705085001080f161d242b323940474e555c636a",
-                "messageContentV2ReceiptBatch" to "a2070509825001080f161d242b323940474e555c636a50020910171e252c333a41484f565d646b",
-                "messageContentV2Reaction" to "a207060aa2015001080f161d242b323940474e555c636a0264f09f918d",
-                "messageContentV2Full" to
-                    "a7016868692074686572650281a20150030a11181f262d343b424950575e656c0263416e6e035820040b121920272e353c434a51585f" +
-                    "666d747b828990979ea5acb3bac1c8cfd6dd046a696d6167652f77656270055820050c131a21282f363d444b525960676e757c838a91" +
-                    "989fa6adb4bbc2c9d0d7de06a50150060d141b222930373e454c535a61686f0250030a11181f262d343b424950575e656c0363416e6e" +
-                    "046773656520796f7505f50ba40163416e6e026668696b696e67035820070e151c232a31383f464d545b626970777e858c939aa1a8af" +
-                    "b6bdc4cbd2d9e0041906a4",
-                "messageContentV2ProfileOpenToChat" to
-                    "a207080ba50163416e6e026668696b696e67035820070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0" +
-                    "041906a405f5",
-                "messageContentV2ProfileLoraNode" to
-                    "a207080ba50163416e6e026668696b696e67035820070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0" +
-                    "041906a4061adeadbeef",
-                "messageContentV2ProfileLoraKey" to
-                    "a207080ba60163416e6e026668696b696e67035820070e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0" +
-                    "041906a4061adeadbeef" +
-                    "075820a11eb6209985504d1381cc3419cca953966a505090965541cb6b2707f04a400e",
-                "messageContentFile" to
-                    "a664626f6479606e6174746163686d656e744861736878403034306231323139323032373265333533633433346135313538" +
-                    "35663636366437343762383238393930393739656135616362336261633163386366643664646e6174746163686d656e744d" +
-                    "696d656f6170706c69636174696f6e2f7064666d6174746163686d656e744b6579782c425177544769456f4c7a5939524574" +
-                    "535757426e626e5638673471526d4a2b6d7262533777736e513139343d6e6174746163686d656e744e616d656a7265706f72" +
-                    "742e7064666e6174746163686d656e7453697a651a00155cc0",
-                "messageContentV2File" to
-                    "a5035820040b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dd046f6170706c69636174696f6e2f" +
-                    "706466055820050c131a21282f363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7de0e6a7265706f72742e706466" +
-                    "0f1a00155cc0",
-                "linkPreviewBlob" to
-                    "a66176016375726c781968747470733a2f2f6578616d706c652e636f6d2f613f623d31657469746c65655469746c656b646573" +
-                    "6372697074696f6e644465736365696d616765480c131a21282f363d69696d6167654d696d656a696d6167652f77656270",
-                "linkPreviewBlobTextOnly" to "a36176016375726c7468747470733a2f2f6578616d706c652e636f6d2f657469746c65655469746c65",
-                "commonsPost" to
-                    "a26573636f706558200e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e76463686174a164626f" +
-                    "64796568656c6c6f",
-                "commonsPostFull" to
-                    "a26573636f706558200e151c232a31383f464d545b626970777e858c939aa1a8afb6bdc4cbd2d9e0e76463686174a364626f" +
-                    "64796768692040416e6e686d656e74696f6e7381a2666e6f64654964781a616d66626367613765797774696f32636a666966" +
-                    "6f7874666e71646e616d6563416e6e677265706c79546fa4696d65737361676549647642673055477949704d44632d525578" +
-                    "54576d466f627768617574686f724964781a616d66626367613765797774696f32636a6669666f7874666e7166617574686f" +
-                    "7263416e6e67736e69707065746773656520796f75",
-                "groupKeyPayloadRoster" to
-                    "a46767726f7570496463672d31646b65797381a36565706f63680364736565645820070e151c232a31383f464d545b626970" +
-                    "777e858c939aa1a8afb6bdc4cbd2d9e0686d696e74656441741904d2626772a364726f6f7458200d141b222930373e454c53" +
-                    "5a61686f767d848b9299a0a7aeb5bcc3cad1d8dfe66776657273696f6e02666d696e7465726261616567726f7570a5626964" +
-                    "63672d31646e616d65645465616d676d656d6265727382626161626262696372656174656442796261616864657061727465" +
-                    "6481626363",
-            )
-
-        const val BUNDLE_ENCODED =
-            "omZzaWdQdWJYIAoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dzjZ2hwa2VQ" +
-                "dWJYIBQbIikwNz5FTFNaYWhvdn2Ei5KZoKeutbzDytHY3+bt"
-        const val BUNDLE_NODE_ID = "cswad43wmlont27jr4tyvu63i4"
+        private val file by lazy { VectorFiles.read(FILE) }
+        val expected: Map<String, String> by lazy {
+            file.getValue("vectors").jsonObject.mapValues { it.value.jsonPrimitive.content }
+        }
+        val bundleEncoded: String by lazy {
+            file
+                .getValue("bundle")
+                .jsonObject
+                .getValue("encoded")
+                .jsonPrimitive.content
+        }
+        val bundleNodeId: String by lazy {
+            file
+                .getValue("bundle")
+                .jsonObject
+                .getValue("nodeId")
+                .jsonPrimitive.content
+        }
     }
 }

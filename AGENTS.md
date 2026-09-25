@@ -39,6 +39,9 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   convergence), `.agents/context/e2e-encryption.md` (crypto). If a change can only be made by *breaking*
   the wire, don't — park it in `docs/NEXT_WIRE_BREAK.md` (the staging list, so a future break carries them
   all at once) and find the additive route per `docs/WIRE_COMPAT.md`.
+- **When touching `vectors/`, `GoldenVectorTest`, `KeyedVectorTest` or `IosEmittedVectorTest`, or when a
+  change moves a wire byte:** READ `vectors/README.md` and ADR 2026-09.fzh7. The iOS port tests against the
+  same files; regenerate with `KNIT_WRITE_VECTORS=1`, never by hand, and never edit `ios-emitted-v1.json`.
 - **When touching `mesh/bluetooth/BleSideChannel`, `SideCarousel`, `SideScanPolicy`, `SideCapableTracker`,
   `BleFastRoutePolicy`, `BleAdvertPayload`'s flags byte, or `BluetoothMeshTransport.fastFanout`/`fastSend`:**
   READ ADR 2026-09.sjaa and the "page carousel" section of `.agents/context/mesh-transport.md`. The BLE side
