@@ -146,6 +146,57 @@ class SessionLabTest {
         }
 
     /**
+     * The previous scenario with the crossing it leaves to chance pinned (chaos seeds 2001/2003/2005): Alice reads
+     * Bob's while-apart DM under the root her reset retired, and her tick for it reaches Bob *before* her
+     * custodied reset does. The open under the kept `prevRoot` must not confirm the replacement session: a tick
+     * that carries no init, under a root Bob has never seen, is one he cannot read — and the reseal his reset
+     * handling sends back reuses the DM's id, so Alice's router dedups it and never ticks again.
+     */
+    @Test
+    @Ignore("#87: a frame opened under prevRoot confirms the replacement session, and the tick sealed next is lost")
+    fun aTickSealedAfterAResetStillReachesAPeerWhoHasNotSeenTheReset() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            assertTrue(alice.sendDm(bob, "hello"))
+            lab.await(1) { bob.decrypted(bob.dmWith(alice)).size }
+            assertTrue(bob.sendDm(alice, "hi"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
+
+            lab.unlink(alice, bob)
+            assertTrue(bob.sendDm(alice, "sent while apart"))
+            val custodied = alice.custodyIds()
+            assertNull("alice's reset went out", alice.resetSession(bob))
+            val reset = (alice.custodyIds() - custodied).single()
+
+            // The pipes first, the hold, then the link-up: nothing Alice sends Bob crosses before the hold.
+            alice.transport.connect(bob.transport, publish = false)
+            alice.transport.hold(bob.transport)
+            alice.transport.publishNeighbors()
+            bob.transport.publishNeighbors()
+            lab.await(1) { alice.decrypted(alice.dmWith(bob)).count { it.second == "sent while apart" } }
+            // Her tick for it, parked beside the reset her digest exchange serves Bob. A DM receipt floods like the
+            // reset (sealed, custodied), so it is told apart by id; with no pages and no board nothing else of
+            // Alice's crosses this pipe as a chat frame in this window.
+            lab.await(1) {
+                alice.transport
+                    .held(bob.transport)
+                    .filter { it.isChatFrom(alice.nodeId) }
+                    .mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }
+                    .filter { it != reset }
+                    .distinct()
+                    .size
+            }
+            alice.transport.release(bob.transport) { batch ->
+                batch.sortedBy { WireCodec.decodeEnvelope(it.signed)?.id == reset } // the reset last
+            }
+
+            lab.assertConverged(listOf(alice, bob), atLeast = 3) { it.dmWith(if (it === alice) bob else alice) }
+        }
+
+    /**
      * The other direction: Alice sends three DMs to an absent Bob (Dave carries them), then forces a reset.
      * When Bob returns the three are sealed under an era the reset retired — pre-era to Bob, so no reset
      * storm — and they still have to reach him.

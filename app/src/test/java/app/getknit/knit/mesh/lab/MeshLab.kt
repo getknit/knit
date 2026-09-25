@@ -594,7 +594,11 @@ class MeshLab {
         acker: LabNode,
     ): DeliveryPlane {
         val ok = tryAwait(1) { if (author.receiptPlanes(messageId).containsKey(acker.nodeId)) 1 else 0 }
-        assertTrue("${author.name} never got ${acker.name}'s tick for $messageId", ok)
+        assertTrue(
+            "${author.name} never got ${acker.name}'s tick for $messageId\n${report(nodes)}\n" +
+                nodes.filter { it.loraLog.isNotEmpty() }.joinToString("\n") { "  ${it.name} lora: ${it.loraLog.takeLast(WINDOW_LORA)}" },
+            ok,
+        )
         return author.receiptPlanes(messageId).getValue(acker.nodeId)
     }
 
@@ -666,6 +670,9 @@ class MeshLab {
 
         /** The newest warnings a failure report quotes ([report]); the stacks log a lot at boot. */
         const val WARNINGS_KEPT = 40
+
+        /** How many of a board's last log lines a failed wait prints. */
+        const val WINDOW_LORA = 40
     }
 }
 
@@ -1027,27 +1034,40 @@ class LabNode internal constructor(
     }
 
     /**
-     * Runs one profile edit and returns once the manager has published it — the version moved and the frame
-     * left the router. The settings write returns before the profile watcher runs; a scenario that linked or
-     * unlinked in that gap found the edit's frame originated to nobody and stranded in this node's custody
-     * (`RoomTickPlanesLabTest` under the throttled loop, 2026-09-16). The caller has already checked the
-     * edit is a real change — a no-op write publishes nothing and this would wait on it forever.
+     * Runs one profile edit and returns once the manager has published it: the version moved and custody holds
+     * the frame under the current publish stamp, past the one before the edit. `broadcastProfile` writes the
+     * three under `profileLock` before it originates the frame, so a link brought up next finds the frame in
+     * the digest, and a parity wait next waits for the flood. The settings write returns before the profile
+     * watcher runs; a scenario that linked or unlinked in that gap found the edit's frame originated to nobody
+     * and stranded in this node's custody (`RoomTickPlanesLabTest` under the throttled loop, 2026-09-16). The
+     * version alone is not the event — it moves before the frame is signed — and neither is `framesOriginated`,
+     * which a first-contact push or a reachable reflood moves too: a wait on the two returned before the edit's
+     * frame existed, and a link taken down next lost it (`CloneLabTest` under chaos, 2026-09-24). A flood
+     * record on [LabTransport] would miss a board node, whose composite never hands its child a null-target
+     * send. The caller has already checked the edit is a real change — a no-op write publishes nothing and this
+     * would wait on it forever.
      */
     private suspend fun published(edit: suspend () -> Unit) {
         val version = settings.profileVersion.first()
-        val originated = metrics.snapshot().framesOriginated
+        val stamp = settings.profilePublishedAt.first()
         edit()
         val done =
             withContext(Dispatchers.Default) {
                 withTimeoutOrNull(MeshLab.AWAIT_MS) {
-                    while (settings.profileVersion.first() <= version || metrics.snapshot().framesOriginated <= originated) {
+                    while (true) {
+                        val now = settings.profilePublishedAt.first()
+                        if (settings.profileVersion.first() > version && now > stamp && "profile-$nodeId-$now" in custodyIds()) break
                         delay(MeshLab.POLL_MS)
                     }
                 }
             } != null
+        val held = custodyIds().filter { it.startsWith("profile-$nodeId-") }
         check(done) {
             "$name's profile edit was never published: version ${settings.profileVersion.first()} (was $version), " +
-                "originated ${metrics.snapshot().framesOriginated} (was $originated)"
+                "stamp ${settings.profilePublishedAt.first()} (was $stamp), custody $held\n  warnings:\n" +
+                ShadowLog.getLogs().filter { it.type >= Log.WARN }.takeLast(MeshLab.WARNINGS_KEPT).joinToString("\n") {
+                    "    ${it.tag}: ${it.msg}${it.throwable?.let { t -> " ($t)" } ?: ""}"
+                }
         }
     }
 

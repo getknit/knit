@@ -163,9 +163,9 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   sends (`sendDm`, `sendGroup`, `react`, `createGroup`) hand their frames to the transport before they
   return — `MeshRouter.sendOwn` awaits `transport.send` — so those need no wait; the profile edits
   (`setDisplayName`, `setStatus`, `setOpenToChat`, `setAvatar`) go through the manager's watcher, so
-  `LabNode` waits for the publish itself (version moved, `framesOriginated` moved) before returning, and
-  a no-op edit returns at once. A `RoomTickPlanesLabTest` node once minted its rename's frame after the
-  scenario had already cut the link.
+  `LabNode` waits for the publish itself (the version moved and custody holds the frame under the new
+  stamp) before returning, and a no-op edit returns at once. A `RoomTickPlanesLabTest` node once minted
+  its rename's frame after the scenario had already cut the link.
 - **A link is presented on both ends before either end is woken.** `LabTransport.connect` publishes the two
   ends one after the other, and on one slow core the first end's reaction — its profile push, its custody
   digest — reached the second end before the second publish; the second end's manager answered through the
@@ -208,10 +208,13 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   board's `send`, before the `lora tx` line a scenario polls; `skipCovered` runs at enqueue, so `loraSkipped*`
   moves before `sendChat` returns; `onFrameReplayed` and `onKeyRecovered` precede the replayed delivery; a
   `groupleave` envelope carries no `group`, so `sortedBy { isGroupFrame() }` does put the leave first. And
-  `published`'s "originated moved" is durable: `broadcastProfile` custodies the new stamp under the lock
-  before `sendOwn` counts it, so a link cut in the microseconds before `transport.send` strands nothing the
-  next exchange cannot serve (a transport-level dispatch counter would not do — the composite fans a flood
-  per neighbour and never hands a board node's flood to the child at all).
+  `published`'s custody row is durable: `broadcastProfile` custodies the new stamp under the lock before it
+  originates, so a link cut in the microseconds before `transport.send` strands nothing the next exchange
+  cannot serve (a transport-level flood record would not do — the composite fans a flood per neighbour and
+  never hands a board node's flood to the child at all). One latent gap: after a `restart()` across a jump
+  past the 12 h republish, boot's wait passes on the old row before the seed runs, and an edit made next can
+  be folded into the seed's republish with no version bump, so `published` would time out; no scenario edits
+  there today.
 - **Two legitimate orderings are not a state to await.** `AttachmentLabTest`'s #79 scenario awaited Carol's
   copy of the blob and then asserted she never served Bob — but Bob asks every neighbour at once, and whether
   Carol holds the bytes when his ask reaches her is a race the mesh does not decide (her pull is two hops and
@@ -363,6 +366,16 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `accountedCount` can already hold a frame the pair exchanged while linked (link copy delivered, spool copy
   accepted before its custody write): read a baseline, never an absolute band. And a race the chaos finds may
   be the mesh's — four of the nine were (#83–#86); a repro that fails on HEAD stays under `@Ignore("#NN: …")`.
+- **What the second sweep taught** (2026-09-25): `onDeliver` custodies **before** it dispatches, so custody
+  parity says nothing about a handler having run — await `awaitInboundDrained()` before flipping what the
+  handler reads (a block, a setting). Custody parity also does not mean a node's **own** link-up hooks ran (the
+  other end's digest can settle it); its digest to that peer does (`transport.digestsSent`), and
+  `watchNeighbors` re-asks blobs before it sends it. `broadcastProfile` bumps the version before it signs, and
+  pushes and refloods move `framesOriginated`, so neither is the publish event: `published` waits for the
+  custody row under the new stamp, written before the frame is originated. (A flood record on `LabTransport`
+  would miss a board node: the composite never hands its child a null-target send.) Where the mesh legitimately
+  takes one of two routes (Bob answers Alice's intro instead of sending his own), assert on what both routes
+  produce. #87 came out of this sweep.
 - **Time is real.** `MeshManager.start` builds its session on `Dispatchers.Default`, so scenarios run under
   `runBlocking` and poll, never virtual time. `MeshLab.await` **fails the scenario** where the wait runs out
   (with every node's counters and sends); `tryAwait` is the Boolean form for a site that words its own

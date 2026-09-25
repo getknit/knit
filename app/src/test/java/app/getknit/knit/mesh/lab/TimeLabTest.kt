@@ -85,6 +85,9 @@ class TimeLabTest {
             assertTrue(alice.sendDm(bob, "while blocked"))
             val dm = alice.ownMessageId(alice.dmWith(bob), "while blocked")
             lab.awaitCustodyParity(alice, bob)
+            // Custody is written before the frame is dispatched (`InboundPipeline.onDeliver`), so parity says
+            // nothing about the block check having run: an unblock inside that gap lets the late dispatch surface it.
+            bob.transport.awaitInboundDrained()
             assertTrue("bob custodied the DM he would not surface", bob.custodyIds().contains(dm))
             assertTrue("nothing surfaced while blocked", bob.decrypted(bob.dmWith(alice)).isEmpty())
 

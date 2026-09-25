@@ -572,10 +572,12 @@ class InternetPlaneLabTest {
             alice.importCard(bobCard)
             bob.importCard(aliceCard)
 
+            // One intro at least, not one each: when Alice's lands before Bob's import runs, Bob already holds a
+            // confirmed responder session, so his import needs no intro (`IntroSync.want`) and he answers hers.
             assertTrue(
                 "no intro ever went out",
                 lab.tryAwait(1, timeoutMs = MeshLab.SPOOL_AWAIT_MS) {
-                    minOf(alice.metrics.snapshot().introsSent, bob.metrics.snapshot().introsSent).toInt()
+                    (alice.metrics.snapshot().introsSent + bob.metrics.snapshot().introsSent).toInt()
                 },
             )
             assertTrue(

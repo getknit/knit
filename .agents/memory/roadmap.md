@@ -132,23 +132,32 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Still deferred (by design)
 
-- **Enforcing the mesh-lab chaos job** (`mesh-lab-chaos` in `.github/workflows/ci.yml`, 2026-09-24). The
-  first whole-package heavy-tail sweep failed nine scenarios on main; triaged 2026-09-24. Four are mesh bugs,
-  filed as work items: **#83** a both-initiate loser's late opening DM fails AEAD and is never recovered
+- **Enforcing the mesh-lab chaos job** (`mesh-lab-chaos` in `.github/workflows/ci.yml`, 2026-09-24). The first
+  whole-package heavy-tail sweep failed nine scenarios on main; triaged 2026-09-24. Four are mesh bugs, filed as
+  work items: **#83** a both-initiate loser's late opening DM fails AEAD and is never recovered
   (`SessionLabTest.theLosersOpening…`, `@Ignore`d), **#84** a relay copy seen first cancels the radio relay
-  (`InternetPlaneLabTest.aFrameTheRelayDeliversFirst…`, `@Ignore`d), **#85** a restore racing its first
-  link sends two resets and the peer refuses the second, **#86** `finishRestore` never resets group-only
-  contacts (both `RestoreLabTest` scenarios, chaos-only). Four were fixture races, fixed: restart's
-  inbound drain, a `receiptsSealed` / `groupSeedsAdopted` await, a relative spool band, Erin's lossy
-  profile pages. One (`AttachmentLabTest`'s board case) no longer reproduces. A second sweep (seeds
-  2000–2009, A/B'd against the committed chaos build to rule out the fixes) found more, all pre-existing and
-  untriaged: CloneLabTest `bothTwinsLightUp…` (fails on HEAD too, seed 3022), SessionLabTest
-  `aForcedResetHeals…` (both trees), InternetPlaneLabTest `twoCardHolders…`, LoraPocketLabTest
-  `aFarPocketsTick…`, TimeLabTest `aDmReceivedWhileBlocked…`, AttachmentLabTest `aPictureAlreadyStreaming…`,
-  and a "profile edit was never published" setup failure in three classes; SessionLabTest
-  `aMemberWhoMissedTheSeed…` is #83's signature. Drop the job's
-  `continue-on-error` once #85/#86 are fixed (the two restore scenarios fail it today), then mirror it in
-  `.gitlab-ci.yml`.
+  (`InternetPlaneLabTest.aFrameTheRelayDeliversFirst…`, `@Ignore`d), **#85** a restore racing its first link
+  sends two resets and the peer refuses the second, **#86** `finishRestore` never resets group-only contacts
+  (both `RestoreLabTest` scenarios, chaos-only). Four were fixture races, fixed: restart's inbound drain, a
+  `receiptsSealed` / `groupSeedsAdopted` await, a relative spool band, Erin's lossy profile pages. One
+  (`AttachmentLabTest`'s board case) no longer reproduces. A second sweep (seeds 2000–2009, all pre-existing)
+  was triaged 2026-09-25. One more mesh bug, **#87**: a frame opened under a reset's kept `prevRoot` confirms
+  the replacement session (`SessionLabTest.aForcedResetHeals…`; the repro `aTickSealedAfterAReset…` is
+  `@Ignore`d). Two were #84 and #86 again. Four were fixture races, fixed: `published` returned before the
+  edit's frame existed (CloneLab), custody lands before dispatch (TimeLab), Bob's own link-up re-ask
+  (AttachmentLab), and an intro oracle that assumed both sides send (`twoCardHolders…`). Still unexplained, not
+  reproduced since (about 2,000 boot-and-rename cycles, 12 seeded runs each), with diagnostics added to their
+  failure messages: the "profile edit was never published" setup failure (TopologyLab, InternetPlane ×2; the
+  version never moved, so it is not the `published` race; kin to the latent boot/seed gap in `testing.md`'s
+  read-safe list, where the watcher's first value finds custody already showing the edit and publishes nothing),
+  the LoRa ride-hold ticks (LoraPocketLabTest `aFarPocketsTick…`, RoomTickPlanesLabTest `aRoomTickReaches…`: the
+  acker heard the post and put no tick on air. The lead is a ride that wakes before the composite's `reachable`
+  has merged the board's sighting, while `watchReachable` conflates the away-and-back edge, so nothing
+  re-flushes it until a heal. The lab's 300 ms hold makes that window real; the field's 60 s makes it unlikely),
+  LoraPocketLabTest `aDmSentWhileTheFarBoardWasOff…` (failed only in a batch the OOM killer ended), and
+  SessionLabTest `aMemberWhoMissedTheSeed…` (one live-link group tick never left Bob; not #83, which would show
+  a ratchet drop). Drop the job's `continue-on-error` once #85/#86/#87 are fixed (the two restore scenarios and
+  `aForcedResetHeals…` fail it today), then mirror it in `.gitlab-ci.yml`.
 - **A per-peer in-flight window on the Wi-Fi Aware coordination plane** (ADR 2026-09.jjhg, 2026-09-21, work
   item #81). The framework's send-queue deadlock needs eight follow-ups the framework has already timed out
   still sitting in the firmware's queue — which a burst to a peer that cannot ack fills. One message in flight
