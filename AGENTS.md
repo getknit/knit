@@ -341,6 +341,11 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   Before touching `RECONCILE_INTERVAL_MS`, who calls `ScopeSync.onScopeTableChanged`, `RatchetSessions.rootChanges`
   or `IntroSync.onPairsChanged`: READ ADR 2026-09.dcah — the scope table derives on its inputs' events and the
   60 s poll is only the net under the calendar; a hook that fires on an unchanged input is the old poll back.
+- **When creating or modifying anything under `app/src/test/java/app/getknit/knit/mesh/lab/`:** RUN
+  `scripts/lab-chaos.sh --tests '<Class>'` on the changed classes and ADOPT (Claude Code: spawn) the
+  `mesh-lab-reviewer` persona in `.agents/personas/mesh-lab-reviewer.md` before calling the change done — every
+  lab flake has been a scenario assuming an order the mesh does not promise. A Stop hook enforces the review.
+  Chaos mode is the "Chaos mode" bullet in `.agents/context/testing.md`.
 - **When writing or running tests, or checking accessibility:** READ `.agents/context/testing.md` (unit +
   Robolectric Room + the **mesh-in-a-box** multi-node JVM scenarios in `mesh/lab/` + seeded UI / FTL +
   black-box UIAutomator + the accessibility/ATF suite that mirrors the Play pre-launch report). A change to

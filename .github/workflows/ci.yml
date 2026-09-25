@@ -97,6 +97,37 @@ jobs:
           path: app/build/reports/tests/testDebugUnitTest/
           if-no-files-found: ignore
 
+  mesh-lab-chaos:
+    name: Mesh-in-a-box under seeded chaos (advisory)
+    runs-on: ubuntu-latest
+    # The same scenarios once more under LabChaos (app/src/test/.../mesh/lab/LabChaos.kt): lagged dispatches,
+    # jittered pipes and the occasional 40-400 ms single-coroutine stall a one-vCPU runner produces now and
+    # then, produced on purpose. A failure is a schedule a slow runner can hit too, so it names a latent
+    # flake with its seed (the run id) — reproduce locally with `scripts/lab-chaos.sh --seed <run id>`.
+    # Advisory until the findings of the first local sweep (2026-09-24) are triaged; then enforce it.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools # NOT the default `tools platform-tools` — see ACTION PINS above
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Run the mesh/lab scenarios under chaos
+        run: >-
+          ./gradlew :app:testDebugUnitTest --tests 'app.getknit.knit.mesh.lab.*' --rerun --stacktrace --console=plain
+          -Pknit.labChaos=${{ github.run_id }}
+      - name: Upload mesh/lab chaos report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mesh-lab-chaos-report
+          path: app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+
   verify:
     name: detekt & ktlint (advisory)
     runs-on: ubuntu-latest

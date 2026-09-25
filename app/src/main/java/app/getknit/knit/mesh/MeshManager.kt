@@ -87,6 +87,7 @@ import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.presence.OpenToChatPolicy
 import app.getknit.knit.presence.OpenToChatWatch
 import app.getknit.knit.transfer.TransferSignals
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -187,6 +188,9 @@ class MeshManager(
     // How long a room tick waits for a ride before it is sealed and sent by itself
     // ([AckSync.RIDE_HOLD_MS], ADR 2026-09.y5f3). Injectable for `mesh/lab` exactly like [tickDebounceMs].
     private val rideHoldMs: Long = AckSync.RIDE_HOLD_MS,
+    // What the session's collectors and everything they launch run on. Production takes the default; the
+    // `mesh/lab` harness hands in its seeded chaos dispatcher (`LabChaos`), a busy pool on demand.
+    private val sessionDispatcher: CoroutineDispatcher = Dispatchers.Default,
     // The per-link meter on broadcast-room posts ([IngressBudget]), handed to the router. A policy object,
     // injectable like [tickDebounceMs] so `mesh/lab` can flood a room past a tiny budget in one scenario;
     // production wiring takes the default and shares [clock].
@@ -608,7 +612,7 @@ class MeshManager(
         // single collector's failure from the rest of the session. The shared handler logs any uncaught
         // throw in a top-level session collector instead of letting it vanish silently.
         val session =
-            CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + Dispatchers.Default + meshExceptionHandler)
+            CoroutineScope(SupervisorJob(scope.coroutineContext[Job]) + sessionDispatcher + meshExceptionHandler)
         sessionScope = session
         router = newRouter(session)
         router.start()

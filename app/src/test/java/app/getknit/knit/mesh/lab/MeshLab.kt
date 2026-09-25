@@ -84,6 +84,7 @@ import app.getknit.knit.notifications.Notifier
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -134,6 +135,12 @@ class MeshLab {
     val clock = LabClock()
 
     /**
+     * The seeded scheduling noise this scenario runs under ([LabChaos]), or null — the default — for a plain
+     * run. Printed at once so a scenario that dies before any report still names its seed in its output.
+     */
+    internal val chaos: LabChaos? = LabChaos.current?.also { println("meshlab $it") }
+
+    /**
      * Creates and starts a node — its own identity, database and settings file — and returns once its router
      * is listening, so a link made next cannot lose the profile push (see [LabTransport.collecting]).
      */
@@ -171,6 +178,7 @@ class MeshLab {
                 clock,
                 pages,
                 seedIdentity = sameIdentityAs?.identityBytes(),
+                chaos = chaos,
             )
         nodes += node
         node.boot()
@@ -191,8 +199,10 @@ class MeshLab {
      * `neighbors` is a conflating `StateFlow`, and a link that comes back inside a collector's wake-up is a
      * link that never went down to it — no newcomer, so no profile push, no digest exchange, no re-send of an
      * owed group seed. No radio flaps that fast; the lab can, and on one slow core a collector's wake-up is
-     * long. A node with a board reads the composite's own `StateFlow` on top, which the lab cannot watch, so
-     * the [SETTLE_MS] pause stays as well.
+     * long. A node with a board also waits for its LoRa child to hold the new link set
+     * ([LabNode.awaitBoardSawLinks]): the composite hands it over from a coroutine of its own, and a send that
+     * outruns it meets a stale election or a peer still counted as linked. The [SETTLE_MS] pause stays for
+     * whatever else reads the composite's `StateFlow`.
      */
     suspend fun unlink(
         a: LabNode,
@@ -201,6 +211,8 @@ class MeshLab {
         a.transport.disconnect(b.transport)
         a.transport.awaitNeighborsObserved()
         b.transport.awaitNeighborsObserved()
+        a.awaitBoardSawLinks()
+        b.awaitBoardSawLinks()
         settle()
     }
 
@@ -276,7 +288,8 @@ class MeshLab {
      * swallowed exception is visible nowhere else. Robolectric records every `Log` call per test.
      */
     fun report(nodes: List<LabNode>): String =
-        nodes.joinToString("\n") { it.metricsLine() } + "\n" +
+        (chaos?.let { "$it\n" } ?: "") +
+            nodes.joinToString("\n") { it.metricsLine() } + "\n" +
             nodes.joinToString("\n") { n -> "  ${n.name} sent: ${n.transport.sent}" } + "\n" +
             "  warnings:\n" +
             ShadowLog
@@ -711,7 +724,12 @@ class LabNode internal constructor(
     private val pages: LabPages? = null,
     // Another node's identity file, for a twin (`MeshLab.node(sameIdentityAs)`); null mints a fresh one.
     seedIdentity: ByteArray? = null,
+    // The lab's scheduling noise ([LabChaos]): this node's dispatchers and pipes run under it. Null = none.
+    private val chaos: LabChaos? = null,
 ) {
+    /** [delegate], or its chaos-lagged form when the lab runs under [chaos]. */
+    private fun dispatcher(delegate: CoroutineDispatcher): CoroutineDispatcher = chaos?.dispatcher(delegate) ?: delegate
+
     /** This node's clock: the lab's shared calendar, plus its own skew if a scenario gave it one. */
     val now: () -> Long = clock.forNode(name)
 
@@ -733,9 +751,10 @@ class LabNode internal constructor(
         Room
             .inMemoryDatabaseBuilder(context, KnitDatabase::class.java)
             .allowMainThreadQueries()
+            .apply { if (chaos != null) setQueryCoroutineContext(dispatcher(Dispatchers.IO)) }
             .build()
 
-    private val settingsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val settingsScope = CoroutineScope(SupervisorJob() + dispatcher(Dispatchers.IO))
     private val dataStore = PreferenceDataStoreFactory.create(scope = settingsScope) { File(dir, "settings.preferences_pb") }
     val settings = SettingsStore(dataStore)
 
@@ -786,8 +805,9 @@ class LabNode internal constructor(
 
     @Suppress("LongMethod") // the DI module's wiring, mirrored in one place on purpose
     internal suspend fun boot() {
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { this.scope = it }
-        transport = LabTransport(nodeId, File(dir, "rx"), pages)
+        val session = dispatcher(Dispatchers.Default)
+        val scope = CoroutineScope(SupervisorJob() + session).also { this.scope = it }
+        transport = LabTransport(nodeId, File(dir, "rx"), pages, chaos)
         metrics = MeshMetrics()
         // The Internet plane is opted into through the same two settings the relay editor writes; the
         // settings file persists, so a restart() dials the same spool again.
@@ -916,6 +936,7 @@ class LabNode internal constructor(
                 clock = now,
                 tickDebounceMs = MeshLab.TICK_DEBOUNCE_MS,
                 rideHoldMs = limits.rideHoldMs,
+                sessionDispatcher = session,
                 ingressBudget = IngressBudget(burst = limits.ingressBurst, perMinute = limits.ingressPerMinute, clock = now),
                 spoolDialer = spool,
                 commons = commons,
@@ -1247,6 +1268,25 @@ class LabNode internal constructor(
                 }
             } != null
         check(done) { "$name's heal basket never finished (healsCompleted stayed at $before)" }
+    }
+
+    /**
+     * Returns once this node's LoRa child (if it has a board) holds the radio's link set — the composite's
+     * `suppressDataPath` hand-off, which runs on a coroutine of its own after the radio's `neighbors` publish.
+     * The child's routing (the election, `fastSend`'s linked-peer skip, the send-time `LINKED` drop) reads that
+     * set, not the radio's. Compared as sets, on the routing field itself: `status.pocketLinks` is a count, and
+     * `publishStatus` has several unlocked writers, so it can keep a stale value long after the hand-off.
+     */
+    internal suspend fun awaitBoardSawLinks() {
+        val board = lora ?: return
+        val radio = { transport.neighbors.value.mapTo(HashSet()) { it.nodeId } }
+        val seen =
+            withContext(Dispatchers.Default) {
+                withTimeoutOrNull(MeshLab.AWAIT_MS) {
+                    while (board.pocketLinkIds != radio()) delay(MeshLab.POLL_MS)
+                }
+            } != null
+        check(seen) { "$name's board never took the radio's links ${radio()} (holds ${board.pocketLinkIds})" }
     }
 
     /** Drops every custody row, as a wiped database would; the digest is rebuilt over nothing. */

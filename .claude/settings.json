@@ -15,6 +15,12 @@
             "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/lintorama-stop.sh\"",
             "timeout": 300,
             "statusMessage": "Running lintorama"
+          },
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/mesh-lab-review-stop.sh\"",
+            "timeout": 30,
+            "statusMessage": "Checking for an unreviewed mesh-lab change"
           }
         ]
       }

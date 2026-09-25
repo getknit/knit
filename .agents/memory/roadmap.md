@@ -132,6 +132,16 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Still deferred (by design)
 
+- **Enforcing the mesh-lab chaos job** (`mesh-lab-chaos` in `.github/workflows/ci.yml`, 2026-09-24). The
+  first whole-package heavy-tail sweep (seeds 1000–1009) failed nine scenarios on main: AttachmentLabTest
+  `aPictureHeardOverTheBoard…` (seed 1005), CustodyLabTest `bothSidesSendWhileApartAndMerge` (1003),
+  GroupFirstMessageLabTest `…RestartsBetweenTheSeedAndTheFrame` (1005), InternetPlaneLabTest `aPhotoTheRelayDelivered…`
+  (1000), RestartLabTest `aSenderThatRestartsBeforeTheTickLands…` (1005), RestoreLabTest `…CarriesOnUnderANewSession`
+  (1002) and `…ReMintsItsGroupChain…` (1007), RoomTickPlanesLabTest `aRoomTickWithNoRideIsPushed…` (1006),
+  SideChannelLabTest `aStrangerOnThePagesParks…` (1006). Each is a latent flake, a mesh race, or a chaos
+  artefact to fix in `LabChaos`. Triage every one, then drop the job's `continue-on-error` and mirror it in
+  `.gitlab-ci.yml`.
+
 - **A per-peer in-flight window on the Wi-Fi Aware coordination plane** (ADR 2026-09.jjhg, 2026-09-21, work
   item #81). The framework's send-queue deadlock needs eight follow-ups the framework has already timed out
   still sitting in the firmware's queue — which a burst to a peer that cannot ack fills. One message in flight

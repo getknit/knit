@@ -404,6 +404,8 @@ android {
                 .map(String::toBoolean)
                 .orElse(false)
                 .get()
+        val labChaos = providers.gradleProperty("knit.labChaos").orNull
+        val labChaosRuns = providers.gradleProperty("knit.labChaosRuns").orNull
         // Run instrumentation tests under Android Test Orchestrator (each test in its own process; combined
         // with the `clearPackageData` runner arg above). Only affects LOCAL connectedDebugAndroidTest —
         // FTL injects its own orchestrator via `--use-orchestrator`. animationsDisabled stabilizes UI tests.
@@ -430,6 +432,11 @@ android {
                 // failed testDebugUnitTest, and never produced a report; test:mesh-lab already runs them
                 // three times uninstrumented. `--tests` cannot express an exclude, hence the property.
                 if (skipMeshLab) test.filter.excludeTestsMatching("app.getknit.knit.mesh.lab.*")
+                // `-Pknit.labChaos=<seed|random>` (+ `-Pknit.labChaosRuns=<n>`) turns on the mesh lab's seeded
+                // scheduling noise (mesh/lab/LabChaos.kt; scripts/lab-chaos.sh). A system property is a Test
+                // input, so a chaos run is never answered from a plain run's up-to-date or cached result.
+                labChaos?.let { test.systemProperty("knit.labChaos", it) }
+                labChaosRuns?.let { test.systemProperty("knit.labChaosRuns", it) }
                 test.jvmArgs(
                     "--add-opens=java.base/java.lang=ALL-UNNAMED",
                     "--add-opens=java.base/java.util=ALL-UNNAMED",

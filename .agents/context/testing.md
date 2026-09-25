@@ -332,6 +332,25 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `systemd-run --user --scope -q -p CPUQuota=50% taskset -c 0 ./gradlew :app:testDebugUnitTest --tests '…' --rerun --no-daemon`
   in a loop, tallying the per-class XMLs; isolated classes flake less than the whole package, so validate
   with `app.getknit.knit.mesh.lab.*` three or four times over.
+- **Chaos mode: the slow runner on the workstation** (`LabChaos.kt`, 2026-09-24). `-Pknit.labChaos=<seed|random>`
+  runs every node's session dispatcher, settings scope and Room queries through a dispatcher that lags some
+  dispatches a few ms, jitters the sender around each pipe delivery and the collectors before each frame, and
+  preempts the fast path's worker now and then — with a **heavy tail**: at the seed's own rate (2–15 ‰ of
+  draws) one coroutine stalls 40–400 ms while the rest carry on, the one-vCPU runner's signature. Uniform
+  noise alone (the first cut) reproduced nothing; the tail is what flips orders. Validated 2026-09-24 against
+  the two latest flake fixes reverted — the heal basket outliving `unlink`'s settle (never reproduced by ten
+  throttled runs) and job 5268's queued blob ask: 4 of 6 scenarios failed within 10 seeds with the CI
+  signatures, and the fixed tree passed all 6 on the same 20 seeds. It never changes what a pipe means (a `send` still returns
+  after the far end has the frame, in order; a hold holds), so a chaos failure is a schedule a slow CI runner
+  can produce too: a latent flake, not an artefact. `-Pknit.labChaosRuns=<n>` repeats each scenario n times
+  in one JVM on consecutive seeds, each with a fresh `MeshLab` — `scripts/lab-chaos.sh --tests '<Class>'
+  [--runs 20] [--seed S]` wraps it and prints each failure with its seed. A seed replays a distribution of
+  delays, not a schedule (the threads still race for the draws), so re-run a failing seed a few times. Every
+  `*LabTest` carries `@get:Rule val chaos = LabChaos.rule()` (`LabChaosCoverageTest` fails a class without
+  it), and a failure names its seed in stderr, a suppressed cause and `MeshLab.report`. The one `mesh/` seam is
+  `MeshManager(sessionDispatcher = …)`, `Dispatchers.Default` in production. Run it on every lab test you
+  write or touch; the `mesh-lab-reviewer` agent (`.agents/personas/`) runs it as part of its review, and a
+  Claude Code Stop hook asks for that review whenever the lab's uncommitted diff changes.
 - **Time is real.** `MeshManager.start` builds its session on `Dispatchers.Default`, so scenarios run under
   `runBlocking` and poll, never virtual time. `MeshLab.await` **fails the scenario** where the wait runs out
   (with every node's counters and sends); `tryAwait` is the Boolean form for a site that words its own
@@ -345,7 +364,9 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
 - **A failed `awaitAcquainted` prints every node's router counters** (`originated / delivered / relayed /
   deduped / suppressed / drops`) — read `suppressed` first; that is how the same-neighbor overhear bug showed.
 - **CI runs the package three times in a row in its own job** (`mesh-lab` in `.github/workflows/ci.yml`,
-  `test:mesh-lab` in `.gitlab-ci.yml`), on top of the one pass inside the full unit suite: this is the one
+  `test:mesh-lab` in `.gitlab-ci.yml`), on top of the one pass inside the full unit suite, plus once under
+  chaos on GitHub (`mesh-lab-chaos`, seed = the run id, advisory until the first sweep's findings are
+  triaged — CHECK `.agents/memory/roadmap.md`): this is the one
   suite where real time and scheduling decide the outcome, so a 1-in-N flake is a bug — both of the
   2026-09-11 findings started as one. Reproduce a CI flake locally with the same loop:
   `for i in 1 2 3; do ./gradlew :app:testDebugUnitTest --tests 'app.getknit.knit.mesh.lab.*' --rerun; done`.

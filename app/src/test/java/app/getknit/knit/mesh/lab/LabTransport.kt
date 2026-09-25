@@ -16,12 +16,14 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.ExperimentalForInheritanceCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.UUID
@@ -61,6 +63,12 @@ class LabTransport(
     private val stagingDir: File,
     /** The side channel's air this node advertises on and listens to, or null for a node without one. */
     private val pages: LabPages? = null,
+    /**
+     * The lab's scheduling noise ([LabChaos]), or null. It stretches time at the pipe — the sender descheduled
+     * around a delivery, a collector late to the frame it was handed — and never what a pipe means: [send]
+     * still returns after the far end has the frame, and a pipe still delivers in order.
+     */
+    private val chaos: LabChaos? = null,
 ) : MeshTransport {
     init {
         pages?.join(this)
@@ -119,6 +127,9 @@ class LabTransport(
                 try {
                     links.collect { published ->
                         handed[token] = published.generation
+                        // A collector slow to act on what it was handed; conflation is the StateFlow's own, as on
+                        // a phone. Recorded first, so [awaitNeighborsObserved] sees a brand-new collector at once.
+                        chaos?.jitter()
                         if (published.peers != last) {
                             last = published.peers
                             collector.emit(published.peers)
@@ -132,14 +143,17 @@ class LabTransport(
 
     override val health = MutableStateFlow(TransportHealth.Healthy).asStateFlow()
 
+    // Under chaos each collector may be late to what it was handed — the router busy on the frame before.
     private val _inbound = MutableSharedFlow<InboundFrame>(extraBufferCapacity = BUFFER)
-    override val inbound = _inbound.asSharedFlow()
+    override val inbound: Flow<InboundFrame> = _inbound.asSharedFlow().lagged()
 
     private val _incomingFiles = MutableSharedFlow<ReceivedFile>(extraBufferCapacity = BUFFER)
-    override val incomingFiles = _incomingFiles.asSharedFlow()
+    override val incomingFiles: Flow<ReceivedFile> = _incomingFiles.asSharedFlow().lagged()
 
     private val _incomingDigests = MutableSharedFlow<ReceivedDigest>(extraBufferCapacity = BUFFER)
-    override val incomingDigests = _incomingDigests.asSharedFlow()
+    override val incomingDigests: Flow<ReceivedDigest> = _incomingDigests.asSharedFlow().lagged()
+
+    private fun <T> Flow<T>.lagged(): Flow<T> = chaos?.let { c -> onEach { c.jitter() } } ?: this
 
     /**
      * Outbound pipes, keyed by the far node id. Concurrent on purpose: the scenario thread links and unlinks
@@ -320,11 +334,17 @@ class LabTransport(
     }
 
     /**
-     * Whether the node's router is collecting [inbound] yet. `MeshRouter.start` subscribes on
-     * `Dispatchers.Default`, and a [MutableSharedFlow] with no replay drops what is emitted before that — so
-     * a link brought up too early would lose the profile push. [MeshLab.node] waits on this.
+     * Whether the node's manager is collecting [inbound], [incomingFiles] and [incomingDigests] yet. Each is a
+     * [MutableSharedFlow] with no replay that drops what is emitted before its collector subscribes, and each
+     * collector is its own `launch` on the session dispatcher (`MeshManager.start` subscribes the files and
+     * digests after the profile seed) — so a link brought up too early loses the profile push, a peer's first
+     * digest (nothing re-offers it for 60 s) or a first-contact avatar. [MeshLab.node] waits on this.
      */
-    val collecting: Boolean get() = _inbound.subscriptionCount.value > 0
+    val collecting: Boolean
+        get() =
+            _inbound.subscriptionCount.value > 0 &&
+                _incomingFiles.subscriptionCount.value > 0 &&
+                _incomingDigests.subscriptionCount.value > 0
 
     override fun start() = Unit
 
@@ -336,6 +356,9 @@ class LabTransport(
         wire: WireEnvelope,
         to: Peer?,
     ) {
+        // One lag before the pipes are read, none between them: a phone's `send` never suspends mid-flood, so a
+        // cancelled caller cannot leave half the links served, and a pipe torn down during the lag is not written.
+        chaos?.jitter()
         val targets = if (to == null) pipes.values.toList() else listOfNotNull(pipes[to.nodeId])
         val key = FrameKey.ofSigned(wire)
         targets.forEach { pipe ->
@@ -350,6 +373,8 @@ class LabTransport(
                 else -> pipe.target.deliver(wire, nodeId, VIA_LINK)
             }
         }
+        // The far end has the frame; the sender's own bookkeeping after `send` returns may come late.
+        chaos?.jitter()
     }
 
     /**
@@ -401,6 +426,7 @@ class LabTransport(
         wire: WireEnvelope,
         key: String?,
     ) {
+        chaos?.stall()
         when {
             pipe.lossy(wire) -> lost += wire
 
@@ -432,6 +458,7 @@ class LabTransport(
         to: Peer,
         meta: FileMeta,
     ): Boolean {
+        chaos?.jitter()
         val pipe = pipes[to.nodeId] ?: return false
         val target = pipe.target
         // The receiver ingests and then deletes the staged copy; it must be the receiver's own copy.
@@ -444,6 +471,7 @@ class LabTransport(
             return true
         }
         target._incomingFiles.emit(received)
+        chaos?.jitter()
         return true
     }
 
@@ -451,8 +479,10 @@ class LabTransport(
         to: Peer,
         ids: List<String>,
     ) {
+        chaos?.jitter()
         digestsSent += to.nodeId
         pipes[to.nodeId]?.target?._incomingDigests?.emit(ReceivedDigest(nodeId, ids))
+        chaos?.jitter()
     }
 
     private fun pipe(to: LabTransport): Pipe = checkNotNull(pipes[to.nodeId]) { "$nodeId is not linked to ${to.nodeId}" }

@@ -202,6 +202,9 @@ internal class LoraMeshTransport(
     @Volatile
     private var linkedPeers: Set<String> = emptySet()
 
+    /** [linkedPeers], for the `mesh/lab` harness to wait on the composite's hand-off (`LabNode.awaitBoardSawLinks`). */
+    internal val pocketLinkIds: Set<String> get() = linkedPeers
+
     // Peers a connected spool was recently a path to (`coveredByInternet`, ADR 2026-09.y5f3). A cover for
     // DM-form traffic only — the spool carries it for free — and deliberately NOT an election input: a
     // spool-present board-holder is not a co-pocket rival, and the role must not move on it.
