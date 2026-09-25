@@ -23,7 +23,8 @@ KNIT_WRITE_VECTORS=1 ./gradlew :app:testDebugUnitTest --rerun \
 - **Signed frames are rebuilt, not stored.** Tink's Ed25519 is deterministic (RFC 8032), so Alice's profile
   and room post are signed again on every run and compared byte for byte.
 - **The sealed DM is stored.** A v1 DM draws a fresh content key, nonce and HPKE ephemeral key, so the pinned
-  one was sealed once and the tests prove Bob can open it. Write mode keeps it while it still opens.
+  one was sealed once and the tests prove Bob can open it. Write mode keeps it while it still opens and
+  re-encodes to its own bytes, and reseals it when either fails.
 - **`ios-emitted-v1.json` comes from the iOS port.** knit-ios writes it with `KNIT_WRITE_VECTORS=1` and
   copies it here with `scripts/sync-vectors.py --export`. Never edit it by hand: a failure in
   `IosEmittedVectorTest` means the two encoders disagree, and the fix belongs in whichever one is wrong.

@@ -514,6 +514,7 @@ class GoldenVectorTest {
 
     @Test
     fun `the two envelopes decode from their pinned bytes and re-encode identically`() {
+        assumeFalse("KNIT_WRITE_VECTORS=1 rewrites the file instead", VectorFiles.writing)
         val wire = expected.getValue("wireEnvelope").fromHex()
         assertArrayEquals(wire, WireCodec.encodeWire(requireNotNull(WireCodec.decodeWire(wire))))
         val relay = expected.getValue("relayEnvelope").fromHex()
@@ -522,6 +523,7 @@ class GoldenVectorTest {
 
     @Test
     fun `raw-key bundle matches its pinned encoding, decodes, and derives its pinned nodeId`() {
+        assumeFalse("KNIT_WRITE_VECTORS=1 rewrites the file instead", VectorFiles.writing)
         // An independent encoder producing the same raw-key CBOR layout (what an iOS client emits) must match
         // byte-for-byte, decode via the production path, and derive the same self-certifying nodeId.
         val bundle = probeBundle()

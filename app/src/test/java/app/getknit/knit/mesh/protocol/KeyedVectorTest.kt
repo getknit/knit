@@ -19,7 +19,6 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeFalse
@@ -33,8 +32,9 @@ import org.junit.Test
  *
  * Tink's Ed25519 is deterministic, so the signed frames are rebuilt on every run and compared byte for byte. A
  * v1 DM draws a fresh content key, nonce and HPKE ephemeral, so the pinned DM is one Alice sealed once; the
- * test proves Bob opens it. Write mode (`KNIT_WRITE_VECTORS=1`) keeps that DM while it still opens, so a
- * regeneration only moves what changed.
+ * test proves Bob opens it and that it re-encodes to its own bytes. Write mode (`KNIT_WRITE_VECTORS=1`) keeps
+ * that DM while it is still current by both tests, and reseals it otherwise, so a regeneration only moves what
+ * changed.
  */
 class KeyedVectorTest {
     private val alice = VectorParty(fixtureBytes(32, 1), fixtureBytes(32, 2))
@@ -79,8 +79,7 @@ class KeyedVectorTest {
         MessageCrypto.header(relay.id, relay.senderId, relay.sentAt, checkNotNull(relay.recipientId))
 
     private fun sealDm(): ByteArray {
-        val sentAt = PUBLISHED_AT + 2_000L
-        val header = MessageCrypto.header(dmId, alice.nodeId, sentAt, bob.nodeId)
+        val header = MessageCrypto.header(dmId, alice.nodeId, DM_SENT_AT, bob.nodeId)
         val sealed =
             checkNotNull(alice.crypto.seal(MessageContent(body = DM_BODY).encode(), header, mapOf(bob.nodeId to bob.bundle)))
         return alice.signedWire(
@@ -88,7 +87,7 @@ class KeyedVectorTest {
                 type = FrameType.CHAT,
                 id = dmId,
                 senderId = alice.nodeId,
-                sentAt = sentAt,
+                sentAt = DM_SENT_AT,
                 recipientId = bob.nodeId,
                 payload = WireCodec.encodePayload(ChatContent(enc = sealed)),
             ),
@@ -105,6 +104,26 @@ class KeyedVectorTest {
         val relay = WireCodec.decodeEnvelope(envelope.signed) ?: return null
         val enc = WireCodec.decodePayload<ChatContent>(relay.payload)?.enc ?: return null
         return reader.crypto.open(enc, dmHeader(relay), reader.nodeId)
+    }
+
+    /**
+     * Whether a pinned DM is still what Alice would send today, short of the fresh key material: both layers
+     * and the payload re-encode to their own bytes, and the id, clock and parties are the ones [sealDm] uses.
+     * Opening alone is not enough — a decoder that still reads an older layout would keep a stale DM.
+     */
+    private fun isCurrentDm(wire: ByteArray): Boolean {
+        val envelope = WireCodec.decodeWire(wire) ?: return false
+        val relay = WireCodec.decodeEnvelope(envelope.signed) ?: return false
+        val chat = WireCodec.decodePayload<ChatContent>(relay.payload) ?: return false
+        return wire.contentEquals(WireCodec.encodeWire(envelope)) &&
+            envelope.signed.contentEquals(WireCodec.encodeEnvelope(relay)) &&
+            relay.payload.contentEquals(WireCodec.encodePayload(chat)) &&
+            relay.type == FrameType.CHAT &&
+            relay.id == dmId &&
+            relay.senderId == alice.nodeId &&
+            relay.sentAt == DM_SENT_AT &&
+            relay.recipientId == bob.nodeId &&
+            openDm(wire, bob)?.body == DM_BODY
     }
 
     private fun helloPayload(): ByteArray = "${alice.nodeId}|${Protocol.VERSION}|${CAPABILITIES.toString(16)}".encodeToByteArray()
@@ -176,6 +195,7 @@ class KeyedVectorTest {
         assumeFalse(VectorFiles.writing)
         val wire = frameHex("aliceDmToBob").fromHex()
         assertEquals(DM_BODY, openDm(wire, bob)?.body)
+        assertTrue("the pinned DM is not what Alice sends today; regenerate with KNIT_WRITE_VECTORS=1", isCurrentDm(wire))
         assertNull("the sender holds no wrapped key", openDm(wire, alice))
         val relay = checkNotNull(WireCodec.decodeEnvelope(checkNotNull(WireCodec.decodeWire(wire)).signed))
         assertEquals(bob.nodeId, relay.recipientId)
@@ -204,8 +224,8 @@ class KeyedVectorTest {
     fun `KNIT_WRITE_VECTORS=1 rewrites the keyed vectors`() {
         assumeTrue(VectorFiles.writing)
         val previousDm = runCatching { frameHex("aliceDmToBob") }.getOrNull()
-        val dm = previousDm?.takeIf { openDm(it.fromHex(), bob)?.body == DM_BODY } ?: sealDm().toHex()
-        assertNotNull(openDm(dm.fromHex(), bob))
+        val dm = previousDm?.takeIf { isCurrentDm(it.fromHex()) } ?: sealDm().toHex()
+        assertTrue(isCurrentDm(dm.fromHex()))
         VectorFiles.write(
             FILE,
             buildJsonObject {
@@ -283,6 +303,7 @@ class KeyedVectorTest {
         const val CAPABILITIES = 0x9L
 
         const val PSM = 0x81
+        const val DM_SENT_AT = PUBLISHED_AT + 2_000L
         const val ROOM_BODY = "Hello, room"
         const val DM_BODY = "Hi Bob"
     }

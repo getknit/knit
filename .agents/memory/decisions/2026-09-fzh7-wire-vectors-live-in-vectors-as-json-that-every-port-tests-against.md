@@ -29,6 +29,7 @@ it ties every other port to Kotlin's syntax and gives it no way to hand frames b
 
 **What it costs.** A wire change now edits JSON through write mode rather than pasting hex, and a moved
 vector fails the iOS port the same day, which is the point. The pinned DM is one Alice sealed once, because
-v1 draws a fresh key, nonce and ephemeral per message; write mode keeps it while it still opens. The private
-keys in `keyed-v1.json` are test keys and nothing else. `GoldenVectorTest` fails when the file names a
-fixture it does not build or misses one it does, and `vectors/README.md` says who writes each file.
+v1 draws a fresh key, nonce and ephemeral per message; write mode keeps it while it still opens and
+re-encodes to its own bytes. The private keys in `keyed-v1.json` are test keys and nothing else.
+`GoldenVectorTest` fails when the file names a fixture it does not build or misses one it does, and
+`vectors/README.md` says who writes each file.

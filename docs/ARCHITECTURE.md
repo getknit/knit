@@ -741,7 +741,9 @@ A typed foreground service hosts `MeshManager` so the mesh survives backgroundin
 ships the same one, so it is a public constant: it defeats casual capture, not an eavesdropper who has read
 the APK. The Bluetooth LE L2CAP CoC is **not** encrypted: `BluetoothMeshTransport` opens it insecure
 (`listenUsingInsecureL2capChannel` / `createInsecureL2capChannel`), with no pairing, so room posts and every
-frame's routing fields are readable over the air. Frame signatures authenticate every frame on both planes.
+frame's routing fields are readable over the air. On both planes a frame is authenticated by its Ed25519
+signature, with two unsigned exceptions: the v3 `relay = false` delivery tick, which only its addressee can
+authenticate, by opening it (ADR 059), and the blob request, which asks for a content hash.
 (2) *End-to-end:* DM and group messages are encrypted to their recipients so relays — which flood every
 message hop-by-hop — only ever carry ciphertext. *At rest:* the Room DB is encrypted with SQLCipher (§9). The
 public **broadcast room is plaintext by design** (no fixed recipient set), so a room message takes the

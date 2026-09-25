@@ -406,6 +406,8 @@ android {
                 .get()
         val labChaos = providers.gradleProperty("knit.labChaos").orNull
         val labChaosRuns = providers.gradleProperty("knit.labChaosRuns").orNull
+        val wireVectors = rootProject.layout.projectDirectory.dir("vectors")
+        val writeVectors = providers.environmentVariable("KNIT_WRITE_VECTORS").orElse("")
         // Run instrumentation tests under Android Test Orchestrator (each test in its own process; combined
         // with the `clearPackageData` runner arg above). Only affects LOCAL connectedDebugAndroidTest —
         // FTL injects its own orchestrator via `--use-orchestrator`. animationsDisabled stabilizes UI tests.
@@ -437,6 +439,14 @@ android {
                 // input, so a chaos run is never answered from a plain run's up-to-date or cached result.
                 labChaos?.let { test.systemProperty("knit.labChaos", it) }
                 labChaosRuns?.let { test.systemProperty("knit.labChaosRuns", it) }
+                // The wire vectors (vectors/, ADR 2026-09.fzh7) are read from disk, not the classpath, so Gradle
+                // cannot see them: without this a synced ios-emitted-v1.json leaves the task UP-TO-DATE and the
+                // last green result stands. KNIT_WRITE_VECTORS flips the vector tests into write mode.
+                test.inputs
+                    .dir(wireVectors)
+                    .withPropertyName("wireVectors")
+                    .withPathSensitivity(PathSensitivity.RELATIVE)
+                test.inputs.property("knitWriteVectors", writeVectors)
                 test.jvmArgs(
                     "--add-opens=java.base/java.lang=ALL-UNNAMED",
                     "--add-opens=java.base/java.util=ALL-UNNAMED",
