@@ -7,14 +7,17 @@ import app.getknit.knit.mesh.spool.AttachmentDeferPolicy
 import app.getknit.knit.mesh.spool.FakeSpool
 import app.getknit.knit.mesh.spool.ScopeSync
 import app.getknit.knit.mesh.spool.SpoolCommonsInfo
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -323,6 +326,63 @@ class InternetPlaneLabTest {
                 "bob re-asked for a picture the relay already gave him: ${bob.transport.sent}",
                 bob.transport.sent.none { it.contains(" ${FrameType.BLOB_REQ} ") },
             )
+        }
+
+    /**
+     * A frame whose relay copy reaches the bridging node before its radio copy is still relayed on over the
+     * radio. Bob shares a DM scope with Alice and is linked to her; Carol, behind him, has no relay. The spool
+     * copy is Bob's first sighting and seeds his pending relay's `heardFrom`; the radio copy then lands inside
+     * the 0–150 ms jitter, and two "neighbours" meet the suppression threshold — cancelling the one hop Carol
+     * depended on (found by chaos seeds 1000/1004 on the scenario below; ADR 2026-09.dcah fixed only the
+     * mirror order, a spool copy arriving second).
+     */
+    @Test
+    @Ignore("#84: a spool copy seen first seeds heardFrom, and the radio copy then cancels the relay")
+    fun aFrameTheRelayDeliversFirstIsStillRelayedToTheCarrierBehindUs() =
+        runBlocking {
+            val spool = FakeSpool()
+            val alice = lab.node("alice", spool = spool).apply { setDisplayName("Alice") }
+            val bob = lab.node("bob", spool = spool).apply { setDisplayName("Bob") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") } // no relay: Bob is her only source
+            lab.linkAll(alice to bob, bob to carol)
+            lab.awaitAcquainted(alice, bob, carol)
+            assertTrue(alice.sendDm(bob, "hello"))
+            lab.await(1) { bob.decrypted(bob.dmWith(alice)).size }
+            assertTrue(bob.sendDm(alice, "hi"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol)) { alice.dmThreadWith(bob)(it) }
+            lab.awaitDmScope(alice, bob)
+            lab.awaitDmScope(bob, alice)
+
+            val suppressed = bob.metrics.snapshot().framesSuppressed
+            val decided = bob.metrics.snapshot().let { it.framesRelayed + it.framesSuppressed }
+            // Each DM's spool copy is Bob's first sighting; its radio copy is released a little after his row
+            // lands, at a spread of offsets, so some land after the relay is scheduled and inside its 0–150 ms
+            // jitter — the window the router's own randomness decides.
+            RADIO_LAG_MS.forEach { lag ->
+                alice.transport.hold(bob.transport)
+                val body = "the relay was first by $lag ms"
+                assertTrue(alice.sendDm(bob, body))
+                // A 1 ms poll, not tryAwait's 25 ms: the offset below is only as tight as this wait.
+                val landed =
+                    withTimeoutOrNull(MeshLab.SPOOL_AWAIT_MS) {
+                        while (bob.decrypted(bob.dmWith(alice)).none { it.second == body }) delay(1)
+                    } != null
+                assertTrue("bob never got \"$body\" off the relay\n${lab.report(listOf(alice, bob, carol))}", landed)
+                delay(lag) // an offset into the router's real-time jitter, not a sync point
+                alice.transport.release(bob.transport)
+            }
+
+            // Every one of Bob's relay decisions made, then the bug named where it happens — before the oracle.
+            lab.await(decided.toInt() + RADIO_LAG_MS.size) {
+                bob.metrics
+                    .snapshot()
+                    .let { it.framesRelayed + it.framesSuppressed }
+                    .toInt()
+            }
+            assertEquals("bob cancelled a relay on the spool's copy", suppressed, bob.metrics.snapshot().framesSuppressed)
+            lab.assertConverged(listOf(alice, bob), atLeast = 2 + RADIO_LAG_MS.size, carriers = listOf(carol)) {
+                alice.dmThreadWith(bob)(it)
+            }
         }
 
     /**
@@ -662,4 +722,9 @@ class InternetPlaneLabTest {
             )
             lab.assertConverged(listOf(alice, bob), atLeast = 2, timeoutMs = MeshLab.SPOOL_AWAIT_MS) { alice.dmThreadWith(bob)(it) }
         }
+
+    private companion object {
+        /** When a DM's radio copy reaches Bob after its spool copy's row (`aFrameTheRelayDeliversFirst…`). */
+        val RADIO_LAG_MS = listOf(0L, 15L, 30L, 45L, 60L, 90L)
+    }
 }

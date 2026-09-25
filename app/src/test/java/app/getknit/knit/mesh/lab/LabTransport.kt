@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -70,7 +71,11 @@ class LabTransport(
      */
     private val chaos: LabChaos? = null,
 ) : MeshTransport {
-    init {
+    /**
+     * Puts this node's scanner on the pages. [LabNode.boot] calls it once the router is collecting: a page
+     * heard before that would be emitted into nobody (and counted in by [awaitInboundDrained] for good).
+     */
+    fun joinPages() {
         pages?.join(this)
     }
 
@@ -145,7 +150,25 @@ class LabTransport(
 
     // Under chaos each collector may be late to what it was handed — the router busy on the frame before.
     private val _inbound = MutableSharedFlow<InboundFrame>(extraBufferCapacity = BUFFER)
-    override val inbound: Flow<InboundFrame> = _inbound.asSharedFlow().lagged()
+
+    /** Frames handed to [inbound] (every emit site counts one) against frames its collector has finished. */
+    private val framesIn = AtomicLong()
+    private val framesHandled = AtomicLong()
+
+    /**
+     * The inbound frames, counted out as the collector *finishes* each one: a direct collector (the router's
+     * `collect { handleInbound(…) }`) returns from `emit` only once `handleInbound` has, so [awaitInboundDrained]
+     * means "every frame this node was handed has been handled" — its custody writes and the sends it
+     * provoked included. Behind a composite's `merge` (a node with a board) `emit` returns at the channel, so
+     * there the signal is early; [LabNode.restart] keeps its settle for that case.
+     */
+    override val inbound: Flow<InboundFrame> =
+        flow {
+            _inbound.asSharedFlow().lagged().collect {
+                emit(it)
+                framesHandled.incrementAndGet()
+            }
+        }
 
     private val _incomingFiles = MutableSharedFlow<ReceivedFile>(extraBufferCapacity = BUFFER)
     override val incomingFiles: Flow<ReceivedFile> = _incomingFiles.asSharedFlow().lagged()
@@ -169,18 +192,33 @@ class LabTransport(
     private class Pipe(
         val target: LabTransport,
     ) {
-        @Volatile
+        // Written and read under the `held` lock, so a frame is either parked before a release takes the batch
+        // or delivered after it — never parked into a batch already taken, with no one left to release it.
         var holding = false
         val held = mutableListOf<WireEnvelope>()
+
+        /** Parks [wire] if this pipe is holding; false means deliver it. One lock with [release]'s batch. */
+        fun park(wire: WireEnvelope): Boolean =
+            synchronized(held) {
+                if (holding) held += wire
+                holding
+            }
 
         @Volatile
         var lossy: (WireEnvelope) -> Boolean = { false }
 
         // A file whose header has crossed and whose bytes have not: staged at the receiver, parked here. The
         // receiver reports its key as arriving and the sender as in flight, exactly as a slow BLE link would.
-        @Volatile
+        // Under the `heldFiles` lock, for the reason [holding] is under `held`'s.
         var holdingFiles = false
         val heldFiles = mutableListOf<ReceivedFile>()
+
+        /** Parks [file] if this pipe is holding files; false means land it. One lock with [releaseFiles]. */
+        fun parkFile(file: ReceivedFile): Boolean =
+            synchronized(heldFiles) {
+                if (holdingFiles) heldFiles += file
+                holdingFiles
+            }
     }
 
     /** Every frame a lossy pipe dropped, for a scenario that asserts on what the air ate. */
@@ -259,9 +297,24 @@ class LabTransport(
         check(seen) { "$nodeId: a neighbor collector never observed link publish #$target (${handed.values.sorted()})" }
     }
 
+    /**
+     * Suspends until this node's router has finished handling every frame it was handed ([inbound]):
+     * `handleInbound` has returned, so `onDeliver`'s inline work is done — its custody row, and a DM's receipt
+     * sealed on a link plane. Not what it launches: a relay fires 0–150 ms later, an escalated group or room
+     * tick after `AckSync`'s debounce. [LabNode.restart] waits on it for every peer of the node going down, so
+     * a frame the peer is still handling when the link dies is custodied before the relaunched node's digest
+     * exchange reads the peer's store. Fails, rather than waits forever, on a collector that never finishes.
+     */
+    suspend fun awaitInboundDrained() {
+        val drained =
+            withTimeoutOrNull(MeshLab.AWAIT_MS) { while (framesHandled.get() < framesIn.get()) delay(1) } != null
+        check(drained) { "$nodeId: the router never finished its inbound frames (${framesHandled.get()} of ${framesIn.get()})" }
+    }
+
     /** From now on, frames this node sends [to] are parked instead of delivered — until [release]. */
     fun hold(to: LabTransport) {
-        pipe(to).holding = true
+        val pipe = pipe(to)
+        synchronized(pipe.held) { pipe.holding = true }
     }
 
     /**
@@ -285,7 +338,8 @@ class LabTransport(
      * work item #79, made a state a scenario can hold a re-ask against.
      */
     fun holdFiles(to: LabTransport) {
-        pipe(to).holdingFiles = true
+        val pipe = pipe(to)
+        synchronized(pipe.heldFiles) { pipe.holdingFiles = true }
     }
 
     /** The keys of the files parked for [to] right now, in send order. */
@@ -294,9 +348,18 @@ class LabTransport(
     /** Lands everything parked for [to] and stops holding files (frames held by [hold] are untouched). */
     suspend fun releaseFiles(to: LabTransport) {
         val pipe = pipe(to)
-        val batch = synchronized(pipe.heldFiles) { pipe.heldFiles.toList().also { pipe.heldFiles.clear() } }
-        pipe.holdingFiles = false
-        batch.forEach { pipe.target._incomingFiles.emit(it) }
+        // Closed until what parked has landed, as [release] keeps it: a file sent meanwhile lands after the batch.
+        while (true) {
+            val batch =
+                synchronized(pipe.heldFiles) {
+                    pipe.heldFiles.toList().also {
+                        pipe.heldFiles.clear()
+                        if (it.isEmpty()) pipe.holdingFiles = false
+                    }
+                }
+            if (batch.isEmpty()) return
+            batch.forEach { pipe.target._incomingFiles.emit(it) }
+        }
     }
 
     /** What every linked sender has parked toward this node: the headers are in, the bytes are not. */
@@ -316,8 +379,12 @@ class LabTransport(
      * — unless [keepHolding], which parks what the far side sends back in answer to the batch as well. A
      * scenario that calls `release` and then `hold` again has a gap between the two in which a delivered frame's
      * whole answer can cross (a key request and the served key, on one slow core: `RestartLabTest` found the
-     * key it meant to strand already delivered). Returns what was released, for a scenario that wants to
+     * key it meant to strand already delivered). Returns the batch as ordered, for a scenario that wants to
      * assert on the frames themselves.
+     *
+     * The pipe stays closed while the batch is delivered: a frame this node sends meanwhile parks behind it,
+     * and is delivered after it, in send order, before the pipe opens — a pipe delivers in order, releases
+     * included, so nothing sent during a release can overtake the batch (or undo a [reorder]).
      */
     suspend fun release(
         to: LabTransport,
@@ -325,12 +392,34 @@ class LabTransport(
         reorder: (List<WireEnvelope>) -> List<WireEnvelope> = { it },
     ): List<WireEnvelope> {
         val pipe = pipe(to)
-        val batch = synchronized(pipe.held) { pipe.held.toList().also { pipe.held.clear() } }
-        pipe.holding = keepHolding
-        val ordered = reorder(batch)
+        val ordered = reorder(takeHeld(pipe, open = false))
+        deliverHeld(pipe, ordered)
+        if (keepHolding) return ordered
+        while (true) {
+            val more = takeHeld(pipe, open = true)
+            if (more.isEmpty()) return ordered
+            deliverHeld(pipe, more)
+        }
+    }
+
+    /** Takes what is parked; with [open], an empty take also stops holding, under the same lock. */
+    private fun takeHeld(
+        pipe: Pipe,
+        open: Boolean,
+    ): List<WireEnvelope> =
+        synchronized(pipe.held) {
+            pipe.held.toList().also {
+                pipe.held.clear()
+                if (open && it.isEmpty()) pipe.holding = false
+            }
+        }
+
+    private suspend fun deliverHeld(
+        pipe: Pipe,
+        frames: List<WireEnvelope>,
+    ) {
         // Two held copies of one frame (the flood's and the fast path's) are one write here, as on the phone.
-        ordered.forEach { if (crosses(pipe, FrameKey.ofSigned(it), VIA_LINK)) pipe.target.deliver(it, nodeId, VIA_LINK) }
-        return ordered
+        frames.forEach { if (crosses(pipe, FrameKey.ofSigned(it), VIA_LINK)) pipe.target.deliver(it, nodeId, VIA_LINK) }
     }
 
     /**
@@ -366,7 +455,7 @@ class LabTransport(
                 pipe.lossy(wire) -> lost += wire
 
                 // A held frame is judged by the memo at [release], not here.
-                pipe.holding -> synchronized(pipe.held) { pipe.held += wire }
+                pipe.park(wire) -> Unit
 
                 !crosses(pipe, key, VIA_LINK) -> Unit
 
@@ -431,7 +520,7 @@ class LabTransport(
             pipe.lossy(wire) -> lost += wire
 
             // A held frame is judged by the memo at [release], not here.
-            pipe.holding -> synchronized(pipe.held) { pipe.held += wire }
+            pipe.park(wire) -> Unit
 
             !crosses(pipe, key, VIA_FAST) -> Unit
 
@@ -466,10 +555,7 @@ class LabTransport(
         file.copyTo(staged, overwrite = true)
         files += "${to.nodeId} ${meta.kind.wire} ${meta.key}"
         val received = ReceivedFile(nodeId, staged.absolutePath, meta.kind, meta.key, meta.mime)
-        if (pipe.holdingFiles) {
-            synchronized(pipe.heldFiles) { pipe.heldFiles += received }
-            return true
-        }
+        if (pipe.parkFile(received)) return true
         target._incomingFiles.emit(received)
         chaos?.jitter()
         return true
@@ -493,6 +579,7 @@ class LabTransport(
         via: String,
     ) {
         val frame = received(wire, fromNodeId, via) ?: return
+        framesIn.incrementAndGet()
         _inbound.emit(frame)
     }
 
@@ -520,6 +607,7 @@ class LabTransport(
     }
 
     private fun emitNow(frame: InboundFrame) {
+        framesIn.incrementAndGet()
         check(_inbound.tryEmit(frame)) { "$nodeId: inbound buffer full ($BUFFER) — a fast-path frame was dropped" }
     }
 

@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.WireCodec
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -182,6 +183,12 @@ class SideChannelLabTest {
             val bob = lab.node("bob", pages = pages).apply { setDisplayName("Bob") }
             lab.linkAll(alice to bob)
             lab.awaitAcquainted(alice, bob)
+            // "Never met anyone" is the scenario's premise, not a thing the mesh promises: a first sighting's
+            // profile flood pages out too (`watchReachable` → `fastFanout`), unawaited by `awaitAcquainted`, and one
+            // trailing past Erin's boot hands her Alice's key before the post. Her scanner misses every profile page
+            // but her own peers', so the key can only come over the link she makes below.
+            val met = setOf(alice.nodeId, bob.nodeId)
+            pages.lossy = { to, wire -> to !in met && WireCodec.decodeEnvelope(wire.signed)?.type == FrameType.PROFILE }
             val erin = lab.node("erin", pages = pages).apply { setDisplayName("Erin") }
 
             assertTrue(alice.sendRoom("from a stranger's phone"))

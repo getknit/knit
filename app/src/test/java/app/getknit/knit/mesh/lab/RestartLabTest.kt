@@ -47,8 +47,12 @@ class RestartLabTest {
             lab.awaitAcquainted(alice, bob)
 
             bob.transport.hold(alice.transport)
+            val sealed = bob.metrics.snapshot().receiptsSealed
             assertTrue(alice.sendDm(bob, "acked after a restart"))
             assertTrue(lab.tryAwait(1) { bob.decrypted(bob.dmWith(alice)).size })
+            // The tick itself, sent and custodied: `onReceiptSealed` follows `originateTick`. A held chat frame
+            // from Bob is not it — his sealed intro answer to Alice's first frame goes out ahead of the tick.
+            assertTrue("bob never sealed the tick", lab.tryAwait(1) { if (bob.metrics.snapshot().receiptsSealed > sealed) 1 else 0 })
             assertTrue("bob's tick was held", lab.tryAwait(1) { bob.transport.held(alice.transport).count { it.isChatFrom(bob.nodeId) } })
 
             alice.restart() // the held tick dies with the link

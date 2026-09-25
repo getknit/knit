@@ -117,8 +117,17 @@ class RoomTickPlanesLabTest {
             val alice = lab.node("alice", air = air, spool = spool).apply { setDisplayName("Alice") }
             val bob = lab.node("bob", air = air, spool = spool).apply { setDisplayName("Bob") }
             lab.meetOnTheRelay(alice, bob, air)
+            // A converged scope has nothing left to pull, so the baselines below cannot move under the tick.
+            assertTrue(
+                "bob's scope never converged after the meeting",
+                lab.tryAwait(1, timeoutMs = MeshLab.SPOOL_AWAIT_MS) { if (bob.dmScopeStatus(alice)?.converged == true) 1 else 0 },
+            )
             val custodiedBefore = bob.custodiedChatsTo(alice)
             val accountedBefore = bob.metrics.snapshot().spoolAccounted
+            // The band can already hold a frame the pair exchanged while linked: its link copy delivered first,
+            // its spool copy accepted before that delivery's custody write landed, so it reads accounted and held
+            // at once (harmless — Diagnostics' "aged" count reads one high). The tick is one more than that.
+            val bandBefore = bob.dmScopeStatus(alice)?.accountedCount ?: 0
 
             assertTrue(alice.sendRoom("over the board"))
             val post = alice.ownMessageId(Conversations.NEARBY, "over the board")
@@ -149,7 +158,7 @@ class RoomTickPlanesLabTest {
                 lab.tryAwait(1, timeoutMs = MeshLab.SPOOL_AWAIT_MS) {
                     if (bob.dmScopeStatus(alice)?.let {
                             it.converged &&
-                                it.accountedCount == 1
+                                it.accountedCount == bandBefore + 1
                         } ==
                         true
                     ) {

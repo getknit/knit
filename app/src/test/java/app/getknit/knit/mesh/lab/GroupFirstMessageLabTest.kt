@@ -96,9 +96,10 @@ class GroupFirstMessageLabTest {
     /**
      * Bob receives the seed for a group he does not hold yet and his app dies before the group frame arrives.
      * Since work item #47 the seed carries its founding roster, so what he holds at the restart is the row
-     * and the adopted chain — both committed with the seed — not an in-memory park (the park, and the
-     * custody replay that healed a park lost to a process death, remain for a seed from a build without the
-     * field; `InboundPipelineTest` pins them). On relaunch and re-link the group frame comes in from Alice's
+     * and the adopted chain, not an in-memory park. The row is pinned from the seed's peek, *before* the seed
+     * commits, so the scenario waits for the committed chain itself (`holdsGroupChainFrom`). The park, and the custody
+     * replay that healed a park lost to a process death, remain for a seed from a build without the field
+     * (`InboundPipelineTest` pins them). On relaunch and re-link the group frame comes in from Alice's
      * custody and opens on its first pass.
      */
     @Test
@@ -118,6 +119,7 @@ class GroupFirstMessageLabTest {
                 "bob never pinned the group from the seed",
                 lab.tryAwait(1) { if (bob.groupShape(groupId) != null) 1 else 0 },
             )
+            assertTrue("bob never committed the seed's chain", lab.tryAwait(1) { if (bob.holdsGroupChainFrom(groupId, alice)) 1 else 0 })
             assertEquals(0L, bob.metrics.snapshot().groupSeedsHeld)
 
             bob.restart() // drops the link and, with it, the still-held group frame

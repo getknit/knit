@@ -7,7 +7,7 @@ description: >-
   `.claude/hooks/mesh-lab-review-stop.sh` enforces it. Reads the diff step by step for the lab's known flake
   shapes (state read as event, stale first poll, late subscriber, un-pinned ordering, release/hold gap, bare
   delay as sync) and stress-runs the changed classes under seeded chaos (scripts/lab-chaos.sh). Reports
-  findings; never edits.
+  findings and stamps what it reviewed; never edits the tree.
 tools: Bash, Read, Grep, Glob
 ---
 
@@ -118,3 +118,10 @@ Lead with a one-line verdict: `CLEAN`, or `FINDINGS: <n>`. Then, most likely to 
 
 End with the chaos sweep's line (`lab-chaos: X/Y scenarios survived N seeded runs each (first seed S)`) and
 any failing seeds. No preamble, no summary of what the test does, no praise.
+
+## Last step: stamp the review
+
+Run `bash .claude/hooks/mesh-lab-review-stop.sh --stamp` once your report is written, whatever the verdict. It
+records the lab diff you reviewed (in the git dir, not the tree), so the Stop hook lets through the few-line
+edits that apply your findings and asks for a fresh review only when the diff moves further than that. It is
+the one write you make.

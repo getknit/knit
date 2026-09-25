@@ -350,7 +350,19 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   it), and a failure names its seed in stderr, a suppressed cause and `MeshLab.report`. The one `mesh/` seam is
   `MeshManager(sessionDispatcher = …)`, `Dispatchers.Default` in production. Run it on every lab test you
   write or touch; the `mesh-lab-reviewer` agent (`.agents/personas/`) runs it as part of its review, and a
-  Claude Code Stop hook asks for that review whenever the lab's uncommitted diff changes.
+  Claude Code Stop hook asks for that review whenever the lab's uncommitted diff moves more than 40 lines past
+  what the last review stamped (`--stamp`, the reviewer's last step) — so applying its findings asks nothing.
+- **What the first chaos sweep taught** (2026-09-24, nine failures, triage in `.agents/memory/roadmap.md`):
+  a stack **sends before it custodies** (`originateWire`), so a frame sent into a link that is going down is
+  re-offered only by the 60 s timer once the relaunch's digest exchange has run without it — `restart()` and
+  `restoreFromBackup()` therefore wait for every peer's inbound to drain (`LabTransport.awaitInboundDrained`:
+  each frame handed to the router has finished `handleInbound`), not just for the departure. `hold`/`release`
+  flip `holding` under the batch's lock, so a frame sent during a release is never parked into a batch
+  already taken. A stranger on the pages is a stranger only while the first-sighting profile floods cannot
+  reach it — they page out unawaited by `awaitAcquainted` — so make `pages.lossy` eat them. A spool scope's
+  `accountedCount` can already hold a frame the pair exchanged while linked (link copy delivered, spool copy
+  accepted before its custody write): read a baseline, never an absolute band. And a race the chaos finds may
+  be the mesh's — four of the nine were (#83–#86); a repro that fails on HEAD stays under `@Ignore("#NN: …")`.
 - **Time is real.** `MeshManager.start` builds its session on `Dispatchers.Default`, so scenarios run under
   `runBlocking` and poll, never virtual time. `MeshLab.await` **fails the scenario** where the wait runs out
   (with every node's counters and sends); `tryAwait` is the Boolean form for a site that words its own

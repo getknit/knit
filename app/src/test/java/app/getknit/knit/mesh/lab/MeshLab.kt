@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.room3.Room
 import androidx.room3.executeSQL
+import androidx.room3.useReaderConnection
 import androidx.room3.withWriteTransaction
 import androidx.test.core.app.ApplicationProvider
 import app.getknit.knit.TextLimits
@@ -950,6 +951,7 @@ class LabNode internal constructor(
         withContext(Dispatchers.Default) {
             withTimeout(MeshLab.AWAIT_MS) {
                 while (!transport.collecting) delay(1)
+                transport.joinPages()
                 while (custodyIds().none { it.startsWith("profile-$nodeId-") }) delay(1)
             }
         }
@@ -962,9 +964,21 @@ class LabNode internal constructor(
      */
     suspend fun restart() {
         val peers = shutdownLive()
-        peers.forEach { it.awaitNeighborsObserved() }
-        withContext(Dispatchers.Default) { delay(MeshLab.SETTLE_MS) }
+        awaitPeersSettled(peers)
         boot()
+    }
+
+    /**
+     * Every peer of a node going down has been handed the departure, and has finished handling each frame it
+     * was handed before it ([LabTransport.awaitInboundDrained]) — its custody row, a DM receipt it seals inline.
+     * A stack sends before it custodies, so a frame sent into the dying link is otherwise re-offered only by the
+     * 60 s timer once the relaunched node's digest exchange has run without it. The settle stays for a peer with a board, whose
+     * composite `merge` makes the drained signal early.
+     */
+    private suspend fun awaitPeersSettled(peers: List<LabTransport>) {
+        peers.forEach { it.awaitNeighborsObserved() }
+        withContext(Dispatchers.Default) { peers.forEach { it.awaitInboundDrained() } }
+        withContext(Dispatchers.Default) { delay(MeshLab.SETTLE_MS) }
     }
 
     /**
@@ -976,10 +990,9 @@ class LabNode internal constructor(
      */
     suspend fun restoreFromBackup() {
         val peers = shutdownLive()
-        peers.forEach { it.awaitNeighborsObserved() }
+        awaitPeersSettled(peers)
         db.withWriteTransaction { BackupTables.TRANSIENT.forEach { executeSQL("DELETE FROM $it") } }
         dataStore.edit { it[booleanPreferencesKey(SettingsKeys.RESTORE_PENDING)] = true }
-        withContext(Dispatchers.Default) { delay(MeshLab.SETTLE_MS) }
         boot()
     }
 
@@ -1486,6 +1499,23 @@ class LabNode internal constructor(
 
     /** The group row as this node holds it, or null. */
     suspend fun group(groupId: String): GroupEntity? = groups.find(groupId)
+
+    /**
+     * Whether this node holds a committed receive chain for [sender]'s messages in [groupId] — a seed adopted
+     * *and* committed. `groupSeedsAdopted` moves inside the seed's ratchet transaction, before it commits, so a
+     * restart in that gap rolls the chain back while the counter says adopted.
+     */
+    suspend fun holdsGroupChainFrom(
+        groupId: String,
+        sender: LabNode,
+    ): Boolean =
+        db.useReaderConnection { connection ->
+            connection.usePrepared("SELECT 1 FROM group_recv_chains WHERE groupId = ? AND senderId = ? LIMIT 1") {
+                it.bindText(1, groupId)
+                it.bindText(2, sender.nodeId)
+                it.step()
+            }
+        }
 
     /**
      * What every member must agree on about a group: who is in, who left, the name and the photo. Not

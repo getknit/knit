@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.lab
 
+import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.runBlocking
@@ -8,6 +9,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -69,6 +71,50 @@ class SessionLabTest {
 
     @Test
     fun bothSidesInitiateAtOnceAndBobsInitLandsFirst() = runBlocking { bothInitiate(aliceFirst = false) }
+
+    /**
+     * Both initiate while apart, and the race's loser (the higher node id adopts the lower's root) answers the
+     * winner's init — its tick, its sealed-profile answer — before its own opening DM reaches the winner: the
+     * frames of one link, crossing in the order a stalled digest collector on the loser produces (found by
+     * chaos seeds 1003/1010 on `CustodyLabTest.bothSidesSendWhileApartAndMerge`). The winner confirms on the
+     * post-adoption frames, and the loser's init then arrives on a confirmed session.
+     */
+    @Test
+    @Ignore("#83: the loser's late opening DM fails AEAD on the confirmed winner and is never recovered")
+    fun theLosersOpeningDmLandingAfterItsAnswersStillOpens() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            val (winner, loser) = if (alice.nodeId < bob.nodeId) alice to bob else bob to alice
+
+            winner.transport.hold(loser.transport)
+            loser.transport.hold(winner.transport)
+            assertTrue(winner.sendDm(loser, "winner opens"))
+            assertTrue(loser.sendDm(winner, "loser opens"))
+            val opening = loser.ownMessageId(loser.dmWith(winner), "loser opens")
+
+            winner.transport.release(loser.transport)
+            lab.await(1) { loser.decrypted(loser.dmWith(winner)).count { it.second == "winner opens" } }
+            // The loser's answers under the adopted root — its tick and its sealed-profile intro — are parked
+            // behind its opening DM. Distinct frames by id, not copies: a digest re-serve of the opening DM, or of
+            // the tick, is a parked chat frame too.
+            lab.await(2) {
+                loser.transport
+                    .held(winner.transport)
+                    .filter { it.isChatFrom(loser.nodeId) }
+                    .mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }
+                    .filter { it != opening }
+                    .distinct()
+                    .size
+            }
+            loser.transport.release(winner.transport) { batch ->
+                batch.sortedBy { WireCodec.decodeEnvelope(it.signed)?.id == opening } // the opening DM last
+            }
+
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
+        }
 
     /**
      * Bob sends while apart; Alice forces a reset while apart. On the merge Bob gets the reset and re-seals
@@ -172,4 +218,7 @@ class SessionLabTest {
         }
 
     private fun WireEnvelope.isGroupFrame(): Boolean = WireCodec.decodeEnvelope(signed)?.group != null
+
+    private fun WireEnvelope.isChatFrom(nodeId: String): Boolean =
+        WireCodec.decodeEnvelope(signed)?.let { it.type == FrameType.CHAT && it.senderId == nodeId } == true
 }
