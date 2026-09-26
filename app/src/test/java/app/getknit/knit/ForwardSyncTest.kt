@@ -488,6 +488,26 @@ class ForwardSyncTest {
         }
 
     /**
+     * A sender's profile goes out ahead of the rest of the reply, wherever the store ranks it (ADR 2026-09.9xuu):
+     * a peer meeting the sender for the first time can then verify the backlog behind it instead of parking it.
+     * The store here ranks the profile last (it is the oldest frame), as the real one's newest-received-first
+     * read usually does; the chat keeps its order behind it.
+     */
+    @Test
+    fun onDigestServesProfilesAheadOfEverythingElse() =
+        runTest {
+            val transport = RecordingTransport()
+            val sync = ForwardSync(transport, FakeForwardStore(), clock = { 0L })
+            listOf(broadcast("r1"), profile("p1"), broadcast("r2")).forEach { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
+
+            sync.onDigest("z", emptyList())
+
+            val order = transport.sent.map { it.first.frameId() }
+            assertEquals("p1", order.first())
+            assertEquals(setOf("r1", "r2"), order.drop(1).toSet())
+        }
+
+    /**
      * The `onServed` report is the fact behind the Your mesh screen's "passed along": one call per frame
      * `onDigest` actually sends, naming the peer it went to, and none for a frame the peer's digest showed
      * it already holds. The ledger downstream decides what counts; the sync only reports.

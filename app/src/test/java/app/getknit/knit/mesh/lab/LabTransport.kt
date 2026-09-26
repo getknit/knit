@@ -248,16 +248,18 @@ class LabTransport(
     /**
      * Links both ways so the two become neighbors, as a data path coming up does. With [publish] false the
      * pipes exist but neither side's `neighbors` moves yet — [publishNeighbors] does that — so a topology of
-     * several links can come up at once (see [MeshLab.linkAll]).
+     * several links can come up at once (see [MeshLab.linkAll]). [lossy] is this side's [lossy] predicate from
+     * the pipe's first frame on — set after the link, a frame the far end is already sending has a window.
      */
     fun connect(
         other: LabTransport,
         publish: Boolean = true,
+        lossy: (WireEnvelope) -> Boolean = { false },
     ) {
         if (other.nodeId == nodeId) return
         crossings.forget(other.nodeId)
         other.crossings.forget(nodeId)
-        pipes[other.nodeId] = Pipe(other)
+        pipes[other.nodeId] = Pipe(other).also { it.lossy = lossy }
         other.pipes[nodeId] = Pipe(this)
         // Both ends answer `neighbors.value` with the new link before either end's collectors run (see [current]).
         presentNeighbors()

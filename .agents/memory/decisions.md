@@ -117,6 +117,7 @@ carries; never renumber an old one.
 | [2026-09.9469](decisions/2026-09-9469-a-post-to-the-meshtastic-room-carries-no-author-name.md) | A post to the Meshtastic room carries no author name | lora, meshtastic, privacy |
 | [2026-09.995c](decisions/2026-09-995c-a-peer-rename-notice-stores-both-names.md) | A peer rename notice stores both names | ui, data |
 | [2026-09.9dnk](decisions/2026-09-9dnk-the-wedge-watchdog-s-tier-1-responder-refresh-is-capped-per-episode.md) | The wedge watchdog's Tier-1 responder refresh is capped per episode | mesh, nan, recovery |
+| [2026-09.9xuu](decisions/2026-09-9xuu-a-stranger-s-backlog-converges-when-the-key-lands.md) | A stranger's backlog converges when the key lands | custody, mesh, convergence |
 | [2026-09.a8ud](decisions/2026-09-a8ud-supervised-and-managed-phones-are-named.md) | Supervised and managed phones are named, and a blocked grant points at whoever holds it | ui, onboarding, permissions, reliability |
 | [2026-09.aa27](decisions/2026-09-aa27-a-room-delivery-tick-rides-a-frame-already-going-to-its-author.md) | A room delivery tick rides a frame already going to its author | receipts, mesh, lora |
 | [2026-09.amzn](decisions/2026-09-amzn-a-spool-s-answers-are-bounded-by-what-the-client-can-track.md) | A spool's answers are bounded by what the client can track | spool, hardening |

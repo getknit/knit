@@ -1328,6 +1328,16 @@ class LabNode internal constructor(
     }
 
     /**
+     * Drops the custody rows whose id [matches] — a frame the per-sender quota evicted here, say, which the
+     * store would otherwise hold for as long as its TTL. The digest follows, as for any removal. Off the
+     * scenario thread: run on Robolectric's main thread, the removal left this node's inbound path parked for
+     * good (it never delivered another frame).
+     */
+    suspend fun forgetCustody(matches: (String) -> Boolean) {
+        withContext(Dispatchers.Default) { custodyIds().filter(matches).forEach { forwardStore.remove(it) } }
+    }
+
+    /**
      * Runs one send, then lets the wall clock tick over before returning, so no two of this node's frames
      * share a `sentAt`. A warm JIT sends in under a millisecond, and two posts stamped alike have no
      * "newer": the DAO's tiebreak is the random frame id, so which one a room sweep keeps — or which of two

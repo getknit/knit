@@ -358,7 +358,9 @@ class MeshManager(
     // Bounded in-memory buffer of frames dropped for a missing sender key: parked alongside the key
     // request in verifyInbound and replayed through the deliver path once handleProfile pins the key, so
     // a frame that raced ahead of its sender's profile still lands. The inbound complement of flushPendingFor.
-    private val pendingInbound = PendingInbound(now = clock, metrics = metrics)
+    // One served backlog parks whole: the park's per-sender cap is the custody quota (ADR 2026-09.9xuu).
+    private val pendingInbound =
+        PendingInbound(now = clock, metrics = metrics, maxPerSender = ForwardRepository.DEFAULT_MAX_PER_SENDER)
 
     // The group-key sibling: a seed ctl DM that arrived for a group we hold no row for yet (the creator
     // floods the seed before the first frame that carries the roster) is parked before the ratchet commit

@@ -1,5 +1,6 @@
 package app.getknit.knit
 
+import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.mesh.PendingInbound
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.protocol.FrameType
@@ -93,6 +94,45 @@ class PendingInboundTest {
         assertTrue("oldest frame evicted under the global cap", buffer.release("s0").isEmpty())
         assertEquals(listOf("m1"), buffer.release("s1").map { it.env.id })
         assertEquals(listOf("m2"), buffer.release("s2").map { it.env.id })
+    }
+
+    @Test
+    fun aWholeBacklogFromOneSenderParksUnderTheDefaults() {
+        // A carrier serves a newcomer one sender's whole custody quota at once (ADR 2026-09.9xuu): the park takes
+        // all of it, where it used to take sixteen and leave the rest deduped for the seen window.
+        val quota = ForwardRepository.DEFAULT_MAX_PER_SENDER
+        val buffer = PendingInbound(now = { 0L })
+        repeat(quota + 1) { i -> buffer.hold(wireFor("m$i", "alice"), envFor("m$i", "alice"), "n") }
+
+        assertEquals(quota, buffer.release("alice").size)
+    }
+
+    @Test
+    fun theByteBudgetEvictsOldestFirst() {
+        var clock = 0L
+        val frame = wireFor("m0", "s0")
+        val size = (frame.signed.size + frame.sig.size).toLong()
+        // Room for two frames by bytes, whatever the frame caps say.
+        val buffer = PendingInbound(now = { clock }, maxBytes = 2 * size + size / 2)
+        repeat(3) { i ->
+            buffer.hold(wireFor("m$i", "s$i"), envFor("m$i", "s$i"), "n")
+            clock += 1
+        }
+
+        assertTrue("oldest frame evicted under the byte budget", buffer.release("s0").isEmpty())
+        assertEquals(listOf("m1"), buffer.release("s1").map { it.env.id })
+        // A release returns its bytes: a third frame fits again beside m2.
+        buffer.hold(wireFor("m3", "s3"), envFor("m3", "s3"), "n")
+        assertEquals(listOf("m2"), buffer.release("s2").map { it.env.id })
+        assertEquals(listOf("m3"), buffer.release("s3").map { it.env.id })
+    }
+
+    @Test
+    fun aFrameOverTheWholeByteBudgetIsNeverParked() {
+        val buffer = PendingInbound(now = { 0L }, maxBytes = 8)
+        buffer.hold(wireFor("big", "alice"), envFor("big", "alice"), "n")
+
+        assertTrue(buffer.release("alice").isEmpty())
     }
 
     @Test

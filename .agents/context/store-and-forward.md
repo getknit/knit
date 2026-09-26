@@ -180,8 +180,20 @@ sender back through `onDeliver` (`pendingInbound.release(...)`, the last stateme
 deviceTag block are applied first). Replay bypasses the router (no re-flood, no `SeenSet` hit) and
 `deliverChat`'s `isNew`/idempotent-save gates keep a later store-and-forward re-serve a no-op. The buffer
 is in-memory by design (a parked frame is unauthenticated until its key arrives, so it's never persisted)
-and bounded by a global cap (the real bound — the senderId is an unauthenticated claim), a per-sender cap,
-and the TTL. Only the locally-delivered types are held (`FrameType.isReplayable`). `PendingInbound` is now
+and bounded by a global frame cap and a 4 MiB byte budget (the real bounds — the senderId is an
+unauthenticated claim), a per-sender cap, and the TTL. Only the locally-delivered types are held
+(`FrameType.isReplayable`).
+
+The per-sender cap is a carrier's whole custody quota for one sender (200), and the carrier serves a
+sender's `profile` ahead of the rest of a digest reply (`ForwardSync.onDigest`) — both ADR 2026-09.9xuu. A
+newcomer served the backlog of someone it has never met used to park 16 frames and refuse the rest, and
+the router had already marked every one of them seen, so the rest stayed undelivered and out of its custody
+for the whole ten-minute window (on Bluetooth `LinkCrossings` also keeps the carrier from re-writing them).
+With the profile first the newcomer refuses nothing; when the carrier no longer holds the profile (the
+per-sender quota evicts a chatty sender's oldest frame, which is its profile) the key comes by `keyreq`
+and the whole backlog is parked to replay. `MeshManager` injects the custody quota as the park's cap
+(pinned by `PendingInboundTest`); below it, the tail of every such backlog is ten minutes late again.
+Pinned end to end by `StrangerBacklogLabTest`. `PendingInbound` is now
 just the fast path: DM, group, **and** broadcast frames all also degrade gracefully via store-and-forward
 re-serve after the buffer expires (broadcast custody closed the old gap where a broadcast frame had the
 `PendingInbound` TTL as its only recovery window). Surfaced in Diagnostics (`framesHeld`/`framesReplayed`)

@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh
 
+import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.isStorable
@@ -93,6 +94,12 @@ class ForwardSync(
      * re-wrapped in a fresh [WireEnvelope] (full ttl, hops 0) around its verbatim signed blob; a duplicate that
      * races in is still dropped by the receiver's SeenSet, so a stale digest only ever costs bytes, never
      * correctness.
+     *
+     * **Profiles go first** (ADR 2026-09.9xuu). The store reads newest-received first, which put a sender's
+     * profile — usually the oldest row we hold of theirs — behind all of their chat, so a peer meeting that
+     * sender for the first time refused the whole backlog for want of a key it was about to be handed. It parks
+     * what it refuses ([PendingInbound]) and replays it on the pin, but a park is a bound, and anything it turns
+     * away is deduped for the router's ten-minute window: the key first is what makes the park the exception.
      */
     suspend fun onDigest(
         fromNodeId: String,
@@ -100,7 +107,7 @@ class ForwardSync(
     ) {
         val peer = transport.neighbors.value.find { it.nodeId == fromNodeId } ?: Peer(fromNodeId)
         val have = theirIds.toHashSet()
-        store.liveFrames(clock()).forEach { carried ->
+        store.liveFrames(clock()).sortedBy { it.envelope.type != FrameType.PROFILE }.forEach { carried ->
             val env = carried.envelope
             if (env.id in have) return@forEach // the diff: skip frames the peer already holds
             // No author-skip: the `have` diff already elides any frame the peer still holds, so the only
