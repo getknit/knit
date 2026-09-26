@@ -511,6 +511,67 @@ class MeshRouterTest {
             assertEquals(0, metrics.snapshot().framesSuppressed)
         }
 
+    /**
+     * Issue #84, the other order: the relay's copy is our first sighting and the originator's radio copy lands
+     * inside the jitter. Seeding the pending relay with the spool made that radio copy the second "neighbour"
+     * and cancelled the one hop a radio-only carrier behind us depended on.
+     */
+    @Test
+    fun doesNotSuppressWhenTheSpoolCopyWasFirst() =
+        runTest {
+            val transport = RecordingTransport(setOf("b", "c", "d"))
+            val metrics = MeshMetrics()
+            val router =
+                MeshRouter(
+                    transport,
+                    this,
+                    metrics = metrics,
+                    jitterWindowMs = 150L,
+                    suppressThreshold = 2,
+                    jitter = { 100L },
+                ) { _, _, _, _ -> }
+
+            val (wire, env) = frame("m1")
+            router.handleInbound(wire, env, fromNodeId = "${ScopeSync.SPOOL_SOURCE_PREFIX}wss://relay.example")
+            advanceTimeBy(40)
+            router.handleInbound(wire, env, fromNodeId = "b") // the originator's radio copy
+            advanceUntilIdle()
+
+            assertEquals(setOf("c", "d"), transport.sent.mapNotNull { it.second?.nodeId }.toSet())
+            assertEquals(1, metrics.snapshot().framesRelayed)
+            assertEquals(1, metrics.snapshot().framesDeduped)
+            assertEquals(0, metrics.snapshot().framesSuppressed)
+        }
+
+    /** A spool-first relay is still suppressed — by two radio neighbours, exactly as a radio-first one is. */
+    @Test
+    fun aSpoolFirstRelayIsStillSuppressedByTwoRadioNeighbours() =
+        runTest {
+            val transport = RecordingTransport(setOf("b", "c", "d"))
+            val metrics = MeshMetrics()
+            val router =
+                MeshRouter(
+                    transport,
+                    this,
+                    metrics = metrics,
+                    jitterWindowMs = 150L,
+                    suppressThreshold = 2,
+                    jitter = { 100L },
+                ) { _, _, _, _ -> }
+
+            val (wire, env) = frame("m1")
+            router.handleInbound(wire, env, fromNodeId = "${ScopeSync.SPOOL_SOURCE_PREFIX}wss://relay.example")
+            advanceTimeBy(20)
+            router.handleInbound(wire, env, fromNodeId = "b")
+            advanceTimeBy(20)
+            router.handleInbound(wire, env, fromNodeId = "c")
+            advanceUntilIdle()
+
+            assertTrue(transport.sent.isEmpty())
+            assertEquals(0, metrics.snapshot().framesRelayed)
+            assertEquals(1, metrics.snapshot().framesSuppressed)
+        }
+
     @Test
     fun relaysAfterJitterWhenNoDuplicateOverheard() =
         runTest {

@@ -82,6 +82,16 @@ the poll the push was seconds after the jitter and the echo a plain dedup. The o
 neighbours: a spool copy says a relay holds the frame, not that anyone near us heard it, so
 `handleInbound` no longer counts a `spool:` source toward suppression (`MeshRouterTest.doesNotSuppressOnADuplicateOffASpool`).
 
+*Amendment (2026-09-25, issue #84).* That covered the spool copy arriving second. Arriving first, it still
+counted: `scheduleRelay` seeded the pending relay's `heardFrom` with its source, so a relay that beat the
+radio left `{spool:<url>}` in the set, and the originator's radio copy landing inside the jitter made two
+"neighbours" and cancelled the hop a relay-less carrier behind us depended on — a minute's wait for the
+re-offer (chaos seeds 1000/1004 on the photo-to-the-neighbour scenario). `heardFrom` now holds radio
+neighbours only: a `spool:` source seeds nothing and adds nothing. Split horizon is unchanged (a `spool:` id
+never names a neighbour), and suppression still fires on two radio copies, exactly as for a relay the radio
+delivered first (`MeshRouterTest.doesNotSuppressWhenTheSpoolCopyWasFirst` /
+`aSpoolFirstRelayIsStillSuppressedByTwoRadioNeighbours`, `InternetPlaneLabTest.aFrameTheRelayDeliversFirst…`).
+
 **A pair scope and the DM scope that supersedes it share a label.** The third loop finding, in the
 card-holders scenario: `Scope.label` is the peer id for both, and the responder derives its DM scope on
 its own confirmation while the initiator still holds only the pair scope, so a status lookup by label
@@ -114,7 +124,7 @@ second and the P3's DM scope off the table (12 → 11), the P3's answer confirme
 initiator's flip) and +1 within fifteen seconds with the table at 13 (the new scope and the old root
 retiring), then back to one a minute; every scope `local == spool`, the retiring one drained.
 
-Regressions: `MeshRouterTest` (a spool duplicate suppresses nothing), `IntroSyncTest` (each move fires once, a settle and a send do not, prime is silent, a
+Regressions: `MeshRouterTest` (a spool copy suppresses nothing, first or duplicate), `IntroSyncTest` (each move fires once, a settle and a send do not, prime is silent, a
 stranger's pin is not a pair input), `InboundPipelineTest` (a confirmation reports once, a chain step and
 a re-served frame do not, a replacement and our own reset each report, a refused replacement and an
 initiation from nothing do not), `ScopeSyncTest`'s pair-scope case, and the `mesh/lab/` spool scenarios

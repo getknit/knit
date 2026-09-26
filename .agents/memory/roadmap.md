@@ -136,7 +136,7 @@ doc). **Don't start a deferred item without explicit direction.**
   whole-package heavy-tail sweep failed nine scenarios on main; triaged 2026-09-24. Four are mesh bugs, filed as
   work items: **#83** a both-initiate loser's late opening DM fails AEAD and is never recovered (fixed by ADR
   2026-09.pz9g; `SessionLabTest.theLosersOpening…` runs), **#84** a relay copy seen first cancels the radio relay
-  (`InternetPlaneLabTest.aFrameTheRelayDeliversFirst…`, `@Ignore`d), **#85** a restore racing its first link
+  (fixed by ADR 2026-09.dcah's amendment; `InternetPlaneLabTest.aFrameTheRelayDeliversFirst…` runs), **#85** a restore racing its first link
   sends two resets and the peer refuses the second, **#86** `finishRestore` never resets group-only contacts
   (both `RestoreLabTest` scenarios, chaos-only). Four were fixture races, fixed: restart's inbound drain, a
   `receiptsSealed` / `groupSeedsAdopted` await, a relative spool band, Erin's lossy profile pages. One

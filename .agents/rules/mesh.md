@@ -75,9 +75,10 @@ free). Two invariants that are easy to break:
   add a wake that carries no change, and don't add a table hook that fires on an unchanged input — the
   before/after view compare in `RatchetSessions` and the `lastPairs` diff in `IntroSync` are the gate.
   Two things the event-driven table exposed: `ScopeStatus.converged` is false until the spool has answered
-  an anchor (two absent digests are not agreement), and `MeshRouter` never counts a `spool:`-sourced
-  duplicate toward overhear suppression — the echo of our own push lands inside the relay jitter now, and
-  a spool copy says nothing about what a radio neighbour heard.
+  an anchor (two absent digests are not agreement), and `MeshRouter` never counts a `spool:` source toward
+  overhear suppression — neither a duplicate (the echo of our own push lands inside the relay jitter now)
+  nor the first copy that seeds a pending relay's `heardFrom` (#84): a spool copy says nothing about what a
+  radio neighbour heard.
 - **Only frames matching the scope frame-set rule may be sealed into a scope, in *both* directions**
   (`ScopeFrames.eligibleFor`, spec §4.4) — a scope is not a general-purpose upload channel. The group
   half has two traps: a `groupleave` carries its group id in the **payload** (never in

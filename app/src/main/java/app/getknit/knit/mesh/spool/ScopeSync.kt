@@ -1974,8 +1974,10 @@ class ScopeSync(
 
         /**
          * Whether an inbound frame's source names a spool rather than a neighbouring node — i.e. it crossed
-         * the Internet plane, not a radio. The delivery tick reads this to say *how* a message got there;
-         * it is a presentation fact only, and nothing about carry, relay or convergence may depend on it.
+         * the Internet plane, not a radio. The delivery tick reads this to say *how* a message got there,
+         * and `MeshRouter`'s overhear suppression reads it to leave a spool copy out of the count — a relay
+         * holding the frame says nothing about which radio neighbour heard it (ADR 2026-09.dcah, #84).
+         * Nothing about carry or convergence may depend on it.
          */
         fun isSpoolSource(fromNodeId: String): Boolean = fromNodeId.startsWith(SPOOL_SOURCE_PREFIX)
 

@@ -50,7 +50,8 @@ class MeshRouter(
      * signature are forwarded verbatim); [heardFrom] is every neighbor we've heard this frame id from
      * (all excluded from the eventual relay — split horizon across every source, not just the first) and
      * its size is the overhear count the suppression threshold is judged on; [job] is the delay-then-send
-     * coroutine.
+     * coroutine. A spool never enters [heardFrom], as the first copy or a duplicate: it is not a radio
+     * neighbor, and counting it let the radio copy that followed a relay's delivery cancel the relay (#84).
      */
     private class PendingRelay(
         val relayed: WireEnvelope,
@@ -102,7 +103,8 @@ class MeshRouter(
             // is not that evidence: it says a relay holds the frame, not that any radio neighbour of ours
             // heard it, and it is routinely our own push echoed back. Once the DM scope derived on the
             // session's confirmation (ADR 2026-09.dcah) that echo landed inside the jitter window and
-            // cancelled the one radio hop a carrier behind us depended on.
+            // cancelled the one radio hop a carrier behind us depended on. The same holds when the spool's
+            // copy came first — see scheduleRelay's seed.
             metrics.onDeduped()
             if (!ScopeSync.isSpoolSource(fromNodeId)) countOverheard(envelope.id, fromNodeId)
             return
@@ -173,7 +175,8 @@ class MeshRouter(
             PendingRelay(
                 relayed = wire.relayed(), // only ttl/hops mutate; signed + sig pass through verbatim
                 envelope = envelope,
-                heardFrom = mutableSetOf(fromNodeId),
+                // A spool source seeds nothing: the radio copy that follows it is the first overhear, not the second.
+                heardFrom = mutableSetOf<String>().apply { if (!ScopeSync.isSpoolSource(fromNodeId)) add(fromNodeId) },
             )
         pendingLock.withLock { pending[id] = entry }
         entry.job =

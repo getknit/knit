@@ -17,7 +17,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -337,7 +336,6 @@ class InternetPlaneLabTest {
      * mirror order, a spool copy arriving second).
      */
     @Test
-    @Ignore("#84: a spool copy seen first seeds heardFrom, and the radio copy then cancels the relay")
     fun aFrameTheRelayDeliversFirstIsStillRelayedToTheCarrierBehindUs() =
         runBlocking {
             val spool = FakeSpool()
@@ -379,6 +377,10 @@ class InternetPlaneLabTest {
                     .let { it.framesRelayed + it.framesSuppressed }
                     .toInt()
             }
+            // `decided` can be one short (the pre-loop tick's relay counted after the snapshot), so the count alone
+            // may pass before the last radio copy is judged; a drained inbound means every copy has been, and any
+            // suppression it caused is counted — both run inline in `handleInbound`.
+            bob.transport.awaitInboundDrained()
             assertEquals("bob cancelled a relay on the spool's copy", suppressed, bob.metrics.snapshot().framesSuppressed)
             lab.assertConverged(listOf(alice, bob), atLeast = 2 + RADIO_LAG_MS.size, carriers = listOf(carol)) {
                 alice.dmThreadWith(bob)(it)
