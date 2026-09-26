@@ -157,6 +157,7 @@ carries; never renumber an old one.
 | [2026-09.qtg9](decisions/2026-09-qtg9-an-unsent-draft-is-a-row-in-the-encrypted-database.md) | An unsent draft is a row in the encrypted database, handed to the composer once | ui, data, room, privacy |
 | [2026-09.qztx](decisions/2026-09-qztx-a-publish-stamp-is-signed-once.md) | A publish stamp is signed once, under one lock, by whoever writes it | mesh, spool, profiles |
 | [2026-09.rre4](decisions/2026-09-rre4-the-lora-backfill-serves-the-room-before-dms.md) | The LoRa backfill serves the room before DMs | lora, airtime, custody |
+| [2026-09.shzv](decisions/2026-09-shzv-the-bluetooth-responder-admits-a-dialer-it-never-sighted.md) | The Bluetooth responder admits a dialer it never sighted | ble, transport, interop |
 | [2026-09.sjaa](decisions/2026-09-sjaa-ble-side-channel.md) | BLE side channel: small floodable frames ride non-connectable extended-advertising pages | mesh, bluetooth |
 | [2026-09.sre4](decisions/2026-09-sre4-a-resolved-meshtastic-author-s-avatar-opens-the-caveat.md) | A resolved Meshtastic author's avatar opens the caveat, not the profile | lora, meshtastic, ui |
 | [2026-09.t8t8](decisions/2026-09-t8t8-an-offer-is-not-backfill-and-must-not-compete-with-it.md) | An OFFER is not backfill and must not compete with it | lora, airtime, reliability |

@@ -61,6 +61,12 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `to`:** READ ADR 2026-09.4n5p — a Meshtastic DM to a set-up board is answered once with a fixed unicast
   (once per sender per day, once per 30 s for anybody, the room's air share, never from a stock or a
   dedicated-slot board), and that reply is the only unicast the plane sends.
+- **When touching `BluetoothMeshTransport.superviseAccepted`, `BleAdmissionPolicy`, `teardownLink`, `LinkEvents`,
+  `neverSighted`, or what a held link scores for eviction:** READ ADR 2026-09.shzv. A dialer presence holds is
+  judged by the old tie-break, unchanged — the Android mesh must not move. Only an unsighted dialer (an iPhone
+  advertises no service data, so it is never sighted and never dialed) is admitted whatever the id order, and its
+  second link replaces the first only once the held one is 30 s old. A teardown passes the link it means
+  (`only =`) — never re-key it by node id alone — and only a never-sighted link scores the −90 floor.
 - **When touching `linkpreview/`, `net/`, `mesh/protocol/LinkPreviewBlob`, or anything that opens an
   Internet socket outside the spool plane:** READ ADR 2026-09.n752 (and 2026-09.7x8k: a send holds up to 5 s
   for the card its link is fetching, or the share sheet never carries one; a LoRa thread takes a card exactly

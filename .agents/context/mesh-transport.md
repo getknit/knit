@@ -332,6 +332,20 @@ scan is floored. The side channel below runs a **second** scan with its own poli
 continuous at LOW_POWER/BALANCED while a flagged peer is around, Off during a connect, and rationed to
 one start per 30 s because Android's five-starts-per-30 s budget is per app and this scan shares it.
 
+## The BLE responder admits a dialer it never sighted (ADR 2026-09.shzv)
+
+The larger node id dials, and the responder used to close every dialer that sorted below it. An iPhone
+advertises no service data, so this side never sights it and never dials it; refusing its dial from below
+left the pair unlinked for good. `BleAdmissionPolicy.decide` keeps the old rule, unchanged, for a dialer presence
+holds (below us: refused, our own dial wins; already linked: refused, which is also what stops a claimed id
+cutting a sighted peer's link). It admits an unsighted dialer in either order, and its second link replaces the
+first once the held one is 30 s old (`REPLACE_MIN_HOLD_MS`). Each link has its own `LinkEvents`, and
+`teardownLink(…, only = link)` releases the slot only while that link holds it — the link's own end and an
+eviction both pass the link they mean; the replaced link's `onLinkDown` used to remove its replacement. A link
+the scan has not once sighted (`neverSighted`) scores the promotion floor (−90 dBm); a sighted peer that left
+presence still scores −127. Oracle: `bt accepted client <id> (<verdict>, sighted=<bool>)` and `bt refused client
+<id> (…)` at debug. Tests: `BleAdmissionPolicyTest`; the lab has no radio layer.
+
 ## A frame crosses a BLE link once, and the loops sleep until something can change
 
 Two paths used to hand the Bluetooth plane the same frame for the same L2CAP stream — the router's flood copy

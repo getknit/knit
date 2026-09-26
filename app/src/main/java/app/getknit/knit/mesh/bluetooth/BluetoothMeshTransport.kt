@@ -122,6 +122,10 @@ class BluetoothMeshTransport(
     // Live L2CAP links, keyed by peer nodeId (many, unlike NAN's ≤1).
     private val links = ConcurrentHashMap<String, FramedLink>()
 
+    // Held links whose peer the scan has not once sighted since the link came up — every inbound iPhone. They
+    // score the promotion floor for eviction, not the absent-peer −127 (ADR 2026-09.shzv). A sighting drops one.
+    private val neverSighted = ConcurrentHashMap.newKeySet<FramedLink>()
+
     // Which frames already crossed which link, either way: the router's flood copy and the fast path's link
     // copy are the same frame twice for the same stream, and a relayed frame's fast copy would go straight
     // back over the link it arrived on. One write per link per frame; the far end's SeenSet would have
@@ -241,33 +245,38 @@ class BluetoothMeshTransport(
             }
         }
 
-    // Forwards a live link's decoded records into our flows and its teardown into [teardownLink].
-    private val linkCallbacks =
-        object : LinkCallbacks {
-            override fun onInbound(frame: InboundFrame) {
-                // In counts as a crossing too: nothing we later hand this link may be the frame it just gave us.
-                crossings.firstCrossing(frame.fromNodeId, FrameKey.of(frame.wire, frame.envelope))
-                _inbound.tryEmit(frame)
-            }
+    // Forwards a live link's decoded records into our flows and its teardown into [teardownLink]. One per link:
+    // a link replaced under the same node id still reports its own end, and that must release only its own slot,
+    // never the replacement's (ADR 2026-09.shzv).
+    private inner class LinkEvents : LinkCallbacks {
+        lateinit var link: FramedLink
 
-            override fun onDigest(digest: ReceivedDigest) {
-                _incomingDigests.tryEmit(digest)
-            }
-
-            override fun onFile(file: ReceivedFile) {
-                _incomingFiles.tryEmit(file)
-                wakeSide() // the one stream edge a link reports: rxInProgress just cleared, the side scan may go Off
-            }
-
-            override fun onLinkDown(nodeId: String) {
-                teardownLink(nodeId, "eof")
-                // A flapping link escalates on the same per-peer streak as a failed connect, so a peer that keeps
-                // dropping isn't reconnected on a tight loop (which would black out scanning each attempt).
-                val (streak, nextAt) = synchronized(lock) { bumpBackoffLocked(nodeId) }
-                wake() // link count changed → connectLoop retries and scanLoop re-evaluates demand
-                Log.i(TAG, "bt link down $nodeId (eof) streak=$streak retryMs=${nextAt - elapsed()}")
-            }
+        override fun onInbound(frame: InboundFrame) {
+            // In counts as a crossing too: nothing we later hand this link may be the frame it just gave us.
+            crossings.firstCrossing(frame.fromNodeId, FrameKey.of(frame.wire, frame.envelope))
+            _inbound.tryEmit(frame)
         }
+
+        override fun onDigest(digest: ReceivedDigest) {
+            _incomingDigests.tryEmit(digest)
+        }
+
+        override fun onFile(file: ReceivedFile) {
+            _incomingFiles.tryEmit(file)
+            wakeSide() // the one stream edge a link reports: rxInProgress just cleared, the side scan may go Off
+        }
+
+        override fun onLinkDown(nodeId: String) {
+            val released = teardownLink(nodeId, "eof", only = link)
+            // Replaced by a fresh link from the same peer: that link holds the slot, and the peer did not flap.
+            if (!released && links[nodeId] != null) return
+            // A flapping link escalates on the same per-peer streak as a failed connect, so a peer that keeps
+            // dropping isn't reconnected on a tight loop (which would black out scanning each attempt).
+            val (streak, nextAt) = synchronized(lock) { bumpBackoffLocked(nodeId) }
+            wake() // link count changed → connectLoop retries and scanLoop re-evaluates demand
+            Log.i(TAG, "bt link down $nodeId (eof) streak=$streak retryMs=${nextAt - elapsed()}")
+        }
+    }
 
     override fun start() {
         if (!hasHardware) {
@@ -563,6 +572,7 @@ class BluetoothMeshTransport(
         val parsed = BleAdvertPayload.parse(data) ?: return
         if (parsed.nodeId == localNodeIdOrEmpty()) return
         deviceFor[parsed.nodeId] = result.device
+        links[parsed.nodeId]?.let(neverSighted::remove)
         presence.onSighting(
             BlePresenceTracker.Sighting(
                 nodeId = parsed.nodeId,
@@ -622,11 +632,13 @@ class BluetoothMeshTransport(
         val rssiByNode = snaps.associate { it.nodeId to it.smoothedRssi }
         // Candidates: peers we're the initiator for (tie-break: larger id initiates), not linked, not in flight.
         val candidates = snaps.filter { localNodeId > it.nodeId && it.nodeId !in links.keys && it.nodeId !in inFlightSnapshot() }
+        // The links this decision scores: an eviction closes the link it scored, never one that replaced it since.
+        val scored = links.values.associateBy { it.nodeId }
         val linkSnaps =
-            links.values.map { fl ->
+            scored.values.map { fl ->
                 PromotionPolicy.LinkSnapshot(
                     nodeId = fl.nodeId,
-                    smoothedRssi = rssiByNode[fl.nodeId] ?: ABSENT_LINK_RSSI,
+                    smoothedRssi = BleAdmissionPolicy.linkRssi(rssiByNode[fl.nodeId], neverSighted = fl in neverSighted),
                     ageMs = now - fl.linkStartedAt,
                     idleMs = now - fl.lastActivityAt,
                 )
@@ -645,7 +657,7 @@ class BluetoothMeshTransport(
         if (decision.promote.isNotEmpty() || decision.evict.isNotEmpty()) {
             Log.i(TAG, "promote=${decision.promote} evict=${decision.evict} backoff=$backoff a2dp=${audioMonitor.state.value}")
         }
-        decision.evict.forEach { teardownLink(it, "evicted") }
+        decision.evict.forEach { id -> scored[id]?.let { teardownLink(id, "evicted", only = it) } }
         decision.promote.forEach { initiateTo(it) }
     }
 
@@ -734,7 +746,10 @@ class BluetoothMeshTransport(
         }
     }
 
-    /** A client connected to our L2CAP responder: read its identity (HELLO, watchdog-bounded), then register. */
+    /**
+     * A client connected to our L2CAP responder: read its identity (HELLO, watchdog-bounded), then keep it or
+     * close it by [BleAdmissionPolicy] — which admits a dialer the scan never saw whatever the id order.
+     */
     private suspend fun superviseAccepted(socket: BluetoothSocket) {
         val link = BluetoothSocketLink(socket)
         // BluetoothSocket has no soTimeout, so bound the HELLO read by closing the socket if it stalls.
@@ -750,8 +765,11 @@ class BluetoothMeshTransport(
             link.close()
             return
         }
-        // Tie-break: the responder must be the SMALLER id (larger initiates); don't double-link.
-        if (localNodeId >= clientNodeId || clientNodeId in links.keys) {
+        val sighted = presence.snapshots(elapsed()).any { it.nodeId == clientNodeId }
+        val heldAgeMs = links[clientNodeId]?.let { elapsed() - it.linkStartedAt }
+        val verdict = BleAdmissionPolicy.decide(localNodeId, clientNodeId, sighted, heldAgeMs)
+        if (verdict == BleAdmissionPolicy.Verdict.Refuse) {
+            Log.d(TAG, "bt refused client $clientNodeId (sighted=$sighted heldAgeMs=$heldAgeMs)")
             link.close()
             return
         }
@@ -761,15 +779,17 @@ class BluetoothMeshTransport(
             link.close()
             return
         }
-        Log.i(TAG, "bt accepted client $clientNodeId")
-        registerLink(clientNodeId, advert, link)
+        Log.i(TAG, "bt accepted client $clientNodeId ($verdict, sighted=$sighted)")
+        registerLink(clientNodeId, advert, link, sighted)
     }
 
     private fun registerLink(
         nodeId: String,
         advert: Protocol.PeerWire,
         link: app.getknit.knit.mesh.link.LinkSocket,
+        sighted: Boolean = true, // an initiator dials only a peer presence holds
     ) {
+        val events = LinkEvents()
         val framed =
             FramedLink(
                 nodeId = nodeId,
@@ -778,14 +798,19 @@ class BluetoothMeshTransport(
                 scope = scope,
                 cacheDir = appContext.cacheDir,
                 metrics = metrics,
-                callbacks = linkCallbacks,
+                callbacks = events,
                 now = SystemClock::elapsedRealtime,
                 paceBytesPerSec = BLE_PACE_BYTES_PER_SEC,
                 log = { msg -> Log.d(TAG, msg) },
             )
+        events.link = framed
         crossings.forget(nodeId) // a fresh stream starts clean: the peer may have restarted with an empty SeenSet
+        if (!sighted) neverSighted.add(framed)
         val prev = links.put(nodeId, framed)
-        prev?.close() // a stale link to the same peer — never leak it
+        if (prev != null) {
+            neverSighted.remove(prev)
+            prev.close() // a stale link to the same peer — never leak it; its own end releases nothing now
+        }
         lastLinkOrStartAt = elapsed()
         synchronized(lock) {
             inFlight.remove(nodeId)
@@ -799,11 +824,14 @@ class BluetoothMeshTransport(
         Log.i(TAG, "bt link up: $nodeId (${links.size} live)")
     }
 
+    /** Closes [nodeId]'s link — only if it is still [only], when given — and says whether one was released. */
     private fun teardownLink(
         nodeId: String,
         reason: String,
-    ) {
-        val fl = links.remove(nodeId) ?: return
+        only: FramedLink? = null,
+    ): Boolean {
+        val fl = (if (only == null) links.remove(nodeId) else only.takeIf { links.remove(nodeId, it) }) ?: return false
+        neverSighted.remove(fl)
         fl.close()
         crossings.forget(nodeId)
         // The peer was here until now: its side-channel flag lingers from the link's end, not from a sighting the
@@ -813,6 +841,7 @@ class BluetoothMeshTransport(
         publishReachable() // drop the peer from reachable too, unless it's still being scan-sighted
         wakeSide() // the audience may have gone unlinked (the eviction path has no other side wake)
         Log.i(TAG, "bt link down: $nodeId ($reason)")
+        return true
     }
 
     /** Per-peer connect backoff: consecutive-failure streak + the elapsed-time deadline before the next attempt. */
@@ -1121,9 +1150,6 @@ class BluetoothMeshTransport(
         // How often the side channel's loop re-asks its scan policy when nothing woke it (also the retry cadence
         // for a start the shared scan budget deferred).
         private const val SIDE_TICK_MS = 10_000L
-
-        // RSSI stand-in for a link whose peer is no longer being sighted (so it sorts as the weakest to evict).
-        private const val ABSENT_LINK_RSSI = -127.0
 
         // How long to keep the scan boosted chasing a foreign (other-plane, e.g. Wi-Fi Aware) peer onto BLE before
         // giving up — so a stationary NAN-only / out-of-BLE-range peer can't pin the scan at full power. Re-armed if
