@@ -184,10 +184,10 @@ class InboundPipeline(
     // watch's one input (mesh/CloneWatch, ADR 2026-09.ypcc): a stamp this phone never minted proves the
     // identity is running elsewhere. Lambda-mediated like the rest; the pipeline itself keeps dropping the frame.
     private val onSelfProfile: suspend (sentAt: Long) -> Unit = {},
-    // A v2 DM from this sender opened and committed; `carriesInit` says its ratchet header still carried the
-    // X3DH init, i.e. the sender has not yet seen a frame of ours (IntroSync.onPeerFrameOpened). Runs
+    // A v2 DM from this sender opened and committed; `initEph` is the X3DH init its ratchet header still
+    // carried, i.e. the sender has not yet seen a frame of ours (IntroSync.onPeerFrameOpened), or null. Runs
     // post-commit, outside the ratchet lock, since the answer it may trigger seals a frame of its own.
-    private val onPeerFrameOpened: suspend (senderId: String, carriesInit: Boolean) -> Unit = { _, _ -> },
+    private val onPeerFrameOpened: suspend (senderId: String, initEph: ByteArray?) -> Unit = { _, _ -> },
     // A sealed CTL_TRANSFER landed (transfer/TransferManager.onSignal): direct-transfer signaling, handed on
     // post-commit like the rest. True when it admitted a live incoming OFFER, which is what earns a notification.
     private val onTransferCtl: suspend (senderId: String, payload: TransferPayload, sentAt: Long) -> Boolean = { _, _, _ -> false },
@@ -983,7 +983,7 @@ class InboundPipeline(
                     ratchet.commitOpen(me, env.senderId, peerIkPub, wireHeader, nonce, enc.ct, aad, now, onOpened)
                 }
             // After the transaction and outside the session lock: the hook may seal an answer of its own.
-            if (committed) onPeerFrameOpened(env.senderId, wireHeader.init != null)
+            if (committed) onPeerFrameOpened(env.senderId, wireHeader.init?.eph)
             committed
         }
         if (plain.ctl != null) {

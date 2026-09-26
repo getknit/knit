@@ -55,9 +55,10 @@ interface IntroStore {
  *   carries the same init, which the peer's engine treats as already resolved — idempotent.
  * - **Answer an unconfirmed peer.** A frame whose ratchet header still carries the X3DH init is proof its
  *   sender has not seen a frame of ours yet (an initiator attaches the init until confirmed). Answering with
- *   one sealed frame ([onPeerFrameOpened]) — once per [answerFloorMs] — is what confirms *their* side,
- *   whether the intro came from a card, a beacon, or a wipe-and-reinstall. `broadcastSealedProfile` would
- *   also do it, but only once per profile version, which is the "wiped initiator stays unconfirmed" gap.
+ *   one sealed frame ([onPeerFrameOpened]) — once per init, and again only after [answerFloorMs] — is what
+ *   confirms *their* side, whether the intro came from a card, a beacon, a wipe-and-reinstall or a session
+ *   reset. `broadcastSealedProfile` would also do it, but only once per profile version, which is the "wiped
+ *   initiator stays unconfirmed" gap.
  * - **Grace after confirmation.** The pair scope is what carries our confirming frame to a peer that has
  *   no DM scope yet, so it stays subscribed for [graceMs] after *our* session confirms, then goes away
  *   ([pairPeers] is what `ScopeRegistry` derives pair scopes from).
@@ -92,7 +93,13 @@ class IntroSync(
 
     // In-memory floors: a restart re-sends once, which the receiver absorbs idempotently.
     private val lastSentAt = ConcurrentHashMap<String, Long>()
-    private val lastAnsweredAt = ConcurrentHashMap<String, Long>()
+    private val lastAnswered = ConcurrentHashMap<String, Answered>()
+
+    /** The init we last answered for a peer (its X3DH ephemeral) and when. */
+    private class Answered(
+        val initEph: ByteArray,
+        val at: Long,
+    )
 
     /** The UI's view — re-published after every transition so `state(peer)` reacts without polling the store. */
     private val states = MutableStateFlow<Map<String, IntroState>>(emptyMap())
@@ -147,22 +154,30 @@ class IntroSync(
     }
 
     /**
-     * A v2 frame from [peerId] opened. [carriesInit] means its header still carried the X3DH init — the
-     * peer is unconfirmed — so answer it (floored). Either way, check whether *our* session with a
-     * pending peer just confirmed and move it into grace.
+     * A v2 frame from [peerId] opened. A non-null [initEph] is the X3DH init its header still carried — the
+     * peer is unconfirmed — so answer it: at once for an init we have not answered, and for the same init
+     * again only after [answerFloorMs] (a peer re-floods its init on every frame until it confirms). Either
+     * way, check whether *our* session with a pending peer just confirmed and move it into grace.
+     *
+     * The floor is per init, not per peer, because a session reset is a new init that needs its own answer:
+     * the resetter confirms only on a frame the peer seals under the new root, and after a reset the peer
+     * often has nothing else to send — its re-seals reuse ids we already hold, so they never reach the
+     * ratchet. A per-peer floor left the resetter unconfirmed, with no spool scope for the pair, for up to an
+     * hour after any earlier answer (#87). A new init only gets here by opening, and every way one opens is
+     * rate-limited by the ratchet's replacement floors or is one answer per frame the peer sent.
      */
     suspend fun onPeerFrameOpened(
         peerId: String,
-        carriesInit: Boolean,
+        initEph: ByteArray?,
     ) {
         settle(peerId)
-        if (!carriesInit) return
+        if (initEph == null) return
         val now = clock()
-        val last = lastAnsweredAt[peerId]
-        if (last != null && now - last < answerFloorMs) return
+        val last = lastAnswered[peerId]
+        if (last != null && last.initEph.contentEquals(initEph) && now - last.at < answerFloorMs) return
         if (!canSeal(peerId)) return
-        lastAnsweredAt[peerId] = now
-        if (sendIntro(peerId)) metrics.onIntroAnswered() else lastAnsweredAt.remove(peerId)
+        lastAnswered[peerId] = Answered(initEph, now)
+        if (sendIntro(peerId)) metrics.onIntroAnswered() else lastAnswered.remove(peerId)
     }
 
     /** The heal hook: settle confirmed peers, re-send stale pending intros, and expire finished grace windows. */
@@ -267,7 +282,7 @@ class IntroSync(
         /** Re-send an unconfirmed intro this often — under the 24 h custody TTL, so a copy is always live. */
         const val RESEND_FLOOR_MS = 20 * 60 * 60_000L
 
-        /** Answer an init-bearing peer at most this often — bounds a peer that keeps re-flooding its init. */
+        /** Answer one init at most this often — bounds a peer that keeps re-flooding its init. */
         const val ANSWER_FLOOR_MS = 60 * 60_000L
 
         /** How long the pair scope outlives our own confirmation, so the peer can still pull our reply from it. */

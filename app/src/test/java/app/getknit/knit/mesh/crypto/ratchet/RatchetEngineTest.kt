@@ -99,6 +99,29 @@ class RatchetEngineTest {
             if (delta.consumedSkippedIdx != null) skipped.remove(header.se to header.n)
         }
 
+        /**
+         * A reset request of ours, minted the way `RatchetSessions.sealResetDm` does: a fresh initiation that
+         * keeps the old root draining as `prevRoot`, our own receive state purged, and send numbering restarted
+         * at 1 — its epoch replaces the dead era's key of that number (ADR 027). The peer opens the returned
+         * frame with `resetRequested = true`; what we seal after it carries the same init, unflagged.
+         */
+        fun reset(now: Long): Frame {
+            val old = session
+            val initiation =
+                engine.initiate(peer.nodeId, ik.priv, peer.ik.pub, RatchetEngine.PeerPrekey(id = 1, pub = peer.spk.pub), now)
+            session =
+                initiation.session.copy(
+                    prevRoot = old?.root,
+                    prevRootWeAreInitiator = old?.weAreInitiator ?: false,
+                    prevRootExpiresAt = if (old != null) now + RatchetEngine.PREV_ROOT_TTL_MS else 0L,
+                    lastResetSentAt = now,
+                )
+            localEpochs[initiation.epoch.epoch] = initiation.epoch
+            recvEpochs.clear()
+            skipped.clear()
+            return seal("reset", now)
+        }
+
         /** A device wipe: ratchet state gone, identity + prekeys (identity.key) intact. */
         fun wipe() {
             session = null
@@ -519,27 +542,91 @@ class RatchetEngineTest {
         assertTrue(checkNotNull(a.session).confirmed)
     }
 
-    @Test
-    fun aLateRaceInitAfterConfirmationNeverDefectsToTheLosingRoot() {
+    /**
+     * #83. The race resolves entirely through A's frames: B adopts A's root and answers under it, and A
+     * confirms on the answer WITHOUT ever having processed B's init — no idempotence anchor. B's opening DM,
+     * sealed under its losing root while the two were apart, lands after that. It is a real message: it must
+     * open, read-only, and never replace the session both sides share.
+     */
+    private fun raceLosersLateOpeningDmOpensReadOnly(loserInitiatedAt: Long) {
         val (a, b) = pair()
         a.initiate(NOW)
-        b.initiate(NOW + 5_000)
-        val loserInit = b.seal("from b, losing root", NOW + 5_000)
+        b.initiate(loserInitiatedAt)
+        val opening = b.seal("from b, losing root", loserInitiatedAt)
 
-        // The race resolves entirely through A's frames: B adopts A's root and replies; A confirms
-        // WITHOUT ever having processed B's init (its idempotence anchor was never recorded).
         b.open(a.seal("from a", NOW), NOW)
         a.open(b.seal("reply under the winner", NOW), NOW)
+        val settled = checkNotNull(a.session)
+        assertTrue(settled.confirmed)
+        assertNull(settled.peerInitEphPub)
+
+        assertEquals("from b, losing root", text(a.open(opening, NOW + 60_000)))
+        val after = checkNotNull(a.session)
+        assertArrayEquals("never defects to the losing root", settled.root, after.root)
+        assertNull("no prevRoot is kept for it", after.prevRoot)
+        assertNull("no anchor is recorded", after.peerInitEphPub)
+        assertEquals(settled.peerBaseEpoch, after.peerBaseEpoch)
+        assertEquals(settled.highestPeAcked, after.highestPeAcked)
+        assertTrue(after.confirmed && after.weAreInitiator)
+
+        // Custody re-serves it for a TTL: the receive row its first open stored makes every copy benign.
+        assertTrue(a.open(opening, NOW + 120_000) === OpenOutcome.Failed.DUPLICATE)
+        assertEquals("still talking", text(b.open(a.seal("still talking", NOW + 120_000), NOW + 120_000)))
+        assertEquals("both ways", text(a.open(b.seal("both ways", NOW + 120_000), NOW + 120_000)))
+    }
+
+    /** The remnant guard's branch: the loser's init is NEWER than the session the winner confirmed. */
+    @Test
+    fun aRaceLosersLateOpeningDmOpensReadOnlyWhenItInitiatedLater() = raceLosersLateOpeningDmOpensReadOnly(NOW + 5_000)
+
+    /** The stale-init branch: the loser's init is OLDER than the session the winner confirmed. */
+    @Test
+    fun aRaceLosersLateOpeningDmOpensReadOnlyWhenItInitiatedEarlier() = raceLosersLateOpeningDmOpensReadOnly(NOW - 5_000)
+
+    /**
+     * The winner reads the loser's pre-adoption frames — both of them, the second on the live chain — but
+     * their epoch sits under the root it is abandoning, so it never becomes the winner's DH base: the winner
+     * stays on the loser's signed prekey, init attached, until the loser answers under the winning root.
+     */
+    @Test
+    fun theRaceWinnerNeverTakesTheLosersPreAdoptionEpochAsItsDhBase() {
+        val (a, b) = pair()
+        a.initiate(NOW)
+        b.initiate(NOW)
+        val early0 = b.seal("early 0", NOW)
+        val early1 = b.seal("early 1", NOW)
+
+        assertEquals("early 0", text(a.open(early0, NOW)))
+        assertEquals("early 1", text(a.open(early1, NOW)))
+        assertEquals(0, checkNotNull(a.session).peerBaseEpoch)
+        val fromA = a.seal("from a", NOW)
+        assertEquals(0, fromA.header.pe)
+        assertNotNull(fromA.header.init)
+
+        assertEquals("from a", text(b.open(fromA, NOW)))
+        assertEquals("answer", text(a.open(b.seal("answer", NOW), NOW)))
+        assertTrue(checkNotNull(a.session).confirmed)
+        assertArrayEquals(checkNotNull(a.session).root, checkNotNull(b.session).root)
+    }
+
+    /**
+     * What `FLAG_RESET` exempts from the remnant guard it also keeps out of the read-only remnant candidate: a
+     * reset is adopted or refused, never read without adoption — reading one would run its re-seal under the
+     * root it asks us to leave. One whose init is older than the session we confirmed stays refused.
+     */
+    @Test
+    fun aStaleFlaggedResetIsRefusedNeverReadWithoutAdoption() {
+        val (a, b) = pair()
+        val staleReset = b.reset(NOW)
+        a.initiate(NOW + 10_000)
+        b.open(a.seal("from a", NOW + 10_000), NOW + 10_000)
+        a.open(b.seal("reply under the winner", NOW + 10_000), NOW + 10_000)
         assertTrue(checkNotNull(a.session).confirmed)
         assertNull(checkNotNull(a.session).peerInitEphPub)
-        val winningRoot = checkNotNull(a.session).root
+        val root = checkNotNull(a.session).root
 
-        // B's original losing-root frame finally re-serves from custody, init timestamp NEWER than the
-        // session A confirmed. It must fail benignly — never replace the session both sides share.
-        val outcome = a.open(loserInit, NOW + 60_000)
-        assertTrue(outcome === OpenOutcome.Failed.AEAD_FAIL)
-        assertArrayEquals(winningRoot, checkNotNull(a.session).root)
-        assertTrue(checkNotNull(a.session).confirmed)
+        assertTrue(a.open(staleReset, NOW + 20_000, resetRequested = true) === OpenOutcome.Failed.AEAD_FAIL)
+        assertArrayEquals(root, checkNotNull(a.session).root)
     }
 
     @Test
@@ -557,7 +644,7 @@ class RatchetEngineTest {
         assertTrue("precondition: B is the higher nodeId the guard refuses", b.nodeId > a.nodeId)
 
         // B loses its state and explicitly asks to re-establish. Unflagged this is indistinguishable
-        // from a re-served race remnant and is refused (aLateRaceInitAfterConfirmationNeverDefects...);
+        // from a re-served race remnant and is only ever read, never adopted (aRaceLosersLateOpeningDm...);
         // flagged, it must be adopted, because refusing it leaves B unable to recover from its own side
         // at all — only A's 6 h reset heuristic could ever clear it, and that is the six-hour
         // one-directional blackout ADR 024 was opened for.
@@ -665,6 +752,138 @@ class RatchetEngineTest {
         // the reset path re-seals undelivered traffic; this asserts the failure is contained, not silent.
         assertTrue(b.open(old0, NOW + 10_000) === OpenOutcome.Failed.DUPLICATE)
         assertTrue(b.open(old1, NOW + 10_000) === OpenOutcome.Failed.AEAD_FAIL)
+    }
+
+    // --- a reset's kept prevRoot (#87) ---
+
+    /** A session that has turned around once, so A is at epoch 2 and B's next frames seal against it. */
+    private fun turnedAround(): Pair<Side, Side> {
+        val (a, b) = pair()
+        a.initiate(NOW)
+        b.open(a.seal("hello", NOW), NOW)
+        a.open(b.seal("hi", NOW), NOW)
+        b.open(a.seal("turnaround", NOW), NOW)
+        return a to b
+    }
+
+    /**
+     * A resets while B is away; B's DMs sealed meanwhile name A's dead-era epoch 2, whose key survives the
+     * reset (it minted only epoch 1). Whatever order they land in, they open under the kept `prevRoot` and
+     * must leave the replacement exactly as the reset minted it: unconfirmed, init still riding, no DH base
+     * from the dead era, no pe ack. Then the thing #87 lost: A's answer carries the init, so B — who has not
+     * seen the reset — adopts from the answer itself, and the reset landing last opens on the skipped key.
+     */
+    private fun oldEraFramesNeverConfirmAResetsReplacement(order: (Frame, Frame) -> List<Frame>) {
+        val (a, b) = turnedAround()
+        val apart0 = b.seal("apart 0", NOW + 1_000)
+        val apart1 = b.seal("apart 1", NOW + 1_000)
+        assertEquals(2, apart0.header.pe)
+        val reset = a.reset(NOW + 2_000)
+
+        order(apart0, apart1).forEach { assertTrue(a.open(it, NOW + 3_000) is OpenOutcome.Opened) }
+        val replacement = checkNotNull(a.session)
+        assertFalse("a frame from the dead era confirmed the replacement", replacement.confirmed)
+        assertNotNull(replacement.initEphPub)
+        assertEquals(0, replacement.peerBaseEpoch)
+        assertEquals(0, replacement.highestPeAcked)
+
+        val tick = a.seal("tick", NOW + 3_000)
+        assertNotNull("the answer still carries the reset's init", tick.header.init)
+        assertEquals(0, tick.header.pe)
+        assertEquals("tick", text(b.open(tick, NOW + 4_000)))
+        assertArrayEquals("B adopted the reset from the answer", replacement.root, checkNotNull(b.session).root)
+        assertEquals("reset", text(b.open(reset, NOW + 4_000, resetRequested = true)))
+
+        assertEquals("after", text(a.open(b.seal("after", NOW + 5_000), NOW + 5_000)))
+        assertTrue(checkNotNull(a.session).confirmed)
+    }
+
+    @Test
+    fun aFrameOpenedUnderAResetsKeptPrevRootNeverConfirmsTheReplacement() =
+        oldEraFramesNeverConfirmAResetsReplacement { apart0, _ -> listOf(apart0) }
+
+    /** The second frame of the dead-era epoch opens on the live chain its first one derived. */
+    @Test
+    fun aSecondOldEraFrameOnTheLiveChainNeverConfirmsTheReplacement() =
+        oldEraFramesNeverConfirmAResetsReplacement { apart0, apart1 -> listOf(apart0, apart1) }
+
+    /** Out of order: the first frame of the dead-era epoch opens on the skipped key the second one stored. */
+    @Test
+    fun anOldEraPairOpenedOutOfOrderNeverConfirmsTheReplacementThroughItsSkippedKey() =
+        oldEraFramesNeverConfirmAResetsReplacement { apart0, apart1 -> listOf(apart1, apart0) }
+
+    /**
+     * The adopter's side of the same rule. B adopts A's reset, and A's dead-era epoch 2 — numbered above the
+     * reset's epoch 1 — then drains in under `prevRoot`, twice. Taking it as B's DH base would seal B's next
+     * frames against a key A replaces the moment its own numbering reaches 2, and the damped adoption would
+     * refuse A's fresh epochs until they climbed past it.
+     */
+    @Test
+    fun oldEraFramesDrainingAfterAnAdoptedResetNeverBecomeTheAdoptersDhBase() {
+        val (a, b) = turnedAround()
+        val old0 = a.seal("old 0", NOW + 1_000)
+        val old1 = a.seal("old 1", NOW + 1_000)
+        assertEquals(2, old0.header.se)
+        val reset = a.reset(NOW + 2_000)
+
+        assertEquals("reset", text(b.open(reset, NOW + 3_000, resetRequested = true)))
+        assertEquals("old 0", text(b.open(old0, NOW + 3_000)))
+        assertEquals("old 1", text(b.open(old1, NOW + 3_000)))
+        assertEquals(1, checkNotNull(b.session).peerBaseEpoch)
+        assertArrayEquals(reset.header.ek, checkNotNull(b.session).peerBasePub)
+
+        val back = b.seal("back", NOW + 4_000)
+        assertEquals(1, back.header.pe)
+        assertEquals("back", text(a.open(back, NOW + 4_000)))
+        assertTrue(checkNotNull(a.session).confirmed)
+    }
+
+    /**
+     * The era is the root a frame opened under, not the number of our epoch it names. A peer that took one of
+     * our dead-era epochs as its base before this rule (an older build) seals under the *new* root against it;
+     * that frame is this era's, and must still confirm the replacement.
+     */
+    @Test
+    fun anInEraFrameNamingOurRetiredEpochStillConfirmsTheReplacement() {
+        val (a, b) = turnedAround()
+        val deadEraEpoch2 = checkNotNull(a.localEpochs[2])
+        val reset = a.reset(NOW + 1_000)
+        b.open(reset, NOW + 2_000, resetRequested = true)
+        b.session = checkNotNull(b.session).copy(peerBasePub = deadEraEpoch2.pub, peerBaseEpoch = 2)
+
+        val inEra = b.seal("in era", NOW + 2_000)
+        assertEquals(2, inEra.header.pe)
+        assertEquals("in era", text(a.open(inEra, NOW + 2_000)))
+        assertTrue(checkNotNull(a.session).confirmed)
+    }
+
+    /**
+     * Why the read-only remnant candidate records nothing. A resetter's follow-up frames carry its reset's
+     * init *without* the flag, and to a session we initiated whose peer never sent an init that is exactly a
+     * race remnant: it is read, not adopted. Had the read anchored the init's ephemeral, the flagged reset
+     * itself — same ephemeral — would then open as an idempotent re-serve on the skipped key its follow-up
+     * stored, never adopted, and we would sit on the root the peer had left.
+     */
+    @Test
+    fun anUnanchoredWinnerThatReadAResetsUnflaggedFollowerStillAdoptsTheReset() {
+        val (a, b) = pair()
+        a.initiate(NOW)
+        b.open(a.seal("hello", NOW), NOW)
+        b.seal("never delivered", NOW) // B's epoch 1, so A holds no receive row for the number B's reset reuses
+        a.open(b.seal("hi", NOW, force = true), NOW)
+        assertTrue(checkNotNull(a.session).confirmed)
+        assertNull(checkNotNull(a.session).peerInitEphPub)
+        assertTrue("precondition: B is the higher nodeId the guard reads", b.nodeId > a.nodeId)
+
+        val reset = b.reset(NOW + 10_000)
+        val followUp = b.seal("follow-up", NOW + 10_000)
+        assertEquals("follow-up", text(a.open(followUp, NOW + 11_000)))
+        assertTrue("read, not adopted", checkNotNull(a.session).weAreInitiator)
+        assertNull(checkNotNull(a.session).peerInitEphPub)
+
+        assertEquals("reset", text(a.open(reset, NOW + 11_000, resetRequested = true)))
+        assertFalse("the reset was adopted", checkNotNull(a.session).weAreInitiator)
+        assertArrayEquals(checkNotNull(b.session).root, checkNotNull(a.session).root)
     }
 
     /**

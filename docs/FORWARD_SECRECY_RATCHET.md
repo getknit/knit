@@ -154,7 +154,9 @@ frame's arrival can be load-bearing. Each frame fully describes how to derive it
 **Numbering is monotone across an *adopted* replacement** (§7): the receiving side keeps its own
 `se` counter running, so a reused `(peer, se)` can only follow a device wipe — which also discards the
 old epoch privs — or a locally-originated **reset**, which re-initiates from scratch and does restart
-`se` at 1. Either way the peer purges its stale rows for that numbering, so there is no collision.
+`se` at 1. Either way the peer purges its stale rows for that numbering, so there is no collision on its
+side. On ours, a reset's re-minted epoch *replaces* the dead era's key of the same number (ADR 027); the
+dead-era keys numbered above it survive, which is how the peer's in-flight frames still drain (§7).
 
 **Adopting the peer's newest epoch as our next DH base is jump-damped.** Once we have an anchor
 (`peerBaseEpoch >= 1`), an `se` more than `MAX_EPOCH_JUMP` beyond it is not adopted: the frame still
@@ -166,6 +168,18 @@ zeroes our anchor while the peer's numbering keeps climbing; refusing there woul
 next legitimate frame, and refusing a *frame* is `BAD_HEADER`, which drives no reset and so has no way
 back. Refusing an *adoption* is recoverable by construction: our sends then name an epoch the peer has
 swept, they report `EPOCH_GONE`, and that does trigger a reset.
+
+**Only a fresh epoch under the active root moves the session's era** (ADR 2026-09.pz9g). Three things a
+successful open records are claims about the era we hold *now*: adopting the peer's epoch as our next DH
+base, raising `highestPeAcked`, and — for an initiator — confirming the session (which drops the init from
+our frames). A frame drained under any other root says nothing about that era: under a kept `prevRoot`, a
+race's other root, or a late race loser's (§7). Such frames open and deliver, and their chain is stored,
+but they record none of the three. The receive rows make the rule exact without a flag: every root change
+on our side purges them, so each row was derived by exactly one fresh derivation, and that derivation's
+root already decided. The live-chain and skipped-key rungs therefore never record any of the three — in
+era it would repeat what the first frame of the epoch recorded, out of era it would be wrong. The era is
+the root, never the number of our epoch a frame names: a peer can seal under the new root against a key
+of ours from the old era, and that frame is this era's.
 
 ## 5. Wire form (additive; see docs/WIRE_COMPAT.md)
 
@@ -220,7 +234,9 @@ in-memory, 10 min, reset per mesh session). Two consequences are baked in:
   `DECRYPT_FAILED`. It also spares v1 an HPKE unwrap per re-serve.
 - **The open ladder** (engine, pure): stored skipped key → live chain of a known recv epoch
   (deriving-and-storing keys across any index gap, ≤200/epoch) → fresh epoch derivation, trying the
-  active root then the draining `prevRoot`. Typed failures map to drop reasons:
+  active root, then the draining `prevRoot`, then — for an unanchored race winner — a late race loser's
+  root (§7). Only the last rung under the active root moves the session's era (§4). Typed failures map
+  to drop reasons:
   `RATCHET_NO_SESSION` / `RATCHET_EPOCH_GONE` / `DUPLICATE` (benign) / `BAD_HEADER` / `AEAD_FAIL`.
   All are delivery-local; the frame still relays and custodies (the no-throw contract of
   `onDeliver` holds — nothing in the v2 path throws out).
@@ -245,7 +261,9 @@ skipped-key path absorbs.
 - **Both-initiate race.** Two unconfirmed roots meet. Winner (both sides compute it): the init
   whose *initiator* has the lexicographically smaller nodeId — deliberately not timestamp-based,
   since concurrent inits can carry identical `at`. The loser's root drains as `prevRoot` (48 h =
-  2× custody TTL) so its in-flight epochs still open; numbering monotone, no collisions.
+  2× custody TTL) so its in-flight epochs still open; numbering monotone, no collisions. They open
+  read-only (§4): the winner never takes the loser's pre-adoption epoch as its DH base, and seals
+  against the loser's SPK, init attached, until the loser answers under the winning root.
 - **Init idempotence.** A session's resolved peer-init is remembered by its ephemeral key
   (`peerInitEphPub`). Re-served copies — which outlive the resolution by up to the custody TTL, and
   can carry a *newer* timestamp than the session they lost to — match the anchor and are treated as
@@ -259,19 +277,32 @@ skipped-key path absorbs.
   **confirmed initiator with no recorded peer-init anchor** (`peerInitEphPub == null` — we won a race
   without ever processing the loser's init) treats an init that *loses* the nodeId tiebreak as a
   stale race remnant, never a replacement — adopting it would defect to the losing root while the
-  peer sits on the winning one, diverging permanently. A genuine wipe of the higher-id peer still
-  recovers: their undecryptable traffic trips our reset heuristic and our reset re-establishes.
+  peer sits on the winning one, diverging permanently. Refused is not unread, though (ADR
+  2026-09.pz9g): the remnant's own frame is the loser's opening DM, which can land *after* the
+  post-adoption answers the winner confirmed on, and it is a real message. So on every return that
+  refuses such an init, the loser's root is offered as a trailing **read-only** candidate — for a
+  `pe = 0` frame, never adopted, and recording nothing (no anchor: a resetter's unflagged follow-up
+  frames carry its reset init, and anchoring one would turn the flagged reset into an idempotent
+  re-serve). `FLAG_RESET` never gets it: a reset is adopted or refused, never read. The state is also
+  every session we initiated whose peer never sent an init, so a genuine wipe of the higher-id peer
+  that re-initiates *without* the flag is read rather than refused, and recovers from the peer's side:
+  our frames fail on it, its heuristic fires, and its flagged reset is exempt from this carve-out.
   Inbound replacements are additionally rate-limited (1/peer/h, the facade's `allowReplacement` gate).
-- **Reset request** (lands in the reset-hardening phase). Trigger: ≥3 distinct undecryptable-v2
-  frame ids from a pinned peer (`RATCHET_NO_SESSION`/`RATCHET_EPOCH_GONE`), rate-limited to one per
-  6 h (persisted). The request is an ordinary v2 DM carrying a fresh init, `flags = RESET`, and
+- **Reset request.** Trigger: ≥3 distinct undecryptable-v2 frame ids from a pinned peer
+  (`RATCHET_NO_SESSION`/`RATCHET_EPOCH_GONE`/`RATCHET_AEAD_FAIL`, ADR 023), each from the era it would
+  abandon (ADR 024/026), rate-limited to one per 6 h (persisted). The request is an ordinary v2 DM carrying a fresh init, `flags = RESET`, and
   `MessageContent.ctl = CTL_SESSION_RESET` — deliberately *not* a new frame type, which v1 relays
   would refuse to custody (`isCustodial` is a fixed list); as a chat frame it floods, custodies,
   and reaches an offline peer. The receiver (frame-signed, newer `init.at`) adopts per the
   replacement rules and **re-seals its still-unacked DMs from the last 24 h** under the fresh
   session (the `flushPendingFor` mechanics: fresh seal, original `id`/`sentAt` header), recovering
   what the wiped device lost from custody. Control frames are never persisted, notified, or acked
-  as messages; inbound replacements are additionally rate-limited (1/peer/h).
+  as messages; inbound replacements are additionally rate-limited (1/peer/h). The resetter's session
+  stays unconfirmed until it opens a frame the peer sealed under the new root: a dead-era frame drained
+  under its `prevRoot` never confirms it (§4), so every frame it seals meanwhile carries the init, and
+  a peer that has not yet seen the reset can adopt it from any of them. The peer answers each new init
+  it opens with one sealed frame (`IntroSync`), because its re-seals reuse ids the resetter already
+  holds and never reach the ratchet.
 
 ## 8. Export API (for the internet relay plane — consumer spec'd)
 

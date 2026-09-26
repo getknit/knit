@@ -8,15 +8,23 @@ import app.getknit.knit.mesh.crypto.AesGcm
  * persists (atomically with the message row — see `RatchetSessions`); no IO, no Android, randomness
  * only through the injected keypair source. That keeps every ordering/race scenario a plain-JVM test.
  *
- * Design invariants (the mesh's custody semantics force all three — see the design doc):
+ * Design invariants (the mesh's custody semantics force all of them — see the design doc):
  * - **Epochs derive independently** off a static per-session root: any subset of a peer's epochs can be
  *   processed in any order, and a wholly-evicted epoch loses only itself.
- * - **Own send-epoch numbers are monotone for the life of the local state**, across root replacements
- *   (both-initiate races, inbound resets). Only a device wipe restarts numbering — and a wipe also
- *   discards the old epoch privs, so `(peer, se)` can only be reused when the session itself was
- *   replaced, which purges the stale receive state ([OpenDelta.purgePeerRecvState]).
+ * - **Own send-epoch numbers are monotone across the roots a peer hands us** (both-initiate races, inbound
+ *   replacements), but **not across our own reset**: `RatchetSessions.sealResetDm` initiates afresh and
+ *   restarts at 1, and the re-minted epoch replaces the dead era's key of the same number (ADR 027). So
+ *   `(peer, se)` is reused only when a session was replaced, and every root change on our side purges the
+ *   stale receive state ([OpenDelta.purgePeerRecvState], and `sealResetDm` for its own).
  * - **A receive chain, once derived, never needs the root again** — `chainKey` alone advances it, which
  *   is what lets a superseded root ([SessionState.prevRoot]) drain for a bounded window and then vanish.
+ * - **A frame moves the session's era only when it derives a fresh epoch under the active root.** Adopting
+ *   the peer's epoch as our DH base, recording which of our epochs it has sealed against, and confirming the
+ *   session are all claims about the era we hold now, and a frame drained under any other root (a kept
+ *   `prevRoot`, a race's other root, a late race remnant) says nothing about it. Every stored receive row
+ *   was derived by exactly one fresh derivation, whose root already decided — the root change that would
+ *   make a row stale purges it — so the live-chain and skipped-key rungs never apply them: in era it would
+ *   repeat what the epoch's first frame recorded, out of era it would be wrong.
  *
  * [SessionState] and [RecvEpoch] are data classes for `copy` ergonomics; their [ByteArray] fields make
  * generated equality reference-based, which nothing here relies on.
@@ -141,7 +149,8 @@ class RatchetEngine(
          * It exempts the init from the [resolveSession] race-remnant refusal. That guard reads a *stale
          * re-serve* out of a confirmed winner's history, and a reset can never be one: it is minted fresh
          * per request, and once adopted its ephemeral becomes the idempotence anchor that makes every
-         * re-serve of it inert.
+         * re-serve of it inert. For the same reason a flagged init is never offered as the read-only remnant
+         * candidate: a reset is adopted or refused, never read without adoption.
          */
         val resetRequested: Boolean = false,
     )
@@ -291,10 +300,12 @@ class RatchetEngine(
     /**
      * Opens one inbound v2 frame. The ladder: a stored skipped key, then the live chain of a known
      * receive epoch (deriving-and-storing keys across any index gap), then a brand-new epoch derivation
-     * — under the active root first and the draining [SessionState.prevRoot] second. An attached init
-     * may establish, idempotently re-confirm, race-tiebreak, or replace the session; every mutation
-     * rides the returned [OpenDelta], and nothing is committed on failure. A null [nonce] is the v3 form
-     * (derived nonce, header bound into the AAD — see [seal]); the ladder is otherwise identical.
+     * — under the active root first, the draining [SessionState.prevRoot] second, and, for an unanchored race
+     * winner, a late race loser's root last. An attached init may establish, idempotently re-confirm,
+     * race-tiebreak, or replace the session; every mutation rides the returned [OpenDelta], and nothing is
+     * committed on failure. Only the fresh derivation, and only under the active root, moves the session's
+     * era (see the class invariants). A null [nonce] is the v3 form (derived nonce, header bound into the AAD
+     * — see [seal]); the ladder is otherwise identical.
      */
     fun open(
         ctx: OpenContext,
@@ -311,7 +322,7 @@ class RatchetEngine(
                 OpenOutcome.Opened(
                     plain,
                     OpenDelta(
-                        session = touch(resolved.session, header, ctx, now),
+                        session = touch(resolved.session, header, ctx, now, eraEffects = false),
                         recvEpoch = ctx.recvEpoch?.copy(lastUsedAt = now),
                         consumedSkippedIdx = header.n,
                     ),
@@ -322,7 +333,7 @@ class RatchetEngine(
         return when {
             epoch == null -> openNewEpoch(ctx, resolved, header, nonce, ct, aad, now)
             header.n < epoch.next -> OpenOutcome.Failed.DUPLICATE
-            else -> finishOpen(ctx, resolved, epoch.chainKey, epoch.next, header, nonce, ct, aad, now)
+            else -> finishOpen(ctx, resolved, epoch.chainKey, epoch.next, header, nonce, ct, aad, now, eraEffects = false)
         }
     }
 
@@ -347,9 +358,15 @@ class RatchetEngine(
         val purge: Boolean = false,
     )
 
+    /**
+     * [active] marks the root the resolved session holds as its own: only a fresh epoch derived under it may
+     * move the session's era. Every other candidate (a draining `prevRoot`, a race's other root, a late race
+     * loser's) is read-only — its frames still open and deliver, and their epoch's chain is stored.
+     */
     private class RootCandidate(
         val root: ByteArray,
         val senderIsInitiator: Boolean,
+        val active: Boolean,
     )
 
     private fun sessionFailure(
@@ -390,12 +407,12 @@ class RatchetEngine(
                         establishedAt = init.at,
                         peerInitEphPub = init.eph,
                     ),
-                rootCandidates = listOf(RootCandidate(root, senderIsInitiator = true)),
+                rootCandidates = listOf(RootCandidate(root, senderIsInitiator = true, active = true)),
             )
         }
-        val candidates = mutableListOf(RootCandidate(session.root, !session.weAreInitiator))
+        val candidates = mutableListOf(RootCandidate(session.root, !session.weAreInitiator, active = true))
         session.prevRoot?.takeIf { session.prevRootExpiresAt > now }?.let {
-            candidates += RootCandidate(it, !session.prevRootWeAreInitiator)
+            candidates += RootCandidate(it, !session.prevRootWeAreInitiator, active = false)
         }
         if (init == null) return ResolvedSession(session, candidates)
         // An init we already resolved (responded to, adopted, or archived), riding a later unconfirmed
@@ -407,14 +424,16 @@ class RatchetEngine(
         // inits can carry the identical timestamp, and both sides must pick the same winner.
         if (!session.confirmed && session.weAreInitiator) return resolveRace(ctx, session, init, now)
         // A genuinely stale init (older than the session we already share) changes nothing.
-        if (init.at <= session.establishedAt) return ResolvedSession(session, candidates)
-        if (ctx.spkPrivForInit == null || !ctx.allowReplacement) return ResolvedSession(session, candidates)
+        if (init.at <= session.establishedAt) return ResolvedSession(session, candidates + remnantCandidates(ctx, header, init))
+        if (ctx.spkPrivForInit == null || !ctx.allowReplacement) {
+            return ResolvedSession(session, candidates + remnantCandidates(ctx, header, init))
+        }
         // The confirmed-initiator race remnant: we won a both-initiate race WITHOUT ever processing the
-        // loser's init (their pre-adoption frames were all lost), so no idempotence anchor was recorded
-        // — and their init can re-serve from custody with a *newer* timestamp for a full TTL. An init
-        // that loses the nodeId tiebreak in this state is that remnant, never a replacement: adopting
-        // it would defect to the losing root while the peer sits on the winning one (both "confirmed",
-        // permanently diverged).
+        // loser's init (their pre-adoption frames were lost, or are still on their way), so no idempotence
+        // anchor was recorded — and their init can re-serve from custody with a *newer* timestamp for a full
+        // TTL. An init that loses the nodeId tiebreak in this state is that remnant, never a replacement:
+        // adopting it would defect to the losing root while the peer sits on the winning one (both
+        // "confirmed", permanently diverged).
         //
         // `FLAG_RESET` is exempt, and must be (ADR 024). The remnant this refuses is a re-served init from
         // an era the peer has already left; a reset is the opposite — freshly minted, deliberate, and the
@@ -423,10 +442,10 @@ class RatchetEngine(
         // that reset in the wrong order stayed dark for up to six hours per cycle while every X3DH input
         // was present. Adopting it cannot defect to a losing root, because a reset abandons the losing
         // root on the sender's side too.
-        val unanchoredRaceWinner = session.confirmed && session.weAreInitiator && session.peerInitEphPub == null
-        if (unanchoredRaceWinner && !ctx.resetRequested && session.peerId > ctx.selfNodeId) {
-            return ResolvedSession(session, candidates)
-        }
+        //
+        // Refused is not unread: the remnant's own frame is the loser's opening DM, and it is still a real
+        // message (#83) — see [remnantCandidates].
+        if (isRemnantOf(ctx, session)) return ResolvedSession(session, candidates + remnantCandidates(ctx, header, init))
         // Replacement (peer reset / re-init after losing state): their epoch numbering restarts at 1,
         // so our recv rows for the old numbering must go; the old root drains via prevRoot for any
         // still-in-flight old frames.
@@ -448,9 +467,51 @@ class RatchetEngine(
                     sendChainKey = null,
                     sendEpochExport = null,
                 ),
-            rootCandidates = listOf(RootCandidate(newRoot, senderIsInitiator = true)),
+            rootCandidates = listOf(RootCandidate(newRoot, senderIsInitiator = true, active = true)),
             purge = true,
         )
+    }
+
+    /**
+     * The state the race-remnant guard reads: a confirmed session we initiated with no peer init ever
+     * resolved (we won a race without processing the loser's init — or simply initiated, since a responder
+     * never sends one), an init from the side that loses the nodeId tiebreak, and no `FLAG_RESET`.
+     */
+    private fun isRemnantOf(
+        ctx: OpenContext,
+        session: SessionState,
+    ): Boolean =
+        session.confirmed && session.weAreInitiator && session.peerInitEphPub == null &&
+            !ctx.resetRequested && session.peerId > ctx.selfNodeId
+
+    /**
+     * The late race loser's root, as a trailing **read-only** candidate (#83). The loser adopts our root and
+     * answers under it — its tick, its intro — and those answers can overtake its own opening DM, which it
+     * sealed under the losing root while the two were apart: that DM rides custody and the digest exchange,
+     * the answers ride the live link. By then we have confirmed on the answers without ever seeing the loser's
+     * init, so both returns that refuse it (a stale `at`, the remnant guard) used to leave the DM unreadable
+     * for good — nothing re-serves or re-seals it, and one or two lost frames never trip the reset heuristic.
+     *
+     * Offered under exactly the state [isRemnantOf] names, for a frame sealed against our signed prekey
+     * (`pe = 0`, as every frame of an unconfirmed initiator's first epoch is), and never adopted: the guard's
+     * point — no defection to the losing root — stands. Nothing is recorded either. Anchoring the init's
+     * ephemeral would turn a later *flagged* reset carrying the same ephemeral into an idempotent re-serve: a
+     * resetter's own follow-up frames carry its reset init without the flag, so reading one of those here and
+     * anchoring it is how the reset itself would open without being adopted. Re-serves of the frame end as
+     * `DUPLICATE` on the receive row its first open stored.
+     *
+     * The same state is also every session we initiated whose peer never sent an init, so a higher-id peer
+     * that lost its ratchet state and re-initiates *without* `FLAG_RESET` is now read rather than refused;
+     * the pair then recovers from that peer's side (its heuristic, then its flagged reset) instead of ours.
+     */
+    private fun remnantCandidates(
+        ctx: OpenContext,
+        header: FrameHeader,
+        init: InitPayload,
+    ): List<RootCandidate> {
+        val session = ctx.session ?: return emptyList()
+        if (!isRemnantOf(ctx, session) || header.pe != 0 || ctx.spkPrivForInit == null) return emptyList()
+        return listOf(RootCandidate(respond(ctx, init), senderIsInitiator = true, active = false))
     }
 
     /**
@@ -462,6 +523,10 @@ class RatchetEngine(
      * own — that holds for an ordinary race, but two peers resetting each other race with inits whose
      * sender restarted its numbering, so the winner's fresh epochs collide with the loser's surviving rows.
      * The side that keeps its own root changes no era and keeps its rows.
+     *
+     * Each side's candidates put the root it now holds first and the other one read-only: the winner still
+     * reads the loser's pre-adoption frames, but their epoch never becomes its DH base — it stays on the
+     * loser's signed prekey (with the init attached) until the loser answers under the winning root.
      */
     private fun resolveRace(
         ctx: OpenContext,
@@ -489,8 +554,8 @@ class RatchetEngine(
                     ),
                 rootCandidates =
                     listOf(
-                        RootCandidate(peerRoot, senderIsInitiator = true),
-                        RootCandidate(session.root, senderIsInitiator = false),
+                        RootCandidate(peerRoot, senderIsInitiator = true, active = true),
+                        RootCandidate(session.root, senderIsInitiator = false, active = false),
                     ),
                 // We just swapped roots, so every recv row we hold describes a chain under the era we are
                 // abandoning — exactly the replacement case, and it must purge for the same reason. The
@@ -511,8 +576,8 @@ class RatchetEngine(
                     ),
                 rootCandidates =
                     listOf(
-                        RootCandidate(session.root, senderIsInitiator = false),
-                        RootCandidate(peerRoot, senderIsInitiator = true),
+                        RootCandidate(session.root, senderIsInitiator = false, active = true),
+                        RootCandidate(peerRoot, senderIsInitiator = true, active = false),
                     ),
             )
         }
@@ -552,7 +617,7 @@ class RatchetEngine(
                     senderEpoch = header.se,
                     baseEpoch = header.pe,
                 )
-            val outcome = finishOpen(ctx, resolved, keys.chainKey, 0, header, nonce, ct, aad, now)
+            val outcome = finishOpen(ctx, resolved, keys.chainKey, 0, header, nonce, ct, aad, now, candidate.active)
             if (outcome !is OpenOutcome.Failed) return outcome
         }
         return OpenOutcome.Failed.AEAD_FAIL
@@ -569,6 +634,7 @@ class RatchetEngine(
         ct: ByteArray,
         aad: ByteArray,
         now: Long,
+        eraEffects: Boolean,
     ): OpenOutcome {
         var chainKey = chainKeyAtNext
         val skipped = mutableListOf<SkippedKey>()
@@ -582,7 +648,7 @@ class RatchetEngine(
             OpenOutcome.Opened(
                 plain,
                 OpenDelta(
-                    session = touch(resolved.session, header, ctx, now),
+                    session = touch(resolved.session, header, ctx, now, eraEffects),
                     recvEpoch = RecvEpoch(epoch = header.se, chainKey = nextChain, next = header.n + 1, lastUsedAt = now),
                     skippedInserts = skipped,
                     purgePeerRecvState = resolved.purge,
@@ -591,13 +657,23 @@ class RatchetEngine(
         }
     }
 
-    /** Post-success bookkeeping: adopt the peer's newest epoch as our next DH base, track pe acks, confirm. */
+    /**
+     * Post-success bookkeeping: adopt the peer's newest epoch as our next DH base, track pe acks, confirm —
+     * the era effects, applied only when [eraEffects] (a fresh epoch derived under the active root; see the
+     * class invariants) — and retire an expired `prevRoot`, which is calendar, not era.
+     *
+     * The gate is what #87 needed: a frame drained under the `prevRoot` a reset of ours kept used to confirm
+     * the *replacement* session (it names an old-era epoch of ours, whose key survives), so the next frame we
+     * sealed dropped the init and was unreadable to a peer that had not yet seen the reset.
+     */
     private fun touch(
         session: SessionState,
         header: FrameHeader,
         ctx: OpenContext,
         now: Long,
+        eraEffects: Boolean,
     ): SessionState {
+        if (!eraEffects) return retirePrevRoot(session, now)
         var out = session
         // Damp the DH-base adoption. A peer that jumps its own numbering (buggy or hostile) would
         // otherwise pin `peerBaseEpoch` somewhere no later epoch can pass the `>` test, and the
@@ -618,11 +694,18 @@ class RatchetEngine(
         if (!out.confirmed && out.weAreInitiator && peerHoldsOurEpoch) {
             out = out.copy(confirmed = true, initEphPub = null)
         }
-        if (out.prevRoot != null && out.prevRootExpiresAt <= now) {
-            out = out.copy(prevRoot = null, prevRootExpiresAt = 0L)
-        }
-        return out
+        return retirePrevRoot(out, now)
     }
+
+    private fun retirePrevRoot(
+        session: SessionState,
+        now: Long,
+    ): SessionState =
+        if (session.prevRoot != null && session.prevRootExpiresAt <= now) {
+            session.copy(prevRoot = null, prevRootExpiresAt = 0L)
+        } else {
+            session
+        }
 
     /**
      * One AEAD attempt with [key]. A null [nonce] is the v3 form: the header is bound into the AAD and the

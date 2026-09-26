@@ -423,7 +423,7 @@ class MeshManager(
             onGroupRootCtl = ::onGroupRootCtl,
             onProfilePinned = { introSync.onProfilePinned(it) },
             onSelfProfile = { cloneWatch.onSelfProfile(it) },
-            onPeerFrameOpened = { senderId, carriesInit -> introSync.onPeerFrameOpened(senderId, carriesInit) },
+            onPeerFrameOpened = { senderId, initEph -> introSync.onPeerFrameOpened(senderId, initEph) },
             onTransferCtl = onTransferSignal,
             commonsTitle = { commons?.find(it)?.name },
         )

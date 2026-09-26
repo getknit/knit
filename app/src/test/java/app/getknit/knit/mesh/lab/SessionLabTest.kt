@@ -9,7 +9,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
-import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -80,7 +79,6 @@ class SessionLabTest {
      * post-adoption frames, and the loser's init then arrives on a confirmed session.
      */
     @Test
-    @Ignore("#83: the loser's late opening DM fails AEAD on the confirmed winner and is never recovered")
     fun theLosersOpeningDmLandingAfterItsAnswersStillOpens() =
         runBlocking {
             val alice = lab.node("alice").apply { setDisplayName("Alice") }
@@ -147,54 +145,76 @@ class SessionLabTest {
 
     /**
      * The previous scenario with the crossing it leaves to chance pinned (chaos seeds 2001/2003/2005): Alice reads
-     * Bob's while-apart DM under the root her reset retired, and her tick for it reaches Bob *before* her
-     * custodied reset does. The open under the kept `prevRoot` must not confirm the replacement session: a tick
-     * that carries no init, under a root Bob has never seen, is one he cannot read — and the reseal his reset
-     * handling sends back reuses the DM's id, so Alice's router dedups it and never ticks again.
+     * Bob's while-apart DMs under the root her reset retired, and her tick for them reaches Bob *before* her
+     * custodied reset does. The open under the kept `prevRoot` must not confirm the replacement session (#87): a
+     * tick that carries no init, under a root Bob has never seen, is one he cannot read — and the reseal his reset
+     * handling sends back reuses the DM's id, so Alice's router dedups it and never ticks again. Carrying the init,
+     * the tick is what Bob adopts the reset from; Bob's answer to that new init is what confirms Alice.
      */
-    @Test
-    @Ignore("#87: a frame opened under prevRoot confirms the replacement session, and the tick sealed next is lost")
-    fun aTickSealedAfterAResetStillReachesAPeerWhoHasNotSeenTheReset() =
-        runBlocking {
-            val alice = lab.node("alice").apply { setDisplayName("Alice") }
-            val bob = lab.node("bob").apply { setDisplayName("Bob") }
-            lab.link(alice, bob)
-            lab.awaitAcquainted(alice, bob)
-            assertTrue(alice.sendDm(bob, "hello"))
-            lab.await(1) { bob.decrypted(bob.dmWith(alice)).size }
-            assertTrue(bob.sendDm(alice, "hi"))
-            lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
+    private suspend fun tickAfterReset(apart: Int) {
+        val alice = lab.node("alice").apply { setDisplayName("Alice") }
+        val bob = lab.node("bob").apply { setDisplayName("Bob") }
+        lab.link(alice, bob)
+        lab.awaitAcquainted(alice, bob)
+        assertTrue(alice.sendDm(bob, "hello"))
+        lab.await(1) { bob.decrypted(bob.dmWith(alice)).size }
+        assertTrue(bob.sendDm(alice, "hi"))
+        lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
 
-            lab.unlink(alice, bob)
-            assertTrue(bob.sendDm(alice, "sent while apart"))
-            val custodied = alice.custodyIds()
-            assertNull("alice's reset went out", alice.resetSession(bob))
-            val reset = (alice.custodyIds() - custodied).single()
+        lab.unlink(alice, bob)
+        val whileApart = (1..apart).map { "sent while apart $it" }
+        whileApart.forEach { assertTrue(bob.sendDm(alice, it)) }
+        val apartIds = whileApart.map { bob.ownMessageId(bob.dmWith(alice), it) }
+        val custodied = alice.custodyIds()
+        assertNull("alice's reset went out", alice.resetSession(bob))
+        val reset = (alice.custodyIds() - custodied).single()
 
-            // The pipes first, the hold, then the link-up: nothing Alice sends Bob crosses before the hold.
-            alice.transport.connect(bob.transport, publish = false)
-            alice.transport.hold(bob.transport)
-            alice.transport.publishNeighbors()
-            bob.transport.publishNeighbors()
-            lab.await(1) { alice.decrypted(alice.dmWith(bob)).count { it.second == "sent while apart" } }
-            // Her tick for it, parked beside the reset her digest exchange serves Bob. A DM receipt floods like the
-            // reset (sealed, custodied), so it is told apart by id; with no pages and no board nothing else of
-            // Alice's crosses this pipe as a chat frame in this window.
-            lab.await(1) {
-                alice.transport
-                    .held(bob.transport)
-                    .filter { it.isChatFrom(alice.nodeId) }
-                    .mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }
-                    .filter { it != reset }
-                    .distinct()
-                    .size
-            }
-            alice.transport.release(bob.transport) { batch ->
-                batch.sortedBy { WireCodec.decodeEnvelope(it.signed)?.id == reset } // the reset last
-            }
-
-            lab.assertConverged(listOf(alice, bob), atLeast = 3) { it.dmWith(if (it === alice) bob else alice) }
+        // The pipes first, the holds, then the link-up: nothing either sends the other crosses before its hold.
+        alice.transport.connect(bob.transport, publish = false)
+        alice.transport.hold(bob.transport)
+        bob.transport.hold(alice.transport)
+        alice.transport.publishNeighbors()
+        bob.transport.publishNeighbors()
+        // Bob's digest serve walks custody newest first, so his DMs are released oldest first: the first one derives
+        // the epoch under the kept `prevRoot`, and the rest of that epoch opens on the live chain it stored.
+        lab.await(apart) {
+            bob.transport
+                .held(alice.transport)
+                .mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }
+                .filter { it in apartIds }
+                .distinct()
+                .size
         }
+        bob.transport.release(alice.transport) { batch ->
+            val (dms, rest) = batch.partition { WireCodec.decodeEnvelope(it.signed)?.id in apartIds }
+            rest + dms.sortedBy { apartIds.indexOf(WireCodec.decodeEnvelope(it.signed)?.id) }
+        }
+        lab.await(apart) { alice.decrypted(alice.dmWith(bob)).count { it.second in whileApart } }
+        // Her ticks for them — one sealed receipt per DM — parked beside the reset her digest exchange serves Bob. A
+        // DM receipt floods like the reset (sealed, custodied), so it is told apart by id; with no pages and no board
+        // nothing else of Alice's crosses this pipe as a chat frame in this window.
+        lab.await(apart) {
+            alice.transport
+                .held(bob.transport)
+                .filter { it.isChatFrom(alice.nodeId) }
+                .mapNotNull { WireCodec.decodeEnvelope(it.signed)?.id }
+                .filter { it != reset }
+                .distinct()
+                .size
+        }
+        alice.transport.release(bob.transport) { batch ->
+            batch.sortedBy { WireCodec.decodeEnvelope(it.signed)?.id == reset } // the reset last
+        }
+
+        lab.assertConverged(listOf(alice, bob), atLeast = 2 + apart) { it.dmWith(if (it === alice) bob else alice) }
+    }
+
+    @Test
+    fun aTickSealedAfterAResetStillReachesAPeerWhoHasNotSeenTheReset() = runBlocking { tickAfterReset(apart = 1) }
+
+    @Test
+    fun aTickSealedAfterAResetStillReachesAPeerWhoHasNotSeenTheResetEvenAfterTwoDmsFromTheSameEpoch() =
+        runBlocking { tickAfterReset(apart = 2) }
 
     /**
      * The other direction: Alice sends three DMs to an absent Bob (Dave carries them), then forces a reset.

@@ -145,19 +145,19 @@ doc). **Don't start a deferred item without explicit direction.**
   the replacement session (`SessionLabTest.aForcedResetHeals…`; the repro `aTickSealedAfterAReset…` is
   `@Ignore`d). Two were #84 and #86 again. Four were fixture races, fixed: `published` returned before the
   edit's frame existed (CloneLab), custody lands before dispatch (TimeLab), Bob's own link-up re-ask
-  (AttachmentLab), and an intro oracle that assumed both sides send (`twoCardHolders…`). Still unexplained, not
-  reproduced since (about 2,000 boot-and-rename cycles, 12 seeded runs each), with diagnostics added to their
-  failure messages: the "profile edit was never published" setup failure (TopologyLab, InternetPlane ×2; the
-  version never moved, so it is not the `published` race; kin to the latent boot/seed gap in `testing.md`'s
-  read-safe list, where the watcher's first value finds custody already showing the edit and publishes nothing),
-  the LoRa ride-hold ticks (LoraPocketLabTest `aFarPocketsTick…`, RoomTickPlanesLabTest `aRoomTickReaches…`: the
-  acker heard the post and put no tick on air. The lead is a ride that wakes before the composite's `reachable`
-  has merged the board's sighting, while `watchReachable` conflates the away-and-back edge, so nothing
-  re-flushes it until a heal. The lab's 300 ms hold makes that window real; the field's 60 s makes it unlikely),
-  LoraPocketLabTest `aDmSentWhileTheFarBoardWasOff…` (failed only in a batch the OOM killer ended), and
-  SessionLabTest `aMemberWhoMissedTheSeed…` (one live-link group tick never left Bob; not #83, which would show
-  a ratchet drop). Drop the job's `continue-on-error` once #85/#86/#87 are fixed (the two restore scenarios and
-  `aForcedResetHeals…` fail it today), then mirror it in `.gitlab-ci.yml`.
+  (AttachmentLab), and an intro oracle that assumed both sides send (`twoCardHolders…`). Still unexplained
+  (#88), not reproduced since (about 2,000 boot-and-rename cycles, 12 seeded runs each), with diagnostics added
+  to their failure messages: the "profile edit was never published" setup failure (TopologyLab, InternetPlane
+  ×2; the version never moved, so it is not the `published` race; kin to the latent boot/seed gap in
+  `testing.md`'s read-safe list, where the watcher's first value finds custody already showing the edit and
+  publishes nothing), the LoRa ride-hold ticks (LoraPocketLabTest `aFarPocketsTick…`, RoomTickPlanesLabTest
+  `aRoomTickReaches…`: the acker heard the post and put no tick on air. The lead is a ride that wakes before the
+  composite's `reachable` has merged the board's sighting, while `watchReachable` conflates the away-and-back
+  edge, so nothing re-flushes it until a heal. The lab's 300 ms hold makes that window real; the field's 60 s
+  makes it unlikely), LoraPocketLabTest `aDmSentWhileTheFarBoardWasOff…` (failed only in a batch the OOM killer
+  ended), and SessionLabTest `aMemberWhoMissedTheSeed…` (one live-link group tick never left Bob; not #83, which
+  would show a ratchet drop). Drop the job's `continue-on-error` once #85/#86/#87 are fixed (the two restore
+  scenarios and `aForcedResetHeals…` fail it today), then mirror it in `.gitlab-ci.yml`.
 - **A per-peer in-flight window on the Wi-Fi Aware coordination plane** (ADR 2026-09.jjhg, 2026-09-21, work
   item #81). The framework's send-queue deadlock needs eight follow-ups the framework has already timed out
   still sitting in the firmware's queue — which a burst to a peer that cannot ack fills. One message in flight

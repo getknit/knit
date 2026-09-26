@@ -126,7 +126,7 @@ class IntroSyncTest {
             rig.sealable += BOB
             rig.sync.want(BOB)
             rig.confirmed += BOB
-            rig.sync.onPeerFrameOpened(BOB, carriesInit = false)
+            rig.sync.onPeerFrameOpened(BOB, initEph = null)
             assertEquals(IntroState.CONNECTED, rig.sync.state(BOB).first())
             assertEquals(setOf(BOB), rig.sync.pairPeers())
             assertTrue(BOB !in rig.store.pending)
@@ -146,23 +146,40 @@ class IntroSyncTest {
     fun `an init-bearing frame is answered once per floor, and only when sealable`() =
         runTest {
             val rig = Rig()
-            rig.sync.onPeerFrameOpened(CAROL, carriesInit = true)
+            rig.sync.onPeerFrameOpened(CAROL, initEph = INIT_1)
             assertEquals(emptyList<String>(), rig.sent) // no prekey yet — nothing to answer with
 
             rig.sealable += CAROL
-            rig.sync.onPeerFrameOpened(CAROL, carriesInit = true)
-            rig.sync.onPeerFrameOpened(CAROL, carriesInit = true)
+            rig.sync.onPeerFrameOpened(CAROL, initEph = INIT_1)
+            rig.sync.onPeerFrameOpened(CAROL, initEph = INIT_1.copyOf())
             assertEquals(listOf(CAROL), rig.sent)
             assertEquals(1L, rig.metrics.snapshot().introsAnswered)
 
             rig.now += IntroSync.ANSWER_FLOOR_MS
-            rig.sync.onPeerFrameOpened(CAROL, carriesInit = true)
+            rig.sync.onPeerFrameOpened(CAROL, initEph = INIT_1)
             assertEquals(listOf(CAROL, CAROL), rig.sent)
 
             // A frame without the init is a confirmed peer — never answered.
             rig.now += IntroSync.ANSWER_FLOOR_MS
-            rig.sync.onPeerFrameOpened(CAROL, carriesInit = false)
+            rig.sync.onPeerFrameOpened(CAROL, initEph = null)
             assertEquals(2, rig.sent.size)
+        }
+
+    @Test
+    fun `a new init is answered inside the floor, once`() =
+        runTest {
+            // Carol re-floods her first init, then resets: the reset is a new init, and only our answer
+            // under it can confirm her side — however recently we answered the old one.
+            val rig = Rig()
+            rig.sealable += CAROL
+            rig.sync.onPeerFrameOpened(CAROL, initEph = INIT_1)
+            rig.sync.onPeerFrameOpened(CAROL, initEph = INIT_2)
+            assertEquals(listOf(CAROL, CAROL), rig.sent)
+
+            rig.sync.onPeerFrameOpened(CAROL, initEph = INIT_2)
+            rig.sync.onPeerFrameOpened(CAROL, initEph = INIT_2)
+            assertEquals("the new init's own repeats stay floored", 2, rig.sent.size)
+            assertEquals(2L, rig.metrics.snapshot().introsAnswered)
         }
 
     @Test
@@ -174,7 +191,7 @@ class IntroSyncTest {
             rig.sealable += BOB
             rig.sync.want(BOB)
             rig.confirmed += BOB
-            rig.sync.onPeerFrameOpened(BOB, carriesInit = true)
+            rig.sync.onPeerFrameOpened(BOB, initEph = INIT_1)
             assertEquals(IntroState.CONNECTED, rig.sync.state(BOB).first())
             // The answer to Bob's init is the confirming frame for his side — one send, not a storm.
             assertEquals(listOf(BOB, BOB), rig.sent)
@@ -268,7 +285,7 @@ class IntroSyncTest {
             assertEquals("a re-send sweep with nothing to settle moves no peer", 2, rig.pairsChanged)
 
             rig.confirmed += BOB
-            rig.sync.onPeerFrameOpened(BOB, carriesInit = false)
+            rig.sync.onPeerFrameOpened(BOB, initEph = null)
             assertEquals(setOf(BOB), rig.sync.pairPeers())
             assertEquals("pending → grace keeps the same pair set", 2, rig.pairsChanged)
 
@@ -301,5 +318,7 @@ class IntroSyncTest {
     private companion object {
         const val BOB = "bbbbbbbbbbbbbbbbbbbbbbbbbb"
         const val CAROL = "cccccccccccccccccccccccccc"
+        val INIT_1 = ByteArray(32) { 1 }
+        val INIT_2 = ByteArray(32) { 2 }
     }
 }

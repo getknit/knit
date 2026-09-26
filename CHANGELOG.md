@@ -18,6 +18,14 @@ document:
 
 # Knit changelog
 
+## Unreleased
+
+### Fixed
+
+- If you and a contact both wrote first while out of range of each other, or Knit had just repaired the
+  encryption between you, a message could stay on one tick forever. It now gets through and shows as
+  delivered.
+
 ## [2.7.0](https://github.com/getknit/knit/releases/tag/v2.7.0) — 2026-09-24T21:26:44Z
 
 > Back up to one encrypted file, pause the mesh for an hour, and use less battery
