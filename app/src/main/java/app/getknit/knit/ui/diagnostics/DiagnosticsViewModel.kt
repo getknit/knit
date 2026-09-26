@@ -2,6 +2,7 @@ package app.getknit.knit.ui.diagnostics
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.getknit.knit.BuildConfig
 import app.getknit.knit.R
 import app.getknit.knit.crash.CrashReportRef
 import app.getknit.knit.crash.CrashReports
@@ -100,7 +101,7 @@ class DiagnosticsViewModel(
     peers: PeerRepository,
     private val meshManager: MeshController,
     identity: Identity,
-    settings: SettingsStore,
+    private val settings: SettingsStore,
     private val metrics: MeshMetrics,
     relayStatus: RelayStatusRepository,
     private val crashes: CrashReports,
@@ -152,6 +153,23 @@ class DiagnosticsViewModel(
     fun resetModerationLatch() {
         viewModelScope.launch { ModelLoadGuard.ALL.forEach { modelGuard.clear(it) } }
         _events.tryEmit(R.string.diagnostics_moderation_reset_done)
+    }
+
+    /** Whether this build offers the Bluetooth link limit row — debug builds only. */
+    val bleLinkCapOffered: Boolean = BuildConfig.DEBUG
+
+    /**
+     * The diagnostic Bluetooth link cap, or null for the shipped budget. Its own flow, like
+     * [moderationLatched], because [state]'s combine is at its five-source limit; the transport collects the
+     * same store key, so a step here reaches the radios without a restart.
+     */
+    val bleLinkCap: StateFlow<Int?> =
+        settings.debugBleLinkCap.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Sets the Bluetooth link cap; the shipped budget clears it. A no-op outside a debug build. */
+    fun setBleLinkCap(cap: Int) {
+        if (!bleLinkCapOffered) return
+        viewModelScope.launch { settings.setDebugBleLinkCap(cap) }
     }
 
     /** Live radio health, shown as a status line above the mesh controls. */

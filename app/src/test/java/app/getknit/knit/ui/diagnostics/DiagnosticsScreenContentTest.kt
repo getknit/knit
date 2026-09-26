@@ -3,6 +3,8 @@ package app.getknit.knit.ui.diagnostics
 import android.content.Context
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -326,6 +328,69 @@ class DiagnosticsScreenContentTest {
     }
 
     /** Work item 18: a plane the phone cannot run is a row that says so, not a row that is missing. */
+    private fun bluetoothState() =
+        state().copy(
+            transports =
+                listOf(TransportRow.Live(TransportStatus(TransportKind.Bluetooth, TransportHealth.Healthy, linked = 1, nearby = 3))),
+        )
+
+    private fun setCapContent(
+        offered: Boolean,
+        cap: Int?,
+        onSet: (Int) -> Unit = {},
+    ) {
+        compose.setContent {
+            KnitTheme {
+                DiagnosticsScreenContent(
+                    state = bluetoothState(),
+                    health = TransportHealth.Healthy,
+                    lastCrash = null,
+                    now = 0L,
+                    snackbarHostState = SnackbarHostState(),
+                    onBack = {},
+                    onRestartMesh = {},
+                    onScan = {},
+                    onOpenCrashLog = {},
+                    moderationLatched = false,
+                    onResetModeration = {},
+                    bleLinkCapOffered = offered,
+                    bleLinkCap = cap,
+                    onSetBleLinkCap = onSet,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun theBluetoothLinkLimitIsAbsentUnlessOffered() {
+        setCapContent(offered = false, cap = 2)
+        compose.onNodeWithTag("ble_link_cap").assertDoesNotExist()
+    }
+
+    @Test
+    fun theBluetoothLinkLimitStepsDownFromTheDefault() {
+        val sets = mutableListOf<Int>()
+        setCapContent(offered = true, cap = null, onSet = { sets += it })
+
+        compose.onNode(hasScrollAction()).performScrollToNode(hasTestTag("ble_link_cap"))
+        compose.onNodeWithText(context.getString(R.string.diagnostics_ble_link_cap_default, 6)).assertExists()
+        compose.onNodeWithTag("ble_link_cap_inc").assertIsNotEnabled()
+        compose.onNodeWithTag("ble_link_cap_dec").performClick()
+        assertEquals(listOf(5), sets)
+    }
+
+    @Test
+    fun theBluetoothLinkLimitStopsAtZeroAndStepsBackUp() {
+        val sets = mutableListOf<Int>()
+        setCapContent(offered = true, cap = 0, onSet = { sets += it })
+
+        compose.onNode(hasScrollAction()).performScrollToNode(hasTestTag("ble_link_cap"))
+        compose.onNodeWithTag("ble_link_cap_value").assertTextEquals("0")
+        compose.onNodeWithTag("ble_link_cap_dec").assertIsNotEnabled()
+        compose.onNodeWithTag("ble_link_cap_inc").performClick()
+        assertEquals(listOf(1), sets)
+    }
+
     @Test
     fun anAbsentPlaneIsListedWithItsReason() {
         val bleOnly = RadioSupport(bluetooth = PlaneSupport.Supported, wifiAware = PlaneSupport.NoHardware)

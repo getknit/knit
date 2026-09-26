@@ -75,17 +75,21 @@ data class PromotionConfig(
      *  reaches further than NAN's NDP, so this is set generously — it excludes only genuinely poor signals
      *  rather than gating to same-room proximity. */
     val rssiFloorDbm: Int = DEFAULT_RSSI_FLOOR_DBM,
-    /** Connection budget: max simultaneous persistent Bluetooth links. */
-    val maxLinks: Int = 6,
+    /** Connection budget: max simultaneous persistent Bluetooth links. A debug build can lower it from
+     *  Diagnostics or the bridge (`SettingsStore.debugBleLinkCap`); release always runs the default. */
+    val maxLinks: Int = DEFAULT_MAX_LINKS,
     /** A candidate must beat the weakest link by this many dB to evict it (RSSI jitter is ±5). */
     val rssiHysteresisDb: Int = 8,
     /** Never evict a link younger than this — time hysteresis so a fresh link isn't dropped immediately. */
     val linkMinHoldMs: Long = 20_000,
 ) {
-    private companion object {
+    companion object {
+        /** The shipped connection budget, and the ceiling of the debug link cap. */
+        const val DEFAULT_MAX_LINKS = 6
+
         // A negative default can't be inlined without tripping MagicNumber, so it lives here as a named const.
         // -90 keeps a small margin above typical BLE 1M-PHY sensitivity (~-90..-95 dBm): broaden reach to the
         // edge of usable range without churning connect-backoff on doomed sub-sensitivity attempts.
-        const val DEFAULT_RSSI_FLOOR_DBM = -90
+        private const val DEFAULT_RSSI_FLOOR_DBM = -90
     }
 }

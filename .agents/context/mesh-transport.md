@@ -346,6 +346,11 @@ the scan has not once sighted (`neverSighted`) scores the promotion floor (−90
 presence still scores −127. Oracle: `bt accepted client <id> (<verdict>, sighted=<bool>)` and `bt refused client
 <id> (…)` at debug. Tests: `BleAdmissionPolicyTest`; the lab has no radio layer.
 
+A debug build can cap the link budget below `PromotionConfig.DEFAULT_MAX_LINKS` (6) from Diagnostics or
+`…debug.BLECAP` (`SettingsStore.debugBleLinkCap`, read as null in release). Only while a cap is set does the
+transport count in-flight dials against it and pass `atCap` to `BleAdmissionPolicy.decide`, which turns an
+Admit (never a Replace) into a Refuse — release keeps the shipped table and the accept-then-shed overflow path.
+
 ## A frame crosses a BLE link once, and the loops sleep until something can change
 
 Two paths used to hand the Bluetooth plane the same frame for the same L2CAP stream — the router's flood copy

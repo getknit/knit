@@ -255,6 +255,12 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
   reads `mSendQueueBlocked: true` in `dumpsys wifiaware` for the first mechanism and an idle queue with
   `NOTIFICATION_TYPE_ON_MESSAGE_SEND_FAIL` ~4 s after each `RESPONSE_TYPE_ON_MESSAGE_SEND_QUEUED_SUCCESS` for the
   second.
+- `…debug.BLECAP` — the **Bluetooth link limit** (debug builds only; `SettingsStore.debugBleLinkCap`, also a
+  stepper under Diagnostics' Transports). `--ei max N` caps held L2CAP links at N (0–6; 6 is the shipped budget and
+  clears it), `--ez clear true` clears, no extras reads; the reply carries `cap` (null = shipped), `default`, and the
+  Bluetooth row's `linked` / `nearby`. It persists across restarts (a `debug_` key, never in a backup) until
+  cleared. The transport sheds the weakest links once they are 20 s old and refuses a dialer that would add one
+  (`bt refused client <id> (… atCap=true)`); the side channel still reaches unlinked peers, and NAN is untouched.
 - `…debug.FLAGMSG` — injects one inbound message **the text moderator flagged** (the UI collapses it behind a
   tap-to-reveal) as the newest row of `--es conv <id>` (default `nearby`), from `--es from <peerNodeId>`
   (default a synthetic sender) with body `--es text <body>`. The radio-less build never receives a real

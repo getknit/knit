@@ -110,7 +110,9 @@ val meshModule =
                                 } else {
                                     null
                                 }
-                            add(BluetoothMeshTransport(ctx, get(), get(), get(), get(), get(), get(), sideChannel))
+                            // The debug link cap reads null in release (gated in the store's flow).
+                            val linkCap = get<SettingsStore>().debugBleLinkCap
+                            add(BluetoothMeshTransport(ctx, get(), get(), get(), get(), get(), get(), sideChannel, linkCap))
                         }
                         // WifiAwareTransport is @RequiresApi(31) (its NDP accept-any responder is API 31). The
                         // explicit SDK_INT guard — redundant with isSupported()'s own — is what lint reads to

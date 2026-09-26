@@ -48,12 +48,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -104,6 +107,9 @@ class BluetoothMeshTransport(
     // The side channel, or null while `BuildConfig.BLE_SIDE_PLANE` keeps it dark — the one seam; nothing
     // downstream gates on the flag again.
     private val sideChannel: BleSideChannel? = null,
+    // The debug-only link cap (`SettingsStore.debugBleLinkCap`): null — always, in release — runs the shipped
+    // budget with the shipped admission table; a number caps held links, dials and inbound admits at it.
+    private val linkCap: Flow<Int?> = flowOf(null),
 ) : MeshTransport {
     private val appContext = context.applicationContext
     private val bluetoothManager = appContext.getSystemService(BluetoothManager::class.java)
@@ -222,6 +228,10 @@ class BluetoothMeshTransport(
     private var audioJob: Job? = null
     private var arbiterJob: Job? = null
     private var sideJob: Job? = null
+    private var capJob: Job? = null
+
+    // The debug link cap as last read from [linkCap]; null runs the shipped budget untouched.
+    @Volatile private var debugCap: Int? = null
 
     // A frame heard off a side-channel page enters exactly where a link frame does; the author is the hop
     // (a page carries no hop identity), which is the LoRa plane's rule too. Our own frame relayed back is dropped.
@@ -309,6 +319,15 @@ class BluetoothMeshTransport(
             audioJob = scope.launch { audioMonitor.contended.drop(1).collect { wakeScan() } }
             // The board dial holds an arbiter slot; wake the scan on release so it resumes without waiting out the gap.
             arbiterJob = scope.launch { arbiter.busy.drop(1).collect { wakeScan() } }
+            // A new cap re-runs the promotion decision now: a lower one sheds the weakest evictable links.
+            capJob =
+                scope.launch {
+                    linkCap.distinctUntilChanged().collect {
+                        debugCap = it
+                        Log.i(TAG, "bt link cap=${it ?: "default"}")
+                        wake()
+                    }
+                }
             sideChannel?.let {
                 it.bind(sideListener)
                 sideJob = scope.launch { sideScanLoop(it) }
@@ -324,6 +343,7 @@ class BluetoothMeshTransport(
         diagJob?.cancel()
         audioJob?.cancel()
         arbiterJob?.cancel()
+        capJob?.cancel()
         sideJob?.cancel()
         sideCapable.clear()
         unregisterAvailability()
@@ -653,7 +673,17 @@ class BluetoothMeshTransport(
                 }
                 backoffs.filterValues { now < it.nextAt }.keys.toSet()
             }
-        val decision = PromotionPolicy.decide(candidates, linkSnaps, backoff)
+        val cap = debugCap
+        val config = PromotionConfig(maxLinks = cap ?: PromotionConfig.DEFAULT_MAX_LINKS)
+        val decided = PromotionPolicy.decide(candidates, linkSnaps, backoff, config)
+        // Under a debug cap, a dial still in flight holds a slot too, so back-to-back ticks can't overshoot it.
+        val decision =
+            if (cap == null) {
+                decided
+            } else {
+                val room = cap - linkSnaps.size - inFlightSnapshot().size + decided.evict.size
+                decided.copy(promote = decided.promote.take(room.coerceAtLeast(0)))
+            }
         if (decision.promote.isNotEmpty() || decision.evict.isNotEmpty()) {
             Log.i(TAG, "promote=${decision.promote} evict=${decision.evict} backoff=$backoff a2dp=${audioMonitor.state.value}")
         }
@@ -767,9 +797,10 @@ class BluetoothMeshTransport(
         }
         val sighted = presence.snapshots(elapsed()).any { it.nodeId == clientNodeId }
         val heldAgeMs = links[clientNodeId]?.let { elapsed() - it.linkStartedAt }
-        val verdict = BleAdmissionPolicy.decide(localNodeId, clientNodeId, sighted, heldAgeMs)
+        val atCap = debugCap?.let { links.size + inFlightSnapshot().size >= it } ?: false
+        val verdict = BleAdmissionPolicy.decide(localNodeId, clientNodeId, sighted, heldAgeMs, atCap)
         if (verdict == BleAdmissionPolicy.Verdict.Refuse) {
-            Log.d(TAG, "bt refused client $clientNodeId (sighted=$sighted heldAgeMs=$heldAgeMs)")
+            Log.d(TAG, "bt refused client $clientNodeId (sighted=$sighted heldAgeMs=$heldAgeMs atCap=$atCap)")
             link.close()
             return
         }

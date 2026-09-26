@@ -140,4 +140,18 @@ class PromotionPolicyTest {
         assertEquals(setOf("e", "d"), d.evict.toSet())
         assertTrue(d.promote.isEmpty())
     }
+
+    @Test
+    fun aZeroBudgetShedsEveryEvictableLinkAndPromotesNobody() {
+        // The debug link cap at 0: a phone that holds no Bluetooth links (fresh ones go once they're evictable).
+        val d =
+            PromotionPolicy.decide(
+                candidates = listOf(cand("x", -40.0)),
+                links = listOf(link("a", -50.0), link("b", -60.0), link("c", -55.0, age = 1_000)),
+                backoff = emptySet(),
+                config = cfg.copy(maxLinks = 0),
+            )
+        assertEquals(setOf("a", "b"), d.evict.toSet())
+        assertTrue(d.promote.isEmpty())
+    }
 }

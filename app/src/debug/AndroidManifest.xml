@@ -33,6 +33,7 @@
                 <action android:name="app.getknit.knit.debug.NANDIAL" />
                 <action android:name="app.getknit.knit.debug.NANINIT" />
                 <action android:name="app.getknit.knit.debug.NANMSG" />
+                <action android:name="app.getknit.knit.debug.BLECAP" />
                 <action android:name="app.getknit.knit.debug.WEBPPROBE" />
                 <action android:name="app.getknit.knit.debug.WEBPCONV" />
                 <action android:name="app.getknit.knit.debug.WEBPCHECK" />

@@ -33,17 +33,22 @@ internal object BleAdmissionPolicy {
      * refusal is also what keeps a device claiming a sighted peer's id from cutting that peer's link. An
      * unsighted dialer's held link is replaced only once it is [REPLACE_MIN_HOLD_MS] old, so a device claiming
      * its id can cut it at most that often.
+     *
+     * [atCap] is the debug link cap (`SettingsStore.debugBleLinkCap`) being full: a dialer that would add a
+     * link is refused rather than admitted and shed by eviction twenty seconds later. A replacement does not
+     * grow the set, so it stands. Always false in release, where the table is exactly the one above.
      */
     fun decide(
         local: String,
         dialer: String,
         sighted: Boolean,
         heldLinkAgeMs: Long?,
+        atCap: Boolean = false,
     ): Verdict =
         when {
             dialer == local -> Verdict.Refuse
             sighted && local > dialer -> Verdict.Refuse
-            heldLinkAgeMs == null -> Verdict.Admit
+            heldLinkAgeMs == null -> if (atCap) Verdict.Refuse else Verdict.Admit
             sighted -> Verdict.Refuse
             heldLinkAgeMs < REPLACE_MIN_HOLD_MS -> Verdict.Refuse
             else -> Verdict.Replace

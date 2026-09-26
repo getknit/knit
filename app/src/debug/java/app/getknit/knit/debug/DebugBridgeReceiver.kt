@@ -48,6 +48,8 @@ import app.getknit.knit.mesh.MeshPause
 import app.getknit.knit.mesh.MeshStartGate
 import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.StoreDigest
+import app.getknit.knit.mesh.TransportKind
+import app.getknit.knit.mesh.bluetooth.PromotionConfig
 import app.getknit.knit.mesh.lora.BoardOwner
 import app.getknit.knit.mesh.lora.BoardSettings
 import app.getknit.knit.mesh.lora.ProvisionMode
@@ -186,6 +188,11 @@ import java.nio.ByteBuffer
  *   `--es fault fail` turns every ack into a failure (dead unicast), `--es fault off` disarms; the watchdog's
  *   verdict and its session cycle then run for real, so the trial is: arm, watch `coordination plane stalled … —
  *   cycling the session` within ~90 s, disarm, watch `episodeMs` return to 0 on the next acked cue.
+ * - [ACTION_BLECAP] — the **Bluetooth link limit** Diagnostics offers in debug builds (`SettingsStore.debugBleLinkCap`).
+ *   `--ei max N` caps held L2CAP links at N (0 up to the shipped 6; 6 clears), `--ez clear true` clears; either way
+ *   the reply is the stored `cap` (null = shipped budget) and the Bluetooth row's `linked` / `nearby`. The transport
+ *   collects the key, so a lower cap sheds the weakest links once they are 20 s old and refuses new inbound dialers;
+ *   the side channel still reaches unlinked peers. Persists across restarts until cleared.
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  * - [ACTION_PAUSE] / [ACTION_RESUME] — the notification's Pause and Resume, by their store write alone
  *   (`--ei minutes 15|60`, the two offered spans): `MeshService` follows `SettingsStore.meshPausedUntil`, so
@@ -385,6 +392,10 @@ class DebugBridgeReceiver :
 
                         ACTION_NANMSG -> {
                             handleNanMsg(intent)
+                        }
+
+                        ACTION_BLECAP -> {
+                            handleBleCap(intent)
                         }
 
                         ACTION_NANICM -> {
@@ -2004,6 +2015,30 @@ class DebugBridgeReceiver :
             .put("armed", r?.armed ?: -1)
     }
 
+    /** [ACTION_BLECAP]: sets or clears the Bluetooth link cap, then reports it with the Bluetooth row. */
+    private suspend fun handleBleCap(intent: Intent): JSONObject {
+        when {
+            intent.getBooleanExtra("clear", false) -> {
+                settings.setDebugBleLinkCap(null)
+            }
+
+            intent.hasExtra("max") -> {
+                val max = intent.getIntExtra("max", -1)
+                if (max !in 0..PromotionConfig.DEFAULT_MAX_LINKS) {
+                    return reply("error", "max must be 0..${PromotionConfig.DEFAULT_MAX_LINKS}")
+                }
+                settings.setDebugBleLinkCap(max)
+            }
+        }
+        val ble = mesh.transportStatuses.value.firstOrNull { it.kind == TransportKind.Bluetooth }
+        return JSONObject()
+            .put("status", "ok")
+            .put("cap", settings.debugBleLinkCap.first() ?: JSONObject.NULL)
+            .put("default", PromotionConfig.DEFAULT_MAX_LINKS)
+            .put("linked", ble?.linked ?: JSONObject.NULL)
+            .put("nearby", ble?.nearby ?: JSONObject.NULL)
+    }
+
     private fun handleNanMsg(intent: Intent): JSONObject {
         if (!NanFaultInjector.bound) return reply("error", "Wi-Fi Aware transport is not running")
         val what =
@@ -2101,6 +2136,7 @@ class DebugBridgeReceiver :
         const val ACTION_NANDIAL = "app.getknit.knit.debug.NANDIAL"
         const val ACTION_NANINIT = "app.getknit.knit.debug.NANINIT"
         const val ACTION_NANMSG = "app.getknit.knit.debug.NANMSG"
+        const val ACTION_BLECAP = "app.getknit.knit.debug.BLECAP"
         const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
         const val ACTION_MSGNOTIF = "app.getknit.knit.debug.MSGNOTIF"
         const val ACTION_FLAGMSG = "app.getknit.knit.debug.FLAGMSG"

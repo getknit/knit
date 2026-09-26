@@ -4,6 +4,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import app.getknit.knit.data.emoji.RecentReactions
+import app.getknit.knit.mesh.bluetooth.PromotionConfig
 import app.getknit.knit.ui.theme.ThemeMode
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -384,5 +385,24 @@ class SettingsStoreTest {
             // Keyed per model: latching the text classifier must not touch the image one.
             assertEquals(ModelLoadState.NONE, store.modelLoadState("nsfw"))
             assertEquals(ModelLoadState("16|rom", 1_700L, 1), store.observeModelLoad("toxicity").first())
+        }
+
+    @Test
+    fun `the debug link cap defaults to none, round-trips below the budget, and clears at it`() =
+        runTest {
+            val store = newStore()
+            assertNull(store.debugBleLinkCap.first())
+
+            store.setDebugBleLinkCap(0)
+            assertEquals(0, store.debugBleLinkCap.first())
+            store.setDebugBleLinkCap(2)
+            assertEquals(2, store.debugBleLinkCap.first())
+
+            // The shipped budget is the default, not a cap: stepping up to it clears the key.
+            store.setDebugBleLinkCap(PromotionConfig.DEFAULT_MAX_LINKS)
+            assertNull(store.debugBleLinkCap.first())
+            store.setDebugBleLinkCap(1)
+            store.setDebugBleLinkCap(null)
+            assertNull(store.debugBleLinkCap.first())
         }
 }

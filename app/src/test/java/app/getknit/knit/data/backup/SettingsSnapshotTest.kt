@@ -1,6 +1,7 @@
 package app.getknit.knit.data.backup
 
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.preferencesOf
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -40,6 +41,7 @@ class SettingsSnapshotTest {
                     longPreferencesKey("clone_seen_at") to 5L,
                     longPreferencesKey("clone_dismissed_at") to 3L,
                     longPreferencesKey("mesh_pause_until") to 9L,
+                    intPreferencesKey("debug_ble_link_cap") to 2,
                     longPreferencesKey("lora_board_node") to 42L,
                     booleanPreferencesKey("lora_enabled") to true,
                 )
@@ -63,6 +65,7 @@ class SettingsSnapshotTest {
                 "clone_seen_at",
                 "clone_dismissed_at",
                 "mesh_pause_until",
+                "debug_ble_link_cap",
             )) {
                 assertFalse(dropped, restored.asMap().keys.any { it.name == dropped })
             }

@@ -22,7 +22,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
@@ -63,6 +65,7 @@ import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
+import app.getknit.knit.mesh.bluetooth.PromotionConfig
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.spool.SpoolStatus
 import app.getknit.knit.mesh.spool.SpoolUrl
@@ -94,6 +97,7 @@ fun DiagnosticsScreen(
     val health by viewModel.health.collectAsStateWithLifecycle()
     val lastCrash by viewModel.lastCrash.collectAsStateWithLifecycle()
     val moderationLatched by viewModel.moderationLatched.collectAsStateWithLifecycle()
+    val bleLinkCap by viewModel.bleLinkCap.collectAsStateWithLifecycle()
     var confirmingModerationReset by remember { mutableStateOf(false) }
     // Inside a NavHost composable the lifecycle owner is this back-stack entry, so this fires again when
     // the crash screen pops — which is how deleting the report over there clears this row over here.
@@ -141,6 +145,9 @@ fun DiagnosticsScreen(
         onOpenCrashLog = onOpenCrashLog,
         onResetModeration = { confirmingModerationReset = true },
         onReleaseInitiatorHold = viewModel::releaseInitiatorHold,
+        bleLinkCapOffered = viewModel.bleLinkCapOffered,
+        bleLinkCap = bleLinkCap,
+        onSetBleLinkCap = viewModel::setBleLinkCap,
     )
 
     if (confirmingModerationReset) {
@@ -176,6 +183,11 @@ internal fun DiagnosticsScreenContent(
     // Diagnostics' "Try again" for a Wi-Fi Aware plane holding its initiator role (ADR 2026-09.m8kc). Defaulted:
     // the section only renders when a transport row says so, and most callers describe phones that never do.
     onReleaseInitiatorHold: () -> Unit = {},
+    // The debug-only Bluetooth link limit. Defaulted off: a release build never offers it, and neither do the
+    // screen's other callers.
+    bleLinkCapOffered: Boolean = false,
+    bleLinkCap: Int? = null,
+    onSetBleLinkCap: (Int) -> Unit = {},
 ) {
     Scaffold(
         modifier = Modifier.testTag("screen_diagnostics"),
@@ -233,6 +245,9 @@ internal fun DiagnosticsScreenContent(
             // Under the rows it explains: the one plane that can put itself on hold says so with the way back.
             if (state.transports.any { it is TransportRow.Live && it.status.initiatorHeld }) {
                 item { InitiatorHoldSection(onRelease = onReleaseInitiatorHold) }
+            }
+            if (bleLinkCapOffered && state.transports.any { it is TransportRow.Live && it.kind == TransportKind.Bluetooth }) {
+                item { BleLinkCapRow(cap = bleLinkCap, onSet = onSetBleLinkCap) }
             }
 
             item { SectionHeader(stringResource(R.string.diagnostics_metrics)) }
@@ -854,6 +869,57 @@ private fun InitiatorHoldSection(onRelease: () -> Unit) {
 }
 
 /**
+ * The debug build's Bluetooth link limit (`SettingsStore.debugBleLinkCap`): a stepper from 0 up to the shipped
+ * budget, where the top step is "Default" and clears the cap. Both buttons are 48 dp targets and go disabled
+ * at their end of the range.
+ */
+@Composable
+private fun BleLinkCapRow(
+    cap: Int?,
+    onSet: (Int) -> Unit,
+) {
+    val max = PromotionConfig.DEFAULT_MAX_LINKS
+    val value = cap ?: max
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp).testTag("ble_link_cap"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.diagnostics_ble_link_cap_label),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = stringResource(R.string.diagnostics_ble_link_cap_body),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        IconButton(
+            onClick = { onSet(value - 1) },
+            enabled = value > 0,
+            modifier = Modifier.size(48.dp).testTag("ble_link_cap_dec"),
+        ) {
+            Icon(Icons.Filled.Remove, contentDescription = stringResource(R.string.diagnostics_ble_link_cap_decrease))
+        }
+        Text(
+            text = if (cap == null) stringResource(R.string.diagnostics_ble_link_cap_default, max) else cap.toString(),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.testTag("ble_link_cap_value"),
+        )
+        IconButton(
+            onClick = { onSet(value + 1) },
+            enabled = value < max,
+            modifier = Modifier.size(48.dp).testTag("ble_link_cap_inc"),
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.diagnostics_ble_link_cap_increase))
+        }
+    }
+}
+
+/**
  * The one-line "Last crash" entry. Interactive, so it takes the 48 dp minimum touch target — `clickable`
  * goes **before** `padding` so the target covers the whole row, unlike the non-interactive [MetricRow]
  * next door, which is ~32 dp tall.
@@ -1180,4 +1246,14 @@ fun DiagnosticsScreenEmptyDegradedPreview() =
             onOpenCrashLog = {},
             onResetModeration = {},
         )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun BleLinkCapRowPreview() =
+    KnitPreview {
+        Column {
+            BleLinkCapRow(cap = null, onSet = {})
+            BleLinkCapRow(cap = 2, onSet = {})
+        }
     }

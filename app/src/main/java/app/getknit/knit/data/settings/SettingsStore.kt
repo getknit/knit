@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.emoji.RecentReactions
+import app.getknit.knit.mesh.bluetooth.PromotionConfig
 import app.getknit.knit.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.map
  * SharedPreferences). Holds the profile/mesh toggles and per-conversation read state. (The node id is
  * no longer persisted here — it is derived from the E2E keypair; see [app.getknit.knit.identity.Identity].)
  */
+@Suppress("TooManyFunctions") // one small setter per key, over the one DataStore file; splitting would relocate, not clarify
 class SettingsStore(
     private val dataStore: DataStore<Preferences>,
 ) : InboundSettings,
@@ -436,6 +438,17 @@ class SettingsStore(
     val loraChannelIndex: Flow<Int> = dataStore.data.map { it[KEY_LORA_CHANNEL] ?: 0 }
 
     /**
+     * A diagnostic cap on how many Bluetooth links this phone holds, `0` up to the shipped budget
+     * ([PromotionConfig.DEFAULT_MAX_LINKS]), or null for the shipped behaviour. Set from Diagnostics or the
+     * debug bridge's `BLECAP`; gated on `BuildConfig.DEBUG` here, so a release build reads null whatever is
+     * stored. Phone-local: the `debug_` prefix keeps it out of a backup.
+     */
+    val debugBleLinkCap: Flow<Int?> =
+        dataStore.data.map { prefs ->
+            if (BuildConfig.DEBUG) prefs[KEY_DEBUG_BLE_LINK_CAP]?.coerceIn(0, PromotionConfig.DEFAULT_MAX_LINKS) else null
+        }
+
+    /**
      * The bound board as its last session reported it — its Meshtastic node number and, on firmware that
      * signs, its key — or null while unbound. What the profile advertises (`ProfileContent.loraNode` /
      * `loraKey`) so a contact can line a post their board heard up with this phone and verify it is ours.
@@ -681,6 +694,16 @@ class SettingsStore(
 
     suspend fun setLoraChannelIndex(index: Int) = dataStore.edit { it[KEY_LORA_CHANNEL] = index }
 
+    /** Sets [debugBleLinkCap]; null, or the shipped budget and above, clears it. */
+    suspend fun setDebugBleLinkCap(cap: Int?) =
+        dataStore.edit {
+            if (cap == null || cap >= PromotionConfig.DEFAULT_MAX_LINKS) {
+                it.remove(KEY_DEBUG_BLE_LINK_CAP)
+            } else {
+                it[KEY_DEBUG_BLE_LINK_CAP] = cap.coerceAtLeast(0)
+            }
+        }
+
     /** Records the LoRa plane's limiters; see [loraPlaneState]. */
     suspend fun setLoraPlaneState(json: String) = dataStore.edit { it[KEY_LORA_PLANE_STATE] = json }
 
@@ -904,6 +927,7 @@ class SettingsStore(
         val KEY_LORA_ADDRESS = stringPreferencesKey("lora_device_address")
         val KEY_LORA_NAME = stringPreferencesKey("lora_device_name")
         val KEY_LORA_CHANNEL = intPreferencesKey("lora_channel_index")
+        val KEY_DEBUG_BLE_LINK_CAP = intPreferencesKey("debug_ble_link_cap")
         val KEY_LORA_NODE = longPreferencesKey("lora_board_node")
         val KEY_LORA_KEY = stringPreferencesKey("lora_board_key")
         val KEY_LORA_SETUP_ADDRESS = stringPreferencesKey("lora_setup_address")

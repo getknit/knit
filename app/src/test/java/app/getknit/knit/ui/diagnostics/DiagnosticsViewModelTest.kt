@@ -32,6 +32,7 @@ import app.getknit.knit.moderation.ModelLoadGuard
 import app.getknit.knit.moderation.ModelLoadPolicy
 import app.getknit.knit.ui.Reach
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
@@ -200,6 +201,49 @@ class DiagnosticsViewModelTest {
             assertEquals(1, controller.releaseInitiatorHoldCount)
             assertEquals(listOf(R.string.diagnostics_nan_hold_retry_done), seen)
             events.cancel()
+        }
+
+    /** The debug build's Bluetooth link limit reads and writes the one store key the transport collects. */
+    @Test
+    fun theBluetoothLinkLimitReadsTheStoreAndWritesThrough() =
+        runTest {
+            val controller = FakeMeshController()
+            val settings = mockk<SettingsStore>(relaxed = true)
+            every { settings.spoolEnabled } returns MutableStateFlow(false)
+            every { settings.spoolUrls } returns MutableStateFlow(emptySet())
+            every { settings.activeSpoolUrls } returns MutableStateFlow(emptySet())
+            val stored = MutableStateFlow<Int?>(2)
+            every { settings.debugBleLinkCap } returns stored
+            coEvery { settings.setDebugBleLinkCap(any()) } answers {
+                stored.value = firstArg()
+                mockk(relaxed = true)
+            }
+            val vm =
+                DiagnosticsViewModel(
+                    peers = mockk(relaxed = true),
+                    meshManager = controller,
+                    identity = mockk(relaxed = true),
+                    settings = settings,
+                    metrics = MeshMetrics(),
+                    relayStatus = RelayStatusRepository(settings, controller),
+                    crashes = mockk(relaxed = true),
+                    modelGuard = unlatchedGuard(),
+                    radios = RadioSupport.ALL,
+                    loraFacts = MutableStateFlow(LoraFacts()),
+                )
+            val cap = backgroundScope.launch { vm.bleLinkCap.collect { } }
+            runCurrent()
+
+            // Unit tests build the debug variant, where the row is offered.
+            assertTrue(vm.bleLinkCapOffered)
+            assertEquals(2, vm.bleLinkCap.value)
+
+            vm.setBleLinkCap(1)
+            runCurrent()
+
+            coVerify { settings.setDebugBleLinkCap(1) }
+            assertEquals(1, vm.bleLinkCap.value)
+            cap.cancel()
         }
 
     @Test

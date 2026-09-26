@@ -17,7 +17,8 @@ class BleAdmissionPolicyTest {
         dialer: String,
         sighted: Boolean,
         heldLinkAgeMs: Long? = null,
-    ) = BleAdmissionPolicy.decide(local, dialer, sighted, heldLinkAgeMs)
+        atCap: Boolean = false,
+    ) = BleAdmissionPolicy.decide(local, dialer, sighted, heldLinkAgeMs, atCap)
 
     @Test
     fun aLargerDialerIsAdmittedSeenOrNot() {
@@ -59,6 +60,22 @@ class BleAdmissionPolicyTest {
         val young = REPLACE_MIN_HOLD_MS - 1
         assertEquals(Verdict.Refuse, verdict(local = high, dialer = low, sighted = false, heldLinkAgeMs = young))
         assertEquals(Verdict.Refuse, verdict(local = low, dialer = high, sighted = false, heldLinkAgeMs = 0L))
+    }
+
+    @Test
+    fun aFullDebugCapRefusesADialerThatWouldAddALink() {
+        // Refused at the door rather than admitted and shed by eviction twenty seconds later.
+        assertEquals(Verdict.Refuse, verdict(local = low, dialer = high, sighted = true, atCap = true))
+        assertEquals(Verdict.Refuse, verdict(local = high, dialer = low, sighted = false, atCap = true))
+    }
+
+    @Test
+    fun aFullDebugCapStillLetsAReplacementThroughAndRefusesNothingNew() {
+        // A replacement doesn't grow the set; every refusal is the one the uncapped table gives.
+        val old = REPLACE_MIN_HOLD_MS
+        assertEquals(Verdict.Replace, verdict(local = high, dialer = low, sighted = false, heldLinkAgeMs = old, atCap = true))
+        assertEquals(Verdict.Refuse, verdict(local = high, dialer = low, sighted = true, atCap = true))
+        assertEquals(Verdict.Refuse, verdict(local = low, dialer = high, sighted = false, heldLinkAgeMs = 0L, atCap = true))
     }
 
     @Test

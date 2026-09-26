@@ -755,6 +755,12 @@
     <string name="diagnostics_nan_hold_body">This phone\'s Wi-Fi dropped each time Knit tried to open a Wi-Fi Aware connection to a nearby phone, so Knit stopped opening them from here. Nearby phones can still connect to this one, and Knit tries again once a day.</string>
     <string name="diagnostics_nan_hold_retry_action">Try again now</string>
     <string name="diagnostics_nan_hold_retry_done">Trying Wi-Fi Aware connections again</string>
+    <!-- Debug builds only: the diagnostic cap on Bluetooth links (SettingsStore.debugBleLinkCap). -->
+    <string name="diagnostics_ble_link_cap_label">Bluetooth link limit (debug)</string>
+    <string name="diagnostics_ble_link_cap_body">This phone holds at most this many Bluetooth links. Other nearby phones stay unlinked over Bluetooth.</string>
+    <string name="diagnostics_ble_link_cap_default">Default (%1$d)</string>
+    <string name="diagnostics_ble_link_cap_decrease">Fewer Bluetooth links</string>
+    <string name="diagnostics_ble_link_cap_increase">More Bluetooth links</string>
 
     <!-- Your mesh (ui/yourmesh): what keeping Knit running has done for the people around this phone, in
          plain words. Every number is counted on this phone and never leaves it. "Passed along" is a message
