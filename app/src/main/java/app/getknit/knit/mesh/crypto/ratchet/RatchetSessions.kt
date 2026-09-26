@@ -103,6 +103,13 @@ class RatchetSessions(
     /** Inbound session-replacement rate limit (per peer): last accepted replacement/adoption. */
     private val lastReplacementAt = HashMap<String, Long>()
 
+    /**
+     * When a session we initiated confirmed (per peer, in memory): the peer adopted that init no later than it
+     * sealed the frame that confirmed it, so its replacement floor runs until at least a minute past this.
+     * [sealResetDm] reads it; a restart forgets it, which only costs the floor we had before it existed.
+     */
+    private val confirmedAt = HashMap<String, Long>()
+
     /** Maps the wire header DTO to the engine's wire-agnostic mirror. */
     private fun headerOf(r: RatchetHeader): RatchetEngine.FrameHeader =
         RatchetEngine.FrameHeader(
@@ -203,6 +210,7 @@ class RatchetSessions(
                     synchronized(lastReplacementAt) { lastReplacementAt[peerId] = now }
                     synchronized(undecryptable) { undecryptable.remove(peerId) }
                 }
+                if (answeredOurInit(ctx.session, outcome.delta.session)) synchronized(confirmedAt) { confirmedAt[peerId] = now }
                 onOpened()
                 before = scopeView(ctx.session)
                 after = scopeView(outcome.delta.session)
@@ -303,14 +311,39 @@ class RatchetSessions(
     }
 
     /**
-     * Seals a session **reset request**: a fresh X3DH initiation replacing any local session (the old
-     * root drains via prevRoot; our epoch numbering restarts, and the peer's replacement handling
-     * purges its stale rows), carrying [plaintext] (the `ctl` reset marker) with [RatchetHeader.FLAG_RESET].
-     * Also stamps the outbound rate limit. Null when the peer has no usable prekey.
+     * Seals a session **reset request** toward [peerId]: the `ctl` reset marker in [plaintext], which makes the
+     * peer re-seal its recent unacked DMs to us and re-send its group seeds. Stamps the outbound rate limit
+     * whenever it seals. Usually that is a fresh X3DH initiation replacing any local session, carrying
+     * [RatchetHeader.FLAG_RESET] (the old root drains via prevRoot; our epoch numbering restarts, and the peer's
+     * replacement handling purges its stale rows).
      *
-     * Purges **our own** receive state too ([RatchetStore.purgePeerRecvState]) — the half this used to leave
-     * behind. Abandoning a root era is symmetric: the peer drops its stale rows when it adopts this init, and
-     * we must drop ours, or its post-replacement epochs meet a surviving chain index from the dead era.
+     * **A reset the peer would refuse is never sealed** (ADR 2026-09.qerd). The peer adopts a `FLAG_RESET`
+     * init only a minute after the last replacement it adopted from us (`RESET_REPLACEMENT_MIN_INTERVAL_MS`),
+     * and one it refuses is worse than none: we have purged the root it is still on, it drops ours as a
+     * duplicate, and our own heuristic is floored for six hours. So, against the session we hold:
+     *
+     * - **our own init, not yet answered, against the peer's current prekey:** a plain one (a first `sealDm`)
+     *   is *marked*, whatever its age — the peer may be adopting it from custody right now, and a second root
+     *   would land inside the floor that adoption starts. The marker is sealed under it with its header
+     *   flagged, so the peer resolves the same init idempotently or adopts it under the short floor. One that
+     *   already is a reset (or was marked) is declined for a minute, then re-rooted as usual: only a fresh
+     *   init outlives a peer that judges this one's `at` stale.
+     * - **our own init, answered under a minute ago, on the heuristic's word ([ResetCause.UNREADABLE]):**
+     *   declined. The frames that failed to open prove the peer held another session with us, so taking our
+     *   init was a replacement and started its floor — no later than it sealed the answer. The heuristic fires
+     *   again on the next failure. An on-demand reset has no such evidence (on first contact the peer
+     *   *established*, which starts no floor) and goes out.
+     * - **[ResetCause.AFTER_WIPE]** (the first start after a backup restore, whose ratchet tables came back
+     *   empty): any session present was made since the wipe, so it only needs the marker — declined when a
+     *   reset already went on it, marked otherwise, re-rooted only past a pending init against a prekey the
+     *   peer has left.
+     *
+     * A marker seals v2 like every reset: the flag is not bound into a v2 frame's AEAD, and it goes on the
+     * header only while an init rides there (the only place a receiver reads it).
+     *
+     * A re-root purges **our own** receive state too ([RatchetStore.purgePeerRecvState]) — the half this used
+     * to leave behind. Abandoning a root era is symmetric: the peer drops its stale rows when it adopts this
+     * init, and we must drop ours, or its post-replacement epochs meet a surviving chain index from the dead era.
      */
     suspend fun sealResetDm(
         peerId: String,
@@ -319,53 +352,182 @@ class RatchetSessions(
         plaintext: ByteArray,
         aad: ByteArray,
         now: Long,
-    ): EncEnvelope? {
+        cause: ResetCause = ResetCause.ON_DEMAND,
+    ): ResetSeal {
         var before: ScopeView? = null
-        val env =
+        var reRooted = false
+        val result =
             locked {
-                peerSpk ?: return@locked null
+                peerSpk ?: return@locked ResetSeal.NoPrekey
                 val old = store.session(peerId)
-                before = scopeView(old)
-                val initiation = engine.initiate(peerId, dhIdentityPriv(), peerIkPub, peerSpk, now)
-                val session =
-                    initiation.session.copy(
-                        prevRoot = old?.root,
-                        prevRootWeAreInitiator = old?.weAreInitiator ?: false,
-                        prevRootExpiresAt = if (old != null) now + RatchetEngine.PREV_ROOT_TTL_MS else 0L,
-                        lastResetSentAt = now,
-                    )
-                val sealed = engine.seal(session, plaintext, aad, peerSpk.pub, now) ?: return@locked null
-                // Abandon our receive side along with the root. The peer purges its stale rows when it adopts
-                // this init; nothing was doing the same for ours, so a recv epoch from the dead era survived and
-                // the peer's post-replacement frames — whose epoch numbers may reuse the old ones — were judged
-                // against its stale chain index and dropped as DUPLICATE. That is unrecoverable by construction:
-                // a duplicate is benign, so it drives no reset, and the pair deadlocks in the one direction.
-                store.purgePeerRecvState(peerId)
-                store.commitSend(sealed.session, initiation.epoch)
-                synchronized(lastResetSentAt) { lastResetSentAt[peerId] = now }
-                synchronized(undecryptable) { undecryptable.remove(peerId) }
-                val h = sealed.header
-                EncEnvelope(
-                    v = EncEnvelope.VERSION_RATCHET,
-                    // A reset always seals v2 — the most compatible form toward a peer that may have reinstalled.
-                    nonce = checkNotNull(sealed.nonce),
-                    ct = sealed.ct,
-                    keys = emptyList(),
-                    r =
-                        RatchetHeader(
-                            se = h.se,
-                            ek = h.ek,
-                            pe = h.pe,
-                            n = h.n,
-                            init = h.init?.let { RatchetInit(eph = it.eph, pkid = it.pkid, at = it.at) },
-                            flags = RatchetHeader.FLAG_RESET,
-                        ),
-                )
+                when (val plan = resetPlan(peerId, old, peerSpk, now, cause)) {
+                    is ResetPlan.Decline -> {
+                        ResetSeal.Declined(plan.reason)
+                    }
+
+                    ResetPlan.Mark -> {
+                        markReset(checkNotNull(old), peerSpk, plaintext, aad, now)
+                    }
+
+                    ResetPlan.ReRoot -> {
+                        before = scopeView(old)
+                        reRooted = true
+                        reRoot(peerId, old, peerIkPub, peerSpk, plaintext, aad, now)
+                    }
+                }
             }
         // The replacement we just minted is unconfirmed, so the peer's scopes leave the table until it
-        // answers — a view change like any other.
-        if (env != null) reportRootChange(peerId, before, after = null)
-        return env
+        // answers — a view change like any other. A marker leaves the root where it was.
+        if (reRooted && result is ResetSeal.Sealed) reportRootChange(peerId, before, after = null)
+        return result
+    }
+
+    /** Our own init answered — not a race lost to the peer's, which also confirms us but as responder. */
+    private fun answeredOurInit(
+        was: RatchetEngine.SessionState?,
+        next: RatchetEngine.SessionState,
+    ): Boolean = was?.weAreInitiator == true && !was.confirmed && next.confirmed && next.weAreInitiator
+
+    /** What [sealResetDm] should do against [old]; see its KDoc for the rules. Runs under the lock. */
+    private fun resetPlan(
+        peerId: String,
+        old: RatchetEngine.SessionState?,
+        peerSpk: RatchetEngine.PeerPrekey,
+        now: Long,
+        cause: ResetCause,
+    ): ResetPlan {
+        if (old == null) return ResetPlan.ReRoot
+        val pendingInit = old.weAreInitiator && !old.confirmed
+        // An init against a prekey the peer has since replaced may never be adoptable: only a fresh one heals it.
+        if (pendingInit && old.initPkid != peerSpk.id) return ResetPlan.ReRoot
+        if (cause == ResetCause.AFTER_WIPE) {
+            return if (old.lastResetSentAt > 0L) ResetPlan.Decline("a reset already went since the restore") else ResetPlan.Mark
+        }
+        if (pendingInit) {
+            // initiate() stamps establishedAt with the same `now` a reset stamps; a plain sealDm init leaves 0.
+            if (old.lastResetSentAt < old.establishedAt) return ResetPlan.Mark
+            return if (now - old.lastResetSentAt < RESET_REPLACEMENT_MIN_INTERVAL_MS) {
+                ResetPlan.Decline("our reset is still on its way")
+            } else {
+                ResetPlan.ReRoot
+            }
+        }
+        val answeredAt = synchronized(confirmedAt) { confirmedAt[peerId] }
+        val insideFloor = answeredAt != null && now - answeredAt < RESET_REPLACEMENT_MIN_INTERVAL_MS
+        if (cause == ResetCause.UNREADABLE && old.weAreInitiator && insideFloor) {
+            return ResetPlan.Decline("the peer adopted our init under a minute ago")
+        }
+        return ResetPlan.ReRoot
+    }
+
+    /** The reset marker under [old], its root untouched: stamped like any reset, never purged. Runs under the lock. */
+    private suspend fun markReset(
+        old: RatchetEngine.SessionState,
+        peerSpk: RatchetEngine.PeerPrekey,
+        plaintext: ByteArray,
+        aad: ByteArray,
+        now: Long,
+    ): ResetSeal {
+        val sealed = engine.seal(old, plaintext, aad, peerSpk.pub, now) ?: return ResetSeal.NoPrekey
+        store.commitSend(sealed.session.copy(lastResetSentAt = now), sealed.newLocalEpoch)
+        synchronized(lastResetSentAt) { lastResetSentAt[old.peerId] = now }
+        synchronized(undecryptable) { undecryptable.remove(old.peerId) }
+        val flags = if (sealed.header.init != null) RatchetHeader.FLAG_RESET else 0
+        return ResetSeal.Sealed(resetEnvelope(sealed, flags), reRooted = false)
+    }
+
+    /** A fresh initiation replacing [old]: the reset as it always was. Runs under the lock. */
+    private suspend fun reRoot(
+        peerId: String,
+        old: RatchetEngine.SessionState?,
+        peerIkPub: ByteArray,
+        peerSpk: RatchetEngine.PeerPrekey,
+        plaintext: ByteArray,
+        aad: ByteArray,
+        now: Long,
+    ): ResetSeal {
+        val initiation = engine.initiate(peerId, dhIdentityPriv(), peerIkPub, peerSpk, now)
+        val session =
+            initiation.session.copy(
+                prevRoot = old?.root,
+                prevRootWeAreInitiator = old?.weAreInitiator ?: false,
+                prevRootExpiresAt = if (old != null) now + RatchetEngine.PREV_ROOT_TTL_MS else 0L,
+                lastResetSentAt = now,
+            )
+        val sealed = engine.seal(session, plaintext, aad, peerSpk.pub, now) ?: return ResetSeal.NoPrekey
+        // Abandon our receive side along with the root. The peer purges its stale rows when it adopts
+        // this init; nothing was doing the same for ours, so a recv epoch from the dead era survived and
+        // the peer's post-replacement frames — whose epoch numbers may reuse the old ones — were judged
+        // against its stale chain index and dropped as DUPLICATE. That is unrecoverable by construction:
+        // a duplicate is benign, so it drives no reset, and the pair deadlocks in the one direction.
+        store.purgePeerRecvState(peerId)
+        store.commitSend(sealed.session, initiation.epoch)
+        synchronized(lastResetSentAt) { lastResetSentAt[peerId] = now }
+        synchronized(undecryptable) { undecryptable.remove(peerId) }
+        synchronized(confirmedAt) { confirmedAt.remove(peerId) }
+        return ResetSeal.Sealed(resetEnvelope(sealed, RatchetHeader.FLAG_RESET), reRooted = true)
+    }
+
+    /** A reset always seals v2 — the most compatible form toward a peer that may have reinstalled. */
+    private fun resetEnvelope(
+        sealed: RatchetEngine.SealResult,
+        flags: Int,
+    ): EncEnvelope {
+        val h = sealed.header
+        return EncEnvelope(
+            v = EncEnvelope.VERSION_RATCHET,
+            nonce = checkNotNull(sealed.nonce),
+            ct = sealed.ct,
+            keys = emptyList(),
+            r =
+                RatchetHeader(
+                    se = h.se,
+                    ek = h.ek,
+                    pe = h.pe,
+                    n = h.n,
+                    init = h.init?.let { RatchetInit(eph = it.eph, pkid = it.pkid, at = it.at) },
+                    flags = flags,
+                ),
+        )
+    }
+
+    private sealed interface ResetPlan {
+        data object ReRoot : ResetPlan
+
+        data object Mark : ResetPlan
+
+        class Decline(
+            val reason: String,
+        ) : ResetPlan
+    }
+
+    /** Why [sealResetDm] is asked for a reset: what the caller knows about the session it would replace. */
+    enum class ResetCause {
+        /** Asked for directly (the debug bridge): nothing is known about the peer's state. */
+        ON_DEMAND,
+
+        /** The heuristic: the peer's frames failed to open, so it held a session with us other than ours. */
+        UNREADABLE,
+
+        /** The first start after a backup restore: every session present was made since the ratchet tables emptied. */
+        AFTER_WIPE,
+    }
+
+    /** What [sealResetDm] did. */
+    sealed interface ResetSeal {
+        /** A reset to flood: a fresh root when [reRooted], else the marker under the session we already hold. */
+        class Sealed(
+            val envelope: EncEnvelope,
+            val reRooted: Boolean,
+        ) : ResetSeal
+
+        /** Nothing sealed: the peer would refuse a new root now, or already has the reset it needs. */
+        class Declined(
+            val reason: String,
+        ) : ResetSeal
+
+        /** The peer has no usable prekey. */
+        data object NoPrekey : ResetSeal
     }
 
     /**
@@ -395,6 +557,7 @@ class RatchetSessions(
                 val state = store.session(peerId)
                 before = scopeView(state)
                 if (state != null) store.deletePeer(peerId)
+                synchronized(confirmedAt) { confirmedAt.remove(peerId) }
                 state != null
             }
         if (had) reportRootChange(peerId, before, after = null)

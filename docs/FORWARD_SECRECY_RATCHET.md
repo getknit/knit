@@ -190,7 +190,8 @@ never wrapped, so `WrappedKey` has no v2 role):
 EncEnvelope { v = 2, nonce, ct, keys = [], r: RatchetHeader }
 RatchetHeader { se: Int, ek: bytes(32), pe: Int, n: Int, init: RatchetInit? , flags: Int = 0 }
 RatchetInit  { eph: bytes(32), pkid: Int, at: Long }    // attached to EVERY frame until confirmed
-flags: bit0 = RESET (§7)
+flags: bit0 = RESET (§7) — read only while an init rides; set on a reset's fresh init, or on a reset
+       sealed under an init the sender already had pending (the "marker", §7). v2 only: v3 binds it.
 ```
 
 Old builds decode the envelope (ignoring `r`), hit `v > MAX_SUPPORTED_VERSION`, and take the
@@ -303,6 +304,24 @@ skipped-key path absorbs.
   a peer that has not yet seen the reset can adopt it from any of them. The peer answers each new init
   it opens with one sealed frame (`IntroSync`), because its re-seals reuse ids the resetter already
   holds and never reach the ratchet.
+- **A reset the peer would refuse is never sent** (ADR 2026-09.qerd). The receiver adopts a flagged init
+  only a minute after the last replacement it adopted from this peer, and drops a refused one as a
+  `DUPLICATE`; the sender has meanwhile purged the root the receiver is still on, and its own heuristic is
+  floored for six hours. So the sender looks at the session it holds first. Over its **own init, still
+  unconfirmed, against the peer's current prekey** it never mints a second root: a plain one (a first
+  send's) is *marked* — the `CTL_SESSION_RESET` sealed under it, v2, `flags = RESET` on a header that still
+  carries the same init, so the peer resolves it idempotently or adopts it under the reset floor, and the
+  recovery runs the same (it keys on the ctl, not on a purge) — and one that already is a reset is declined
+  for a minute, then re-rooted. When the heuristic asks, over its own init **confirmed under a minute ago**
+  it declines: the unreadable frames prove the peer held another session, so taking the init was a
+  replacement that started its floor, no later than it sealed the answer (a reset asked for on demand goes
+  out — on first contact the peer established, which starts no floor). The first start after a **backup restore**, whose
+  ratchet tables came back empty, resets every peer a session was wiped with (DM threads and the other
+  members of every group) and treats any session it finds as made since the wipe: the marker under it,
+  confirmed or not, or nothing when a reset already went. `IntroSync` answers a marked init once more even if
+  it answered the same init unmarked, since the marked frame may be the one the peer adopted. The group seed
+  re-send floor counts only seeds sealed under the root held now, so the forced flush a reset triggers is
+  never refused by a seed that went out under the root it replaced (`GROUP_FORWARD_SECRECY.md` §3).
 
 ## 8. Export API (for the internet relay plane — consumer spec'd)
 

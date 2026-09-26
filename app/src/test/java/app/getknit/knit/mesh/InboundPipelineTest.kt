@@ -4320,6 +4320,51 @@ class InboundPipelineTest {
             assertEquals("a refused replacement moves no root", 2, rig.rootChanges.size)
         }
 
+    /**
+     * The receiving half of ADR 2026-09.qerd: a peer that already opened a session with us — a restored phone
+     * whose group post went out first — seals its reset under that session instead of minting a second root we
+     * would refuse. The frame opens as the same session, and the recovery still runs.
+     */
+    @Test
+    fun aResetMarkerUnderTheSessionWeAlreadyHoldStillReSealsAndFlushes() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            val restored = V2Author(alice, rig, at = 5L)
+            rig.deliver(alice, restored.dm("seed", "hello"))
+            val root = checkNotNull(rig.ratchetStore.session(alice.nodeId)).root
+
+            rig.deliver(
+                alice,
+                restored.dm("mark", "", ctl = MessageContent.CTL_SESSION_RESET) { h ->
+                    RatchetHeader(se = h.se, ek = h.ek, pe = h.pe, n = h.n, init = h.init, flags = RatchetHeader.FLAG_RESET)
+                },
+            )
+
+            assertEquals(listOf(alice.nodeId), rig.resealed)
+            assertEquals(listOf(alice.nodeId to true), rig.groupKeysFlushed)
+            assertArrayEquals("the same session", root, checkNotNull(rig.ratchetStore.session(alice.nodeId)).root)
+            assertEquals("only the establishment moved a root", listOf(alice.nodeId), rig.rootChanges)
+        }
+
+    @Test
+    fun aResetTheRatchetDeclinesOriginatesNothingAndSaysWhy() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            assertNull(rig.pipeline.sendSessionReset(alice.nodeId, rig.self.nodeId, rig.nowMs))
+            val sent = rig.originated.size
+
+            assertNotNull("our reset is still on its way", rig.pipeline.sendSessionReset(alice.nodeId, rig.self.nodeId, rig.nowMs))
+            assertNotNull(
+                "a restore finds the reset already sent",
+                rig.pipeline.sendSessionReset(alice.nodeId, rig.self.nodeId, rig.nowMs, RatchetSessions.ResetCause.AFTER_WIPE),
+            )
+            assertEquals(sent, rig.originated.size)
+        }
+
     // --- profile prekey pinning ---
 
     private fun Rig.profileWithPrekey(

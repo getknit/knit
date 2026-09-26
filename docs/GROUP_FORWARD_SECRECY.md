@@ -133,7 +133,12 @@ and a DM session reset/replacement with that member (ctl frames are never persis
 trigger is **forced**: it bypasses the outbox's acked-epoch short-circuit, because a reset means the
 peer lost their DB and any recorded ack of the current epoch predates the wipe — without the bypass
 the flush silently no-ops and the peer black-holes group frames until the sender's next natural mint
-(found by the post-ship branch review; the 15-minute re-distribution floor still applies).
+(found by the post-ship branch review; the 15-minute re-distribution floor still applies). The floor
+counts only sends under the pairwise root held with that member *now* (ADR 2026-09.qerd): a seed sealed
+under a root the member has since left is one it can never open, and it used to stamp the floor all the
+same — so a restored member whose reset landed just after our post (sealed under the wiped session) had the
+reset's forced flush refused, and sat at `GROUP_RATCHET_NO_KEY` for a quarter hour. A root moves only
+through the ratchet's rate-limited paths, and a bare reset marker under an unchanged root stays floored.
 
 **The receive side has a matching local half** (found by the first on-device smoke): a group frame
 that arrives *before* its seed is dropped locally but still custodied by the receiver as a carrier —
@@ -339,7 +344,7 @@ since shipped sealed — `docs/ENCRYPTED_RECEIPTS_REACTIONS.md`).
 | skipped keys | ≤200/(sender, epoch); ≤2000 global (own budget, separate from the DM's) | epoch cap; DoS bound |
 | key-request trigger | ≥3 distinct ids per (group, sender), frame `sentAt` ≤ 48 h old | DM reset-heuristic shape + custody dead-on-arrival guard |
 | key-request outbound floor | 1 h per (group, sender) | cheaper + non-destructive vs the DM's 6 h reset |
-| re-distribution floor | 15 min per (group, member) | responder flood bound |
+| re-distribution floor | 15 min per (group, member, pairwise root) | responder flood bound |
 | epoch-adoption limit | ≤4 per (group, sender) per 24 h | legitimate advances: count + age + leave + wipe |
 | roster cap | 8 founding members (`GroupInfo.MAX_MEMBERS`) | bounds seed fan-out and skipped-key surface |
 

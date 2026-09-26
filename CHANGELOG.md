@@ -25,6 +25,9 @@ document:
 - If you and a contact both wrote first while out of range of each other, or Knit had just repaired the
   encryption between you, a message could stay on one tick forever. It now gets through and shows as
   delivered.
+- After restoring a backup, messages with some contacts could stay unreadable on both phones for up to six
+  hours, most often with someone you only share a group with. They now get through once the two phones can
+  reach each other again.
 
 ## [2.7.0](https://github.com/getknit/knit/releases/tag/v2.7.0) — 2026-09-24T21:26:44Z
 

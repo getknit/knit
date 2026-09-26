@@ -183,6 +183,23 @@ class IntroSyncTest {
         }
 
     @Test
+    fun `an init marked as a reset is answered once more inside the floor`() =
+        runTest {
+            // Carol's plain init reached us first (read as a race remnant, say, so our answer went out under the
+            // old session); she then seals her reset under that same init (ADR 2026-09.qerd), and the marked frame
+            // is the one we adopt. It earns its own answer, once.
+            val rig = Rig()
+            rig.sealable += CAROL
+            rig.sync.onPeerFrameOpened(CAROL, initEph = INIT_1)
+            rig.sync.onPeerFrameOpened(CAROL, initEph = INIT_1, resetFlagged = true)
+            assertEquals(listOf(CAROL, CAROL), rig.sent)
+
+            rig.sync.onPeerFrameOpened(CAROL, initEph = INIT_1, resetFlagged = true)
+            rig.sync.onPeerFrameOpened(CAROL, initEph = INIT_1)
+            assertEquals("a marked init's repeats, and the plain ones after it, stay floored", 2, rig.sent.size)
+        }
+
+    @Test
     fun `both sides importing each other converges with no extra sends`() =
         runTest {
             // Us: pending intro to Bob, Bob's prekey known → sent. Bob's own intro then arrives with its

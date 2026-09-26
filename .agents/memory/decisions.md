@@ -150,6 +150,7 @@ carries; never renumber an old one.
 | [2026-09.p7j8](decisions/2026-09-p7j8-a-missing-ack-is-not-evidence-until-an-ack-could-have-arrived.md) | A missing ack is not evidence until an ack could have arrived, and it is read from both ends of the DM | spool, attachments |
 | [2026-09.ptv8](decisions/2026-09-ptv8-a-missing-attachment-is-re-wanted-from-the-database-at-every-link-up.md) | A missing attachment is re-wanted from the database at every link-up, not only at startup | mesh, attachments, blob-exchange, lora |
 | [2026-09.pz9g](decisions/2026-09-pz9g-a-frame-moves-a-session-s-era-only-when-it-derives-a-fresh-epoch-under-the-activ.md) | A frame moves a session's era only when it derives a fresh epoch under the active root | crypto, pfs, recovery |
+| [2026-09.qerd](decisions/2026-09-qerd-a-session-reset-the-peer-would-refuse-is-never-sent.md) | A session reset the peer would refuse is never sent | crypto, pfs, recovery, backup |
 | [2026-09.qgk4](decisions/2026-09-qgk4-the-startup-profile-ships-beside-the-baseline-one.md) | The startup profile ships beside the baseline one, from the same journey | performance, build, distribution |
 | [2026-09.qq2r](decisions/2026-09-qq2r-a-file-is-an-ordinary-attachment-with-an-arbitrary-mime-and-a-sealed-name.md) | A file is an ordinary attachment with an arbitrary MIME and a sealed name | attachments, ui, wire, moderation |
 | [2026-09.qsj6](decisions/2026-09-qsj6-a-heard-inconsistent-offer-is-news.md) | A heard inconsistent OFFER is news | lora, airtime, reliability |

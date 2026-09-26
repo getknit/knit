@@ -290,10 +290,18 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   recovery key the app shows once and never keeps; custody and both ratchets are never carried
   (`BackupTables`, test-pinned to the schema — a new table must be classified), a restore is staged and
   verified in full before `READY` (both readers on the other side fail destructively), applied by the
-  relaunched process before Koin, and finished by one session reset per DM peer on the first mesh start.
-  A restore is a **move** — the mesh has no clone tolerance — and the copy says so. The database copy goes
+  relaunched process before Koin, and finished on the first mesh start by one session reset per peer whose
+  session was wiped (DM peers and every group's other members, ADR 2026-09.qerd). A restore is a **move** —
+  the mesh has no clone tolerance — and the copy says so. The database copy goes
   through a raw single-connection driver on purpose (`ATTACH` is read-only to SQLite and lands on a pool
   reader; the SQLCipher layer rewrites `BEGIN` to `EXCLUSIVE`) — don't move it onto the Room connection.
+- **When touching `RatchetSessions.sealResetDm`, `InboundPipeline.sendSessionReset` / `maybeRequestReset`,
+  `MeshManager.seedSendFloorOpen`, or anything else that sends a DM session reset:** READ ADR 2026-09.qerd and
+  `docs/FORWARD_SECRECY_RATCHET.md` §7. A reset the peer would refuse — a second root inside its one-minute
+  floor — is never sealed: over our own unanswered init it *marks* that init (the reset ctl under it, v2,
+  flagged) or declines, and on the heuristic's word over an init answered under a minute ago it declines.
+  The group seed floor counts only sends under the pairwise root held now, never `force`. Regression:
+  `RatchetSessionsResetTest`, and `RestoreLabTest` under `scripts/lab-chaos.sh`.
 - **When touching `mesh/CloneWatch`, the self branch of `InboundPipeline.handleProfile`, the `clone_`
   settings keys, `ui/chatlist/CloneBanner`, the Settings clone row, or `ui/signout/`:** READ ADR
   2026-09.ypcc. One backup restored onto two phones is detected from the **profile stamp alone** — a

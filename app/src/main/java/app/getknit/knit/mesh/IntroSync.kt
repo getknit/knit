@@ -99,6 +99,7 @@ class IntroSync(
     private class Answered(
         val initEph: ByteArray,
         val at: Long,
+        val resetFlagged: Boolean,
     )
 
     /** The UI's view — re-published after every transition so `state(peer)` reacts without polling the store. */
@@ -165,18 +166,24 @@ class IntroSync(
      * ratchet. A per-peer floor left the resetter unconfirmed, with no spool scope for the pair, for up to an
      * hour after any earlier answer (#87). A new init only gets here by opening, and every way one opens is
      * rate-limited by the ratchet's replacement floors or is one answer per frame the peer sent.
+     *
+     * [resetFlagged] earns the same init one more answer. A peer marks the init it is waiting on as a reset by
+     * sealing the reset under it (ADR 2026-09.qerd); if we first read that init read-only, as a race remnant,
+     * our answer went out under the old session and the marked frame is the one we actually adopt. Only one
+     * marked frame reaches here per mark — its re-serves end as duplicates in the ratchet.
      */
     suspend fun onPeerFrameOpened(
         peerId: String,
         initEph: ByteArray?,
+        resetFlagged: Boolean = false,
     ) {
         settle(peerId)
         if (initEph == null) return
         val now = clock()
-        val last = lastAnswered[peerId]
-        if (last != null && last.initEph.contentEquals(initEph) && now - last.at < answerFloorMs) return
+        val answered = lastAnswered[peerId]?.takeIf { it.initEph.contentEquals(initEph) && (it.resetFlagged || !resetFlagged) }
+        if (answered != null && now - answered.at < answerFloorMs) return
         if (!canSeal(peerId)) return
-        lastAnswered[peerId] = Answered(initEph, now)
+        lastAnswered[peerId] = Answered(initEph, now, resetFlagged)
         if (sendIntro(peerId)) metrics.onIntroAnswered() else lastAnswered.remove(peerId)
     }
 

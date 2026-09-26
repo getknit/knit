@@ -10,6 +10,9 @@ topics: [data, crypto, ui, backup]
 
 Status: Accepted (2026-09-20). Format: `docs/BACKUP_FORMAT.md`. Code: `data/backup/`, `ui/backup/`,
 `RestartActivity`, `MeshManager.finishRestore`, `SeenSet.reopen`. No wire change, no DB schema change.
+Amended 2026-09-25 by ADR 2026-09.qerd: the first start resets every peer whose session was wiped (DM peers
+and the other members of every group), before the profile bump, and a session it finds gets the reset sealed
+under it rather than a second root (#85, #86).
 
 **What was observed.** A lost or replaced phone loses the person: the node id is the hash of the identity
 key, and the key is wrapped under a hardware Keystore key that never leaves the phone. Android's own Auto

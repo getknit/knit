@@ -423,7 +423,7 @@ class MeshManager(
             onGroupRootCtl = ::onGroupRootCtl,
             onProfilePinned = { introSync.onProfilePinned(it) },
             onSelfProfile = { cloneWatch.onSelfProfile(it) },
-            onPeerFrameOpened = { senderId, initEph -> introSync.onPeerFrameOpened(senderId, initEph) },
+            onPeerFrameOpened = { senderId, initEph, flagged -> introSync.onPeerFrameOpened(senderId, initEph, flagged) },
             onTransferCtl = onTransferSignal,
             commonsTitle = { commons?.find(it)?.name },
         )
@@ -885,12 +885,21 @@ class MeshManager(
      * - a **profile bump** ([broadcastProfile]), so the fresh prekey and the restored name outrank whatever
      *   version the old phone last published — peers order profiles on that number, never on the frame's
      *   own time;
-     * - a **session reset toward every DM peer** ([InboundPipeline.sendSessionReset]): the receiver adopts
-     *   the fresh init, re-seals its still-unacked DMs of the last 24 h under it and force-flushes its group
-     *   seeds (`docs/FORWARD_SECRECY_RATCHET.md` §7). Without it a peer notices nothing until three of its
-     *   frames fail to open and its own heuristic fires, six hours apart — for a device that just lost
-     *   *every* session, that is the slow path. Peers we hold no prekey for decline here as they would
-     *   anywhere; their next profile bootstraps the session the ordinary way.
+     * - a **session reset toward every peer whose session the restore wiped** ([wipedPeers],
+     *   [InboundPipeline.sendSessionReset]): the receiver adopts the fresh init, re-seals its still-unacked DMs
+     *   of the last 24 h under it and force-flushes its group seeds (`docs/FORWARD_SECRECY_RATCHET.md` §7).
+     *   Without it a peer notices nothing until three of its frames fail to open and its own heuristic fires,
+     *   six hours apart — for a device that just lost *every* session, that is the slow path. Peers we hold no
+     *   prekey for decline here as they would anywhere; their next profile bootstraps the session the
+     *   ordinary way.
+     *
+     * The resets go as [RatchetSessions.ResetCause.AFTER_WIPE] (ADR 2026-09.qerd). The transport is already up, so a peer's backlog
+     * may have tripped the heuristic's own reset by now, or a group post may have opened a session with a
+     * plain init; a second root inside the peer's one-minute floor is refused and strands the pair for hours.
+     * A session found here was made since the wipe, so it gets only the reset marker under it, or nothing when
+     * a reset already went. They go before the profile bump, whose arrival makes the peer flush its seeds
+     * under whatever session it holds — ahead of the reset, that is the old one, and the flush floor then
+     * holds back the forced flush the reset asks for.
      *
      * Runs once: the flag is cleared at the end, and the group chains re-mint on the next group send by
      * themselves (advance rule 5 in `docs/GROUP_FORWARD_SECRECY.md`).
@@ -898,15 +907,28 @@ class MeshManager(
     private suspend fun finishRestore() {
         if (!settings.restorePending.first()) return
         val me = identity.nodeId()
-        Log.i(TAG, "finishing a backup restore: fresh prekey, profile bump, session resets")
+        Log.i(TAG, "finishing a backup restore: fresh prekey, session resets, profile bump")
         identity.rotatePrekey(clock())
-        broadcastProfile()
-        val dmPeers = messages.distinctConversations().filter { Conversations.kindFor(it) == ConversationKind.DM }
-        for (peer in dmPeers) {
-            pipeline.sendSessionReset(peer, me, clock())?.let { Log.i(TAG, "no session reset to $peer: $it") }
+        for (peer in wipedPeers(me)) {
+            pipeline.sendSessionReset(peer, me, clock(), RatchetSessions.ResetCause.AFTER_WIPE)?.let {
+                Log.i(TAG, "no session reset to $peer: $it")
+            }
         }
+        broadcastProfile()
         settings.clearRestorePending()
     }
+
+    /**
+     * Everyone a restore left without a session who could have sealed something to us under the old one: DM
+     * peers, and the other members of every group we are in — seeds travel as control DMs over the pairwise
+     * sessions, so a contact we share only a group with lost one too (#86).
+     */
+    private suspend fun wipedPeers(me: String): Set<String> =
+        buildSet {
+            messages.distinctConversations().filterTo(this) { Conversations.kindFor(it) == ConversationKind.DM }
+            for (group in groups.active()) addAll(GroupMembersStore.decode(group.members))
+            remove(me)
+        }
 
     /** Tears down and re-establishes the transport (e.g. after Bluetooth toggles back on). */
     override fun restart() {
@@ -1243,8 +1265,15 @@ class MeshManager(
     }
 
     // (groupId, memberId) -> last seed (re-)send toward them, bounding every proactive plane (profile
-    // arrival, neighbor join, session reset) and the key-request responder to one send per floor window.
-    private val lastSeedSendAt = ConcurrentHashMap<Pair<String, String>, Long>()
+    // arrival, neighbor join, session reset) and the key-request responder to one send per floor window
+    // per pairwise root (see [seedSendFloorOpen]).
+    private val lastSeedSendAt = ConcurrentHashMap<Pair<String, String>, SeedSend>()
+
+    /** When a seed last went to a member, and a fingerprint of the pairwise root it went under (null: none yet). */
+    private class SeedSend(
+        val at: Long,
+        val root: Int?,
+    )
 
     // (groupId, memberId) -> the group-root version we last gossiped to them. The root has no ack (unlike
     // an epoch seed), so without this a member whose seeds are all acked would still draw a root-only ctl
@@ -1641,15 +1670,25 @@ class MeshManager(
             }
     }
 
-    /** Checks-and-stamps the per-(group, member) seed re-send floor. */
-    private fun seedSendFloorOpen(
+    /**
+     * Checks-and-stamps the per-(group, member) seed re-send floor. The floor counts only sends under the
+     * pairwise root we hold with [memberId] now (ADR 2026-09.qerd): a seed sealed under a root the member has
+     * since left is one it can never open, so it must not hold back the one that replaces it. That is the
+     * restored member's case — our post went out before we adopted its reset, sealed under the session its
+     * restore wiped, and the forced flush the reset asks for then met the floor that send had stamped. A root
+     * changes only through the ratchet's own rate-limited paths, so this adds at most one send per change; a
+     * bare reset marker under an unchanged root stays floored, which keeps the reset from being an amplifier.
+     */
+    private suspend fun seedSendFloorOpen(
         groupId: String,
         memberId: String,
     ): Boolean {
         val key = groupId to memberId
         val now = clock()
-        if (now - (lastSeedSendAt[key] ?: 0L) < SEED_RESEND_FLOOR_MS) return false
-        lastSeedSendAt[key] = now
+        val root = ratchet.sessionFor(memberId)?.root?.contentHashCode()
+        val last = lastSeedSendAt[key]
+        if (last != null && last.root == root && now - last.at < SEED_RESEND_FLOOR_MS) return false
+        lastSeedSendAt[key] = SeedSend(now, root)
         return true
     }
 

@@ -52,6 +52,7 @@ import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.Protocol
+import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
@@ -1916,6 +1917,48 @@ class MeshManagerTest {
             assertEquals(2L, rig.metrics.snapshot().groupSeedsSent)
         }
 
+    /**
+     * ADR 2026-09.qerd: the seed floor counts only sends under the root we hold with the member now. A restored
+     * member's reset lands after our post already sealed its seed under the session the restore wiped; the
+     * forced flush the reset asks for must not meet the floor that dead send stamped. Under an unchanged root
+     * the floor holds, forced or not.
+     */
+    @Test
+    fun aSeedSentUnderARootTheMemberHasLeftDoesNotHoldBackTheNextOne() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            val group = GroupInfo(id = "g-1", members = listOf(rig.me.nodeId, rig.bob.nodeId), createdBy = rig.me.nodeId)
+            coEvery { rig.groups.groupsWith(rig.bob.nodeId) } returns
+                listOf(
+                    GroupEntity(
+                        groupId = "g-1",
+                        name = "Team",
+                        members = GroupMembersStore.encode(group.members),
+                        createdBy = rig.me.nodeId,
+                        createdAt = 1L,
+                    ),
+                )
+            assertTrue(rig.manager.sendChat("mint", group = group))
+            advanceUntilIdle()
+
+            fun seeds() = rig.sentChatFrames().count { it.recipientId == rig.bob.nodeId && it.group == null }
+
+            rig.manager.flushPendingGroupKeysFor(rig.bob.nodeId) // unacked: one re-send, which stamps the floor
+            val floored = seeds()
+            rig.manager.flushPendingGroupKeysFor(rig.bob.nodeId, force = true)
+            assertEquals("same root: the floor holds, forced or not", floored, seeds())
+
+            // Bob's replacement landed: the session we hold with him now has another root.
+            val store = RatchetRepository(rig.db.ratchetDao(), clock = { rig.now })
+            val session = checkNotNull(store.session(rig.bob.nodeId))
+            store.upsertSession(session.copy(root = ByteArray(32) { 9 }))
+            rig.manager.flushPendingGroupKeysFor(rig.bob.nodeId, force = true)
+            assertEquals("the seed under the left root no longer counts", floored + 1, seeds())
+            rig.manager.flushPendingGroupKeysFor(rig.bob.nodeId, force = true)
+            assertEquals("and the new root has a floor of its own", floored + 1, seeds())
+        }
+
     // --- sealed reactions (CTL_REACTION) ---
 
     /** The REACTION routing envelopes the manager originated (the legacy cleartext form). */
@@ -2164,6 +2207,76 @@ class MeshManagerTest {
                     .firstMetAt,
             )
             assertEquals(2, rig.db.metPeerDao().count())
+        }
+
+    // --- the first start after a backup restore (ADR 2026-09.6mj7, ADR 2026-09.qerd) ---
+
+    /**
+     * #86: a contact we share only a group with lost its session in the restore as surely as a DM peer did —
+     * group seeds travel as control DMs — so it gets a reset too. And the resets go out before the profile
+     * bump, whose arrival makes a peer flush its seeds under whatever session it holds at that moment.
+     */
+    @Test
+    fun aRestoreResetsEveryWipedPeerBeforeItsProfileBump() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.stubProfileState(MutableStateFlow(0L))
+            rig.stubHealState()
+            val restorePending = MutableStateFlow(true)
+            coEvery { rig.settings.restorePending } returns restorePending
+            coEvery { rig.settings.clearRestorePending() } answers {
+                restorePending.value = false
+                mockk(relaxed = true)
+            }
+            val carol = party()
+            val dave = party()
+            rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            rig.pinRatchetCapable(carol, RatchetCrypto.generateKeyPair().pub)
+            rig.pinRatchetCapable(dave, RatchetCrypto.generateKeyPair().pub)
+            coEvery { rig.messages.distinctConversations() } returns listOf(rig.bob.nodeId, "g-room")
+            coEvery { rig.groups.active() } returns
+                listOf(
+                    GroupEntity(
+                        groupId = "g-1",
+                        name = "Group",
+                        members = GroupMembersStore.encode(listOf(rig.me.nodeId, rig.bob.nodeId, carol.nodeId)),
+                        createdBy = rig.me.nodeId,
+                        createdAt = 1L,
+                    ),
+                    GroupEntity(
+                        groupId = "g-2",
+                        name = "Other",
+                        members = GroupMembersStore.encode(listOf(rig.me.nodeId, dave.nodeId)),
+                        createdBy = dave.nodeId,
+                        createdAt = 1L,
+                    ),
+                )
+
+            rig.manager.start()
+            rig.await(1) { if (restorePending.value) 0 else 1 }
+
+            val sent =
+                rig.transport.sent
+                    .mapNotNull { WireCodec.decodeEnvelope(it.first.signed) }
+                    .distinctBy { it.id }
+            val resets =
+                sent.filter {
+                    it.type == FrameType.CHAT &&
+                        WireCodec
+                            .decodePayload<ChatContent>(it.payload)
+                            ?.enc
+                            ?.r
+                            ?.flags == RatchetHeader.FLAG_RESET
+                }
+            assertEquals(
+                "one reset per wiped peer: the DM peer, and each group's other members, never ourselves",
+                setOf(rig.bob.nodeId, carol.nodeId, dave.nodeId),
+                resets.map { it.recipientId }.toSet(),
+            )
+            assertEquals(3, resets.size)
+            val bump = sent.indexOfFirst { it.type == FrameType.PROFILE }
+            assertTrue("the profile bump went out", bump >= 0)
+            assertTrue("every reset precedes the profile bump", resets.all { sent.indexOf(it) < bump })
         }
 
     // --- the heal basket (work item #63) ---

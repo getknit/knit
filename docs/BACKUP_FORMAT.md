@@ -147,11 +147,16 @@ file), renames each staged file into place, and deletes `READY` last. Each step 
 the app's data directory, so a crash between two moves resumes on the next start.
 
 The first mesh start after that (`MeshManager.finishRestore`, gated on `restore_pending`) mints a fresh
-signed prekey, bumps and re-publishes the profile (so the fresh prekey and the restored name outrank
-whatever the old phone last published), and sends a session reset to every DM peer: the receiver adopts
-the fresh init, re-seals its still-unacked DMs of the last 24 h under it and re-flushes its group seeds.
-Group send chains re-mint on the next group send by themselves. `RestoreLabTest` runs the whole thing
-between real stacks in one JVM.
+signed prekey, sends a session reset to every peer whose session the restore wiped — each DM peer and the
+other members of every group, since group seeds travel as control DMs — and then bumps and re-publishes the
+profile (so the fresh prekey and the restored name outrank whatever the old phone last published). The
+receiver adopts the fresh init, re-seals its still-unacked DMs of the last 24 h under it and re-flushes its
+group seeds. The transport is already up by then, so a peer's re-served backlog may have tripped the
+heuristic's own reset first, or a group post opened a session with a plain init; a session found here was
+made since the wipe, so it gets the reset sealed under it, or nothing when a reset already went — never a
+second root the peer would refuse inside its one-minute floor (ADR 2026-09.qerd,
+`FORWARD_SECRECY_RATCHET.md` §7). Group send chains re-mint on the next group send by themselves.
+`RestoreLabTest` runs the whole thing between real stacks in one JVM.
 
 One router detail makes the re-seal land: the sender re-seals under the **same** frame id (so every other
 node dedups it), but the copy custody served the restored node moments earlier put that id in its seen

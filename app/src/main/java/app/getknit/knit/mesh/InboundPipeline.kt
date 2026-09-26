@@ -62,6 +62,7 @@ import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.Protocol
+import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.ReceiptContent
@@ -185,9 +186,10 @@ class InboundPipeline(
     // identity is running elsewhere. Lambda-mediated like the rest; the pipeline itself keeps dropping the frame.
     private val onSelfProfile: suspend (sentAt: Long) -> Unit = {},
     // A v2 DM from this sender opened and committed; `initEph` is the X3DH init its ratchet header still
-    // carried, i.e. the sender has not yet seen a frame of ours (IntroSync.onPeerFrameOpened), or null. Runs
-    // post-commit, outside the ratchet lock, since the answer it may trigger seals a frame of its own.
-    private val onPeerFrameOpened: suspend (senderId: String, initEph: ByteArray?) -> Unit = { _, _ -> },
+    // carried, i.e. the sender has not yet seen a frame of ours (IntroSync.onPeerFrameOpened), or null, and
+    // `resetFlagged` whether that header carried FLAG_RESET. Runs post-commit, outside the ratchet lock, since
+    // the answer it may trigger seals a frame of its own.
+    private val onPeerFrameOpened: suspend (senderId: String, initEph: ByteArray?, resetFlagged: Boolean) -> Unit = { _, _, _ -> },
     // A sealed CTL_TRANSFER landed (transfer/TransferManager.onSignal): direct-transfer signaling, handed on
     // post-commit like the rest. True when it admitted a live incoming OFFER, which is what earns a notification.
     private val onTransferCtl: suspend (senderId: String, payload: TransferPayload, sentAt: Long) -> Boolean = { _, _, _ -> false },
@@ -983,7 +985,7 @@ class InboundPipeline(
                     ratchet.commitOpen(me, env.senderId, peerIkPub, wireHeader, nonce, enc.ct, aad, now, onOpened)
                 }
             // After the transaction and outside the session lock: the hook may seal an answer of its own.
-            if (committed) onPeerFrameOpened(env.senderId, wireHeader.init?.eph)
+            if (committed) onPeerFrameOpened(env.senderId, wireHeader.init?.eph, wireHeader.flags and RatchetHeader.FLAG_RESET != 0)
             committed
         }
         if (plain.ctl != null) {
@@ -1767,7 +1769,9 @@ class InboundPipeline(
             return
         }
         if (!ratchet.noteUndecryptable(env.senderId, env.id, now)) return
-        sendSessionReset(env.senderId, me, now)
+        sendSessionReset(env.senderId, me, now, RatchetSessions.ResetCause.UNREADABLE)?.let {
+            Log.d(TAG, "no session reset to ${env.senderId}: $it")
+        }
     }
 
     /**
@@ -1821,12 +1825,15 @@ class InboundPipeline(
      *
      * The gates are the peer material an X3DH initiation needs, and any of them can be the real reason a
      * stuck session never recovers — a peer we hold no prekey for can never be re-established from this
-     * side at all, however many undecryptable frames it sends us.
+     * side at all, however many undecryptable frames it sends us. Past them the ratchet may still decline,
+     * or seal the reset under the session we hold rather than a new root: it never sends a reset the peer
+     * would refuse ([RatchetSessions.sealResetDm], ADR 2026-09.qerd), which is why it is told the [cause].
      */
     suspend fun sendSessionReset(
         peerId: String,
         me: String,
         now: Long,
+        cause: RatchetSessions.ResetCause = RatchetSessions.ResetCause.ON_DEMAND,
     ): String? {
         val peer = peers.find(peerId) ?: return "no peer row"
         if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return "peer is not ratchet-capable"
@@ -1837,15 +1844,27 @@ class InboundPipeline(
         val aad = MessageCrypto.header(id, me, now, peerId)
         val plaintext = MessageContent(body = "", ctl = MessageContent.CTL_SESSION_RESET).encode()
         val sealed =
-            ratchet.sealResetDm(
-                peerId = peerId,
-                peerIkPub = bundle.dhPublicKey(),
-                peerSpk = RatchetEngine.PeerPrekey(id = prekeyId, pub = prekeyPub),
-                plaintext = plaintext,
-                aad = aad,
-                now = now,
-            ) ?: return "sealResetDm refused (unusable prekey)"
-        Log.w(TAG, "requesting ratchet session reset with $peerId")
+            when (
+                val seal =
+                    ratchet.sealResetDm(
+                        peerId = peerId,
+                        peerIkPub = bundle.dhPublicKey(),
+                        peerSpk = RatchetEngine.PeerPrekey(id = prekeyId, pub = prekeyPub),
+                        plaintext = plaintext,
+                        aad = aad,
+                        now = now,
+                        cause = cause,
+                    )
+            ) {
+                is RatchetSessions.ResetSeal.Sealed -> seal
+                is RatchetSessions.ResetSeal.Declined -> return seal.reason
+                RatchetSessions.ResetSeal.NoPrekey -> return "sealResetDm refused (unusable prekey)"
+            }
+        if (sealed.reRooted) {
+            Log.w(TAG, "requesting ratchet session reset with $peerId")
+        } else {
+            Log.w(TAG, "requesting ratchet session reset with $peerId under the session we hold")
+        }
         originate(
             RelayEnvelope(
                 type = FrameType.CHAT,
@@ -1853,7 +1872,7 @@ class InboundPipeline(
                 senderId = me,
                 sentAt = now,
                 recipientId = peerId,
-                payload = WireCodec.encodePayload(ChatContent(enc = sealed)),
+                payload = WireCodec.encodePayload(ChatContent(enc = sealed.envelope)),
             ),
         )
         return null
