@@ -3100,8 +3100,12 @@ class InboundPipeline(
         // re-send any group epoch seeds their outbox still shows unacked (their prekey may be new).
         flushPending(env.senderId)
         flushGroupKeys(env.senderId, false)
-        // Cache this peer's verbatim signed profile so we can re-serve its key to a neighbor that asks, and
-        // resolve any key request we (or a node we're relaying for) had outstanding for it.
+        // Keep this peer's verbatim signed profile beside the pin, newest publish stamp winning (clamped: the peer
+        // picks it), so this phone can prove their key to a newcomer for as long as it carries their frames —
+        // after a restart, and after custody has lost the profile to the quota or the TTL (ADR 2026-09.g64k).
+        peers.recordProfileFrame(env.senderId, wire, clampFuture(env.sentAt))
+        // Cache it for the same re-serve, and resolve any key request we (or a node we're relaying for) had
+        // outstanding for it.
         keyExchange.onProfilePinned(env.senderId, wire)
         // A pending contact-card intro to this sender can be sealed now that its prekey is pinned.
         onProfilePinned(env.senderId)

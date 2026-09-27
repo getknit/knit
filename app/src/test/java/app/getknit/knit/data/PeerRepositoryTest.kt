@@ -4,12 +4,14 @@ import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.settings.InboundSettings
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.IdentitySource
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -66,6 +68,45 @@ class PeerRepositoryTest : RoomDbTest() {
         }
 
     @Test
+    fun `a peer's proof of key keeps the newest stamp whatever order the copies arrive in`() =
+        runTest {
+            val repo = repo()
+            db.peerDao().upsert(PeerEntity(nodeId = "a", pubKey = "KEY"))
+
+            repo.recordProfileFrame("a", frame(2), sentAt = 20L)
+            repo.recordProfileFrame("a", frame(1), sentAt = 10L) // an older copy, re-served late
+            assertArrayEquals(byteArrayOf(2), repo.profileFrame("a")!!.signed)
+
+            repo.recordProfileFrame("a", frame(3), sentAt = 20L) // the same stamp: the copy already held stays
+            assertArrayEquals(byteArrayOf(2), repo.profileFrame("a")!!.signed)
+
+            repo.recordProfileFrame("a", frame(4), sentAt = 30L)
+            val served = repo.profileFrame("a")!!
+            assertArrayEquals(byteArrayOf(4), served.signed)
+            assertArrayEquals(byteArrayOf(40), served.sig)
+            assertFalse("a key is served point to point", served.relay)
+            assertNull(repo.profileFrame("b"))
+        }
+
+    @Test
+    fun `a proof of key goes with the pin it proves`() =
+        runTest {
+            val dao = db.peerDao()
+            val repo = repo(maxPeers = 1)
+            dao.upsert(PeerEntity(nodeId = "me", pubKey = "SELF"))
+            dao.upsert(PeerEntity(nodeId = "old", updatedAt = 1L))
+            dao.upsert(PeerEntity(nodeId = "new", updatedAt = 2L))
+            listOf("me", "old", "new").forEach { repo.recordProfileFrame(it, frame(1), sentAt = 1L) }
+
+            repo.forgetSelf("me")
+            repo.sweepCap(protected = emptySet())
+
+            assertNull(repo.profileFrame("me"))
+            assertNull(repo.profileFrame("old"))
+            assertNotNull(repo.profileFrame("new"))
+        }
+
+    @Test
     fun `observeDirectory folds our own name into the universe and labels same-named peers`() =
         runTest {
             val dao = db.peerDao()
@@ -96,4 +137,7 @@ class PeerRepositoryTest : RoomDbTest() {
             assertEquals("Me", labels.labelFor("me").text)
             assertEquals(Alias.aliasFor("zz"), labels.labelFor("zz").text) // never pinned → alias, undiscriminated
         }
+
+    /** A stand-in signed profile frame: the bytes are what the store must keep, not a real envelope. */
+    private fun frame(tag: Int) = WireEnvelope(sig = byteArrayOf((tag * 10).toByte()), signed = byteArrayOf(tag.toByte()))
 }

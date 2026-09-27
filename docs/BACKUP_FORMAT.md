@@ -86,9 +86,11 @@ A reader refuses a format version or a KDF id it does not know before it touches
 are exactly what the app would create) filled from the live one under a read snapshot, table by table,
 inside SQLite (`DatabaseExport`). The mesh keeps running: the live database's write lock is never taken.
 
-Carried (`BackupTables.CARRIED`): `blobs`, `blob_verdicts`, `peers`, `met_peers`, `groups`,
+Carried (`BackupTables.CARRIED`): `blobs`, `blob_verdicts`, `peers`, `peer_profiles`, `met_peers`, `groups`,
 `group_roots`, `commons`, `commons_members`, `commons_outbox`, `messages`, `reactions`,
 `message_receipts`, `drafts`. Rebuilt on arrival: `messages_fts` (the triggers fill it as the rows land).
+`peer_profiles` is the signed profile frame each pin came from, public by construction; carried so a restored
+phone can still prove the key of every peer whose frames it will carry again (ADR 2026-09.g64k).
 
 **Never carried** (`BackupTables.TRANSIENT`), on purpose — they exist in the copy, empty:
 

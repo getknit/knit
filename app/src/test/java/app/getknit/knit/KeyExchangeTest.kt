@@ -43,6 +43,9 @@ class KeyExchangeTest {
         maxIdsPerReq: Int = 128,
         maxRequestIds: Int = 128,
         missingTtlMs: Long = 30 * 60_000L,
+        // The pin store's signed profiles (ADR 2026-09.g64k); empty unless a test gives the node a pin it
+        // survived a restart with.
+        stored: Map<String, WireEnvelope> = emptyMap(),
         val clock: () -> Long,
     ) {
         val transport = FakeLoopTransport(id)
@@ -59,6 +62,7 @@ class KeyExchangeTest {
                 maxIdsPerReq = maxIdsPerReq,
                 maxRequestIds = maxRequestIds,
                 missingTtlMs = missingTtlMs,
+                storedProfile = { stored[it] },
             )
         private val router =
             MeshRouter(transport, scope) { wire, env, fromNodeId, _ ->
@@ -156,6 +160,46 @@ class KeyExchangeTest {
 
             c.exchange.want("a")
 
+            assertEquals("KEY_A", pinnedKeyOf(c, "a"))
+        }
+
+    @Test
+    fun aHolderWhoseCacheARestartEmptiedAnswersFromItsPinStore() =
+        runTest(UnconfinedTestDispatcher()) {
+            // a — b — c again, but b has restarted since it pinned a: nothing in its cache, only the signed
+            // frame its pin came from. c's request is answered from there, and b asks nobody else for it.
+            var clock = 0L
+            val a = Node("a", backgroundScope) { clock }
+            val b = Node("b", backgroundScope, stored = mapOf("a" to profileWire("a", "KEY_A"))) { clock }
+            val c = Node("c", backgroundScope) { clock }
+            a.transport.connect(b.transport)
+            b.transport.connect(c.transport)
+            a.start(backgroundScope)
+            b.start(backgroundScope)
+            c.start(backgroundScope)
+
+            c.exchange.want("a")
+
+            assertEquals("KEY_A", pinnedKeyOf(c, "a"))
+            assertEquals("b answered from its store, so recursed to no one", 0, a.keyRequestsReceived().size)
+        }
+
+    @Test
+    fun serveKeyHandsTheStoredProfileOverPointToPointAndNothingWhenNoneIsHeld() =
+        runTest(UnconfinedTestDispatcher()) {
+            var clock = 0L
+            val b = Node("b", backgroundScope, stored = mapOf("a" to profileWire("a", "KEY_A"))) { clock }
+            val c = Node("c", backgroundScope) { clock }
+            b.transport.connect(c.transport)
+            b.start(backgroundScope)
+            c.start(backgroundScope)
+
+            assertTrue(b.exchange.serveKey("a", Peer("c")))
+            assertFalse("no key held for z", b.exchange.serveKey("z", Peer("c")))
+
+            val served = c.received.filter { it.envelope.type == FrameType.PROFILE }
+            assertEquals(listOf("a"), served.map { it.envelope.senderId })
+            assertFalse("a served key must never be flooded", served.single().wire.relay)
             assertEquals("KEY_A", pinnedKeyOf(c, "a"))
         }
 

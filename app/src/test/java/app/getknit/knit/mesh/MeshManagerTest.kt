@@ -417,6 +417,8 @@ class MeshManagerTest {
             coEvery { textModeration.classify(any(), any()) } returns TextVerdict.ALLOWED
             coEvery { messages.save(any()) } answers { saved += firstArg<MessageEntity>() }
             coEvery { peers.find(any()) } returns null // default: no recipient key is known
+            // No proof of key held (ADR 2026-09.g64k): relaxed, this would hand KeyExchange a mock frame to serve.
+            coEvery { peers.profileFrame(any()) } returns null
             coEvery { blobs.bytes(any()) } returns null
             manager =
                 MeshManager(

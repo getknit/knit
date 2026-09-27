@@ -148,7 +148,8 @@ doc). **Don't start a deferred item without explicit direction.**
   (AttachmentLab), and an intro oracle that assumed both sides send (`twoCardHolders…`). Still unexplained
   (#88), not reproduced since (about 2,000 boot-and-rename cycles, 12 seeded runs each), with diagnostics added
   to their failure messages: the "profile edit was never published" setup failure (TopologyLab, InternetPlane
-  ×2; the version never moved, so it is not the `published` race; kin to the latent boot/seed gap in
+  ×2, and StrangerBacklogLab once under chaos seed 732113838, 2026-09-27, Alice's first rename in `backlog()`; the
+  version never moved, so it is not the `published` race; kin to the latent boot/seed gap in
   `testing.md`'s read-safe list, where the watcher's first value finds custody already showing the edit and
   publishes nothing), the LoRa ride-hold ticks (LoraPocketLabTest `aFarPocketsTick…`, RoomTickPlanesLabTest
   `aRoomTickReaches…`: the acker heard the post and put no tick on air. The lead is a ride that wakes before the

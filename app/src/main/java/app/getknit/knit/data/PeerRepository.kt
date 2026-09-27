@@ -6,6 +6,7 @@ import app.getknit.knit.data.settings.InboundSettings
 import app.getknit.knit.identity.IdentitySource
 import app.getknit.knit.identity.PeerLabelIndex
 import app.getknit.knit.identity.PeerLabels
+import app.getknit.knit.mesh.protocol.WireEnvelope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -57,6 +58,21 @@ class PeerRepository(
     suspend fun upsert(peer: PeerEntity) = dao.upsert(peer)
 
     /**
+     * Keeps [wire] — a `profile` frame [nodeId]'s key was just pinned from — as the proof of that key this phone
+     * hands on (ADR 2026-09.g64k), unless a copy stamped [sentAt] or later is already held. The caller has
+     * already clamped [sentAt] to the skew window: the peer picks it.
+     */
+    suspend fun recordProfileFrame(
+        nodeId: String,
+        wire: WireEnvelope,
+        sentAt: Long,
+    ) = dao.recordProfile(nodeId, wire.signed, wire.sig, sentAt)
+
+    /** [nodeId]'s kept proof of key, wrapped point to point as a key is served; null when none is held. */
+    suspend fun profileFrame(nodeId: String): WireEnvelope? =
+        dao.profile(nodeId)?.let { WireEnvelope(relay = false, sig = it.sig, signed = it.signed) }
+
+    /**
      * Drops the row a device pinned for *itself* — `nodeId` is our own — if one exists. A node never pins its
      * own key (`InboundPipeline.handleProfile` refuses its own profile), but builds before 2026-09-13 did when
      * their own profile looped back, and the row made every seal-to-a-pinned-peer path treat us as a peer.
@@ -65,6 +81,7 @@ class PeerRepository(
     suspend fun forgetSelf(nodeId: String): Boolean {
         if (dao.findByNodeId(nodeId) == null) return false
         dao.delete(nodeId)
+        dao.deleteOrphanProfiles()
         return true
     }
 
@@ -89,7 +106,9 @@ class PeerRepository(
         cap: Int = maxPeers,
     ) {
         val over = dao.countCappable(protected) - cap
-        if (over > 0) dao.evictOldestCappable(protected, over)
+        if (over <= 0) return
+        dao.evictOldestCappable(protected, over)
+        dao.deleteOrphanProfiles() // the proof of key goes with the pin it proves
     }
 
     private companion object {

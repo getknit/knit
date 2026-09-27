@@ -182,6 +182,11 @@ class ForwardSyncTest {
 
     private fun broadcast(id: String) = RelayEnvelope(type = FrameType.CHAT, id = id, senderId = "a", sentAt = 1L, payload = ByteArray(0))
 
+    private fun post(
+        id: String,
+        sender: String,
+    ) = RelayEnvelope(type = FrameType.CHAT, id = id, senderId = sender, sentAt = 1L, payload = ByteArray(0))
+
     private fun receipt(id: String) = RelayEnvelope(type = FrameType.RECEIPT, id = id, senderId = "a", payload = ByteArray(0))
 
     private fun reaction(id: String) = RelayEnvelope(type = FrameType.REACTION, id = id, senderId = "a", payload = ByteArray(0))
@@ -528,6 +533,95 @@ class ForwardSyncTest {
 
             assertEquals(setOf("r1" to "z", "r3" to "z"), served.toSet())
             assertEquals("one report per frame actually sent", transport.sent.size, served.size)
+        }
+
+    /** A sync whose `serveKey` records (sender, peer, frames already sent) — the last says whether it went first. */
+    private inner class KeyedSync(
+        store: FakeForwardStore = FakeForwardStore(),
+    ) {
+        val transport = RecordingTransport()
+        val keys = mutableListOf<Triple<String, String, Int>>()
+        val sync =
+            ForwardSync(transport, store, clock = { 0L }, serveKey = {
+                sender,
+                to,
+                ->
+                keys += Triple(sender, to.nodeId, transport.sent.size)
+            })
+
+        suspend fun carry(vararg envs: RelayEnvelope) = envs.forEach { sync.onSeen(wireOf(it), it, ForwardStore.ORIGIN_RELAY) }
+    }
+
+    /**
+     * Custody holds no profile of a sender whose backlog goes to a peer holding none of it (ADR 2026-09.g64k): their
+     * key is served ahead of every frame, once per sender, to the peer that asked.
+     */
+    @Test
+    fun onDigestServesAKeylessSendersKeyAheadOfTheirBacklog() =
+        runTest {
+            val k = KeyedSync()
+            k.carry(post("r1", "a"), post("r2", "a"), post("s1", "b"))
+
+            k.sync.onDigest("z", emptyList())
+
+            assertEquals(setOf(Triple("a", "z", 0), Triple("b", "z", 0)), k.keys.toSet())
+            assertEquals("one key per sender", 2, k.keys.size)
+            assertEquals(3, k.transport.sent.size)
+        }
+
+    /** A profile of theirs in custody goes first already, or the peer holds it: no second copy of the key. */
+    @Test
+    fun onDigestServesNoKeyForASenderWhoseProfileCustodyHolds() =
+        runTest {
+            val k = KeyedSync()
+            k.carry(profile("p1"), post("r1", "a"))
+
+            k.sync.onDigest("z", emptyList())
+            k.sync.onDigest("y", listOf("p1"))
+
+            assertTrue(k.keys.isEmpty())
+        }
+
+    /**
+     * A peer that custodies a frame of the sender's verified it, so it holds their key: two carriers of one chatty
+     * sender whose profile the quota evicted do not trade the key on every reconcile.
+     */
+    @Test
+    fun onDigestServesNoKeyToAPeerHoldingAFrameOfTheSenders() =
+        runTest {
+            val k = KeyedSync()
+            k.carry(post("r1", "a"), post("r2", "a"))
+
+            k.sync.onDigest("z", listOf("r1"))
+
+            assertEquals(listOf("r2"), k.transport.sent.map { it.first.frameId() })
+            assertTrue(k.keys.isEmpty())
+        }
+
+    /** The peer's own frames coming home after a wipe: it is their key. */
+    @Test
+    fun onDigestServesNoKeyForTheDigestsOwnSender() =
+        runTest {
+            val k = KeyedSync()
+            k.carry(post("r1", "z"))
+
+            k.sync.onDigest("z", emptyList())
+
+            assertEquals(listOf("r1"), k.transport.sent.map { it.first.frameId() })
+            assertTrue(k.keys.isEmpty())
+        }
+
+    /** A key rides only with a backlog: nothing of the sender's goes out (all held, or a group the peer is not in). */
+    @Test
+    fun onDigestServesNoKeyWhenNothingOfTheSendersGoesOut() =
+        runTest {
+            val k = KeyedSync()
+            k.carry(post("r1", "a"), groupMsg("g1", "b", listOf("b", "c")))
+
+            k.sync.onDigest("z", listOf("r1"))
+
+            assertTrue(k.transport.sent.isEmpty())
+            assertTrue(k.keys.isEmpty())
         }
 
     @Test

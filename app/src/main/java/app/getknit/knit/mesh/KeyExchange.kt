@@ -35,8 +35,13 @@ import java.util.concurrent.ConcurrentHashMap
  * the writer; and an inbound request's id list is capped ([maxRequestIds]) so it can't drive unbounded
  * recursion/growth. A peer flooding forged sender ids therefore costs bounded memory and work.
  *
- * Pure (no Android/Room): the transport, identity, raw signer, and clock are injected, so the recursion
- * is unit-tested with [FakeLoopTransport] (see `KeyExchangeTest`).
+ * The cache is the hot layer over [storedProfile], the signed frame each pin came from, kept beside the pin
+ * (ADR 2026-09.g64k): a carrier must still prove the key of anyone whose frames it serves after a restart has
+ * emptied the cache and custody has lost their profile to the quota or the TTL. [serveKey] is the other door
+ * onto it — `ForwardSync.onDigest` hands a newcomer the key ahead of a backlog it could not otherwise read.
+ *
+ * Pure (no Android/Room): the transport, identity, raw signer, clock and pin store are injected, so the
+ * recursion is unit-tested with [FakeLoopTransport] (see `KeyExchangeTest`).
  */
 class KeyExchange(
     private val transport: MeshTransport,
@@ -54,10 +59,14 @@ class KeyExchange(
     private val maxWanters: Int = MAX_WANTERS,
     private val maxIdsPerReq: Int = MAX_IDS_PER_REQ,
     private val maxRequestIds: Int = MAX_REQUEST_IDS,
+    // The signed profile frame a pinned peer's key came from, as the pin store keeps it (`PeerRepository`), or
+    // null when none is held. Read on a cache miss only; the default holds nothing, as before the store.
+    private val storedProfile: suspend (nodeId: String) -> WireEnvelope? = { null },
 ) {
     // nodeId -> the peer's verbatim signed profile frame, so we can re-serve it on request. Populated for
-    // every profile we pin (onProfilePinned); in-memory, repopulated as profiles re-arrive after restart.
-    // Not an attack surface (each entry required a self-certifying pin) → left unbounded/lock-free.
+    // every profile we pin (onProfilePinned) and for every [storedProfile] read; in-memory, a hot layer over
+    // the pin store, which is what survives a restart. Not an attack surface (each entry required a
+    // self-certifying pin) → left unbounded/lock-free.
     private val cache = ConcurrentHashMap<String, WireEnvelope>()
 
     // Guards `missing` + `wanters` (both mutated across coroutines). A dedicated monitor, not `this`, and
@@ -122,7 +131,7 @@ class KeyExchange(
         val peer = Peer(fromNodeId)
         nodeIds.take(maxRequestIds).forEach { nodeId ->
             if (nodeId == me) return@forEach
-            val held = cache[nodeId]
+            val held = profileFor(nodeId)
             if (held != null) {
                 serve(held, peer)
             } else {
@@ -131,6 +140,24 @@ class KeyExchange(
             }
         }
     }
+
+    /**
+     * Hands [peer] the key of [nodeId] — its signed profile, point to point — if we hold one; returns whether it
+     * went. The digest reply's door ([ForwardSync.onDigest]): a key goes ahead of a backlog its reader has no
+     * key for, so nothing in it is refused and nothing waits on a request.
+     */
+    suspend fun serveKey(
+        nodeId: String,
+        peer: Peer,
+    ): Boolean {
+        val held = profileFor(nodeId) ?: return false
+        serve(held, peer)
+        return true
+    }
+
+    /** [nodeId]'s signed profile: the cache, else the pin store (cached on the way out). */
+    private suspend fun profileFor(nodeId: String): WireEnvelope? =
+        cache[nodeId] ?: storedProfile(nodeId)?.also { cache.putIfAbsent(nodeId, it) }
 
     /**
      * A profile for [nodeId] was pinned (delivered through [wire]): cache its verbatim signed frame for

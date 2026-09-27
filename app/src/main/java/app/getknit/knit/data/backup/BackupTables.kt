@@ -21,6 +21,7 @@ object BackupTables {
             "blobs",
             "blob_verdicts",
             "peers",
+            "peer_profiles",
             "met_peers",
             "groups",
             "group_roots",

@@ -402,6 +402,21 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v15 → v16: the `peer_profiles` table (ADR 2026-09.g64k), empty — a peer's proof of key is kept from the next
+     * profile of theirs this phone pins.
+     */
+    val MIGRATION_15_16 =
+        object : Migration(15, 16) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `peer_profiles` " +
+                        "(`nodeId` TEXT NOT NULL, `signed` BLOB NOT NULL, `sig` BLOB NOT NULL, `sentAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`nodeId`))",
+                )
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -419,5 +434,6 @@ object KnitMigrations {
             MIGRATION_12_13,
             MIGRATION_13_14,
             MIGRATION_14_15,
+            MIGRATION_15_16,
         )
 }

@@ -275,6 +275,14 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   per (frame id, peer) per `SeenSet.DEFAULT_TTL_MS` — the receivers' own window, so every copy it withholds is
   one they would drop — and a newcomer the 30 s floor skipped is never memoed. Keep `ackSync.onReachable` ahead
   of every throttle (ADR 2026-09.y5f3). Regression: `MeshManagerTest.aLingerFlap…` / `aProfileEditIsReflooded…`.
+- **When touching `KeyExchange`'s cache / `profileFor` / `serveKey`, `peer_profiles` (`PeerProfileEntity`,
+  `PeerRepository.recordProfileFrame`), or the key-ahead in `ForwardSync.onDigest` (`keylessSenders`):** READ ADR
+  2026-09.g64k (it closes the case ADR 2026-09.9xuu set aside). A carrier keeps the signed profile each pin came
+  from, so it can prove the key of anyone whose frames it serves after a restart and after custody lost the
+  profile. A key goes point to point, never flooded, and only to a peer holding none of that sender's frames we
+  hold. Don't fold the frame into `peers` (a `ByteArray` breaks its equality), and don't keep the profile in
+  custody past the quota or TTL (that moves the convergent quota rule). Regression: `StrangerBacklogLabTest`,
+  `ForwardSyncTest`'s `onDigestServes…Key…` cases.
 - **When touching `BlobDao.observeSizes`, `BlobRepository.observeSizes`, or `ChatViewModel`'s `heldHashes` /
   `heldSizes`:** READ ADR 2026-09.fjcw. The chat's one blob-table subscription is keyed to the window's
   attachment hashes plus the staged one (`IN (:hashes)`, primary-key seeks), and an empty ask never builds a

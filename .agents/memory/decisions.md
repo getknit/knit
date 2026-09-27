@@ -134,6 +134,7 @@ carries; never renumber an old one.
 | [2026-09.fjcw](decisions/2026-09-fjcw-the-chat-reads-blob-sizes-for-its-window.md) | The chat reads blob sizes for its window, not the table | chat, blobs, battery |
 | [2026-09.fq6b](decisions/2026-09-fq6b-overscroll-and-ripple-take-their-colour-from-the-theme.md) | Overscroll and ripple take their colour from the theme | ui, theme |
 | [2026-09.fzh7](decisions/2026-09-fzh7-wire-vectors-live-in-vectors-as-json-that-every-port-tests-against.md) | wire vectors live in vectors/ as JSON that every port tests against | wire, testing, ios |
+| [2026-09.g64k](decisions/2026-09-g64k-a-carrier-keeps-the-signed-profile-of-everyone-it-carries.md) | A carrier keeps the signed profile of everyone it carries | custody, mesh, convergence, keys |
 | [2026-09.gc3m](decisions/2026-09-gc3m-battery-use-set-to-restricted-is-its-own-state.md) | Battery use set to Restricted is its own state, shown where the exemption is | ui, onboarding, settings, reliability |
 | [2026-09.gdhp](decisions/2026-09-gdhp-every-sender-supplied-last-writer-wins-clock-is-clamped-to-the-skew-window.md) | Every sender-supplied last-writer-wins clock is clamped to the skew window | mesh, groups, profile, reactions |
 | [2026-09.ggq4](decisions/2026-09-ggq4-a-heard-meshtastic-post-is-verified-against-the-board-key-in-its-author-s-profil.md) | A heard Meshtastic post is verified against the board key in its author's profile | lora, meshtastic, mesh |

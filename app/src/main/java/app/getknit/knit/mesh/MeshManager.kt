@@ -241,6 +241,9 @@ class MeshManager(
             onCarried = { pipeline.onCarriedFrame(it) },
             // A carried frame actually sent to a peer that lacked it — the ledger decides whether it counts.
             onServed = { env, to -> ledger.onHandedOff(env, setOf(to)) },
+            // A sender whose backlog goes to a peer that may not hold their key, and whose profile custody no
+            // longer holds: the pin store's copy goes first (ADR 2026-09.g64k).
+            serveKey = { senderId, to -> keyExchange.serveKey(senderId, to) },
             // (The carry store grew → the store impl folds the id into StoreDigest, whose version change re-cues.)
         )
 
@@ -254,6 +257,8 @@ class MeshManager(
             signRaw = messageCrypto::signRaw,
             now = clock,
             metrics = metrics,
+            // The signed frame each pin came from, so a restart never leaves a carrier unable to prove a key.
+            storedProfile = { peers.profileFrame(it) },
         )
 
     // The same-identity clone watch (ADR 2026-09.ypcc): a `profile` under our own node id whose stamp this

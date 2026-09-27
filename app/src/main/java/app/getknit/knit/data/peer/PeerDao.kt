@@ -5,6 +5,7 @@ import androidx.room3.Query
 import kotlinx.coroutines.flow.Flow
 
 @Dao
+@Suppress("TooManyFunctions") // the pin and its proof of key: two tables behind one DAO, so they are swept together
 interface PeerDao {
     @Query("SELECT * FROM peers ORDER BY name ASC")
     fun observeAll(): Flow<List<PeerEntity>>
@@ -56,6 +57,30 @@ interface PeerDao {
 
     @Query("DELETE FROM peers WHERE nodeId = :nodeId")
     suspend fun delete(nodeId: String)
+
+    /**
+     * Keeps [signed]/[sig] as [nodeId]'s proof of key ([PeerProfileEntity]) unless the row already holds a copy
+     * stamped [sentAt] or later — so the newest publish wins whatever order the copies arrive in, and a copy we
+     * already hold is never rewritten. `ON CONFLICT DO UPDATE … WHERE`, not `@Upsert`, for [upsert]'s reason.
+     */
+    @Query(
+        "INSERT INTO peer_profiles (nodeId, signed, sig, sentAt) VALUES (:nodeId, :signed, :sig, :sentAt) " +
+            "ON CONFLICT(nodeId) DO UPDATE SET signed = excluded.signed, sig = excluded.sig, sentAt = excluded.sentAt " +
+            "WHERE excluded.sentAt > peer_profiles.sentAt",
+    )
+    suspend fun recordProfile(
+        nodeId: String,
+        signed: ByteArray,
+        sig: ByteArray,
+        sentAt: Long,
+    )
+
+    @Query("SELECT * FROM peer_profiles WHERE nodeId = :nodeId")
+    suspend fun profile(nodeId: String): PeerProfileEntity?
+
+    /** Drops every proof of key whose pin is gone — run after each deletion from `peers`. */
+    @Query("DELETE FROM peer_profiles WHERE nodeId NOT IN (SELECT nodeId FROM peers)")
+    suspend fun deleteOrphanProfiles()
 
     /**
      * Writes [peer], replacing every column in place when the row is already there. Every caller keeps passing

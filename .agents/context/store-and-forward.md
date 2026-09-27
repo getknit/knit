@@ -130,8 +130,10 @@ whole TTL delta, so treat changing them like a wire change. Verify with `…debu
 invariant; `allFingerprint` legitimately lags by expired residue until the sweep and is NOT
 fleet-comparable at a TTL boundary) and every sender's carried count must be ≤ its quota. (Aside: the
 per-sender bucket lumps a node's profile in with its chat, so a node that sends >quota frames evicts its
-own profile *frame* from custody — harmless, since the pinned key + connect-time `pushProfileTo` / edit
-re-broadcast are the real profile paths, and every node evicts it alike.)
+own profile *frame* from custody. Every node evicts it alike, so the digests don't care, and a peer that
+already pinned the key doesn't either — but a newcomer served that sender's backlog needs the key from
+somewhere, which is why a carrier keeps the signed frame beside the pin, `peer_profiles`, ADR 2026-09.g64k;
+see the KeyExchange section.)
 
 ## Retransmit-on-key-arrival (outbound key gap)
 
@@ -171,6 +173,16 @@ dies on) a record the codec rejects. Recovery is visible in Diagnostics
 `handleProfile` also gained a last-writer-wins `sentAt` guard so a re-served (older) profile can never
 revert a newer name/status — the key itself is immutable per nodeId.
 
+**What a holder serves from** (ADR 2026-09.g64k). The in-memory cache is only the hot layer: `handleProfile`
+also keeps the signed frame each pin came from in `peer_profiles` (`PeerRepository.recordProfileFrame`, newest
+publish stamp wins, clamped; the rows go with their pin), and `KeyExchange.profileFor` falls back to it. A
+carrier stores a frame only once it pinned the sender, so with the store it can prove the key of everyone
+whose frames it serves — after a restart empties the cache, and after custody has lost the profile to the
+quota or the TTL (up to a 12 h republish period ahead of a departed sender's last posts). Without it the
+Pixel 3 in the iOS port's run held 81 frames no fresh peer could read, for their whole TTL. The same store
+feeds `KeyExchange.serveKey`, the door `ForwardSync.onDigest` uses to send a key *ahead* of a backlog (next
+section).
+
 ## PendingInbound (park-until-key)
 
 The dropped frame that *triggered* the request is no longer lost: `verifyInbound` also **parks** it in
@@ -189,9 +201,12 @@ sender's `profile` ahead of the rest of a digest reply (`ForwardSync.onDigest`) 
 newcomer served the backlog of someone it has never met used to park 16 frames and refuse the rest, and
 the router had already marked every one of them seen, so the rest stayed undelivered and out of its custody
 for the whole ten-minute window (on Bluetooth `LinkCrossings` also keeps the carrier from re-writing them).
-With the profile first the newcomer refuses nothing; when the carrier no longer holds the profile (the
-per-sender quota evicts a chatty sender's oldest frame, which is its profile) the key comes by `keyreq`
-and the whole backlog is parked to replay. `MeshManager` injects the custody quota as the park's cap
+With the profile first the newcomer refuses nothing. When the carrier's custody no longer holds the profile
+(the per-sender quota evicts a chatty sender's oldest frame, which is its profile; the TTL takes a departed
+sender's first) the digest reply sends the pin's copy ahead instead — to a peer holding none of that sender's
+frames we hold, since custodying one means it verified it (`ForwardSync.keylessSenders`, ADR 2026-09.g64k) —
+and if that copy is lost the key comes by `keyreq`, answered from the same store, while the whole backlog is
+parked to replay. `MeshManager` injects the custody quota as the park's cap
 (pinned by `PendingInboundTest`); below it, the tail of every such backlog is ten minutes late again.
 Pinned end to end by `StrangerBacklogLabTest`. `PendingInbound` is now
 just the fast path: DM, group, **and** broadcast frames all also degrade gracefully via store-and-forward

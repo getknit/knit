@@ -46,7 +46,7 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v15) creates and opens from the exported JSON`() =
+    fun `the current schema (v16) creates and opens from the exported JSON`() =
         runTest {
             helper.createDatabase(CURRENT_VERSION).close()
         }
@@ -585,6 +585,24 @@ class KnitDatabaseMigrationTest {
         }
 
     @Test
+    fun `migrate 15 to 16 preserves existing peers and adds the empty peer_profiles table`() =
+        runTest {
+            helper.createDatabase(15).use { c ->
+                c.execSQL("INSERT INTO peers (nodeId, name, status, verified, updatedAt, openToChat) VALUES ('p1','Pat','',0,1,0)")
+            }
+            helper.runMigrationsAndValidate(16, listOf(KnitMigrations.MIGRATION_15_16)).use { c ->
+                c.prepare("SELECT COUNT(*) FROM peers").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(1L, s.getLong(0))
+                }
+                c.prepare("SELECT COUNT(*) FROM peer_profiles").use { s ->
+                    assertTrue(s.step())
+                    assertEquals("a proof of key is kept from the next profile pinned", 0L, s.getLong(0))
+                }
+            }
+        }
+
+    @Test
     fun `migrate 11 to 12 indexes every existing message and keeps the index in step from then on`() =
         runTest {
             // A device upgrading holds history; 'rebuild' must index all of it, and the sync triggers must
@@ -639,7 +657,7 @@ class KnitDatabaseMigrationTest {
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 15
+        const val CURRENT_VERSION = 16
 
         /** The v11 column list, as MIGRATION_10_11's test seeds it. */
         const val INSERT_V11 =

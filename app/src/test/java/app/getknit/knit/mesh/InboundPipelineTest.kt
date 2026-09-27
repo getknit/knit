@@ -219,6 +219,9 @@ class InboundPipelineTest {
         val metrics = MeshMetrics()
         val forwardStore = FakeForwardStore()
         val peerMap = ConcurrentHashMap<String, PeerEntity>()
+
+        /** `nodeId -> (signed bytes, stamp)` of every proof of key the pipeline handed the pin store (ADR 2026-09.g64k). */
+        val proofs = ConcurrentHashMap<String, Pair<ByteArray, Long>>()
         val msgMap = ConcurrentHashMap<String, MessageEntity>()
         val groupMap = ConcurrentHashMap<String, GroupEntity>()
         val peers = mockk<PeerRepository>(relaxed = true)
@@ -328,6 +331,9 @@ class InboundPipelineTest {
         init {
             coEvery { peers.find(any()) } answers { peerMap[firstArg()] }
             coEvery { peers.upsert(any()) } answers { peerMap[firstArg<PeerEntity>().nodeId] = firstArg() }
+            coEvery { peers.recordProfileFrame(any(), any(), any()) } answers {
+                proofs[firstArg()] = secondArg<WireEnvelope>().signed to thirdArg<Long>()
+            }
             // The real query orders claimants by updatedAt DESC and takes the first; the fake does the same.
             coEvery { peers.findByLoraNode(any()) } answers {
                 val node = firstArg<Long>()
@@ -945,6 +951,47 @@ class InboundPipelineTest {
             assertEquals("pin must not change", other.bundle.encoded, rig.peerMap[alice.nodeId]?.pubKey)
             assertTrue("verified badge must survive", rig.peerMap[alice.nodeId]?.verified == true)
             assertEquals(1L, rig.drops(DropReason.PIN_CHANGE_REFUSED))
+        }
+
+    /**
+     * The profile a key was pinned from is kept beside the pin, verbatim, so this phone can prove the key to a
+     * newcomer after a restart and after custody lost the frame (ADR 2026-09.g64k). Its stamp is the peer's, so
+     * it is bounded to the skew window before it orders anything.
+     */
+    @Test
+    fun aPinnedProfileIsKeptAsItsSendersProofOfKeyUnderABoundedStamp() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bob = party()
+            val profile = rig.profile(alice)
+            val wire = alice.sign(profile)
+
+            rig.pipeline.onDeliver(wire, profile, alice.nodeId)
+            rig.deliver(bob, rig.profile(bob, sentAt = Long.MAX_VALUE))
+
+            assertArrayEquals("the signed bytes, verbatim", wire.signed, rig.proofs[alice.nodeId]?.first)
+            assertEquals(profile.sentAt, rig.proofs[alice.nodeId]?.second)
+            assertEquals(rig.nowMs + Protocol.MAX_FUTURE_SKEW_MS, rig.proofs[bob.nodeId]?.second)
+        }
+
+    /** Only a profile that pins keeps a proof: never our own, never one refusing a pinned key, never one stale on both clocks. */
+    @Test
+    fun aProfileThatPinsNothingKeepsNoProofOfKey() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val carol = party()
+            val other = party()
+            rig.peerMap[alice.nodeId] = PeerEntity(nodeId = alice.nodeId, pubKey = other.bundle.encoded, updatedAt = 1L)
+            rig.peerMap[carol.nodeId] =
+                PeerEntity(nodeId = carol.nodeId, pubKey = carol.bundle.encoded, updatedAt = 100L, prekeyProfileAt = 100L)
+
+            rig.deliver(rig.self, rig.profile(rig.self, name = "Me"))
+            rig.deliver(alice, rig.profile(alice))
+            rig.deliver(carol, rig.profile(carol, sentAt = 6L))
+
+            assertTrue(rig.proofs.isEmpty())
         }
 
     // --- Status notices (MessageEntity.kind) -------------------------------------------------------

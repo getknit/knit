@@ -24,6 +24,9 @@ document:
 
 - When a nearby phone passed along messages from someone you hadn't met yet, most of them could take ten
   minutes to appear. They now show up together once that person's profile reaches your phone.
+- Messages from someone you hadn't met could fail to appear for up to a day if the phone passing them along
+  had restarted since it last heard from that person. That phone can now prove who wrote them, so they show
+  up as soon as it passes them on.
 - If you and a contact both wrote first while out of range of each other, or Knit had just repaired the
   encryption between you, a message could stay on one tick forever. It now gets through and shows as
   delivered.

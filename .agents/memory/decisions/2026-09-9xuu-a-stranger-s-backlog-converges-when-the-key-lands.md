@@ -56,7 +56,9 @@ before. An attacker who fills them evicts honest parked frames, and the victim i
 ten-minute delay, not a loss. The replay on a pin can now run up to 200 frames on the inbound coroutine,
 the same work as the burst that brought them.
 
-**What it does not cover.** A backlog larger than the park, or one evicted by an attacker's flood, still
+**What it does not cover.** A carrier that no longer holds the profile *and* has restarted since it pinned
+the author had no signed copy left to serve, by digest or by `keyreq` — closed by ADR 2026-09.g64k, which keeps
+the frame beside the pin. A backlog larger than the park, or one evicted by an attacker's flood, still
 waits out the seen window. So does a sender whose key arrives through a door that never releases the park
 (a contact card import). `MeshManager` injects the custody quota as the park's per-sender cap
 (`ForwardRepository.DEFAULT_MAX_PER_SENDER`; the mesh layer keeps no import of the data layer, as

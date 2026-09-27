@@ -41,6 +41,9 @@ class ForwardSync(
     // Your mesh screen's "passed along" / "handed straight to" numbers (`ContributionLedger` decides whether
     // it counts). Defaulted to a no-op so the pure tests are unaffected.
     private val onServed: suspend (RelayEnvelope, toNodeId: String) -> Unit = { _, _ -> },
+    // Hands a peer the key of a sender (their signed profile, point to point) if one is held — `KeyExchange.serveKey`,
+    // over the pin store (ADR 2026-09.g64k). Defaulted to a no-op so the pure tests are unaffected.
+    private val serveKey: suspend (senderId: String, to: Peer) -> Unit = { _, _ -> },
 ) {
     // Ids of DMs purged by a delivery receipt: a short-lived tombstone (≤ carry TTL) so a still-
     // circulating copy from an unvaccinated peer isn't re-stored after we've already delivered it.
@@ -100,6 +103,12 @@ class ForwardSync(
      * sender for the first time refused the whole backlog for want of a key it was about to be handed. It parks
      * what it refuses ([PendingInbound]) and replays it on the pin, but a park is a bound, and anything it turns
      * away is deduped for the router's ten-minute window: the key first is what makes the park the exception.
+     *
+     * **And when custody holds no profile, the pin's does** (ADR 2026-09.g64k). The per-sender quota evicts a
+     * chatty sender's profile, and the TTL takes a departed sender's up to a republish period before their last
+     * posts, so a carrier often holds frames whose author's profile it no longer holds. It still pinned their
+     * key to carry them, and it keeps the signed frame that pin came from: [keylessSenders] names each sender
+     * this reply would hand the peer a backlog it has no key for, and their key goes first, point to point.
      */
     suspend fun onDigest(
         fromNodeId: String,
@@ -107,20 +116,51 @@ class ForwardSync(
     ) {
         val peer = transport.neighbors.value.find { it.nodeId == fromNodeId } ?: Peer(fromNodeId)
         val have = theirIds.toHashSet()
-        store.liveFrames(clock()).sortedBy { it.envelope.type != FrameType.PROFILE }.forEach { carried ->
-            val env = carried.envelope
-            if (env.id in have) return@forEach // the diff: skip frames the peer already holds
-            // No author-skip: the `have` diff already elides any frame the peer still holds, so the only
-            // peer-authored frame reaching here is one it authored but no longer has — its custody wiped by a
-            // DB wipe. Re-serving it is exactly how a node re-carries its own sends so the
-            // content digest reconverges; it authenticates the frame against its own identity bundle (see
-            // MeshManager.verifierBundle). The old `senderId == fromNodeId` skip assumed the author always has
-            // its own frame, which a wipe breaks — leaving each node permanently short its own sends.
-            val members = env.group?.members
-            if (members != null && fromNodeId !in members) return@forEach // group: members only (DM/broadcast: anyone)
+        val live = store.liveFrames(clock()).sortedBy { it.envelope.type != FrameType.PROFILE }
+        val outgoing =
+            live.filter { carried ->
+                val env = carried.envelope
+                // The diff: skip frames the peer already holds. No author-skip: the `have` diff already elides
+                // any frame the peer still holds, so the only peer-authored frame reaching here is one it authored
+                // but no longer has — its custody wiped by a DB wipe. Re-serving it is exactly how a node
+                // re-carries its own sends so the content digest reconverges; it authenticates the frame against
+                // its own identity bundle (see MeshManager.verifierBundle). The old `senderId == fromNodeId` skip
+                // assumed the author always has its own frame, which a wipe breaks — leaving each node permanently
+                // short its own sends.
+                val members = env.group?.members
+                env.id !in have && (members == null || fromNodeId in members) // group: members only (DM/broadcast: anyone)
+            }
+        keylessSenders(live, outgoing, have, fromNodeId).forEach { serveKey(it, peer) }
+        outgoing.forEach { carried ->
             transport.send(WireEnvelope(sig = carried.sig, signed = carried.signed), peer)
-            onServed(env, fromNodeId)
+            onServed(carried.envelope, fromNodeId)
         }
+    }
+
+    /**
+     * The senders of [outgoing] whose key the peer [fromNodeId] may not hold and this reply does not carry: not
+     * the peer itself, no live `profile` of theirs in our custody (that goes first already, or the peer holds it
+     * — the diff skipped it), and none of our live frames of theirs in the peer's digest ([have]). A peer that
+     * custodies a frame verified it, so it holds that sender's key; the last rule is what keeps two carriers of
+     * the same chatty sender from trading their key on every reconcile.
+     */
+    private fun keylessSenders(
+        live: List<CarriedFrame>,
+        outgoing: List<CarriedFrame>,
+        have: Set<String>,
+        fromNodeId: String,
+    ): List<String> {
+        val known = HashSet<String>()
+        live.forEach { carried ->
+            val env = carried.envelope
+            if (env.type == FrameType.PROFILE || env.id in have) known += env.senderId
+        }
+        return outgoing
+            .asSequence()
+            .map { it.envelope.senderId }
+            .filter { it != fromNodeId && it !in known }
+            .distinct()
+            .toList()
     }
 
     /**
