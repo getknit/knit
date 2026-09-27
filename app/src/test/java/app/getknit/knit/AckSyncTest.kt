@@ -614,20 +614,57 @@ class AckSyncTest {
         }
 
     @Test
-    fun aCleartextTickIsNotBackedOff() =
+    fun aCleartextTickBacksOffLikeTheSealedOne() =
         runTest(UnconfinedTestDispatcher()) {
-            // Only the sealed form costs the author a decrypt. The cleartext form is rebuilt with a fresh
-            // id per attempt, so a retry is a SeenSet dedup — it keeps today's every-heartbeat cadence.
+            // A legacy author's tick costs the author only a SeenSet dedup, which is why it used to be exempt —
+            // but a best-effort send is a LoRa packet whenever the board has heard that author, and every heal
+            // re-sent every entry: ~200 owed ticks held a board's airtime window full for the whole 24 h TTL.
             var clock = 0L
             val recorder = FastSendRecorder(FakeLoopTransport("recip"))
             val ack = ackSyncOn(recorder, "recip", clock = { clock }) // sealTick defaults to null
 
             ack.owe("m1", "author")
-            repeat(3) {
+            assertEquals(1, recorder.fastSent.size)
+            repeat(3) { ack.retryPending() } // heals inside the first step: a resume, motion, the heartbeat
+            assertEquals("a heal inside the backoff must not re-send", 1, recorder.fastSent.size)
+
+            clock += AckSync.RETRY_BASE_MS // +15m: the first step is due
+            ack.retryPending()
+            clock += AckSync.RETRY_BASE_MS // +30m: the next step is 30m out
+            ack.retryPending()
+            assertEquals(2, recorder.fastSent.size)
+
+            while (clock < AckSync.OWED_TTL_MS) {
                 clock += AckSync.RETRY_BASE_MS
                 ack.retryPending()
             }
+            assertEquals("the same 8 re-sends across the 24h horizon as the sealed form", 8, recorder.fastSent.size)
+            assertEquals(
+                "each re-send is still a fresh cleartext receipt",
+                8,
+                recorder.fastSent
+                    .map { WireCodec.decodeEnvelope(it.signed)?.id }
+                    .toSet()
+                    .size,
+            )
+        }
 
-            assertEquals("a legacy author's tick still retries every heartbeat", 4, recorder.fastSent.size)
+    @Test
+    fun aBackedOffCleartextTickStillGoesHomeTheMomentALinkExists() =
+        runTest(UnconfinedTestDispatcher()) {
+            var clock = 0L
+            val author = Author("author")
+            val recip = FakeLoopTransport("recip")
+            author.start(backgroundScope)
+            val ack = ackSyncOn(recip, "recip", clock = { clock })
+
+            ack.owe("m1", "author") // absent: cleartext, held, next step 15m out
+            clock += 60_000
+            recip.connect(author.transport)
+            ack.retryPending()
+
+            assertEquals("a live link overrides the backoff", listOf("m1"), author.ackIds())
+            ack.retryPending()
+            assertEquals("and the entry is dropped, not re-sent", listOf("m1"), author.ackIds())
         }
 }

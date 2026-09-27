@@ -93,6 +93,13 @@ custody / relay all run unchanged.
 > reuse `isFresh` (which returns true for every non-chat type), and `profile` cannot simply be excluded:
 > a board that comes up beacons its profile first, and that first hearing is what fires `reofferTo`. The
 > gate wraps **only** `noteReachable` — decode, dedup, delivery, custody and relay all still run.
+>
+> **A radio in our own pocket vouches for nobody** (ADR 2026-09.6gk8). `boardOwners` maps a radio to the
+> publisher of the OFFERs it airs; a fresh frame aired by our own board or by a board whose owner we hold a
+> live link to (`pocketKeys()`) is not presence, and `heardVia` withdraws an author the moment the radio
+> that last vouched for them turns out to be co-pocket (its OFFER heard, or `suppressDataPath` linking its
+> owner). Don't narrow this to "only the author's own board": a far gateway's airing of a board-less author
+> is exactly the reach ADR 2026-09.wkbk's last hop rides.
 
 ## The layers
 
@@ -198,7 +205,9 @@ gaps — ADR 039 §8: a peer that just appeared has demonstrably never heard us,
 this is the only way a late arrival learns our key). The composite's self-profile `fastFanout` shares the
 5-min floor. `PendingInbound` (~2 min) replays the parked chat once the profile pins the key. A **sig-keyed
 SeenSet** (first 8 B of `sig`, 10 min) recorded on send *and* receive stops re-fanning a LoRa-received
-frame and bounds AckSync's 24 h verbatim tick retries.
+frame and bounds AckSync's 24 h verbatim tick retries. A cleartext `receipt` is rebuilt with a fresh id per attempt, so
+`fastSend` keys it on (recipient, acked id) instead (`targetedKey`, ADR 2026-09.6gk8), and AckSync backs off
+both forms on the same doubling schedule.
 
 ## Bridging pockets (ADR 044)
 

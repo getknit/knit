@@ -20,6 +20,7 @@ import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.link.FragReassembler
 import app.getknit.knit.mesh.meshNodeLabel
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
@@ -188,6 +189,16 @@ internal class LoraMeshTransport(
     // board overheard, and one linger rule ages the reading out with the radio it belongs to.
     private val boardsHeardAt = ConcurrentHashMap<UInt, RxQuality>()
     private val heardPeers = ConcurrentHashMap<String, Peer>()
+
+    // Author -> the radio that aired the fresh frame which last put them in `reachable`, so a hearing can be
+    // withdrawn once that radio turns out to belong to our own pocket (ADR 2026-09.6gk8).
+    private val heardVia = ConcurrentHashMap<String, UInt>()
+
+    // Radio -> the publisher key of the OFFERs it airs, i.e. the Knit node that owns it. An OFFER is only ever
+    // put on the air by its publisher's own board (a Meshtastic repeat keeps `from`), so this is the one
+    // unforgeable-enough board -> node binding the plane has without trusting a profile's self-asserted
+    // `loraNode`. Aged on the same linger as the radios themselves.
+    private val boardOwners = ConcurrentHashMap<UInt, OfferedBy>()
     private val lastSelfProfileAt = AtomicLong(NEVER)
 
     // Peers a short-range sibling has *sighted*. Diagnostics only — deliberately nothing routes on it.
@@ -375,6 +386,8 @@ internal class LoraMeshTransport(
         link.stop()
         lastHeardAt.clear()
         heardPeers.clear()
+        heardVia.clear()
+        boardOwners.clear()
         // Takes the signal readings with it: they belong to radios this session heard, and a stale one used
         // to survive a restart and read as the state of a link that had not been re-established yet.
         boardsHeardAt.clear()
@@ -521,6 +534,9 @@ internal class LoraMeshTransport(
         linkedPeers = peers
         // A co-pocket gateway gaining or losing its link is exactly what changes who speaks for this pocket.
         recomputeRole()
+        // ...and whose board's hearings still count as reach: a radio that just joined our pocket vouches for
+        // nobody on the LoRa hop any more (ADR 2026-09.6gk8).
+        recomputeReachable(clock())
     }
 
     override fun coveredByInternet(peers: Set<String>) {
@@ -641,7 +657,7 @@ internal class LoraMeshTransport(
         if (!LoraFramePolicy.eligible(env, wire, LoraFramePolicy.Path.TARGETED, to.nodeId)) return
         val label = "send:${env.type}->${to.nodeId}"
         val parts = encodeOrNull(wire, label) ?: return
-        if (!sigSeen.add(dedupKey(wire, env))) return
+        if (!sigSeen.add(targetedKey(wire, env, to))) return
         // The targeted path admits only receipts and sealed ticks (LoraFramePolicy), so it needs no hint.
         // Recipient only: the role gate is deliberately absent here and must stay absent on the way out too,
         // for the reason the comment above gives — this send is owed by exactly one node.
@@ -1068,6 +1084,11 @@ internal class LoraMeshTransport(
         val key = keyOf(offer.publisher)
         metrics.onLoraOfferReceived()
         gateway.onOffer(offer.publisher, now)
+        if (packet.from != 0u) {
+            boardOwners[packet.from] = OfferedBy(offer.publisher, now)
+            // A radio we just learned is a co-pocket gateway's withdraws the hearings it already put in `reachable`.
+            recomputeReachable(now)
+        }
         val sameSet = offer.prefixes.contentEquals(lastOfferPrefixes)
         gossip.onOffer(sameSet = sameSet, now = now)
         // Logged before any of the decisions below, because "did the other gateway's offer reach this phone
@@ -1584,7 +1605,13 @@ internal class LoraMeshTransport(
         // Presence, and ONLY presence, is gated on the frame's age: a backfill, a re-offer or a re-fan of
         // something a spool just handed a gateway says where a *frame* has been, not where its author is.
         // Everything below runs either way — this path must never become a propagation black hole.
-        if (isPresenceEvidence(env, wallClock())) noteReachable(Peer(env.senderId))
+        // And only from a radio outside our pocket: a co-pocket gateway airs what our own radios carried to it,
+        // so its copy says the author is one BLE/NAN hop from *it*, never that the LoRa hop reaches them from
+        // here (ADR 2026-09.6gk8). Read as reach, it sent every ✓✓ owed to a board-less co-pocket author onto the
+        // air, where no board could carry it anywhere our radios had not already been.
+        if (isPresenceEvidence(env, wallClock()) && !airedByPocket(packet.from, pocketKeys())) {
+            noteReachable(Peer(env.senderId), packet.from)
+        }
         metrics.onLoraReceived()
         if (fragmented) metrics.onLoraReassembled()
         if (LoraFramePolicy.isDmForm(env)) metrics.onLoraDmReceived()
@@ -1629,10 +1656,14 @@ internal class LoraMeshTransport(
         publishStatus()
     }
 
-    private fun noteReachable(peer: Peer) {
+    private fun noteReachable(
+        peer: Peer,
+        board: UInt,
+    ) {
         val now = clock()
         val firstHeard = lastHeardAt.put(peer.nodeId, now) == null
         heardPeers[peer.nodeId] = peer
+        heardVia[peer.nodeId] = board
         recomputeReachable(now)
         if (firstHeard) {
             scope.launch {
@@ -1642,9 +1673,28 @@ internal class LoraMeshTransport(
         }
     }
 
+    /**
+     * Whether [board] is a radio in our own pocket — our own board, heard back through a repeater, or one whose
+     * OFFERs name a node we hold a live link to ([pocket], the [pocketKeys] of the moment). Anything it airs
+     * reached us over BLE/NAN too, or will: its copy is an echo of our pocket, never evidence of the LoRa hop.
+     * A radio we have not heard OFFER yet is taken as far, which is today's reading and the safe one — a
+     * wrongly withheld hearing strands a far pocket's ✓✓ (ADR 2026-09.wkbk).
+     */
+    private fun airedByPocket(
+        board: UInt,
+        pocket: Set<Long>,
+    ): Boolean {
+        if (board == (link.state.value as? LinkState.Ready)?.board?.myNodeNum) return true
+        return boardOwners[board]?.publisher?.let { it in pocket } == true
+    }
+
     private fun recomputeReachable(now: Long) {
         lastHeardAt.entries.removeAll { now - it.value > REACHABLE_LINGER_MS }
         boardsHeardAt.entries.removeAll { now - it.value.atMs > REACHABLE_LINGER_MS }
+        boardOwners.entries.removeAll { now - it.value.atMs > REACHABLE_LINGER_MS }
+        val pocket = pocketKeys()
+        lastHeardAt.keys.removeAll { author -> heardVia[author]?.let { airedByPocket(it, pocket) } == true }
+        heardVia.keys.retainAll(lastHeardAt.keys)
         heardPeers.keys.retainAll(lastHeardAt.keys)
         _reachable.value = heardPeers.values.toSet()
         publishStatus()
@@ -1755,6 +1805,23 @@ internal class LoraMeshTransport(
         wire: WireEnvelope,
         env: RelayEnvelope,
     ): String = if (wire.sig.isEmpty()) "u:${env.id}" else sigKey(wire)
+
+    /**
+     * [fastSend]'s dedup key. A cleartext receipt is rebuilt with a fresh id — so a fresh signature — on every
+     * AckSync attempt, and keyed as [dedupKey] keys it no two copies of one tick ever matched: a retry pass
+     * queued the whole owed set again behind the copies still waiting for air. Keyed on what it says instead —
+     * (recipient, acked id) — the window holds one packet per tick (ADR 2026-09.6gk8). The sealed form needs
+     * none of this: its retries are verbatim, so the signature already repeats.
+     */
+    private fun targetedKey(
+        wire: WireEnvelope,
+        env: RelayEnvelope,
+        to: Peer,
+    ): String {
+        if (env.type != FrameType.RECEIPT) return dedupKey(wire, env)
+        val ackId = WireCodec.decodePayload<ReceiptContent>(env.payload)?.ackId ?: return dedupKey(wire, env)
+        return "r:${to.nodeId}:$ackId"
+    }
 
     private fun sigKey(wire: WireEnvelope): String {
         val n = minOf(SIG_KEY_BYTES, wire.sig.size)
@@ -1902,4 +1969,10 @@ internal const val MESH_POST_DEDICATED = "DEDICATED"
 internal data class BoardBinding(
     val nodeNum: UInt,
     val signingKey: String?,
+)
+
+/** Which Knit node a radio's OFFERs name as their publisher, and when one was last heard from it. */
+private data class OfferedBy(
+    val publisher: Long,
+    val atMs: Long,
 )

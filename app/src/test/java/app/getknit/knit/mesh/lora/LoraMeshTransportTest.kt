@@ -12,6 +12,7 @@ import app.getknit.knit.mesh.link.FastFrameCodec
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupInfo
+import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
@@ -1820,6 +1821,207 @@ class LoraMeshTransportTest {
             advanceTimeBy(4_000)
             runCurrent()
             assertTrue("a tick to a LoRa-reachable, uncovered peer rides", b.link.sent.size > bSentBefore)
+            a.transport.stop()
+            b.transport.stop()
+        }
+
+    /** A cleartext `receipt` for [ackId] as AckSync builds each attempt: a fresh id and signature every time. */
+    private fun cleartextReceipt(
+        sender: String,
+        ackId: String,
+    ): WireEnvelope {
+        val env =
+            RelayEnvelope(
+                type = FrameType.RECEIPT,
+                id = "rcpt-$sigCounter",
+                senderId = sender,
+                payload = WireCodec.encodePayload(ReceiptContent(ackId)),
+            )
+        val sig = ByteArray(64)
+        sig[0] = (sigCounter shr 8).toByte()
+        sig[1] = sigCounter.toByte()
+        sigCounter++
+        return WireEnvelope(relay = false, sig = sig, signed = WireCodec.encodeEnvelope(env))
+    }
+
+    /** [to] hears [publisher]'s OFFER aired by board [from] — how the plane learns whose radio that is. */
+    private fun hearOffer(
+        to: Rig,
+        from: UInt,
+        publisher: String,
+    ) = to.link.deliver(
+        from = from,
+        channelIndex = 0,
+        portnum = MeshtasticProto.PORT_PRIVATE_APP,
+        payload = LoraCtl.encodeOffer(StoreDigest.hash64(publisher), IntArray(0), 200),
+    )
+
+    @Test
+    fun aCoPocketGatewaysAiringIsNotReachForItsAuthors() =
+        runTest {
+            // Field, 2026-09-26: the lab P9 sat PASSIVE beside the P7 gateway it held a BLE link to. The P7 aired a
+            // board-less test peer's room posts, the P9's board heard them, and the author went into the P9's
+            // `reachable` — so every ✓✓ owed to it went onto the air, 218 at a time, and held the window full.
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+            b.transport.suppressDataPath(setOf("alice")) // bob holds a live link to alice: same pocket
+            hearOffer(b, from = 1u, publisher = "alice")
+            runCurrent()
+
+            a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = "carol has no board"))
+            advanceTimeBy(4_000)
+            runCurrent()
+
+            assertTrue("the frame still crosses — delivery is untouched", b.received.any { it.envelope.senderId == "carol" })
+            assertFalse(
+                "but a co-pocket board's airing puts nobody in reach",
+                b.transport.reachable.value
+                    .any { it.nodeId == "carol" },
+            )
+            val before = b.link.sent.size
+            b.transport.fastSend(cleartextReceipt("bob", "m1"), Peer("carol"))
+            advanceTimeBy(4_000)
+            runCurrent()
+            assertEquals("so carol's ✓✓ stays off the air", before, b.link.sent.size)
+            a.transport.stop()
+            b.transport.stop()
+        }
+
+    @Test
+    fun aFarGatewaysAiringStillPutsItsBoardlessAuthorInReach() =
+        runTest {
+            // ADR 2026-09.wkbk rests on this: a far pocket's ✓✓ goes back over LoRa to a board-less author because
+            // the far gateway aired that author's post, and hands it the last hop over its own link.
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+            hearOffer(b, from = 1u, publisher = "alice") // a gateway, but not one bob is linked to
+            runCurrent()
+
+            a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = "from the far pocket"))
+            advanceTimeBy(4_000)
+            runCurrent()
+
+            assertTrue(
+                "carol is reachable through the far gateway",
+                b.transport.reachable.value
+                    .any { it.nodeId == "carol" },
+            )
+            a.transport.stop()
+            b.transport.stop()
+        }
+
+    @Test
+    fun linkingTheGatewayWithdrawsTheReachItsBoardVouchedFor() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+            hearOffer(b, from = 1u, publisher = "alice")
+            a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = "heard while alice was far"))
+            advanceTimeBy(4_000)
+            runCurrent()
+            assertTrue(
+                b.transport.reachable.value
+                    .any { it.nodeId == "carol" },
+            )
+
+            // Alice walks into bob's pocket: her board now airs what bob's own radios carry.
+            b.transport.suppressDataPath(setOf("alice"))
+            assertFalse(
+                "the hearing her board vouched for is withdrawn at once, not after the 45-min linger",
+                b.transport.reachable.value
+                    .any { it.nodeId == "carol" },
+            )
+
+            // And she walks out again: the next fresh airing is reach once more.
+            b.transport.suppressDataPath(emptySet())
+            a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = "alice is far again"))
+            advanceTimeBy(4_000)
+            runCurrent()
+            assertTrue(
+                b.transport.reachable.value
+                    .any { it.nodeId == "carol" },
+            )
+            a.transport.stop()
+            b.transport.stop()
+        }
+
+    @Test
+    fun aRadioLearnedToBeCoPocketWithdrawsItsEarlierHearings() =
+        runTest {
+            // The OFFER can land after the frames: a hearing taken from a radio of unknown owner counts (the safe
+            // reading), and is withdrawn once that radio's OFFER names a node bob is linked to.
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+            b.transport.suppressDataPath(setOf("alice"))
+            a.transport.fastFanout(frame(FrameType.CHAT, "carol", body = "before any offer"))
+            advanceTimeBy(4_000)
+            runCurrent()
+            assertTrue(
+                b.transport.reachable.value
+                    .any { it.nodeId == "carol" },
+            )
+
+            hearOffer(b, from = 1u, publisher = "alice")
+            runCurrent()
+            assertFalse(
+                b.transport.reachable.value
+                    .any { it.nodeId == "carol" },
+            )
+            a.transport.stop()
+            b.transport.stop()
+        }
+
+    @Test
+    fun aCleartextTicksRetriesDedupOnWhatTheySayNotOnTheirSignature() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            val a = rig(air, 1u, "alice", backgroundScope) { testScheduler.currentTime }
+            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "ping"))
+            advanceTimeBy(4_000)
+            runCurrent()
+            val before = b.link.sent.size
+
+            b.transport.fastSend(cleartextReceipt("bob", "m1"), Peer("alice"))
+            b.transport.fastSend(cleartextReceipt("bob", "m1"), Peer("alice")) // AckSync's next attempt: new id, new sig
+            advanceTimeBy(4_000)
+            runCurrent()
+            assertEquals("one packet per tick inside the window", before + 1, b.link.sent.size)
+
+            b.transport.fastSend(cleartextReceipt("bob", "m2"), Peer("alice"))
+            advanceTimeBy(4_000)
+            runCurrent()
+            assertEquals("a tick for another message is its own packet", before + 2, b.link.sent.size)
+
+            advanceTimeBy(LoraMeshTransport.SIG_TTL_MS)
+            runCurrent()
+            val lapsed = b.link.sent.size
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "still here")) // keep alice in reach
+            advanceTimeBy(4_000)
+            runCurrent()
+            b.transport.fastSend(cleartextReceipt("bob", "m1"), Peer("alice"))
+            advanceTimeBy(4_000)
+            runCurrent()
+            assertEquals("past the window the retry rides again", lapsed + 1, b.link.sent.size)
             a.transport.stop()
             b.transport.stop()
         }

@@ -51,7 +51,8 @@ import java.util.concurrent.ConcurrentHashMap
  *   plane: a batched tick outgrows even the compact-fragment budget by construction, which is why
  *   escalation goes through origination, never [MeshTransport.fastSend].
  * - **Legacy (cleartext) author** — today's unicast best-effort tick, kept and retried ([retryPending],
- *   [onNeighborAdded]) until it lands or ages out. Deliberately NEVER flooded or custodied: a cleartext
+ *   [onNeighborAdded]) until it lands or ages out, on the same doubling [backOff] as the sealed
+ *   form. Deliberately NEVER flooded or custodied: a cleartext
  *   receipt in custody would re-leak the delivery event ADR 018 sealed away, and downgrading a sealed
  *   tick to cleartext would make the form an on-path observable of link state. The cleartext form is
  *   rebuilt per attempt (fresh id, so the author's SeenSet never dedups a retry); toward such an author
@@ -119,7 +120,7 @@ class AckSync(
         val sealed: WireEnvelope? = null,
         /** Best-effort re-sends already spent on this entry — the doubling exponent (see [backOff]). */
         val retries: Int = 0,
-        /** Earliest clock at which a best-effort re-send may go out; 0 = due now. Sealed form only. */
+        /** Earliest clock at which a best-effort re-send may go out; 0 = due now. */
         val nextAttemptAt: Long = 0,
     )
 
@@ -655,9 +656,7 @@ class AckSync(
     private fun linkedTo(authorId: String): Peer? = transport.neighbors.value.firstOrNull { it.nodeId == authorId }
 
     /**
-     * Schedules the next best-effort re-send of a **sealed** owed entry. The cleartext form is exempt and
-     * returns unchanged: it is rebuilt with a fresh id per attempt, so a retry costs the author a SeenSet
-     * dedup, never a decrypt.
+     * Schedules the next best-effort re-send of an owed entry, in either form.
      *
      * The sealed form re-sends one frame id verbatim for the entry's whole life. The router suppresses a
      * repeat for only 10 minutes ([SeenSet]) while the heal heartbeat runs every 15, so every flat retry
@@ -665,13 +664,18 @@ class AckSync(
      * the author per stuck tick, across the 24 h TTL. Doubling from one heartbeat up to [RETRY_CAP_MS]
      * holds the same horizon at ~8. Nothing here extends the entry's life: [sweep] still ages it out on
      * [Owed.recordedAt], and the tick self-heals anyway when the message re-serves and re-[owe]s.
+     *
+     * The cleartext form used to be exempt — a fresh id per attempt costs the author only a SeenSet dedup —
+     * but the cost that matters is the **sender's**: a best-effort send is a LoRa packet whenever the board
+     * has heard the author, and every `heal()` (heartbeat, motion, each app resume) re-sent every entry.
+     * Two hundred owed ticks toward one legacy author held a board's 15-minute airtime window full for the
+     * whole 24 h TTL (ADR 2026-09.6gk8).
      */
     private fun backOff(
         messageId: String,
         entry: Owed,
         now: Long,
     ) {
-        if (entry.sealed == null) return
         val retries = entry.retries + 1
         // Compare-and-set: never resurrect an entry a concurrent live-link send has just removed.
         owed.replace(messageId, entry, entry.copy(retries = retries, nextAttemptAt = now + retryDelayMs(retries)))

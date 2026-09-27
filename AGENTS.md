@@ -57,6 +57,9 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `BuildConfig.LORA_PLANE` and off until the user pairs a board (ADR 038 + 039, introduced by ADR
   2026-09.6gtm — it is no longer a gate that keeps anything out of shipped builds). `mesh/lora/` is
   pure/JVM-tested; the only `android.bluetooth.*` importer is `mesh/bluetooth/meshtastic/MeshtasticGatt`.
+  **Before touching `noteReachable`, `airedByPocket` / `boardOwners` / `heardVia`, `fastSend`'s `targetedKey`, or
+  `AckSync.backOff`:** READ ADR 2026-09.6gk8 — a co-pocket board's airing is not LoRa reach (but a far
+  gateway's still is, ADR 2026-09.wkbk), and a cleartext owed tick backs off like the sealed one.
   **Before touching `DmAutoReplyPolicy`, `Destination.Reply`, `OutboundFrame.to`, or `MeshtasticLink.send`'s
   `to`:** READ ADR 2026-09.4n5p — a Meshtastic DM to a set-up board is answered once with a fixed unicast
   (once per sender per day, once per 30 s for anybody, the room's air share, never from a stock or a
