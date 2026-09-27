@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Knit</string>
+    <string name="complication_nearby">Knit nearby</string>
+    <string name="complication_health">Knit mesh</string>
+    <string name="complication_transports">Knit radios</string>
+    <string name="complication_relayed">Knit relayed</string>
+</resources>

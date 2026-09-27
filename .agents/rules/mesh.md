@@ -15,7 +15,8 @@ behind each lives in `context/mesh-transport.md`, `context/wire-format.md`, and
   default network.
 - Nothing outside `mesh/bluetooth/` may import `android.bluetooth.*` (the Meshtastic GATT client lives at
   `mesh/bluetooth/meshtastic/MeshtasticGatt` under that boundary; its pure session/codec sit in `mesh/lora/`,
-  which imports no Android at all — ADR 038).
+  which imports no Android at all — ADR 038; the watch status server is `mesh/bluetooth/wear/WearStatusServer`, its
+  pure snapshot `mesh/wear/`, ADR 2026-09.wetm). The rule is :app's: the `:wear` module is its own boundary.
 - Nothing outside `mesh/spool/OkHttpSpoolDialer.kt` and `linkpreview/OkHttpPreviewFetcher.kt` may import
   `okhttp3.*` (detekt's `ForbiddenImport` enforces it). Each sits behind a pure seam — `SpoolLink`/`SpoolSocket`
   for the Internet plane's socket, `PreviewFetcher` for the link-preview fetch — for the same reason the radios

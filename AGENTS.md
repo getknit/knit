@@ -231,6 +231,12 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   membership, titles, speaker and contacts rules live in those two shared files so search cannot drift
   from the list; a hit opens the thread through `chat/{id}?messageId=` and the quote-jump machinery,
   never a second thread view). "Search in this chat" is deferred — CHECK `.agents/memory/roadmap.md`.
+- **When touching `wearstatus/`, `mesh/wear/`, `mesh/bluetooth/wear/WearStatusServer`, the `:wear` module, or
+  `BuildConfig.WEAR_STATUS`:** READ ADR 2026-09.wetm. A bonded Wear OS watch reads the mesh status from one
+  read-only, encrypted GATT characteristic the phone serves while `MeshService` runs — no Data Layer (GMS), never
+  framed, reachable over LE through the mesh's own advert and, only while paused, the server's own. A prototype: dark in release, `:wear` only under `-Pknit.wear=true`. `wearstatus/` is
+  compiled into both modules, so it imports nothing but `java.*`/`kotlin.*`, and its layout is pinned by one golden
+  vector in `WearStatusCodecTest` and `:wear`'s `StatusTextTest`; a stopped or paused mesh reports no radio.
 - **When touching `ui/yourmesh/`, `mesh/ContributionLedger`, `data/settings/ContributionJournal`,
   `data/peer/MetPeer*`, `ForwardDao.observeCarriedForOthers`, or the `onRelayed` / `onServed` hooks in
   `MeshRouter` / `ForwardSync`:** READ ADR 2026-09.2v2t. The Your mesh screen's numbers are shown to the user

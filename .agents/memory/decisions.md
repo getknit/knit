@@ -179,6 +179,7 @@ carries; never renumber an old one.
 | [2026-09.w3xk](decisions/2026-09-w3xk-a-screen-on-lonely-node-relaxes-its-bluetooth-scan-after-three-minutes.md) | A screen-on lonely node relaxes its Bluetooth scan after three minutes | bluetooth, battery |
 | [2026-09.wa79](decisions/2026-09-wa79-a-scope-heals-when-something-changed.md) | A scope heals when something changed | spool, battery, reliability |
 | [2026-09.wdfz](decisions/2026-09-wdfz-message-search-is-an-external-content-fts4-index-over-messages-body.md) | Message search is an external-content FTS4 index over messages.body | data, room, search, perf |
+| [2026-09.wetm](decisions/2026-09-wetm-a-bonded-watch-reads-the-mesh-status-from-a-read-only-gatt-characteristic.md) | A bonded watch reads the mesh status from a read-only GATT characteristic | wear, ble, privacy |
 | [2026-09.wkbk](decisions/2026-09-wkbk-a-gateway-hands-a-targeted-tick-the-last-hop.md) | A gateway hands a targeted tick the last hop | receipts, mesh, lora |
 | [2026-09.wnh6](decisions/2026-09-wnh6-search-is-one-screen-over-the-chat-list-s-own-universe.md) | Search is one screen over the chat list's own universe, and a hit opens the thread on one message | ui, search, navigation |
 | [2026-09.wtmz](decisions/2026-09-wtmz-a-large-file-goes-off-the-mesh.md) | A large file goes off the mesh, over a Wi-Fi group the two phones raise | transfer, mesh, wifi |

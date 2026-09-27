@@ -96,6 +96,13 @@ val commons = (project.findProperty("commons") as? String)?.toBoolean()
 // source so F-Droid's -P-free rebuild stays identical. Flip the release default after the device trial.
 val bleSidePlane = (project.findProperty("bleSidePlane") as? String)?.toBoolean()
 
+// The Wear OS status service (a read-only GATT characteristic a bonded watch reads the mesh state from; the
+// watch app is the opt-in `:wear` module) — a prototype: ON in debug, OFF in a shipped artifact, overridable
+// with `-PwearStatus=true|false`. It gates the one seam, the `WearStatusServer` definition in the DI graph
+// (absent while dark, so `MeshService` opens no GATT server). Not a code strip (R8 prunes the
+// `if (WEAR_STATUS)` branch), and the defaults live in source so F-Droid's -P-free rebuild stays identical.
+val wearStatus = (project.findProperty("wearStatus") as? String)?.toBoolean()
+
 // ABIs packaged into the **debug** APK. Debug is unminified and carries both tflite models, so it is
 // ~150 MB before native libs; the four-ABI default adds ~28 MB more, of which the two 32-bit slices are
 // dead weight — every lab Pixel is arm64-v8a and every Gradle-managed emulator image is x86_64, so
@@ -230,6 +237,8 @@ android {
         buildConfigField("boolean", "COMMONS", (commons ?: true).toString())
         // The BLE side channel is ON in debug so a lab build airs and hears pages; see `bleSidePlane` above.
         buildConfigField("boolean", "BLE_SIDE_PLANE", (bleSidePlane ?: true).toString())
+        // The Wear OS status service is ON in debug so a lab phone serves a paired watch; see `wearStatus` above.
+        buildConfigField("boolean", "WEAR_STATUS", (wearStatus ?: true).toString())
         // Fault injection for the model poison-pill's acceptance test (ADR 037):
         // `-PmodelFaultOnLoad=segv` raises SIGSEGV, `=kill` sends SIGKILL, inside ModelLoadGuard right
         // after the in-flight marker is durably written. They test opposite things: only `segv` produces
@@ -323,6 +332,8 @@ android {
             buildConfigField("boolean", "COMMONS", (commons ?: false).toString())
             // The BLE side channel is not introduced yet: dark in a shipped artifact until its device trial.
             buildConfigField("boolean", "BLE_SIDE_PLANE", (bleSidePlane ?: false).toString())
+            // The Wear OS status service is a prototype: dark in a shipped artifact.
+            buildConfigField("boolean", "WEAR_STATUS", (wearStatus ?: false).toString())
             // Never ship a fault injector, whatever `-PmodelFaultOnLoad` said.
             buildConfigField("String", "MODEL_FAULT_ON_LOAD", "\"\"")
             // Unsigned when no keystore.properties / KNIT_UPLOAD_* creds are present (see signingConfigs).

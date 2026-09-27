@@ -30,6 +30,7 @@ import app.getknit.knit.mesh.bluetooth.BleSideChannel
 import app.getknit.knit.mesh.bluetooth.BluetoothMeshTransport
 import app.getknit.knit.mesh.bluetooth.meshtastic.BondedBoardDirectory
 import app.getknit.knit.mesh.bluetooth.meshtastic.MeshtasticGatt
+import app.getknit.knit.mesh.bluetooth.wear.WearStatusServer
 import app.getknit.knit.mesh.crypto.MessageCrypto
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetSessions
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
@@ -47,6 +48,7 @@ import app.getknit.knit.mesh.power.PowerMonitor
 import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.mesh.spool.OkHttpSpoolDialer
 import app.getknit.knit.mesh.spool.SpoolDialer
+import app.getknit.knit.mesh.wear.WearStatusSource
 import app.getknit.knit.mesh.wifiaware.WifiAwareTransport
 import app.getknit.knit.net.InternetGate
 import app.getknit.knit.transfer.AndroidDirectWifi
@@ -302,4 +304,11 @@ val meshModule =
                 ?: if (BuildConfig.LORA_PLANE) get<LoraMeshTransport>() else LoraPlaneStatus.Dark
         }
         single { LoraStatusRepository(get(), get()) }
+        // The Wear OS status service (prototype, `BuildConfig.WEAR_STATUS`): defined only while lit, so a dark
+        // build has nothing for `MeshService` to resolve — its `getOrNull` is the one seam. It reads the same
+        // repositories the header does, and nothing it serves is framed onto the mesh.
+        if (BuildConfig.WEAR_STATUS) {
+            single { WearStatusSource(get(), get(), get(), get(), get()) }
+            single { WearStatusServer(androidContext(), get(), get<CoroutineScope>()) }
+        }
     }

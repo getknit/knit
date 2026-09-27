@@ -171,6 +171,12 @@ benchmark = "1.5.0"
 # the format support and bug fixes the platform class only gains with each OS release, which matters on
 # minSdk 29 for the HEIC/RAW files a modern camera hands us through the picker.
 exifinterface = "1.4.2"
+# Wear OS — used ONLY by the opt-in :wear module (the watch app for the mesh-status prototype), which is in
+# the build only under `-Pknit.wear=true`: never in :app's graph, app/gradle.lockfile or a shipped artifact.
+# Complications 1.3.0 AARs are minCompileSdk 34; Wear Compose 1.7.0 is minCompileSdk 37 + AGP 9.1, both
+# cleared by compileSdk 37.1 / AGP 9.4.1.
+wearComplications = "1.3.0"
+wearCompose = "1.7.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -228,6 +234,10 @@ okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhtt
 # Test-only: a local HTTP server for OkHttpPreviewFetcherTest — the byte caps, redirect policy and header
 # hygiene of the link-preview fetch are only observable on a socket. Same version line as okhttp, never ships.
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver3", version.ref = "okhttp" }
+
+androidx-wear-complications-data-source-ktx = { group = "androidx.wear.watchface", name = "watchface-complications-data-source-ktx", version.ref = "wearComplications" }
+androidx-wear-compose-material3 = { group = "androidx.wear.compose", name = "compose-material3", version.ref = "wearCompose" }
+androidx-wear-compose-foundation = { group = "androidx.wear.compose", name = "compose-foundation", version.ref = "wearCompose" }
 
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }

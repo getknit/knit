@@ -40,3 +40,10 @@ include(":app")
 if (providers.gradleProperty("knit.baselineProfile").orNull.toBoolean()) {
     include(":baselineprofile")
 }
+
+// The Wear OS watch app for the mesh-status prototype (the phone side is `WearStatusServer`, behind
+// `BuildConfig.WEAR_STATUS`). Opt-in for the same reason as :baselineprofile: F-Droid's rebuild and CI never
+// configure it or resolve the Wear libraries, so it cannot move a byte of :app's release.
+if (providers.gradleProperty("knit.wear").orNull.toBoolean()) {
+    include(":wear")
+}

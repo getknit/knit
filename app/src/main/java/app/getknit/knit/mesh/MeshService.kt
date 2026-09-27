@@ -27,6 +27,7 @@ import app.getknit.knit.MainActivity
 import app.getknit.knit.R
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.isKoinStarted
+import app.getknit.knit.mesh.bluetooth.wear.WearStatusServer
 import app.getknit.knit.mesh.power.PowerMonitor
 import app.getknit.knit.moderation.MlTextModerator
 import app.getknit.knit.notifications.NotificationChannels
@@ -42,6 +43,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.koin.android.ext.android.getKoin
 import org.koin.android.ext.android.inject
 
 /**
@@ -116,6 +118,13 @@ class MeshService : LifecycleService() {
 
     /** When the motion trigger last healed, on [clock]; 0 (always past the floor) until the first one. */
     private var lastMotionHealAt = 0L
+
+    /**
+     * The Wear OS status server — a prototype, defined in the graph only while `BuildConfig.WEAR_STATUS` is on,
+     * so null in a shipped build. Resolved by [resolveGraph] on the worker with the rest, started by [startMesh]
+     * and kept up through a pause (a paused mesh is still a status worth reading), stopped in [onDestroy].
+     */
+    private var wearStatus: WearStatusServer? = null
 
     /**
      * A significant-motion trigger. The sensor is one-shot and re-armed after every fire, so a walk fires it every
@@ -195,6 +204,7 @@ class MeshService : LifecycleService() {
     private fun resolveGraph(): List<Any> {
         val began = SystemClock.elapsedRealtime()
         val roots = listOf(meshManager, powerMonitor, settings)
+        wearStatus = getKoin().getOrNull()
         Log.i(TAG, "mesh graph resolved in ${SystemClock.elapsedRealtime() - began} ms on ${Thread.currentThread().name}")
         return roots
     }
@@ -218,6 +228,7 @@ class MeshService : LifecycleService() {
         scheduleHeartbeat()
         armSignificantMotion()
         observePause()
+        wearStatus?.start()
     }
 
     /**
@@ -403,6 +414,7 @@ class MeshService : LifecycleService() {
         significantMotion?.let { sensorManager.cancelTriggerSensor(motionListener, it) }
         cancelHeartbeat()
         cancelResume()
+        wearStatus?.stop()
         if (meshRunning) meshManager.stop()
         super.onDestroy()
     }
