@@ -346,6 +346,33 @@ the scan has not once sighted (`neverSighted`) scores the promotion floor (−90
 presence still scores −127. Oracle: `bt accepted client <id> (<verdict>, sighted=<bool>)` and `bt refused client
 <id> (…)` at debug. Tests: `BleAdmissionPolicyTest`; the lab has no radio layer.
 
+## The BLE plane rings a peer's GATT doorbell when its HELLO asks (ADR 2026-09.dqvb)
+
+iOS does not resume a suspended app for data on an open L2CAP channel, and does for a write to its own GATT
+server, so an iPhone serves a **doorbell**, characteristic `f34c056b-5830-4243-a888-01f92f49e446` in a primary
+`0xFE30` service (`DoorbellPolicy.SERVICE_UUID` / `DOORBELL_UUID`, pinned). It sets `Protocol.CAP_DOORBELL`
+(`0x1000`) in its HELLO. Android never sets it, so no Android↔Android link touches GATT.
+
+`registerLink` gives a link whose HELLO carries the bit a `BleDoorbell`, one coroutine per link that owns a
+GATT client and a `DoorbellPolicy.Schedule`. `writeOnce` pokes it after enqueuing a frame (past the
+`LinkCrossings` check). `typing`, `blobreq` and `keyreq` don't ring; digests, files and the HELLO never pass
+through it.
+
+- **The schedule is the port's own.** A ring at most every 5 s, plus one more after a burst.
+- **The first ring looks the doorbell up.** `connectGatt(TRANSPORT_LE)` attaches to the link's own ACL; if it has
+  not attached within 2 s the ACL is gone, and the timeout's close cancels the dial it turned into. Then
+  `discoverServices`, then the characteristic, which must take a write without response.
+- **A ring is a 1-byte write without response.** Never with a response: a suspended app would have to answer it.
+- **The client lives and dies with the link** (`teardownLink`, and `registerLink`'s replace branch): an open client
+  holds the ACL.
+- **The poke goes at the enqueue, not after the socket write.** A suspended iPhone's credits run out and the
+  writer blocks until the ring wakes it.
+- **A dialed link never rings.** Its caps are the advert's low byte; A3 must pass the reply HELLO's.
+
+Oracle: `bt doorbell found|absent|lookup failed|wedged <id>` at info, `bt ring <id>` at debug, and
+`doorbells=`/`rings=` on the `bt state` line. Tests: `DoorbellPolicyTest`, `ProtocolTest`; `BleDoorbell` is
+device-verified only.
+
 A debug build can cap the link budget below `PromotionConfig.DEFAULT_MAX_LINKS` (6) from Diagnostics or
 `…debug.BLECAP` (`SettingsStore.debugBleLinkCap`, read as null in release). Only while a cap is set does the
 transport count in-flight dials against it and pass `atCap` to `BleAdmissionPolicy.decide`, which turns an

@@ -62,6 +62,16 @@ class ProtocolTest {
     }
 
     @Test
+    fun theDoorbellBitIsTheIphonesAndNeverOurs() {
+        // ADR 2026-09.dqvb: the next bit after direct transfer, read from the HELLO by the Bluetooth transport only.
+        // Android serves no GATT doorbell, so no local build claims it.
+        assertEquals(0x1000L, Protocol.CAP_DOORBELL)
+        assertEquals(Protocol.CAP_DIRECT_TRANSFER shl 1, Protocol.CAP_DOORBELL)
+        assertEquals(0L, Protocol.LOCAL_CAPABILITIES and Protocol.CAP_DOORBELL)
+        assertEquals(Protocol.CAP_DOORBELL, Protocol.parse("ffbbh6thbepahqxsv2gqog45m4|1|1009").capabilities and Protocol.CAP_DOORBELL)
+    }
+
+    @Test
     fun nodeIdIsAlwaysTheFirstSegment() {
         // Robust to any future suffix appended after the capabilities field.
         assertEquals("abcd1234", Protocol.parse("abcd1234|1|f|future|stuff").nodeId)

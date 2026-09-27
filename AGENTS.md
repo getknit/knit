@@ -70,6 +70,12 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   advertises no service data, so it is never sighted and never dialed) is admitted whatever the id order, and its
   second link replaces the first only once the held one is 30 s old. A teardown passes the link it means
   (`only =`) — never re-key it by node id alone — and only a never-sighted link scores the −90 floor.
+- **When touching `mesh/bluetooth/BleDoorbell`, `DoorbellPolicy`, `Protocol.CAP_DOORBELL`, or what
+  `BluetoothMeshTransport.writeOnce` rings:** READ ADR 2026-09.dqvb (companion change A4 for the iOS port). A link
+  rings only when the peer's HELLO carries `CAP_DOORBELL`, which Android never claims, so Android↔Android links never
+  touch GATT. The doorbell UUIDs are cross-platform law, and the schedule is the port's. `typing`, `blobreq` and
+  `keyreq` don't ring. The GATT client attaches to the link's own ACL, closes on a 2 s attach timeout, and lives
+  and dies with the link. A ring is a write without response, poked at the enqueue, never after the socket write.
 - **When touching `linkpreview/`, `net/`, `mesh/protocol/LinkPreviewBlob`, or anything that opens an
   Internet socket outside the spool plane:** READ ADR 2026-09.n752 (and 2026-09.7x8k: a send holds up to 5 s
   for the card its link is fetching, or the share sheet never carries one; a LoRa thread takes a card exactly

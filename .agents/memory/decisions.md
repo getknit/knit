@@ -127,6 +127,7 @@ carries; never renumber an old one.
 | [2026-09.cf7a](decisions/2026-09-cf7a-a-meshtastic-public-post-is-a-signed-attribution-in-its-own-room.md) | A Meshtastic public post is a signed attribution in its own room | lora, meshtastic, mesh |
 | [2026-09.cq9z](decisions/2026-09-cq9z-bundled-models-are-leased.md) | Bundled models are leased, not held resident | moderation, ml, battery, reliability |
 | [2026-09.dcah](decisions/2026-09-dcah-the-scope-table-derives-on-its-inputs-events.md) | The scope table derives on its inputs' events | spool, battery |
+| [2026-09.dqvb](decisions/2026-09-dqvb-an-android-phone-rings-the-doorbell-of-a-peer-whose-hello-asks-for-it.md) | An Android phone rings the doorbell of a peer whose HELLO asks for it | ble, transport, interop, wire |
 | [2026-09.e8yw](decisions/2026-09-e8yw-the-bytes-own-radio-arrival-is-the-recipient-s-deferral-evidence.md) | The bytes' own radio arrival is the recipient's deferral evidence, noted before they are stored | spool, attachments |
 | [2026-09.emd7](decisions/2026-09-emd7-a-knit-board-tells-the-mesh-it-is-unmonitored.md) | A Knit board tells the mesh it is unmonitored | lora, meshtastic, provisioning |
 | [2026-09.f69x](decisions/2026-09-f69x-a-start-into-a-demoted-foreground-service-re-claims-the-state-instead-of-timing.md) | A start into a demoted foreground service re-claims the state instead of timing out | reliability, service, android |

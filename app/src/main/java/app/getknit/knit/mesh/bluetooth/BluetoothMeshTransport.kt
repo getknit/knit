@@ -63,6 +63,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * [MeshTransport] over **Bluetooth LE** — the second mesh plane, running simultaneously with
@@ -131,6 +132,12 @@ class BluetoothMeshTransport(
     // Held links whose peer the scan has not once sighted since the link came up — every inbound iPhone. They
     // score the promotion floor for eviction, not the absent-peer −127 (ADR 2026-09.shzv). A sighting drops one.
     private val neverSighted = ConcurrentHashMap.newKeySet<FramedLink>()
+
+    // The doorbell of each link whose HELLO asked to be rung ([DoorbellPolicy.serves]) — an iPhone, which iOS
+    // suspends and only a GATT write wakes (ADR 2026-09.dqvb). Keyed by link like [neverSighted], so a replaced
+    // link's doorbell goes with it; [rings] counts the writes, for the debug state line.
+    private val doorbells = ConcurrentHashMap<FramedLink, BleDoorbell>()
+    private val rings = AtomicInteger()
 
     // Which frames already crossed which link, either way: the router's flood copy and the fast path's link
     // copy are the same frame twice for the same stream, and a relayed frame's fast copy would go straight
@@ -382,16 +389,29 @@ class BluetoothMeshTransport(
         val bytes = WireCodec.encodeWire(wire)
         val key = FrameKey.ofSigned(wire) // an unsigned frame is point-to-point and never fanned: no memo
         val targets = if (to == null) links.values.toList() else listOfNotNull(links[to.nodeId])
-        targets.forEach { writeOnce(it, key, bytes) } // FramedLink.send accounts the bytes
+        targets.forEach { writeOnce(it, key, bytes, wire) } // FramedLink.send accounts the bytes
     }
 
-    /** [FramedLink.send] unless [key] already crossed this link either way — then the far end has it. */
+    /**
+     * [FramedLink.send] unless [key] already crossed this link either way — then the far end has it — and a poke
+     * of the link's doorbell, if it has one and the frame rings ([DoorbellPolicy.rings]; [env] when the caller
+     * already decoded it). The ring goes with the enqueue, not after the socket write, on purpose: a suspended
+     * iPhone reads nothing, so its channel's credits run out and the writer blocks until the ring wakes it.
+     */
     private fun writeOnce(
         link: FramedLink,
         key: String?,
         bytes: ByteArray,
+        wire: WireEnvelope,
+        env: RelayEnvelope? = null,
     ) {
-        if (key == null || crossings.firstCrossing(link.nodeId, key)) link.send(bytes) else metrics.onBleLinkDupSkipped()
+        if (key != null && !crossings.firstCrossing(link.nodeId, key)) {
+            metrics.onBleLinkDupSkipped()
+            return
+        }
+        link.send(bytes)
+        val doorbell = doorbells[link] ?: return
+        if (DoorbellPolicy.rings((env ?: WireCodec.decodeEnvelope(wire.signed))?.type)) doorbell.poke()
     }
 
     /**
@@ -408,7 +428,7 @@ class BluetoothMeshTransport(
         val route = BleFastRoutePolicy.fanout(env, links.keys, sideAvailable)
         val bytes = WireCodec.encodeWire(wire)
         val key = FrameKey.of(wire, env)
-        route.linkTargets.forEach { links[it]?.let { link -> writeOnce(link, key, bytes) } }
+        route.linkTargets.forEach { links[it]?.let { link -> writeOnce(link, key, bytes, wire, env) } }
         val offer = route.side ?: return
         if (side?.offer(wire, env, offer.kind, offer.coalesceKey) == null) metrics.onBleSideTooBig()
     }
@@ -422,7 +442,7 @@ class BluetoothMeshTransport(
         if (route.linkTargets.isEmpty()) return
         val bytes = WireCodec.encodeWire(wire)
         val key = FrameKey.ofSigned(wire)
-        route.linkTargets.forEach { links[it]?.let { link -> writeOnce(link, key, bytes) } }
+        route.linkTargets.forEach { links[it]?.let { link -> writeOnce(link, key, bytes, wire) } }
     }
 
     override suspend fun sendFile(
@@ -765,7 +785,7 @@ class BluetoothMeshTransport(
                 )
             }
             Log.i(TAG, "bt connect ok $nodeId durMs=${elapsed() - startedAt}")
-            registerLink(nodeId, advert, link)
+            registerLink(nodeId, advert, link, device = device)
         }
     }
 
@@ -811,7 +831,7 @@ class BluetoothMeshTransport(
             return
         }
         Log.i(TAG, "bt accepted client $clientNodeId ($verdict, sighted=$sighted)")
-        registerLink(clientNodeId, advert, link, sighted)
+        registerLink(clientNodeId, advert, link, sighted, socket.remoteDevice)
     }
 
     private fun registerLink(
@@ -819,6 +839,9 @@ class BluetoothMeshTransport(
         advert: Protocol.PeerWire,
         link: app.getknit.knit.mesh.link.LinkSocket,
         sighted: Boolean = true, // an initiator dials only a peer presence holds
+        // The peer's device, for its doorbell. A dialed link's caps are the advert's low byte, which never carries
+        // CAP_DOORBELL, so only an accepted link rings until Android dials iPhones (companion change A3).
+        device: BluetoothDevice? = null,
     ) {
         val events = LinkEvents()
         val framed =
@@ -840,7 +863,21 @@ class BluetoothMeshTransport(
         val prev = links.put(nodeId, framed)
         if (prev != null) {
             neverSighted.remove(prev)
+            doorbells.remove(prev)?.close() // teardownLink(only = prev) will find it replaced and release nothing
             prev.close() // a stale link to the same peer — never leak it; its own end releases nothing now
+        }
+        // Before framed.start() and the neighbor refresh, so the link-up frames already ring it.
+        if (device != null && DoorbellPolicy.serves(advert.capabilities)) {
+            doorbells[framed] =
+                BleDoorbell(
+                    context = appContext,
+                    device = device,
+                    nodeId = nodeId,
+                    scope = scope,
+                    isLive = { links[nodeId] === framed },
+                    onRang = { rings.incrementAndGet() },
+                    now = SystemClock::elapsedRealtime,
+                ).also { it.start() }
         }
         lastLinkOrStartAt = elapsed()
         synchronized(lock) {
@@ -863,6 +900,7 @@ class BluetoothMeshTransport(
     ): Boolean {
         val fl = (if (only == null) links.remove(nodeId) else only.takeIf { links.remove(nodeId, it) }) ?: return false
         neverSighted.remove(fl)
+        doorbells.remove(fl)?.close()
         fl.close()
         crossings.forget(nodeId)
         // The peer was here until now: its side-channel flag lingers from the link's end, not from a sighting the
@@ -1118,7 +1156,7 @@ class BluetoothMeshTransport(
             TAG,
             "bt state links=${links.keys} reach=${_reachable.value.map { it.nodeId }} " +
                 "inFlight=${inFlightSnapshot()} backoff=[$backoffStr] a2dp=${audioMonitor.state.value} " +
-                "lonely=${lonelyForMs()}ms psm=$currentPsm" +
+                "lonely=${lonelyForMs()}ms psm=$currentPsm doorbells=${doorbells.size} rings=${rings.get()}" +
                 (sideChannel?.let { " ${it.diag()} $sideDecision" } ?: ""),
         )
     }

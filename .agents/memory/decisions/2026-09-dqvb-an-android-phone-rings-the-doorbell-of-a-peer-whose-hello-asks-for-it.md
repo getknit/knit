@@ -1,0 +1,98 @@
+---
+id: "2026-09.dqvb"
+slug: an-android-phone-rings-the-doorbell-of-a-peer-whose-hello-asks-for-it
+title: "An Android phone rings the doorbell of a peer whose HELLO asks for it"
+date: 2026-09-27
+topics: [ble, transport, interop, wire]
+---
+
+# ADR 2026-09.dqvb — An Android phone rings the doorbell of a peer whose HELLO asks for it
+
+Status: Accepted (2026-09-27). Companion change A4 for the iOS port (`knit-ios`, ADR 2026-09.khjj there).
+JVM-tested; not yet run on hardware, which waits on the port setting the bit.
+
+**What was observed.** iOS suspends Knit a few seconds after it leaves the screen, and on iOS 27 data arriving
+on an open L2CAP channel does not resume it. In the port's MVP item 9 test an iPhone 12 stayed locked for 14
+minutes with its link to the Pixel 3 up the whole time, and Knit read none of ten DMs until someone opened it. All
+ten then arrived within a second, from the link's buffer. What does resume a suspended app is a delegate event,
+and the one a peer can cause at will is a write to the app's own GATT server: iOS lets Knit run about 9 s for each.
+The port now serves such a **doorbell**, a characteristic `f34c056b-5830-4243-a888-01f92f49e446` in a primary
+`0xFE30` service, whose value means nothing. Its Linux peer rings after the frames it sends, and against it every
+DM of ten locked minutes was read within 0.5 s. Android did not ring, so a locked iPhone linked only to Android
+phones received nothing, and relayed nothing, until it was next opened.
+
+**What changed.** The Bluetooth transport rings a peer that asks to be rung:
+
+- **Which links.** A node that serves a doorbell sets a new capability bit in its HELLO, `CAP_DOORBELL = 0x1000`
+  (`Protocol`). `registerLink` gives such a link a `BleDoorbell`, built from the link's `BluetoothDevice`: the
+  accepted socket's `remoteDevice`. Android never sets the bit (`LOCAL_CAPABILITIES` leaves it out), so a link
+  between two Android phones never opens a GATT client.
+- **Which frames.** `writeOnce` pokes the doorbell after a frame is enqueued, past the `LinkCrossings` check, so
+  `send`, `fastFanout` and `fastSend` all ring. The exceptions are `typing`, `blobreq` and `keyreq`
+  (`DoorbellPolicy.rings`), because they are the link's upkeep. A typing cue is worthless to a locked phone, and the
+  60 s tick re-sends the two requests for as long as a blob or a key is missing, which would wake the iPhone every
+  minute. DIGEST records, FILE records and the HELLO never ring.
+- **When.** `DoorbellPolicy.Schedule` is a line-for-line port of the iOS port's schedule: a ring at most every 5 s
+  while frames go out, and one more once a burst ends. A burst costs two wakes, and a busy link at most twelve a
+  minute.
+- **How.** The first ring looks the doorbell up:
+  1. `connectGatt(…, TRANSPORT_LE)` on a device with an open LE link attaches a GATT client to that link. It does
+     not dial (AOSP `gatt_connect`).
+  2. `discoverServices`.
+  3. The characteristic, if it takes a write without response.
+
+  A ring is a one-byte write without response. The client stays open for the rest of the link and closes with it
+  (`teardownLink`, and `registerLink`'s replace branch).
+
+The first design a reader would reach for gates on A1's signal: a dialer this phone never sighted, which is every
+iPhone. It needs nothing from the port, but a screen-off Android phone scans only every two to five minutes, so an
+Android dialer is often unsighted when it is admitted. A good share of Android↔Android links would then have paid a
+GATT attach and a service discovery each, on stacks (the Moto G's among them) this mesh has learned not to poke. It
+would also have stopped working at A3, once Android dials iPhones it has found and they count as sighted. A bit the
+peer sets says what the peer is, and it holds on either path.
+
+The other alternative, ringing every frame exactly as the port's `LinkManager` does, keeps a locked iPhone waking
+about once a minute for as long as this phone lacks some blob or key the iPhone cannot even serve.
+
+**What it costs, and the traps.**
+
+- **Nothing rings until the port sets the bit.** Its HELLO must carry `0x1000` whenever its radio serves the
+  doorbell (KnitBLE, and knit-peer's `ios` profile), a knit-ios change still owed. The bit belongs to the radio,
+  not the build, so it stays out of the port's `Capabilities.local`, its signed profile and its advert, and no
+  pinned fixture or emitted vector moves.
+- **A dialed link never rings,** because a dialed link's capabilities come from the advert's low byte. When A3
+  lands, `registerLink` must take the reply HELLO's capabilities for the dialed iPhone.
+- **Attaching can turn into dialing.** If the ACL is gone when `connectGatt` runs, the call dials the peer's
+  address instead of attaching. The link is checked just before the call, the attach gets 2 s (a real attach
+  reports connected within milliseconds), and the timeout closes the client, which cancels the dial. A failed
+  lookup is retried at most once a minute, and three failures end the lookups for that link
+  (`DoorbellPolicy.Lookups`). The 32 client registrations Android allows per device are shared with every app, so
+  running out lands here too.
+- **An open client holds the ACL.** So it must never outlive its link, and it doesn't. Closing one mid-link, for a
+  peer with no doorbell, is safe: the stack starts the link's idle timer only when no dynamic channel is open, and
+  the CoC is one.
+- **No write with a response,** ever. The suspended app would have to answer it (7.7 s in the port's test), and
+  an ATT timeout tears GATT down on the ACL. A characteristic without the write-without-response property counts
+  as no doorbell.
+- **A write refused as busy is treated as a wedged client.** Rings are seconds apart and nothing else runs on the
+  client, so a refusal means a callback never came. The client is dropped and the doorbell looked up again.
+- **The poke goes with the enqueue, not the socket write.** A suspended iPhone reads nothing, its channel's
+  credits run out, and the writer loop blocks until a ring wakes it. Moving the hook after the write would
+  deadlock the wake.
+- **Anyone in range can make this phone attach.** A HELLO claiming the bit costs one GATT attach and one discovery
+  per link. It carries nothing, and the HELLO was already unauthenticated.
+
+`DoorbellPolicyTest` pins the two UUIDs (the twin of the port's `theGATTIdentifiersArePinned`), the schedule, the
+frame filter and the lookup budget, and `ProtocolTest` pins the bit and its absence from `LOCAL_CAPABILITIES`.
+`BleDoorbell` is verified on hardware only, like `MeshtasticGatt`. There is no host GATT stack, and the lab has no
+radio layer.
+
+On hardware, first run the Pixel 3 and the API-30 Moto G (the pre-33 write path) against knit-peer's `ios`
+profile, which serves a doorbell and counts rings (`status.rung`), and check the log lines below. Then run the
+port's `interop.py iphone-wake --sender phone` with the iPhone locked. The log oracle:
+
+- `bt doorbell found <id> (<address>)`, `bt doorbell absent <id>`, `bt doorbell lookup failed <id> (<phase>)` and
+  `bt doorbell wedged <id>` at info;
+- `bt ring <id>` at debug;
+- `doorbells=` and `rings=` on the debug `bt state` line;
+- no doorbell line on any Android↔Android link.

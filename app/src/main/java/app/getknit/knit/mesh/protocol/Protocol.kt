@@ -134,6 +134,19 @@ object Protocol {
      */
     const val CAP_DIRECT_TRANSFER = 0x800L
 
+    /**
+     * A GATT doorbell: this node serves the writable characteristic
+     * [app.getknit.knit.mesh.bluetooth.DoorbellPolicy.DOORBELL_UUID] and asks the peer on a Bluetooth link to
+     * write it after the frames it sends. iOS resumes a suspended app for a write to its own GATT server and
+     * not for data arriving on an open L2CAP channel, so the iPhone port sets this bit (knit-ios ADR
+     * 2026-09.khjj; ADR 2026-09.dqvb here).
+     *
+     * **Never in [LOCAL_CAPABILITIES]:** Android serves no GATT and is never suspended. Read from the HELLO's
+     * copy only, and only by the Bluetooth transport; it sits above the 8 bits a BLE advert carries, so no
+     * advert shows it.
+     */
+    const val CAP_DOORBELL = 0x1000L
+
     /** This build's advertised capability bitfield. */
     const val LOCAL_CAPABILITIES: Long =
         CAP_E2E or CAP_GROUPS or CAP_REACTIONS or CAP_STORE_FORWARD or CAP_RATCHET or CAP_FAST_COMPACT or

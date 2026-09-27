@@ -618,6 +618,19 @@ no ctl value, no capability bit, no DB change — the compact v3 layout never ca
 330 more bytes of ciphertext at the roster cap, and the one reader is the member the seed is addressed to, who
 is in the roster it names.
 
+**Precedent — the first capability bit Android never claims (`CAP_DOORBELL = 0x1000`, companion change A4 for the
+iOS port, ADR 2026-09.dqvb).** A node that serves a GATT doorbell (a writable characteristic,
+`f34c056b-5830-4243-a888-01f92f49e446`, in a primary `0xFE30` service) sets the bit in its HELLO, and the
+Bluetooth transport writes that characteristic after the frames it sends on the link. iOS resumes a suspended app
+for that write and not for L2CAP data. Every other bit is a feature a build implements, so every local build
+claims it. This one describes the platform, and `LOCAL_CAPABILITIES` must never carry it (`ProtocolTest` pins
+both). It is read from the HELLO's copy only, by the transport only. It sits above the advert's eight bits, so no
+advert shows it. The port sets it in the HELLO alone, from the radio that serves the doorbell, never in its
+signed profile, and nothing here reads it from one. An
+older Android build ignores the bit, and the iPhone then simply sleeps through its frames. No field, no `type`, no
+ctl, no version bump, no discovery marker, no DB change, and every golden vector is unmoved. The two GATT UUIDs are
+pinned in `DoorbellPolicyTest` beside it: the characteristic is law from the first build that rings it.
+
 **When you bump a version layer:** add a round-trip test plus an "unknown higher version drops locally
 but is counted" test. New crypto scheme ⇒ bump `EncEnvelope.MAX_SUPPORTED_VERSION` + every branch that
 tests the version (`InboundPipeline.decryptAndDeliver`, `MeshManager`'s inline-ack give-back,
