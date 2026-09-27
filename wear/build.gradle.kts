@@ -82,6 +82,7 @@ dependencies {
     implementation(libs.androidx.wear.protolayout)
     implementation(libs.androidx.wear.protolayout.expression)
     implementation(libs.androidx.wear.protolayout.material3)
+    implementation(libs.androidx.graphics.shapes)
     implementation(libs.kotlinx.coroutines.android)
 
     testImplementation(libs.junit)

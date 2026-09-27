@@ -119,9 +119,12 @@ needs attention.
 - **Privacy:** a mask says which planes reach *a* peer, in the phone's node-id order; no id, name or key
   crosses. The near / far split is Diagnostics' own (`neighbors` vs `reachable` + `spoolPresentPeers`), so the
   map never draws a peer nearer than that screen lists it. Up to two of the eight slots go to far peers.
-- **The app's hero is a peer map**: this phone in the middle, short-range peers on the inner orbit, far ones
-  hollow on the outer, each line drawn in its plane's style (solid Bluetooth, double Wi-Fi Aware, wave LoRa,
-  dotted relay) with a legend of only the styles drawn. Alone, the middle ripples. Radios appear as cards only
+- **The app's hero is a peer map**, drawn soft (M3 Expressive): this phone a slowly turning "cookie" shape
+  (`graphics-shapes`) with the nearby count in it, short-range peers as filled bubbles close in, far ones
+  hollow further out, each joined by a curved line in its plane's style (fine Bluetooth, wide ribbon Wi-Fi
+  Aware, wave LoRa, dotted relay) with a legend of only the styles drawn. Placement is jittered by slot, never
+  randomly, and the far ring turns to clear the near spokes, so the map is the same every reading. Alone, the
+  cookie breathes into a circle; reduce-motion stills it all. Radios appear as cards only
   when one the phone has is weak or down; one never set up is not a problem.
 - **The watch keeps its own day** (`StatusHistory`, a private file of one line per good read, 36 h kept):
   relayed today (the sum of the all-time counter's rises across today's readings — a fall is a new baseline,

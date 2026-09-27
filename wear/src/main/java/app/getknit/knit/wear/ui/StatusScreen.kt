@@ -15,6 +15,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
@@ -34,8 +35,6 @@ import androidx.wear.compose.material3.Card
 import androidx.wear.compose.material3.EdgeButton
 import androidx.wear.compose.material3.EdgeButtonSize
 import androidx.wear.compose.material3.Icon
-import androidx.wear.compose.material3.ListHeader
-import androidx.wear.compose.material3.ListHeaderDefaults
 import androidx.wear.compose.material3.ListSubHeader
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.ScreenScaffold
@@ -129,16 +128,7 @@ fun StatusScreen(
             },
         ) { contentPadding ->
             TransformingLazyColumn(state = listState, contentPadding = contentPadding) {
-                item {
-                    ListHeader(
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .transformedHeight(this, spec)
-                                .minimumVerticalContentPadding(ListHeaderDefaults.minimumTopListContentPadding, 0.dp),
-                        transformation = SurfaceTransformation(spec),
-                    ) { Text("Knit mesh") }
-                }
+                // No title: the map is the screen's subject and opens it, centred under the time.
                 item { Hero(status, reading) }
                 when {
                     !granted -> item { PermissionCard(spec, onAllow) }
@@ -176,7 +166,7 @@ private fun Hero(
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp)
+            .padding(top = 8.dp, bottom = 4.dp)
             .semantics(mergeDescendants = true) {
                 contentDescription =
                     listOfNotNull(StatusLines.healthLine(status).text, PeerLinks.summary(status)).joinToString(". ")
@@ -188,20 +178,23 @@ private fun Hero(
             tone = tone,
             alone = status?.state == MeshState.Alone,
             reading = reading,
-            center =
-                if (live != null) {
-                    null
-                } else {
-                    {
-                        Icon(
-                            painterResource(StatusText.glyph(status?.state).res),
-                            contentDescription = null,
-                            modifier = Modifier.size(32.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
-        )
+        ) {
+            // Inside the cookie: who is in range right now, or at rest the state's glyph.
+            if (live != null) {
+                Text(
+                    live.nearby.toString(),
+                    style = MaterialTheme.typography.numeralSmall,
+                    color = COOKIE_INK,
+                )
+            } else {
+                Icon(
+                    painterResource(StatusText.glyph(status?.state).res),
+                    contentDescription = null,
+                    modifier = Modifier.size(22.dp),
+                    tint = COOKIE_INK,
+                )
+            }
+        }
         Text(word, style = MaterialTheme.typography.titleMedium, color = tone.color())
         PeerLinks.summary(status)?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -210,7 +203,7 @@ private fun Hero(
             Spacer(Modifier.height(4.dp))
             val legend = PeerLinks.legend(links)
             if (legend.isNotEmpty()) {
-                LinkLegend(legend)
+                LinkLegend(legend, tone)
             } else {
                 Text(
                     listening(live),
@@ -445,6 +438,9 @@ private fun Footer(
         textAlign = TextAlign.Center,
     )
 }
+
+/** Dark ink on the cookie: every tone is a light pastel, so one ink reads on all of them. */
+private val COOKIE_INK = Color(0xFF1D1B1A)
 
 private const val TICK_MS = 1_000L
 private const val POLL_MS = 30_000L
