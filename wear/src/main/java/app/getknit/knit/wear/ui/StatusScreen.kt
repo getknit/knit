@@ -430,8 +430,11 @@ private fun Footer(
     snapshot: Snapshot?,
     now: Long,
 ) {
+    // The transport rides along while the prototype gathers which one each watch's bond carries.
     Text(
-        snapshot?.let { "Updated ${Counts.ago(now - it.fetchedAtMs)}" } ?: "Not read yet",
+        snapshot?.let { s ->
+            "Updated ${Counts.ago(now - s.fetchedAtMs)}" + (s.via?.let { " · ${it.label}" } ?: "")
+        } ?: "Not read yet",
         modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
         style = MaterialTheme.typography.bodyExtraSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,

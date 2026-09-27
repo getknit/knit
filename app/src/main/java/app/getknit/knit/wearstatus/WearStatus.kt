@@ -226,9 +226,11 @@ private const val PLANE_MASK = 0b11
 /**
  * The status service's identity. Random 128-bit values, deliberately outside the `0xFE3x` block
  * `mesh/bluetooth/BleConstants` versions the mesh wire with — this service is never advertised and never
- * scanned for; the watch finds it by discovering services on the phone it is already bonded to.
+ * scanned for; the watch finds it by discovering services on the phone it is already bonded to. [RFCOMM] is
+ * the SDP record the Classic path looks up; [SERVICE] / [STATUS] the LE fallback's GATT service.
  */
 object WearStatusUuids {
     val SERVICE: UUID = UUID.fromString("6b1f0a3e-5d2c-4f0e-9a57-3c8e2d41b7a0")
     val STATUS: UUID = UUID.fromString("6b1f0a3e-5d2c-4f0e-9a57-3c8e2d41b7a1")
+    val RFCOMM: UUID = UUID.fromString("6b1f0a3e-5d2c-4f0e-9a57-3c8e2d41b7a2")
 }

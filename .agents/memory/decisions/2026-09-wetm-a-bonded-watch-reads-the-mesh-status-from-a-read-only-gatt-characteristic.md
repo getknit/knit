@@ -136,3 +136,37 @@ needs attention.
   timeline — they stay true when the phone goes quiet. The tile's cards are nearby, today and held, and a radio
   problem ("LoRa offline") takes the title.
 
+
+## Amendment 2026-09-27 (3) — RFCOMM over the Classic link first, LE the fallback
+
+The Pixel Watch 3 went to "Phone out of reach" on a busy mesh phone and stayed there. The phone's host had
+no GATT connection left to give it: `dumpsys bluetooth_manager` on the Pixel 9 read
+`TCB (GATT_MAX_PHY_CHANNEL: 8) in_use: 8`. Every LE link takes one of those slots, the mesh's L2CAP links
+included, and here five mesh links, the Meshtastic board, a ring and a tracker held all eight. Each LE connect
+from the watch was dropped at once (`gatt_le_connect_cback: … due to out of resources`; the watch logs HCI 19,
+the phone 22). The last good read came eleven minutes before the sixth and seventh LE links filled the table.
+Nothing in the phone app can see or reserve a slot, and a mesh capped to leave one would lose a peer while
+another app took the slot anyway.
+
+The same logs showed a second cost the first trial missed. The bond carries no LE keys, so every successful
+LE read ran a fresh LE pairing (a bond event on both sides per read, about every 90 s while the app polled),
+and one link failed with a MIC error (61). "The stack satisfies the encrypted read without a prompt" was a
+silent re-pairing that rewrote the watch's bond record on every read.
+
+- **The watch now reads over RFCOMM first**, on the Classic link a paired watch already keeps to its phone: a
+  secure (authenticated, encrypted) server socket under `WearStatusUuids.RFCOMM`'s SDP record, opened and
+  closed with the GATT service, reopened on `STATE_ON`. It takes no LE connection and no GATT slot, needs no
+  advert, and the existing bond encrypts it. Both ends re-check the bond, as the GATT read does.
+- **The stream carries one `WearStatusFrame`**: a length byte, then the unchanged codec bytes (pure, in
+  `wearstatus/`, pinned by `WearStatusFrameTest`). The watch closes once it holds the frame; the phone lingers
+  up to 3 s for that close, because a close right behind the write can drop the tail.
+- **LE GATT stays as the fallback**, twice as before, until other watches show which transport their bond
+  carries; the pause advert stays with it. GATT over BR/EDR is dropped: it never answered on the lab pair, and
+  RFCOMM is the Classic route now.
+- **Order** (`ReadRoutes`, tested): RFCOMM, LE, LE; the route that answered last leads, so a watch whose phone
+  predates the RFCOMM server does not pay for the SDP lookup on every read; a device the stack knows only over
+  LE skips RFCOMM. The snapshot records the route (`Snapshot.via`), the reader logs it at info, and the status
+  screen's footer names it ("Updated 1 min ago · Classic"), so a tester without adb can report it.
+- **Privacy:** the SDP record names the service to any device that opens a Classic connection to the phone
+  while the mesh runs. The phone is not discoverable and the mesh advert does not carry its Classic address,
+  so a device has to know that address to ask.

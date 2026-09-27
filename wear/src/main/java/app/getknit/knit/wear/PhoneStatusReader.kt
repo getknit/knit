@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -18,29 +19,38 @@ import android.util.Log
 import androidx.core.content.edit
 import app.getknit.knit.wearstatus.WearStatus
 import app.getknit.knit.wearstatus.WearStatusCodec
+import app.getknit.knit.wearstatus.WearStatusFrame
 import app.getknit.knit.wearstatus.WearStatusUuids
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.IOException
 
-/** The last good read: the phone's snapshot and when this watch got it, on the watch's own clock. */
+/**
+ * The last good read: the phone's snapshot, when this watch got it (on the watch's own clock) and over which
+ * transport — null for a copy stored before the transport was recorded, or by the debug demo.
+ */
 data class Snapshot(
     val status: WearStatus,
     val fetchedAtMs: Long,
+    val via: Via? = null,
 )
 
 /**
- * Reads the phone's status characteristic: connect to a bonded phone over LE, discover, read once, close. One
- * read at a time ([lock]), and a good read is cached for [FRESH_MS] so four complications refreshing together
- * cost one connection. The cache is persisted, so a complication asked after the process died still has the
- * last copy to show (aged by [fetchedAtMs]).
+ * Reads the phone's status once: RFCOMM over the Classic link the watch already holds, else the GATT
+ * characteristic over LE, in [ReadRoutes]' order. One read at a time ([lock]), and a good read is cached for
+ * [FRESH_MS] so four complications refreshing together cost one connection. The cache is persisted, so a
+ * complication asked after the process died still has the last copy to show (aged by [fetchedAtMs]).
  *
  * The phone is found without a scan: the cached address first, then every bonded device, phones first — the
- * one that exposes the service is kept. Device-verified only (there is no host GATT stack); what it hands the
+ * one that answers is kept. Device-verified only (there is no host Bluetooth stack); what it hands the
  * complications is rendered by the pure `StatusText`.
  *
  * A read that found no phone holds off the next unforced one for [FAIL_FLOOR_MS], so the four complications,
@@ -71,7 +81,8 @@ object PhoneStatusReader {
         val prefs = prefs(context)
         val bytes = prefs.getString(KEY_BYTES, null)?.let { Base64.decode(it, Base64.NO_WRAP) } ?: return null
         val status = WearStatusCodec.decode(bytes) ?: return null
-        return Snapshot(status, prefs.getLong(KEY_FETCHED_AT, 0L))
+        val via = prefs.getString(KEY_VIA, null)?.let { name -> Via.entries.firstOrNull { it.name == name } }
+        return Snapshot(status, prefs.getLong(KEY_FETCHED_AT, 0L), via)
     }
 
     /** A snapshot no older than [maxAgeMs] if the phone answers, else the last good one (possibly null). */
@@ -84,8 +95,8 @@ object PhoneStatusReader {
             val now = System.currentTimeMillis()
             cached(app)?.takeIf { now - it.fetchedAtMs in 0..maxAgeMs }?.let { return@withLock it }
             if (maxAgeMs > 0 && now - lastFailureMs in 0 until FAIL_FLOOR_MS) return@withLock cached(app)
-            fetch(app)?.let { (address, bytes) ->
-                val snapshot = store(app, bytes, address, System.currentTimeMillis())
+            fetch(app)?.let { (address, via, bytes) ->
+                val snapshot = store(app, bytes, address, System.currentTimeMillis(), via)
                 if (snapshot != null) return@withLock snapshot
                 Log.w(TAG, "phone answered with a snapshot this build cannot read (${bytes.size} B)")
             }
@@ -99,21 +110,29 @@ object PhoneStatusReader {
         bytes: ByteArray,
         address: String?,
         nowMs: Long,
+        via: Via? = null,
     ): Snapshot? {
         val status = WearStatusCodec.decode(bytes) ?: return null
         prefs(context).edit {
             putString(KEY_BYTES, Base64.encodeToString(bytes, Base64.NO_WRAP))
             putLong(KEY_FETCHED_AT, nowMs)
             address?.let { putString(KEY_ADDRESS, it) }
+            if (via != null) putString(KEY_VIA, via.name) else remove(KEY_VIA)
         }
-        return Snapshot(status, nowMs).also {
+        return Snapshot(status, nowMs, via).also {
             lastFailureMs = 0L
             latest.value = it
             StatusHistory.record(context, it)
         }
     }
 
-    private suspend fun fetch(context: Context): Pair<String, ByteArray>? {
+    private data class Fetched(
+        val address: String,
+        val via: Via,
+        val bytes: ByteArray,
+    )
+
+    private suspend fun fetch(context: Context): Fetched? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
             context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -123,6 +142,7 @@ object PhoneStatusReader {
         val adapter: BluetoothAdapter =
             context.getSystemService(BluetoothManager::class.java)?.adapter?.takeIf { it.isEnabled } ?: return null
         val remembered = prefs(context).getString(KEY_ADDRESS, null)
+        val lastGood = cached(context)?.via
         val bonded =
             runCatching { adapter.bondedDevices.orEmpty() }
                 .getOrDefault(emptySet())
@@ -131,32 +151,27 @@ object PhoneStatusReader {
             (listOfNotNull(remembered?.let { runCatching { adapter.getRemoteDevice(it) }.getOrNull() }) + bonded)
                 .distinctBy { it.address }
         for (device in candidates) {
-            for ((attempt, transport) in transportsFor(device).withIndex()) {
+            val routes = ReadRoutes.plan(leOnly = device.type == BluetoothDevice.DEVICE_TYPE_LE, lastGood = lastGood)
+            for ((attempt, via) in routes.withIndex()) {
                 if (attempt > 0) delay(RETRY_MS)
-                val bytes = OneShotRead(context, device, transport).run()
-                Log.d(TAG, "read ${device.address} over ${transportName(transport)}: ${bytes?.size ?: "nothing"}")
-                if (bytes != null) return device.address to bytes
+                val started = System.currentTimeMillis()
+                val bytes =
+                    when (via) {
+                        Via.Classic -> RfcommRead(device).run()
+                        Via.Le -> OneShotRead(context, device, BluetoothDevice.TRANSPORT_LE).run()
+                    }
+                val took = System.currentTimeMillis() - started
+                Log.d(TAG, "read ${device.address} over ${via.label}: ${bytes?.size ?: "nothing"} in $took ms")
+                if (bytes != null) {
+                    // Info, not debug: which transport a watch's bond carries is what the field data is for.
+                    Log.i(TAG, "phone answered over ${via.label} (attempt ${attempt + 1} of ${routes.size})")
+                    return Fetched(device.address, via, bytes)
+                }
             }
         }
         Log.i(TAG, "no bonded device answered (${candidates.size} tried)")
         return null
     }
-
-    /**
-     * LE first — it is the link that works on the lab's Pixel Watch 3, whose bond to the phone carries no LE keys
-     * yet still reads the service over LE while the phone is connectable (the mesh advert, or the server's own
-     * while paused). LE twice: one read in six on that pair failed with a fast 133 on the first connect, the
-     * stack's generic error, which a retry after [RETRY_MS] clears. GATT over BR/EDR (the watch already holds an
-     * encrypted BR/EDR link) is the last resort for a classic or dual-mode bond; it failed with 133 against a
-     * Pixel 9 on 2026-09-26, at the cost of 0.2 s.
-     */
-    private fun transportsFor(device: BluetoothDevice): List<Int> =
-        when (device.type) {
-            BluetoothDevice.DEVICE_TYPE_LE -> listOf(BluetoothDevice.TRANSPORT_LE, BluetoothDevice.TRANSPORT_LE)
-            else -> listOf(BluetoothDevice.TRANSPORT_LE, BluetoothDevice.TRANSPORT_LE, BluetoothDevice.TRANSPORT_BREDR)
-        }
-
-    private fun transportName(transport: Int) = if (transport == BluetoothDevice.TRANSPORT_LE) "LE" else "BR/EDR"
 
     private fun prefs(context: Context) = context.getSharedPreferences("phone_status", Context.MODE_PRIVATE)
 
@@ -164,13 +179,50 @@ object PhoneStatusReader {
     private const val KEY_BYTES = "bytes"
     private const val KEY_FETCHED_AT = "fetched_at"
     private const val KEY_ADDRESS = "address"
+    private const val KEY_VIA = "via"
     private const val RETRY_MS = 750L
     const val FRESH_MS = 60_000L
     const val FAIL_FLOOR_MS = 45_000L
 }
 
 /**
- * One connect → discover → read → close against [device], every step under one [TIMEOUT_MS]. Null for a device
+ * One RFCOMM connect → frame → close against [device]'s status record, under one [TIMEOUT_MS]: the connect
+ * runs the SDP lookup and rides the Classic link the watch already holds, so it needs no LE connection and no
+ * advert. Null for a device without the record (not a Knit phone, or a phone build that predates it), out of
+ * reach, or with nothing to give. The socket blocks, so a watchdog closes it on the deadline.
+ */
+@SuppressLint("MissingPermission")
+private class RfcommRead(
+    private val device: BluetoothDevice,
+) {
+    suspend fun run(): ByteArray? =
+        withContext(Dispatchers.IO) {
+            val socket: BluetoothSocket =
+                runCatching { device.createRfcommSocketToServiceRecord(WearStatusUuids.RFCOMM) }.getOrNull()
+                    ?: return@withContext null
+            val watchdog =
+                launch {
+                    delay(TIMEOUT_MS)
+                    runCatching { socket.close() }
+                }
+            try {
+                socket.connect()
+                WearStatusFrame.read(socket.inputStream)
+            } catch (_: IOException) {
+                null
+            } finally {
+                watchdog.cancel()
+                runCatching { socket.close() }
+            }
+        }
+
+    private companion object {
+        const val TIMEOUT_MS = 8_000L
+    }
+}
+
+/**
+ * One LE connect → discover → read → close against [device], every step under one [TIMEOUT_MS]. Null for a device
  * that is not a Knit phone (no service), is out of reach, or refuses the read. Callbacks land on a binder
  * thread; each step completes a one-shot deferred, and a disconnect completes them all so nothing waits out
  * the timeout on a dead link.

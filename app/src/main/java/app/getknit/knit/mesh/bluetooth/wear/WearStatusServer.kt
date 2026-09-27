@@ -10,6 +10,8 @@ import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothServerSocket
+import android.bluetooth.BluetoothSocket
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertisingSet
 import android.bluetooth.le.AdvertisingSetCallback
@@ -26,30 +28,38 @@ import app.getknit.knit.mesh.wear.WearInputs
 import app.getknit.knit.mesh.wear.WearStatusPolicy
 import app.getknit.knit.mesh.wear.WearStatusSource
 import app.getknit.knit.wearstatus.WearStatusCodec
+import app.getknit.knit.wearstatus.WearStatusFrame
 import app.getknit.knit.wearstatus.WearStatusUuids
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import java.io.IOException
 
 /**
- * A read-only GATT service a bonded Wear OS watch reads the mesh status from: one characteristic, one
- * [WearStatusCodec] snapshot, computed at read time from the last [WearInputs] [WearStatusSource] emitted.
- * The watch connects to the phone it is already bonded to and discovers the service; nothing here touches the
- * mesh wire.
+ * The mesh status a bonded Wear OS watch reads, served two ways: one [WearStatusCodec] snapshot, computed at
+ * read time from the last [WearInputs] [WearStatusSource] emitted. Nothing here touches the mesh wire.
  *
- * **Reachability is borrowed from the mesh**, except during a pause. A Pixel Watch 3 bonded to its phone over
- * BR/EDR reaches this service over LE only while the phone is LE-connectable, which the mesh's presence advert
- * makes it; GATT over the BR/EDR link fails (133). A pause takes that advert down, so for exactly the length
- * of a pause this server raises its own set — legacy, connectable, empty, one-second interval — and the watch
- * reads "Paused" instead of timing out onto a stale "Linked". Only while paused, so it never contends with the
- * mesh's presence and side-channel sets for a controller slot (they are down then).
+ * **RFCOMM first** (ADR 2026-09.wetm, third amendment): a secure server socket under [WearStatusUuids.RFCOMM]'s
+ * SDP record, one [WearStatusFrame] per connection. It rides the Classic link a paired watch already holds, so
+ * it takes no LE connection — the host's GATT table (eight slots on a Pixel 9, one per LE link, the mesh's
+ * L2CAP links included) was full on a busy mesh phone and every LE connect from the watch was dropped "out of
+ * resources" — needs no advert, and is encrypted by the existing bond instead of a fresh LE pairing per read.
  *
- * Only a bonded central is answered: the characteristic demands an encrypted link
- * (`PERMISSION_READ_ENCRYPTED`, so the stack refuses an unencrypted read before we see it), and the read
- * handler re-checks the bond, so a stranger that pairs through the encryption prompt still gets nothing
- * unless the user accepted it.
+ * **LE GATT is the fallback**, kept until other watches show which transport their bond carries: one
+ * read-only characteristic. Its reachability is borrowed from the mesh, except during a pause. A Pixel Watch 3
+ * bonded to its phone over BR/EDR reaches it over LE only while the phone is LE-connectable, which the mesh's
+ * presence advert makes it; GATT over the BR/EDR link fails (133). A pause takes that advert down, so for
+ * exactly the length of a pause this server raises its own set — legacy, connectable, empty, one-second
+ * interval. Only while paused, so it never contends with the mesh's presence and side-channel sets for a
+ * controller slot (they are down then).
+ *
+ * Only a bonded device is answered: the RFCOMM socket is the authenticated, encrypted kind (a stranger's
+ * connect would raise a pairing prompt), the characteristic demands an encrypted link
+ * (`PERMISSION_READ_ENCRYPTED`, so the stack refuses an unencrypted read before we see it), and both handlers
+ * re-check the bond, so a stranger that pairs through a prompt still gets nothing unless the user accepted it.
  *
  * Follows the BLE plane's idioms: the adapter is a provider, never a cached handle (an adapter off → on
  * cycle kills a cached server, as it did the cached scanner), the server is reopened on `STATE_ON`, and
@@ -73,6 +83,8 @@ internal class WearStatusServer(
     @Volatile private var inputs: WearInputs? = null
 
     @Volatile private var server: BluetoothGattServer? = null
+
+    @Volatile private var rfcomm: BluetoothServerSocket? = null
     private var collector: Job? = null
 
     // The pause advert (see the class note). Guarded by this object's monitor, like [open]/[close].
@@ -160,7 +172,26 @@ internal class WearStatusServer(
 
     @Synchronized
     private fun open() {
-        if (server != null || adapter?.isEnabled != true) return
+        if (adapter?.isEnabled != true) return
+        openRfcomm()
+        openGatt()
+    }
+
+    /** Holds the monitor. */
+    private fun openRfcomm() {
+        if (rfcomm != null) return
+        val ss =
+            runCatching { adapter?.listenUsingRfcommWithServiceRecord(SDP_NAME, WearStatusUuids.RFCOMM) }
+                .onFailure { Log.w(TAG, "RFCOMM listen failed: ${it.message}") }
+                .getOrNull() ?: return
+        rfcomm = ss
+        scope.launch(Dispatchers.IO) { acceptLoop(ss) }
+        Log.i(TAG, "status RFCOMM open")
+    }
+
+    /** Holds the monitor. */
+    private fun openGatt() {
+        if (server != null) return
         val opened =
             runCatching { bluetoothManager?.openGattServer(appContext, callback) }
                 .onFailure { Log.w(TAG, "openGattServer failed: ${it.message}") }
@@ -186,6 +217,11 @@ internal class WearStatusServer(
     @Synchronized
     private fun close() {
         stopAdvert()
+        rfcomm?.let {
+            rfcomm = null
+            runCatching { it.close() } // unblocks the accept loop
+            Log.i(TAG, "status RFCOMM closed")
+        }
         val s = server ?: return
         server = null
         runCatching {
@@ -193,6 +229,46 @@ internal class WearStatusServer(
             s.close()
         }
         Log.i(TAG, "status service closed")
+    }
+
+    private fun acceptLoop(ss: BluetoothServerSocket) {
+        while (rfcomm === ss) {
+            val client = runCatching { ss.accept() }.getOrNull() ?: break
+            scope.launch(Dispatchers.IO) { serve(client) }
+        }
+        if (rfcomm === ss) Log.w(TAG, "RFCOMM accept failed; the server stays down until Bluetooth cycles")
+    }
+
+    /**
+     * One frame to one bonded watch, then linger for the watch to close: a close right behind the write could
+     * drop the frame's tail. [LINGER_MS] bounds a watch that never closes.
+     */
+    private fun serve(client: BluetoothSocket) {
+        val linger =
+            scope.launch {
+                delay(LINGER_MS)
+                runCatching { client.close() }
+            }
+        try {
+            if (client.remoteDevice.bondState != BluetoothDevice.BOND_BONDED) {
+                Log.d(TAG, "RFCOMM read refused: not bonded")
+                return
+            }
+            val bytes = snapshot() ?: return // nothing written: the watch reads the end of the stream
+            client.outputStream.apply {
+                write(WearStatusFrame.frame(bytes))
+                flush()
+            }
+            Log.d(TAG, "RFCOMM read served (${bytes.size} B)")
+            val input = client.inputStream
+            var next = input.read()
+            while (next >= 0) next = input.read() // until the watch closes
+        } catch (_: IOException) {
+            // The watch closed (the normal end) or the linger did.
+        } finally {
+            linger.cancel()
+            runCatching { client.close() }
+        }
     }
 
     @Synchronized
@@ -275,5 +351,7 @@ internal class WearStatusServer(
 
     private companion object {
         const val TAG = "KnitWear"
+        const val SDP_NAME = "Knit mesh status"
+        const val LINGER_MS = 3_000L
     }
 }
