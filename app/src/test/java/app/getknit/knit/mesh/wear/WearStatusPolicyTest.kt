@@ -5,8 +5,13 @@ import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
 import app.getknit.knit.mesh.lora.LoraPlane
+import app.getknit.knit.mesh.spool.ScopeStatus
+import app.getknit.knit.mesh.spool.SpoolStatus
 import app.getknit.knit.wearstatus.MeshState
 import app.getknit.knit.wearstatus.Plane
+import app.getknit.knit.wearstatus.WearExtra
+import app.getknit.knit.wearstatus.WearLink
+import app.getknit.knit.wearstatus.WearStatusCodec
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -117,4 +122,85 @@ class WearStatusPolicyTest {
     fun `the stamp is the read's clock in seconds`() {
         assertEquals(now / 1000, WearStatusPolicy.of(running, now).stampSec)
     }
+
+    @Test
+    fun `the peer map draws short-range peers by their planes and far ones by their path`() {
+        val spool =
+            SpoolStatus(
+                url = "https://relay.example",
+                connected = true,
+                powBits = 0,
+                lastError = null,
+                scopes = listOf(scope("far-spool", seenAt = now - 60_000), scope("stale", seenAt = now - 86_400_000)),
+            )
+        val s =
+            WearStatusPolicy.of(
+                running.copy(
+                    nearby = 2,
+                    carrying = 7,
+                    peers =
+                        WearPeers(
+                            nearby = setOf("b-both", "a-ble"),
+                            reachable = setOf("a-ble", "b-both", "c-lora"),
+                            planes =
+                                mapOf(
+                                    "a-ble" to setOf(TransportKind.Bluetooth),
+                                    "b-both" to setOf(TransportKind.Bluetooth, TransportKind.WifiAware),
+                                    "c-lora" to setOf(TransportKind.LoRa),
+                                ),
+                            spools = listOf(spool),
+                        ),
+                ),
+                now,
+            )
+        val extra = s.extra!!
+        assertEquals(7, extra.carrying)
+        assertEquals(2, extra.far)
+        assertEquals(
+            listOf(WearLink.BLE, WearLink.BLE or WearLink.NAN, WearLink.LORA, WearLink.SPOOL),
+            extra.links,
+        )
+    }
+
+    @Test
+    fun `a crowd nearby still leaves room for far peers, and a paused mesh draws nobody`() {
+        val crowd = (1..12).map { "n%02d".format(it) }.toSet()
+        val s =
+            WearStatusPolicy.of(
+                running.copy(
+                    nearby = 12,
+                    peers =
+                        WearPeers(
+                            nearby = crowd,
+                            reachable = crowd + setOf("x", "y", "z"),
+                            planes = (crowd + setOf("x", "y", "z")).associateWith { setOf(TransportKind.LoRa) },
+                        ),
+                ),
+                now,
+            )
+        val links = s.extra!!.links
+        assertEquals(WearStatusCodec.MAX_LINKS, links.size)
+        assertEquals(6, links.count { (it and WearLink.SHORT_RANGE) != 0 })
+        assertEquals(2, links.count { it == WearLink.LORA })
+        assertEquals(3, s.extra.far)
+        // A nearby peer whose planes have not arrived yet is drawn as Bluetooth, never dropped.
+        assertEquals(WearLink.BLE, links.first())
+
+        val paused = WearStatusPolicy.of(running.copy(pausedUntil = now + 60_000, carrying = 3), now)
+        assertEquals(WearExtra(carrying = 3, far = 0, links = emptyList()), paused.extra)
+    }
+
+    private fun scope(
+        label: String,
+        seenAt: Long,
+    ) = ScopeStatus(
+        scopeHex = label,
+        label = label,
+        localCount = 0,
+        spoolCount = 0,
+        converged = true,
+        invalidCount = 0,
+        retiring = false,
+        peerSeenAt = seenAt,
+    )
 }

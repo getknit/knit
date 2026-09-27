@@ -31,6 +31,15 @@ android {
         versionName = providers.gradleProperty("knit.versionName").get()
     }
 
+    buildTypes {
+        getByName("debug") {
+            // A debuggable APK runs Compose (and the tile's ProtoLayout) without ART's JIT/AOT optimisations,
+            // which on a watch's small cores is visibly laggy. Still the debug variant — debug key, the debug-only
+            // DemoReceiver — just not debuggable, so no run-as and no debugger attach.
+            isDebuggable = false
+        }
+    }
+
     buildFeatures {
         compose = true
     }
@@ -65,9 +74,14 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.wear.compose.material3)
     implementation(libs.androidx.wear.compose.foundation)
     implementation(libs.androidx.wear.complications.data.source.ktx)
+    implementation(libs.androidx.wear.tiles)
+    implementation(libs.androidx.wear.protolayout)
+    implementation(libs.androidx.wear.protolayout.expression)
+    implementation(libs.androidx.wear.protolayout.material3)
     implementation(libs.kotlinx.coroutines.android)
 
     testImplementation(libs.junit)

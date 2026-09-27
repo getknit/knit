@@ -6,8 +6,9 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * The phone → watch snapshot layout. [GOLDEN] is repeated byte for byte in `:wear`'s decode test — the two
- * modules compile one codec, and the vector is what proves a watch build reads what a phone build wrote.
+ * The phone → watch snapshot layout. [GOLDEN] and [GOLDEN_EXTENDED] are repeated byte for byte in `:wear`'s
+ * decode test — the two modules compile one codec, and the vectors are what prove a watch build reads what a
+ * phone build wrote, with and without the appended block.
  */
 class WearStatusCodecTest {
     private val sample =
@@ -35,6 +36,26 @@ class WearStatusCodecTest {
     @Test
     fun `fits one default-MTU read`() {
         assert(WearStatusCodec.encode(sample).size <= 20)
+        assertEquals(20, WearStatusCodec.encode(extended).size)
+    }
+
+    @Test
+    fun `the extended vector appends carrying, far peers and the link nibbles`() {
+        assertEquals(GOLDEN_EXTENDED, WearStatusCodec.encode(extended).toHex())
+        assertEquals(extended, WearStatusCodec.decode(GOLDEN_EXTENDED.fromHex()))
+        // An older watch reads the first 13 bytes and ignores the rest; an older phone's 13 decode with no extra.
+        assertEquals(sample, WearStatusCodec.decode(GOLDEN_EXTENDED.fromHex()).let { it!!.copy(extra = null) })
+        assertNull(WearStatusCodec.decode(GOLDEN.fromHex())!!.extra)
+    }
+
+    @Test
+    fun `links stop at the first empty slot, drop zero masks and cap at eight`() {
+        val many = extended.copy(extra = WearExtra(carrying = 0, far = 0, links = listOf(1, 0, 2) + List(9) { 3 }))
+        val back = WearStatusCodec.decode(WearStatusCodec.encode(many))!!.extra!!
+        assertEquals(listOf(1, 2) + List(6) { 3 }, back.links)
+        val none = extended.copy(extra = WearExtra(carrying = 70_000, far = 300, links = emptyList()))
+        val saturated = WearStatusCodec.decode(WearStatusCodec.encode(none))!!.extra!!
+        assertEquals(WearExtra(carrying = 0xFFFF, far = 0xFF, links = emptyList()), saturated)
     }
 
     @Test
@@ -71,11 +92,29 @@ class WearStatusCodecTest {
         assertArrayEquals(bytes, WearStatusCodec.encode(WearStatusCodec.decode(bytes)!!))
     }
 
+    private val extended =
+        sample.copy(
+            extra =
+                WearExtra(
+                    carrying = 12,
+                    far = 2,
+                    links =
+                        listOf(
+                            WearLink.BLE or WearLink.NAN,
+                            WearLink.BLE,
+                            WearLink.NAN,
+                            WearLink.LORA,
+                            WearLink.LORA or WearLink.SPOOL,
+                        ),
+                ),
+        )
+
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
     private fun String.fromHex() = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
     private companion object {
         const val GOLDEN = "010305001bd2040000803bb16a"
+        const val GOLDEN_EXTENDED = "010305001bd2040000803bb16a0c000213420c00"
     }
 }

@@ -8,6 +8,7 @@ import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MeshBlobStore
 import app.getknit.knit.data.crypto.IdentityKeyStore
+import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.data.settings.LoraPlaneStateStore
 import app.getknit.knit.data.settings.SettingsStore
@@ -308,7 +309,7 @@ val meshModule =
         // build has nothing for `MeshService` to resolve — its `getOrNull` is the one seam. It reads the same
         // repositories the header does, and nothing it serves is framed onto the mesh.
         if (BuildConfig.WEAR_STATUS) {
-            single { WearStatusSource(get(), get(), get(), get(), get()) }
+            single { WearStatusSource(get(), get(), get(), get(), get(), get<ForwardRepository>(), get()) }
             single { WearStatusServer(androidContext(), get(), get<CoroutineScope>()) }
         }
     }

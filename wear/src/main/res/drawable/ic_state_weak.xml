@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Weak: three nodes, one link missing. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,2.5a2.75,2.75 0,1 1,0 5.5a2.75,2.75 0,1 1,0 -5.5zM5,15.5a2.75,2.75 0,1 1,0 5.5a2.75,2.75 0,1 1,0 -5.5zM19,15.5a2.75,2.75 0,1 1,0 5.5a2.75,2.75 0,1 1,0 -5.5z" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.75"
+        android:strokeLineCap="round"
+        android:pathData="M10.6,7.7L6.4,15M8,18.25L16,18.25" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.75"
+        android:strokeLineCap="round"
+        android:pathData="M13.4,7.7L14.2,9.1M16.8,13.6L17.6,15" />
+</vector>

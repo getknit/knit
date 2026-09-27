@@ -21,6 +21,8 @@ import app.getknit.knit.wearstatus.WearStatusCodec
 import app.getknit.knit.wearstatus.WearStatusUuids
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -40,10 +42,29 @@ data class Snapshot(
  * The phone is found without a scan: the cached address first, then every bonded device, phones first — the
  * one that exposes the service is kept. Device-verified only (there is no host GATT stack); what it hands the
  * complications is rendered by the pure `StatusText`.
+ *
+ * A read that found no phone holds off the next unforced one for [FAIL_FLOOR_MS], so the four complications,
+ * the tile and the app asking together against a phone out of reach cost one round of connects, not six.
+ * Every good read is published on [snapshots], which the status screen draws from.
  */
 @SuppressLint("MissingPermission") // BLUETOOTH is install-time on API 30; CONNECT is checked in [read]
 object PhoneStatusReader {
     private val lock = Mutex()
+    private val latest = MutableStateFlow<Snapshot?>(null)
+    private var seeded = false
+
+    @Volatile private var lastFailureMs = 0L
+
+    /** The last good snapshot, seeded from the persisted copy, then every good read as it lands. */
+    fun snapshots(context: Context): StateFlow<Snapshot?> {
+        synchronized(this) {
+            if (!seeded) {
+                seeded = true
+                latest.compareAndSet(null, cached(context.applicationContext))
+            }
+        }
+        return latest
+    }
 
     /** Last good snapshot, reading the persisted copy if this process has none yet. */
     fun cached(context: Context): Snapshot? {
@@ -62,20 +83,35 @@ object PhoneStatusReader {
             val app = context.applicationContext
             val now = System.currentTimeMillis()
             cached(app)?.takeIf { now - it.fetchedAtMs in 0..maxAgeMs }?.let { return@withLock it }
+            if (maxAgeMs > 0 && now - lastFailureMs in 0 until FAIL_FLOOR_MS) return@withLock cached(app)
             fetch(app)?.let { (address, bytes) ->
-                val status = WearStatusCodec.decode(bytes)
-                if (status != null) {
-                    prefs(app).edit {
-                        putString(KEY_BYTES, Base64.encodeToString(bytes, Base64.NO_WRAP))
-                        putLong(KEY_FETCHED_AT, now)
-                        putString(KEY_ADDRESS, address)
-                    }
-                    return@withLock Snapshot(status, now)
-                }
+                val snapshot = store(app, bytes, address, System.currentTimeMillis())
+                if (snapshot != null) return@withLock snapshot
                 Log.w(TAG, "phone answered with a snapshot this build cannot read (${bytes.size} B)")
             }
+            lastFailureMs = System.currentTimeMillis()
             cached(app)
         }
+
+    /** Persists and publishes [bytes] as read at [nowMs]; null (and nothing stored) if they do not decode. */
+    fun store(
+        context: Context,
+        bytes: ByteArray,
+        address: String?,
+        nowMs: Long,
+    ): Snapshot? {
+        val status = WearStatusCodec.decode(bytes) ?: return null
+        prefs(context).edit {
+            putString(KEY_BYTES, Base64.encodeToString(bytes, Base64.NO_WRAP))
+            putLong(KEY_FETCHED_AT, nowMs)
+            address?.let { putString(KEY_ADDRESS, it) }
+        }
+        return Snapshot(status, nowMs).also {
+            lastFailureMs = 0L
+            latest.value = it
+            StatusHistory.record(context, it)
+        }
+    }
 
     private suspend fun fetch(context: Context): Pair<String, ByteArray>? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
@@ -130,6 +166,7 @@ object PhoneStatusReader {
     private const val KEY_ADDRESS = "address"
     private const val RETRY_MS = 750L
     const val FRESH_MS = 60_000L
+    const val FAIL_FLOOR_MS = 45_000L
 }
 
 /**

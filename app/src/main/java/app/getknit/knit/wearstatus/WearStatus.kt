@@ -64,7 +64,8 @@ enum class Plane(
 /**
  * What the watch shows. [nearby] is the app header's count (short-range peers only); [relayed] is the Your
  * mesh screen's all-time "passed along" total; [stampSec] is the phone's wall clock in epoch seconds when the
- * snapshot was taken, so the watch can age a cached copy.
+ * snapshot was taken, so the watch can age a cached copy. [extra] is the appended block — null from a phone
+ * build that predates it.
  */
 data class WearStatus(
     val state: MeshState,
@@ -75,11 +76,35 @@ data class WearStatus(
     val spool: Plane,
     val relayed: Long,
     val stampSec: Long,
+    val extra: WearExtra? = null,
 )
 
 /**
- * The fixed little-endian layout, [SIZE] bytes, well inside the 20-byte payload of a default (23-byte) ATT
- * MTU so a read never needs a long-read or an MTU exchange:
+ * The peer map and the store: [carrying] is the Your mesh screen's "carrying for others" (live chat frames this
+ * phone holds for other people); [far] is how many peers are reached only over a long-range plane (LoRa, the
+ * internet relay) — never counted in [WearStatus.nearby]; [links] is one [WearLink] mask per peer the watch
+ * draws, at most [WearStatusCodec.MAX_LINKS], short-range peers first. No peer identity crosses: a mask is only
+ * which planes reach *a* peer, in the phone's own stable order.
+ */
+data class WearExtra(
+    val carrying: Int,
+    val far: Int,
+    val links: List<Int>,
+)
+
+/** The bits of one peer's [WearExtra.links] mask. A zero mask is not a peer (it marks an empty slot). */
+object WearLink {
+    const val BLE = 0b0001
+    const val NAN = 0b0010
+    const val LORA = 0b0100
+    const val SPOOL = 0b1000
+    const val SHORT_RANGE = BLE or NAN
+    const val MASK = 0b1111
+}
+
+/**
+ * The fixed little-endian layout: [SIZE] bytes, or [EXTENDED_SIZE] with the [WearExtra] block — exactly the
+ * 20-byte payload of a default (23-byte) ATT MTU, so a read never needs a long read or an MTU exchange:
  *
  * | offset | size | field |
  * |---|---|---|
@@ -89,17 +114,24 @@ data class WearStatus(
  * | 4 | 1 | planes: ble bits 0-1, nan 2-3, lora 4-5, spool 6-7 |
  * | 5 | 4 | relayed (u32, saturating) |
  * | 9 | 4 | stamp (u32 epoch seconds) |
+ * | 13 | 2 | carrying (u16, saturating) — the [WearExtra] block from here |
+ * | 15 | 1 | far peers (u8, saturating) |
+ * | 16 | 4 | [MAX_LINKS] [WearLink] nibbles, low nibble first; 0 = empty slot, and the rest are empty too |
  *
- * Additive growth appends fields after byte 13: [decode] ignores trailing bytes. A new major version, or a
- * state code this build does not know, decodes to null — the watch then shows "no data" rather than a guess.
+ * Additive growth appends fields: [decode] ignores trailing bytes, and a read of [SIZE] to [EXTENDED_SIZE] − 1
+ * bytes (an older phone) decodes with no [WearExtra]. A new major version, or a state code this build does
+ * not know, decodes to null — the watch then shows "no data" rather than a guess. Growing past 20 bytes means
+ * a long read; the server already honours offsets, but the watch has only ever read in one go.
  */
 @Suppress("MagicNumber") // the offsets and widths of the table above, pinned by the golden vector
 object WearStatusCodec {
     const val VERSION = 1
     const val SIZE = 13
+    const val EXTENDED_SIZE = 20
+    const val MAX_LINKS = 8
 
     fun encode(s: WearStatus): ByteArray {
-        val out = ByteArray(SIZE)
+        val out = ByteArray(if (s.extra == null) SIZE else EXTENDED_SIZE)
         out[0] = VERSION.toByte()
         out[1] = s.state.code.toByte()
         putLe(out, 2, s.nearby.toLong().coerceIn(0, U16_MAX), 2)
@@ -112,6 +144,19 @@ object WearStatusCodec {
             ).toByte()
         putLe(out, 5, s.relayed.coerceIn(0, U32_MAX), 4)
         putLe(out, 9, s.stampSec.coerceIn(0, U32_MAX), 4)
+        s.extra?.let { extra ->
+            putLe(out, 13, extra.carrying.toLong().coerceIn(0, U16_MAX), 2)
+            out[15] = extra.far.coerceIn(0, U8_MAX).toByte()
+            val links =
+                extra.links
+                    .map { it and WearLink.MASK }
+                    .filter { it != 0 }
+                    .take(MAX_LINKS)
+            for ((i, mask) in links.withIndex()) {
+                val at = LINKS_AT + i / 2
+                out[at] = (out[at].toInt() or (mask shl (NIBBLE * (i % 2)))).toByte()
+            }
+        }
         return out
     }
 
@@ -128,6 +173,21 @@ object WearStatusCodec {
             spool = Plane.ofCode(planes shr SPOOL_SHIFT),
             relayed = getLe(bytes, 5, 4),
             stampSec = getLe(bytes, 9, 4),
+            extra = if (bytes.size >= EXTENDED_SIZE) decodeExtra(bytes) else null,
+        )
+    }
+
+    private fun decodeExtra(bytes: ByteArray): WearExtra {
+        val links = mutableListOf<Int>()
+        for (i in 0 until MAX_LINKS) {
+            val mask = (bytes[LINKS_AT + i / 2].toInt() shr (NIBBLE * (i % 2))) and WearLink.MASK
+            if (mask == 0) break
+            links += mask
+        }
+        return WearExtra(
+            carrying = getLe(bytes, 13, 2).toInt(),
+            far = bytes[15].toInt() and BYTE_MASK,
+            links = links,
         )
     }
 
@@ -154,6 +214,9 @@ object WearStatusCodec {
     private const val LORA_SHIFT = 4
     private const val SPOOL_SHIFT = 6
     private const val BYTE_MASK = 0xFF
+    private const val LINKS_AT = 16
+    private const val NIBBLE = 4
+    private const val U8_MAX = 0xFF
     private const val U16_MAX = 0xFFFFL
     private const val U32_MAX = 0xFFFF_FFFFL
 }

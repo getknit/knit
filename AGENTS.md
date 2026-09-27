@@ -234,7 +234,10 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
 - **When touching `wearstatus/`, `mesh/wear/`, `mesh/bluetooth/wear/WearStatusServer`, the `:wear` module, or
   `BuildConfig.WEAR_STATUS`:** READ ADR 2026-09.wetm. A bonded Wear OS watch reads the mesh status from one
   read-only, encrypted GATT characteristic the phone serves while `MeshService` runs — no Data Layer (GMS), never
-  framed, reachable over LE through the mesh's own advert and, only while paused, the server's own. A prototype: dark in release, `:wear` only under `-Pknit.wear=true`. `wearstatus/` is
+  framed, reachable over LE through the mesh's own advert and, only while paused, the server's own. A prototype: dark in release, `:wear` only under `-Pknit.wear=true`. The watch surfaces (complications in every suited type with a staleness timeline, a
+  Material3 tile that never blocks on Bluetooth, the M3 Expressive app) are the ADR's 2026-09-27 amendment; Wear Widgets wait for a stable release.
+  The second amendment extends the snapshot to exactly 20 bytes (carrying, far peers, 4-bit per-peer plane masks — no ids; `GOLDEN_EXTENDED`
+  in both modules) for the peer map, and adds the watch-only day history (`StatusHistory`/`DayStats`). `wearstatus/` is
   compiled into both modules, so it imports nothing but `java.*`/`kotlin.*`, and its layout is pinned by one golden
   vector in `WearStatusCodecTest` and `:wear`'s `StatusTextTest`; a stopped or paused mesh reports no radio.
 - **When touching `ui/yourmesh/`, `mesh/ContributionLedger`, `data/settings/ContributionJournal`,
