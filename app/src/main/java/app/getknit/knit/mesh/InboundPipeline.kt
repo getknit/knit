@@ -2975,12 +2975,7 @@ class InboundPipeline(
     /**
      * Pins an inbound peer's profile (self-cert check → last-writer-wins → immutable-pin guard → upsert),
      * then flushes/replays anything that was waiting on the sender's key.
-     *
-     * `@Suppress("CyclomaticComplexMethod")`: the #14 immutable-pin guard adds the one branch that tips this
-     * past detekt's threshold of 15. The body is a straight-line sequence of null-coalesced field resolutions
-     * and guards — not genuinely complex — and the guard is load-bearing, so suppress rather than reshuffle it.
      */
-    @Suppress("CyclomaticComplexMethod", "LongMethod") // LongMethod: the self guard tipped it past 60
     private suspend fun handleProfile(
         env: RelayEnvelope,
         wire: WireEnvelope,
@@ -3011,7 +3006,6 @@ class InboundPipeline(
             Log.w(TAG, "drop profile from ${env.senderId}: key does not derive to its nodeId")
             return
         }
-        val existing = peers.find(env.senderId)
         // The LWW key is the sender's profile *version*, not the frame's `sentAt` — `sentAt` is now a publish
         // stamp the sender refreshes on a cadence to keep the frame inside custody's `sentAt + ttl` window
         // (ADR 022), so it moves without the profile having changed. A peer predating the field sends no
@@ -3019,10 +3013,108 @@ class InboundPipeline(
         // Bounded before it becomes either watermark below: the peer picks this number, and stored raw a
         // far-future one would outrank every later profile of theirs, on both paths, for good.
         val version = clampFuture(content.version ?: env.sentAt)
+        val prekey = verifiedPrekey(content, pubKey, env.senderId)
+        // The read, the blob check and the write share one write transaction (#98): the avatar writers run on
+        // another collector and copy the same row, so without it either write can put back the row the other
+        // one read — reverting this profile, or the pushed avatar that landed while we checked for its blob.
+        val stored =
+            db.withWriteTransaction<StoredProfile> {
+                storeProfileRow(env.senderId, content, pubKey, version, prekey)
+            }
+        val applied =
+            when (stored) {
+                StoredProfile.Stale -> {
+                    return
+                }
+
+                StoredProfile.PinRefused -> {
+                    Log.w(TAG, "drop profile from ${env.senderId}: pinned key change refused (collision/impersonation?)")
+                    metrics.onDropped(DropReason.PIN_CHANGE_REFUSED)
+                    // Surfaced in the thread as well as counted: this is the one profile event a user could act
+                    // on, and a metric only a maintainer reads is the wrong place for it. Effectively unreachable
+                    // by design — a key that doesn't derive back to the sender's nodeId was already dropped
+                    // above, so arriving here needs a 128-bit collision or a corrupted pin — which is exactly why
+                    // it should be visible if it ever does happen rather than silent.
+                    savePeerNotice(env.senderId, StatusNotices.keyPinRefused(env.senderId, clampFuture(env.sentAt)))
+                    return
+                }
+
+                is StoredProfile.Applied -> {
+                    stored
+                }
+            }
+        val name = content.name.take(TextLimits.DISPLAY_NAME)
+        applyPresentationFollowUps(
+            env.senderId,
+            applied.previous,
+            name,
+            content.avatarHash,
+            applied.haveAvatar,
+            version,
+            applied.stalePresentation,
+        )
+        applyDeviceTagBlockContinuity(env.senderId, content.deviceTag)
+        // The sender's key is now pinned: retransmit any DMs to them that were stuck awaiting it, and
+        // re-send any group epoch seeds their outbox still shows unacked (their prekey may be new).
+        flushPending(env.senderId)
+        flushGroupKeys(env.senderId, false)
+        // Keep this peer's verbatim signed profile beside the pin, newest publish stamp winning (clamped: the peer
+        // picks it), so this phone can prove their key to a newcomer for as long as it carries their frames —
+        // after a restart, and after custody has lost the profile to the quota or the TTL (ADR 2026-09.g64k).
+        peers.recordProfileFrame(env.senderId, wire, clampFuture(env.sentAt))
+        // Cache it for the same re-serve, and resolve any key request we (or a node we're relaying for) had
+        // outstanding for it.
+        keyExchange.onProfilePinned(env.senderId, wire)
+        // A pending contact-card intro to this sender can be sealed now that its prekey is pinned.
+        onProfilePinned(env.senderId)
+        // Replay any frames we parked from this sender while we couldn't verify them. Must run last: the
+        // key is now pinned (so the replayed verifyInbound passes instead of re-parking) and any deviceTag
+        // block has been applied (so a blocked sender is dropped on replay, not delivered). Replay bypasses
+        // the router — no second flood, no SeenSet hit — and onDeliver's isNew/idempotent-save gates make a
+        // later store-and-forward re-serve of the same frame a no-op.
+        pendingInbound.release(env.senderId).forEach {
+            metrics.onFrameReplayed()
+            onDeliver(it.wire, it.env, it.fromNodeId, it.kind)
+        }
+    }
+
+    /** What [storeProfileRow] did with a cleartext profile, for the follow-ups [handleProfile] runs after commit. */
+    private sealed interface StoredProfile {
+        /** Older than the row on both watermarks: nothing moved. */
+        data object Stale : StoredProfile
+
+        /** A different key for a pinned node id: refused, nothing moved. */
+        data object PinRefused : StoredProfile
+
+        /** The row was written; [previous] is how it stood before (null on first contact). */
+        class Applied(
+            val previous: PeerEntity?,
+            val haveAvatar: Boolean,
+            val stalePresentation: Boolean,
+        ) : StoredProfile
+    }
+
+    /**
+     * The peer-row half of [handleProfile]: read, gate and write the row. Runs inside the caller's write
+     * transaction, so it must stay free of DataStore reads, the ratchet lock and anything that sends.
+     *
+     * `@Suppress("CyclomaticComplexMethod")`: the body is a straight-line sequence of null-coalesced field
+     * resolutions and guards — not genuinely complex — and every guard is load-bearing (the #14 immutable-pin
+     * guard among them), so suppress rather than reshuffle it.
+     */
+    @Suppress("CyclomaticComplexMethod")
+    private suspend fun storeProfileRow(
+        senderId: String,
+        content: ProfileContent,
+        pubKey: String,
+        version: Long,
+        prekey: app.getknit.knit.mesh.protocol.PrekeyInfo?,
+    ): StoredProfile {
+        val existing = peers.find(senderId)
         // Last-writer-wins, split across two watermarks. The key is immutable per nodeId (a different key
-        // would be a hash collision, excluded above), so an out-of-order or re-served copy can never change
-        // the pinned key — it could only revert name/status. A first profile (existing == null) is always
-        // accepted, so this never blocks recovering a missing key.
+        // would be a hash collision, excluded by the caller's derivation check), so an out-of-order or
+        // re-served copy can never change the pinned key — it could only revert name/status. A first profile
+        // (existing == null) is always accepted, so this never blocks recovering a missing key.
         //
         // Presentation and prekey are gated SEPARATELY because a sealed CTL_PROFILE advances `updatedAt`
         // while deliberately carrying no prekey (ADR 020). Gating both on that one watermark let a sealed
@@ -3030,31 +3122,20 @@ class InboundPipeline(
         // EVENT can outrun a heal-round pull, that race lands exactly when the prekey matters most.
         val stalePresentation = existing != null && version < existing.updatedAt
         val stalePrekey = existing != null && version < (existing.prekeyProfileAt ?: 0L)
-        if (stalePresentation && stalePrekey) return
+        if (stalePresentation && stalePrekey) return StoredProfile.Stale
         // Immutable pin: a peer's key is bound to its nodeId, so once pinned it can only "change" via a
         // hash collision — an impersonation attempt. Refuse it: keep the first-pinned key and its verified
         // badge rather than let a swapped-in key inherit a verified contact (finding #14). A first profile
         // (existing?.pubKey == null) still pins normally; a same-key re-profile still updates name/status.
         val pinned = existing?.pubKey
-        if (pinned != null && pinned != pubKey) {
-            Log.w(TAG, "drop profile from ${env.senderId}: pinned key change refused (collision/impersonation?)")
-            metrics.onDropped(DropReason.PIN_CHANGE_REFUSED)
-            // Surfaced in the thread as well as counted: this is the one profile event a user could act
-            // on, and a metric only a maintainer reads is the wrong place for it. Effectively unreachable
-            // by design — a key that doesn't derive back to the sender's nodeId was already dropped
-            // above, so arriving here needs a 128-bit collision or a corrupted pin — which is exactly why
-            // it should be visible if it ever does happen rather than silent.
-            savePeerNotice(env.senderId, StatusNotices.keyPinRefused(env.senderId, clampFuture(env.sentAt)))
-            return
-        }
+        if (pinned != null && pinned != pubKey) return StoredProfile.PinRefused
         val advertised = content.avatarHash
         // The stored avatarHash means "bytes are present locally": adopt the advertised hash only once
         // we hold its blob, otherwise keep the current avatar (if any) until the new one is fetched.
         val haveAvatar = advertised != null && blobStore.has(advertised)
-        val prekey = verifiedPrekey(content, pubKey, env.senderId)
         // The pinned key is guaranteed unchanged here (a differing key was refused above), so carrying
         // the prior [verified] state through the upsert is safe.
-        val base = existing ?: PeerEntity(env.senderId)
+        val base = existing ?: PeerEntity(senderId)
         val name = content.name.take(TextLimits.DISPLAY_NAME)
         peers.upsert(
             base.copy(
@@ -3094,30 +3175,7 @@ class InboundPipeline(
                 loraKey = if (stalePresentation) base.loraKey else content.loraKey,
             ),
         )
-        applyPresentationFollowUps(env.senderId, existing, name, advertised, haveAvatar, version, stalePresentation)
-        applyDeviceTagBlockContinuity(env.senderId, content.deviceTag)
-        // The sender's key is now pinned: retransmit any DMs to them that were stuck awaiting it, and
-        // re-send any group epoch seeds their outbox still shows unacked (their prekey may be new).
-        flushPending(env.senderId)
-        flushGroupKeys(env.senderId, false)
-        // Keep this peer's verbatim signed profile beside the pin, newest publish stamp winning (clamped: the peer
-        // picks it), so this phone can prove their key to a newcomer for as long as it carries their frames —
-        // after a restart, and after custody has lost the profile to the quota or the TTL (ADR 2026-09.g64k).
-        peers.recordProfileFrame(env.senderId, wire, clampFuture(env.sentAt))
-        // Cache it for the same re-serve, and resolve any key request we (or a node we're relaying for) had
-        // outstanding for it.
-        keyExchange.onProfilePinned(env.senderId, wire)
-        // A pending contact-card intro to this sender can be sealed now that its prekey is pinned.
-        onProfilePinned(env.senderId)
-        // Replay any frames we parked from this sender while we couldn't verify them. Must run last: the
-        // key is now pinned (so the replayed verifyInbound passes instead of re-parking) and any deviceTag
-        // block has been applied (so a blocked sender is dropped on replay, not delivered). Replay bypasses
-        // the router — no second flood, no SeenSet hit — and onDeliver's isNew/idempotent-save gates make a
-        // later store-and-forward re-serve of the same frame a no-op.
-        pendingInbound.release(env.senderId).forEach {
-            metrics.onFrameReplayed()
-            onDeliver(it.wire, it.env, it.fromNodeId, it.kind)
-        }
+        return StoredProfile.Applied(existing, haveAvatar, stalePresentation)
     }
 
     /**
@@ -3232,13 +3290,30 @@ class InboundPipeline(
         }
         owners.forEach { nodeId ->
             advertisedAvatars.remove(nodeId)
-            val peer = peers.find(nodeId) ?: return@forEach
-            if (peer.avatarHash == hash) return@forEach
-            val oldHash = peer.avatarHash
-            peers.upsert(peer.copy(avatarHash = hash))
-            if (oldHash != hash) blobs.deleteIfUnreferenced(oldHash)
+            pointPeerAtAvatar(nodeId, hash, createRow = false)?.let { blobs.deleteIfUnreferenced(it) }
         }
     }
+
+    /**
+     * Points [nodeId]'s row at the now-local avatar [hash] and returns the hash it replaced, for the caller to
+     * reclaim after the commit (null when nothing was replaced). A missing row is created only when
+     * [createRow] (a pushed avatar can outrun the profile that pins its sender).
+     *
+     * The read and the write share one write transaction (#98). The profile writers run on the router's
+     * collector while these run on the files path, and a photo change sends both at once: a row read outside
+     * the lock and written back whole reverts a profile that landed in between — name, version, prekey pin.
+     */
+    private suspend fun pointPeerAtAvatar(
+        nodeId: String,
+        hash: String,
+        createRow: Boolean,
+    ): String? =
+        db.withWriteTransaction<String?> {
+            val peer = peers.find(nodeId) ?: if (createRow) PeerEntity(nodeId) else return@withWriteTransaction null
+            if (peer.avatarHash == hash) return@withWriteTransaction null
+            peers.upsert(peer.copy(avatarHash = hash))
+            peer.avatarHash
+        }
 
     /**
      * Ingests a direct neighbor's pushed avatar into the encrypted blob store, points the peer row at
@@ -3268,10 +3343,7 @@ class InboundPipeline(
             blobs.deleteIfUnreferenced(hash)
             return
         }
-        val existing = peers.find(nodeId)
-        val oldHash = existing?.avatarHash
-        peers.upsert((existing ?: PeerEntity(nodeId)).copy(avatarHash = hash))
-        if (oldHash != hash) blobs.deleteIfUnreferenced(oldHash)
+        pointPeerAtAvatar(nodeId, hash, createRow = true)?.let { blobs.deleteIfUnreferenced(it) }
     }
 
     /**

@@ -22,6 +22,8 @@ document:
 
 ### Fixed
 
+- When a contact changed their photo along with their name or status, your phone could keep the old name
+  or miss the new photo until they edited their profile again. Both changes now arrive together.
 - When a nearby phone passed along messages from someone you hadn't met yet, most of them could take ten
   minutes to appear. They now show up together once that person's profile reaches your phone.
 - Messages from someone you hadn't met could fail to appear for up to a day if the phone passing them along
