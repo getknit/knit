@@ -66,8 +66,17 @@ workflow:
     - .gradle/build-cache/
   policy: pull
 
+# Pinned to amd64 because the untagged pool includes an Apple Silicon runner (mac-mini-docker), which would
+# otherwise pull the arm64 image. Two native pieces of the build are Linux x86_64-only: AGP's AAPT2 (from
+# Maven) and Robolectric's native runtime (`nativeruntime-dist-compat` ships no linux/aarch64). In an arm64
+# container Rosetta finds no x86_64 loader, and AAPT2 dies at processDebugResources (job 6043). An amd64
+# container runs whole under Rosetta, which is slower than native and still correct; on the x86 runners this
+# does nothing. Needs runner 16.7+ for `docker: platform`.
 .android:
-  image: eclipse-temurin:21-jdk
+  image:
+    name: eclipse-temurin:21-jdk
+    docker:
+      platform: linux/amd64
   before_script:
     - apt-get update -qq && apt-get install -y -qq unzip wget > /dev/null
     - export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
