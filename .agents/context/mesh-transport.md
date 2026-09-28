@@ -263,12 +263,15 @@ why a `FILE_HEADER`→`FILE_CHUNK`s→`FILE_END` run needs no file id. Don't pus
 expecting them to interleave.
 
 A link holds **at most one custody digest waiting to be written** (ADR 2026-09.tjfb). `FramedLink.sendDigest`
-swaps the ids into one slot and queues a `DigestDue` marker only when the slot was empty; the writer empties the
-slot when it reaches the marker. A digest is a snapshot of `liveIds`, so the newer set replaces the older one
-where it stands, and a back-fill on a slow link no longer collects one stale 20 KB digest per re-offer tick
-ahead of every later frame (the knit-ios `hci1` runs: a post waited 393 s behind ten of them). An idle link's
-cadence and bytes are unchanged, and a digest still rides between file chunks. Counter: `digestsReplaced`.
-Sender-local: the wire and the receiver are untouched.
+swaps the ids into one slot and queues a `DigestDue` marker only when the slot was empty; the writer empties
+the slot when it reaches the marker. A digest is a snapshot of `liveIds`, so the newer set replaces the older
+one where it stands, and a back-fill on a slow link no longer collects one stale 20 KB digest per re-offer
+tick in `FramedLink`'s queue. An idle link's cadence and bytes are unchanged, and a digest still rides between
+file chunks. Counter: `digestsReplaced`. Sender-local: the wire and the receiver are untouched. **It reaches
+only `FramedLink`'s own queue:** the Bluetooth stack's socket buffer (≥ 120 KB on the Pixel 3) holds whatever
+the writer has already handed it, and on the knit-ios `hci1` rig a post still waited 133 s behind six digests
+queued there (393 s behind ten before). Shrinking that wait means keeping the socket shallow or the digest
+smaller, not a second slot.
 
 ## Steady-state digest parity + BLE suppression means NAN has no NDP exactly when an image needs it
 

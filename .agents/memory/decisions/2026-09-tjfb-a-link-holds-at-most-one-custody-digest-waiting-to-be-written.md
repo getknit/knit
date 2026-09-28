@@ -64,7 +64,32 @@ Nothing on the wire moves: the `DIGEST` record, its JSON and the 60 s re-offer a
 cannot tell a replaced digest from one never sent. It is local to the sender and not cross-platform law; the
 iOS port mirrors it as its own choice.
 
+## Measured on hardware
+
+Same rig on 2026-09-27, 18:23 to 18:43: the Pixel 3 on this commit, linked to the other four lab phones, and
+knit-ios `scripts/interop.py android-rings --peer-log debug --arrival-timeout 900` with knit-peer on `hci1`.
+All ten steps passed, and the link held. The room post and the DM took **133.1 s and 124.4 s**, against
+392.9 s and 383.1 s on the old queue. On the four phone links alone `digestsReplaced` stayed at 0 for three
+minutes, and the Pixel 3, 7, 8 and 9 held the same custody fingerprint, so digests still flow and custody
+still converges.
+
+That is a third of the old wait, not the few seconds the slot would give on its own, and the logs say why.
+`digestsReplaced` rose once a minute to 4 while the back-fill was going into the socket, then stopped at
+18:36. From 18:40:20 to 18:43:19, six digests still reached the peer 33 to 37 s apart, and the post landed
+directly behind the sixth. Those six were each written whole as its tick came round, with nothing waiting in
+`FramedLink`: the writer had handed the back-fill's tail to the Bluetooth stack by 18:36, and the stack's own
+socket buffer held it, plus every digest written after it, at least 120 KB, three to four minutes of `hci1`
+air. `FramedLink` sees only its own queue. Once it has written a record, the record cannot be replaced, and
+the socket gives no depth to read. The same buffer is why the file feed is paced (`BLE_PACE_BYTES_PER_SEC`).
+
 ## What it costs
+
+**The Bluetooth stack's buffer is outside the slot's reach.** On a link much slower than that buffer is deep,
+a frame still waits behind whatever the stack holds, and a link past its back-fill keeps it nearly full: one
+20 KB digest a minute is most of what `hci1` carries in that minute. Closing that means keeping the socket
+shallow — pacing frame writes as the file feed already is, at a rate learned from the link — or a smaller
+digest record. The first needs a throughput estimate `FramedLink` does not have; the second is a wire
+question. Neither is done here. Between two phones at tens of KB/s the same buffer drains in seconds.
 
 A frame sent during a back-fill still waits for the rest of the back-fill ahead of it; that is a priority
 question (live frames ahead of custody re-serves), not this one. On a link as slow as `hci1`, the one waiting

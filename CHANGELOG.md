@@ -37,7 +37,7 @@ document:
   nearby who can only get it through your phone could wait up to a minute. Your phone now passes it on
   straight away.
 - On a weak Bluetooth link, a message you sent while your phone was catching a nearby phone up on older
-  messages could arrive minutes after the catch-up finished. It now goes out soon after the catch-up ends.
+  messages could arrive minutes after the catch-up finished. That wait is now much shorter.
 
 ## [2.7.0](https://github.com/getknit/knit/releases/tag/v2.7.0) — 2026-09-24T21:26:44Z
 
