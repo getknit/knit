@@ -9,6 +9,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -281,6 +282,9 @@ class SessionLabTest {
                 opened,
             )
             assertEquals(1L, bob.metrics.snapshot().groupKeyRequestsSent)
+            // A row is written before its tick is sealed, so three rows do not mean three ticks left: one still
+            // being sealed when the link goes is lost for good (#96, its own repro below). Wait for the ticks.
+            lab.await(1) { if (alice.missingAcks(groupId, listOf(alice, bob)).isEmpty()) 1 else 0 }
             // The seed the hold ate is still in Alice's custody and nowhere in Bob's; the digest exchange on
             // the next link-up (or the 60 s re-offer) is what serves it. Re-link, then the oracle.
             lab.unlink(alice, bob)
@@ -288,8 +292,43 @@ class SessionLabTest {
             lab.assertConverged(listOf(alice, bob), atLeast = 3) { groupId }
         }
 
+    /**
+     * A group tick sent over a live link leaves `AckSync` the moment `send` returns: it is `relay = false`, so
+     * it is never custodied, and the owed entry is dropped as delivered. A link that dies with the tick still in
+     * its buffer loses it for good — the message is delivered and custodied on both sides, so no digest
+     * re-serves it and nothing re-owes the tick; the author never sees this member's ✓✓. The lossy pipe is the
+     * buffer the teardown loses, the unlink is the teardown. Found by the chaos soak (2026-09-28) as the
+     * missed-seed scenario's lost third tick: a live send suspended past the scenario's unlink.
+     */
+    @Ignore("#96: a live-link group tick lost with its link is never sent again")
+    @Test
+    fun aGroupTickLostWithItsLinkIsSentAgainOnTheNextLink() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            lab.link(alice, bob)
+            lab.awaitAcquainted(alice, bob)
+            val groupId = alice.createGroup(bob)
+            assertTrue(alice.sendGroup(groupId, "first"))
+            lab.assertConverged(listOf(alice, bob), atLeast = 1) { groupId }
+
+            bob.transport.lossy(alice.transport) { it.isLiveTickFrom(bob.nodeId) }
+            assertTrue(alice.sendGroup(groupId, "second"))
+            lab.await(1) { bob.transport.lost.size }
+            // The loss is recorded inside `send`, before AckSync drops the owed entry: a re-link that ran first
+            // would find the tick still owed and send it again, and the repro would pass on HEAD.
+            bob.transport.awaitInboundDrained()
+            bob.transport.lossy(alice.transport)
+            lab.unlink(alice, bob)
+            lab.link(alice, bob)
+            lab.assertConverged(listOf(alice, bob), atLeast = 2) { groupId }
+        }
+
     private fun WireEnvelope.isGroupFrame(): Boolean = WireCodec.decodeEnvelope(signed)?.group != null
 
     private fun WireEnvelope.isChatFrom(nodeId: String): Boolean =
         WireCodec.decodeEnvelope(signed)?.let { it.type == FrameType.CHAT && it.senderId == nodeId } == true
+
+    /** A point-to-point (`relay = false`) chat frame [nodeId] sent: the live-link form of a delivery tick. */
+    private fun WireEnvelope.isLiveTickFrom(nodeId: String): Boolean = !relay && isChatFrom(nodeId)
 }

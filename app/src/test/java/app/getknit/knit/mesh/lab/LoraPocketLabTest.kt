@@ -130,8 +130,8 @@ class LoraPocketLabTest {
             assertTrue(bob.sendDm(alice, "and back"))
             lab.assertConverged(listOf(alice, bob), atLeast = 2) { it.dmWith(if (it === alice) bob else alice) }
             assertTrue("the gate never fired", alice.metrics.snapshot().loraSkippedLinked >= 1)
-            assertEquals("nothing of the DM went on the air", 0, alice.loraTx("far:chat"))
-            assertEquals(0, bob.loraTx("far:chat"))
+            assertEquals("nothing of the DM went on the air: ${alice.loraLog}", 0, alice.loraTx("far:chat"))
+            assertEquals("nothing of the reply went on the air: ${bob.loraLog}", 0, bob.loraTx("far:chat"))
         }
 
     /**

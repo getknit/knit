@@ -88,6 +88,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import io.mockk.slot
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -104,6 +105,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -3570,6 +3572,52 @@ class InboundPipelineTest {
             assertEquals(hash, rig.peerMap[alice.nodeId]?.avatarHash)
             coVerify { rig.blobs.insert(hash, "image/jpeg", any()) }
             assertFalse("the staging file is deleted after ingest", file.exists())
+        }
+
+    /**
+     * #98: the avatar push and the profile frame arrive on two collectors (the files flow and the router), and
+     * both writers read the peer row, copy it and upsert the whole row back. An avatar push that read the row
+     * before a newer profile landed writes the older row back over it — the profile's name, version and prekey
+     * pin are gone, and the frame is already deduped and custodied, so nothing re-applies it.
+     */
+    @Ignore("#98: an avatar write reverts a profile that landed between its read and its write")
+    @Test
+    fun anAvatarPushThatReadTheRowBeforeANewerProfileKeepsThatProfile() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.peerMap[alice.nodeId] =
+                PeerEntity(nodeId = alice.nodeId, pubKey = alice.bundle.encoded, name = "Old", updatedAt = 1L)
+            val bytes = byteArrayOf(4, 3, 2, 1)
+            val hash = sha256Hex(bytes)
+            val file = File.createTempFile("avatar", ".bin").apply { writeBytes(bytes) }
+
+            // The avatar path reads the row, then is descheduled before its write.
+            val read = CompletableDeferred<Unit>()
+            val resume = CompletableDeferred<Unit>()
+            var gated = true
+            coEvery { rig.peers.find(alice.nodeId) } coAnswers {
+                val row = rig.peerMap[firstArg()]
+                if (gated) {
+                    gated = false
+                    read.complete(Unit)
+                    resume.await()
+                }
+                row
+            }
+            val push = launch { rig.pipeline.onAvatarReceived(alice.nodeId, hash, "image/jpeg", file.absolutePath) }
+            read.await()
+
+            val newer = rig.profile(alice, name = "New", sentAt = 9L)
+            rig.pipeline.onDeliver(alice.sign(newer), newer, alice.nodeId)
+            assertEquals("New", rig.peerMap[alice.nodeId]?.name)
+
+            resume.complete(Unit)
+            push.join()
+            val row = rig.peerMap.getValue(alice.nodeId)
+            assertEquals("the pushed avatar is adopted", hash, row.avatarHash)
+            assertEquals("the newer profile's name survives the avatar write", "New", row.name)
+            assertEquals("the newer profile's version survives the avatar write", 9L, row.updatedAt)
         }
 
     @Test

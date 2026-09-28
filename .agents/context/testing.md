@@ -376,6 +376,20 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   would miss a board node: the composite never hands its child a null-target send.) Where the mesh legitimately
   takes one of two routes (Bob answers Alice's intro instead of sending his own), assert on what both routes
   produce. #87 came out of this sweep.
+- **What the overnight soak taught** (2026-09-28, whole-package sweeps on fresh seeds over two worktrees,
+  single-JVM, three-fork and one- or two-core-throttled). A board node's manager runs on the composite's
+  `combine … stateIn`, a copy of the link set that trails the radio and conflates on its own, and
+  `awaitNeighborsObserved` cannot see it. After an `unlink`, `AckSync` still read the departed peer from
+  `neighbors.value` and "sent" a tick into no child (#96), and an unlink and re-link inside the composite's lag
+  was no newcomer to the manager, so no blob re-ask ran. `unlink` now waits for the composite's merged set and
+  for `MeshManager.linksActedOn`. `link` is not awaited, so `awaitAcquainted` also waits for each board to hold
+  the radio's links: a DM sent before that met a board that saw no link and aired it. A message row is written
+  before its tick is sealed (`deliverChat`, then `acknowledge`), so a row count is not proof the tick left; await
+  the author's receipts before a link goes. Three mesh bugs came out of it: #96 (a live-link tick lost with its
+  link is never sent again), #97 (DataStore 1.2.1 drops the update for a `data` collector that subscribes
+  mid-write: the "profile edit was never published" setup failure, and the most frequent failure in a sweep until
+  it is fixed) and #98 (a profile frame and an avatar file landing together overwrite each other's peer-row
+  write).
 - **Time is real.** `MeshManager.start` builds its session on `Dispatchers.Default`, so scenarios run under
   `runBlocking` and poll, never virtual time. `MeshLab.await` **fails the scenario** where the wait runs out
   (with every node's counters and sends); `tryAwait` is the Boolean form for a site that words its own

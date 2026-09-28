@@ -2273,6 +2273,16 @@ class MeshManager(
 
     // --- Profile broadcasting ---
 
+    /**
+     * The link set [watchNeighbors] last acted on. `neighbors` is a conflating `StateFlow`, so a link taken
+     * down and brought back inside one wake-up of that watcher is a link that never went down to it: no
+     * newcomer on the way back, so no profile push, digest exchange or blob re-ask until the 60 s re-offer.
+     * No radio flaps that fast; the mesh-in-a-box lab can, and waits on this before it re-links.
+     */
+    @Volatile
+    internal var linksActedOn: Set<String> = emptySet()
+        private set
+
     private fun watchNeighbors(session: CoroutineScope) {
         session.launch {
             var known = emptySet<String>()
@@ -2288,6 +2298,7 @@ class MeshManager(
                 // link (Bluetooth) only joins once, so reofferToNeighborsPeriodically re-runs these hooks on a
                 // timer for currently-linked neighbors — the anti-entropy a non-flapping link needs.)
                 known = currentIds
+                linksActedOn = currentIds
                 // A newcomer may be the holder of bytes whose want the sweep already reclaimed — re-arm from
                 // the database first, so the re-ask below has the full missing set to ask it for.
                 if (newcomers.isNotEmpty()) rewantMissingBlobs()

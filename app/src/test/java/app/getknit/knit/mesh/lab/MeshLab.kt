@@ -201,9 +201,11 @@ class MeshLab {
      * link that never went down to it — no newcomer, so no profile push, no digest exchange, no re-send of an
      * owed group seed. No radio flaps that fast; the lab can, and on one slow core a collector's wake-up is
      * long. A node with a board also waits for its LoRa child to hold the new link set
-     * ([LabNode.awaitBoardSawLinks]): the composite hands it over from a coroutine of its own, and a send that
-     * outruns it meets a stale election or a peer still counted as linked. The [SETTLE_MS] pause stays for
-     * whatever else reads the composite's `StateFlow`.
+     * ([LabNode.awaitBoardSawLinks]) and for the composite's own merged `neighbors`: each is handed over from a
+     * coroutine of its own, and a send that outruns it meets a stale election or a peer still counted as
+     * linked. Last, each manager must have acted on the departure ([LabNode.awaitLinksActedOn]) — on a board
+     * node it collects the composite's `StateFlow`, a second conflation the radio's hand-off record cannot see.
+     * The [SETTLE_MS] pause stays for the composite's other `StateFlow`s (`reachable`, the status).
      */
     suspend fun unlink(
         a: LabNode,
@@ -214,6 +216,8 @@ class MeshLab {
         b.transport.awaitNeighborsObserved()
         a.awaitBoardSawLinks()
         b.awaitBoardSawLinks()
+        a.awaitLinksActedOn()
+        b.awaitLinksActedOn()
         settle()
     }
 
@@ -454,7 +458,7 @@ class MeshLab {
             "profiles did not converge across ${nodes.map { it.name }} within ${timeoutMs}ms:\n" +
                 pairs
                     .map { (a, b) -> "  ${a.name} holds ${b.name} as ${a.presentationOf(b)}; ${b.name} is ${b.ownPresentation()}" }
-                    .joinToString("\n"),
+                    .joinToString("\n") + "\n${report(nodes)}",
             presented,
         )
     }
@@ -622,7 +626,11 @@ class MeshLab {
      * the two halves of the handshake a link-up starts (the profile push, then the digest exchange). Met means
      * both: a scenario may cut a link the moment this returns, and a node with a board and no link then has
      * nothing to fan an old profile stamp with (`RoomTickPlanesLabTest` found the stores still settling on
-     * one slow core).
+     * one slow core). A node with a board also waits for its LoRa child to hold the radio's links
+     * ([LabNode.awaitBoardSawLinks]), as [unlink] does for a departure: the composite hands the link set over
+     * from a coroutine of its own, and under a stall the handshake can finish first — a DM sent next then met
+     * a board that still counted its peer as unlinked and aired it (`LoraPocketLabTest`'s linked-DM gate under
+     * chaos seed 279241075, 2026-09-28).
      */
     suspend fun awaitAcquainted(vararg nodes: LabNode) {
         val pairs = nodes.flatMap { a -> nodes.filter { it !== a }.map { b -> a to b } }
@@ -630,6 +638,7 @@ class MeshLab {
         val missing = pairs.filterNot { (a, b) -> a.knows(b) }.map { (a, b) -> "${a.name}→${b.name}" }
         assertTrue("profiles never exchanged among ${nodes.map { it.name }}; missing $missing\n${report(nodes.toList())}", ok)
         awaitCustodyParity(*nodes)
+        nodes.forEach { it.awaitBoardSawLinks() }
     }
 
     companion object {
@@ -779,6 +788,9 @@ class LabNode internal constructor(
     internal var lora: LoraMeshTransport? = null
         private set
 
+    /** The composite the manager runs on when the node has a board ([lora] beside the radio), else null. */
+    private var composite: CompositeMeshTransport? = null
+
     /** Everything the LoRa plane logged this boot — `lora tx <label> parts=N` lines are the air oracle. */
     val loraLog = CopyOnWriteArrayList<String>()
     lateinit var manager: MeshManager
@@ -908,7 +920,8 @@ class LabNode internal constructor(
                         ),
                 )
             }
-        val meshTransport: MeshTransport = lora?.let { CompositeMeshTransport(listOf(transport, it), scope) } ?: transport
+        composite = lora?.let { CompositeMeshTransport(listOf(transport, it), scope) }
+        val meshTransport: MeshTransport = composite ?: transport
         manager =
             MeshManager(
                 transport = meshTransport,
@@ -1309,17 +1322,41 @@ class LabNode internal constructor(
      * The child's routing (the election, `fastSend`'s linked-peer skip, the send-time `LINKED` drop) reads that
      * set, not the radio's. Compared as sets, on the routing field itself: `status.pocketLinks` is a count, and
      * `publishStatus` has several unlocked writers, so it can keep a stale value long after the hand-off.
+     *
+     * The composite's own `neighbors` — what the manager reads for "is the author linked" (`AckSync`, the
+     * newcomer hooks) — is a third copy, a `combine … stateIn` with a collector of its own, so it is waited for
+     * too. The 100 ms settle used to cover it; a chaos stall outlasts that, and a room tick owed just after an
+     * unlink then took the live-link branch toward a peer whose link was gone and was lost with the send
+     * (`RoomTickPlanesLabTest`'s LoRa-only tick under chaos seed 7424, 2026-09-28 — the loss itself is #96).
      */
     internal suspend fun awaitBoardSawLinks() {
         val board = lora ?: return
+        val stack = checkNotNull(composite) { "$name has a board and no composite" }
         val radio = { transport.neighbors.value.mapTo(HashSet()) { it.nodeId } }
+        val merged = { stack.neighbors.value.mapTo(HashSet()) { it.nodeId } }
         val seen =
             withContext(Dispatchers.Default) {
                 withTimeoutOrNull(MeshLab.AWAIT_MS) {
-                    while (board.pocketLinkIds != radio()) delay(MeshLab.POLL_MS)
+                    while (board.pocketLinkIds != radio() || merged() != radio()) delay(MeshLab.POLL_MS)
                 }
             } != null
-        check(seen) { "$name's board never took the radio's links ${radio()} (holds ${board.pocketLinkIds})" }
+        check(seen) { "$name's board never took the radio's links ${radio()} (holds ${board.pocketLinkIds}, the stack reads ${merged()})" }
+    }
+
+    /**
+     * Returns once this node's manager has acted on the radio's current link set ([MeshManager.linksActedOn]).
+     * [LabTransport.awaitNeighborsObserved] proves the radio's own collectors were handed a change; a node with
+     * a board runs its manager on the composite's merged `StateFlow`, which conflates on its own, and a re-link
+     * inside that window was no newcomer to the manager — no blob re-ask, no digest, until the 60 s re-offer
+     * (`AttachmentLabTest`'s long-isolation picture under chaos seed 913483320, 2026-09-28).
+     */
+    internal suspend fun awaitLinksActedOn() {
+        val radio = { transport.neighbors.value.mapTo(HashSet()) { it.nodeId } }
+        val seen =
+            withContext(Dispatchers.Default) {
+                withTimeoutOrNull(MeshLab.AWAIT_MS) { while (manager.linksActedOn != radio()) delay(1) }
+            } != null
+        check(seen) { "$name's manager never acted on the links ${radio()} (last acted on ${manager.linksActedOn})" }
     }
 
     /** Drops every custody row, as a wiped database would; the digest is rebuilt over nothing. */
