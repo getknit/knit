@@ -28,9 +28,11 @@ class MeshMetricsTest {
         repeat(2) { metrics.onFastDropped(FastPathDrop.FRAG_TIMEOUT) }
         metrics.onFastDropped(FastPathDrop.UNKNOWN_TAG)
         repeat(4) { metrics.onBleLinkDupSkipped() }
+        repeat(2) { metrics.onDigestReplaced() }
 
         val snap = metrics.snapshot()
         assertEquals(4L, snap.bleLinkDupSkipped)
+        assertEquals(2L, snap.digestsReplaced)
         assertEquals(1L, snap.fastCompactSent)
         assertEquals(2L, snap.fastLegacySent)
         assertEquals(1L, snap.fastFragSent)

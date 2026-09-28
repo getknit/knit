@@ -165,6 +165,7 @@ carries; never renumber an old one.
 | [2026-09.sjaa](decisions/2026-09-sjaa-ble-side-channel.md) | BLE side channel: small floodable frames ride non-connectable extended-advertising pages | mesh, bluetooth |
 | [2026-09.sre4](decisions/2026-09-sre4-a-resolved-meshtastic-author-s-avatar-opens-the-caveat.md) | A resolved Meshtastic author's avatar opens the caveat, not the profile | lora, meshtastic, ui |
 | [2026-09.t8t8](decisions/2026-09-t8t8-an-offer-is-not-backfill-and-must-not-compete-with-it.md) | An OFFER is not backfill and must not compete with it | lora, airtime, reliability |
+| [2026-09.tjfb](decisions/2026-09-tjfb-a-link-holds-at-most-one-custody-digest-waiting-to-be-written.md) | A link holds at most one custody digest waiting to be written | mesh, custody, airtime |
 | [2026-09.tmbq](decisions/2026-09-tmbq-a-relay-invite-is-a-bearer-link.md) | A relay invite is a bearer link, applied on consent and never silently | spool, relays, ui, contacts |
 | [2026-09.tss4](decisions/2026-09-tss4-a-shared-location-is-a-geo-uri-in-the-body.md) | A shared location is a geo URI in the body, read only when you send it | location, privacy, ui, permissions, moderation |
 | [2026-09.u8qj](decisions/2026-09-u8qj-the-ble-side-scan-is-off-while-every-capable-peer-is-linked-and-nothing-streams.md) | The BLE side scan is off while every capable peer is linked and nothing streams | mesh, bluetooth |

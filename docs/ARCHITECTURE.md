@@ -175,7 +175,8 @@ Implementations:
   NDP socket and the BLE L2CAP socket. A byte stream is chunked into length-prefixed records
   `[type:1][len:4 big-endian][payload]`: `FRAME` (one CBOR `WireEnvelope` → `inbound`); a file as
   `FILE_HEADER` (JSON `FileHeaderWire`: kind + key + mime) → `FILE_CHUNK`s → `FILE_END` (→
-  `incomingFiles`); `DIGEST` (a custody id-list); plus `HELLO`/`KEEPALIVE`. The writer serializes files
+  `incomingFiles`); `DIGEST` (a custody id-list, at most one waiting per link — a newer one takes the
+  waiting one's place, ADR 2026-09.tjfb); plus `HELLO`/`KEEPALIVE`. The writer serializes files
   and interleaves live frames *between* chunks so an 8 MiB blob never stalls traffic; a per-file receive
   ceiling matches the 8 MiB send cap.
 - **Byte metrics:** `send` records `metrics.onBytesSent(bytes.size * targets.size)` — one frame

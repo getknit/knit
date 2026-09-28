@@ -90,6 +90,7 @@ class FramedLinkTest {
         // A small out-pipe lets a test force the writer to back-pressure mid-file (see the interleave test).
         fromLinkBuffer: Int = 1 shl 18,
         paceBytesPerSec: Int = 0,
+        metrics: MeshMetrics = MeshMetrics(),
     ): Harness {
         val toLink = PipedOutputStream()
         val linkInput = PipedInputStream(toLink, 1 shl 18)
@@ -113,7 +114,7 @@ class FramedLinkTest {
                 socket = socket,
                 scope = scope,
                 cacheDir = tmp.root,
-                metrics = MeshMetrics(),
+                metrics = metrics,
                 callbacks = callbacks,
                 now = { 0L },
                 paceBytesPerSec = paceBytesPerSec,
@@ -315,6 +316,89 @@ class FramedLinkTest {
         val endAt = types.indexOf(LinkFraming.Type.FILE_END)
         assertTrue("a FRAME must interleave before FILE_END, saw $types", frameAt in 0 until endAt)
         assertArrayEquals("the interleaved frame's bytes are intact", framePayload, interleaved)
+    }
+
+    @Test
+    fun digestsSentWhileTheWriterIsBusyCollapseIntoTheNewest() {
+        // ADR 2026-09.tjfb: on a slow link a back-fill held one digest per 60 s re-offer, each minutes stale when
+        // written and each ahead of every frame queued after it. A 1 KiB out-pipe holds the writer inside the
+        // 64 KiB frame until the test reads, so every send below lands while that frame is still on the socket.
+        val metrics = MeshMetrics()
+        val h = harness(fromLinkBuffer = 1024, metrics = metrics)
+        val backfill = ByteArray(64 * 1024) { 7 }
+        val live = frameBytes(id = "live1", senderId = "me000001")
+        h.link.send(backfill)
+        h.link.sendDigest(listOf("a"))
+        h.link.sendDigest(listOf("a", "b"))
+        h.link.sendDigest(listOf("a", "b", "c"))
+        h.link.send(live)
+
+        assertArrayEquals(backfill, LinkFraming.read(h.fromLink)!!.payload)
+        val digest = LinkFraming.read(h.fromLink)!!
+        assertEquals(LinkFraming.Type.DIGEST, digest.type)
+        assertEquals("one digest, with the newest id set", listOf("a", "b", "c"), LinkFraming.decodeDigest(digest.payload)!!.ids)
+        val next = LinkFraming.read(h.fromLink)!!
+        assertEquals("the live frame comes next, not two stale digests", LinkFraming.Type.FRAME, next.type)
+        assertArrayEquals(live, next.payload)
+        assertEquals(2L, metrics.snapshot().digestsReplaced)
+    }
+
+    @Test
+    fun anIdleLinkWritesEveryDigestItIsHanded() {
+        // The slot empties when the writer takes it, before the record reaches the socket, so a digest sent after
+        // the last one was read is a fresh record: the re-offer cadence on an idle link is what it was.
+        val metrics = MeshMetrics()
+        val h = harness(metrics = metrics)
+        h.link.sendDigest(listOf("a"))
+        assertEquals(listOf("a"), LinkFraming.decodeDigest(LinkFraming.read(h.fromLink)!!.payload)!!.ids)
+        h.link.sendDigest(listOf("b"))
+        assertEquals(listOf("b"), LinkFraming.decodeDigest(LinkFraming.read(h.fromLink)!!.payload)!!.ids)
+        assertEquals(0L, metrics.snapshot().digestsReplaced)
+    }
+
+    @Test
+    fun aDigestAlreadyOnTheSocketIsNeverRewrittenAndTheNextQueuesBehindIt() {
+        // Once the writer has taken the waiting digest its bytes are going out as they were; a newer digest is a
+        // second record. The ids overflow the 1 KiB out-pipe, so the first digest stays on the socket until read.
+        val h = harness(fromLinkBuffer = 1024)
+        val first = List(200) { "id-%019d".format(it) }
+        h.link.sendDigest(first)
+        assertTrue("the writer took the first digest", awaitUntil { h.fromLink.available() > 0 })
+        h.link.sendDigest(listOf("newer"))
+
+        val a = LinkFraming.read(h.fromLink)!!
+        assertEquals(first, LinkFraming.decodeDigest(a.payload)!!.ids)
+        val b = LinkFraming.read(h.fromLink)!!
+        assertEquals(LinkFraming.Type.DIGEST, b.type)
+        assertEquals(listOf("newer"), LinkFraming.decodeDigest(b.payload)!!.ids)
+    }
+
+    @Test
+    fun aDigestStillGoesOutBetweenFileChunksAndCollapsesThereToo() {
+        // A digest is what makes the peer serve us what we lack, so it keeps riding between a file's chunks
+        // rather than waiting out the file, and several sent while the file streams go out as one. The 64 KiB
+        // frame ahead of the file holds the writer until the test reads, so all of them are queued first.
+        val h = harness(fromLinkBuffer = 1024)
+        val file = tmp.newFile("between.bin").apply { writeBytes(ByteArray(80 * 1024)) }
+        h.link.send(ByteArray(64 * 1024))
+        h.link.sendFile(file, FileMeta(FileKind.ATTACHMENT, "9".repeat(64), "image/jpeg"))
+        h.link.sendDigest(listOf("a"))
+        h.link.sendDigest(listOf("a", "b"))
+        h.link.send(frameBytes(id = "live1", senderId = "me000001"))
+
+        val types = ArrayList<LinkFraming.Type>()
+        val digests = ArrayList<List<String>>()
+        var rec = LinkFraming.read(h.fromLink)
+        while (rec != null) {
+            types.add(rec.type)
+            if (rec.type == LinkFraming.Type.DIGEST) digests.add(LinkFraming.decodeDigest(rec.payload)!!.ids)
+            if (rec.type == LinkFraming.Type.FILE_END) break
+            rec = LinkFraming.read(h.fromLink)
+        }
+        assertEquals("one digest, with the newest id set", listOf(listOf("a", "b")), digests)
+        val end = types.indexOf(LinkFraming.Type.FILE_END)
+        assertTrue("the digest rides between chunks, saw $types", types.indexOf(LinkFraming.Type.DIGEST) in 0 until end)
+        assertTrue("so does the live frame, saw $types", types.lastIndexOf(LinkFraming.Type.FRAME) in 1 until end)
     }
 
     @Test

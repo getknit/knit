@@ -262,6 +262,14 @@ transfers and interleaves live frames *between* chunks (so an 8 MiB blob never s
 why a `FILE_HEADER`→`FILE_CHUNK`s→`FILE_END` run needs no file id. Don't push two files down one socket
 expecting them to interleave.
 
+A link holds **at most one custody digest waiting to be written** (ADR 2026-09.tjfb). `FramedLink.sendDigest`
+swaps the ids into one slot and queues a `DigestDue` marker only when the slot was empty; the writer empties the
+slot when it reaches the marker. A digest is a snapshot of `liveIds`, so the newer set replaces the older one
+where it stands, and a back-fill on a slow link no longer collects one stale 20 KB digest per re-offer tick
+ahead of every later frame (the knit-ios `hci1` runs: a post waited 393 s behind ten of them). An idle link's
+cadence and bytes are unchanged, and a digest still rides between file chunks. Counter: `digestsReplaced`.
+Sender-local: the wire and the receiver are untouched.
+
 ## Steady-state digest parity + BLE suppression means NAN has no NDP exactly when an image needs it
 
 Large attachments go through the bulk-want escape hatch, and it must never feed the recovery machinery.

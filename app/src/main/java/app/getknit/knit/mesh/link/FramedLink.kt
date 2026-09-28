@@ -22,6 +22,7 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.io.IOException
 import java.io.OutputStream
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Callbacks a [FramedLink] raises up to its owning transport. Kept transport-neutral (no radio types) so
@@ -68,6 +69,11 @@ class FramedLink(
     private val log: (String) -> Unit = {},
 ) {
     private val outbound = Channel<Outbound>(Channel.UNLIMITED)
+
+    // The custody digest waiting in [outbound] to be written, if one is. Whoever swaps it from null queues one
+    // [Outbound.DigestDue] and the writer empties it on reaching that marker, so at most one marker is ever
+    // queued. [sendDigest] swaps a newer id set in here rather than queueing a second record.
+    private val pendingDigest = AtomicReference<List<String>?>(null)
     private var readerJob: Job? = null
     private var writerJob: Job? = null
 
@@ -131,9 +137,20 @@ class FramedLink(
         metrics.onBytesSent(bytes.size.toLong())
     }
 
-    /** Enqueue a store-and-forward custody digest ([LinkFraming.Type.DIGEST]) for this peer. */
+    /**
+     * Enqueue a store-and-forward custody digest ([LinkFraming.Type.DIGEST]) for this peer. A link holds at most
+     * one digest not yet written: while one waits, [ids] replaces its id set where it stands in the queue
+     * (ADR 2026-09.tjfb). A digest is a snapshot of custody's live ids, so the newer one says everything the
+     * older one would, and a link busy with a back-fill writes one current digest when it gets there instead of
+     * one stale digest per re-offer tick, each ahead of every frame queued after it. An idle link writes each
+     * digest as it comes, so there the cadence and the bytes are unchanged.
+     */
     fun sendDigest(ids: List<String>) {
-        outbound.trySend(Outbound.Digest(ids))
+        if (pendingDigest.getAndSet(ids) == null) {
+            outbound.trySend(Outbound.DigestDue)
+        } else {
+            metrics.onDigestReplaced()
+        }
     }
 
     /**
@@ -263,10 +280,11 @@ class FramedLink(
                         touch()
                     }
 
-                    is Outbound.Digest -> {
-                        writeRecordSafely(out, LinkFraming.Type.DIGEST, LinkFraming.encodeDigest(DigestWire(item.ids)))
-                        out.flush()
-                        touch()
+                    Outbound.DigestDue -> {
+                        if (writePendingDigest(out)) {
+                            out.flush()
+                            touch()
+                        }
                     }
 
                     is Outbound.FileSend -> {
@@ -339,6 +357,17 @@ class FramedLink(
         }
     }
 
+    /**
+     * Writes the waiting digest with the newest id set [sendDigest] handed it, and empties the slot, so a digest
+     * sent while this one is on the socket queues behind it as a fresh one. False when the slot was already
+     * empty, which a marker never meets while [pendingDigest]'s invariant holds.
+     */
+    private fun writePendingDigest(out: OutputStream): Boolean {
+        val ids = pendingDigest.getAndSet(null) ?: return false
+        writeRecordSafely(out, LinkFraming.Type.DIGEST, LinkFraming.encodeDigest(DigestWire(ids)))
+        return true
+    }
+
     /** Next outbound item: a file stashed during a prior transfer, else the channel head. */
     private suspend fun nextOutbound(): Outbound? = stash.removeFirstOrNull() ?: outbound.receiveCatching().getOrNull()
 
@@ -357,9 +386,8 @@ class FramedLink(
                     wrote = true
                 }
 
-                is Outbound.Digest -> {
-                    writeRecordSafely(out, LinkFraming.Type.DIGEST, LinkFraming.encodeDigest(DigestWire(item.ids)))
-                    wrote = true
+                Outbound.DigestDue -> {
+                    wrote = writePendingDigest(out) || wrote
                 }
 
                 is Outbound.FileSend -> {
@@ -495,9 +523,8 @@ class FramedLink(
             val bytes: ByteArray,
         ) : Outbound
 
-        class Digest(
-            val ids: List<String>,
-        ) : Outbound
+        // A digest is due; its ids are whatever [pendingDigest] holds when the writer gets here.
+        data object DigestDue : Outbound
 
         class FileSend(
             val file: File,

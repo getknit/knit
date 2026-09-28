@@ -275,6 +275,7 @@ class MeshMetrics {
     private val bleSideDeduped = AtomicLong()
     private val bleSideDrops: Map<BleSideDrop, AtomicLong> = BleSideDrop.entries.associateWith { AtomicLong() }
     private val bleLinkDupSkipped = AtomicLong()
+    private val digestsReplaced = AtomicLong()
     private val spoolTablesDerived = AtomicLong()
     private val spoolPushed = AtomicLong()
     private val spoolPulled = AtomicLong()
@@ -734,6 +735,15 @@ class MeshMetrics {
         bleLinkDupSkipped.incrementAndGet()
     }
 
+    /**
+     * A custody digest was handed to a link while an older one still waited there unwritten, and took its id
+     * set instead of queueing behind it (`FramedLink.sendDigest`, ADR 2026-09.tjfb). Zero on an idle link;
+     * about one a minute per link while a back-fill or a file holds the writer.
+     */
+    fun onDigestReplaced() {
+        digestsReplaced.incrementAndGet()
+    }
+
     /** The side channel discarded a frame — see [BleSideDrop] for how to read each reason. */
     fun onBleSideDropped(reason: BleSideDrop) {
         bleSideDrops.getValue(reason).incrementAndGet()
@@ -1140,6 +1150,7 @@ class MeshMetrics {
             bleSideDeduped = bleSideDeduped.get(),
             bleSideDropsByReason = bleSideDrops.mapValues { it.value.get() }.filterValues { it > 0 },
             bleLinkDupSkipped = bleLinkDupSkipped.get(),
+            digestsReplaced = digestsReplaced.get(),
             spoolTablesDerived = spoolTablesDerived.get(),
             spoolPushed = spoolPushed.get(),
             spoolPulled = spoolPulled.get(),
@@ -1265,6 +1276,7 @@ class MeshMetrics {
         val bleSideDeduped: Long = 0,
         val bleSideDropsByReason: Map<BleSideDrop, Long> = emptyMap(),
         val bleLinkDupSkipped: Long = 0,
+        val digestsReplaced: Long = 0,
         val spoolTablesDerived: Long = 0,
         val spoolPushed: Long = 0,
         val spoolPulled: Long = 0,
