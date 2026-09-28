@@ -25,15 +25,17 @@ object StatusRefresh {
         private set
 
     /**
-     * Starts a read unless one is pending or running. [force] skips the 60 s cache and the failure floor — the
-     * user asked; an unforced kick that the reader would answer from its cache starts nothing, so a surface
-     * redrawn by a read's own landing never starts another.
+     * Starts a read unless one is pending or running, or the Bluetooth grant is missing ([BluetoothGrant]).
+     * [force] skips the 60 s cache and the failure floor — the user asked; an unforced kick that the reader would
+     * answer from its cache starts nothing, so a surface redrawn by a read's own landing never starts another.
      */
     fun kick(
         context: Context,
         force: Boolean,
     ) {
         val app = context.applicationContext
+        // Without the grant a read cannot connect, and its failure would read as "Phone out of reach".
+        if (!BluetoothGrant.held(app)) return
         if (!force && !PhoneStatusReader.due(app)) return
         if (!inFlight.compareAndSet(false, true)) return
         if (force) lastForcedMs = System.currentTimeMillis()

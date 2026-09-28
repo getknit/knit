@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- WO-V15: a 48x48 dp app icon on the splash screen. -->
+    <dimen name="splash_icon_size">48dp</dimen>
+</resources>

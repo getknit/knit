@@ -322,25 +322,31 @@ object PeerLinks {
 
 /** Numbers and times as the watch writes them, pure. */
 object Counts {
+    /**
+     * A no-break space: a number and its unit ("12 h") never part at a line end, which at a large font size on a
+     * small watch they otherwise do (WO-V1).
+     */
+    const val NBSP = "\u00A0"
+
     /** "just now", "42 s ago", "3 min ago", "2 h ago" — the age of a snapshot on the watch's clock. */
     fun ago(ageMs: Long): String {
         val s = (ageMs / SECOND).coerceAtLeast(0)
         return when {
             s < JUST_NOW_S -> "just now"
-            s < MINUTE_S -> "$s s ago"
-            s < HOUR_S -> "${s / MINUTE_S} min ago"
-            else -> "${s / HOUR_S} h ago"
+            s < MINUTE_S -> "$s${NBSP}s ago"
+            s < HOUR_S -> "${s / MINUTE_S}${NBSP}min ago"
+            else -> "${s / HOUR_S}${NBSP}h ago"
         }
     }
 
-    /** "under a minute", "45 min", "2 h", "2 h 10 min". */
+    /** "under a minute", "45 min", "2 h", "2 h 10 min" (each number bound to its unit by [NBSP]). */
     fun duration(ms: Long): String {
         val m = (ms / MINUTE_MS).coerceAtLeast(0)
         return when {
             m < 1 -> "under a minute"
-            m < MINUTES_PER_HOUR -> "$m min"
-            m % MINUTES_PER_HOUR == 0L -> "${m / MINUTES_PER_HOUR} h"
-            else -> "${m / MINUTES_PER_HOUR} h ${m % MINUTES_PER_HOUR} min"
+            m < MINUTES_PER_HOUR -> "$m${NBSP}min"
+            m % MINUTES_PER_HOUR == 0L -> "${m / MINUTES_PER_HOUR}${NBSP}h"
+            else -> "${m / MINUTES_PER_HOUR}${NBSP}h ${m % MINUTES_PER_HOUR}${NBSP}min"
         }
     }
 

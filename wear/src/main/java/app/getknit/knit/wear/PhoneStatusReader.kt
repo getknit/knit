@@ -1,6 +1,5 @@
 package app.getknit.knit.wear
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothClass
@@ -12,8 +11,6 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothSocket
 import android.content.Context
-import android.content.pm.PackageManager
-import android.os.Build
 import android.util.Base64
 import android.util.Log
 import androidx.core.content.edit
@@ -154,9 +151,7 @@ object PhoneStatusReader {
     )
 
     private suspend fun fetch(context: Context): Fetched? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
-        ) {
+        if (!BluetoothGrant.held(context)) {
             Log.w(TAG, "no BLUETOOTH_CONNECT grant; open the app on the watch")
             return null
         }

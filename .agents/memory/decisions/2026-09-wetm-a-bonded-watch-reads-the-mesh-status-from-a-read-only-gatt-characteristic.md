@@ -228,3 +228,35 @@ was.
   - The tile's title reads "As of 12:40", which stays true however long nothing asks.
   - The app mutes the hero and dates it. Every surface drops to "Phone out of reach" as soon as a read fails
     past the window. Pinned by `StatusTextTest`.
+
+## Amendment 2026-09-27 (5) — the Wear OS app-quality checklist
+
+The watch app was checked against Google's
+[Wear OS app quality guidelines](https://developer.android.com/docs/quality-guidelines/wear-app-quality) on the
+small round (192 dp, the WO-V16 floor) and large round (227 dp) emulators, at the default font size and at 1.24x.
+Fonts (12 sp floor in the app and the tile's autosize), touch targets, swipe-to-dismiss, the scroll indicator,
+restored scroll state, black backgrounds, the launcher icon, target SDK 36 and 64-bit ABIs already passed. What
+changed:
+
+- **Splash screen (WO-V15).** `core-splashscreen` with `Theme.Knit.Starting`: the launcher icon at 48 dp on black
+  on every API level, Wear OS 3 included, which has no platform splash.
+- **The "signed out" state (WO-V9) is the missing Bluetooth grant.** On API 31+ `BLUETOOTH_CONNECT` is runtime and
+  only the app can ask, so a tile or complication added before the app was opened used to say "No phone" and send
+  the wearer to the wrong device. `BluetoothGrant` gates every read (`StatusRefresh.kick`); without it the tile
+  reads "Allow nearby devices" with an Allow edge button, each complication answers "Allow" in its own type, and
+  the app's hero says "Needs permission". Every tap opens the app, which asks, and a grant change redraws them all.
+- **Large font on a small watch (WO-V1).** A number and its unit are joined by a no-break space ("12 h"), the radio
+  problem card hyphenates ("discon-nected"), and the edge button drops its icon and then shrinks its one-line
+  label toward 12 sp rather than wrapping "Refre/sh". The tile sizes itself on the main slot's room, the screen's
+  width over the font scale: three data cards from 180 dp of room, else two (the third, held for others, stays in
+  the app); a message card's glyph and hint only on a large screen (225 dp, the Wear OS breakpoint) with room.
+- **Tile preview (WO-V10)** resized to the recommended 400x400 px, unchanged otherwise.
+- **Play packaging (WO-G7).** `:wear` signs release builds with the same credentials `:app` reads, meant for the
+  Play upload key (Play App Signing then signs both with one app key). Its `versionCode` is the phone's plus
+  1,000,000,000, since Play wants a watch version code unique across form factors.
+
+Still owed before a Play release, outside the code: the listing (WO-G2: name the tile and complications, never
+"Android Wear"), 1:1 watch screenshots of the app and tile (WO-G5), the Wear OS form-factor opt-in, and turning
+the phone side on in release (`BuildConfig.WEAR_STATUS`), without which the non-standalone watch app has nothing to
+read (WO-P5). The watch screenshots must stay out of the fastlane tree F-Droid reads, since F-Droid ships no watch
+build.

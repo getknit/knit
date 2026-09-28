@@ -64,7 +64,8 @@ data class WatchView(
  * if a read since found no phone ([StatusText.shown]). A watch face renders the timeline on its own clock, so it
  * turns without an ask, which never comes while the watch dozes (a face too old for timelines keeps the live
  * entry). A source over the day's history stays true when the phone goes quiet, so it answers plainly. A tap
- * opens the app.
+ * opens the app. Without the Bluetooth grant every source answers "Allow" in its type instead ([BluetoothGrant]),
+ * and the tap into the app is what asks for it.
  */
 abstract class StatusComplicationService : SuspendingTimelineComplicationDataSourceService() {
     /** [type] drawn for [view], or null if this source does not offer [type]. */
@@ -79,6 +80,7 @@ abstract class StatusComplicationService : SuspendingTimelineComplicationDataSou
     override suspend fun onComplicationRequest(request: ComplicationRequest): ComplicationDataTimeline? {
         val type = request.complicationType
         StatusAlarm.asked(this, request.complicationInstanceId)
+        if (!BluetoothGrant.held(this)) return allow(type)?.let { ComplicationDataTimeline(it, emptyList()) }
         val snapshot = cachedAfterKick()
         val failedAt = PhoneStatusReader.failedAt(this)
         val now = System.currentTimeMillis()
@@ -358,6 +360,73 @@ private fun Context.dayPie(today: Today?): ComplicationData {
         .setTapAction(openApp())
         .build()
 }
+
+/**
+ * No Bluetooth grant: "Allow" in whichever type the face asked for, with the Bluetooth glyph, and a tap into the
+ * app, which asks for it (WO-V9's "signed out" state, for a complication).
+ */
+private fun Context.allow(type: ComplicationType): ComplicationData? {
+    val word = text(ALLOW)
+    val description = text(ALLOW_DESCRIPTION)
+    val icon = monochrome(Glyph.Bluetooth)
+    return when (type) {
+        ComplicationType.SHORT_TEXT -> {
+            ShortTextComplicationData
+                .Builder(word, description)
+                .setMonochromaticImage(icon)
+                .setTapAction(openApp())
+                .build()
+        }
+
+        ComplicationType.LONG_TEXT -> {
+            LongTextComplicationData
+                .Builder(text("Open Knit to allow nearby devices"), description)
+                .setTitle(text("Knit"))
+                .setMonochromaticImage(icon)
+                .setTapAction(openApp())
+                .build()
+        }
+
+        ComplicationType.RANGED_VALUE -> {
+            RangedValueComplicationData
+                .Builder(value = 0f, min = 0f, max = 1f, contentDescription = description)
+                .setText(word)
+                .setMonochromaticImage(icon)
+                .setTapAction(openApp())
+                .build()
+        }
+
+        ComplicationType.SMALL_IMAGE -> {
+            SmallImageComplicationData
+                .Builder(smallImage(Glyph.Bluetooth, Tone.Muted), description)
+                .setTapAction(openApp())
+                .build()
+        }
+
+        ComplicationType.MONOCHROMATIC_IMAGE -> {
+            MonochromaticImageComplicationData
+                .Builder(icon, description)
+                .setTapAction(openApp())
+                .build()
+        }
+
+        else -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && type == ComplicationType.WEIGHTED_ELEMENTS) {
+                WeightedElementsComplicationData
+                    .Builder(listOf(WeightedElementsComplicationData.Element(1f, Tone.Muted.argb)), description)
+                    .setText(word)
+                    .setMonochromaticImage(icon)
+                    .setTapAction(openApp())
+                    .build()
+            } else {
+                null
+            }
+        }
+    }
+}
+
+private const val ALLOW = "Allow"
+private const val ALLOW_DESCRIPTION = "Knit needs nearby devices. Tap to open Knit on this watch and allow it."
 
 private fun text(s: String): ComplicationText = PlainComplicationText.Builder(s).build()
 

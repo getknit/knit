@@ -54,6 +54,7 @@ import kotlin.time.Duration.Companion.minutes
  */
 class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors) {
     override suspend fun MaterialScope.tileResponse(requestParams: TileRequest): Tile {
+        if (!BluetoothGrant.held(this@MeshTileService)) return tile(timeline(timelineEntry(allowLayout())), freshness = FRESHNESS)
         val now = System.currentTimeMillis()
         val clicked = requestParams.currentState.lastClickableId == REFRESH_ID
         // The last click id can ride along on the redraw the read itself asks for; a refresh that just ran
@@ -131,6 +132,23 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
         )
     }
 
+    /**
+     * No Bluetooth grant yet (API 31+, before the app was first opened, or after the grant was revoked): the
+     * tile's "signed out" state (WO-V9). It names what is missing and where to fix it, and both the card and the
+     * edge button open the app, which asks. [StatusActivity] redraws the tile once the grant changes.
+     */
+    private fun MaterialScope.allowLayout(): LayoutElement =
+        primaryLayout(
+            titleSlot = { text("Knit".layoutString) },
+            mainSlot = { message(Glyph.Bluetooth, "Allow nearby devices", "Knit reads your phone over Bluetooth") },
+            bottomSlot = {
+                textEdgeButton(
+                    onClick = openApp(),
+                    modifier = LayoutModifier.contentDescription("Open Knit to allow nearby devices"),
+                ) { text("Allow".layoutString) }
+            },
+        )
+
     private fun title(status: WearStatus?): String =
         StatusLines.problemShort(status)
             ?: when (status?.state) {
@@ -143,7 +161,7 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
     /**
      * Three cards: the count that matters most in the state's colour (quiet like the others once the reading is
      * [aged]), the other two quieter. An older phone sends no carrying count; its third card is the all-time
-     * relayed total instead.
+     * relayed total instead. Where three would not fit ([roomy]) the third is left to the app.
      */
     private fun MaterialScope.metrics(
         status: WearStatus,
@@ -151,6 +169,7 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
         aged: Boolean,
     ): LayoutElement {
         val carrying = StatusText.carrying(status)
+        val three = roomy()
         return buttonGroup {
             buttonGroupItem {
                 metric(
@@ -168,16 +187,18 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
                     filledTonalCardColors(),
                 )
             }
-            buttonGroupItem {
-                if (status.extra == null) {
-                    metric(
-                        Counts.compact(status.relayed),
-                        "relayed",
-                        "${Counts.grouped(status.relayed)} relayed in all",
-                        filledVariantCardColors(),
-                    )
-                } else {
-                    metric(carrying.text, "held", StatusLines.carryingLine(status).text, filledVariantCardColors())
+            if (three) {
+                buttonGroupItem {
+                    if (status.extra == null) {
+                        metric(
+                            Counts.compact(status.relayed),
+                            "relayed",
+                            "${Counts.grouped(status.relayed)} relayed in all",
+                            filledVariantCardColors(),
+                        )
+                    } else {
+                        metric(carrying.text, "held", StatusLines.carryingLine(status).text, filledVariantCardColors())
+                    }
                 }
             }
         }
@@ -205,7 +226,25 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
             contentPadding = padding(horizontal = CARD_SIDE_PADDING_DP, vertical = CARD_END_PADDING_DP),
         )
 
-    /** Resting or unreachable: one wide card with the state's glyph, what it means, and what to do. */
+    /**
+     * The main slot's room at the user's font size (WO-V1): the screen's width over the font scale, in dp. A
+     * small watch (192 dp) with the font turned up has too little for three data cards (a label would be
+     * ellipsized, "nea…") or for a message's hint and glyph (they push the headline out of the card).
+     */
+    private fun MaterialScope.room(): Float = deviceConfiguration.screenWidthDp / deviceConfiguration.fontScale.coerceAtLeast(1f)
+
+    /** A large watch by the Wear OS breakpoint: more of the slot's height as well as its width. */
+    private fun MaterialScope.large(): Boolean = deviceConfiguration.screenWidthDp >= LARGE_SCREEN_DP
+
+    /** Room for three data cards; below it the tile shows two. */
+    private fun MaterialScope.roomy(): Boolean = room() >= THREE_CARDS_MIN_DP
+
+    /**
+     * Resting, unreachable or not yet allowed: one wide card with the state's glyph, what it means, and what to
+     * do. The headline may take two lines; the hint and the glyph need a large screen's taller slot (the
+     * guidelines' 225 dp breakpoint) and, as the [room] shrinks, the hint goes first, then the glyph, so the
+     * headline is never cut.
+     */
     private fun MaterialScope.message(
         glyph: Glyph,
         headline: String,
@@ -213,9 +252,9 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
     ): LayoutElement =
         iconDataCard(
             onClick = openApp(),
-            title = { text(headline.layoutString, typography = Typography.TITLE_MEDIUM) },
-            content = { text(hint.layoutString, maxLines = 2) },
-            secondaryIcon = { icon(imageResource(androidImageResource(glyph.res))) },
+            title = { text(headline.layoutString, typography = Typography.TITLE_MEDIUM, maxLines = 2) },
+            content = if (large() && room() >= MESSAGE_HINT_MIN_DP) ({ text(hint.layoutString, maxLines = 2) }) else null,
+            secondaryIcon = if (large() && roomy()) ({ icon(imageResource(androidImageResource(glyph.res))) }) else null,
             width = expand(),
             height = expand(),
             colors = filledTonalCardColors(),
@@ -262,6 +301,15 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
         const val CLICK_DEBOUNCE_MS = 15_000L
         const val CARD_SIDE_PADDING_DP = 4f
         const val CARD_END_PADDING_DP = 8f
+
+        /** [roomy]'s bound: the [room] three compact data cards need, and a message its glyph. */
+        const val THREE_CARDS_MIN_DP = 180f
+
+        /** The Wear OS large-screen breakpoint. */
+        const val LARGE_SCREEN_DP = 225
+
+        /** The [room] a message needs for its hint under a two-line headline. */
+        const val MESSAGE_HINT_MIN_DP = 210f
         val FRESHNESS = 5.minutes
 
         /**
