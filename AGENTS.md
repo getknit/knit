@@ -42,6 +42,9 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
 - **When touching `vectors/`, `GoldenVectorTest`, `KeyedVectorTest` or `IosEmittedVectorTest`, or when a
   change moves a wire byte:** READ `vectors/README.md` and ADR 2026-09.fzh7. The iOS port tests against the
   same files; regenerate with `KNIT_WRITE_VECTORS=1`, never by hand, and never edit `ios-emitted-v1.json`.
+- **When your first prompt opens with "# Paired change", or a message arrives from the `knit-pair` supervisor
+  or a `knit-ios-*` worker:** obey `.agents/rules/paired-change.md`. The iOS half runs in its own session
+  under knit-ios's rules; never edit that repo.
 - **When touching `mesh/bluetooth/BleSideChannel`, `SideCarousel`, `SideScanPolicy`, `SideCapableTracker`,
   `BleFastRoutePolicy`, `BleAdvertPayload`'s flags byte, or `BluetoothMeshTransport.fastFanout`/`fastSend`:**
   READ ADR 2026-09.sjaa and the "page carousel" section of `.agents/context/mesh-transport.md`. The BLE side
