@@ -38,6 +38,8 @@ document:
   straight away.
 - On a weak Bluetooth link, a message you sent while your phone was catching a nearby phone up on older
   messages could arrive minutes after the catch-up finished. That wait is now much shorter.
+- If you left the Profile screen right after cropping a new photo, the photo could be lost, and the greyed-out
+  Save button made it look unsaved anyway. It now saves when you confirm the crop, and a message tells you so.
 
 ## [2.7.0](https://github.com/getknit/knit/releases/tag/v2.7.0) — 2026-09-24T21:26:44Z
 

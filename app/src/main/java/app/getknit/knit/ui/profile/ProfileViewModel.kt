@@ -13,6 +13,7 @@ import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.ui.util.computeAvatarCrop
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -29,6 +30,12 @@ class ProfileViewModel(
     identity: Identity,
     private val avatars: AvatarStore,
     private val blobs: BlobRepository,
+    /**
+     * The application scope. The photo is persisted the moment the crop is confirmed (Save batches only the
+     * name and status), so its write must outlive this screen: on [viewModelScope], a Back tapped before the
+     * encode and blob insert landed cancelled it and the photo was silently lost (issue #26).
+     */
+    private val appScope: CoroutineScope,
 ) : ViewModel() {
     val nodeId = MutableStateFlow("")
 
@@ -161,7 +168,15 @@ class ProfileViewModel(
         }
     }
 
-    /** Persists the cropped avatar. [scale]/[offset]/[diameter] come from the crop dialog's transform. */
+    // A one-shot signal that a photo change landed, so the screen can say so: nothing else on it moves (Save
+    // tracks only the name and status), and a greyed-out Save read as "the photo is not saved yet" (#26).
+    private val _photoChanged = MutableSharedFlow<PhotoChange>(extraBufferCapacity = 1)
+    val photoChanged = _photoChanged.asSharedFlow()
+
+    /**
+     * Persists the cropped avatar on [appScope]. [scale]/[offset]/[diameter] come from the crop dialog's
+     * transform. The hash and the republish stamp go down in one edit ([SettingsStore.setOwnAvatar]).
+     */
     fun confirmCrop(
         scale: Float,
         offset: Offset,
@@ -169,12 +184,12 @@ class ProfileViewModel(
     ) {
         val source = _cropTarget.value ?: return
         _cropTarget.value = null
-        viewModelScope.launch {
+        appScope.launch {
             val crop = computeAvatarCrop(source.width, source.height, diameter, scale, offset.x, offset.y)
             val oldHash = settings.ownAvatarHash.first()
             val newHash = avatars.saveOwnAvatar(source, crop)
-            settings.setOwnAvatarHash(newHash)
-            settings.setAvatarUpdatedAt(System.currentTimeMillis()) // triggers a profile re-broadcast
+            settings.setOwnAvatar(newHash, System.currentTimeMillis()) // the stamp triggers a profile re-broadcast
+            _photoChanged.emit(PhotoChange.UPDATED)
             if (oldHash != newHash) blobs.deleteIfUnreferenced(oldHash)
         }
     }
@@ -184,18 +199,18 @@ class ProfileViewModel(
     }
 
     /**
-     * Clears the user's avatar photo: drops the stored hash (so [avatarHash] emits null and the screen
-     * falls back to the initial), stamps [SettingsStore.setAvatarUpdatedAt] to re-broadcast the now
-     * photo-less profile, and deletes the blob if nothing else references it. Also recovers a *dangling*
+     * Clears the user's avatar photo on [appScope]: drops the stored hash (so [avatarHash] emits null and the
+     * screen falls back to the initial) and stamps the republish time in the same edit, so the now photo-less
+     * profile is re-broadcast, then deletes the blob if nothing else references it. Also recovers a *dangling*
      * hash whose blob is already gone (deleteIfUnreferenced tolerates the missing blob). Note: peers treat
      * a null advertised hash as "unchanged", so this drops the photo locally and for newly-met peers, but
      * doesn't retroactively evict it from peers that already pinned it — matching existing avatar semantics.
      */
     fun clearAvatar() {
-        viewModelScope.launch {
+        appScope.launch {
             val oldHash = settings.ownAvatarHash.first() ?: return@launch
-            settings.clearOwnAvatarHash()
-            settings.setAvatarUpdatedAt(System.currentTimeMillis()) // triggers a profile re-broadcast
+            settings.setOwnAvatar(null, System.currentTimeMillis()) // the stamp triggers a profile re-broadcast
+            _photoChanged.emit(PhotoChange.REMOVED)
             blobs.deleteIfUnreferenced(oldHash)
         }
     }
@@ -204,6 +219,9 @@ class ProfileViewModel(
         _cropTarget.value = null
     }
 }
+
+/** What a landed photo write did, for the screen's confirmation. */
+enum class PhotoChange { UPDATED, REMOVED }
 
 /** Tokens of the owner's phrase the Profile screen reads: the alias plus the one continuation it shows. */
 private const val OWNER_TOKENS = 2

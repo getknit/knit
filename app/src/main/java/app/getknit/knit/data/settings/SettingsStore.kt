@@ -522,6 +522,19 @@ class SettingsStore(
     /** Removes the stored own-avatar hash so [ownAvatarHash] emits null again (the user cleared their photo). */
     suspend fun clearOwnAvatarHash() = dataStore.edit { it.remove(KEY_OWN_AVATAR_HASH) }
 
+    /**
+     * Sets the own-avatar [hash] (null clears it) and stamps [avatarUpdatedAt] in one edit. The stamp is
+     * what republishes the profile (`MeshManager.watchProfileChanges`), and two separate edits could be
+     * cut off between them, leaving a new photo on this phone that no peer is told about (issue #26).
+     */
+    suspend fun setOwnAvatar(
+        hash: String?,
+        updatedAt: Long,
+    ) = dataStore.edit {
+        if (hash == null) it.remove(KEY_OWN_AVATAR_HASH) else it[KEY_OWN_AVATAR_HASH] = hash
+        it[KEY_AVATAR_UPDATED_AT] = updatedAt
+    }
+
     suspend fun setLastReadAt(
         conversationId: String,
         value: Long,

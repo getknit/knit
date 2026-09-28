@@ -30,6 +30,7 @@ import app.getknit.knit.ui.requests.MessageRequestsViewModel
 import app.getknit.knit.ui.search.SearchViewModel
 import app.getknit.knit.ui.settings.SettingsViewModel
 import app.getknit.knit.ui.yourmesh.YourMeshViewModel
+import kotlinx.coroutines.CoroutineScope
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.module.dsl.viewModel
 import org.koin.dsl.module
@@ -113,7 +114,7 @@ val uiModule =
         // Your mesh: the plain-words companion to Diagnostics. Reads the concrete ForwardRepository for its
         // "carrying now" count — a UI projection deliberately kept off the ForwardStore seam.
         viewModel { YourMeshViewModel(get(), get(), get(), get<ForwardRepository>(), get()) }
-        viewModel { ProfileViewModel(get(), get(), get(), get()) }
+        viewModel { ProfileViewModel(get(), get(), get(), get(), get<CoroutineScope>()) }
         viewModel { OnboardingViewModel(get(), get()) }
         viewModel {
             SettingsViewModel(get(), get(), get<RelayStatusRepository>().facts, get<LoraStatusRepository>().facts)

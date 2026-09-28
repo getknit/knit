@@ -116,6 +116,22 @@ fun ProfileScreen(
         viewModel.saved.collect { onBack() }
     }
 
+    // The photo persists the moment the crop is confirmed, while Save stays greyed out (it batches only the
+    // name and status) — so the change says so itself, or it reads as unsaved (#26).
+    val snackbarHostState = remember { SnackbarHostState() }
+    val photoUpdated = stringResource(R.string.profile_photo_updated)
+    val photoRemoved = stringResource(R.string.profile_photo_removed)
+    LaunchedEffect(Unit) {
+        viewModel.photoChanged.collect { change ->
+            val message =
+                when (change) {
+                    PhotoChange.UPDATED -> photoUpdated
+                    PhotoChange.REMOVED -> photoRemoved
+                }
+            snackbarHostState.showSnackbar(message)
+        }
+    }
+
     val picker =
         rememberLauncherForActivityResult(
             ActivityResultContracts.PickVisualMedia(),
@@ -155,6 +171,7 @@ fun ProfileScreen(
         },
         onClearPhoto = viewModel::clearAvatar,
         onSave = viewModel::save,
+        snackbarHostState = snackbarHostState,
     )
 }
 
@@ -171,10 +188,10 @@ internal fun ProfileScreenContent(
     onPickPhoto: () -> Unit,
     onClearPhoto: () -> Unit,
     onSave: () -> Unit,
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
 ) {
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
-    val snackbarHostState = remember { SnackbarHostState() }
     // Android 13+ shows its own copy confirmation, so the snackbar only fires below it (the CrashLogScreen
     // idiom, also followed by Add contact).
     val copiedMessage = stringResource(R.string.action_copied)
