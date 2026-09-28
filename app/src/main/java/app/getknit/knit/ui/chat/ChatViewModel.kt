@@ -46,6 +46,7 @@ import app.getknit.knit.data.relay.RelayPlane
 import app.getknit.knit.data.relay.RelayReach
 import app.getknit.knit.data.relay.attachmentReach
 import app.getknit.knit.data.relay.attachmentWait
+import app.getknit.knit.data.relay.lacksForwardSecrecy
 import app.getknit.knit.data.relay.noticeFor
 import app.getknit.knit.data.relay.planeFor
 import app.getknit.knit.data.relay.reachFor
@@ -344,8 +345,8 @@ data class ChatUiState(
     // Peers currently typing in this thread, shown as an animated indicator above the input. Ephemeral
     // (TTL'd in the mesh layer) and best-effort; empty most of the time.
     val typingPeers: List<TypingPeer> = emptyList(),
-    // Whether the Internet-relay plane covers this thread. Only [RelayReach.Room] and
-    // [RelayReach.Pending] render anything — coverage is the happy path, and an outage is transient and
+    // Whether the Internet-relay plane covers this thread. Only [RelayReach.Room], [RelayReach.Pending]
+    // and [RelayReach.NoForwardSecrecy] render anything — coverage is the happy path, and an outage is transient and
     // stays quiet. A room whose notice the user has dismissed reads [RelayReach.Silent] here, so this is
     // what to *show*, not what is true of the plane. See [noticeFor].
     val relayReach: RelayReach = RelayReach.Silent,
@@ -911,6 +912,8 @@ class ChatViewModel(
             // A group's pinned roster, or a commons' seen members: both feed the @-mention candidates.
             val members = group?.let { GroupMembersStore.decode(it.members) } ?: publicId.commonsMembers
             val peersByNode = directory.byNode
+            // A DM peer on a Knit without forward secrecy: the relay notice says so instead of "not covered yet".
+            val peerLacksFs = isPeerThread && lacksForwardSecrecy(peersByNode[conversationId])
             // Group once, then tally per emoji within each message's bucket. Orphan reactions (no matching
             // message yet) simply never produce a row until their message arrives.
             val reactionsByMessage = reacts.groupBy { it.messageId }
@@ -1107,7 +1110,13 @@ class ChatViewModel(
                 memberCount = members.size,
                 groupFaces = faces,
                 typingPeers = typingPeers,
-                relayReach = noticeFor(conversationId, relay, mesh.relay.roomNoticeDismissed),
+                relayReach =
+                    noticeFor(
+                        conversationId,
+                        relay,
+                        mesh.relay.roomNoticeDismissed,
+                        peerLacksForwardSecrecy = peerLacksFs,
+                    ),
                 relayPlane = planeFor(relay),
                 loraPlane = mesh.lora.facts.plane,
                 loraReach =

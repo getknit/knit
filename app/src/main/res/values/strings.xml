@@ -1146,6 +1146,9 @@
     <string name="chat_relay_room_body">The Nearby room is carried only by Wi-Fi and Bluetooth, by design — it is a public, unencrypted room, so it is never uploaded to a relay.</string>
     <string name="chat_relay_pending_title">Not covered yet</string>
     <string name="chat_relay_pending_body">This conversation does not have a relay channel yet. It usually appears on its own once both sides have exchanged encryption keys. Until then, messages travel by Wi-Fi and Bluetooth.</string>
+    <string name="chat_relay_no_fs">This conversation can\'t use relays</string>
+    <string name="chat_relay_no_fs_title">Relays need forward secrecy</string>
+    <string name="chat_relay_no_fs_body">%1$s\'s version of Knit doesn\'t support forward secrecy yet, and relays carry a direct message only when both sides use it. Messages here still travel by Wi-Fi and Bluetooth, end-to-end encrypted. Once %1$s updates Knit, relays can carry this conversation too.</string>
     <string name="chat_relay_notice_dismiss">Dismiss</string>
     <string name="chat_relay_nearby_only">Nearby only</string>
     <string name="chat_relay_nearby_only_desc">Attachment will not be sent over the Internet</string>

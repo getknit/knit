@@ -2072,6 +2072,23 @@ class ChatViewModelTest {
             assertEquals(RelayReach.Pending, vm.state.value.relayReach)
         }
 
+    @Test
+    fun aDmToAPeerWithoutForwardSecrecySaysSoInsteadOfPending() =
+        runTest {
+            stubDm("ana")
+            peersFlow.value = listOf(peer("ana", "Ana", pubKey = "k", capabilities = 0L))
+            relayFactsFlow.value = RelayFacts(enabled = true, configured = 1, active = 1, connected = 1)
+            val vm = vm("ana")
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+            assertEquals(RelayReach.NoForwardSecrecy, vm.state.value.relayReach)
+
+            // The peer updates: its next profile claims the ratchet, and the thread is merely pending again.
+            peersFlow.value = listOf(peer("ana", "Ana", pubKey = "k", capabilities = Protocol.CAP_RATCHET))
+            advanceUntilIdle()
+            assertEquals(RelayReach.Pending, vm.state.value.relayReach)
+        }
+
     private companion object {
         const val GROUP = "g-trailhead"
     }

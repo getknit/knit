@@ -2,7 +2,9 @@ package app.getknit.knit.data.relay
 
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
+import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.spool.ScopeAttachments
 
 /**
@@ -54,8 +56,8 @@ enum class RelayPlane {
 /**
  * What to tell the user about one conversation's Internet reach.
  *
- * The states are deliberately asymmetric: only [Room] and [Pending] render anything. Coverage is the
- * happy path and needs no ornament, and [Silent] is the "we have nothing true to say" case — including
+ * The states are deliberately asymmetric: only [Room], [Pending] and [NoForwardSecrecy] render anything.
+ * Coverage is the happy path and needs no ornament, and [Silent] is the "we have nothing true to say" case — including
  * a relay outage, which heals by itself and must not paint a notice across every open thread.
  */
 enum class RelayReach {
@@ -70,6 +72,12 @@ enum class RelayReach {
 
     /** Relays are live but this thread has no scope yet — a peer or group still becoming eligible. */
     Pending,
+
+    /**
+     * Relays are live, but this DM's peer runs a Knit without forward secrecy, so no scope is coming until
+     * it updates. See [lacksForwardSecrecy].
+     */
+    NoForwardSecrecy,
 }
 
 /** What to tell the user about one attachment's Internet reach. */
@@ -131,10 +139,17 @@ fun planeFor(facts: RelayFacts): RelayPlane =
  * channel — so a relay could not carry it under any future configuration. [RelayReach.Pending] would have
  * promised a coverage that is never coming, and even the room's permanent-by-design wording would be
  * describing a plane that thread was never on.
+ *
+ * A DM whose peer [lacksForwardSecrecy] is the same trap with a way out, so it earns its own copy rather
+ * than silence: a DM scope keys on the ratchet session's root (`ScopeRegistry`), and `ScopeFrames.eligibleForDm`
+ * refuses anything without a v2 header, so [RelayReach.Pending]'s "appears once both sides have exchanged
+ * keys" would never come true — but an update on the peer's side would. Checked after coverage, so a pair
+ * scope (spec §3.5, which needs no session) still reads as covered.
  */
 fun reachFor(
     conversationId: String,
     facts: RelayFacts,
+    peerLacksForwardSecrecy: Boolean = false,
 ): RelayReach =
     when {
         conversationId == Conversations.MESHTASTIC -> RelayReach.Silent
@@ -149,8 +164,18 @@ fun reachFor(
         // is no "becoming eligible" to promise, only silence.
         Conversations.kindFor(conversationId) == ConversationKind.COMMONS -> RelayReach.Silent
 
+        peerLacksForwardSecrecy -> RelayReach.NoForwardSecrecy
+
         else -> RelayReach.Pending
     }
+
+/**
+ * Whether [peer] — a DM's other side — has a pinned profile that does not claim [Protocol.CAP_RATCHET]:
+ * every DM to it seals v1 (`MeshManager.sealEnvelopeFor`), so no ratchet session, and with it no relay
+ * scope, can form until its Knit updates. No pinned profile yet is not this case: the keys simply have not
+ * arrived, which is what [RelayReach.Pending] already says.
+ */
+fun lacksForwardSecrecy(peer: PeerEntity?): Boolean = peer?.pubKey != null && (peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L
 
 /**
  * The notice to render for [conversationId]: [reachFor], with the user's standing dismissal folded in.
@@ -169,8 +194,9 @@ fun noticeFor(
     conversationId: String,
     facts: RelayFacts,
     roomNoticeDismissed: Boolean,
+    peerLacksForwardSecrecy: Boolean = false,
 ): RelayReach {
-    val reach = reachFor(conversationId, facts)
+    val reach = reachFor(conversationId, facts, peerLacksForwardSecrecy)
     return if (reach == RelayReach.Room && roomNoticeDismissed) RelayReach.Silent else reach
 }
 

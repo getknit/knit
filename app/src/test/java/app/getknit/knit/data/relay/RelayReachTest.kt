@@ -2,6 +2,8 @@ package app.getknit.knit.data.relay
 
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
+import app.getknit.knit.mesh.protocol.Protocol
+import app.getknit.knit.ui.peer
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -77,6 +79,34 @@ class RelayReachTest {
     @Test
     fun `an unscoped conversation is pending`() {
         assertEquals(RelayReach.Pending, reachFor("peer-unknown", covered))
+    }
+
+    @Test
+    fun `a DM to a peer without forward secrecy says so instead of promising coverage`() {
+        // No ratchet session can form, so no DM scope: "not covered yet" would wait forever, while an
+        // update on the peer's side really would bring it.
+        assertEquals(RelayReach.NoForwardSecrecy, reachFor("peer-z", covered, peerLacksForwardSecrecy = true))
+        assertEquals(RelayReach.NoForwardSecrecy, noticeFor("peer-z", covered, roomNoticeDismissed = true, peerLacksForwardSecrecy = true))
+        assertEquals(false, dismissable(RelayReach.NoForwardSecrecy))
+    }
+
+    @Test
+    fun `a peer without forward secrecy changes nothing the plane itself already decides`() {
+        // Plane off, parked or down stays silent; a scope that does exist (a pair scope needs no session)
+        // still reads as covered.
+        assertEquals(RelayReach.Silent, reachFor("peer-z", covered.copy(enabled = false), peerLacksForwardSecrecy = true))
+        assertEquals(RelayReach.Silent, reachFor("peer-z", covered.copy(connected = 0), peerLacksForwardSecrecy = true))
+        assertEquals(RelayReach.Covered, reachFor("peer-a", covered, peerLacksForwardSecrecy = true))
+    }
+
+    @Test
+    fun `only a pinned profile without the ratchet bit lacks forward secrecy`() {
+        assertEquals(true, lacksForwardSecrecy(peer("z", pubKey = "k", capabilities = null)))
+        assertEquals(true, lacksForwardSecrecy(peer("z", pubKey = "k", capabilities = 0L)))
+        assertEquals(false, lacksForwardSecrecy(peer("z", pubKey = "k", capabilities = Protocol.CAP_RATCHET)))
+        // No profile yet: the keys have not arrived, which is what Pending already says.
+        assertEquals(false, lacksForwardSecrecy(peer("z", pubKey = null, capabilities = null)))
+        assertEquals(false, lacksForwardSecrecy(null))
     }
 
     @Test

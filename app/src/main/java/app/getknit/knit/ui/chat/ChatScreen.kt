@@ -1471,16 +1471,26 @@ internal fun ChatScreenContent(
     }
 
     if (showRelayInfo) {
-        val isRoom = state.relayReach == RelayReach.Room
+        val (relayTitle, relayBody) =
+            when (state.relayReach) {
+                RelayReach.Room -> {
+                    stringResource(R.string.chat_relay_room_title) to stringResource(R.string.chat_relay_room_body)
+                }
+
+                RelayReach.NoForwardSecrecy -> {
+                    stringResource(R.string.chat_relay_no_fs_title) to
+                        stringResource(R.string.chat_relay_no_fs_body, state.title)
+                }
+
+                RelayReach.Pending, RelayReach.Silent, RelayReach.Covered -> {
+                    stringResource(R.string.chat_relay_pending_title) to stringResource(R.string.chat_relay_pending_body)
+                }
+            }
         AlertDialog(
             onDismissRequest = { showRelayInfo = false },
             icon = { Icon(Icons.Filled.CloudOff, contentDescription = null) },
-            title = {
-                Text(stringResource(if (isRoom) R.string.chat_relay_room_title else R.string.chat_relay_pending_title))
-            },
-            text = {
-                Text(stringResource(if (isRoom) R.string.chat_relay_room_body else R.string.chat_relay_pending_body))
-            },
+            title = { Text(relayTitle) },
+            text = { Text(relayBody) },
             confirmButton = {
                 TextButton(onClick = { showRelayInfo = false }) {
                     Text(stringResource(R.string.action_close))
@@ -1658,6 +1668,7 @@ private fun RelayNotice(
         when (reach) {
             RelayReach.Room -> R.string.chat_relay_room
             RelayReach.Pending -> R.string.chat_relay_pending
+            RelayReach.NoForwardSecrecy -> R.string.chat_relay_no_fs
             RelayReach.Silent, RelayReach.Covered -> return
         }
     Surface(
