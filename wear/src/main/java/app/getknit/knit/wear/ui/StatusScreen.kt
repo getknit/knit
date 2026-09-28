@@ -57,6 +57,7 @@ import app.getknit.knit.wear.StatusLines
 import app.getknit.knit.wear.StatusRefresh
 import app.getknit.knit.wear.StatusText
 import app.getknit.knit.wear.Today
+import app.getknit.knit.wear.Tone
 import app.getknit.knit.wear.res
 import app.getknit.knit.wearstatus.MeshState
 import app.getknit.knit.wearstatus.Plane
@@ -99,7 +100,9 @@ fun StatusScreen(
             }
         }
     }
-    val status = StatusText.fresh(snapshot, now)
+    // Aged past the live window it is still drawn, muted and dated, until a read finds no phone.
+    val shown = StatusText.shown(snapshot, PhoneStatusReader.failedAt(context), now)
+    val status = shown?.status
     val today = DayStats.today(history, StatusHistory.dayStart(now), now)
     val listState = rememberTransformingLazyColumnState()
     val spec = rememberTransformationSpec()
@@ -129,7 +132,7 @@ fun StatusScreen(
         ) { contentPadding ->
             TransformingLazyColumn(state = listState, contentPadding = contentPadding) {
                 // No title: the map is the screen's subject and opens it, centred under the time.
-                item { Hero(status, reading) }
+                item { Hero(status, reading, agedSinceMs = shown?.agedSinceMs) }
                 when {
                     !granted -> item { PermissionCard(spec, onAllow) }
                     status == null -> item { UnreachableCard(spec, snapshot, now) }
@@ -147,13 +150,17 @@ fun StatusScreen(
     }
 }
 
-/** The peer map, the state under it, a count of who is where, and the legend of the lines drawn. */
+/**
+ * The peer map, the state under it, a count of who is where, and the legend of the lines drawn. A reading past
+ * its live window ([agedSinceMs]) is drawn muted, with the time it was taken.
+ */
 @Composable
 private fun Hero(
     status: WearStatus?,
     reading: Boolean,
+    agedSinceMs: Long?,
 ) {
-    val tone = StatusText.tone(status?.state)
+    val tone = if (agedSinceMs != null) Tone.Muted else StatusText.tone(status?.state)
     val word = status?.let { StatusText.word(it.state) } ?: "No phone"
     val live = status?.takeUnless { StatusText.resting(it) }
     // A phone build without the link list: its nearby count, drawn as plain Bluetooth lines.
@@ -198,6 +205,13 @@ private fun Hero(
         Text(word, style = MaterialTheme.typography.titleMedium, color = tone.color())
         PeerLinks.summary(status)?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        agedSinceMs?.let {
+            Text(
+                "As of ${Counts.clock(it)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         if (live != null) {
             Spacer(Modifier.height(4.dp))

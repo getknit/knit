@@ -170,3 +170,61 @@ silent re-pairing that rewrote the watch's bond record on every read.
 - **Privacy:** the SDP record names the service to any device that opens a Classic connection to the phone
   while the mesh runs. The phone is not discoverable and the mesh advert does not carry its Classic address,
   so a device has to know that address to ask.
+
+## Amendment 2026-09-27 (4) — every read runs in a job
+
+After the RFCOMM change the Pixel Watch 3 still went to "Phone out of reach" for stretches, and after a night in
+Bedtime mode it stayed there until the app was opened. The transport was not the cause; the watch's scheduling
+was.
+
+- **The periodic asks wait for the watch to leave Doze.** Wear OS runs a data source's `UPDATE_PERIOD_SECONDS`
+  as a `wearservices` job (`FutureUpdateJobService`) gated on `DEVICE_NOT_DOZING`. A watch dozes whenever its
+  screen is off or ambient, so on a watch that is most of the day and all of the night. At the capture the
+  watch was in deep Doze with Knit's five-minute job 31 s overdue. The staleness timeline still flips the face
+  to no-data six minutes after the last read, on the face's own clock.
+- **A poke is about ten seconds of CPU.** The watch app stays a *cached* process through a complication or tile
+  request: the system unfreezes it for the call ("sync unfroze … for 6") and the freezer's 10 s debounce freezes
+  it again, whatever it is still doing. At 15:10 the screen woke, the app was unfrozen at :33.9 and frozen at
+  :44.3; the phone accepted the RFCOMM connection at :46.8, wrote the frame, lingered its 3 s for a close that
+  never came, and closed. That read was lost, and the failure floor then held off the next one. At 15:25 the
+  same path took four seconds and landed. Opening the app worked because a foreground process is not frozen.
+- **So every read now runs in `StatusReadJob`**, a `JobService`: a running job keeps the process out of the
+  cached state until the read ends. It is expedited, so it starts at once. When the expedited quota is spent the
+  scheduler refuses it outright and it goes as a plain job with no constraints, as it always does on Wear OS 3,
+  which has no expedited jobs; while the watch is awake that starts at once too. One job id, never rescheduled
+  while running (that would stop it).
+- **No surface waits on Bluetooth any more.** A complication ask answers from the cache like the tile already
+  did, and starts a read when the cache is due (`PhoneStatusReader.due`: older than the fresh minute and outside
+  the failure floor, pinned by `ReadDueTest`). A good read asks every source again. The same gate stops a read's
+  own redraws from starting another.
+- **Cost:** a good read holds a job for 1-5 s over Classic. A failed one runs to its end instead of being frozen
+  partway, up to the routes' timeouts (8 s RFCOMM, then two 10 s LE attempts, per bonded device tried). Reads
+  happen when a surface asks and, with the alarm below, about every five minutes while a complication is on the
+  face.
+- **Raising the wrist does not end Doze, so Knit keeps its own clock.** The first device run of the job found
+  that a wrist-raise lights the screen with the display policy still `DOZE`: the device never left deep idle, the
+  complication jobs stayed parked, and nothing asked Knit for 25 minutes of glances. Touching the screen did not
+  end Doze either. So while a Knit complication is on the face, `StatusAlarm` runs an allow-while-idle alarm
+  every five minutes (the maintainer's choice of cadence). The alarm kicks the expedited read, and a good read
+  asks the face for fresh data. After a read that found no phone the alarm waits fifteen minutes instead.
+  - The alarm is inexact, the price of not needing the exact-alarm grant. The system may hold it up to three
+    quarters of its lead time to batch it, and in Doze it did so every time. In the first field test (2026-09-27,
+    an hour off adb) an alarm asked for five minutes fired every 8 min 45 s, and each one read the phone over
+    Classic 4-5 s later in under half a second. So the alarm now asks for 4/7 of the interval (`StatusAlarm.lead`,
+    pinned by `StatusAlarmTest`), which puts the latest delivery at the interval itself. Targeting S+, the quota
+    is 72 such alarms an hour.
+  - The chain runs only while a complication is active. A complication counts as active once it asks
+    (`complicationInstanceId`), and it stops counting when it is deactivated or after 24 h without an ask. A
+    reboot or an update re-arms the chain.
+- **An old reading is shown with its age, not as "Phone out of reach"** (the maintainer's call). The six-minute
+  window assumed an ask every 300 s, which Doze breaks, so past it the reading usually means nobody asked, not
+  that the phone went away. `StatusText.shown` keeps it, muted and dated, and returns "out of reach" only when a
+  read *after* it found no phone. That failure time is persisted (`PhoneStatusReader.failedAt`, cleared by the
+  next good read) so any process can draw it, and a failed read now redraws the complications as a good one
+  does. How each surface shows the age:
+  - A complication's timeline turns at the window's close into the aged entry. Its title becomes the age, a
+    `TimeDifferenceComplicationText` ("12m ago") that the face counts up on its own clock. The colour and ring
+    go muted, and TalkBack hears the age too.
+  - The tile's title reads "As of 12:40", which stays true however long nothing asks.
+  - The app mutes the hero and dates it. Every surface drops to "Phone out of reach" as soon as a read fails
+    past the window. Pinned by `StatusTextTest`.

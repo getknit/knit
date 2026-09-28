@@ -11,6 +11,7 @@ import androidx.wear.watchface.complications.data.ColorRamp
 import androidx.wear.watchface.complications.data.ComplicationData
 import androidx.wear.watchface.complications.data.ComplicationText
 import androidx.wear.watchface.complications.data.ComplicationType
+import androidx.wear.watchface.complications.data.CountUpTimeReference
 import androidx.wear.watchface.complications.data.LongTextComplicationData
 import androidx.wear.watchface.complications.data.MonochromaticImage
 import androidx.wear.watchface.complications.data.MonochromaticImageComplicationData
@@ -20,6 +21,8 @@ import androidx.wear.watchface.complications.data.ShortTextComplicationData
 import androidx.wear.watchface.complications.data.SmallImage
 import androidx.wear.watchface.complications.data.SmallImageComplicationData
 import androidx.wear.watchface.complications.data.SmallImageType
+import androidx.wear.watchface.complications.data.TimeDifferenceComplicationText
+import androidx.wear.watchface.complications.data.TimeDifferenceStyle
 import androidx.wear.watchface.complications.data.WeightedElementsComplicationData
 import androidx.wear.watchface.complications.datasource.ComplicationDataSourceUpdateRequester
 import androidx.wear.watchface.complications.datasource.ComplicationDataTimeline
@@ -33,24 +36,35 @@ import app.getknit.knit.wearstatus.WearExtra
 import app.getknit.knit.wearstatus.WearStatus
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.TimeUnit
 
-/** What a complication is drawn from: the phone's snapshot (null: no fresh one) and the watch's own day. */
+/**
+ * What a complication is drawn from: the phone's reading (null: none, or the phone is out of reach), when it was
+ * taken if it is past the live window ([agedSinceMs], shown as its age in a muted tone), and the watch's own day.
+ */
 data class WatchView(
     val status: WearStatus?,
     val today: Today?,
-)
+    val agedSinceMs: Long? = null,
+) {
+    constructor(shown: Shown?, today: Today?) : this(shown?.status, today, shown?.agedSinceMs)
+}
 
 /**
  * One Knit complication over the phone's snapshot and the watch's history, in every type its data suits (the
- * manifest lists them, the face picks). The system asks every `UPDATE_PERIOD_SECONDS` (300, the manifest) and
- * whenever a fresh read lands; each ask reads through [PhoneStatusReader], whose cache makes the sources share
- * one connection.
+ * manifest lists them, the face picks). The system asks every `UPDATE_PERIOD_SECONDS` (300, the manifest) while
+ * the watch is awake — never while it dozes, and a raised wrist does not wake it from Doze — and whenever a read
+ * lands, so while a source is on the face [StatusAlarm] reads on Knit's own five-minute clock. An ask never
+ * waits on Bluetooth: it answers from [PhoneStatusReader]'s cache and, when that is due, starts a read
+ * ([StatusRefresh], run in [StatusReadJob]) whose landing asks every source again, so the sources share one
+ * connection.
  *
- * A source over live state ([goesStale]) answers with a timeline: the live data now, and from
- * [StatusText.STALE_MS] after the read the no-data face — a watch face renders the timeline on its own clock, so
- * a phone that stops answering greys out even if the system never asks again (a face too old for timelines
- * keeps the live data). A source over the day's history stays true when the phone goes quiet, so it answers
- * plainly. A tap opens the app.
+ * A source over live state ([goesStale]) answers with a timeline: the live reading now, and from
+ * [StatusText.STALE_MS] after the read the same reading muted with its age counting up — or "Phone out of reach"
+ * if a read since found no phone ([StatusText.shown]). A watch face renders the timeline on its own clock, so it
+ * turns without an ask, which never comes while the watch dozes (a face too old for timelines keeps the live
+ * entry). A source over the day's history stays true when the phone goes quiet, so it answers plainly. A tap
+ * opens the app.
  */
 abstract class StatusComplicationService : SuspendingTimelineComplicationDataSourceService() {
     /** [type] drawn for [view], or null if this source does not offer [type]. */
@@ -64,17 +78,32 @@ abstract class StatusComplicationService : SuspendingTimelineComplicationDataSou
 
     override suspend fun onComplicationRequest(request: ComplicationRequest): ComplicationDataTimeline? {
         val type = request.complicationType
-        val snapshot = PhoneStatusReader.read(this)
+        StatusAlarm.asked(this, request.complicationInstanceId)
+        val snapshot = cachedAfterKick()
+        val failedAt = PhoneStatusReader.failedAt(this)
         val now = System.currentTimeMillis()
         val today = StatusHistory.today(this, now)
         if (!goesStale) return build(type, WatchView(snapshot?.status, today))?.let { ComplicationDataTimeline(it, emptyList()) }
-        val stale = build(type, WatchView(null, today)) ?: return null
-        val status = StatusText.fresh(snapshot, now)
-        if (snapshot == null || status == null) return ComplicationDataTimeline(stale, emptyList())
-        val live = build(type, WatchView(status, today)) ?: return null
-        val goesStaleAt = Instant.ofEpochMilli(snapshot.fetchedAtMs + StatusText.STALE_MS)
-        val after = TimeInterval(goesStaleAt, goesStaleAt.plus(STALE_FOREVER))
-        return ComplicationDataTimeline(live, listOf(TimelineEntry(after, stale)))
+        val shown = StatusText.shown(snapshot, failedAt, now)
+        val current = build(type, WatchView(shown, today)) ?: return null
+        // A live reading turns, at the close of its window, into what it will be then: aged, or out of reach.
+        val closes =
+            snapshot?.takeIf { shown != null && shown.agedSinceMs == null }?.let { live ->
+                val at = Instant.ofEpochMilli(live.fetchedAtMs + StatusText.STALE_MS)
+                build(type, WatchView(StatusText.afterLive(live, failedAt), today))
+                    ?.let { TimelineEntry(TimeInterval(at, at.plus(STALE_FOREVER)), it) }
+            }
+        return ComplicationDataTimeline(current, listOfNotNull(closes))
+    }
+
+    override fun onComplicationDeactivated(complicationInstanceId: Int) {
+        StatusAlarm.deactivated(this, complicationInstanceId)
+    }
+
+    /** The cached copy — an ask never waits on Bluetooth — after starting a read if that copy is due. */
+    private fun cachedAfterKick(): Snapshot? {
+        StatusRefresh.kick(this, force = false)
+        return PhoneStatusReader.cached(this)
     }
 
     override fun getPreviewData(type: ComplicationType): ComplicationData? = build(type, WatchView(PREVIEW, PREVIEW_TODAY))
@@ -105,7 +134,7 @@ abstract class StatusComplicationService : SuspendingTimelineComplicationDataSou
                 lastPeerAtMs = null,
             )
 
-        /** How long the no-data entry lasts; long enough that nothing reads past it before the next ask. */
+        /** How long the entry after the live window lasts; long enough that nothing reads past it before the next ask. */
         private val STALE_FOREVER: Duration = Duration.ofDays(365)
 
         private val ALL =
@@ -117,7 +146,7 @@ abstract class StatusComplicationService : SuspendingTimelineComplicationDataSou
                 CarryingComplicationService::class.java,
             )
 
-        /** Ask the system to re-query every Knit complication on the face (after a fresh read). */
+        /** Ask the system to re-query every Knit complication on the face (after a read changed what they show). */
         fun requestUpdateAll(context: Context) {
             for (service in ALL) {
                 ComplicationDataSourceUpdateRequester
@@ -134,9 +163,9 @@ class NearbyComplicationService : StatusComplicationService() {
         view: WatchView,
     ): ComplicationData? =
         when (type) {
-            ComplicationType.SHORT_TEXT -> shortText(StatusText.nearby(view.status))
-            ComplicationType.LONG_TEXT -> longText(StatusLines.nearbyLine(view.status))
-            ComplicationType.RANGED_VALUE -> nearbyGauge(view.status)
+            ComplicationType.SHORT_TEXT -> shortText(StatusText.nearby(view.status), view.agedSinceMs)
+            ComplicationType.LONG_TEXT -> longText(StatusLines.nearbyLine(view.status), view.agedSinceMs)
+            ComplicationType.RANGED_VALUE -> nearbyGauge(view.status, view.agedSinceMs)
             else -> null
         }
 }
@@ -147,25 +176,27 @@ class HealthComplicationService : StatusComplicationService() {
         view: WatchView,
     ): ComplicationData? {
         val line = StatusLines.healthLine(view.status)
+        val aged = view.agedSinceMs
+        val description = describe("${line.title}: ${line.text}", aged)
         return when (type) {
             ComplicationType.SHORT_TEXT -> {
-                shortText(StatusText.health(view.status))
+                shortText(StatusText.health(view.status), aged)
             }
 
             ComplicationType.LONG_TEXT -> {
-                longText(line)
+                longText(line, aged)
             }
 
             ComplicationType.SMALL_IMAGE -> {
                 SmallImageComplicationData
-                    .Builder(smallImage(line.icon, line.tone), text("${line.title}: ${line.text}"))
+                    .Builder(smallImage(line.icon, if (aged != null) Tone.Muted else line.tone), description)
                     .setTapAction(openApp())
                     .build()
             }
 
             ComplicationType.MONOCHROMATIC_IMAGE -> {
                 MonochromaticImageComplicationData
-                    .Builder(monochrome(line.icon), text("${line.title}: ${line.text}"))
+                    .Builder(monochrome(line.icon), description)
                     .setTapAction(openApp())
                     .build()
             }
@@ -226,53 +257,75 @@ class CarryingComplicationService : StatusComplicationService() {
         view: WatchView,
     ): ComplicationData? =
         when (type) {
-            ComplicationType.SHORT_TEXT -> shortText(StatusText.carrying(view.status))
-            ComplicationType.LONG_TEXT -> longText(StatusLines.carryingLine(view.status))
+            ComplicationType.SHORT_TEXT -> shortText(StatusText.carrying(view.status), view.agedSinceMs)
+            ComplicationType.LONG_TEXT -> longText(StatusLines.carryingLine(view.status), view.agedSinceMs)
             else -> null
         }
 }
 
 // --- builders shared by the four sources ------------------------------------------------------------------------
 
-private fun Context.shortText(face: Face): ComplicationData =
-    ShortTextComplicationData
-        .Builder(text(face.text), text(listOfNotNull(face.text, face.title).joinToString(" ")))
-        .apply { face.title?.let { setTitle(text(it)) } }
+/**
+ * A short text; an aged reading ([agedSinceMs]) keeps its value but trades the title for its age ("12m ago",
+ * counted up by the face) and its colour for [Tone.Muted].
+ */
+private fun Context.shortText(
+    face: Face,
+    agedSinceMs: Long? = null,
+): ComplicationData {
+    val tone = if (agedSinceMs != null) Tone.Muted else face.tone
+    val title = agedSinceMs?.let { ago(it, "^1 ago") } ?: face.title?.let(::text)
+    return ShortTextComplicationData
+        .Builder(text(face.text), describe(listOfNotNull(face.text, face.title).joinToString(" "), agedSinceMs))
+        .apply { title?.let { setTitle(it) } }
         .setMonochromaticImage(monochrome(face.icon))
-        .setSmallImage(smallImage(face.icon, face.tone))
+        .setSmallImage(smallImage(face.icon, tone))
         .setTapAction(openApp())
         .build()
+}
 
-private fun Context.longText(line: Line): ComplicationData =
-    LongTextComplicationData
-        .Builder(text(line.text), text(listOfNotNull(line.title, line.text).joinToString(": ")))
-        .apply { line.title?.let { setTitle(text(it)) } }
+/** A long text; an aged reading adds its age to the title ("Knit mesh · 12m ago") and mutes its colour. */
+private fun Context.longText(
+    line: Line,
+    agedSinceMs: Long? = null,
+): ComplicationData {
+    val tone = if (agedSinceMs != null) Tone.Muted else line.tone
+    val title = agedSinceMs?.let { ago(it, listOfNotNull(line.title, "^1 ago").joinToString(" · ")) } ?: line.title?.let(::text)
+    return LongTextComplicationData
+        .Builder(text(line.text), describe(listOfNotNull(line.title, line.text).joinToString(": "), agedSinceMs))
+        .apply { title?.let { setTitle(it) } }
         .setMonochromaticImage(monochrome(line.icon))
-        .setSmallImage(smallImage(line.icon, line.tone))
+        .setSmallImage(smallImage(line.icon, tone))
         .setTapAction(openApp())
         .build()
+}
 
 /**
  * Nearby peers as a gauge filling toward [StatusText.NEARBY_SCALE], coloured from "alone" to "linked". The
- * text is the true count, so a crowd of 23 fills the ring and still says 23.
+ * text is the true count, so a crowd of 23 fills the ring and still says 23. An aged reading keeps its count in
+ * a muted ring, titled with its age.
  */
-private fun Context.nearbyGauge(status: WearStatus?): ComplicationData {
+private fun Context.nearbyGauge(
+    status: WearStatus?,
+    agedSinceMs: Long?,
+): ComplicationData {
     val face = StatusText.nearby(status)
     val count = status?.takeUnless { StatusText.resting(it) }?.nearby ?: 0
     val ramp =
-        if (StatusText.resting(status)) {
+        if (StatusText.resting(status) || agedSinceMs != null) {
             intArrayOf(Tone.Muted.argb)
         } else {
             intArrayOf(Tone.Calm.argb, Tone.Good.argb)
         }
+    val title = agedSinceMs?.let { ago(it, "^1 ago") } ?: face.title?.let(::text)
     return RangedValueComplicationData
         .Builder(
             value = count.coerceAtMost(StatusText.NEARBY_SCALE).toFloat(),
             min = 0f,
             max = StatusText.NEARBY_SCALE.toFloat(),
-            contentDescription = text(StatusLines.nearbyLine(status).text),
+            contentDescription = describe(StatusLines.nearbyLine(status).text, agedSinceMs),
         ).setText(text(face.text))
-        .apply { face.title?.let { setTitle(text(it)) } }
+        .apply { title?.let { setTitle(it) } }
         .setMonochromaticImage(monochrome(face.icon))
         .setColorRamp(ColorRamp(ramp, interpolated = true))
         .setTapAction(openApp())
@@ -307,6 +360,23 @@ private fun Context.dayPie(today: Today?): ComplicationData {
 }
 
 private fun text(s: String): ComplicationText = PlainComplicationText.Builder(s).build()
+
+/** [template] with `^1` as the time since [sinceMs] ("12m", "3h"), counted up by the face on its own clock. */
+private fun ago(
+    sinceMs: Long,
+    template: String,
+): ComplicationText =
+    TimeDifferenceComplicationText
+        .Builder(TimeDifferenceStyle.SHORT_SINGLE_UNIT, CountUpTimeReference(Instant.ofEpochMilli(sinceMs)))
+        .setText(template)
+        .setMinimumTimeUnit(TimeUnit.MINUTES)
+        .build()
+
+/** What TalkBack reads: [s], and for an aged reading how old it is. */
+private fun describe(
+    s: String,
+    agedSinceMs: Long?,
+): ComplicationText = agedSinceMs?.let { ago(it, "$s, ^1 ago") } ?: text(s)
 
 private fun Context.monochrome(glyph: Glyph): MonochromaticImage =
     MonochromaticImage.Builder(Icon.createWithResource(this, glyph.res)).build()

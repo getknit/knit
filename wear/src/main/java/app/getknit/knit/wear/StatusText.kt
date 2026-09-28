@@ -54,23 +54,50 @@ data class PlaneRow(
 )
 
 /**
- * The words and colours every Wear surface draws, pure so they are unit-tested. A snapshot older than
- * [STALE_MS] — or none at all — is drawn as [NO_DATA] rather than as numbers that may no longer be true.
- * [STALE_MS] is one missed refresh (the 300 s complication period) plus slack: a phone that stopped answering
- * — a Stop, Bluetooth off, out of range — reads as "no data" within six minutes rather than showing its last
- * "Linked" for a quarter hour.
+ * A reading as the surfaces draw it: the phone's [status], and — once it is past [StatusText.STALE_MS] — the
+ * time it was taken ([agedSinceMs]), so a surface can show its age and mute its colour instead of passing it off
+ * as live.
+ */
+data class Shown(
+    val status: WearStatus,
+    val agedSinceMs: Long? = null,
+)
+
+/**
+ * The words and colours every Wear surface draws, pure so they are unit-tested. A reading within [STALE_MS] is
+ * drawn as it stands. Past it, it is drawn with its age rather than as [NO_DATA]: Wear OS does not ask a data
+ * source while the watch dozes, so an old reading usually means nobody asked, not that the phone went away.
+ * "Phone out of reach" is kept for a read that found no phone (ADR 2026-09.wetm, fourth amendment).
  */
 object StatusText {
+    /** How long a reading counts as live: one 300 s complication period plus slack. */
     const val STALE_MS = 6 * 60_000L
     const val NO_DATA = "–"
 
     /** The ranged-value gauge's full scale: eight peers in reach is a busy room; the text still says 23. */
     const val NEARBY_SCALE = 8
 
-    fun fresh(
+    /**
+     * What the surfaces draw at [nowMs]: the reading, aged once it is past [STALE_MS] — or null ("Phone out of
+     * reach") with no reading, or when a read after it found no phone ([failedAtMs], 0 for none) and it is past
+     * [STALE_MS]. A failure inside the live window leaves the reading live until the window closes.
+     */
+    fun shown(
         snapshot: Snapshot?,
+        failedAtMs: Long,
         nowMs: Long,
-    ): WearStatus? = snapshot?.takeIf { nowMs - it.fetchedAtMs in 0..STALE_MS }?.status
+    ): Shown? {
+        snapshot ?: return null
+        if (nowMs - snapshot.fetchedAtMs in 0..STALE_MS) return Shown(snapshot.status)
+        if (failedAtMs > snapshot.fetchedAtMs) return null
+        return Shown(snapshot.status, agedSinceMs = snapshot.fetchedAtMs)
+    }
+
+    /** What [shown] will be once [snapshot]'s live window has closed — the entry a timeline switches to. */
+    fun afterLive(
+        snapshot: Snapshot,
+        failedAtMs: Long,
+    ): Shown? = shown(snapshot, failedAtMs, snapshot.fetchedAtMs + STALE_MS + 1)
 
     fun tone(state: MeshState?): Tone =
         when (state) {

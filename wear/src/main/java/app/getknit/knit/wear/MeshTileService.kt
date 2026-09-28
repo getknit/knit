@@ -47,9 +47,10 @@ import kotlin.time.Duration.Companion.minutes
  * colours where the user has them on, else Knit's coral ([KnitTileColors]).
  *
  * A tile request must answer at once, so it never waits on Bluetooth: it draws the cached snapshot and, when
- * that is older than a minute (or Refresh was tapped), starts a background read that asks for a redraw when
- * it lands ([StatusRefresh]). The layout is a timeline whose live entry expires [StatusText.STALE_MS] after
- * the read, so a phone that stopped answering greys out on the watch's own clock.
+ * that is due (or Refresh was tapped), starts a background read that asks for a redraw when it lands
+ * ([StatusRefresh]). The layout is a timeline whose live entry expires [StatusText.STALE_MS] after the read,
+ * on the watch's own clock, into the same reading titled with the time it was taken ("As of 12:40") — which
+ * stays true however long nothing asks — or, if a read since found no phone, "No phone" ([StatusText.shown]).
  */
 class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors) {
     override suspend fun MaterialScope.tileResponse(requestParams: TileRequest): Tile {
@@ -57,39 +58,39 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
         val clicked = requestParams.currentState.lastClickableId == REFRESH_ID
         // The last click id can ride along on the redraw the read itself asks for; a refresh that just ran
         // is not asked for again, which is what keeps that redraw from starting another read.
-        if (clicked && now - StatusRefresh.lastForcedMs > CLICK_DEBOUNCE_MS) {
-            StatusRefresh.kick(this@MeshTileService, force = true)
-        } else {
-            val cached = PhoneStatusReader.cached(this@MeshTileService)
-            if (cached == null || now - cached.fetchedAtMs > PhoneStatusReader.FRESH_MS) {
-                StatusRefresh.kick(this@MeshTileService, force = false)
-            }
-        }
+        val refresh = clicked && now - StatusRefresh.lastForcedMs > CLICK_DEBOUNCE_MS
+        StatusRefresh.kick(this@MeshTileService, force = refresh)
         val reading = StatusRefresh.reading.value
         val today = StatusHistory.today(this@MeshTileService, now)
         val snapshot = PhoneStatusReader.cached(this@MeshTileService)
-        val status = StatusText.fresh(snapshot, now)
-        val unreachable = timelineEntry(layout(null, today, reading))
-        if (snapshot == null || status == null) return tile(timeline(unreachable), freshness = FRESHNESS)
+        val failedAt = PhoneStatusReader.failedAt(this@MeshTileService)
+        val shown = StatusText.shown(snapshot, failedAt, now)
+        if (snapshot == null || shown == null || shown.agedSinceMs != null) {
+            return tile(timeline(timelineEntry(layout(shown, today, reading))), freshness = FRESHNESS)
+        }
+        // Live now: the default entry is what the reading becomes when its window closes.
+        val closed = timelineEntry(layout(StatusText.afterLive(snapshot, failedAt), today, reading))
         val live =
             timelineEntry(
-                layout(status, today, reading),
+                layout(shown, today, reading),
                 validity =
                     timeInterval(
                         snapshot.fetchedAtMs.milliseconds,
                         (snapshot.fetchedAtMs + StatusText.STALE_MS).milliseconds,
                     ),
             )
-        return tile(timeline(unreachable, live), freshness = FRESHNESS)
+        return tile(timeline(closed, live), freshness = FRESHNESS)
     }
 
     private fun MaterialScope.layout(
-        status: WearStatus?,
+        shown: Shown?,
         today: Today,
         reading: Boolean,
-    ): LayoutElement =
-        primaryLayout(
-            titleSlot = { text(title(status).layoutString) },
+    ): LayoutElement {
+        val status = shown?.status
+        val aged = shown?.agedSinceMs
+        return primaryLayout(
+            titleSlot = { text((aged?.let { "As of ${Counts.clock(it)}" } ?: title(status)).layoutString) },
             mainSlot = {
                 when {
                     status == null -> {
@@ -105,7 +106,7 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
                     }
 
                     else -> {
-                        metrics(status, today)
+                        metrics(status, today, aged = aged != null)
                     }
                 }
             },
@@ -128,6 +129,7 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
                 }
             },
         )
+    }
 
     private fun title(status: WearStatus?): String =
         StatusLines.problemShort(status)
@@ -139,12 +141,14 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
             }
 
     /**
-     * Three cards: the count that matters most in the state's colour, the other two quieter. An older phone
-     * sends no carrying count; its third card is the all-time relayed total instead.
+     * Three cards: the count that matters most in the state's colour (quiet like the others once the reading is
+     * [aged]), the other two quieter. An older phone sends no carrying count; its third card is the all-time
+     * relayed total instead.
      */
     private fun MaterialScope.metrics(
         status: WearStatus,
         today: Today,
+        aged: Boolean,
     ): LayoutElement {
         val carrying = StatusText.carrying(status)
         return buttonGroup {
@@ -153,7 +157,7 @@ class MeshTileService : Material3TileService(defaultColorScheme = KnitTileColors
                     status.nearby.toString(),
                     "nearby",
                     StatusLines.nearbyLine(status).text,
-                    stateColors(status.state),
+                    if (aged) filledTonalCardColors() else stateColors(status.state),
                 )
             }
             buttonGroupItem {

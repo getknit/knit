@@ -54,7 +54,9 @@ data class Snapshot(
  * complications is rendered by the pure `StatusText`.
  *
  * A read that found no phone holds off the next unforced one for [FAIL_FLOOR_MS], so the four complications,
- * the tile and the app asking together against a phone out of reach cost one round of connects, not six.
+ * the tile and the app asking together against a phone out of reach cost one round of connects, not six. Its
+ * time is persisted ([failedAt]) until the next good read, because it is also what turns an aged reading into
+ * "Phone out of reach" ([StatusText.shown]) in whichever process draws it next.
  * Every good read is published on [snapshots], which the status screen draws from.
  */
 @SuppressLint("MissingPermission") // BLUETOOTH is install-time on API 30; CONNECT is checked in [read]
@@ -62,8 +64,6 @@ object PhoneStatusReader {
     private val lock = Mutex()
     private val latest = MutableStateFlow<Snapshot?>(null)
     private var seeded = false
-
-    @Volatile private var lastFailureMs = 0L
 
     /** The last good snapshot, seeded from the persisted copy, then every good read as it lands. */
     fun snapshots(context: Context): StateFlow<Snapshot?> {
@@ -85,6 +85,27 @@ object PhoneStatusReader {
         return Snapshot(status, prefs.getLong(KEY_FETCHED_AT, 0L), via)
     }
 
+    /** When a read last found no phone, if no good read has landed since; 0 for none. */
+    fun failedAt(context: Context): Long = prefs(context).getLong(KEY_FAILED_AT, 0L)
+
+    /**
+     * Whether an unforced [read] now would try the phone: the cache is older than [FRESH_MS] (or absent) and no
+     * read found the phone missing within [FAIL_FLOOR_MS]. [StatusRefresh] asks before it starts a job, so a
+     * surface that a read's own landing redraws does not start another.
+     */
+    fun due(
+        context: Context,
+        nowMs: Long = System.currentTimeMillis(),
+    ): Boolean = due(cached(context)?.fetchedAtMs, failedAt(context), nowMs)
+
+    internal fun due(
+        fetchedAtMs: Long?,
+        failedAtMs: Long,
+        nowMs: Long,
+    ): Boolean =
+        (fetchedAtMs == null || nowMs - fetchedAtMs !in 0..FRESH_MS) &&
+            nowMs - failedAtMs !in 0 until FAIL_FLOOR_MS
+
     /** A snapshot no older than [maxAgeMs] if the phone answers, else the last good one (possibly null). */
     suspend fun read(
         context: Context,
@@ -94,13 +115,13 @@ object PhoneStatusReader {
             val app = context.applicationContext
             val now = System.currentTimeMillis()
             cached(app)?.takeIf { now - it.fetchedAtMs in 0..maxAgeMs }?.let { return@withLock it }
-            if (maxAgeMs > 0 && now - lastFailureMs in 0 until FAIL_FLOOR_MS) return@withLock cached(app)
+            if (maxAgeMs > 0 && now - failedAt(app) in 0 until FAIL_FLOOR_MS) return@withLock cached(app)
             fetch(app)?.let { (address, via, bytes) ->
                 val snapshot = store(app, bytes, address, System.currentTimeMillis(), via)
                 if (snapshot != null) return@withLock snapshot
                 Log.w(TAG, "phone answered with a snapshot this build cannot read (${bytes.size} B)")
             }
-            lastFailureMs = System.currentTimeMillis()
+            prefs(app).edit { putLong(KEY_FAILED_AT, System.currentTimeMillis()) }
             cached(app)
         }
 
@@ -118,9 +139,9 @@ object PhoneStatusReader {
             putLong(KEY_FETCHED_AT, nowMs)
             address?.let { putString(KEY_ADDRESS, it) }
             if (via != null) putString(KEY_VIA, via.name) else remove(KEY_VIA)
+            remove(KEY_FAILED_AT)
         }
         return Snapshot(status, nowMs, via).also {
-            lastFailureMs = 0L
             latest.value = it
             StatusHistory.record(context, it)
         }
@@ -180,6 +201,7 @@ object PhoneStatusReader {
     private const val KEY_FETCHED_AT = "fetched_at"
     private const val KEY_ADDRESS = "address"
     private const val KEY_VIA = "via"
+    private const val KEY_FAILED_AT = "failed_at"
     private const val RETRY_MS = 750L
     const val FRESH_MS = 60_000L
     const val FAIL_FLOOR_MS = 45_000L

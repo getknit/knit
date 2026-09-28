@@ -16,6 +16,8 @@
         android:maxSdkVersion="30" />
     <!-- API 31+ (a later Wear OS update of the same watch): runtime, requested by StatusActivity. -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Re-arms StatusAlarm after a reboot, which drops every alarm. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="false"
@@ -132,6 +134,22 @@
                 android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
                 android:value="300" />
         </service>
+        <!-- Every read of the phone runs here: a running job keeps the process out of the freezer. -->
+        <service
+            android:name=".StatusReadJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- Knit's own read cadence while a complication is on the face: the system's asks wait out Doze. -->
+        <receiver
+            android:name=".StatusAlarmReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <!-- The tile (Material 3 Expressive, ProtoLayout). The preview is what the tile picker shows. -->
         <service
             android:name=".MeshTileService"

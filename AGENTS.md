@@ -248,6 +248,11 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   in both modules) for the peer map, and adds the watch-only day history (`StatusHistory`/`DayStats`). `wearstatus/` is
   compiled into both modules, so it imports nothing but `java.*`/`kotlin.*`, and its layout is pinned by one golden
   vector in `WearStatusCodecTest` and `:wear`'s `StatusTextTest`; a stopped or paused mesh reports no radio.
+  Every read of the phone runs in `StatusReadJob` and no surface waits on Bluetooth (the fourth amendment: the
+  watch app is a cached process, frozen ten seconds after a complication or tile poke, and dozing defers the asks);
+  past the six-minute window a reading is drawn aged (`StatusText.shown`), and only a failed read says out of reach.
+  A raised wrist does not end Doze, so while a complication is active `StatusAlarm` reads every five minutes on an
+  allow-while-idle alarm; don't lean on `UPDATE_PERIOD_SECONDS` for freshness.
 - **When touching `ui/yourmesh/`, `mesh/ContributionLedger`, `data/settings/ContributionJournal`,
   `data/peer/MetPeer*`, `ForwardDao.observeCarriedForOthers`, or the `onRelayed` / `onServed` hooks in
   `MeshRouter` / `ForwardSync`:** READ ADR 2026-09.2v2t. The Your mesh screen's numbers are shown to the user

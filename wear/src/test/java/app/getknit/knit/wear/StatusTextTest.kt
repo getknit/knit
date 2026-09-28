@@ -32,11 +32,27 @@ class StatusTextTest {
     }
 
     @Test
-    fun `a snapshot older than one missed refresh is no data`() {
-        val now = 10_000_000L
-        assertEquals(linked, StatusText.fresh(Snapshot(linked, now - StatusText.STALE_MS), now))
-        assertNull(StatusText.fresh(Snapshot(linked, now - StatusText.STALE_MS - 1), now))
-        assertNull(StatusText.fresh(null, now))
+    fun `a reading is live for one missed refresh, then shown with its age`() {
+        val now = 1_790_000_000_000L
+        val edge = now - StatusText.STALE_MS
+        assertEquals(Shown(linked), StatusText.shown(Snapshot(linked, edge), failedAtMs = 0L, nowMs = now))
+        assertEquals(Shown(linked, agedSinceMs = edge - 1), StatusText.shown(Snapshot(linked, edge - 1), 0L, now))
+        assertEquals(Shown(linked, agedSinceMs = now - HOURS_8), StatusText.shown(Snapshot(linked, now - HOURS_8), 0L, now))
+        assertNull(StatusText.shown(null, failedAtMs = 0L, nowMs = now))
+    }
+
+    @Test
+    fun `a read that found no phone turns an aged reading into out of reach, never a live one`() {
+        val now = 1_790_000_000_000L
+        val old = Snapshot(linked, now - HOURS_8)
+        assertNull(StatusText.shown(old, failedAtMs = now - 1_000L, nowMs = now))
+        // A failure before the reading was taken says nothing about it.
+        assertEquals(Shown(linked, now - HOURS_8), StatusText.shown(old, failedAtMs = now - HOURS_8 - 1, nowMs = now))
+        // Inside the live window the reading stays live; the window's close is where it goes out of reach.
+        val recent = Snapshot(linked, now - 60_000L)
+        assertEquals(Shown(linked), StatusText.shown(recent, failedAtMs = now, nowMs = now))
+        assertNull(StatusText.afterLive(recent, failedAtMs = now))
+        assertEquals(Shown(linked, recent.fetchedAtMs), StatusText.afterLive(recent, failedAtMs = 0L))
     }
 
     @Test
@@ -170,5 +186,9 @@ class StatusTextTest {
         assertEquals("12k", Counts.compact(12_345))
         assertEquals("1.2M", Counts.compact(1_234_567))
         assertEquals("12M", Counts.compact(12_345_678))
+    }
+
+    private companion object {
+        const val HOURS_8 = 8 * 60 * 60_000L
     }
 }
