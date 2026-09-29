@@ -1,5 +1,8 @@
+import com.android.build.api.variant.BuildConfigField
 import org.jlleitschuh.gradle.ktlint.reporter.ReporterType
+import java.io.ByteArrayOutputStream
 import java.util.Properties
+import javax.inject.Inject
 
 plugins {
     alias(libs.plugins.android.application)
@@ -249,6 +252,9 @@ android {
         // passes no `-P` — resolves the same OFF and stays byte-identical.
         val modelFaultOnLoad = (project.findProperty("modelFaultOnLoad") as? String).orEmpty()
         buildConfigField("String", "MODEL_FAULT_ON_LOAD", "\"$modelFaultOnLoad\"")
+        // The checkout's short commit, shown in About. Empty here on purpose: only the debug variant fills
+        // it (`androidComponents` below), so a release APK never carries the build machine's Git state.
+        buildConfigField("String", "GIT_SHA", "\"\"")
     }
 
     signingConfigs {
@@ -523,6 +529,53 @@ android {
                 kotlin.directories.add("src/release/java")
             }
         }
+    }
+}
+
+// The checkout's short commit for About's Build section — DEBUG ONLY (ADR 2026-09.6eb6's amendment). A
+// release, staging or nonMinifiedRelease APK keeps defaultConfig's empty GIT_SHA: F-Droid rebuilds the
+// release from a tree with no `.git` and byte-compares it against ours, which is the same reason
+// `vcsInfo { include = false }` is set; a release's version already names its tag. Read through a
+// ValueSource that the debug variant's field holds lazily, so `git` runs only when a debug BuildConfig is
+// generated (never at configuration time, so the configuration cache is not keyed on HEAD), and a checkout
+// with no Git — or no `git` on the PATH — yields an empty string rather than a failed build.
+abstract class GitShortSha : ValueSource<String, GitShortSha.Params> {
+    interface Params : ValueSourceParameters {
+        val repoDir: DirectoryProperty
+    }
+
+    @get:Inject
+    abstract val execOperations: ExecOperations
+
+    override fun obtain(): String =
+        runCatching {
+            val repo =
+                parameters.repoDir.asFile
+                    .get()
+                    .absolutePath
+            val out = ByteArrayOutputStream()
+            val result =
+                execOperations.exec {
+                    commandLine("git", "-C", repo, "rev-parse", "--short", "HEAD")
+                    standardOutput = out
+                    errorOutput = ByteArrayOutputStream()
+                    isIgnoreExitValue = true
+                }
+            if (result.exitValue == 0) out.toString(Charsets.UTF_8).trim() else ""
+        }.getOrDefault("")
+}
+
+val gitShortSha =
+    providers.of(GitShortSha::class.java) {
+        parameters.repoDir.set(rootProject.layout.projectDirectory)
+    }
+
+androidComponents {
+    onVariants(selector().withBuildType("debug")) { variant ->
+        variant.buildConfigFields?.put(
+            "GIT_SHA",
+            gitShortSha.map { BuildConfigField("String", "\"$it\"", "Short commit of the checkout; debug only") },
+        )
     }
 }
 

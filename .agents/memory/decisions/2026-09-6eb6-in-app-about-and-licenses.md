@@ -63,3 +63,11 @@ The trap: **nothing from the build machine may reach About.** No git SHA, no bui
 `buildConfigField` that reads the environment — the release APK is byte-compared by F-Droid's buildserver
 against ours, and that one `version-control-info.textproto` was the only diff the last time it was tried.
 Version, code and build type come from `BuildConfig`; everything else is `android.os.Build` at runtime.
+
+*Amendment (2026-09-29): a debug build names its commit.* About's Build section, and the Copy block under
+its `app:` line, show the checkout's short SHA — in the **debug** variant only. `BuildConfig.GIT_SHA` is
+empty in `defaultConfig`, so release, staging and nonMinifiedRelease carry nothing; `androidComponents`
+fills it for debug alone, from a `ValueSource` running `git rev-parse --short HEAD` lazily when the debug
+`BuildConfig` is generated (not at configuration time, so HEAD never keys the configuration cache), and a
+tree with no Git yields an empty field and no row. The trap above stands for every release-shaped build: a
+release's version already names its tag, and F-Droid's rebuild has no `.git` to read.

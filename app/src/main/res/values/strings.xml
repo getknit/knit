@@ -877,6 +877,7 @@
     <string name="about_licenses_subtitle">The libraries and models Knit is built from</string>
     <string name="about_section_build">Build</string>
     <string name="about_build_version">Version</string>
+    <string name="about_build_commit">Commit</string>
     <string name="about_build_type">Build</string>
     <string name="about_build_type_minified">%1$s · minified</string>
     <string name="about_build_installed_from">Installed from</string>

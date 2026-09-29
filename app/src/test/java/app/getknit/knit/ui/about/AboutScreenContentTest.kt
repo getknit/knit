@@ -38,11 +38,12 @@ class AboutScreenContentTest {
         buildType: String = "release",
         obfuscated: Boolean = true,
         installSource: InstallSource = InstallSource.FDROID,
+        commit: String? = null,
     ) {
         compose.setContent {
             KnitTheme {
                 AboutScreenContent(
-                    info = AboutBuildInfo(previewEnvironment(buildType, obfuscated), installSource),
+                    info = AboutBuildInfo(previewEnvironment(buildType, obfuscated), installSource, commit),
                     snackbarHostState = SnackbarHostState(),
                     onBack = {},
                     onOpenUrl = { opened += it },
@@ -84,6 +85,19 @@ class AboutScreenContentTest {
         compose.onNodeWithTag("about_build_installed_from").assertTextContains("F-Droid")
         compose.onNodeWithTag("about_build_android").assertTextContains("16 (SDK 36)")
         compose.onNodeWithTag("about_build_device").assertTextContains("Google Pixel 8")
+    }
+
+    @Test
+    fun aReleaseBuildShowsNoCommit() {
+        render()
+        compose.onNodeWithTag("about_build_version").performScrollTo()
+        compose.onNodeWithTag("about_build_commit").assertDoesNotExist()
+    }
+
+    @Test
+    fun aDebugBuildShowsItsCommit() {
+        render(buildType = "debug", obfuscated = false, commit = "06dd410d")
+        compose.onNodeWithTag("about_build_commit").performScrollTo().assertTextContains("06dd410d")
     }
 
     @Test

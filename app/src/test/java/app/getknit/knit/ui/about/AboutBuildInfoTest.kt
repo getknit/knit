@@ -20,4 +20,25 @@ class AboutBuildInfoTest {
             info.asText(),
         )
     }
+
+    @Test
+    fun aDebugBuildNamesItsCommitUnderTheAppLine() {
+        val info =
+            AboutBuildInfo(
+                environment = previewEnvironment(buildType = "debug", obfuscated = false),
+                installSource = InstallSource.SIDELOADED,
+                commit = "06dd410d",
+            )
+        assertEquals(
+            """
+            app: 2.5.1 (21) debug
+            commit: 06dd410d
+            installed from: sideloaded
+            device: Google Pixel 8 (shiba)
+            android: 16 (SDK 36)
+            abis: arm64-v8a
+            """.trimIndent(),
+            info.asText(),
+        )
+    }
 }

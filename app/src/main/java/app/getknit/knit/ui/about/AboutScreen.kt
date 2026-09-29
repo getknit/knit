@@ -320,6 +320,13 @@ private fun BuildSection(
             value = "${environment.versionName} (${environment.versionCode})",
             modifier = Modifier.testTag("about_build_version"),
         )
+        info.commit?.let { commit ->
+            DetailRow(
+                label = stringResource(R.string.about_build_commit),
+                value = commit,
+                modifier = Modifier.testTag("about_build_commit"),
+            )
+        }
         DetailRow(
             label = stringResource(R.string.about_build_type),
             value =
@@ -407,6 +414,7 @@ fun AboutScreenDebugPreview() =
                 AboutBuildInfo(
                     environment = previewEnvironment(buildType = "debug", obfuscated = false),
                     installSource = InstallSource.SIDELOADED,
+                    commit = "06dd410d",
                 ),
             snackbarHostState = SnackbarHostState(),
             onBack = {},

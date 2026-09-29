@@ -187,9 +187,9 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `releaseRuntimeClasspath` by `ReleaseClasspathNoticesTest` — a new shipped dependency is a row in both files
   (with the artifact prefixes that claim it) or a `NOT_SHIPPED` entry with its reason, and nothing else makes
   those tests pass. The license texts are committed copies (no Gradle task; `assets/legal/COPYING` is
-  byte-pinned to root `COPYING`), and nothing from the build machine — git SHA, timestamp — goes into About:
-  the release APK is byte-reproduced by F-Droid. No license plugin; `legal/InstallSource.kt` is the app's
-  one installer read.
+  byte-pinned to root `COPYING`), and nothing from the build machine — git SHA, timestamp — goes into a
+  release's About: the release APK is byte-reproduced by F-Droid, so only the debug variant fills
+  `BuildConfig.GIT_SHA`. No license plugin; `legal/InstallSource.kt` is the app's one installer read.
 - **When touching `ui/onboarding/`, `ui/Permissions.kt`, `ui/BackgroundBattery.kt`, or `BootReceiver`'s start
   decision:** READ ADR 2026-09.nzpr. Entry is gated on `hasRadioPermissions` alone — the transports assume
   those grants (`@SuppressLint("MissingPermission")` is a lint suppression, not a runtime guard), so the mesh
