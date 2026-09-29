@@ -529,7 +529,11 @@ class BluetoothMeshTransport(
 
     private fun readvertise() {
         if (adapter?.isEnabled != true || currentPsm == 0 || !::localNodeId.isInitialized) return
-        val flags = if (sideChannel?.live == true) BleAdvertPayload.FLAG_SIDE_CHANNEL else 0
+        // FLAG_DIALS_GATT_PEERS rides the same gate as the reader, so it never claims a read this phone cannot make:
+        // a lower-id iPhone waits to be dialed only by a phone that can find it (companion change A3).
+        val flags =
+            (if (sideChannel?.live == true) BleAdvertPayload.FLAG_SIDE_CHANNEL else 0) or
+                (if (gattPeers) BleAdvertPayload.FLAG_DIALS_GATT_PEERS else 0)
         advertiser.update(
             BleAdvertPayload.encode(localNodeId, Protocol.LOCAL_CAPABILITIES, storeDigest.current(), currentPsm, flags),
         )
