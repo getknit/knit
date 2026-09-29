@@ -96,3 +96,36 @@ port's `interop.py iphone-wake --sender phone` with the iPhone locked. The log o
 - `bt ring <id>` at debug;
 - `doorbells=` and `rings=` on the debug `bt state` line;
 - no doorbell line on any Android↔Android link.
+
+**Amended 2026-09-29 (#102): the lookup runs at link-up and asks for a 5 s supervision timeout.** Every
+iPhone↔Android link so far is one the iPhone dialed, so the iPhone is the central and iOS sets the parameters. On
+the iPhone 12 (iOS 27.0) a link opens at 30 ms, no latency and a **720 ms** supervision timeout. Links an Android
+phone dials run at 5 s. A walk on 2026-09-29 with the Pixel 7's snoop on showed how the lookup moved it:
+
+- The stack's own update for the discovery asked for 10–20 ms and 5 s, and iOS granted 15 ms and 5 s.
+- Once discovery found the doorbell, the stack asked for the link's first values back, and iOS granted 30 ms and
+  720 ms.
+- The link then ended with `Connection Timeout` (0x08), 0.73 s after the iPhone's last ACL packet, at about 10 m.
+  Pixel↔Pixel links in the same walk held to about 30 m. The Pixel 9's and Pixel 3's links to the Pixel 7 ran at
+  30 ms and 5 s, one of them on LE 2M too, so the PHY is not the difference.
+
+Two changes follow:
+
+- **Each lookup that finds the doorbell calls `requestConnectionPriority(CONNECTION_PRIORITY_BALANCED)`** on the
+  client it keeps open. AOSP's BALANCED is 30–50 ms at no latency, with the 5 s timeout every priority carries.
+  That is inside Apple's accessory limits, and the snoop showed iOS granting a 5 s request. The request follows
+  every lookup, so a re-lookup's discovery (after a wedge or a services change) is followed by the request again,
+  whatever values the stack restores when discovery ends.
+- **The lookup runs at link-up** rather than at the first ring. It rings nothing, and it spends from the same
+  `DoorbellPolicy.Lookups` budget. The link then spends no time at 720 ms waiting for a ring, and a replaced link,
+  which gets no link-up push, still gets the request. It costs one GATT discovery per link that asks for a ring,
+  and most of those rang at once anyway.
+
+`Client` also logs the parameters the link settles on (`bt conn params <id> …`), through `onConnectionUpdated`.
+That callback has been hidden since API 26, so it is declared without `override` and kept with `@Keep`. It is a
+diagnostic only; the snoop log is the oracle. Links Android dials (companion change A3, #101) are unaffected:
+Android is their central, and BALANCED matches what they already run.
+
+Still owed on hardware: the walk again, with Wi-Fi Aware off on the Pixels, checking that the snoop shows the 5 s
+update after `bt doorbell found` and none back to 720 ms for the life of the link, and comparing drop distance with
+a Pixel↔Pixel Bluetooth link at the same spot.

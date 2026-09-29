@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import androidx.annotation.Keep
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,13 +30,22 @@ import kotlinx.coroutines.withTimeoutOrNull
  * One coroutine owns the GATT client and the schedule, woken through a conflated channel, so a poke never blocks the
  * writer and a ring asked for during the lookup waits for it. The trailing ring of a burst is that loop's timeout.
  *
- * **The lookup** runs at the first ring. `connectGatt` on a device with an open LE link attaches a client to that
- * link rather than dialing (AOSP `gatt_connect`), which is why the attach window is [ATTACH_TIMEOUT_MS] and the link
- * is re-checked ([isLive]) just before: if the ACL is already gone, the call would dial the peer's address instead,
- * and closing the client on the timeout cancels that dial. The client holds the ACL while it is open, so it never
- * outlives the link — [close] ends it with the link. A peer with no doorbell (or one that takes no write without a
- * response, which is the only kind a suspended app can take without holding the link up) is not asked again on this
+ * **The lookup** runs at link-up, before any ring (#102). `connectGatt` on a device with an open LE link attaches a
+ * client to that link rather than dialing (AOSP `gatt_connect`), which is why the attach window is [ATTACH_TIMEOUT_MS]
+ * and the link is re-checked ([isLive]) just before: if the ACL is already gone, the call would dial the peer's address
+ * instead, and closing the client on the timeout cancels that dial. The client holds the ACL while it is open, so it
+ * never outlives the link — [close] ends it with the link. A peer with no doorbell (or one that takes no write without
+ * a response, which is the only kind a suspended app can take without holding the link up) is not asked again on this
  * link, and its client is closed at once; the open CoC keeps the ACL up without it.
+ *
+ * **Each lookup that finds the doorbell also asks for [BluetoothGatt.CONNECTION_PRIORITY_BALANCED]** (#102). An iPhone
+ * that dialed us is the link's central and runs it at a 720 ms supervision timeout, which drops the link at the first
+ * 0.72 s without a good packet. The stack's own update for the discovery asks for 5 s and gets it, then asks for the
+ * link's first values back once discovery ends. BALANCED is AOSP's 30–50 ms at no latency with the 5 s timeout every
+ * priority carries, inside Apple's accessory limits, and iOS grants it. It is asked after every lookup, so a
+ * re-lookup's discovery (after a wedge or a services change) is followed by the request again. That is why the lookup
+ * runs at link-up: the link spends no time at 720 ms waiting for its first ring, and a replaced link, which gets no
+ * link-up push, still gets it.
  *
  * Callbacks arrive on a binder thread (the four-arg `connectGatt` passes no Handler); each lookup gets its own
  * [Client], whose deferreds are made before the call, so nothing is handed between threads through a plain field.
@@ -79,6 +89,7 @@ internal class BleDoorbell(
 
     private suspend fun loop() {
         try {
+            lookUp() // at link-up, for the connection priority it asks for; it rings nothing
             while (currentCoroutineContext().isActive) {
                 val due = schedule.dueAt
                 val poked =
@@ -133,6 +144,7 @@ internal class BleDoorbell(
                 } else {
                     doorbell = ch
                     Log.i(TAG, "bt doorbell found $nodeId (${device.address})")
+                    askForBalanced(c)
                 }
                 ch
             }
@@ -144,6 +156,14 @@ internal class BleDoorbell(
                 null
             }
         }
+    }
+
+    /** Asks for BALANCED parameters, whose 5 s supervision timeout replaces an iPhone central's 720 ms (#102). */
+    private fun askForBalanced(c: Client) {
+        val asked =
+            runCatching { c.gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED) == true }
+                .getOrDefault(false)
+        Log.i(TAG, "bt doorbell priority $nodeId requested=$asked")
     }
 
     private fun write(
@@ -249,6 +269,27 @@ internal class BleDoorbell(
         override fun onServiceChanged(g: BluetoothGatt) {
             servicesChanged = true
         }
+
+        /**
+         * The link's parameters changed: interval in 1.25 ms units, timeout in 10 ms units. Hidden since API 26, so
+         * not an `override`: the framework calls it virtually, and [Keep] stops R8 dropping a method nothing here
+         * calls. Diagnostics only (#102): the snoop log stays the oracle.
+         */
+        @Keep
+        @Suppress("unused", "UNUSED_PARAMETER", "UnusedParameter")
+        fun onConnectionUpdated(
+            g: BluetoothGatt,
+            interval: Int,
+            latency: Int,
+            timeout: Int,
+            status: Int,
+        ) {
+            Log.i(
+                TAG,
+                "bt conn params $nodeId interval=${interval * INTERVAL_UNIT_US}us latency=$latency " +
+                    "timeout=${timeout * TIMEOUT_UNIT_MS}ms status=$status",
+            )
+        }
     }
 
     private companion object {
@@ -258,6 +299,10 @@ internal class BleDoorbell(
         // dialing instead, which the timeout's close cancels.
         const val ATTACH_TIMEOUT_MS = 2_000L
         const val DISCOVER_TIMEOUT_MS = 10_000L
+
+        // The HCI units `onConnectionUpdated` reports in.
+        const val INTERVAL_UNIT_US = 1_250
+        const val TIMEOUT_UNIT_MS = 10
 
         // The doorbell's value means nothing; one byte is the least a write carries.
         val VALUE = byteArrayOf(1)

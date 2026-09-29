@@ -370,9 +370,13 @@ GATT client and a `DoorbellPolicy.Schedule`. `writeOnce` pokes it after enqueuin
 through it.
 
 - **The schedule is the port's own.** A ring at most every 5 s, plus one more after a burst.
-- **The first ring looks the doorbell up.** `connectGatt(TRANSPORT_LE)` attaches to the link's own ACL; if it has
-  not attached within 2 s the ACL is gone, and the timeout's close cancels the dial it turned into. Then
-  `discoverServices`, then the characteristic, which must take a write without response.
+- **The lookup runs at link-up, before any ring** (#102). `connectGatt(TRANSPORT_LE)` attaches to the link's own
+  ACL; if it has not attached within 2 s the ACL is gone, and the timeout's close cancels the dial it turned into.
+  Then `discoverServices`, then the characteristic, which must take a write without response.
+- **Every lookup that finds the doorbell asks for `CONNECTION_PRIORITY_BALANCED`** (#102). An iPhone that dialed
+  us is the central and runs the link at a 720 ms supervision timeout; the stack's discovery-time update lifts it
+  to 5 s and then asks for 720 ms back. BALANCED carries AOSP's fixed 5 s timeout (30–50 ms, no latency), and iOS
+  grants it. Asked after each lookup, so a re-lookup's discovery is followed by the request again.
 - **A ring is a 1-byte write without response.** Never with a response: a suspended app would have to answer it.
 - **The client lives and dies with the link** (`teardownLink`, and `registerLink`'s replace branch): an open client
   holds the ACL.
@@ -380,7 +384,9 @@ through it.
   writer blocks until the ring wakes it.
 - **A dialed link never rings.** Its caps are the advert's low byte; A3 must pass the reply HELLO's.
 
-Oracle: `bt doorbell found|absent|lookup failed|wedged <id>` at info, `bt ring <id>` at debug, and
+Oracle: `bt doorbell found|absent|lookup failed|wedged <id>`, `bt doorbell priority <id> requested=<bool>` and
+`bt conn params <id> interval=… latency=… timeout=…` (the hidden `onConnectionUpdated`) at info, `bt ring <id>` at
+debug, and
 `doorbells=`/`rings=` on the `bt state` line. Tests: `DoorbellPolicyTest`, `ProtocolTest`; `BleDoorbell` is
 device-verified only.
 

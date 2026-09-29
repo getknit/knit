@@ -79,6 +79,8 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   touch GATT. The doorbell UUIDs are cross-platform law, and the schedule is the port's. `typing`, `blobreq` and
   `keyreq` don't ring. The GATT client attaches to the link's own ACL, closes on a 2 s attach timeout, and lives
   and dies with the link. A ring is a write without response, poked at the enqueue, never after the socket write.
+  The lookup runs at link-up and each one that finds the doorbell asks for `CONNECTION_PRIORITY_BALANCED`: an
+  iPhone central runs the link at a 720 ms supervision timeout, BALANCED carries 5 s (#102, the ADR's amendment).
 - **When touching `linkpreview/`, `net/`, `mesh/protocol/LinkPreviewBlob`, or anything that opens an
   Internet socket outside the spool plane:** READ ADR 2026-09.n752 (and 2026-09.7x8k: a send holds up to 5 s
   for the card its link is fetching, or the share sheet never carries one; a LoRa thread takes a card exactly
