@@ -556,10 +556,11 @@ internal fun ConversationListItem(
     modifier: Modifier = Modifier,
     onDelete: (conversationId: String) -> Unit = {},
 ) {
-    // The Nearby broadcast room can't be deleted, so it gets a plain tap with no long-press menu. The
-    // Meshtastic room is a room too but *can* be cleared — it is a radio channel arriving unasked; clearing
-    // it drops the history, and the row stays only while a radio is bound.
-    val deletable = !row.isRoom || row.isBridged
+    // Nearby and the Meshtastic room are cleared rather than removed: the history goes, Nearby's row stays,
+    // and the Meshtastic row stays while a radio is bound. A commons is left from its relay row, so it gets a
+    // plain tap with no long-press menu.
+    val isNearby = row.id == Conversations.NEARBY
+    val deletable = !row.isRoom || row.isBridged || isNearby
     var menuOpen by remember { mutableStateOf(false) }
     var showConfirm by remember { mutableStateOf(false) }
     val clickModifier =
@@ -757,8 +758,21 @@ internal fun ConversationListItem(
     if (showConfirm) {
         AlertDialog(
             onDismissRequest = { showConfirm = false },
-            title = { Text(stringResource(R.string.chat_list_delete_confirm_title)) },
-            text = { Text(stringResource(R.string.chat_list_delete_confirm_body)) },
+            // "Delete chat?" would promise the room goes too; Nearby's dialog says it stays.
+            title = {
+                Text(
+                    stringResource(
+                        if (isNearby) R.string.chat_list_clear_nearby_confirm_title else R.string.chat_list_delete_confirm_title,
+                    ),
+                )
+            },
+            text = {
+                Text(
+                    stringResource(
+                        if (isNearby) R.string.chat_list_clear_nearby_confirm_body else R.string.chat_list_delete_confirm_body,
+                    ),
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     onDelete(row.id)

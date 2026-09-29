@@ -25,6 +25,8 @@ document:
 - You can now remove someone from your contacts using the menu on their profile. It deletes your chat with
   them from this phone, and they aren't told. People you share a group with stay in your contacts while
   you're both in it.
+- You can now clear the Nearby room's messages by long-pressing it in the chat list, as you can with other
+  chats. This only removes them from your phone, and the room stays in your list.
 
 ### Fixed
 

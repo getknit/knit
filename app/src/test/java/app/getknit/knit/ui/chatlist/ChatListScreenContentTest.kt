@@ -1,8 +1,10 @@
 package app.getknit.knit.ui.chatlist
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertContentDescriptionContains
 import androidx.compose.ui.test.assertIsDisplayed
@@ -560,5 +562,46 @@ class ChatListScreenContentTest {
         compose.onNodeWithTag("chatlist_mesh_off_banner_action").performClick()
         assertEquals(1, starts)
         assertEquals(0, resumes)
+    }
+
+    /**
+     * Nearby is cleared like any other chat: its row carries the Delete action, and the dialog says the room
+     * stays. A commons has no delete here (it is left from its relay row).
+     */
+    @Test
+    fun nearbyOffersDeleteWithItsOwnDialogAndACommonsDoesNot() {
+        val commons = Conversations.commonsIdFor("ab".repeat(32))
+        var deleted: String? = null
+        compose.setContent {
+            KnitTheme {
+                Column {
+                    ConversationListItem(row(Conversations.NEARBY, "Nearby", isRoom = true), now, onClick = {}, onDelete = {
+                        deleted = it
+                    })
+                    ConversationListItem(row(commons, "Home", isRoom = true), now, onClick = {})
+                }
+            }
+        }
+
+        val customActions = SemanticsActions.CustomActions
+        assertFalse(
+            "a commons row offers no delete",
+            compose
+                .onNodeWithTag("chat_row_$commons")
+                .fetchSemanticsNode()
+                .config
+                .contains(customActions),
+        )
+        val delete =
+            compose
+                .onNodeWithTag("chat_row_${Conversations.NEARBY}")
+                .fetchSemanticsNode()
+                .config[customActions]
+                .single { it.label == "Delete" }
+        compose.runOnUiThread { delete.action() }
+
+        compose.onNodeWithText("Clear Nearby messages?").assertIsDisplayed()
+        compose.onNodeWithText("Delete").performClick()
+        assertEquals(Conversations.NEARBY, deleted)
     }
 }

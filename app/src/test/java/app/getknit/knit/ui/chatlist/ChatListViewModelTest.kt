@@ -364,6 +364,35 @@ class ChatListViewModelTest {
             assertEquals(context.getString(R.string.nearby_title), nearby.title)
         }
 
+    @Test
+    fun deletingNearbyClearsItsMessagesAndDraftButTheRoomStays() =
+        runTest {
+            store.set(
+                msg(senderId = "bob", sentAt = 100, conversationId = Conversations.NEARBY),
+                msg(senderId = "me", sentAt = 200, conversationId = Conversations.NEARBY),
+                msg(senderId = "me", sentAt = 300, conversationId = "ada", recipientId = "ada"),
+            )
+            val vm = vm()
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+
+            vm.deleteConversation(Conversations.NEARBY)
+            advanceUntilIdle()
+
+            val nearby =
+                vm.state.value.conversations
+                    .single { it.id == Conversations.NEARBY }
+            assertEquals(null, nearby.lastPreview)
+            assertEquals(null, nearby.lastMessageAt)
+            assertEquals(0, nearby.unreadCount)
+            assertTrue(
+                "another thread is untouched",
+                vm.state.value.conversations
+                    .any { it.id == "ada" },
+            )
+            coVerify(exactly = 1) { drafts.clear(Conversations.NEARBY) }
+        }
+
     /** The clone banner (ADR 2026-09.ypcc) is the two persisted stamps compared, and a dismissal writes the second. */
     @Test
     fun theCloneBannerFollowsTheSeenStampPastTheDismissal() =

@@ -382,26 +382,24 @@ class ChatListViewModel(
     }
 
     /**
-     * Deletes a conversation locally: clears its messages (DM/group/bridged room) and, for a group,
-     * hard-deletes the group row so it leaves the list but can be re-added by a future group frame. Nearby is
-     * not deletable. Sends nothing over the mesh; the list updates from the underlying flows.
+     * Deletes a conversation locally: clears its messages (DM/group/Nearby/bridged room) and, for a group,
+     * hard-deletes the group row so it leaves the list but can be re-added by a future group frame. Sends
+     * nothing over the mesh and leaves custody alone; the list updates from the underlying flows.
      */
     fun deleteConversation(conversationId: String) {
         viewModelScope.launch {
             // An unsent line belongs to the thread it was typed in, and goes when the thread does.
             drafts.clear(conversationId)
             when (Conversations.kindFor(conversationId)) {
-                // the broadcast room can't be deleted
-                ConversationKind.NEARBY -> {}
-
                 ConversationKind.GROUP -> {
                     groups.delete(conversationId)
                 }
 
-                // Unlike Nearby, the Meshtastic room *is* clearable: the history goes, and the row stays
-                // only while a radio is bound — the honest way to say "not interested" in a channel that
-                // arrives unasked.
-                ConversationKind.MESHTASTIC, ConversationKind.DM -> {
+                // The rooms are cleared, not removed: Nearby's row is always built, and the Meshtastic room's
+                // stays only while a radio is bound — the honest way to say "not interested" in a channel that
+                // arrives unasked. Cleared posts don't come back: custody still holds them, so no peer's
+                // digest re-serves them, and every copy expires on the frame's own stamp.
+                ConversationKind.NEARBY, ConversationKind.MESHTASTIC, ConversationKind.DM -> {
                     messages.deleteByConversation(conversationId)
                 }
 

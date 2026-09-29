@@ -351,6 +351,8 @@
     <string name="chat_list_delete_action">Delete</string>
     <string name="chat_list_delete_confirm_title">Delete chat?</string>
     <string name="chat_list_delete_confirm_body">All messages in this chat will be removed from this device only.</string>
+    <string name="chat_list_clear_nearby_confirm_title">Clear Nearby messages?</string>
+    <string name="chat_list_clear_nearby_confirm_body">All Nearby messages will be removed from this device only. The room stays in your chat list.</string>
     <string name="chat_action_block">Block user</string>
     <string name="chat_action_unblock">Unblock user</string>
     <string name="chat_view_profile">View %1$s\'s profile</string>
