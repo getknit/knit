@@ -417,7 +417,7 @@ characteristic `848eedcd-a2e3-4fb2-86f9-e2c80821a497` (`DoorbellPolicy.PAYLOAD_U
 - **The dial rule is unchanged.** A read iPhone is sighted, so the larger id dials and a sighted lower dialer is
   refused. The dialed link takes the reply HELLO's caps, so the doorbell rings it.
 - **`FLAG_DIALS_GATT_PEERS` (0x02)** in the advert's flags byte tells an iPhone whose id sorts lower to wait to be
-  dialed. Set only while the reader runs (`readvertise`, the same gate), in its own commit after the device gate.
+  dialed. Set only while the reader runs (`readvertise`, the same gate); it went on after the device gate passed.
 
 Limits: in the iPhone-below order the first link waits on this phone's (possibly floored) scan cadence; a read
 during iOS's PSM-change service swap is a 10-minute stranger, kept line for line with iOS; a backgrounded iPhone

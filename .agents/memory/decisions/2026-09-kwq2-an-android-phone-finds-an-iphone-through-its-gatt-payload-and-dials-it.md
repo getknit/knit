@@ -10,7 +10,7 @@ topics: [ble, transport, interop]
 
 Status: Accepted (2026-09-29). Companion change A3 for the iOS port (`knit-ios`, ADR 2026-09.xzpt there), knit-next issue
 101, with #102 for the link-parameter motive. Dark in release behind `BuildConfig.BLE_GATT_PEERS` until its device
-trial. The flag bit lands in a commit of its own, after the device gate.
+trial. The flag bit landed in a commit of its own, after the device gate passed (2026-09-29).
 
 **What was observed.** A foreground iPhone advertises the `0xFE30` UUID and nothing else: iOS cannot advertise service
 data, and `BleScanner` filtered on it, so an Android phone never sighted an iPhone and never dialed one. The iPhone
@@ -102,7 +102,19 @@ while the gate is on. The iOS worker's gate scenario greps these lines.
 The mesh lab has no radio layer, so no lab scenario covers this. `GattPayloadsTest`, `BleAdvertPayloadTest` and
 `DoorbellPolicyTest` pin the rules and identifiers. The reader is device-verified only, like `BleDoorbell`.
 
-**Device gate (owed).** knit-peer's `ios` profile on `hci1` against a Pixel (API 37, the API-33 read callback) and
-the Moto G (API 30, the pre-33 one), in both id orders, with the flag clear. It checks for the `bt gatt read … →`
-lines, that the phone dials only when its id is larger, `bt doorbell found` on the link it dialed, and that no
-`bt gatt read` names an Android phone. Then the flag, and the iPhone checks against the iPhone 12 in both orders.
+**Device gate: passed 2026-09-29, at b7480e85 with the flag clear.** knit-peer's `ios` profile on `hci1` ran against
+the Pixel 7 (API 37, the API-33 read callback) and the Pixel 3 (API 31, the pre-33 one; the Moto G, planned for it,
+now runs an API-34 GSI), in both id orders:
+
+- Every read named knit-peer, and none named an Android phone.
+- The phone dialed only when its id was larger, and found and rang the doorbell on every link it dialed. Above it,
+  the peer was admitted as sighted and never dialed.
+- All three forget rules fired on the Pixel 7: quiet, hello on an accepted link (then `Admit, sighted=false`), hello
+  in a dial's reply (a HANDSHAKE), and dial (a TIMEOUT).
+- First links took 40.5 to 104.8 s. Three of the four runs began with a failed first read, mostly
+  `timeout@discover` against `hci1`, and each paid the 30 s retry. Whether that is the rig or real is judged after
+  the iPhone runs.
+
+The first gate, on 7c16aae5, is what found the stale payload at a reused address. The flag then went on in its own
+commit. Still owed: the iPhone checks against the iPhone 12 on the flag build, the Pixel 3 sorting above the iPhone
+and the Pixel 7 below it.
