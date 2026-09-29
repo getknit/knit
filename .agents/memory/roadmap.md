@@ -149,16 +149,16 @@ doc). **Don't start a deferred item without explicit direction.**
   The overnight soak (2026-09-28: whole-package sweeps on fresh seeds, single-JVM, three-fork and one- or
   two-core-throttled, over two worktrees) explained three of #88's four: the setup "profile edit was never
   published" is **#97** (DataStore 1.2.1 drops the update for a `data` collector that subscribes mid-write, so
-  `watchProfileChanges` never sees an edit made while the mesh starts; fixed upstream in 1.3.0-alpha03), the most
-  frequent failure in a sweep until it is fixed; the missed-seed tick and the LoRa ride-hold tick are **#96** (a
+  `watchProfileChanges` never sees an edit made while the mesh starts; fixed upstream in 1.3.0-alpha03, which the
+  catalog pins since 2026-09-28 — its repro runs), the most frequent failure in a sweep until then; the
+  missed-seed tick and the LoRa ride-hold tick are **#96** (a
   live-link tick whose send reaches no link is dropped as delivered, including a board node reading the
   composite's lagging `neighbors`), each also a fixture race, fixed (the scenario waits for the ticks; `unlink`
   waits for the composite and the manager). The far-board DM did not recur. The soak also filed **#98** (a
   profile frame and an avatar file landing together overwrite each other's peer-row write) and fixed three more
-  fixture races — see `testing.md`, "What the overnight soak taught". #96, #97 and #98 each have an `@Ignore`d
-  repro. #85/#86 are closed and the restore scenarios passed every soak iteration; drop the job's
-  `continue-on-error` once #97 is fixed (it fails a sweep about once per iteration), then mirror it in
-  `.gitlab-ci.yml`.
+  fixture races — see `testing.md`, "What the overnight soak taught". #96 has an `@Ignore`d
+  repro. #85/#86 are closed and the restore scenarios passed every soak iteration; with #97 fixed, the job's
+  `continue-on-error` can go once a few CI sweeps come back clean, then mirror it in `.gitlab-ci.yml`.
 - **A per-peer in-flight window on the Wi-Fi Aware coordination plane** (ADR 2026-09.jjhg, 2026-09-21, work
   item #81). The framework's send-queue deadlock needs eight follow-ups the framework has already timed out
   still sitting in the firmware's queue — which a burst to a peer that cannot ack fills. One message in flight

@@ -14,7 +14,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
-import org.junit.Ignore
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
@@ -25,10 +24,9 @@ import java.nio.file.Files
  * cache's real update as not newer (fixed upstream in 1.3.0-alpha03, b/431787506). It is how
  * `MeshManager.watchProfileChanges` missed a rename made while the mesh started — the mesh lab's "profile
  * edit was never published" setup failure (#88 case 1). A race, so it counts misses over many rounds: 11 of
- * 3000 on a workstation.
+ * 3000 on a workstation under 1.2.1, which is why the catalog pins 1.3.0-alpha03 until 1.3.0 is stable.
  */
 class DataStoreSubscribeRaceTest {
-    @Ignore("#97: DataStore 1.2.1 drops an update for a collector that subscribes mid-write")
     @Test
     fun aCollectorThatSubscribesDuringAWriteSeesTheWrite() =
         runBlocking {

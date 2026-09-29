@@ -388,7 +388,7 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   the author's receipts before a link goes. Three mesh bugs came out of it: #96 (a live-link tick lost with its
   link is never sent again), #97 (DataStore 1.2.1 drops the update for a `data` collector that subscribes
   mid-write: the "profile edit was never published" setup failure, and the most frequent failure in a sweep until
-  it is fixed) and #98 (a profile frame and an avatar file landing together overwrite each other's peer-row
+  DataStore moved to 1.3.0-alpha03, 2026-09-28; its repro `DataStoreSubscribeRaceTest` now runs) and #98 (a profile frame and an avatar file landing together overwrite each other's peer-row
   write).
 - **Time is real.** `MeshManager.start` builds its session on `Dispatchers.Default`, so scenarios run under
   `runBlocking` and poll, never virtual time. `MeshLab.await` **fails the scenario** where the wait runs out

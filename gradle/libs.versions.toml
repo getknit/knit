@@ -42,7 +42,10 @@ room3 = "3.0.3"
 sqlcipher = "4.19.0"
 coroutines = "1.11.0"
 kotlinxSerializationJson = "1.11.0"
-datastore = "1.2.1"
+# Alpha on purpose (the stable-only rule's second exception, toolchain.md): 1.3.0-alpha03 fixes the dropped
+# update a `data` collector that subscribes mid-write never sees (b/431787506, work item #97), which no stable
+# line carries — 1.2.1 postdates it and still has the race. Back to stable once 1.3.0 ships.
+datastore = "1.3.0-alpha03"
 # The WSS client for the spool (Internet-relay) plane. Pure Java/Kotlin — no native code, so nothing to
 # 16 KB-align and nothing that can make the F-Droid rebuild machine-dependent; its only non-stdlib
 # dependency is okio, already on the classpath via DataStore. Chosen over a Ktor client because its
