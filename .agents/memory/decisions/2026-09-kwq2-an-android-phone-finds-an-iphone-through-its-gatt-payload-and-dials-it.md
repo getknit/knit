@@ -112,9 +112,21 @@ now runs an API-34 GSI), in both id orders:
 - All three forget rules fired on the Pixel 7: quiet, hello on an accepted link (then `Admit, sighted=false`), hello
   in a dial's reply (a HANDSHAKE), and dial (a TIMEOUT).
 - First links took 40.5 to 104.8 s. Three of the four runs began with a failed first read, mostly
-  `timeout@discover` against `hci1`, and each paid the 30 s retry. Whether that is the rig or real is judged after
-  the iPhone runs.
+  `timeout@discover` against `hci1`, and each paid the 30 s retry. The iPhone runs settled it as the rig's: the
+  overruns were `hci1`'s discovery, not the reader's, so the pacing stays as it is.
 
 The first gate, on 7c16aae5, is what found the stale payload at a reused address. The flag then went on in its own
-commit. Still owed: the iPhone checks against the iPhone 12 on the flag build, the Pixel 3 sorting above the iPhone
-and the Pixel 7 below it.
+commit.
+
+**iPhone checks: passed 2026-09-29, on the flag build (8a6d1a58), against the iPhone 12.** knit-peer read the
+flags byte as `0x03` on both phones.
+
+- **The iPhone below the Pixel 3:** 19 of 19. The Pixel 3 dialed it, first link in 15.9 s, relink in 3.3 s.
+- **The iPhone above the Pixel 7:** 19 of 19. The iPhone dialed, first link in 10.5 s, relink in 13.8 s. The
+  Pixel 7 had to be within a metre; at −97 dBm the iPhone never dialed it.
+- **`iphone-wake` with the Pixel 3:** 10 of 10. Every DM to the locked iPhone woke Knit over a link Android had
+  dialed, and the Pixel 3 logged ten rings.
+
+One peer-above run on the Pixel 3 made no read for 180 s. Its presence scan ran with the UUID filter the whole
+time, and every window returned only the three Android phones in reach, so knit-peer's advert never arrived: rig
+side.
