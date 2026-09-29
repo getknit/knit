@@ -5,12 +5,13 @@ package app.getknit.knit.mesh.bluetooth
  * eviction. Pure, so the table is a JVM test ([app.getknit.knit.BleAdmissionPolicyTest]).
  *
  * The larger node id dials, and the responder closes a dialer that sorts below it. That settles a cross-dial
- * between two phones that see each other, and every dialer the scan can see is still judged exactly that way.
- * A dialer this phone has **not** sighted is different: nothing on this side will ever dial it (an iPhone
- * cannot advertise the service data [BleScanner] filters on), so refusing it leaves the pair unlinked for
- * good. Such a dialer is admitted whatever the order, and a second link from it replaces the first once the
- * held one is [REPLACE_MIN_HOLD_MS] old: that is its fresh link after the old one died on its side before ours
- * noticed (ADR 2026-09.shzv).
+ * between two phones that see each other, and every dialer the scan can see is still judged exactly that way —
+ * a foreground iPhone too, once its GATT payload is read (companion change A3, ADR 2026-09.kwq2). A dialer this
+ * phone has **not** sighted is different: nothing on this side will dial it (a backgrounded iPhone, whose UUID
+ * only iOS can read, or any iPhone while the reader is dark), so refusing it leaves the pair unlinked for good.
+ * Such a dialer is admitted whatever the order, and a second link from it replaces the first once the held one
+ * is [REPLACE_MIN_HOLD_MS] old: that is its fresh link after the old one died on its side before ours noticed
+ * (ADR 2026-09.shzv, which stays whole under A3).
  */
 internal object BleAdmissionPolicy {
     enum class Verdict {
@@ -57,9 +58,9 @@ internal object BleAdmissionPolicy {
     /**
      * What a held link scores in [PromotionPolicy]'s weakest-first eviction: the scan's smoothed RSSI while the
      * peer is in presence. A peer that has left presence scores [ABSENT_LINK_RSSI] so it is shed first, as it
-     * always was. A peer the scan has not once sighted for the whole life of the link ([neverSighted] — every
-     * inbound iPhone) scores the promotion floor instead: it has no RSSI to lose, and at −127 it would be the
-     * first link shed every time.
+     * always was. A peer the scan has not once sighted for the whole life of the link ([neverSighted] — an
+     * inbound iPhone whose GATT payload this phone has not read) scores the promotion floor instead: it has no
+     * RSSI to lose, and at −127 it would be the first link shed every time.
      */
     fun linkRssi(
         sightedRssi: Double?,

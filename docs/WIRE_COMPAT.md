@@ -117,7 +117,12 @@ if one ever happens they all ride it together and no single item has to justify 
 > Its gate is not a capability bit but the BLE-local **flags byte** the presence advert grew
 > (`BleAdvertPayload` 23 → 24 B, `FLAG_SIDE_CHANNEL`): additive, because the older parser ignores trailing
 > bytes and the older scan filter matches service data of any length, and an older build's legacy scan
-> cannot decode an extended advert at all.
+> cannot decode an extended advert at all. **A new flags-byte bit is additive** under the same reasoning:
+> every shipped parser tests only the bits it knows (`Parsed.sideChannel` reads bit 0 alone) and ignores
+> the rest, so a bit a reader predates reads as nothing. Bit 1 is `FLAG_DIALS_GATT_PEERS` (companion change
+> A3, ADR 2026-09.kwq2; knit-ios ADR 2026-09.xzpt): "I read a UUID-only peer's GATT payload, so I dial it".
+> The value that payload characteristic serves (`DoorbellPolicy.PAYLOAD_UUID`) is the same 24-byte advert
+> payload with the digest cue zeroed, so it grows under the same rules as the advert.
 
 > **Pre-1.0 alpha history.** The precedents below (DB v19 / v21 / v22) document the coordinated wire/discovery
 > breaks taken *during pre-release alpha*, when the app had no installed base and every schema bump wiped

@@ -588,6 +588,12 @@ doc). **Don't start a deferred item without explicit direction.**
   a few seconds of local speaker playback that contends for nothing. Harmless while the flag is
   instrumentation-only; gating connects on it as-is would stall the mesh every time someone listens to a
   message. The gate needs to distinguish a real A2DP route from any active stream.
+- **Finding iPhones over GATT (A3): the release flag** — BUILT 2026-09-29 (ADR 2026-09.kwq2, companion change A3,
+  #101): the presence scan matches the `0xFE30` UUID, reads a foreground iPhone's GATT payload, dials it when our id
+  is larger, and advertises `FLAG_DIALS_GATT_PEERS`. Dark in a shipped artifact (`BuildConfig.BLE_GATT_PEERS`, debug
+  on / release off) until the device trial: the gate against knit-peer's `ios` profile on a Pixel 7 and the Moto G
+  in both id orders, then the iPhone 12 checks in both orders, recording first-link times in the iPhone-below order
+  (revisit a scan-tier-following flag only if they miss MVP item 2). Flip the release default then.
 - **BLE side channel: the release flag** — the carrier is BUILT (2026-09-16, ADR 2026-09.sjaa;
   knit/knit-next#13) and device-trialled on three lab phones (2026-09-17: every controller 1650-B extended
   advertising, 20/20 and 12/12 pages caught screen-on, 11/12 screen-off, the #13 case delivering the

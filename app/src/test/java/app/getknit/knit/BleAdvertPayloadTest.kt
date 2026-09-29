@@ -75,6 +75,33 @@ class BleAdvertPayloadTest {
     }
 
     @Test
+    fun theDialsGattPeersBitRoundTripsBesideTheSideChannelBit() {
+        val both = BleAdvertPayload.FLAG_SIDE_CHANNEL or BleAdvertPayload.FLAG_DIALS_GATT_PEERS
+        val p = BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, flags = both))!!
+        assertTrue(p.sideChannel)
+        assertTrue(p.dialsGattPeers)
+        val side = BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, BleAdvertPayload.FLAG_SIDE_CHANNEL))!!
+        assertFalse("bit 1 is its own", side.dialsGattPeers)
+        assertFalse(BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1))!!.dialsGattPeers)
+    }
+
+    @Test
+    fun theIosGattValueParsesWithTheDialsGattPeersFlag() {
+        // knit-ios `LinkTests.theGATTValueIsThePayloadWithItsCueZeroed`: caps 0x09, cue 0, PSM 0x80, flags 0x02.
+        val vector = "09294213fa67091e03c2f2ae8d071b9d6700000000008002"
+        val bytes = ByteArray(vector.length / 2) { vector.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
+        val p = BleAdvertPayload.parse(bytes)!!
+        assertEquals(0x09L, p.capabilities)
+        assertEquals(0, p.digestCue)
+        assertEquals(0x80, p.psm)
+        assertEquals(BleAdvertPayload.FLAG_DIALS_GATT_PEERS, p.flags)
+        assertTrue(p.dialsGattPeers)
+        assertFalse(p.sideChannel)
+        val again = BleAdvertPayload.encode(p.nodeId, p.capabilities, 0L, p.psm, p.flags)
+        assertEquals(vector, again.joinToString("") { "%02x".format(it) })
+    }
+
+    @Test
     fun shortOrNullDataDecodesToNull() {
         assertNull(BleAdvertPayload.parse(null))
         assertNull(BleAdvertPayload.parse(ByteArray(10)))

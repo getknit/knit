@@ -17,6 +17,7 @@ class DoorbellPolicyTest {
         // Cross-platform law with the iOS port (knit-ios `LinkTests.theGATTIdentifiersArePinned`): never change them.
         assertEquals("0000fe30-0000-1000-8000-00805f9b34fb", DoorbellPolicy.SERVICE_UUID.toString())
         assertEquals("f34c056b-5830-4243-a888-01f92f49e446", DoorbellPolicy.DOORBELL_UUID.toString())
+        assertEquals("848eedcd-a2e3-4fb2-86f9-e2c80821a497", DoorbellPolicy.PAYLOAD_UUID.toString())
     }
 
     @Test

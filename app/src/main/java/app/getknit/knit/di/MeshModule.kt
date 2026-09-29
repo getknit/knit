@@ -115,7 +115,21 @@ val meshModule =
                                 }
                             // The debug link cap reads null in release (gated in the store's flow).
                             val linkCap = get<SettingsStore>().debugBleLinkCap
-                            add(BluetoothMeshTransport(ctx, get(), get(), get(), get(), get(), get(), sideChannel, linkCap))
+                            // BLE_GATT_PEERS gates the iPhone reader, its scan filter and the advert flag together (A3).
+                            add(
+                                BluetoothMeshTransport(
+                                    ctx,
+                                    get(),
+                                    get(),
+                                    get(),
+                                    get(),
+                                    get(),
+                                    get(),
+                                    sideChannel,
+                                    linkCap,
+                                    gattPeers = BuildConfig.BLE_GATT_PEERS,
+                                ),
+                            )
                         }
                         // WifiAwareTransport is @RequiresApi(31) (its NDP accept-any responder is API 31). The
                         // explicit SDK_INT guard — redundant with isSupported()'s own — is what lint reads to

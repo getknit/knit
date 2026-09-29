@@ -92,3 +92,21 @@ and a re-run is owed.
   run. The second process held no keys, so custody then waited out its SeenSet window: 77 of the Pixel's frames
   arrived before the Pixel's profile and were dropped. Under the floor, a second dial within 30 s of the first
   link's start is refused once and admitted on its next try.
+
+**Amended 2026-09-29 (A3, ADR 2026-09.kwq2): A1 stays whole.** A foreground iPhone is now *sighted* through its
+GATT payload, so it is judged by the old rule: the larger id dials, and a sighted dialer below us is refused. Every
+branch of A1 still carries a real case:
+
+- **The unsighted admit** is the fallback that makes a clear `FLAG_DIALS_GATT_PEERS` safe. The flag is clear in a
+  release build until the trial, on a phone whose adapter cannot read, toward an iPhone build that ignores the flag,
+  and while the iPhone holds a sighting from before the flag. Reverting the admit would re-strand half the pairs in
+  each of those cases.
+- **The replace path and the −90 dBm score** still serve a backgrounded iPhone. Its UUID sits in Apple's overflow
+  area, which this phone cannot read, so its links stay never-sighted and its redial after its side died still
+  needs the replace.
+- **`teardownLink(only =)` and the per-link `LinkEvents`** fix general replace and evict races, not iPhone ones.
+
+One behaviour changes. A *sighted* iPhone's redial over a held link is now refused, as an Android peer's is, until
+the held link fails. #102's 5 s supervision timeout makes that wait longer than the 720 ms one did, and the
+iPhone's 10 s dial backoff covers it. The comments that said nothing on this side ever dials an iPhone are updated
+(`BleAdmissionPolicy`, `BluetoothMeshTransport.neverSighted`, `BleScanner`).

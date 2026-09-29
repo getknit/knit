@@ -43,6 +43,7 @@ import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -111,6 +112,10 @@ class BluetoothMeshTransport(
     // The debug-only link cap (`SettingsStore.debugBleLinkCap`): null — always, in release — runs the shipped
     // budget with the shipped admission table; a number caps held links, dials and inbound admits at it.
     private val linkCap: Flow<Int?> = flowOf(null),
+    // `BuildConfig.BLE_GATT_PEERS`: find a peer that advertises only the `0xFE30` UUID (a foreground iPhone) by
+    // reading its GATT payload ([GattPayloads], companion change A3). It gates the second scan filter and the reader
+    // here, and the advert's FLAG_DIALS_GATT_PEERS with them — a flag without a reader strands the pair.
+    private val gattPeers: Boolean = false,
 ) : MeshTransport {
     private val appContext = context.applicationContext
     private val bluetoothManager = appContext.getSystemService(BluetoothManager::class.java)
@@ -124,14 +129,27 @@ class BluetoothMeshTransport(
     // detached the plane from the stack after any such flap (zero scanner/advertiser registration, reach=[]
     // forever) until the app was killed.
     private val advertiser = BleAdvertiser({ adapter?.bluetoothLeAdvertiser }, log = { Log.d(TAG, it) })
-    private val scanner = BleScanner({ adapter?.bluetoothLeScanner }, ::onScanResult, log = { Log.d(TAG, it) })
+    private val scanner =
+        BleScanner({ adapter?.bluetoothLeScanner }, ::onScanResult, log = { Log.d(TAG, it) }, matchesServiceUuid = gattPeers)
+
+    // Whose GATT payload to read and what each read found (companion change A3), and the reader; [gattReads] counts
+    // the reads begun, for the debug state line. [gattJob] is the read in progress, cancelled with the radio.
+    private val gattPayloads = GattPayloads()
+    private val gattReader = BleGattPayloadReader(appContext, arbiter)
+    private val gattReads = AtomicInteger()
+
+    @Volatile private var gattJob: Job? = null
 
     // Live L2CAP links, keyed by peer nodeId (many, unlike NAN's ≤1).
     private val links = ConcurrentHashMap<String, FramedLink>()
 
-    // Held links whose peer the scan has not once sighted since the link came up — every inbound iPhone. They
-    // score the promotion floor for eviction, not the absent-peer −127 (ADR 2026-09.shzv). A sighting drops one.
+    // Held links whose peer the scan has not once sighted since the link came up — an inbound iPhone this phone has
+    // not read the GATT payload of (a backgrounded one, or any while the reader is dark). They score the promotion
+    // floor for eviction, not the absent-peer −127 (ADR 2026-09.shzv). A sighting drops one.
     private val neverSighted = ConcurrentHashMap.newKeySet<FramedLink>()
+
+    // The address of each link's peer, so a GATT read never dials an address a link already holds (companion change A3).
+    private val linkAddresses = ConcurrentHashMap<FramedLink, String>()
 
     // The doorbell of each link whose HELLO asked to be rung ([DoorbellPolicy.serves]) — an iPhone, which iOS
     // suspends and only a GATT write wakes (ADR 2026-09.dqvb). Keyed by link like [neverSighted], so a replaced
@@ -352,6 +370,7 @@ class BluetoothMeshTransport(
         arbiterJob?.cancel()
         capJob?.cancel()
         sideJob?.cancel()
+        cancelGattRead()
         sideCapable.clear()
         unregisterAvailability()
         audioMonitor.stop()
@@ -607,16 +626,37 @@ class BluetoothMeshTransport(
         return floor
     }
 
+    /**
+     * A scan hit, on the main thread. An advert with our service data is sighted as it always was. One that only lists
+     * the `0xFE30` UUID (a foreground iPhone) is sighted with the payload its GATT characteristic served, once read;
+     * until then it launches a read on [scope] when [GattPayloads] says one is due, and wakes nothing — the read's own
+     * [sight] is what counts as a boost trigger (companion change A3).
+     */
     private fun onScanResult(result: ScanResult) {
-        val data = result.scanRecord?.getServiceData(BleConstants.SERVICE_UUID) ?: return
-        val parsed = BleAdvertPayload.parse(data) ?: return
+        val record = result.scanRecord ?: return
+        val data = record.getServiceData(BleConstants.SERVICE_UUID)
+        if (data != null) {
+            BleAdvertPayload.parse(data)?.let { sight(it, result.device, result.rssi) }
+            return
+        }
+        if (!gattPeers || record.serviceUuids?.contains(BleConstants.SERVICE_UUID) != true) return
+        val read = gattPayloads.payload(of = result.device.address)
+        if (read != null) sight(read, result.device, result.rssi) else maybeReadGatt(result.device, result.rssi)
+    }
+
+    /** The peer [parsed] names is here, on [device] at [rssi]: presence, the side channel's audience, and the loops. */
+    private fun sight(
+        parsed: BleAdvertPayload.Parsed,
+        device: BluetoothDevice,
+        rssi: Int,
+    ) {
         if (parsed.nodeId == localNodeIdOrEmpty()) return
-        deviceFor[parsed.nodeId] = result.device
+        deviceFor[parsed.nodeId] = device
         links[parsed.nodeId]?.let(neverSighted::remove)
         presence.onSighting(
             BlePresenceTracker.Sighting(
                 nodeId = parsed.nodeId,
-                rssiDbm = result.rssi,
+                rssiDbm = rssi,
                 protoVersion = Protocol.VERSION, // implied by the matched (versioned) service UUID
                 capabilities = parsed.capabilities,
                 psm = parsed.psm,
@@ -635,6 +675,55 @@ class BluetoothMeshTransport(
         // scanLoop: wake ONLY for a genuine boost trigger. Waking on every sighting (incl. already-linked peers)
         // is what keeps a settled clique scanning continuously — gating here is what lets the floor engage.
         if (isBoostTrigger(parsed.nodeId)) scanWake.trySend(Unit)
+    }
+
+    /**
+     * Reads [device]'s GATT payload when [GattPayloads] says one is due, and sights the peer it names. Never an address
+     * a link holds, and never while a dial is in flight or another connect holds the arbiter: the read is a connection
+     * the controller must make, as a dial is. The read is launched, never run on the scan callback's main thread.
+     */
+    private fun maybeReadGatt(
+        device: BluetoothDevice,
+        rssi: Int,
+    ) {
+        val address = device.address
+        if (!::localNodeId.isInitialized || address in linkAddresses.values) return
+        if (inFlightSnapshot().isNotEmpty() || arbiter.busy.value) return
+        if (!gattPayloads.begin(address, elapsed())) return
+        gattReads.incrementAndGet()
+        Log.d(TAG, "bt gatt reading $address")
+        gattJob =
+            scope.launch(Dispatchers.IO) {
+                // Whatever the read threw, it ends as a failure: an unfinished read would hold [GattPayloads] for good.
+                val result =
+                    runCatching { gattReader.read(device) }.getOrElse {
+                        if (it is CancellationException) throw it
+                        BleGattPayloadReader.Result(GattPayloads.Outcome.Failed, "error: ${it.message}")
+                    }
+                gattPayloads.finish(address, result.outcome, elapsed())
+                when (val outcome = result.outcome) {
+                    is GattPayloads.Outcome.Read -> {
+                        Log.i(TAG, "bt gatt read $address → ${outcome.payload.nodeId} (psm ${outcome.payload.psm})")
+                        sight(outcome.payload, device, rssi)
+                    }
+
+                    GattPayloads.Outcome.Failed -> {
+                        Log.i(TAG, "bt gatt read $address failed (${result.phase})")
+                    }
+
+                    GattPayloads.Outcome.Stranger -> {
+                        Log.i(TAG, "bt gatt read $address stranger (${result.phase})")
+                    }
+                }
+                wake() // the arbiter is free again, and a dial held back for the read may go
+            }
+    }
+
+    /** Gives up the read in progress without a wait: the radio went down under it. */
+    private fun cancelGattRead() {
+        gattJob?.cancel()
+        gattJob = null
+        gattPayloads.cancel()
     }
 
     /** A just-sighted peer worth boosting the scan for: one we'd initiate to (larger id), not linked, above the
@@ -708,15 +797,15 @@ class BluetoothMeshTransport(
             Log.i(TAG, "promote=${decision.promote} evict=${decision.evict} backoff=$backoff a2dp=${audioMonitor.state.value}")
         }
         decision.evict.forEach { id -> scored[id]?.let { teardownLink(id, "evicted", only = it) } }
-        decision.promote.forEach { initiateTo(it) }
+        // A GATT read is a connection too; a dial waits for it (the read's end wakes this loop), as a read waits for a dial.
+        if (gattPayloads.current == null) decision.promote.forEach { initiateTo(it) }
     }
 
     @Suppress("LongMethod") // the connect + watchdog + two-way HELLO is one linear flow; splitting it obscures it
     private fun initiateTo(nodeId: String) {
         val device = deviceFor[nodeId] ?: return
         val psm = presence.psmFor(nodeId) ?: return
-        val advert = presenceAdvert(nodeId) ?: return
-        if (!beginConnect(nodeId)) return
+        if (presenceAdvert(nodeId) == null || !beginConnect(nodeId)) return
         val rssi =
             presence
                 .snapshots(elapsed())
@@ -728,7 +817,7 @@ class BluetoothMeshTransport(
             val startedAt = elapsed()
             val socket =
                 runCatching { device.createInsecureL2capChannel(psm) }
-                    .getOrElse { t -> return@launch failConnect(nodeId, classify(t), startedAt, t) }
+                    .getOrElse { t -> return@launch failConnect(nodeId, classify(t), startedAt, t, device) }
             // Time-box the blocking connect(): on stall, give up this peer's inFlight slot at the timeout so the
             // scan (paused while any connect is in flight) resumes promptly — instead of after connect() finally
             // unwinds. Closing the socket is best-effort only: on some stacks (the API-30 device's Qualcomm
@@ -742,7 +831,7 @@ class BluetoothMeshTransport(
                     delay(CONNECT_TIMEOUT_MS)
                     if (settled.compareAndSet(false, true)) {
                         val cause = TimeoutException("connect watchdog ${CONNECT_TIMEOUT_MS}ms")
-                        failConnect(nodeId, ConnectFailReason.TIMEOUT, startedAt, cause)
+                        failConnect(nodeId, ConnectFailReason.TIMEOUT, startedAt, cause, device)
                     }
                     runCatching { socket.close() } // may block until the native connect unwinds; the slot is already freed
                 }
@@ -755,7 +844,7 @@ class BluetoothMeshTransport(
             watchdog.cancel()
             if (connectErr != null) {
                 runCatching { socket.close() }
-                return@launch failConnect(nodeId, classify(connectErr), startedAt, connectErr)
+                return@launch failConnect(nodeId, classify(connectErr), startedAt, connectErr, device)
             }
             val link = BluetoothSocketLink(socket)
             // Two-way HELLO: send our identity first, then read the responder's reply and require it to match
@@ -785,7 +874,9 @@ class BluetoothMeshTransport(
                 )
             }
             Log.i(TAG, "bt connect ok $nodeId durMs=${elapsed() - startedAt}")
-            registerLink(nodeId, advert, link, device = device)
+            // The reply's full-width capabilities, as an accepted link takes the dialer's: the advert carries only
+            // their low byte, which never holds CAP_DOORBELL, so a dialed iPhone would never be rung (A3, ADR 2026-09.dqvb).
+            registerLink(nodeId, reply, link, device = device)
         }
     }
 
@@ -839,8 +930,8 @@ class BluetoothMeshTransport(
         advert: Protocol.PeerWire,
         link: app.getknit.knit.mesh.link.LinkSocket,
         sighted: Boolean = true, // an initiator dials only a peer presence holds
-        // The peer's device, for its doorbell. A dialed link's caps are the advert's low byte, which never carries
-        // CAP_DOORBELL, so only an accepted link rings until Android dials iPhones (companion change A3).
+        // The peer's device, for its doorbell and its address. [advert] is the peer's HELLO either way — the dialer's
+        // on an accepted link, the reply on a dialed one — so its capabilities are full width and carry CAP_DOORBELL.
         device: BluetoothDevice? = null,
     ) {
         val events = LinkEvents()
@@ -860,9 +951,11 @@ class BluetoothMeshTransport(
         events.link = framed
         crossings.forget(nodeId) // a fresh stream starts clean: the peer may have restarted with an empty SeenSet
         if (!sighted) neverSighted.add(framed)
+        device?.let { linkAddresses[framed] = it.address }
         val prev = links.put(nodeId, framed)
         if (prev != null) {
             neverSighted.remove(prev)
+            linkAddresses.remove(prev)
             doorbells.remove(prev)?.close() // teardownLink(only = prev) will find it replaced and release nothing
             prev.close() // a stale link to the same peer — never leak it; its own end releases nothing now
         }
@@ -900,6 +993,7 @@ class BluetoothMeshTransport(
     ): Boolean {
         val fl = (if (only == null) links.remove(nodeId) else only.takeIf { links.remove(nodeId, it) }) ?: return false
         neverSighted.remove(fl)
+        linkAddresses.remove(fl)
         doorbells.remove(fl)?.close()
         fl.close()
         crossings.forget(nodeId)
@@ -936,7 +1030,12 @@ class BluetoothMeshTransport(
         reason: ConnectFailReason,
         startedAt: Long,
         cause: Throwable,
+        device: BluetoothDevice? = null,
     ) {
+        // A dial that failed before its channel opened may have used a PSM the peer no longer listens on (an iPhone
+        // that restarted), so its GATT payload is read again at the next advert. A HELLO refusal says nothing of the
+        // PSM (GattPayloads, companion change A3).
+        if (gattPeers && device != null && reason != ConnectFailReason.HANDSHAKE) forgetGattPayload(device.address)
         val (streak, nextAt) =
             synchronized(lock) {
                 inFlight.remove(nodeId)
@@ -951,6 +1050,11 @@ class BluetoothMeshTransport(
                 "a2dp=${audioMonitor.state.value} links=${links.size} streak=$streak retryMs=${nextAt - elapsed()}",
             cause,
         )
+    }
+
+    private fun forgetGattPayload(address: String) {
+        if (gattPayloads.payload(of = address) != null) Log.i(TAG, "bt gatt read $address again at its next advert")
+        gattPayloads.forget(address)
     }
 
     /** Advance [nodeId]'s failure streak and set its next-eligible deadline via [ConnectBackoffPolicy]. Holds [lock]. */
@@ -1008,6 +1112,7 @@ class BluetoothMeshTransport(
                         scope.launch {
                             links.keys.toList().forEach { teardownLink(it, "adapter off") }
                             tearDownRadio()
+                            cancelGattRead()
                             presence.clear()
                             deviceFor.clear()
                             sideCapable.clear()
@@ -1157,6 +1262,7 @@ class BluetoothMeshTransport(
             "bt state links=${links.keys} reach=${_reachable.value.map { it.nodeId }} " +
                 "inFlight=${inFlightSnapshot()} backoff=[$backoffStr] a2dp=${audioMonitor.state.value} " +
                 "lonely=${lonelyForMs()}ms psm=$currentPsm doorbells=${doorbells.size} rings=${rings.get()}" +
+                (if (gattPeers) " gattPayloads=${gattPayloads.payloadCount} gattReads=${gattReads.get()}" else "") +
                 (sideChannel?.let { " ${it.diag()} $sideDecision" } ?: ""),
         )
     }

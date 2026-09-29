@@ -346,8 +346,11 @@ one start per 30 s because Android's five-starts-per-30 s budget is per app and 
 ## The BLE responder admits a dialer it never sighted (ADR 2026-09.shzv)
 
 The larger node id dials, and the responder used to close every dialer that sorted below it. An iPhone
-advertises no service data, so this side never sights it and never dials it; refusing its dial from below
-left the pair unlinked for good. `BleAdmissionPolicy.decide` keeps the old rule, unchanged, for a dialer presence
+advertises no service data, so before A3 this side never sighted it and never dialed it; refusing its dial from
+below left the pair unlinked for good. A3 (below) sights a foreground iPhone through its GATT payload, which puts
+it under the old rule; A1 stays whole for the rest — a backgrounded iPhone, a dark reader, an iPhone build that
+ignores the flag (the shzv amendment). A sighted iPhone's redial over a held link is refused like an Android
+peer's, until the held link fails. `BleAdmissionPolicy.decide` keeps the old rule, unchanged, for a dialer presence
 holds (below us: refused, our own dial wins; already linked: refused, which is also what stops a claimed id
 cutting a sighted peer's link). It admits an unsighted dialer in either order, and its second link replaces the
 first once the held one is 30 s old (`REPLACE_MIN_HOLD_MS`). Each link has its own `LinkEvents`, and
@@ -382,13 +385,44 @@ through it.
   holds the ACL.
 - **The poke goes at the enqueue, not after the socket write.** A suspended iPhone's credits run out and the
   writer blocks until the ring wakes it.
-- **A dialed link never rings.** Its caps are the advert's low byte; A3 must pass the reply HELLO's.
+- **A dialed link rings too** (A3). The dialer registers the link with the HELLO reply's full-width caps, not the
+  advert's low byte, so a dialed iPhone's `CAP_DOORBELL` shows; a dialed Android↔Android link's `Peer.capabilities`
+  is full width now, as the accepted side's was.
 
 Oracle: `bt doorbell found|absent|lookup failed|wedged <id>`, `bt doorbell priority <id> requested=<bool>` and
 `bt conn params <id> interval=… latency=… timeout=…` (the hidden `onConnectionUpdated`) at info, `bt ring <id>` at
 debug, and
 `doorbells=`/`rings=` on the `bt state` line. Tests: `DoorbellPolicyTest`, `ProtocolTest`; `BleDoorbell` is
 device-verified only.
+
+## An Android phone finds an iPhone through its GATT payload (A3, ADR 2026-09.kwq2)
+
+A foreground iPhone advertises only the `0xFE30` UUID and serves its 24-byte advert payload (cue zeroed) from
+characteristic `848eedcd-a2e3-4fb2-86f9-e2c80821a497` (`DoorbellPolicy.PAYLOAD_UUID`) in the doorbell's service
+(knit-ios ADR 2026-09.xzpt). While `BuildConfig.BLE_GATT_PEERS` is on (debug; dark in release until the trial):
+
+- **The presence scan matches the UUID too** (`BleScanner(matchesServiceUuid)`, a second OR'd filter).
+- **`onScanResult` splits.** Service data → `sight`, as always. A UUID-only advert → the cached payload for its
+  address, sighted at this advert's RSSI; else a read launched on the transport's scope, with no scan wake.
+- **`GattPayloads` paces the reads**, line for line with iOS: one at a time, 12 s each, 30 s after a failure, 10
+  min after a stranger (no service, no characteristic, a value under 23 B); a payload kept until a dial to the
+  address fails before its channel opens (`failConnect`, never on HANDSHAKE); `cancel()` on radio stop; at most 64
+  addresses, LRU (an iPhone's address rotates).
+- **`BleGattPayloadReader` is a dial**: `connectGatt(TRANSPORT_LE)` → discover → read → parse, 12 s in all, under
+  `BleConnectArbiter("gatt-read")`, client always closed, no `requestMtu` (the Read Blob fetches 24 B at MTU 23).
+  Never an address a link holds, never while an L2CAP dial is in flight or the arbiter is held; a promotion waits
+  while a read runs.
+- **The dial rule is unchanged.** A read iPhone is sighted, so the larger id dials and a sighted lower dialer is
+  refused. The dialed link takes the reply HELLO's caps, so the doorbell rings it.
+- **`FLAG_DIALS_GATT_PEERS` (0x02)** in the advert's flags byte tells an iPhone whose id sorts lower to wait to be
+  dialed. Set only while the reader runs (`readvertise`, the same gate), in its own commit after the device gate.
+
+Limits: in the iPhone-below order the first link waits on this phone's (possibly floored) scan cadence; a read
+during iOS's PSM-change service swap is a 10-minute stranger, kept line for line with iOS; a backgrounded iPhone
+cannot be sighted, and one below a flagged phone waits for a dial that can't come (free until iOS gains background
+discovery). Oracle: `bt gatt read <addr> → <id>` / `failed (<phase>)` / `stranger (<phase>)` and `… again at its
+next advert` at info, `bt gatt reading <addr>` at debug, `gattPayloads=`/`gattReads=` on `bt state`. Tests:
+`GattPayloadsTest`, `BleAdvertPayloadTest`, `DoorbellPolicyTest`; the reader is device-verified only.
 
 A debug build can cap the link budget below `PromotionConfig.DEFAULT_MAX_LINKS` (6) from Diagnostics or
 `…debug.BLECAP` (`SettingsStore.debugBleLinkCap`, read as null in release). Only while a cap is set does the

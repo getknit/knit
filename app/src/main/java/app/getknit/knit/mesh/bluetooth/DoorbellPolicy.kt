@@ -29,6 +29,14 @@ internal object DoorbellPolicy {
      */
     val DOORBELL_UUID: UUID = UUID.fromString("f34c056b-5830-4243-a888-01f92f49e446")
 
+    /**
+     * The payload: a read-only characteristic in [SERVICE_UUID] whose value is the peer's 24-byte [BleAdvertPayload]
+     * with the digest cue zeroed. [BleGattPayloadReader] reads it to find a peer that advertises only the UUID
+     * (companion change A3). Minted by the iOS port (knit-ios ADR 2026-09.xzpt) and cross-platform law — never
+     * change it. Looked up by UUID, since the doorbell shares the service.
+     */
+    val PAYLOAD_UUID: UUID = UUID.fromString("848eedcd-a2e3-4fb2-86f9-e2c80821a497")
+
     /** The least time between two rings of one link. A ring keeps an iPhone running about 9 s (iOS 27). */
     const val RING_INTERVAL_MS = 5_000L
 

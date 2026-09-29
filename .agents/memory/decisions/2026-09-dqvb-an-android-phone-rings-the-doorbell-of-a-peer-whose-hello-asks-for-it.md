@@ -129,3 +129,12 @@ Android is their central, and BALANCED matches what they already run.
 Still owed on hardware: the walk again, with Wi-Fi Aware off on the Pixels, checking that the snoop shows the 5 s
 update after `bt doorbell found` and none back to 720 ms for the life of the link, and comparing drop distance with
 a Pixel↔Pixel Bluetooth link at the same spot.
+
+**Amended 2026-09-29 (A3, ADR 2026-09.kwq2): a dialed link rings too.** A link this phone dials now registers with
+the HELLO reply's `PeerWire` rather than the presence advert's, so its `Peer.capabilities` is full width and
+carries `CAP_DOORBELL` when the peer set it. A dialed iPhone therefore gets a `BleDoorbell`, and its link-up lookup
+asks for BALANCED like an accepted one. `DoorbellPolicy.serves` is unchanged. A dialed Android↔Android link's
+capabilities become full width too, as the accepted side's already were. Their one consumer,
+`CompositeMeshTransport.richer` (which record of a peer seen on two planes wins), only gains accuracy; `MeshManager`'s
+`CAP_RATCHET` and `CAP_INLINE_ACK` checks read the pinned profile, not the link. Android never sets `CAP_DOORBELL`,
+so no Android↔Android link opens a GATT client.

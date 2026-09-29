@@ -146,6 +146,7 @@ carries; never renumber an old one.
 | [2026-09.jjhg](decisions/2026-09-jjhg-a-starved-coordination-plane-is-cured-by-a-nan-restart.md) | A starved coordination plane is cured by a NAN restart, and the watchdog reads acks to know | mesh, nan, recovery |
 | [2026-09.k68y](decisions/2026-09-k68y-diagnostics-reads-a-relay-s-build-from-its-source-offer.md) | Diagnostics reads a relay's build from its /source offer, not from HELLO | spool, diagnostics, ui |
 | [2026-09.kb68](decisions/2026-09-kb68-a-lonely-node-relaxes-its-discovery-cadence.md) | A lonely node relaxes its discovery cadence | wifi-aware, battery, reliability |
+| [2026-09.kwq2](decisions/2026-09-kwq2-an-android-phone-finds-an-iphone-through-its-gatt-payload-and-dials-it.md) | An Android phone finds an iPhone through its GATT payload and dials it | ble, transport, interop |
 | [2026-09.m7vn](decisions/2026-09-m7vn-settings-and-your-profile-are-two-screens.md) | Settings and your profile are two screens | ui, navigation, settings, profile |
 | [2026-09.m8kc](decisions/2026-09-m8kc-an-initiate-that-costs-the-phone-its-wi-fi-is-given-up-on.md) | An initiate that costs the phone its Wi-Fi is given up on | wifi-aware, reliability, mesh |
 | [2026-09.m9h8](decisions/2026-09-m9h8-material-you-is-opt-in.md) | Material You is opt-in, and green stays green | ui, theme, settings |

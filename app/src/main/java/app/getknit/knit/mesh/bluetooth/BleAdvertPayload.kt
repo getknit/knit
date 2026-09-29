@@ -15,8 +15,9 @@ import java.nio.ByteBuffer
  * bytes 1..16  nodeId, 16 raw bytes (NodeId.BYTES = 128 bits), decoded to the 26-char id via NodeId.fromBytes
  * bytes 17..20 digest cue = low 32 bits of StoreDigest.version (BE) — both BLE peers truncate identically
  * bytes 21..22 L2CAP PSM (unsigned 16-bit, BE) so an initiator knows which channel to connect to
- * byte 23      BLE-local flags: bit 0 [FLAG_SIDE_CHANNEL]; bits 1..7 reserved (0). Optional on the wire: a
- *              build before it advertised 23 bytes, and this parser reads a missing byte as 0.
+ * byte 23      BLE-local flags: bit 0 [FLAG_SIDE_CHANNEL], bit 1 [FLAG_DIALS_GATT_PEERS]; bits 2..7 reserved
+ *              (0). Optional on the wire: a build before it advertised 23 bytes, and this parser reads a
+ *              missing byte as 0. Every shipped parser tests only the bits it knows, so a new bit is additive.
  * ```
  *
  * Byte 23 is the **last** byte the legacy advert can carry, and it is deliberately not a second capabilities
@@ -45,6 +46,14 @@ internal object BleAdvertPayload {
      */
     const val FLAG_SIDE_CHANNEL = 0x01
 
+    /**
+     * This node reads the GATT payload of a peer that advertises only the `0xFE30` UUID (an iPhone, which cannot
+     * advertise service data) and dials it, so such a peer whose id sorts lower waits to be dialed rather than
+     * dialing (companion change A3, knit-ios ADR 2026-09.xzpt). Set only while [GattPayloads]' reader runs: a flag
+     * without a reader strands the pair.
+     */
+    const val FLAG_DIALS_GATT_PEERS = 0x02
+
     private const val CAP_MASK = 0xFFL
     private const val PSM_MASK = 0xFFFF
     private const val FLAGS_MASK = 0xFF
@@ -59,6 +68,7 @@ internal object BleAdvertPayload {
         val flags: Int = 0,
     ) {
         val sideChannel: Boolean get() = flags and FLAG_SIDE_CHANNEL != 0
+        val dialsGattPeers: Boolean get() = flags and FLAG_DIALS_GATT_PEERS != 0
     }
 
     fun encode(
