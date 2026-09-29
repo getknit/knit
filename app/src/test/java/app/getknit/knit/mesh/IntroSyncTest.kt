@@ -332,6 +332,65 @@ class IntroSyncTest {
             assertEquals(1, rig.pairsChanged)
         }
 
+    @Test
+    fun `cancel withdraws a pending intro, stops its re-sends and reports the pair set once`() =
+        runTest {
+            val rig = Rig()
+            rig.sync.prime()
+            rig.sealable += BOB
+            rig.sync.want(BOB)
+            val changesBefore = rig.pairsChanged
+
+            rig.sync.cancel(BOB)
+            assertEquals(emptyMap<String, Long>(), rig.store.pending)
+            assertNull(rig.sync.state(BOB).first())
+            assertEquals(changesBefore + 1, rig.pairsChanged)
+
+            rig.now += IntroSync.RESEND_FLOOR_MS
+            rig.sync.retry()
+            rig.sync.onProfilePinned(BOB)
+            assertEquals("no re-send once withdrawn", listOf(BOB), rig.sent)
+        }
+
+    @Test
+    fun `cancel with nothing pending writes nothing and reports nothing`() =
+        runTest {
+            val rig = Rig()
+            rig.sync.prime()
+            val writes = rig.store.writes
+            rig.sync.cancel(BOB)
+            assertEquals(writes, rig.store.writes)
+            assertEquals(0, rig.pairsChanged)
+        }
+
+    @Test
+    fun `cancel leaves a confirmed peer's grace alone`() =
+        runTest {
+            val rig = Rig()
+            rig.sync.prime()
+            rig.sealable += BOB
+            rig.sync.want(BOB)
+            rig.confirmed += BOB
+            rig.sync.retry()
+            assertEquals(IntroState.CONNECTED, rig.sync.state(BOB).first())
+
+            rig.sync.cancel(BOB)
+            assertTrue(BOB in rig.store.grace)
+            assertEquals(IntroState.CONNECTED, rig.sync.state(BOB).first())
+        }
+
+    @Test
+    fun `a withdrawn peer can be wanted again and is introduced at once`() =
+        runTest {
+            val rig = Rig()
+            rig.sealable += BOB
+            rig.sync.want(BOB)
+            rig.sync.cancel(BOB)
+            rig.sync.want(BOB)
+            assertEquals("the floor went with the cancel", listOf(BOB, BOB), rig.sent)
+            assertEquals(IntroState.SENT, rig.sync.state(BOB).first())
+        }
+
     private companion object {
         const val BOB = "bbbbbbbbbbbbbbbbbbbbbbbbbb"
         const val CAROL = "cccccccccccccccccccccccccc"

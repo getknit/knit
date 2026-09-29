@@ -96,6 +96,11 @@ class CommonsRepository(
 
     override suspend fun allMembers(): List<CommonsMember> = dao.allMembers().map { CommonsMember(it.conversationId, it.nodeId, it.seenAt) }
 
+    override suspend fun isMember(
+        conversationId: String,
+        nodeId: String,
+    ): Boolean = dao.isMember(conversationId, nodeId)
+
     override suspend fun sweepOutbox(before: Long) = dao.sweepOutbox(before)
 
     private suspend fun purge(conversationId: String) {

@@ -117,6 +117,13 @@ interface MeshController {
      */
     suspend fun importContact(peerId: String) {}
 
+    /**
+     * The contact [peerId] was removed: withdraw a pending contact-card intro (`IntroSync.cancel`), so its
+     * re-sends stop and its pair scope drops. Nothing else — never the ratchet session, custody or the key
+     * pin (ADR 2026-09.adgd); the narrow name keeps it that way. Idempotent.
+     */
+    suspend fun cancelIntro(peerId: String) {}
+
     /** Where the contact-card intro with [peerId] stands, or null when none is pending or recently confirmed. */
     fun introState(peerId: String): Flow<IntroState?> = flowOf(null)
 

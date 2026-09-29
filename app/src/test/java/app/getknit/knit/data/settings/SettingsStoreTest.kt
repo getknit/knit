@@ -39,6 +39,18 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun `unaccept removes only that id and is idempotent`() =
+        runTest {
+            val store = newStore()
+            store.accept("peer-a")
+            store.accept("g-group")
+            store.unaccept("peer-a")
+            store.unaccept("peer-a")
+            store.unaccept("never-accepted")
+            assertEquals(setOf("g-group"), store.acceptedConversations.first())
+        }
+
+    @Test
     fun `name and status default to empty`() =
         runTest {
             val store = newStore()

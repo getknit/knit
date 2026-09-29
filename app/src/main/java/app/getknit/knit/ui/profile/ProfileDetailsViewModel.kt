@@ -4,7 +4,9 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.R
+import app.getknit.knit.contacts.ContactRemover
 import app.getknit.knit.data.GroupRepository
+import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerDirectory
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.group.GroupEntity
@@ -26,12 +28,18 @@ import app.getknit.knit.mesh.meshNodeLabel
 import app.getknit.knit.mesh.spool.SpoolStatus
 import app.getknit.knit.mesh.spool.spoolPresentPeers
 import app.getknit.knit.ui.Reach
+import app.getknit.knit.ui.contacts.ContactStanding
+import app.getknit.knit.ui.contacts.contactStanding
+import app.getknit.knit.ui.contacts.observeContactSignals
 import app.getknit.knit.ui.reachOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -84,6 +92,41 @@ data class SharedGroup(
     val faces: List<GroupFace>,
 )
 
+/**
+ * What the profile's "Remove contact" offers for this peer (ADR 2026-09.adgd), from their [ContactStanding]
+ * by [removalFor]. The groups are drawn like [InCommon]'s, but only the accepted, active ones — the ones that
+ * actually keep the peer a contact; a group invitation still in Message Requests is in common yet binds no one.
+ */
+sealed interface ContactRemoval {
+    /** Not a contact (a stranger, a request, blocked — or ourselves): the menu offers no Remove. */
+    data object NotOffered : ContactRemoval
+
+    /**
+     * Removing clears something. [keptBy] are the groups that keep the peer a contact anyway, named in the
+     * confirm; [clearsVerification] says the out-of-band key check goes too.
+     */
+    data class Removes(
+        val keptBy: List<SharedGroup>,
+        val clearsVerification: Boolean,
+    ) : ContactRemoval
+
+    /** A contact only through [groups]: there is nothing of ours to clear, so the dialog explains instead. */
+    data class GroupsOnly(
+        val groups: List<SharedGroup>,
+    ) : ContactRemoval
+}
+
+/** [standing] as the menu and its dialog present it; [shared] draws a binding group like an in-common row. */
+internal fun removalFor(
+    standing: ContactStanding,
+    shared: (GroupEntity) -> SharedGroup,
+): ContactRemoval =
+    when {
+        !standing.isContact -> ContactRemoval.NotOffered
+        standing.ownSignals -> ContactRemoval.Removes(standing.bindingGroups.map(shared), standing.verified)
+        else -> ContactRemoval.GroupsOnly(standing.bindingGroups.map(shared))
+    }
+
 /** A remote peer's profile as shown on the read-only details screen. */
 data class ProfileDetailsUiState(
     val nodeId: String,
@@ -115,6 +158,8 @@ data class ProfileDetailsUiState(
     val loraNodeLabel: String? = null,
     // Shared groups and the met stamps; the section is absent entirely when there is nothing to show.
     val inCommon: InCommon = InCommon.EMPTY,
+    // What "Remove contact" would do, and whether the overflow offers it at all.
+    val removal: ContactRemoval = ContactRemoval.NotOffered,
 )
 
 /**
@@ -132,6 +177,8 @@ class ProfileDetailsViewModel(
     meshManager: MeshController,
     private val settings: SettingsStore,
     identity: Identity,
+    messages: MessageRepository,
+    private val remover: ContactRemover,
     // The per-spool status flow, not the repository that produces it: the production flow is an infinite
     // poller, and under a test's virtual clock its `delay` is instant, so a test driving this VM with
     // `advanceUntilIdle()` could never reach idle. Taking the flow lets a test supply a finite one.
@@ -144,6 +191,15 @@ class ProfileDetailsViewModel(
     private val clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     private val me = MutableStateFlow<MyIdentity?>(null)
+
+    // Our node id alone, resolved on the main dispatcher (as the contacts picker resolves it) rather than
+    // with [me]'s key bundle on IO: the contact standing keys on it, and nothing about it needs the bundle.
+    private val myNodeId = MutableStateFlow<String?>(null)
+
+    private val _removed = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /** Emits once a [removeContact] has finished writing, so the screen can close. */
+    val removed: SharedFlow<Unit> = _removed.asSharedFlow()
 
     // One directory flow for both combines below: the labels it carries name a group's members, and a
     // second `observeDirectory()` would rebuild the whole label index on every peer write.
@@ -165,6 +221,7 @@ class ProfileDetailsViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             me.value = MyIdentity(identity.nodeId(), identity.publicKeyBundle())
         }
+        viewModelScope.launch { myNodeId.value = identity.nodeId() }
     }
 
     // The presence tier, pre-combined so the main [state] combine stays within its five-source limit.
@@ -221,18 +278,39 @@ class ProfileDetailsViewModel(
         )
     }
 
-    // This device's identity and [inCommon] ride in as one source: the main combine below is at Kotlin's
-    // five-flow limit, and widening it would mean the untyped array overload.
-    private val identityAndCommon: Flow<Pair<MyIdentity?, InCommon>> = combine(me, inCommon, ::Pair)
+    // Where the peer stands as a contact, by the rule the contacts picker draws (ADR 2026-09.wnh6), and so
+    // what Remove would do. Offered for nobody until our own id resolves: until then a thread we wrote in
+    // cannot be told from one we did not, and we could be looking at our own profile.
+    private val removal: Flow<ContactRemoval> =
+        combine(
+            observeContactSignals(messages, groups, settings, myNodeId),
+            directory,
+            settings.blockedNodeIds,
+            myNodeId,
+        ) { signals, dir, blocked, myId ->
+            if (myId == null || myId == nodeId) return@combine ContactRemoval.NotOffered
+            removalFor(contactStanding(nodeId, signals, dir.verified, blocked)) { sharedGroup(it, dir, myId) }
+        }.distinctUntilChanged()
+
+    /** This device's identity, [inCommon] and [removal] — one source for the main combine's five. */
+    private data class Extras(
+        val myId: MyIdentity?,
+        val shared: InCommon,
+        val removal: ContactRemoval,
+    )
+
+    // They ride in as one source: the main combine below is at Kotlin's five-flow limit, and widening it
+    // would mean the untyped array overload.
+    private val extras: Flow<Extras> = combine(me, inCommon, removal, ::Extras)
 
     val state: StateFlow<ProfileDetailsUiState> =
         combine(
             directory,
             reach,
             settings.blockedNodeIds,
-            identityAndCommon,
+            extras,
             meshManager.introState(nodeId),
-        ) { directory, reach, blocked, (myId, shared), intro ->
+        ) { directory, reach, blocked, (myId, shared, removal), intro ->
             val peer = directory.byNode[nodeId]
             val label = directory.label(nodeId)
             peerBundle = peer?.pubKey
@@ -260,6 +338,7 @@ class ProfileDetailsViewModel(
                 openToChat = peer?.openToChat == true,
                 loraNodeLabel = peer?.loraNode?.let(::meshNodeLabel),
                 inCommon = shared,
+                removal = removal,
             )
         }.stateIn(
             viewModelScope,
@@ -291,6 +370,17 @@ class ProfileDetailsViewModel(
     /** Unblocks this peer, restoring their (never-deleted) message history. */
     fun unblock() {
         viewModelScope.launch { settings.unblock(nodeId, peerDeviceTag) }
+    }
+
+    /**
+     * Removes this peer from contacts (`ContactRemover`, ADR 2026-09.adgd): our accept, their verification, the
+     * DM thread and a pending intro go; nothing is sent. [removed] fires once the writes are done.
+     */
+    fun removeContact() {
+        viewModelScope.launch {
+            remover.remove(nodeId)
+            _removed.tryEmit(Unit)
+        }
     }
 
     /** Marks this peer's pinned key as verified out of band (safety numbers matched / QR scanned). */

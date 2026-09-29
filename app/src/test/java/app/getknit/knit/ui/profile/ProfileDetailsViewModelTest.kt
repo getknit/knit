@@ -3,7 +3,9 @@
 package app.getknit.knit.ui.profile
 
 import android.content.Context
+import app.getknit.knit.contacts.ContactRemover
 import app.getknit.knit.data.GroupRepository
+import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.peer.MetPeerEntity
@@ -25,11 +27,13 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -58,6 +62,8 @@ class ProfileDetailsViewModelTest {
     private val groups = mockk<GroupRepository>(relaxed = true)
     private val context = mockk<Context>(relaxed = true)
     private val metPeers = mockk<MetPeerRepository>(relaxed = true)
+    private val messages = mockk<MessageRepository>(relaxed = true)
+    private val remover = mockk<ContactRemover>(relaxed = true)
 
     private val peersFlow = MutableStateFlow(emptyList<PeerEntity>())
     private val blockedFlow = MutableStateFlow(emptySet<String>())
@@ -71,6 +77,14 @@ class ProfileDetailsViewModelTest {
     private val sharedGroupsFlow = MutableStateFlow(emptyList<GroupEntity>())
     private val metFlow = MutableStateFlow<MetPeerEntity?>(null)
 
+    // The contact standing's inputs (ADR 2026-09.adgd) — stubbed for the same reason: the Remove offer
+    // pre-combines them into the main `state`, and an unstubbed one stalls every test here.
+    private val dmThreadsFlow = MutableStateFlow(emptyList<String>())
+    private val authoredFlow = MutableStateFlow(emptyList<String>())
+    private val allGroupsFlow = MutableStateFlow(emptyList<GroupEntity>())
+    private val groupSendersFlow = MutableStateFlow(emptyMap<String, Set<String>>())
+    private val acceptedFlow = MutableStateFlow(emptySet<String>())
+
     @Before
     fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -81,6 +95,11 @@ class ProfileDetailsViewModelTest {
         every { groups.observeGroupsWith(nodeId) } returns sharedGroupsFlow
         every { metPeers.observe(nodeId) } returns metFlow
         every { context.getString(any()) } returns UNNAMED_GROUP
+        every { messages.observeConversations(any()) } returns dmThreadsFlow
+        every { messages.observeConversationsIAuthoredIn(any()) } returns authoredFlow
+        every { messages.observeGroupSenders(any()) } returns groupSendersFlow
+        every { groups.observeGroups() } returns allGroupsFlow
+        every { settings.acceptedConversations } returns acceptedFlow
     }
 
     @After
@@ -97,6 +116,8 @@ class ProfileDetailsViewModelTest {
             mesh,
             settings,
             identity,
+            messages,
+            remover,
             spoolsFlow,
             context,
             clock = { NOW },
@@ -335,6 +356,132 @@ class ProfileDetailsViewModelTest {
             assertEquals(emptyList<Any>(), shared.groups)
             assertNull(shared.firstMetAt)
             assertNull(shared.lastMetAt)
+        }
+
+    // --- Remove contact (ADR 2026-09.adgd) ---
+
+    /** Collects `state` for the test's lifetime and returns the VM. */
+    private fun TestScope.collecting(): ProfileDetailsViewModel {
+        val vm = vm()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+        return vm
+    }
+
+    @Test
+    fun aStrangerIsNotOfferedRemove() =
+        runTest {
+            val vm = collecting()
+            peersFlow.value = listOf(peer(nodeId, name = "Ada"))
+            dmThreadsFlow.value = listOf(nodeId) // they wrote to us; we never answered
+            advanceUntilIdle()
+            assertEquals(ContactRemoval.NotOffered, vm.state.value.removal)
+        }
+
+    @Test
+    fun anAcceptedPeerIsOfferedAFullRemove() =
+        runTest {
+            val vm = collecting()
+            acceptedFlow.value = setOf(nodeId)
+            advanceUntilIdle()
+            assertEquals(ContactRemoval.Removes(keptBy = emptyList(), clearsVerification = false), vm.state.value.removal)
+        }
+
+    @Test
+    fun aDmWeWroteInIsEnoughToOfferRemove() =
+        runTest {
+            val vm = collecting()
+            dmThreadsFlow.value = listOf(nodeId)
+            authoredFlow.value = listOf(nodeId)
+            advanceUntilIdle()
+            assertTrue(vm.state.value.removal is ContactRemoval.Removes)
+        }
+
+    @Test
+    fun aVerifiedPeersRemoveSaysTheVerificationGoesToo() =
+        runTest {
+            val vm = collecting()
+            peersFlow.value = listOf(peer(nodeId, name = "Ada", pubKey = "PBUNDLE", verified = true))
+            advanceUntilIdle()
+            assertEquals(ContactRemoval.Removes(keptBy = emptyList(), clearsVerification = true), vm.state.value.removal)
+        }
+
+    @Test
+    fun anAcceptedGroupKeepsItsCoMemberAndIsNamedInTheConfirm() =
+        runTest {
+            val vm = collecting()
+            val trail = group("g-trail", members = listOf("me", nodeId), name = "Trail Crew")
+            allGroupsFlow.value = listOf(trail)
+            acceptedFlow.value = setOf(nodeId, "g-trail")
+            advanceUntilIdle()
+            val removal = vm.state.value.removal as ContactRemoval.Removes
+            assertEquals(listOf("Trail Crew"), removal.keptBy.map { it.title })
+        }
+
+    @Test
+    fun aContactOnlyThroughAGroupGetsTheExplanationInstead() =
+        runTest {
+            val vm = collecting()
+            allGroupsFlow.value = listOf(group("g-trail", members = listOf("me", nodeId), name = "Trail Crew"))
+            authoredFlow.value = listOf("g-trail") // we posted in the group, never in their DM
+            advanceUntilIdle()
+            val removal = vm.state.value.removal as ContactRemoval.GroupsOnly
+            assertEquals(listOf("g-trail"), removal.groups.map { it.groupId })
+        }
+
+    @Test
+    fun aGroupStillInRequestsIsInCommonButNeitherKeepsNorOffers() =
+        runTest {
+            val vm = collecting()
+            val invite = group("g-invite", members = listOf("me", nodeId), name = "Invite")
+            sharedGroupsFlow.value = listOf(invite)
+            allGroupsFlow.value = listOf(invite)
+            groupSendersFlow.value = mapOf("g-invite" to setOf(nodeId)) // a stranger's post: still a request
+            advanceUntilIdle()
+            assertEquals(
+                listOf("g-invite"),
+                vm.state.value.inCommon.groups
+                    .map { it.groupId },
+            )
+            assertEquals(ContactRemoval.NotOffered, vm.state.value.removal)
+        }
+
+    @Test
+    fun aBlockedPeerIsNotOfferedRemove() =
+        runTest {
+            val vm = collecting()
+            acceptedFlow.value = setOf(nodeId)
+            blockedFlow.value = setOf(nodeId)
+            advanceUntilIdle()
+            assertEquals(ContactRemoval.NotOffered, vm.state.value.removal)
+        }
+
+    @Test
+    fun ourOwnProfileIsNeverOfferedRemove() =
+        runTest {
+            coEvery { identity.nodeId() } returns nodeId
+            val vm = collecting()
+            acceptedFlow.value = setOf(nodeId)
+            advanceUntilIdle()
+            assertEquals(ContactRemoval.NotOffered, vm.state.value.removal)
+        }
+
+    @Test
+    fun removedFiresOnlyOnceTheRemoverHasFinished() =
+        runTest {
+            val gate = CompletableDeferred<Unit>()
+            coEvery { remover.remove(nodeId) } coAnswers { gate.await() }
+            val vm = collecting()
+            var fired = 0
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.removed.collect { fired++ } }
+
+            vm.removeContact()
+            advanceUntilIdle()
+            assertEquals("still writing", 0, fired)
+
+            gate.complete(Unit)
+            advanceUntilIdle()
+            assertEquals(1, fired)
+            coVerify(exactly = 1) { remover.remove(nodeId) }
         }
 
     private companion object {

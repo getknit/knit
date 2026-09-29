@@ -360,6 +360,14 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   intro driver's rules, the assetlinks prerequisite) and `docs/SPOOL_PROTOCOL.md` §3.5 (the pair scope);
   decision record ADR 042. The card is versioned by `v` and additive under the WIRE_COMPAT rules; import
   never sets `verified`.
+- **When touching `contacts/ContactRemover`, the profile's Remove contact (`ContactRemoval`),
+  `SettingsStore.unaccept`, `IntroSync.cancel` / `MeshController.cancelIntro`, `contactStanding` /
+  `groupsAcceptedOnlyThrough` in `ui/contacts/ContactUniverse.kt`, or what `MeshManager.onCommonsMember`
+  accepts:** READ ADR 2026-09.adgd. A contact is derived, so removal clears our own signals — a group that
+  rested on the peer is accepted first, the accept is cleared last, the DM thread goes — and never the peer
+  row, the session, custody or the block list; nothing is sent. A group co-member stays a contact (only
+  their own leave shrinks a roster), and a commons member is accepted on first sighting only. Regression:
+  `ContactRemoverTest`, `ContactUniverseTest`, `BlockAndRequestLabTest`.
 - **When touching relay invites — `getknit.app/r` / `knit://r`, `mesh/spool/RelayInvite`,
   `data/relay/RelayInviteApplier`, `ui/relay/RelayInviteSheet` / `RelayInviteInbox`, the relay row's
   Share / Copy, or the Add-contact preview's relay "Add":** READ `docs/RELAY_INVITE.md` (layout, the

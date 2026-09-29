@@ -55,6 +55,12 @@ interface CommonsDao {
     @Query("SELECT * FROM commons_members")
     suspend fun allMembers(): List<CommonsMemberEntity>
 
+    @Query("SELECT EXISTS(SELECT 1 FROM commons_members WHERE conversationId = :conversationId AND nodeId = :nodeId)")
+    suspend fun isMember(
+        conversationId: String,
+        nodeId: String,
+    ): Boolean
+
     @Query("SELECT nodeId FROM commons_members WHERE conversationId = :conversationId")
     fun observeMemberIds(conversationId: String): Flow<List<String>>
 

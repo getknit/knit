@@ -176,6 +176,13 @@ interface Notifier {
     /** Clears the posted notification(s) for [conversationId] (its normal + mention entries) — Mark-read. */
     fun clearConversation(conversationId: String)
 
+    /**
+     * [clearConversation], and the thread's conversation shortcut goes too — the thread itself is gone (a
+     * removed contact's DM, ADR 2026-09.adgd), so the launcher and the share sheet must stop offering it. A
+     * shortcut the user pinned to the home screen stays; that one was theirs to place.
+     */
+    fun forgetConversation(conversationId: String)
+
     /** Drops the accumulated state for the dismissed [tag] only (notification swiped away). */
     fun onDismissed(tag: String)
 

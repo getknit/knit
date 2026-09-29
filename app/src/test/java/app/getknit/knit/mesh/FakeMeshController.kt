@@ -58,6 +58,13 @@ class FakeMeshController : MeshController {
     val sentReactions = mutableListOf<Pair<String, String>>()
     val sentTyping = mutableListOf<String>()
 
+    /** Peers passed to [cancelIntro], in order — a contact removal's one mesh call. */
+    val cancelledIntros = mutableListOf<String>()
+
+    override suspend fun cancelIntro(peerId: String) {
+        cancelledIntros += peerId
+    }
+
     /** When false, [sendChat] records the call but returns false (simulates the moderator flagging the text). */
     var sendChatResult = true
 

@@ -25,8 +25,10 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -39,6 +41,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -56,9 +59,11 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -89,12 +94,16 @@ import org.koin.core.parameter.parametersOf
 /** How faded the presence dot draws for a relay-reachable peer — the same as a Diagnostics relay row. */
 private const val RELAY_DOT_ALPHA = 0.45f
 
+/** Groups a remove dialog names outright; the rest collapse into "and N more groups". */
+private const val NAMED_GROUPS_MAX = 3
+
 /**
  * Read-only "contact details" view of another peer (keyed by [nodeId]): avatar, display name, live
  * presence (online / reachable via relay / offline), free-text status, node id, and end-to-end key
  * verification (safety number + QR scan). Offers a Message action (accepts any pending request from this
- * peer, then opens/starts a DM via [onMessage]) and Block/Unblock in the overflow menu. Reached by tapping
- * a peer's avatar in a chat, or a sender's avatar in the Message Requests inbox.
+ * peer, then opens/starts a DM via [onMessage]), and Remove contact and Block/Unblock in the overflow menu.
+ * Reached by tapping a peer's avatar in a chat, or a sender's avatar in the Message Requests inbox.
+ * [onRemoved] runs once a confirmed removal has finished writing — the DM it deleted may be the screen below.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -103,11 +112,15 @@ fun ProfileDetailsScreen(
     onBack: () -> Unit,
     onMessage: (nodeId: String) -> Unit,
     onOpenGroup: (groupId: String) -> Unit,
+    onRemoved: () -> Unit,
     viewModel: ProfileDetailsViewModel = koinViewModel { parametersOf(nodeId) },
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val scanResult by viewModel.scanResult.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // Outside the scanner branch below, so a removal that lands while the scanner is up still closes.
+    LaunchedEffect(Unit) { viewModel.removed.collect { onRemoved() } }
 
     val matchMessage = stringResource(R.string.verify_match)
     val mismatchMessage = stringResource(R.string.verify_mismatch)
@@ -145,6 +158,7 @@ fun ProfileDetailsScreen(
             onScan = { scanning = true },
             onBlock = viewModel::block,
             onUnblock = viewModel::unblock,
+            onRemoveContact = viewModel::removeContact,
             onMarkVerified = viewModel::markVerified,
             onClearVerification = viewModel::clearVerification,
         )
@@ -162,6 +176,7 @@ internal fun ProfileDetailsScreenContent(
     onScan: () -> Unit,
     onBlock: () -> Unit,
     onUnblock: () -> Unit,
+    onRemoveContact: () -> Unit,
     onMarkVerified: () -> Unit,
     onClearVerification: () -> Unit,
     // Whether the LoRa plane is introduced at all in this build — a peer on a debug build can name a board
@@ -171,6 +186,10 @@ internal fun ProfileDetailsScreenContent(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var showAvatarFullscreen by remember { mutableStateOf(false) }
+    var showRemove by remember { mutableStateOf(false) }
+    // A standing that drops out from under an open dialog (they were blocked, or removed from elsewhere)
+    // closes it, rather than leaving the flag set to reopen it the next time Remove is offered.
+    LaunchedEffect(state.removal) { if (state.removal == ContactRemoval.NotOffered) showRemove = false }
 
     Scaffold(
         modifier = Modifier.testTag("screen_profile_details"),
@@ -203,6 +222,17 @@ internal fun ProfileDetailsScreenContent(
                             )
                         }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            if (state.removal != ContactRemoval.NotOffered) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.profile_details_remove_contact)) },
+                                    leadingIcon = { Icon(Icons.Filled.PersonRemove, contentDescription = null) },
+                                    onClick = {
+                                        menuOpen = false
+                                        showRemove = true
+                                    },
+                                    modifier = Modifier.testTag("profile_details_remove_contact"),
+                                )
+                            }
                             DropdownMenuItem(
                                 text = {
                                     Text(
@@ -289,6 +319,99 @@ internal fun ProfileDetailsScreenContent(
             title = state.displayName,
             onDismiss = { showAvatarFullscreen = false },
         )
+    }
+
+    if (showRemove) {
+        RemoveContactDialog(
+            name = state.displayName,
+            removal = state.removal,
+            onConfirm = {
+                showRemove = false
+                onRemoveContact()
+            },
+            onDismiss = { showRemove = false },
+        )
+    }
+}
+
+/**
+ * The confirm behind "Remove contact" (ADR 2026-09.adgd). It says what goes — the chat, from this phone only —
+ * that the person is not told, and where their next message lands; and it names the groups that keep them a
+ * contact anyway, since only their own leave changes a roster. For a contact held only by groups there is
+ * nothing to remove, so the dialog explains that and offers OK alone.
+ */
+@Composable
+private fun RemoveContactDialog(
+    name: String,
+    removal: ContactRemoval,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    when (removal) {
+        // Nothing to confirm: the screen shows this dialog only while Remove is offered.
+        ContactRemoval.NotOffered -> {}
+
+        is ContactRemoval.Removes -> {
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                title = { Text(stringResource(R.string.profile_details_remove_title, name)) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (removal.keptBy.isEmpty()) {
+                            Text(stringResource(R.string.profile_details_remove_body, name))
+                        } else {
+                            Text(stringResource(R.string.profile_details_remove_body_kept, name))
+                            GroupTitles(removal.keptBy)
+                        }
+                        if (removal.clearsVerification) Text(stringResource(R.string.profile_details_remove_verified))
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = onConfirm, modifier = Modifier.testTag("profile_details_remove_confirm")) {
+                        Text(
+                            text = stringResource(R.string.profile_details_remove_action),
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = onDismiss) { Text(stringResource(android.R.string.cancel)) }
+                },
+            )
+        }
+
+        is ContactRemoval.GroupsOnly -> {
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                title = { Text(stringResource(R.string.profile_details_remove_kept_title, name)) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(stringResource(R.string.profile_details_remove_kept_body, name))
+                        GroupTitles(removal.groups)
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = onDismiss) { Text(stringResource(android.R.string.ok)) }
+                },
+            )
+        }
+    }
+}
+
+/** The groups a remove dialog names, one per line, the ones past [NAMED_GROUPS_MAX] folded into a count. */
+@Composable
+private fun GroupTitles(groups: List<SharedGroup>) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        groups.take(NAMED_GROUPS_MAX).forEach { group ->
+            Text(
+                text = group.title,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        val more = groups.size - NAMED_GROUPS_MAX
+        if (more > 0) Text(pluralStringResource(R.plurals.profile_details_remove_more_groups, more, more))
     }
 }
 
@@ -667,6 +790,11 @@ fun ProfileDetailsScreenOnlineVerifiedPreview() =
                             firstMetAt = PREVIEW_FIRST_MET,
                             lastMetAt = PREVIEW_LAST_MET,
                         ),
+                    removal =
+                        ContactRemoval.Removes(
+                            keptBy = listOf(SharedGroup("g-trail", "Trail Crew", photoHash = null, faces = PREVIEW_FACES)),
+                            clearsVerification = true,
+                        ),
                 ),
             snackbarHostState = remember { SnackbarHostState() },
             onBack = {},
@@ -675,6 +803,7 @@ fun ProfileDetailsScreenOnlineVerifiedPreview() =
             onScan = {},
             onBlock = {},
             onUnblock = {},
+            onRemoveContact = {},
             onMarkVerified = {},
             onClearVerification = {},
         )
@@ -705,6 +834,7 @@ fun ProfileDetailsScreenViaRelayPreview() =
             onScan = {},
             onBlock = {},
             onUnblock = {},
+            onRemoveContact = {},
             onMarkVerified = {},
             onClearVerification = {},
         )
@@ -736,6 +866,7 @@ fun ProfileDetailsScreenNoKeyPreview() =
             onScan = {},
             onBlock = {},
             onUnblock = {},
+            onRemoveContact = {},
             onMarkVerified = {},
             onClearVerification = {},
         )
@@ -768,8 +899,26 @@ fun ProfileDetailsScreenBlockedPreview() =
             onScan = {},
             onBlock = {},
             onUnblock = {},
+            onRemoveContact = {},
             onMarkVerified = {},
             onClearVerification = {},
+        )
+    }
+
+// The confirm for a verified contact a shared group keeps: the chat goes, the group is named, the check resets.
+@Preview(showBackground = true)
+@Composable
+fun RemoveContactDialogPreview() =
+    KnitPreview {
+        RemoveContactDialog(
+            name = "Ada Lovelace",
+            removal =
+                ContactRemoval.Removes(
+                    keptBy = listOf(SharedGroup("g-trail", "Trail Crew", photoHash = null, faces = PREVIEW_FACES)),
+                    clearsVerification = true,
+                ),
+            onConfirm = {},
+            onDismiss = {},
         )
     }
 

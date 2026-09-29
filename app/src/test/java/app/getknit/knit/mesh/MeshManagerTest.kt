@@ -782,6 +782,47 @@ class MeshManagerTest {
         }
 
     @Test
+    fun aCommonsMemberIsAcceptedOnTheirFirstSightingOnly() =
+        runTest(UnconfinedTestDispatcher()) {
+            val store = FakeCommonsStore(roomId, roomSecret)
+            val rig = Rig(backgroundScope, commons = store)
+
+            repeat(3) { rig.manager.onCommonsMember(roomId, rig.bob.nodeId) }
+            advanceUntilIdle()
+
+            // Every sighting is still recorded (it stamps the latest), but only the first made a contact.
+            assertEquals(3, store.members.size)
+            coVerify(exactly = 1) { rig.settings.accept(rig.bob.nodeId) }
+        }
+
+    @Test
+    fun aRemovedCommonsMemberIsNotReacceptedWhenARestartRepullsTheRoom() =
+        runTest(UnconfinedTestDispatcher()) {
+            // Bob was a member before, and the user has since removed him from contacts (ADR 2026-09.adgd).
+            val store = FakeCommonsStore(roomId, roomSecret)
+            val rig = Rig(backgroundScope, commons = store)
+            store.members += roomId to rig.bob.nodeId
+
+            rig.manager.onCommonsMember(roomId, rig.bob.nodeId)
+            advanceUntilIdle()
+
+            coVerify(exactly = 0) { rig.settings.accept(any()) }
+        }
+
+    @Test
+    fun cancelIntroWithdrawsThePendingIntroAndKeepsGrace() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            val carolId = "c".repeat(8)
+            coEvery { rig.settings.pendingIntros } returns MutableStateFlow(setOf("${rig.bob.nodeId}|1000"))
+            coEvery { rig.settings.introGrace } returns MutableStateFlow(setOf("$carolId|${Long.MAX_VALUE}"))
+
+            rig.manager.cancelIntro(rig.bob.nodeId)
+
+            coVerify(exactly = 1) { rig.settings.setIntroState(emptySet(), setOf("$carolId|${Long.MAX_VALUE}")) }
+        }
+
+    @Test
     fun aCommonsSendWithoutTheStoreIsRefused() =
         runTest(UnconfinedTestDispatcher()) {
             val rig = Rig(backgroundScope)

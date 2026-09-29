@@ -587,6 +587,20 @@
          the presence badge is the only claim about now. -->
     <string name="profile_details_first_met">First met</string>
     <string name="profile_details_last_met">Last met</string>
+    <!-- Remove contact (ADR 2026-09.adgd): local only, nothing is sent. The DM thread goes, from this phone
+         only; a shared group keeps the person a contact, since only their own leave changes its roster. -->
+    <string name="profile_details_remove_contact">Remove contact</string>
+    <string name="profile_details_remove_title">Remove %1$s from contacts?</string>
+    <string name="profile_details_remove_body">%1$s leaves your contacts, and your chat with them is deleted from this phone. Knit doesn\'t notify them. If they write again, it arrives as a message request.</string>
+    <string name="profile_details_remove_body_kept">Your chat with %1$s is deleted from this phone, and a new message from them arrives as a message request. Knit doesn\'t notify them. They stay in your contacts while you\'re both in:</string>
+    <string name="profile_details_remove_verified">Their safety number goes back to not verified.</string>
+    <string name="profile_details_remove_action">Remove</string>
+    <string name="profile_details_remove_kept_title">%1$s stays in your contacts</string>
+    <string name="profile_details_remove_kept_body">Everyone in your groups is one of your contacts, so %1$s stays for as long as you\'re both in:</string>
+    <plurals name="profile_details_remove_more_groups">
+        <item quantity="one">and %d more group</item>
+        <item quantity="other">and %d more groups</item>
+    </plurals>
 
     <!-- Encryption indicator in the chat header -->
     <string name="chat_encrypted_desc">Encrypted</string>

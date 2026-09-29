@@ -308,6 +308,13 @@ class MessageNotifier(
         postSummary()
     }
 
+    override fun forgetConversation(conversationId: String) {
+        clearConversation(conversationId)
+        // The shortcut is keyed by the conversation id ([pushConversationShortcut]); removing the
+        // long-lived one takes the dynamic entry and the system's cached copy with it.
+        runCatching { ShortcutManagerCompat.removeLongLivedShortcuts(context, listOf(conversationId)) }
+    }
+
     override fun onDismissed(tag: String) {
         if (tag == DISMISS_ALL) {
             synchronized(states) { states.clear() }

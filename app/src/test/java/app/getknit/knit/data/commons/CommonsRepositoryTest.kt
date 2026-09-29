@@ -97,6 +97,22 @@ class CommonsRepositoryTest : RoomDbTest() {
             assertEquals(listOf("peer"), repo.observeMemberIds(id).first())
         }
 
+    /** The first-sighting test a member's accept keys on (ADR 2026-09.adgd): per room, and gone with a leave. */
+    @Test
+    fun isMemberHoldsFromTheFirstSightingUntilTheRoomIsLeft() =
+        runTest {
+            val repo = repo()
+            val id = repo.join("wss://a/spool/v1", secret, null, now = 1L)
+            assertFalse(repo.isMember(id, "peer"))
+            repo.recordMember(id, "peer", now = 3L)
+            assertTrue(repo.isMember(id, "peer"))
+            assertFalse("another node", repo.isMember(id, "other"))
+            assertFalse("another room", repo.isMember(Conversations.COMMONS_PREFIX + "00", "peer"))
+
+            repo.leave(id)
+            assertFalse(repo.isMember(id, "peer"))
+        }
+
     @Test
     fun theOutboxSweepDropsOnlyWhatTheSpoolHasLongExpired() =
         runTest {

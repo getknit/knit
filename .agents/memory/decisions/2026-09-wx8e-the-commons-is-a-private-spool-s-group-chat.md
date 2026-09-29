@@ -15,7 +15,9 @@ began under (ADR 064, ADR 2026-09.6gtm). The gate is the `CommonsStore` the DI h
 `InternetRelayViewModel` — null while dark, so no room is derived into the scope table, subscribed, posted
 to or listed, the relay row draws no Join / Leave line, and `NotificationChannels` registers no room
 channel; the debug bridge refuses a join. Not a code strip. Flip the release default when the feature is
-introduced; see `.agents/memory/roadmap.md`.
+introduced; see `.agents/memory/roadmap.md`. *Amended by ADR 2026-09.adgd (2026-09-29): a member is accepted
+on their first sighting in a room only, so a user's Remove contact survives the restart re-pull; the new
+`SettingsStore.unaccept` is that removal's alone.*
 
 **What was observed.** `knit-spool` 0.2.0 shipped a **commons** — one operator-declared shared scope per
 spool, joined by an invite `knit-commons:v1:<32 B>` whose hash is the scope id and whose secret the spool

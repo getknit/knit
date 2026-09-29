@@ -35,9 +35,86 @@ internal fun contactIds(
             .filter { Conversations.kindFor(it) == ConversationKind.DM }
             .filter { Conversations.isAccepted(it, accepted, verified, authored) }
     val explicitlyAccepted = accepted.filter { Conversations.kindFor(it) == ConversationKind.DM }
-    val groupMembers =
-        groups
-            .filter { !it.left && Conversations.isAccepted(it.groupId, accepted, verified, authored, groupSenders[it.groupId].orEmpty()) }
-            .flatMap { GroupMembersStore.decode(it.members) }
+    val groupMembers = bindingGroups(groups, groupSenders, accepted, verified, authored).flatMap { GroupMembersStore.decode(it.members) }
     return (acceptedDmPeers + explicitlyAccepted + groupMembers + verified).toSet() - blocked - me
+}
+
+/**
+ * The groups whose members [contactIds] counts: active (non-left) groups the shared [Conversations.isAccepted]
+ * rule accepts, given who has posted in each. A group request lends nobody — that is #82.
+ */
+private fun bindingGroups(
+    groups: List<GroupEntity>,
+    groupSenders: Map<String, Set<String>>,
+    accepted: Set<String>,
+    verified: Set<String>,
+    authored: Set<String>,
+): List<GroupEntity> =
+    groups.filter {
+        !it.left && Conversations.isAccepted(it.groupId, accepted, verified, authored, groupSenders[it.groupId].orEmpty())
+    }
+
+/**
+ * Where one peer stands against [contactIds], signal by signal — what removing the contact would clear, and
+ * what it cannot (ADR 2026-09.adgd). [accepted], [verified] and [authoredDm] are our own signals: the
+ * explicit accept (a card imported, a request accepted, the profile's Message), the out-of-band key check,
+ * and a DM thread we have written in. [bindingGroups] are the accepted, active groups the peer is a member
+ * of; only the peer's own signed leave shrinks a roster, so those keep them a contact whatever we clear.
+ */
+internal data class ContactStanding(
+    val accepted: Boolean,
+    val verified: Boolean,
+    val authoredDm: Boolean,
+    val bindingGroups: List<GroupEntity>,
+    val blocked: Boolean,
+) {
+    /** Whether any signal a removal clears is present. */
+    val ownSignals: Boolean get() = accepted || verified || authoredDm
+
+    /** Exactly `nodeId in contactIds(...)`, for any node id but our own (the caller checks that). */
+    val isContact: Boolean get() = !blocked && (ownSignals || bindingGroups.isNotEmpty())
+}
+
+/** [nodeId]'s [ContactStanding], judged by the same rule as [contactIds]; never call it with our own id. */
+internal fun contactStanding(
+    nodeId: String,
+    signals: ContactSignals,
+    verified: Set<String>,
+    blocked: Set<String>,
+): ContactStanding {
+    val authoredDm = nodeId in signals.authored && Conversations.kindFor(nodeId) == ConversationKind.DM
+    return ContactStanding(
+        accepted = nodeId in signals.accepted,
+        verified = nodeId in verified,
+        authoredDm = authoredDm,
+        bindingGroups =
+            bindingGroups(signals.groups, signals.groupSenders, signals.accepted, verified, signals.authored)
+                .filter { nodeId in GroupMembersStore.decode(it.members) },
+        blocked = nodeId in blocked,
+    )
+}
+
+/**
+ * The active groups that are accepted only because [nodeId] is a known peer who has posted in them — the
+ * sender clause of [Conversations.isAccepted] — and would fall back into message requests once [nodeId]'s
+ * own signals are cleared, taking every member they lend to [contactIds] with them. Removing a contact
+ * accepts these first, so removing one person never demotes a group (ADR 2026-09.adgd). Membership is not
+ * checked: a group [nodeId] has since left can still owe its acceptance to their old posts.
+ */
+internal fun groupsAcceptedOnlyThrough(
+    nodeId: String,
+    signals: ContactSignals,
+    verified: Set<String>,
+): List<String> {
+    val acceptedAfter = signals.accepted - nodeId
+    val verifiedAfter = verified - nodeId
+    val authoredAfter = signals.authored - nodeId
+    return signals.groups
+        .filter { !it.left }
+        .map { it.groupId }
+        .filter { groupId ->
+            val senders = signals.groupSenders[groupId].orEmpty()
+            Conversations.isAccepted(groupId, signals.accepted, verified, signals.authored, senders) &&
+                !Conversations.isAccepted(groupId, acceptedAfter, verifiedAfter, authoredAfter, senders)
+        }
 }

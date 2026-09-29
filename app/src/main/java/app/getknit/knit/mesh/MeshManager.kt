@@ -727,14 +727,19 @@ class MeshManager(
      * the private instance's room is a contact — accepted, so it sits in Contacts, its DMs skip the
      * requests inbox and its peer row is protected from the sweep — exactly what importing their contact
      * card would do, minus the card. Never for our own frames coming back round.
+     *
+     * Accepted on the first sighting in the room only, as a card is imported once: a restart re-pulls the
+     * whole room, and re-accepting on every frame would undo the user removing the member (ADR 2026-09.adgd).
+     * The accept goes before the insert, so a crash between them re-accepts on the next pull.
      */
     internal suspend fun onCommonsMember(
         conversationId: String,
         nodeId: String,
     ) {
         if (nodeId == identity.nodeId()) return
-        commons?.recordMember(conversationId, nodeId, clock())
-        settings.accept(nodeId)
+        val store = commons ?: return
+        if (!store.isMember(conversationId, nodeId)) settings.accept(nodeId)
+        store.recordMember(conversationId, nodeId, clock())
     }
 
     /**
@@ -778,6 +783,8 @@ class MeshManager(
         // a mesh but never exchanged a profile still gets the prekey without waiting for a re-flood.
         keyExchange.want(peerId)
     }
+
+    override suspend fun cancelIntro(peerId: String) = introSync.cancel(peerId)
 
     override fun introState(peerId: String): Flow<IntroState?> = introSync.state(peerId)
 

@@ -20,6 +20,12 @@ document:
 
 ## Unreleased
 
+### Added
+
+- You can now remove someone from your contacts using the menu on their profile. It deletes your chat with
+  them from this phone, and they aren't told. People you share a group with stay in your contacts while
+  you're both in it.
+
 ### Fixed
 
 - When a contact changed their photo along with their name or status, your phone could keep the old name

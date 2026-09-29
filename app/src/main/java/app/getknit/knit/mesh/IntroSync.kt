@@ -146,6 +146,22 @@ class IntroSync(
         if (room) want(peerId)
     }
 
+    /**
+     * Withdraws a pending intro with [peerId] — the user removed the contact (ADR 2026-09.adgd). The re-sends
+     * stop and the pair scope goes with the next derivation; a peer with nothing pending is left alone, so
+     * nothing is written and the pair-set hook stays quiet (ADR 2026-09.dcah). A confirmed peer's grace is
+     * kept: it is session plumbing (our confirming reply may still be on its way), and it lapses by itself.
+     */
+    suspend fun cancel(peerId: String) =
+        lock.withLock {
+            val pending = store.pending().toMutableMap()
+            if (pending.remove(peerId) == null) return@withLock
+            val grace = store.grace()
+            store.write(pending, grace)
+            lastSentAt.remove(peerId)
+            publish(pending, grace)
+        }
+
     /** A profile for [peerId] was pinned on some plane: if an intro to it is pending, it can be sealed now. */
     suspend fun onProfilePinned(peerId: String) {
         if (peerId !in lock.withLock { store.pending() }) return

@@ -3,6 +3,8 @@ package app.getknit.knit.mesh.lab
 import app.getknit.knit.data.message.Conversations
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -12,10 +14,11 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 
 /**
- * The two local presentation decisions the mesh must never observe (ADR 009, ADR 010): a message request
- * that was never accepted is custodied and relayed like any DM, and a blocked sender's room post is still
- * acked — blocking stays invisible to the blocked party — while never surfacing on the blocker. Both ADRs
- * say the decision is "never folded into custody/relay"; the full oracle is what checks that.
+ * The local presentation decisions the mesh must never observe (ADR 009, ADR 010, ADR 2026-09.adgd): a
+ * message request that was never accepted is custodied and relayed like any DM, a blocked sender's room post
+ * is still acked — blocking stays invisible to the blocked party — while never surfacing on the blocker, and
+ * a removed contact is a stranger again on the remover alone. Each ADR says the decision is "never folded
+ * into custody/relay"; the full oracle is what checks that.
  */
 @RunWith(RobolectricTestRunner::class)
 class BlockAndRequestLabTest {
@@ -76,5 +79,41 @@ class BlockAndRequestLabTest {
             carol.accept(alice.nodeId)
             assertTrue(carol.sendDm(alice, "accepted"))
             lab.assertConverged(listOf(alice, carol), atLeast = 2, carriers = listOf(bob)) { it.dmWith(if (it === alice) carol else alice) }
+        }
+
+    /**
+     * ADR 2026-09.adgd: Alice removes Bob. The thread goes from her phone only, and Bob — who is not told —
+     * writes again: the DM lands as a request, and Alice still ticks it, as she ticks any request. Nothing the
+     * mesh converges on moved: custody, profiles and the session hold across all three, which the room's full
+     * oracle checks (the DM oracle cannot, since Alice legitimately dropped the old messages Bob still holds).
+     */
+    @Test
+    fun aRemovedContactsNextDmIsARequestAndTheRemovalStaysInvisible() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            lab.linkAll(alice to bob, bob to carol, alice to carol)
+            lab.awaitAcquainted(alice, bob, carol)
+
+            assertTrue(alice.sendDm(bob, "hi bob"))
+            lab.awaitReceipt(alice, alice.ownMessageId(alice.dmWith(bob), "hi bob"), bob)
+            assertTrue(bob.sendDm(alice, "hi alice"))
+            lab.awaitReceipt(bob, bob.ownMessageId(bob.dmWith(alice), "hi alice"), alice)
+            assertTrue("a DM she wrote in makes Bob a contact", alice.isContact(bob))
+
+            alice.removeContact(bob)
+            assertFalse(alice.isContact(bob))
+            assertEquals(emptySet<Pair<String, String>>(), alice.decrypted(alice.dmWith(bob)))
+
+            assertTrue(bob.sendDm(alice, "still there?"))
+            lab.awaitReceipt(bob, bob.ownMessageId(bob.dmWith(alice), "still there?"), alice)
+            assertEquals(setOf("still there?"), alice.decrypted(alice.dmWith(bob)).map { it.second }.toSet())
+            assertTrue("the new DM is a message request", alice.isRequest(bob))
+            assertFalse(alice.isContact(bob))
+            assertTrue("Bob's side is untouched", bob.isContact(alice))
+
+            assertTrue(alice.sendRoom("after the removal"))
+            lab.assertConverged(listOf(alice, bob, carol), atLeast = 1) { Conversations.NEARBY }
         }
 }

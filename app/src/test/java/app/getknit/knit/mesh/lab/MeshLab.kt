@@ -13,6 +13,7 @@ import androidx.test.core.app.ApplicationProvider
 import app.getknit.knit.TextLimits
 import app.getknit.knit.contacts.ContactCards
 import app.getknit.knit.contacts.ContactImporter
+import app.getknit.knit.contacts.ContactRemover
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GroupRepository
@@ -26,6 +27,7 @@ import app.getknit.knit.data.backup.BackupTables
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.crypto.KeystoreSecret
+import app.getknit.knit.data.draft.DraftRepository
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
@@ -83,6 +85,8 @@ import app.getknit.knit.moderation.ScopedTextModerator
 import app.getknit.knit.moderation.TextVerdict
 import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.notifications.Notifier
+import app.getknit.knit.ui.contacts.contactStanding
+import app.getknit.knit.ui.contacts.observeContactSignals
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -91,9 +95,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
@@ -1205,6 +1211,30 @@ class LabNode internal constructor(
 
     /** Accepts a message request — one settings write, the whole of what the Requests inbox does. */
     suspend fun accept(conversationId: String) = settings.accept(conversationId)
+
+    /**
+     * Removes [peer] from contacts as the profile's Remove does: the real `ContactRemover` over this node's
+     * stores (ADR 2026-09.adgd). The notifier is a relaxed double, as the booted stack's is. The draft
+     * store launches its delete on the scope it is given, so it gets this call's own: the helper returns only
+     * once that delete has run, rather than leaving it on the session scope past the call.
+     */
+    suspend fun removeContact(peer: LabNode) =
+        coroutineScope {
+            val drafts = DraftRepository(db.draftDao(), this, Dispatchers.Unconfined)
+            ContactRemover(settings, peers, messages, groups, drafts, manager, mockk(relaxed = true), identity).remove(peer.nodeId)
+        }
+
+    /** Whether [peer] is in this node's contacts, by the rule the picker draws (`contactIds`). */
+    suspend fun isContact(peer: LabNode): Boolean {
+        val signals = observeContactSignals(messages, groups, settings, flowOf(nodeId)).first()
+        return contactStanding(peer.nodeId, signals, peers.verifiedNodeIds().toSet(), settings.blockedNodeIds.first()).isContact
+    }
+
+    /** Whether this node's DM thread with [peer] sits in Message Requests, by ADR 009's one shared rule. */
+    suspend fun isRequest(peer: LabNode): Boolean {
+        val signals = observeContactSignals(messages, groups, settings, flowOf(nodeId)).first()
+        return !Conversations.isAccepted(dmWith(peer), signals.accepted, peers.verifiedNodeIds().toSet(), signals.authored)
+    }
 
     /**
      * Sends [bytes] as an image — to [to], into [groupId], or into the room when both are null — the frame

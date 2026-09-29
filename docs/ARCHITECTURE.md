@@ -677,8 +677,10 @@ that budget is a purely local knob that can differ per node without breaking cue
   - `ChatListScreen` — one row per conversation (always-present Nearby room + DM threads with
     messages), each with a leading visual (room icon vs. peer `Avatar`), last-message preview,
     relative time, and an unread `Badge`; a FAB opens Contacts, an overflow menu opens Settings.
-  - `ContactsScreen` — the new-DM picker; lists known peers ∪ live neighbors − self (so you can
-    message a neighbor before their profile arrives), online-first; tapping opens `chat/{nodeId}`.
+  - `ContactsScreen` — the new-DM picker; lists your contacts by the shared `contactIds` rule (accepted
+    DM peers, explicitly accepted peers, co-members of accepted groups, verified peers − self and blocked),
+    online-first; one pick opens `chat/{nodeId}`, several create a group. A contact is removed from their
+    `ProfileDetailsScreen` overflow (ADR 2026-09.adgd).
   - `ChatScreen` — a `LazyColumn` of bubbles with reactions, image attachments (Coil + animated
     decoder for GIF/WebP), `@`-mention highlighting and typeahead, auto-scroll, and an IME-padded
     input.

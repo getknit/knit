@@ -23,6 +23,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -466,11 +467,7 @@ fun KnitApp(startRoute: String? = null) {
                     // the peer's DM (the reported "Message just returns to Nearby" bug). If we arrived
                     // straight from this peer's own DM, just return to it so we don't stack a duplicate;
                     // otherwise open it, replacing the profile so Back lands on the chat we came from.
-                    val parent = navController.previousBackStackEntry
-                    val fromSameDm =
-                        parent?.destination?.route == Routes.CHAT &&
-                            parent.arguments?.getString("conversationId") == id
-                    if (fromSameDm) {
+                    if (navController.parentIsDmWith(id)) {
                         navController.popBackStack()
                     } else {
                         navController.navigate(Routes.chat(id)) {
@@ -481,6 +478,15 @@ fun KnitApp(startRoute: String? = null) {
                 // A shared group opens its details, stacked on this profile — unlike Message, which
                 // replaces it: you came here about the person, and Back should return to them.
                 onOpenGroup = { groupId -> navController.navigate(Routes.groupDetails(groupId)) },
+                // Removing the contact deleted their DM (ADR 2026-09.adgd). When that DM is the screen below,
+                // pop past it too, as Leave pops past a left group's chat; otherwise just return.
+                onRemoved = {
+                    if (navController.parentIsDmWith(nodeId)) {
+                        navController.popBackStack(Routes.CHAT, inclusive = true)
+                    } else {
+                        navController.popBackStack()
+                    }
+                },
             )
         }
         composable(
@@ -617,4 +623,13 @@ fun KnitApp(startRoute: String? = null) {
             onDismiss = { reviewInbox.consume() },
         )
     }
+}
+
+/**
+ * Whether the screen under the current one is [nodeId]'s own DM. Nearby, groups and DMs share the
+ * `chat/{conversationId}` destination, so the route alone cannot tell; the argument does.
+ */
+private fun NavController.parentIsDmWith(nodeId: String): Boolean {
+    val parent = previousBackStackEntry ?: return false
+    return parent.destination.route == Routes.CHAT && parent.arguments?.getString("conversationId") == nodeId
 }

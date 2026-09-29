@@ -5,6 +5,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -42,6 +43,7 @@ class ProfileDetailsScreenContentTest {
         verified: Boolean = true,
         isBlocked: Boolean = false,
         inCommon: InCommon = InCommon.EMPTY,
+        removal: ContactRemoval = ContactRemoval.NotOffered,
     ) = ProfileDetailsUiState(
         openToChat = openToChat,
         loraNodeLabel = loraNodeLabel,
@@ -56,6 +58,7 @@ class ProfileDetailsScreenContentTest {
         safetyNumber = "12345 67890 12345 67890 12345 67890",
         myQrPayload = null,
         inCommon = inCommon,
+        removal = removal,
     )
 
     private fun setContent(
@@ -68,11 +71,13 @@ class ProfileDetailsScreenContentTest {
         verified: Boolean = true,
         isBlocked: Boolean = false,
         inCommon: InCommon = InCommon.EMPTY,
+        removal: ContactRemoval = ContactRemoval.NotOffered,
+        onRemoveContact: () -> Unit = {},
     ) {
         compose.setContent {
             KnitTheme {
                 ProfileDetailsScreenContent(
-                    state = state(openToChat, loraNodeLabel, reach, verified, isBlocked, inCommon),
+                    state = state(openToChat, loraNodeLabel, reach, verified, isBlocked, inCommon, removal),
                     snackbarHostState = SnackbarHostState(),
                     onBack = {},
                     onMessage = onMessage,
@@ -80,6 +85,7 @@ class ProfileDetailsScreenContentTest {
                     onScan = {},
                     onBlock = {},
                     onUnblock = {},
+                    onRemoveContact = onRemoveContact,
                     onMarkVerified = {},
                     onClearVerification = {},
                     showLoraRadio = showLoraRadio,
@@ -286,5 +292,84 @@ class ProfileDetailsScreenContentTest {
             )
         const val FIRST_MET = 1_755_000_000_000L
         const val LAST_MET = 1_757_900_000_000L
+    }
+
+    // --- Remove contact (ADR 2026-09.adgd) ---
+
+    private fun sharedGroup(
+        id: String,
+        title: String,
+    ) = SharedGroup(id, title, photoHash = null, faces = emptyList())
+
+    private fun openMenu() {
+        compose.onNodeWithContentDescription(context.getString(R.string.chat_more_options)).performClick()
+    }
+
+    private fun openRemove() {
+        openMenu()
+        compose.onNodeWithTag("profile_details_remove_contact").performClick()
+    }
+
+    @Test
+    fun noRemoveItemWhenRemovalIsNotOffered() {
+        setContent()
+        openMenu()
+        compose.onNodeWithText(context.getString(R.string.chat_action_block)).assertIsDisplayed()
+        compose.onNodeWithTag("profile_details_remove_contact").assertDoesNotExist()
+    }
+
+    @Test
+    fun removeAsksFirstAndCancelChangesNothing() {
+        var removed = 0
+        setContent(removal = ContactRemoval.Removes(keptBy = emptyList(), clearsVerification = false), onRemoveContact = { removed++ })
+
+        openRemove()
+        compose.onNodeWithText(context.getString(R.string.profile_details_remove_title, "Ada Lovelace")).assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.profile_details_remove_body, "Ada Lovelace")).assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.profile_details_remove_verified)).assertDoesNotExist()
+        compose.onNodeWithText(context.getString(android.R.string.cancel)).performClick()
+        compose.onNodeWithTag("profile_details_remove_confirm").assertDoesNotExist()
+        assertEquals(0, removed)
+
+        openRemove()
+        compose.onNodeWithTag("profile_details_remove_confirm").performClick()
+        compose.onNodeWithTag("profile_details_remove_confirm").assertDoesNotExist()
+        assertEquals(1, removed)
+    }
+
+    @Test
+    fun theConfirmNamesTheGroupsThatKeepThemAndTheVerificationItClears() {
+        setContent(
+            removal = ContactRemoval.Removes(keptBy = listOf(sharedGroup("g-trail", "Trail Crew")), clearsVerification = true),
+        )
+        openRemove()
+        compose.onNodeWithText(context.getString(R.string.profile_details_remove_body_kept, "Ada Lovelace")).assertIsDisplayed()
+        compose.onNodeWithText("Trail Crew").assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.profile_details_remove_verified)).assertIsDisplayed()
+        compose.onNodeWithTag("profile_details_remove_confirm").assertIsDisplayed()
+    }
+
+    @Test
+    fun aContactOnlyThroughAGroupIsToldWhyAndOfferedNoRemove() {
+        var removed = 0
+        setContent(removal = ContactRemoval.GroupsOnly(listOf(sharedGroup("g-trail", "Trail Crew"))), onRemoveContact = { removed++ })
+
+        openRemove()
+        compose.onNodeWithText(context.getString(R.string.profile_details_remove_kept_title, "Ada Lovelace")).assertIsDisplayed()
+        compose.onNodeWithText("Trail Crew").assertIsDisplayed()
+        compose.onNodeWithTag("profile_details_remove_confirm").assertDoesNotExist()
+        compose.onNodeWithText(context.getString(android.R.string.ok)).performClick()
+        compose.onNodeWithText(context.getString(R.string.profile_details_remove_kept_title, "Ada Lovelace")).assertDoesNotExist()
+        assertEquals(0, removed)
+    }
+
+    @Test
+    fun moreThanThreeGroupsCollapseIntoACount() {
+        val groups = (1..5).map { sharedGroup("g-$it", "Group $it") }
+        setContent(removal = ContactRemoval.Removes(keptBy = groups, clearsVerification = false))
+        openRemove()
+        compose.onNodeWithText("Group 3").assertIsDisplayed()
+        compose.onNodeWithText("Group 4").assertDoesNotExist()
+        compose.onNodeWithText(context.resources.getQuantityString(R.plurals.profile_details_remove_more_groups, 2, 2)).assertIsDisplayed()
     }
 }

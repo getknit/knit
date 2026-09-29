@@ -567,6 +567,12 @@ class SettingsStore(
     /** Accepts [conversationId] out of the message-request queue (a DM peer id or a "g-…" group id). */
     suspend fun accept(conversationId: String) = dataStore.edit { it[KEY_ACCEPTED] = (it[KEY_ACCEPTED] ?: emptySet()) + conversationId }
 
+    /**
+     * Takes [conversationId] back out of the accepted set — [accept]'s inverse, and idempotent. Only a contact
+     * removal calls it (`ContactRemover`, ADR 2026-09.adgd): the thread's next message is a request again.
+     */
+    suspend fun unaccept(conversationId: String) = dataStore.edit { it[KEY_ACCEPTED] = (it[KEY_ACCEPTED] ?: emptySet()) - conversationId }
+
     /** Fronts [emoji] in [recentReactions] — read-modify-write inside one edit, which DataStore serializes. */
     suspend fun recordReaction(emoji: String) =
         dataStore.edit { prefs ->

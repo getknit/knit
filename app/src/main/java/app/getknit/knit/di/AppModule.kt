@@ -8,6 +8,7 @@ import androidx.datastore.preferences.preferencesDataStoreFile
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.contacts.ContactCards
 import app.getknit.knit.contacts.ContactImporter
+import app.getknit.knit.contacts.ContactRemover
 import app.getknit.knit.crash.CrashReports
 import app.getknit.knit.crash.ProcessExitReasons
 import app.getknit.knit.crash.crashStore
@@ -147,6 +148,8 @@ val appModule =
         single { ContactCardInbox() }
         single { ContactCards(get(), get(), get<MessageCrypto>()::signRaw) }
         single { ContactImporter(get(), get(), get(), get(), BuildConfig.INTERNET_PLANE) }
+        // Its inverse: clears our own contact signals locally, tells no one (ADR 2026-09.adgd).
+        single { ContactRemover(get(), get(), get(), get(), get(), get(), get(), get()) }
         // Relay invites (docs/RELAY_INVITE.md): the link handoff inbox and the one apply sequence both doors
         // share. The commons store rides only while `BuildConfig.COMMONS` is on — null is the wx8e seam.
         single { RelayInviteInbox() }

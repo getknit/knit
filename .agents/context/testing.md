@@ -135,7 +135,8 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   entry: it takes part in the custody and per-store checks and nothing else.
 - **`LabNode` mirrors the ViewModels' writes** for the ops the first batch lacked: `react` (`ChatViewModel.react`),
   `leaveGroup` / `renameGroup` / `setGroupPhoto` (`GroupDetailsViewModel`), `setStatus` / `setOpenToChat` /
-  `setAvatar` (`ProfileViewModel`), `block` / `unblock` / `accept`, `sendImage` (bytes straight into the
+  `setAvatar` (`ProfileViewModel`), `block` / `unblock` / `accept`, `removeContact` (the real
+  `ContactRemover`, ADR 2026-09.adgd), `sendImage` (bytes straight into the
   blob store under their hash — `AttachmentStore.ingest` collapses every picture into one placeholder hash
   under Robolectric's legacy graphics), `mintCard` / `importCard` (`ContactCards` + `ContactImporter`),
   `resetSession`, `heal()` (runs the heartbeat basket and returns once it has run to its end — `healsCompleted`), `sweepExpired()` (the TTL sweep the prune
@@ -143,7 +144,8 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   `wipeCustody`. Readers beside them:
   `reactions`, `group` / `groupShape`, `attachmentHash` / `attachmentHeld` / `attachmentScreened` /
   `attachmentPlain`, `peer` / `presentationOf`, `session`, `selfAddressedCustody`, `notices`, `rowsIn`,
-  `custodiedChatsFrom`, `scopeStatus`, `loraLine`. If a ViewModel's write sequence changes, change the mirror.
+  `custodiedChatsFrom`, `scopeStatus`, `loraLine`, `isContact` / `isRequest` (the picker's and the requests
+  inbox's rules). If a ViewModel's write sequence changes, change the mirror.
 - **`LabTransport` stages a received file in the receiver's own directory** (`File(dir, "rx")`) before
   emitting it: `MeshBlobStore.saveIncoming` deletes what it reads, and two receivers of one blob handed the
   sender's single temp path raced for it, the loser dropping the blob silently. It also has a per-pipe loss

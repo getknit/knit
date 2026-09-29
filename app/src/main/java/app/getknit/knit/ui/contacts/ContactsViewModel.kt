@@ -12,8 +12,6 @@ import app.getknit.knit.data.message.StatusNotices
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.MeshController
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -21,10 +19,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -56,8 +50,8 @@ data class ContactsUiState(
  *  - **accepted DM peers** — a DM thread whose peer passes the shared [Conversations.isAccepted] rule
  *    (accepted out of the request queue / verified / already replied to), so an unanswered stranger DM
  *    stays a message request and out of this picker;
- *  - **group co-members** — everyone in any active (non-left) group you're in, even one with no messages
- *    yet; and
+ *  - **group co-members** — everyone in any active (non-left) group the same predicate accepts, even one
+ *    with no messages yet, so a stranger's unanswered group invitation lends none of its members (#82); and
  *  - **verified peers** — anyone whose key you've verified out of band (covers a QR-verified contact you
  *    have never chatted with, who may not have a cached profile yet).
  *
@@ -133,45 +127,14 @@ class ContactsViewModel(
         const val MAX_OTHER_MEMBERS = 7
     }
 
-    // The three facts the picker needs from the messages table — which DM threads exist, which threads we
-    // have spoken in, and who has posted in each group — read as distinct-id queries rather than as the
-    // table. Pre-combined with groups + the accepted set so the outer combine stays within the 5-flow typed
-    // overload (it then adds peers + neighbors + blocked + myNodeId).
-    private data class Bundle(
-        val conversations: Set<String>,
-        val authored: Set<String>,
-        val groups: List<GroupEntity>,
-        val groupSenders: Map<String, Set<String>>,
-        val accepted: Set<String>,
-    )
-
-    // Keyed by our own id, which resolves after construction: empty until then, and the state below stays
-    // loading until then too, so the gap never renders as "no contacts".
-    @OptIn(ExperimentalCoroutinesApi::class)
-    private val authored: Flow<Set<String>> =
-        myNodeId.flatMapLatest { me ->
-            if (me == null) flowOf(emptySet()) else messages.observeConversationsIAuthoredIn(me).map { it.toSet() }
-        }
-
-    // Who has posted in each group, less blocked senders — the chat list's input to the group half of
-    // `Conversations.isAccepted`, so a stranger's group invitation is a request here exactly when it is there.
-    @OptIn(ExperimentalCoroutinesApi::class)
-    private val groupSenders: Flow<Map<String, Set<String>>> =
-        settings.blockedNodeIds.distinctUntilChanged().flatMapLatest { messages.observeGroupSenders(it) }
-
-    private val bundle =
-        combine(
-            messages.observeConversations(),
-            authored,
-            groups.observeGroups(),
-            groupSenders,
-            settings.acceptedConversations,
-        ) { conversations, mine, groupList, senders, accepted -> Bundle(conversations.toSet(), mine, groupList, senders, accepted) }
+    // Our own id keys the authored query; the state below stays loading until it resolves, so the gap
+    // never renders as "no contacts".
+    private val signals = observeContactSignals(messages, groups, settings, myNodeId)
 
     /** Accepted DM peers ∪ accepted-group co-members ∪ verified peers, minus self and blocked; connected first, then name. */
     val state: StateFlow<ContactsUiState> =
         combine(
-            bundle,
+            signals,
             peers.observeDirectory(),
             meshManager.neighbors,
             settings.blockedNodeIds,

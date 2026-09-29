@@ -50,6 +50,15 @@ interface CommonsStore {
     /** Every member across every joined room, for the DM-bootstrap sweep. */
     suspend fun allMembers(): List<CommonsMember>
 
+    /**
+     * Whether [nodeId] is already a recorded member of [conversationId] — the first-sighting test that makes
+     * a member a contact once, so a removal sticks across re-pulls (ADR 2026-09.adgd).
+     */
+    suspend fun isMember(
+        conversationId: String,
+        nodeId: String,
+    ): Boolean = allMembers().any { it.conversationId == conversationId && it.nodeId == nodeId }
+
     /** Drops outbox rows older than [before] — the spool has long expired them. */
     suspend fun sweepOutbox(before: Long)
 }
