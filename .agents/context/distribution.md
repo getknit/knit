@@ -107,6 +107,14 @@ Four inputs were deliberately de-machine-ified to keep it that way:
   timestamps normalized to `1981-01-01`, and all four ABIs present (which the release workflow also checks).
   Any *new* native dependency must additionally be **16 KB-page-aligned** (`readelf -lW` → `LOAD
   align=0x4000`); that requirement is why litert is pinned to 1.4.x and it was re-verified for CameraX.
+  **Aligned `LOAD`s are not enough: check `GNU_RELRO` too, on every native bump, not only new ones.** Android 16+
+  puts the whole app in page-size compat mode (`pageSizeCompat=256`, `PAGE_SIZE_APP_COMPAT_FLAG_RELRO_NOT_ALIGNED`,
+  the "isn't 16 KB compatible" warning) when a `.so`'s RELRO "is not a suffix and its end is not PAGE-aligned" —
+  it ends mid-page inside a writable segment. DataStore 1.3.0-alpha03-05 shipped such a
+  `libdatastore_shared_counter.so` (RELRO `0xc000+0x1000`, after `.data`), with every `LOAD` at `0x4000`; the
+  classic lld layout, where RELRO fills the first `RW` `LOAD`, passes even when its end is only 4 KB-aligned.
+  The check that decides it is the device's: install on a `ps16k` emulator and read
+  `dumpsys package app.getknit.knit | grep pageSizeCompat` (0 is clean).
 - **Every SDK package must exist in F-Droid's transparency log — and resolve in their image.** The
   buildserver image's `sdkmanager` is **F-Droid's own** (25.2.0), which resolves packages from
   [`f-droid/android-sdk-transparency-log`](https://github.com/f-droid/android-sdk-transparency-log), not

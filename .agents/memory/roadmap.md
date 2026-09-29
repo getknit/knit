@@ -149,8 +149,8 @@ doc). **Don't start a deferred item without explicit direction.**
   The overnight soak (2026-09-28: whole-package sweeps on fresh seeds, single-JVM, three-fork and one- or
   two-core-throttled, over two worktrees) explained three of #88's four: the setup "profile edit was never
   published" is **#97** (DataStore 1.2.1 drops the update for a `data` collector that subscribes mid-write, so
-  `watchProfileChanges` never sees an edit made while the mesh starts; fixed upstream in 1.3.0-alpha03, which the
-  catalog pins since 2026-09-28 — its repro runs), the most frequent failure in a sweep until then; the
+  `watchProfileChanges` never sees an edit made while the mesh starts; fixed upstream in 1.3.0-alpha03; the
+  catalog has pinned a 1.3.0 alpha since 2026-09-28, alpha11 since 2026-09-29 — its repro runs), the most frequent failure in a sweep until then; the
   missed-seed tick and the LoRa ride-hold tick are **#96** (a
   live-link tick whose send reaches no link is dropped as delivered, including a board node reading the
   composite's lagging `neighbors`), each also a fixture race, fixed (the scenario waits for the ticks; `unlink`
