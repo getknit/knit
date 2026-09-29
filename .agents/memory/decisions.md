@@ -121,6 +121,7 @@ carries; never renumber an old one.
 | [2026-09.9xuu](decisions/2026-09-9xuu-a-stranger-s-backlog-converges-when-the-key-lands.md) | A stranger's backlog converges when the key lands | custody, mesh, convergence |
 | [2026-09.a8ud](decisions/2026-09-a8ud-supervised-and-managed-phones-are-named.md) | Supervised and managed phones are named, and a blocked grant points at whoever holds it | ui, onboarding, permissions, reliability |
 | [2026-09.aa27](decisions/2026-09-aa27-a-room-delivery-tick-rides-a-frame-already-going-to-its-author.md) | A room delivery tick rides a frame already going to its author | receipts, mesh, lora |
+| [2026-09.adpz](decisions/2026-09-adpz-a-receipt-that-lands-before-its-dm-vaccinates-the-dm-on-arrival.md) | A receipt that lands before its DM vaccinates the DM on arrival | mesh, custody, receipts, convergence |
 | [2026-09.amzn](decisions/2026-09-amzn-a-spool-s-answers-are-bounded-by-what-the-client-can-track.md) | A spool's answers are bounded by what the client can track | spool, hardening |
 | [2026-09.bgk3](decisions/2026-09-bgk3-an-unfulfillable-responder-request-is-re-filed-on-a-curve-and-given-up-on.md) | An unfulfillable responder request is re-filed on a curve and given up on | wifi-aware, reliability, mesh |
 | [2026-09.bts9](decisions/2026-09-bts9-the-block-list-never-enters-custody.md) | The block list never enters custody: a blocker carries a blocked sender's frames like every other node | custody, convergence, moderation, privacy |

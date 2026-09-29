@@ -36,7 +36,10 @@ custodied like any flood frame — delay-tolerant for free. Its form splits cust
   (the ack path self-vaccinates after originating). Because the ack must come *from* the DM's
   cleartext `recipientId`, a forged receipt can't evict an undelivered message — the same recipient
   check gates `markReceived` (fixing a prior tick-spoof), and its null arm keeps the group/broadcast
-  best-effort tick working for the sealed form.
+  best-effort tick working for the sealed form. A receipt that lands **before** its DM (a newest-first back-fill, or the
+  recipient's jittered relay behind its instant receipt) is remembered as `(ackId, acker)` for the tombstone's
+  24 h, and `onSeen` refuses and tombstones the DM when it arrives if its recipient is that acker. Otherwise the
+  DM's custody would depend on arrival order (ADR 2026-09.adpz, #100).
 
 **Delivery ticks for broadcast/group** have no single recipient; `AckSync` owns their delay tolerance with
 a three-way rule keyed at the deliverer (ADR 033 — a local emission choice, never a carry rule). Toward a

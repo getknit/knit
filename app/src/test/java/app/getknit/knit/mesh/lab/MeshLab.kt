@@ -70,6 +70,7 @@ import app.getknit.knit.mesh.lora.LoraGossipPolicy
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPacePolicy
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.sha256Hex
 import app.getknit.knit.mesh.spool.FakeSpool
 import app.getknit.knit.mesh.spool.RelayInvite
@@ -1098,6 +1099,23 @@ class LabNode internal constructor(
         to: LabNode,
         text: String,
     ): Boolean = spaced { manager.sendChat(text = text, recipientId = to.nodeId) }
+
+    /**
+     * Makes this node answer [author]'s DMs with the legacy cleartext receipt, as it answers an author that cannot
+     * read a sealed one (knit-ios without its ratchet, an older build): clears `CAP_RATCHET` on the pinned row, the
+     * bit `InboundPipeline.sealDmReceipt` reads. Only the receipt's form moves; the DMs still arrive sealed. A later
+     * profile frame from [author] carries the bit back, so call it once the pair is acquainted. [cleartext] false
+     * puts the bit back — a cleartext receipt never confirms the author's ratchet, so the session oracle wants a
+     * sealed frame from this node before the scenario ends.
+     */
+    suspend fun answerWithCleartextReceipts(
+        author: LabNode,
+        cleartext: Boolean = true,
+    ) {
+        val row = checkNotNull(peers.find(author.nodeId)) { "$name has no pin for ${author.name}" }
+        val caps = row.capabilities ?: 0L
+        peers.upsert(row.copy(capabilities = if (cleartext) caps and Protocol.CAP_RATCHET.inv() else caps or Protocol.CAP_RATCHET))
+    }
 
     /**
      * Creates a group with [others], the way `ContactsViewModel.createGroup` does (mirrored here because the

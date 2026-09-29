@@ -12,8 +12,9 @@ import app.getknit.knit.mesh.protocol.isStorable
  * relays ([onSeen]) and, when a neighbor joins ([onNeighborAdded]), unicasts the carried ones to it:
  *
  * - **DMs** are offered to any newcomer: if it's the recipient it delivers + acks; otherwise its normal
- *   relay floods the frame onward through the new topology. A delivery receipt from the addressed
- *   recipient purges the carried copy mesh-wide ([onAck]).
+ *   relay floods the frame onward through the new topology. A cleartext delivery receipt from the addressed
+ *   recipient purges the carried copy mesh-wide ([onAck]), and a DM that lands after its own receipt is
+ *   refused on arrival ([onSeen]).
  * - **Group messages** are offered only to a roster member (the member set rides in cleartext on the
  *   frame); once any member receives it, the normal flood re-distributes it to the rest. A group has no
  *   single recipient and no reliable per-member ack, so it is never vaccine-purged — the TTL/cap sweep
@@ -49,6 +50,11 @@ class ForwardSync(
     // circulating copy from an unvaccinated peer isn't re-stored after we've already delivered it.
     private val acked = SeenSet(ttlMillis = ACK_TOMBSTONE_TTL_MS, clock = clock)
 
+    // Receipts that named a DM we did not hold yet, keyed (ackId, acker): the DM that lands after its own receipt
+    // — a back-fill served newest first, or the recipient's relay behind its instant receipt — is vaccinated on
+    // arrival instead of carried to expiry, so custody doesn't depend on the order the two arrived in (#100).
+    private val earlyAcks = SeenSet(ttlMillis = ACK_TOMBSTONE_TTL_MS, clock = clock)
+
     /**
      * Capture a chat frame we originated ([ForwardStore.ORIGIN_SELF]) or relayed
      * ([ForwardStore.ORIGIN_RELAY]) into the carry store — a DM, group, or broadcast-room message (all
@@ -64,11 +70,25 @@ class ForwardSync(
     ) {
         if (!envelope.isStorable()) return
         if (acked.contains(envelope.id) || store.has(envelope.id)) return
+        // Its receipt came first ([onAck]): the purge we could not apply then applies now, on the same
+        // recipient-authenticated terms, and the id is tombstoned exactly as a purge would leave it.
+        val recipient = envelope.recipientId
+        if (recipient != null && earlyAcks.contains(earlyAckKey(envelope.id, recipient))) {
+            acked.add(envelope.id)
+            return
+        }
         if (origin == ForwardStore.ORIGIN_RELAY && !authenticate(wire, envelope)) return
         // The store impl folds the new id into the StoreDigest, whose version change re-cues neighbors that
         // we now hold something they may want to pull. A dead-on-arrival frame (past its frame-global expiry —
         // a skewed-clock peer re-serving what everyone has swept) is refused, so we must not custody its blob.
         if (!store.store(CarriedFrame(envelope, wire.sig, wire.signed), origin, clock())) return
+        // Asked again once the row is written: a receipt [onAck] handled while the write was in flight missed the
+        // row, and the check above missed its memo. Each side writes before it reads, so one of them sees the other.
+        if (recipient != null && earlyAcks.contains(earlyAckKey(envelope.id, recipient))) {
+            store.remove(envelope.id)
+            acked.add(envelope.id)
+            return
+        }
         // Now custody any blob the frame references (e.g. an image), so a late joiner can still pull it from us.
         onCarried(envelope)
     }
@@ -169,11 +189,21 @@ class ForwardSync(
      * signature). This makes the purge recipient-authenticated, so a forged receipt can't evict an
      * undelivered message. The id is tombstoned so a copy still circulating from an unvaccinated peer
      * isn't re-accepted by [onSeen].
+     *
+     * Every receipt is also remembered with its acker for the tombstone's lifetime, for the one that names a
+     * frame we don't hold yet: the router marks it seen, so it is never applied again, and the DM behind it would
+     * otherwise be carried to expiry here while every neighbour that heard the two the other way round refuses it
+     * (#100). [onSeen] drops that DM on arrival if its recipient is the acker. The DM's own expiry always ends
+     * first (ADR 2026-09.adpz).
      */
     suspend fun onAck(
         ackId: String,
         senderId: String,
     ) {
+        // Remembered before the store is read, whether or not the DM is held: an [onSeen] of it racing on another
+        // dispatcher then finds either this memo or a row this purge removes. A memo that never matches (a held
+        // group or room frame, a non-recipient acker) costs one slot in a bounded set.
+        earlyAcks.add(earlyAckKey(ackId, senderId))
         if (store.recipientOf(ackId) != senderId) return
         store.remove(ackId)
         acked.add(ackId)
@@ -183,6 +213,11 @@ class ForwardSync(
     suspend fun sweepExpired() {
         store.sweepExpired(clock())
     }
+
+    private fun earlyAckKey(
+        ackId: String,
+        ackerId: String,
+    ): String = "$ackId|$ackerId"
 
     private companion object {
         /** How long a delivered id stays tombstoned — matches the carry TTL so it can't outlive a copy. */

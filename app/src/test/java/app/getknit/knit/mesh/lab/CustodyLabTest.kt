@@ -85,6 +85,75 @@ class CustodyLabTest {
         }
 
     /**
+     * A receipt that lands before its DM (#100). Bob answers Alice with the cleartext receipt, which purges the DM
+     * from every carrier that holds it. Dave alone hears Alice's DM and hands it to Bob; Carol then hears Bob's
+     * receipt with no DM to purge, and only afterwards meets Alice, who has not heard it yet and serves her the DM.
+     * A carrier in Carol's place used to keep that DM for its full day while everyone else had purged it; the walk
+     * pins both orders that would hide it (Bob's jittered relay reaching Carol ahead of the receipt, and Alice
+     * purging on Carol's receipt before serving her the DM), so it fails every time without the fix.
+     */
+    @Test
+    fun aDmWhoseCleartextReceiptLandsFirstIsCarriedByNobody() =
+        runBlocking {
+            val alice = lab.node("alice").apply { setDisplayName("Alice") }
+            val bob = lab.node("bob").apply { setDisplayName("Bob") }
+            val carol = lab.node("carol").apply { setDisplayName("Carol") }
+            val dave = lab.node("dave").apply { setDisplayName("Dave") }
+            lab.linkAll(alice to dave, dave to bob, bob to carol)
+            lab.awaitAcquainted(alice, bob, carol, dave)
+            bob.answerWithCleartextReceipts(alice)
+            lab.unlink(dave, bob)
+            lab.unlink(bob, carol)
+
+            assertTrue(alice.sendDm(bob, "acked in the clear"))
+            val dm = alice.ownMessageId(alice.dmWith(bob), "acked in the clear")
+            lab.await(1) { if (dm in dave.custodyIds()) 1 else 0 }
+            lab.unlink(alice, dave)
+
+            // Bob delivers it, and his receipt purges his copy and Dave's. His relay of the DM fires here, while Dave
+            // is his only link, so it cannot reach Carol ahead of the receipt.
+            val bobRelayed = bob.metrics.snapshot().framesRelayed
+            lab.link(dave, bob)
+            lab.await(1) {
+                val delivered = bob.decrypted(bob.dmWith(alice)).isNotEmpty()
+                if (delivered && dm !in bob.custodyIds() && dm !in dave.custodyIds()) 1 else 0
+            }
+            lab.await(1) { (bob.metrics.snapshot().framesRelayed - bobRelayed).toInt() }
+            lab.unlink(dave, bob)
+
+            // Carol takes the receipt from Bob's custody, then meets Alice with it — once her own relay of it has fired,
+            // so it cannot slip to Alice past the hold below.
+            val carolRelayed = carol.metrics.snapshot().framesRelayed
+            lab.link(bob, carol)
+            lab.awaitCustodyParity(bob, carol)
+            lab.await(1) { (carol.metrics.snapshot().framesRelayed - carolRelayed).toInt() }
+            lab.unlink(bob, carol)
+            // Carol's frames to Alice are held, digests excepted: Alice serves the DM on Carol's digest before she can
+            // hear the receipt. The serve landing on Carol, and her router finishing it, is what says she handled it —
+            // not her relay count, which her own leftover relay of the receipt can move first.
+            carol.transport.connect(alice.transport, publish = false)
+            carol.transport.hold(alice.transport)
+            carol.transport.publishNeighbors()
+            alice.transport.publishNeighbors()
+            lab.await(1) {
+                // Each line reads "#seq <receiver> <type> <id> …"; Alice's earlier send to Dave is already in the log.
+                alice.transport.sent.count { line ->
+                    val cols = line.split(' ')
+                    cols.getOrNull(3) == dm && carol.nodeId.startsWith(cols[1])
+                }
+            }
+            carol.transport.awaitInboundDrained()
+            carol.transport.release(alice.transport)
+            lab.await(1) { if (dm !in alice.custodyIds()) 1 else 0 }
+
+            lab.linkAll(alice to dave, dave to bob, bob to carol)
+            bob.answerWithCleartextReceipts(alice, cleartext = false)
+            assertTrue(bob.sendDm(alice, "a sealed reply"))
+            val thread = { n: LabNode -> n.dmWith(if (n === alice) bob else alice) }
+            lab.assertConverged(listOf(alice, bob), atLeast = 2, carriers = listOf(carol, dave), conversation = thread)
+        }
+
+    /**
      * Partition and merge. Alice and Bob know each other, lose each other, and both keep talking — Alice even
      * starts a group with Bob while they are apart. On the merge every message crosses in both directions from
      * custody alone: the DM each sealed to the other, the group's seed and its roster, and then the receipts.

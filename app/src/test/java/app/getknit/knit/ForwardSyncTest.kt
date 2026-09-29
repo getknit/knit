@@ -456,6 +456,97 @@ class ForwardSyncTest {
             assertTrue("a group message is never vaccine-purged", store.has("g1"))
         }
 
+    // --- a receipt that lands before its DM (#100) ---
+
+    @Test
+    fun aReceiptBeforeItsDmVaccinatesTheDmOnArrival() =
+        runTest {
+            val carried = mutableListOf<String>()
+            val store = FakeForwardStore()
+            val sync = ForwardSync(RecordingTransport(), store, clock = { 0L }, onCarried = { carried += it.id })
+            val env = dm("m1", "a", "b")
+
+            sync.onAck("m1", senderId = "b") // the recipient's receipt, served ahead of the DM
+            sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
+
+            assertFalse("the DM its receipt beat here is never carried", store.has("m1"))
+            assertTrue("nor is its blob pulled", carried.isEmpty())
+            sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
+            assertFalse("and it is tombstoned as a purge leaves it", store.has("m1"))
+        }
+
+    @Test
+    fun aReceiptHandledWhileTheDmsCustodyWriteIsInFlightStillPurgesIt() =
+        runTest {
+            val fake = FakeForwardStore()
+            lateinit var sync: ForwardSync
+            // The receipt lands on another dispatcher after onSeen's first check and before its row is visible.
+            val racing =
+                object : ForwardStore by fake {
+                    override suspend fun store(
+                        frame: CarriedFrame,
+                        origin: Int,
+                        now: Long,
+                    ): Boolean {
+                        sync.onAck(frame.envelope.id, senderId = "b")
+                        return fake.store(frame, origin, now)
+                    }
+                }
+            sync = ForwardSync(RecordingTransport(), racing, clock = { 0L })
+            val env = dm("m1", "a", "b")
+
+            sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_SELF)
+
+            assertFalse("the receipt that raced the write still purges the DM", fake.has("m1"))
+            sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
+            assertFalse("and tombstones it", fake.has("m1"))
+        }
+
+    @Test
+    fun anEarlyReceiptFromANonRecipientVaccinatesNothing() =
+        runTest {
+            val store = FakeForwardStore()
+            val sync = ForwardSync(RecordingTransport(), store, clock = { 0L })
+            val env = dm("m1", "a", "b")
+
+            sync.onAck("m1", senderId = "attacker") // not the recipient "b"
+            sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
+
+            assertTrue("a receipt from anyone but the recipient cannot pre-empt the DM", store.has("m1"))
+        }
+
+    @Test
+    fun anEarlyReceiptLapsesWithTheTombstoneTtl() =
+        runTest {
+            var now = 0L
+            val store = FakeForwardStore(ttlMs = 48 * 60 * 60_000L)
+            val sync = ForwardSync(RecordingTransport(), store, clock = { now })
+            val env = dm("m1", "a", "b")
+
+            sync.onAck("m1", senderId = "b")
+            now = 24 * 60 * 60_000L + 1
+            sync.onSeen(wireOf(env), env, ForwardStore.ORIGIN_RELAY)
+
+            assertTrue("the memo is bounded by the tombstone's lifetime", store.has("m1"))
+        }
+
+    @Test
+    fun anEarlyReceiptNeverTouchesAGroupOrRoomFrame() =
+        runTest {
+            val store = FakeForwardStore()
+            val sync = ForwardSync(RecordingTransport(), store, clock = { 0L })
+            val g = groupMsg("g1", sender = "a", members = listOf("a", "b", "c"))
+            val room = broadcast("r1")
+
+            sync.onAck("g1", senderId = "b")
+            sync.onAck("r1", senderId = "b")
+            sync.onSeen(wireOf(g), g, ForwardStore.ORIGIN_RELAY)
+            sync.onSeen(wireOf(room), room, ForwardStore.ORIGIN_RELAY)
+
+            assertTrue("a group message has no recipient to match", store.has("g1"))
+            assertTrue("nor has a room post", store.has("r1"))
+        }
+
     // --- push on contact ---
 
     @Test
