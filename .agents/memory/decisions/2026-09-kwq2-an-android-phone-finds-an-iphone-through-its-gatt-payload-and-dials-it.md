@@ -31,11 +31,25 @@ so it can be found by reading it.
   cue zeroed. It is looked up by UUID.
 - **The pacing.** `GattPayloads` is `GattPayloads.swift` line for line. One read runs at a time, and each gets 12 s,
   the L2CAP connect watchdog. A failed read waits 30 s, and a stranger waits 10 min: one that connects but serves no
-  `0xFE30` service, no payload characteristic, or a value under 23 bytes. A payload is kept until a dial to that
-  address fails before its channel opens (never on a HELLO refusal), which catches an iPhone that restarted onto a
-  new PSM. `cancel()` runs on radio stop. Android adds one thing: each of the two maps keeps at most 64 addresses,
-  least recently used first out, because an iPhone rotates its address about every 15 min and iOS never prunes.
-  `GattPayloadsTest` mirrors `GattPayloadsTests.swift` case for case, plus the cap.
+  `0xFE30` service, no payload characteristic, or a value under 23 bytes. `cancel()` runs on radio stop. Android adds
+  one thing: each of the two maps keeps at most 64 addresses, least recently used first out, because an iPhone rotates
+  its address about every 15 min and iOS never prunes. `GattPayloadsTest` mirrors `GattPayloadsTests.swift` case for
+  case, plus the cap and the quiet clock.
+- **The payload lifetime** (the contract, revised after the first device gate, on both sides). A payload serves every
+  advert from its address until the transport forgets the address, which it does on any of three rules:
+  1. A dial to that address fails before its channel opens (`failConnect`, never on HANDSHAKE). This catches an
+     iPhone that restarted onto a new PSM.
+  2. A HELLO on a link to that address names a node other than the payload's: the HELLO of a peer that dialed us
+     (`superviseAccepted`, against `socket.remoteDevice.address`, before the verdict) or the reply to our own dial.
+     A refusal, where the responder closes without a reply, keeps the payload.
+  3. The address has gone unheard for 60 s of *scanning* (`GattPayloads.QUIET_MS`; only the time the presence scan
+     ran counts, so a floored scan's idle gaps don't force a re-read), while no link to it is up. An advert, the read
+     itself and a link up all count as hearing it.
+
+  The first gate found the case these close: rule 1 alone never forgets an address this phone does not dial, so when
+  knit-peer relaunched on the same adapter address under a new node id, the Pixel 7 and the Pixel 3 sighted the old
+  node there for good (`reach=[…, xdibkr…]` for five minutes, `gattReads` frozen) and admitted the real dialer as
+  unsighted.
 - **The scan.** The presence `BleScanner` gets a second filter, OR'd with the service-data one, on `0xFE30` in a
   service-UUID list. `onScanResult` splits: service data is sighted as before (`sight`). A UUID-only advert with a
   cached payload is sighted with it at this advert's RSSI. Without a cached payload, it launches a read on the
@@ -59,8 +73,8 @@ succeeding, while a link Android dials is Android's own. The other alternative i
 find iPhones. It stays whole (see the shzv amendment): it is the fallback that makes a clear flag safe.
 
 **Diagnostics.** At info: `bt gatt read <addr> → <id> (psm <psm>)`, `bt gatt read <addr> failed (<phase>)`,
-`bt gatt read <addr> stranger (<phase>)`, and `bt gatt read <addr> again at its next advert` when a failed dial
-forgets a payload. At debug: `bt gatt reading <addr>`, and `gattPayloads=` / `gattReads=` on the `bt state` line
+`bt gatt read <addr> stranger (<phase>)`, and `bt gatt forget <addr> (dial|hello <nodeId>|quiet)` for each rule of
+the payload lifetime that forgets a payload. At debug: `bt gatt reading <addr>`, and `gattPayloads=` / `gattReads=` on the `bt state` line
 while the gate is on. The iOS worker's gate scenario greps these lines.
 
 **What it costs, and its limits.**
@@ -68,6 +82,13 @@ while the gate is on. The iOS worker's gate scenario greps these lines.
 - **The floored scan.** When the iPhone's id sorts below ours, the first link waits on this phone's scan cadence,
   which is floored while it already holds links. The trial measures first-link times in that order. A flag that
   follows the scan tier is the follow-up only if they miss MVP item 2.
+- **A failed first read.** The pacing's 30 s wait after a failed read is paid in full by a first link: in the first
+  gate a read that failed at connect put a peer's first link at 71.0 s. A first link is at least the read, the
+  promotion dwell counted from the read's sighting, and the connect.
+- **An identity change at an address that never goes quiet** stays open, on both sides. When the new node sorts below
+  a flagged phone and the old one above it, nobody dials: the phone never dials the old node, and the new one waits
+  to be dialed. No HELLO arrives to fire rule 2 and the address is never quiet for rule 3, so the old sighting lasts
+  until the address rotates or goes quiet.
 - **The service-replace race.** A read that lands while iOS is replacing its service for a PSM change finds no
   characteristic, and that counts as a 10-minute stranger. It is kept line for line with iOS.
 - **A backgrounded iPhone.** Its UUID moves to Apple's overflow area, which only iOS can read, so this phone cannot

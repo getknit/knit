@@ -405,9 +405,11 @@ characteristic `848eedcd-a2e3-4fb2-86f9-e2c80821a497` (`DoorbellPolicy.PAYLOAD_U
 - **`onScanResult` splits.** Service data → `sight`, as always. A UUID-only advert → the cached payload for its
   address, sighted at this advert's RSSI; else a read launched on the transport's scope, with no scan wake.
 - **`GattPayloads` paces the reads**, line for line with iOS: one at a time, 12 s each, 30 s after a failure, 10
-  min after a stranger (no service, no characteristic, a value under 23 B); a payload kept until a dial to the
-  address fails before its channel opens (`failConnect`, never on HANDSHAKE); `cancel()` on radio stop; at most 64
+  min after a stranger (no service, no characteristic, a value under 23 B); `cancel()` on radio stop; at most 64
   addresses, LRU (an iPhone's address rotates).
+- **A payload lives until one of three rules forgets its address** (the contract's payload lifetime): a dial to it
+  fails before its channel opens (never on HANDSHAKE); a HELLO on a link to it, accepted or the reply to ours, names
+  another node; or it goes 60 s of scanning unheard with no link up (`GattPayloads.scanned`, fed each scan window).
 - **`BleGattPayloadReader` is a dial**: `connectGatt(TRANSPORT_LE)` → discover → read → parse, 12 s in all, under
   `BleConnectArbiter("gatt-read")`, client always closed, no `requestMtu` (the Read Blob fetches 24 B at MTU 23).
   Never an address a link holds, never while an L2CAP dial is in flight or the arbiter is held; a promotion waits
@@ -420,8 +422,9 @@ characteristic `848eedcd-a2e3-4fb2-86f9-e2c80821a497` (`DoorbellPolicy.PAYLOAD_U
 Limits: in the iPhone-below order the first link waits on this phone's (possibly floored) scan cadence; a read
 during iOS's PSM-change service swap is a 10-minute stranger, kept line for line with iOS; a backgrounded iPhone
 cannot be sighted, and one below a flagged phone waits for a dial that can't come (free until iOS gains background
-discovery). Oracle: `bt gatt read <addr> → <id>` / `failed (<phase>)` / `stranger (<phase>)` and `… again at its
-next advert` at info, `bt gatt reading <addr>` at debug, `gattPayloads=`/`gattReads=` on `bt state`. Tests:
+discovery); an identity change at an address that never goes quiet, new node below a flagged phone and old above,
+keeps the old sighting until the address rotates or goes quiet. Oracle: `bt gatt read <addr> → <id>` /
+`failed (<phase>)` / `stranger (<phase>)` and `bt gatt forget <addr> (dial|hello <id>|quiet)` at info, `bt gatt reading <addr>` at debug, `gattPayloads=`/`gattReads=` on `bt state`. Tests:
 `GattPayloadsTest`, `BleAdvertPayloadTest`, `DoorbellPolicyTest`; the reader is device-verified only.
 
 A debug build can cap the link budget below `PromotionConfig.DEFAULT_MAX_LINKS` (6) from Diagnostics or

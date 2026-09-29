@@ -17,7 +17,9 @@ import org.junit.Test
  */
 class GattPayloadsTest {
     private val reads =
-        GattPayloads(GattPayloads.Configuration(readTimeoutMs = 100, retryMs = 1000, strangerRetryMs = 5000, maxAddresses = 3))
+        GattPayloads(
+            GattPayloads.Configuration(readTimeoutMs = 100, retryMs = 1000, strangerRetryMs = 5000, quietMs = 600, maxAddresses = 3),
+        )
     private val phone = "phone"
     private val other = "other"
     private val payload = BleAdvertPayload.Parsed(NodeId.derive("peer-2"), capabilities = 0xFF, digestCue = 0, psm = 0x81)
@@ -28,6 +30,7 @@ class GattPayloadsTest {
         assertEquals(12_000L, defaults.readTimeoutMs)
         assertEquals(30_000L, defaults.retryMs)
         assertEquals(600_000L, defaults.strangerRetryMs)
+        assertEquals(60_000L, defaults.quietMs)
         assertEquals(64, defaults.maxAddresses)
     }
 
@@ -122,6 +125,46 @@ class GattPayloadsTest {
         assertTrue("the eldest wait went past the cap", reads.begin("a", now = 1))
         reads.cancel()
         assertFalse(reads.begin("d", now = 1))
+    }
+
+    @Test
+    fun aPayloadUnheardForTheQuietSpanOfScanningIsForgotten() {
+        read(phone, now = 0)
+        assertEquals(emptyList<String>(), reads.scanned(599, linked = emptyList()))
+        assertEquals(payload, reads.payload(of = phone))
+        assertEquals(listOf(phone), reads.scanned(1, linked = emptyList()))
+        assertNull(reads.payload(of = phone))
+        assertTrue("read again at its next advert", reads.begin(phone, now = 1))
+    }
+
+    @Test
+    fun anAdvertRestartsTheQuietClockAndOnlyScanningTimeCounts() {
+        read(phone, now = 0)
+        reads.scanned(500, linked = emptyList())
+        assertEquals(payload, reads.heard(phone))
+        // Wall-clock time between scan windows never counts: only what scanned() is told the scan ran.
+        assertEquals(emptyList<String>(), reads.scanned(599, linked = emptyList()))
+        assertEquals(listOf(phone), reads.scanned(1, linked = emptyList()))
+        assertNull("nothing to hear once forgotten", reads.heard(phone))
+    }
+
+    @Test
+    fun aLinkedAddressIsNeverQuiet() {
+        read(phone, now = 0)
+        read(other, now = 0)
+        assertEquals(listOf(other), reads.scanned(10_000, linked = listOf(phone)))
+        assertEquals(payload, reads.payload(of = phone))
+        // The link counts as hearing it: the quiet span starts over when the link goes.
+        assertEquals(emptyList<String>(), reads.scanned(599, linked = emptyList()))
+        assertEquals(listOf(phone), reads.scanned(1, linked = emptyList()))
+    }
+
+    @Test
+    fun aReadStartsTheQuietClockAtItsEnd() {
+        reads.scanned(5_000, linked = emptyList())
+        read(phone, now = 0)
+        assertEquals(emptyList<String>(), reads.scanned(599, linked = emptyList()))
+        assertEquals(listOf(phone), reads.scanned(1, linked = emptyList()))
     }
 
     private fun read(

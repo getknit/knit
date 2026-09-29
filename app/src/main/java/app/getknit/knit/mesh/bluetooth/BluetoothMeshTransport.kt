@@ -556,8 +556,11 @@ class BluetoothMeshTransport(
             val power = powerState.state.value
             val duty = PowerPolicy.dutyCycle(power)
             scanner.start(if (power.interactive || power.charging) ScanSettings.SCAN_MODE_BALANCED else ScanSettings.SCAN_MODE_LOW_POWER)
+            val windowStart = elapsed()
+            val scanned = scanner.isScanning
             delay(duty.scanWindowMs)
             scanner.stop()
+            if (gattPeers && scanned) forgetQuietGattPayloads(elapsed() - windowStart)
             val lonelyFor = lonelyForMs()
             val idle =
                 if (floorScan()) {
@@ -640,7 +643,7 @@ class BluetoothMeshTransport(
             return
         }
         if (!gattPeers || record.serviceUuids?.contains(BleConstants.SERVICE_UUID) != true) return
-        val read = gattPayloads.payload(of = result.device.address)
+        val read = gattPayloads.heard(result.device.address)
         if (read != null) sight(read, result.device, result.rssi) else maybeReadGatt(result.device, result.rssi)
     }
 
@@ -865,6 +868,8 @@ class BluetoothMeshTransport(
             val reply = runCatching { LinkHandshake.readHello(link.input) }.getOrNull()
             replyWatchdog.cancel()
             if (reply == null || reply.nodeId != nodeId) {
+                // A reply naming another node: a new node took the address our payload came from. No reply keeps it.
+                if (reply != null) forgetGattPayloadIfOther(device.address, reply.nodeId)
                 link.close()
                 return@launch failConnect(
                     nodeId,
@@ -906,6 +911,9 @@ class BluetoothMeshTransport(
             link.close()
             return
         }
+        // A dialer at an address whose payload names another node took that address: forget the payload before the
+        // verdict, so the ghost it names is not what this dialer is judged by (the contract's payload lifetime, rule 2).
+        forgetGattPayloadIfOther(socket.remoteDevice.address, clientNodeId)
         val sighted = presence.snapshots(elapsed()).any { it.nodeId == clientNodeId }
         val heldAgeMs = links[clientNodeId]?.let { elapsed() - it.linkStartedAt }
         val atCap = debugCap?.let { links.size + inFlightSnapshot().size >= it } ?: false
@@ -1035,7 +1043,7 @@ class BluetoothMeshTransport(
         // A dial that failed before its channel opened may have used a PSM the peer no longer listens on (an iPhone
         // that restarted), so its GATT payload is read again at the next advert. A HELLO refusal says nothing of the
         // PSM (GattPayloads, companion change A3).
-        if (gattPeers && device != null && reason != ConnectFailReason.HANDSHAKE) forgetGattPayload(device.address)
+        if (gattPeers && device != null && reason != ConnectFailReason.HANDSHAKE) forgetGattPayload(device.address, "dial")
         val (streak, nextAt) =
             synchronized(lock) {
                 inFlight.remove(nodeId)
@@ -1052,9 +1060,34 @@ class BluetoothMeshTransport(
         )
     }
 
-    private fun forgetGattPayload(address: String) {
-        if (gattPayloads.payload(of = address) != null) Log.i(TAG, "bt gatt read $address again at its next advert")
+    /**
+     * Forgets [address]'s GATT payload and any wait before its next read, so its next advert reads it afresh (the
+     * contract's payload lifetime). Logged only when a payload went: `bt gatt forget <addr> (dial|hello <id>|quiet)`.
+     */
+    private fun forgetGattPayload(
+        address: String,
+        reason: String,
+    ) {
+        if (gattPayloads.payload(of = address) != null) Log.i(TAG, "bt gatt forget $address ($reason)")
         gattPayloads.forget(address)
+    }
+
+    /** Rule 2: a HELLO on a link to [address] named [nodeId], and the payload held for the address names another. */
+    private fun forgetGattPayloadIfOther(
+        address: String?,
+        nodeId: String,
+    ) {
+        if (!gattPeers || address == null) return
+        val held = gattPayloads.payload(of = address) ?: return
+        if (held.nodeId != nodeId) forgetGattPayload(address, "hello $nodeId")
+    }
+
+    /**
+     * Rule 3: the scan ran [ms] more, and a payload whose address went [GattPayloads.Configuration.quietMs] of scanning
+     * unheard, with no link to it up, is forgotten — a node that left, whose address another may take up later.
+     */
+    private fun forgetQuietGattPayloads(ms: Long) {
+        gattPayloads.scanned(ms, linkAddresses.values.toSet()).forEach { Log.i(TAG, "bt gatt forget $it (quiet)") }
     }
 
     /** Advance [nodeId]'s failure streak and set its next-eligible deadline via [ConnectBackoffPolicy]. Holds [lock]. */

@@ -86,8 +86,9 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   READ ADR 2026-09.kwq2 (companion change A3; knit-ios ADR 2026-09.xzpt) and its section in
   `.agents/context/mesh-transport.md`. A foreground iPhone is found by reading its GATT payload and dialed by the
   unchanged rule (larger id dials); `GattPayloads` is the iOS pacing line for line (one read at a time, 12 s,
-  30 s / 10 min waits, forget only on a failed dial before its channel opens, never on HANDSHAKE) plus a 64-address
-  LRU. The flag is set only while the reader runs — one build switch gates filter, reader and flag, dark in
+  30 s / 10 min waits) plus a 64-address LRU, and a payload lives until one of the contract's three rules forgets it: a
+  dial failing before its channel opens (never on HANDSHAKE), a HELLO on a link to the address naming another node,
+  or 60 s of scanning unheard with no link up. The flag is set only while the reader runs — one build switch gates filter, reader and flag, dark in
   release until the trial. A1 (shzv) stays whole: it is the fallback that makes a clear flag safe.
 - **When touching `linkpreview/`, `net/`, `mesh/protocol/LinkPreviewBlob`, or anything that opens an
   Internet socket outside the spool plane:** READ ADR 2026-09.n752 (and 2026-09.7x8k: a send holds up to 5 s
