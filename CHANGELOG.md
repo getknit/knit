@@ -58,6 +58,8 @@ document:
 - A photo, file or voice message that hasn't reached your phone yet no longer keeps a spinner turning for as
   long as the chat is open. After half a minute it changes to a still hourglass, so a chat left open uses less
   battery.
+- If you came near a few phones that were already connected to each other with their screens off, your phone
+  could take ten minutes or more to join them over Bluetooth. It now joins within about four minutes.
 
 ## [2.7.0](https://github.com/getknit/knit/releases/tag/v2.7.0) — 2026-09-24T21:26:44Z
 

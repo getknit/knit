@@ -214,6 +214,10 @@ class BluetoothMeshTransport(
     @Volatile private var currentPsm = 0
 
     @Volatile private var lastLinkOrStartAt = 0L
+
+    // When this node last held no link: the transport's start, or the last link going down. Not [lastLinkOrStartAt],
+    // which the scan's lonely cadence reads (ADR 2026-09.w3xk): this one times the lonely dial (ADR 2026-09.hj4a).
+    @Volatile private var noLinkSince = 0L
     private var availabilityRegistered = false
 
     // Two conflated wake channels so the scan and connect loops never steal each other's wakes: connectLoop
@@ -322,6 +326,7 @@ class BluetoothMeshTransport(
         scope.launch {
             localNodeId = identity.nodeId()
             lastLinkOrStartAt = elapsed()
+            noLinkSince = lastLinkOrStartAt
             registerAvailability()
             audioMonitor.start()
             if (adapter?.isEnabled == true) bringUp() else _health.value = TransportHealth.Unavailable
@@ -391,7 +396,7 @@ class BluetoothMeshTransport(
     }
 
     override fun onForeignReachable(peers: Set<String>) {
-        // Only chase peers we'd initiate to (larger id initiates); a smaller-id foreign peer connects to us via
+        // Only chase peers we'd initiate to (larger id initiates); a larger-id foreign peer connects to us via
         // our always-on advert, so scanning harder for it wouldn't help. Guard localNodeId until start() sets it.
         val initiable = if (::localNodeId.isInitialized) peers.filterTo(HashSet()) { localNodeId > it } else emptySet()
         if (initiable == foreignReachable) return
@@ -757,9 +762,34 @@ class BluetoothMeshTransport(
 
     private fun nextConnectWaitMs(): Long {
         val now = elapsed()
-        val nextDue = synchronized(lock) { backoffs.values.filter { it.nextAt > now }.minOfOrNull { it.nextAt } }
+        val backoffDue = synchronized(lock) { backoffs.values.filter { it.nextAt > now }.minOfOrNull { it.nextAt } }
+        // The lonely dial comes due on the clock too — the window closing, a candidate's dwell ripening — and on a
+        // screen-off phone the next sighting would restart that dwell rather than ripen it (ADR 2026-09.hj4a).
+        val lonelyDue = lonelyDialDueMs(presence.snapshots(now))?.let { now + it }
+        val nextDue = listOfNotNull(backoffDue, lonelyDue).minOrNull()
         return ConnectBackoffPolicy.nextDueWaitMs(now, nextDue, CONNECT_WAIT_MIN_MS, CONNECT_WAIT_MAX_MS)
     }
+
+    /**
+     * The sighted peers [LonelyDialPolicy] may pick from: dialable at all (device and PSM known), not linked, with the
+     * ordinary backoff read without [driveConnections]' prune. The policy applies the id order and the other gates.
+     */
+    private fun lonelyCandidates(snaps: List<BlePresenceTracker.Snapshot>): List<LonelyDialPolicy.Candidate> {
+        val backoff = activeBackoff(elapsed())
+        return snaps
+            .filter { it.nodeId !in links.keys && it.psm != 0 && deviceFor.containsKey(it.nodeId) }
+            .map { LonelyDialPolicy.Candidate(it.nodeId, it.smoothedRssi, it.dwellMs, it.nodeId in backoff) }
+    }
+
+    /** Whether a dial to a larger id is open: the tie-break never dials one, so it can only be a lonely dial. */
+    private fun lonelyDialInFlight(): Boolean = inFlightSnapshot().any { it > localNodeId }
+
+    private fun lonelyDialDueMs(snaps: List<BlePresenceTracker.Snapshot>): Long? =
+        if (!::localNodeId.isInitialized || adapter?.isEnabled != true) {
+            null
+        } else {
+            LonelyDialPolicy.msUntilDue(localNodeId, links.size, aloneForMs(), lonelyCandidates(snaps), lonelyDialInFlight())
+        }
 
     private fun driveConnections() {
         val now = elapsed()
@@ -791,7 +821,10 @@ class BluetoothMeshTransport(
             }
         val cap = debugCap
         val config = PromotionConfig(maxLinks = cap ?: PromotionConfig.DEFAULT_MAX_LINKS)
-        val decided = PromotionPolicy.decide(candidates, linkSnaps, backoff, config)
+        val ordinary = PromotionPolicy.decide(candidates, linkSnaps, backoff, config)
+        // Alone past the window: one larger-id peer too, which the responder admits unless it has sighted us (hj4a).
+        val lonely = LonelyDialPolicy.pick(localNodeId, links.size, aloneForMs(), lonelyCandidates(snaps), lonelyDialInFlight(), config)
+        val decided = if (lonely == null) ordinary else ordinary.copy(promote = ordinary.promote + lonely.nodeId)
         // Under a debug cap, a dial still in flight holds a slot too, so back-to-back ticks can't overshoot it.
         val decision =
             if (cap == null) {
@@ -805,7 +838,21 @@ class BluetoothMeshTransport(
         }
         decision.evict.forEach { id -> scored[id]?.let { teardownLink(id, "evicted", only = it) } }
         // A GATT read is a connection too; a dial waits for it (the read's end wakes this loop), as a read waits for a dial.
-        if (gattPayloads.current == null) decision.promote.forEach { initiateTo(it) }
+        if (gattPayloads.current == null) dial(decision.promote, lonely)
+    }
+
+    /** Dials each of [promote]; the one that is [lonely]'s is announced first (ADR 2026-09.hj4a). */
+    private fun dial(
+        promote: List<String>,
+        lonely: LonelyDialPolicy.Candidate?,
+    ) {
+        promote.forEach { id ->
+            // Straight before its own `bt initiating to`: the iOS port's interop harness keys off the pair.
+            if (id == lonely?.nodeId) {
+                Log.i(TAG, "bt lonely dial $id (alone=${aloneForMs()}ms rssi=${lonely.smoothedRssi.toInt()} dwell=${lonely.dwellMs}ms)")
+            }
+            initiateTo(id)
+        }
     }
 
     @Suppress("LongMethod") // the connect + watchdog + two-way HELLO is one linear flow; splitting it obscures it
@@ -1004,6 +1051,7 @@ class BluetoothMeshTransport(
         only: FramedLink? = null,
     ): Boolean {
         val fl = (if (only == null) links.remove(nodeId) else only.takeIf { links.remove(nodeId, it) }) ?: return false
+        if (links.isEmpty()) noLinkSince = elapsed() // the lonely dial's clock runs from the last link's end (hj4a)
         neverSighted.remove(fl)
         linkAddresses.remove(fl)
         doorbells.remove(fl)?.close()
@@ -1051,7 +1099,9 @@ class BluetoothMeshTransport(
         val (streak, nextAt) =
             synchronized(lock) {
                 inFlight.remove(nodeId)
-                bumpBackoffLocked(nodeId)
+                // A dial the peer refused because its own dial to us linked first (a lonely dial crossing the
+                // ordinary one, ADR 2026-09.hj4a) is no failure to back off from: that link reset the streak already.
+                if (nodeId in links.keys) 0 to elapsed() else bumpBackoffLocked(nodeId)
             }
         metrics.onBtConnectFailed(reason)
         wake()
@@ -1200,6 +1250,9 @@ class BluetoothMeshTransport(
 
     private fun lonelyForMs(): Long = if (links.isEmpty()) elapsed() - lastLinkOrStartAt else 0L
 
+    /** How long this node has held no link at all, the lonely dial's clock; 0 while one is held (ADR 2026-09.hj4a). */
+    private fun aloneForMs(): Long = if (links.isEmpty()) elapsed() - noLinkSince else 0L
+
     private fun inFlightSnapshot(): Set<String> = synchronized(lock) { inFlight.toSet() }
 
     /** Read-only view of peers currently in connect backoff (no [driveConnections] prune side effect). */
@@ -1298,7 +1351,7 @@ class BluetoothMeshTransport(
             TAG,
             "bt state links=${links.keys} reach=${_reachable.value.map { it.nodeId }} " +
                 "inFlight=${inFlightSnapshot()} backoff=[$backoffStr] a2dp=${audioMonitor.state.value} " +
-                "lonely=${lonelyForMs()}ms psm=$currentPsm doorbells=${doorbells.size} rings=${rings.get()}" +
+                "lonely=${lonelyForMs()}ms alone=${aloneForMs()}ms psm=$currentPsm doorbells=${doorbells.size} rings=${rings.get()}" +
                 (if (gattPeers) " gattPayloads=${gattPayloads.payloadCount} gattReads=${gattReads.get()}" else "") +
                 (sideChannel?.let { " ${it.diag()} $sideDecision" } ?: ""),
         )

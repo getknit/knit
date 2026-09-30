@@ -41,13 +41,13 @@ divergence (`lonelyRelaxed` true, `Cadence.relaxed` false) so dropping the claus
 and `bt scan lonely: aggressive again` once per edge (the twin of the NAN `lonely:` lines), and the 60 s
 `bt state` line carries `lonely=`.
 
-**What already covers the latency, left alone.** A walk-up while relaxed is found within one gap at worst
-(≈ 72 s). The advert is always-on, so a smaller-id peer connects to us regardless of our scan; and the
-loop's idle is a `withTimeoutOrNull(scanWake)`, ended early by `heal()` (app resume, motion, the 15-min
-alarm), a `PowerState` edge (screen on, plug in), the adapter's `STATE_ON`, and NAN's `onForeignReachable`
-rising edge — each runs an immediate 12 s scan. No fresh three-minute window on a screen-on edge: one
-immediate scan is the same purchase kb68 makes for a heal, and a phone that cycles its screen all day would
-otherwise never relax.
+**What already covers the latency, left alone.** A walk-up while relaxed is found within one gap at worst (≈
+72 s). The advert is always-on, so a larger-id peer connects to us regardless of our scan (this read
+"smaller-id" until ADR 2026-09.hj4a corrected it); and the loop's idle is a `withTimeoutOrNull(scanWake)`,
+ended early by `heal()` (app resume, motion, the 15-min alarm), a `PowerState` edge (screen on, plug in), the
+adapter's `STATE_ON`, and NAN's `onForeignReachable` rising edge — each runs an immediate 12 s scan. No fresh
+three-minute window on a screen-on edge: one immediate scan is the same purchase kb68 makes for a heal, and a
+phone that cycles its screen all day would otherwise never relax.
 
 The alternatives: dropping the scan mode to LOW_POWER at 12 s / 12 s (≈ 5 %, but it lowers the odds a short
 advert burst lands in a window and needs the mode plumbed through the policy); reusing the interactive duty

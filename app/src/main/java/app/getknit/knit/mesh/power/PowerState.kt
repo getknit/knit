@@ -118,9 +118,10 @@ object PowerPolicy {
 
     // Screen on, on battery, alone past the window: the 12 s BALANCED window every 72 s, ~4 % receiver
     // duty where 12 s / 12 s was ~12.5 %, for as long as the phone stays alone. A walk-up is found within
-    // one gap at worst; the advert is always-on, so a smaller-id peer connects to us regardless, and a
-    // heal, a power edge, the adapter coming on or a NAN sighting (`onForeignReachable`) each wake an
-    // immediate scan through the transport's `scanWake` (ADR 2026-09.w3xk).
+    // one gap at worst; the advert is always-on, so a larger-id peer connects to us regardless (and alone
+    // past the window we dial one ourselves, ADR 2026-09.hj4a), and a heal, a power edge, the adapter
+    // coming on or a NAN sighting (`onForeignReachable`) each wake an immediate scan through the
+    // transport's `scanWake` (ADR 2026-09.w3xk).
     private const val LONELY_RELAXED_ACTIVE_IDLE_MS = 60_000L
 
     // Discovery floor once a node is settled (links to everyone it sees, nothing to promote) or audio-contended:

@@ -72,11 +72,16 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `autoConnect` with an hourly direct net and no arbiter while waiting; a refusal backs off, only a spent window
   doesn't; the pacer parks on `link.state`, never its 1 s tick.
 - **When touching `BluetoothMeshTransport.superviseAccepted`, `BleAdmissionPolicy`, `teardownLink`, `LinkEvents`,
-  `neverSighted`, or what a held link scores for eviction:** READ ADR 2026-09.shzv. A dialer presence holds is
-  judged by the old tie-break, unchanged — the Android mesh must not move. Only an unsighted dialer (an iPhone
+  `neverSighted`, `LonelyDialPolicy` / `noLinkSince`, or what a held link scores for eviction:** READ ADR
+  2026-09.shzv and ADR 2026-09.hj4a. A dialer presence holds is judged by the old tie-break, unchanged — the
+  Android mesh must not move. Only an unsighted dialer (an iPhone
   advertises no service data, so it is never sighted and never dialed) is admitted whatever the id order, and its
   second link replaces the first only once the held one is 30 s old. A teardown passes the link it means
-  (`only =`) — never re-key it by node id alone — and only a never-sighted link scores the −90 floor.
+  (`only =`) — never re-key it by node id alone — and only a never-sighted link scores the −90 floor. The one
+  exception to "larger dials" is hj4a's lonely dial: after 180 s with **no** link (a clock of its own, never
+  `lonelyForMs`) a node dials the strongest larger id it sights, one at a time, and it rests on the unsighted admit:
+  a responder that sighted the newcomer refuses it and dials it itself. Its oracle, `bt lonely dial <id> (…)`, is
+  keyed by the iOS interop harness — don't reword it.
 - **When touching `mesh/bluetooth/BleDoorbell`, `DoorbellPolicy`, `Protocol.CAP_DOORBELL`, or what
   `BluetoothMeshTransport.writeOnce` rings:** READ ADR 2026-09.dqvb (companion change A4 for the iOS port). A link
   rings only when the peer's HELLO carries `CAP_DOORBELL`, which Android never claims, so Android↔Android links never

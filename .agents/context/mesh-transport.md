@@ -360,6 +360,23 @@ the scan has not once sighted (`neverSighted`) scores the promotion floor (−90
 presence still scores −127. Oracle: `bt accepted client <id> (<verdict>, sighted=<bool>)` and `bt refused client
 <id> (…)` at debug. Tests: `BleAdmissionPolicyTest`; the lab has no radio layer.
 
+## A lonely node dials a larger peer it sights (ADR 2026-09.hj4a)
+
+The tie-break left a smaller-id newcomer waiting on a settled, screen-off clique's floored scan — `120 s × (1 +
+links)`, 360–600 s — and the clique's one post-link-down scan lands inside the newcomer's fresh backoff (#103). So a
+node that has held **zero** links for `LONELY_AGGRESSIVE_WINDOW_MS` (180 s) may dial a sighted peer whose id sorts
+**above** its own: `LonelyDialPolicy.pick`, PromotionPolicy's own gates (−90 dBm, 12 s dwell, off backoff) plus device
+and PSM known, strongest first, one open at a time (an in-flight dial to a larger id can only be the lonely one). Its
+clock is `noLinkSince` — transport start, restarted when the last link goes (`teardownLink`) — not `lonelyForMs`,
+which runs from the last link's start and drives the scan's relaxed cadence (w3xk). The responder is unchanged: a
+peer that has not sighted the newcomer admits it (shzv's unsighted admit), and one that has refuses it and dials it
+by the tie-break; the refusal is an ordinary `HANDSHAKE` failure with the ordinary backoff, and a failure for a peer
+whose own dial already linked bumps no streak. `LonelyDialPolicy.msUntilDue` wakes the connect loop when the window
+closes or a candidate's dwell ripens, because on a screen-off phone every 8 s scan window restarts the dwell
+(`presenceGapResetMs`), so the next sighting never ripens it. Scan untouched: zero links is always Boost. Oracle:
+`bt lonely dial <id> (alone=<ms>ms rssi=<dBm> dwell=<ms>ms)` straight before that dial's `bt initiating to <id>` —
+the iOS interop harness keys off the pair — and `alone=` on the `bt state` line. Tests: `LonelyDialPolicyTest`.
+
 ## The BLE plane rings a peer's GATT doorbell when its HELLO asks (ADR 2026-09.dqvb)
 
 iOS does not resume a suspended app for data on an open L2CAP channel, and does for a write to its own GATT
@@ -458,9 +475,9 @@ link. The lab's `LabTransport` keeps the same memo (`dupSkipped`), so the box st
 
 The loops around the radio no longer poll on a fixed short tick: `scanLoop`'s paused branch waits 60 s while
 the adapter is off (the `STATE_ON` receiver wakes it) and `CONNECT_TIMEOUT_MS + 3 s` while a connect is in
-flight (its end wakes it), `connectLoop` sleeps until the earliest connect backoff expires (clamped to 1–60 s,
-`ConnectBackoffPolicy.nextDueWaitMs`) instead of every 5 s, and both transports' diagnostic state line runs every
-60 s and builds its string only in debug builds. Every wait is still a timeout, so a lost wake costs latency,
+flight (its end wakes it), `connectLoop` sleeps until the earliest connect backoff expires or the lonely dial
+comes due (hj4a), clamped to 1–60 s (`ConnectBackoffPolicy.nextDueWaitMs`), instead of every 5 s, and both
+transports' diagnostic state line runs every 60 s and builds its string only in debug builds. Every wait is still a timeout, so a lost wake costs latency,
 never liveness.
 
 ## The BLE side channel is a page carousel, not a message queue (ADR 2026-09.sjaa)
