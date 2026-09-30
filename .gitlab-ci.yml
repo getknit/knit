@@ -137,11 +137,18 @@ workflow:
 .compile-unit-tests: &compile-unit-tests
   ./gradlew :app:compileDebugUnitTestJavaWithJavac :app:packageDebugUnitTestForUnitTest :app:bundleDebugClassesToRuntimeJar :app:processDebugUnitTestJavaRes :app:processDebugJavaRes :app:generateDebugUnitTestConfig :app:koverFindJar --stacktrace --console=plain
 
+# Every job that compiles runs on skuld for now (`tags: [skuld]` here and on the three test jobs;
+# build:release is already on bigmem). On the 1 vCPU `service` runner a cold compile alone takes ~44 min —
+# after a dependency bump the deps cache there has no entry for the new key and its build cache is stale,
+# since only the build jobs save either and caches are per runner — so a test job landing there ran past the
+# 60 min timeout (test:mesh-lab 6263; test:unit 6252, 6055).
+#
 # Also compiles the unit-test sources (a second invocation, for the same memory reason as the split above)
 # so the one job that saves the build cache has the test jobs' compile in it.
 build:debug:
   extends: .android
   stage: build
+  tags: [skuld]
   script:
     - ./gradlew :app:assembleDebug --stacktrace --console=plain
     - *compile-unit-tests
@@ -207,6 +214,7 @@ build:release:
 test:unit:
   extends: .android
   stage: test
+  tags: [skuld]
   needs: [{job: "build:debug", artifacts: false}]
   script:
     - *compile-unit-tests
@@ -226,12 +234,15 @@ test:unit:
 # lost-parked-seed gap both surfaced as flakes). Three consecutive green runs are the bar; `--rerun` forces
 # the Test task past Gradle's up-to-date check. Same compile/run split as test:unit, and each run forks its
 # own test JVM in turn, so the memory profile is test:unit's, three times over. Enforced, not advisory. The
-# awaits (MeshLab.AWAIT_MS, 30 s per convergence) are headroom for this single shared vCPU, not a budget: a
+# awaits (MeshLab.AWAIT_MS, 30 s per convergence) are headroom for a single shared vCPU, not a budget: a
 # scenario converges in seconds even on one core, so a flake here is a fixture racing the mesh, not a slow
 # runner — reproduce it with the throttled loop in .agents/context/testing.md before touching a timeout.
+# On skuld for now (see build:debug), so CI no longer runs the lab on one slow core; `scripts/lab-chaos.sh
+# --quota` is the slow-runner stand-in until it does again.
 test:mesh-lab:
   extends: .android
   stage: test
+  tags: [skuld]
   needs: [{job: "build:debug", artifacts: false}]
   script:
     - *compile-unit-tests
@@ -261,6 +272,7 @@ test:mesh-lab:
 test:coverage:
   extends: .android
   stage: test
+  tags: [skuld]
   needs: [{job: "build:debug", artifacts: false}]
   allow_failure: true
   script:
