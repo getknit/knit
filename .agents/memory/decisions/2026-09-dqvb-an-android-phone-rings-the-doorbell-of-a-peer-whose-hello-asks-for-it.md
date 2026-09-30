@@ -165,5 +165,8 @@ The maintainer ruled that the hidden callback may drive this behaviour, with the
 the callback, and the framework calls it virtually, so no reflection is involved. A new info line,
 `bt doorbell priority <id> again (put-back <ms>ms|settle) requested=<bool>`, logs each re-ask. The oracle is
 unchanged: after the lookup, the last `bt conn params <id> …` line a link logs shows `timeout=5000ms`.
-`DoorbellPolicyTest` pins the rule. Still owed on hardware: knit-ios's `android-reads --order peer-above` and
-`interop.py iphone` with the iPhone above, ten link-ups per phone on the Pixel 7 and the Pixel 3.
+`DoorbellPolicyTest` pins the rule. Still owed on hardware: ten counted link-ups in each of three knit-ios runs.
+Two have BlueZ as the central (`android-reads --order peer-above`), one on the Pixel 7 and one on the Pixel 3. The
+third has the iPhone as the central (`interop.py iphone`) on the Pixel 7. The iPhone can't be the Pixel 3's central:
+the Pixel 3's node id sorts above the iPhone's, so the Pixel 3 always dials, and the maintainer dropped that run on
+2026-09-30.
