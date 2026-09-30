@@ -2202,7 +2202,9 @@ class MeshManagerTest {
             rig.await(1) { if (runBlocking { store.session(rig.me.nodeId) } == null) 1 else 0 }
             assertNotNull("another peer's session is not the sweep's business", store.session(rig.bob.nodeId))
             coVerify { rig.peers.forgetSelf(rig.me.nodeId) }
-            coVerify { rig.groups.forgetSelf(rig.me.nodeId) }
+            // The outbox sweep runs after the session delete on the manager's real-thread session, so seeing
+            // the row gone does not mean it has been called yet: wait for it rather than race it.
+            coVerify(timeout = AWAIT_MS) { rig.groups.forgetSelf(rig.me.nodeId) }
         }
 
     private fun selfSession(peerId: String) =
