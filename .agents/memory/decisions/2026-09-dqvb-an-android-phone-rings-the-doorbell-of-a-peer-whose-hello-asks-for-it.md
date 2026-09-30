@@ -169,9 +169,10 @@ the callback, and the framework calls it virtually, so no reflection is involved
 unchanged: after the lookup, the last `bt conn params <id> …` line a link logs shows `timeout=5000ms`.
 `DoorbellPolicyTest` pins the rule.
 
-**Device-verified 2026-09-30** on `ed9446bf`, in three knit-ios runs of ten counted link-ups each. The raw runs are in
+**Device-verified 2026-09-30** in four knit-ios runs of ten counted link-ups each: three on `ed9446bf`, then the
+Pixel 3's BlueZ run again on `24bac000`, where the failed-update rule has the most to do. The raw runs are in
 knit-ios's `.build/interop-balanced/`. The iPhone can't be the Pixel 3's central: the Pixel 3's node id sorts above
-the iPhone's, so the Pixel 3 always dials, and the maintainer dropped that run. All 30 links ended at
+the iPhone's, so the Pixel 3 always dials, and the maintainer dropped that run. All 40 links ended at
 `timeout=5000ms`, and the settle timer never fired.
 
 | Central | Phone | Put-backs answered | Last parameters |
@@ -179,13 +180,19 @@ the iPhone's, so the Pixel 3 always dials, and the maintainer dropped that run. 
 | iPhone 12 (`interop.py iphone`) | Pixel 7 | 720 ms on 10 of 10 | 45 ms, latency 5, 5 s |
 | BlueZ on `hci0` (`android-reads --order peer-above`) | Pixel 7 | 420 ms on 2 of 10 | 45 ms, latency 5, 5 s |
 | BlueZ on `hci0` | Pixel 3 | 420 ms on 5 of 10 | 45 ms, latency 0, 5 s |
+| BlueZ on `hci0`, on `24bac000` | Pixel 3 | 420 ms on 3 of 10 | 45 ms, latency 0, 5 s |
 
 The iPhone's put-back lands after the ask every time, so without the re-ask every one of those links would have run
 at 720 ms. On one Pixel 3 link (01:03:11), the re-ask met the ask still in flight. That update failed with
 status 42 (`0x2A`, Different Transaction Collision) and reported the 420 ms the link still ran at. `ed9446bf` took
 it for a second put-back and spent its last re-ask on it. The link reached 5 s anyway, but a real put-back after
-that would have gone unanswered. That is why a failed update counts for nothing.
+that would have gone unanswered. That is why a failed update counts for nothing. The run's other four status-42
+reports came about 90 ms after the 5 s had landed, each as the link's last line: a second request colliding
+after BALANCED, harmless, and costing nothing under either build. The rerun on `24bac000` logged no failed update
+at all.
 
-On three Pixel 7 link-ups with BlueZ as central, the lookup failed at `discover`, so no ask was made. These were not
-counted, and the links held. A link whose lookup fails gets no BALANCED ask until the next lookup, which comes after
-`LOOKUP_RETRY_MS`.
+Some link-ups made no ask and were not counted. On three Pixel 7 link-ups with BlueZ as central, and once in the
+Pixel 3's rerun (02:15:53), the lookup failed at `discover`. The Pixel 3's link stayed at 420 ms and held its
+60 s. A link whose lookup fails gets no BALANCED ask until the next lookup, `LOOKUP_RETRY_MS` later, and closing
+that gap is a follow-up outside this amendment. Once in the rerun (02:13:48), discovery finished without the
+doorbell although the peer serves it, and the link was marked `bt doorbell absent`, so it gets no ask at all.

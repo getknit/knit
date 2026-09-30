@@ -386,7 +386,7 @@ through it.
   again at once, and 2 s after the ask a settle check asks again unless a report since showed 5 s — the net for a
   framework that stops calling the hidden callback. At most two repeats per lookup, all for the same values; a
   report with a non-success status (`0x2A`, a re-ask colliding with the ask in flight) spends none. Device-verified:
-  30 of 30 links ended at 5 s, with the iPhone and BlueZ as central.
+  40 of 40 links ended at 5 s, with the iPhone and BlueZ as central (the last ten on this rule).
 - **A ring is a 1-byte write without response.** Never with a response: a suspended app would have to answer it.
 - **The client lives and dies with the link** (`teardownLink`, and `registerLink`'s replace branch): an open client
   holds the ACL.
