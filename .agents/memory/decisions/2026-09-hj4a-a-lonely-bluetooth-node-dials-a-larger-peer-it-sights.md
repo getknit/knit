@@ -8,9 +8,9 @@ topics: [ble, transport, interop]
 
 # ADR 2026-09.hj4a — A lonely Bluetooth node dials a larger peer it sights
 
-Status: Accepted (2026-09-30; `mesh/bluetooth/LonelyDialPolicy`, JVM-tested, device trial below). Issue #103. The
-iOS port changes only its interop harness and docs: its `admit()` (knit-ios ADR 2026-09.6es2) already gives a
-lonely dialer the verdict `BleAdmissionPolicy` gives here. No wire byte moves.
+Status: Accepted (2026-09-30; `mesh/bluetooth/LonelyDialPolicy`, JVM-tested, device-trialled 2026-09-30 below).
+Issue #103. The iOS port changes only its interop harness and docs: its `admit()` (knit-ios ADR 2026-09.6es2)
+already gives a lonely dialer the verdict `BleAdmissionPolicy` gives here. No wire byte moves.
 
 **What was observed.** The larger node id dials. A phone that joins a settled, screen-off clique whose peers all
 have larger ids waits for one of them to scan, and a settled clique scans at its floor:
@@ -86,6 +86,26 @@ left to the ordinary path, the wake — and the device trial is the evidence for
 *smaller*-id peer connects to us (`BluetoothMeshTransport.onForeignReachable`, `PowerState.kt`, w3xk) had the
 tie-break backwards and are corrected.
 
-**Device trial** (owed at acceptance): a screen-off clique of three Android phones, Bluetooth toggled on the one
-with the smallest id in range, three runs, the iPhone's Knit closed and knit-peer stopped, no `HEAL`, no screen
-wake. Pass: each run's `bt lonely dial` then `bt link up` within about four minutes of the toggle.
+**Device trial, 2026-09-30**, on b6336ddf: the P3, P8 and P9 (P8 the smallest id in range, the Moto G and P7 kept
+out, the iPhone's Knit closed, knit-peer stopped), screens dozing, no `HEAL`. Logs in
+`~/knit-trials/2026-09-30-103-lonely-smaller-id-dials/`. Six Bluetooth toggles on P8:
+
+- **Runs 1–3, the ordinary path.** Off 10 s, 120 s, and 120 s with P8's Wi-Fi Aware taken dark (`NANFAIL` +
+  `NANSTORM`). The link came back 32 s, 46 s and 36 s after the enable, each time by the P3's ordinary dial. A short
+  toggle leaves P8 in the clique's 90 s presence linger, and each link-down wakes a scan and a dial. With NAN up,
+  its early warning (`onForeignReachable` → chase) boosts the clique's scans too. P8 was never 180 s alone.
+- **Runs 4–6, counted.** P8 stayed off until the P3 logged `scan → floor (settled, links=1)` after its post-drop
+  dials, and at least 200 s, so it came back already past the window. Run 4: `bt lonely dial ijeeg44…
+  (alone=213196ms rssi=-54 dwell=12006ms)`, `bt link up` 12.7 s after the adapter came on, and the P9 logged
+  `Admit, sighted=false`.
+  The P3's ordinary dial landed 1.2 s later. Run 5: the lonely dial fired (`alone=330895ms dwell=12010ms`) and
+  linked the P9 (`Admit, sighted=false`), 1.2 s after the P3's ordinary dial. Run 6: the P3's ordinary dial won
+  before P8 sighted anyone, and no lonely dial fired. Links came back 14 s, 135 s and 109 s after the enable.
+
+What the trial showed beyond the rule. `dwell=12006`/`12010` is the `msUntilDue` wake timing the dial. In runs 5
+and 6, P8's first relaxed scan window after the enable (8 s at LOW_POWER, then 120 s idle, since its `lonelyForMs`
+was long past three minutes) sighted nobody. So a lonely screen-off node's latency is bounded by its own relaxed
+scan cycle, up to about 128 s plus the dwell, and not by the window. The lab also never reached #103's own shape.
+The P3's floor idle measured 120 s, where 240 s was expected: the phones' `PowerState` read interactive while
+dumpsys said Dozing (#105), and a three-phone clique's floor is 360 s screen-off at most anyway. The ten-minute
+wait needs a bigger or truly screen-off clique to reproduce.
