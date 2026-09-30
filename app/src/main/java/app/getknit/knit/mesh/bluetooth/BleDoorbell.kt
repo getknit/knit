@@ -323,7 +323,7 @@ internal class BleDoorbell(
                     "timeout=${timeout * TIMEOUT_UNIT_MS}ms status=$status",
             )
             val timeoutMs = timeout * TIMEOUT_UNIT_MS
-            if (balanced.onParams(timeoutMs)) askAgain(this, "put-back ${timeoutMs}ms")
+            if (balanced.onParams(timeoutMs, succeeded = status == BluetoothGatt.GATT_SUCCESS)) askAgain(this, "put-back ${timeoutMs}ms")
         }
     }
 

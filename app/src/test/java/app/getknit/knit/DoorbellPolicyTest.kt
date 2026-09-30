@@ -137,4 +137,21 @@ class DoorbellPolicyTest {
         assertFalse(balanced.onSettle())
         assertTrue("the next lookup's ask starts a fresh budget", DoorbellPolicy.Balanced().apply { asked() }.onParams(720))
     }
+
+    @Test
+    fun aFailedUpdateIsNeitherAPutBackNorAReading() {
+        // The Pixel 3 on the rig, 01:03:11: the re-ask met the ask still in flight and failed with 0x2A, reporting the
+        // 420 ms the link still ran at. That spent the last re-ask before a real put-back could need it.
+        val balanced = DoorbellPolicy.Balanced()
+        balanced.asked()
+        assertTrue(balanced.onParams(420))
+        assertFalse(balanced.onParams(420, succeeded = false))
+        assertTrue("the budget is intact for a real put-back", balanced.onParams(420))
+
+        val stuck = DoorbellPolicy.Balanced()
+        stuck.asked()
+        assertTrue(stuck.onParams(720))
+        assertFalse(stuck.onParams(5_000, succeeded = false))
+        assertTrue("a failure is not the 5 s, so the settle check still asks", stuck.onSettle())
+    }
 }

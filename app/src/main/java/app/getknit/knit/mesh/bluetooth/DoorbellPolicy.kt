@@ -119,7 +119,9 @@ internal object DoorbellPolicy {
      * [BALANCED_TIMEOUT_MS] after it ([onParams], from the hidden `onConnectionUpdated`), and once more
      * [BALANCED_SETTLE_MS] after it unless a report since shows the 5 s ([onSettle]), which holds if that callback
      * ever stops coming. Every repeat asks for the same values, so two of ours colliding cannot end under 5 s; at most
-     * [MAX_BALANCED_REASKS] per lookup.
+     * [MAX_BALANCED_REASKS] per lookup. A report of an update that failed (on the rig, `0x2A`, Different Transaction
+     * Collision, when a re-ask meets the ask still in flight) says the link did not move, so it is neither a put-back
+     * nor a reading: it spends nothing, and the settle check still answers a link that stays low.
      *
      * Thread-safe: [onParams] runs on a binder thread, the rest on the [BleDoorbell] loop.
      */
@@ -136,10 +138,13 @@ internal object DoorbellPolicy {
             asked = true
         }
 
-        /** The link reported a supervision timeout of [timeoutMs]. True: ask again now. */
+        /** The link reported a supervision timeout of [timeoutMs], from an update that [succeeded] or not. True: ask again now. */
         @Synchronized
-        fun onParams(timeoutMs: Int): Boolean {
-            if (!asked) return false
+        fun onParams(
+            timeoutMs: Int,
+            succeeded: Boolean = true,
+        ): Boolean {
+            if (!asked || !succeeded) return false
             latestTimeoutMs = timeoutMs
             return timeoutMs < BALANCED_TIMEOUT_MS && spend()
         }

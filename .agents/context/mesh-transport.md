@@ -384,7 +384,9 @@ through it.
   values (720 ms from an iPhone, 420 ms from BlueZ) as discovery ends, and over the L2CAP-signalling path nothing
   orders that put-back against our ask. A timeout under 5 s reported by `onConnectionUpdated` after the ask asks
   again at once, and 2 s after the ask a settle check asks again unless a report since showed 5 s — the net for a
-  framework that stops calling the hidden callback. At most two repeats per lookup, all for the same values.
+  framework that stops calling the hidden callback. At most two repeats per lookup, all for the same values; a
+  report with a non-success status (`0x2A`, a re-ask colliding with the ask in flight) spends none. Device-verified:
+  30 of 30 links ended at 5 s, with the iPhone and BlueZ as central.
 - **A ring is a 1-byte write without response.** Never with a response: a suspended app would have to answer it.
 - **The client lives and dies with the link** (`teardownLink`, and `registerLink`'s replace branch): an open client
   holds the ACL.

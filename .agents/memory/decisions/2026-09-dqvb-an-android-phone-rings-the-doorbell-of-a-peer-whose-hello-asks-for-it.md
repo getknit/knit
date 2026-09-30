@@ -160,13 +160,32 @@ later re-send by the stack carries 5 s. Only the first put-back threatens the li
   that stops calling the hidden callback.
 - **At most two re-asks per lookup,** so a central that lowers the timeout on purpose is not fought. Every ask
   carries the same values, so no collision among our own requests can end under 5 s.
+- **A failed update counts for nothing.** A report whose status is not success says the link did not move. It is
+  neither a put-back nor a reading, so it spends no re-ask. The settle check still catches a link that stays low.
 
 The maintainer ruled that the hidden callback may drive this behaviour, with the timer as its net. `@Keep` keeps
 the callback, and the framework calls it virtually, so no reflection is involved. A new info line,
 `bt doorbell priority <id> again (put-back <ms>ms|settle) requested=<bool>`, logs each re-ask. The oracle is
 unchanged: after the lookup, the last `bt conn params <id> …` line a link logs shows `timeout=5000ms`.
-`DoorbellPolicyTest` pins the rule. Still owed on hardware: ten counted link-ups in each of three knit-ios runs.
-Two have BlueZ as the central (`android-reads --order peer-above`), one on the Pixel 7 and one on the Pixel 3. The
-third has the iPhone as the central (`interop.py iphone`) on the Pixel 7. The iPhone can't be the Pixel 3's central:
-the Pixel 3's node id sorts above the iPhone's, so the Pixel 3 always dials, and the maintainer dropped that run on
-2026-09-30.
+`DoorbellPolicyTest` pins the rule.
+
+**Device-verified 2026-09-30** on `ed9446bf`, in three knit-ios runs of ten counted link-ups each. The raw runs are in
+knit-ios's `.build/interop-balanced/`. The iPhone can't be the Pixel 3's central: the Pixel 3's node id sorts above
+the iPhone's, so the Pixel 3 always dials, and the maintainer dropped that run. All 30 links ended at
+`timeout=5000ms`, and the settle timer never fired.
+
+| Central | Phone | Put-backs answered | Last parameters |
+| --- | --- | --- | --- |
+| iPhone 12 (`interop.py iphone`) | Pixel 7 | 720 ms on 10 of 10 | 45 ms, latency 5, 5 s |
+| BlueZ on `hci0` (`android-reads --order peer-above`) | Pixel 7 | 420 ms on 2 of 10 | 45 ms, latency 5, 5 s |
+| BlueZ on `hci0` | Pixel 3 | 420 ms on 5 of 10 | 45 ms, latency 0, 5 s |
+
+The iPhone's put-back lands after the ask every time, so without the re-ask every one of those links would have run
+at 720 ms. On one Pixel 3 link (01:03:11), the re-ask met the ask still in flight. That update failed with
+status 42 (`0x2A`, Different Transaction Collision) and reported the 420 ms the link still ran at. `ed9446bf` took
+it for a second put-back and spent its last re-ask on it. The link reached 5 s anyway, but a real put-back after
+that would have gone unanswered. That is why a failed update counts for nothing.
+
+On three Pixel 7 link-ups with BlueZ as central, the lookup failed at `discover`, so no ask was made. These were not
+counted, and the links held. A link whose lookup fails gets no BALANCED ask until the next lookup, which comes after
+`LOOKUP_RETRY_MS`.
