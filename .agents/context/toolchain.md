@@ -168,7 +168,7 @@ knowing before you touch the data layer:
 
 - **There is no `openHelperFactory`.** Room 3 deletes the SupportSQLite layer from the core API, so
   `setDriver(SQLiteDriver)` is the only seam for a custom engine. SQLCipher rides in as
-  `SQLCipherDriver` (`net.zetetic:sqlcipher-android` 4.19.0; 4.18.0 was the release that added it) — see
+  `SQLCipherDriver` (`net.zetetic:sqlcipher-android` 4.19.1; 4.18.0 was the release that added it) — see
   ADR 065.
   That is why Room 3 and SQLCipher move together; neither can be bumped past the other alone.
 - **There is no `room3-ktx`.** `withWriteTransaction` / `useWriterConnection` / `immediateTransaction` are in

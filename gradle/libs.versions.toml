@@ -1,6 +1,6 @@
 [versions]
 agp = "9.4.1"
-coreKtx = "1.19.0"
+coreKtx = "1.19.1"
 junit = "4.13.2"
 junitVersion = "1.3.0"
 # JVM-only mocking for the InboundPipeline seam test (relaxed mocks of the concrete Room-backed repos
@@ -15,7 +15,7 @@ activityCompose = "1.13.0"
 # The 2.10.x line is stable (2.9.8 was the hold-point before it). Its Android artifact is the KMP
 # `navigation-compose-android` AAR, minCompileSdk=37 / minAGP 9.1.0 — cleared by compileSdk 37.1 and
 # AGP 9.4.0. It declares androidx.compose.* 1.10.5 floors, well under the Compose BOM's 1.12.1.
-navigationCompose = "2.10.1"
+navigationCompose = "2.10.2"
 kotlin = "2.4.20"
 # Compose UI 1.12.1 / Material3 1.4.0. UI 1.12.1's AAR sets minCompileSdk=37, which compileSdk 37.1 clears.
 # 2026.09.00 is a pure Compose 1.12.0 → 1.12.1 patch — material3 and material-icons-extended are unmoved.
@@ -37,9 +37,10 @@ room3 = "3.0.3"
 # win. sqlite 2.7.0's AAR is minCompileSdk 34, so it changes nothing about the SDK gate. Its .so are
 # 16 KB-page-aligned on all four ABIs (`readelf -lW` → LOAD align 0x4000), the same requirement that pins
 # litert to 1.4.x. 4.18.0 is also what supplies SQLCipherDriver, so Room 3 and SQLCipher move together.
-# 4.19.0 keeps both deps and the alignment identical, but raises its OWN aar-metadata minCompileSdk to 37
-# (4.18.0 was lower) — cleared by compileSdk 37.1, and the one thing to re-check if compileSdk ever drops.
-sqlcipher = "4.19.0"
+# 4.19.0 kept both deps and the alignment identical but raised its OWN aar-metadata minCompileSdk to 37;
+# 4.19.1 drops it back to 36 (upstream now compiles against 36) and adds the common-page-size linker flag —
+# still 0x4000 on all four ABIs.
+sqlcipher = "4.19.1"
 coroutines = "1.11.0"
 kotlinxSerializationJson = "1.11.0"
 # Alpha on purpose (the stable-only rule's second exception, toolchain.md): 1.3.0-alpha03 fixed the dropped
@@ -64,7 +65,7 @@ koin = "4.2.2"
 # Coil 3.4.0+ is built with Kotlin 2.4.x. We now compile :app with Kotlin 2.4.20 (built-in Kotlin is
 # overridden off AGP's bundled 2.2.10 — see the buildscript classpath in the root build.gradle.kts), so
 # the 2.4 metadata is readable again and Coil is free to track latest.
-coil = "3.6.2"
+coil = "3.6.3"
 # On-device NSFW image classifier runtime — the classic TFLite interpreter, which upstream renamed to
 # "LiteRT". org.tensorflow:tensorflow-lite dead-ends at 2.17.0, whose x86_64/x86/armeabi-v7a .so segments
 # are only 4 KB-aligned (p_align=0x1000) and fail to load on a 16 KB-page image such as the emulator;
@@ -141,7 +142,7 @@ ktlintPlugin = "14.2.0"
 # 0.9 line's Gradle-9 fix) applied but did NOT hook AGP 9.2.1's variants (no per-variant tasks, empty
 # report); 0.9.8+ detects the debug variant correctly, so don't drop below it. Run with
 # `./gradlew :app:koverHtmlReportDebug` (HTML) / `:app:koverXmlReportDebug` (CI-parseable XML).
-kover = "0.9.9"
+kover = "0.9.11"
 # JVM Room/DAO + migration tests (finding #5): Robolectric supplies a Context + framework SQLite on the JVM
 # so in-memory Room executes the real eviction/GC SQL, and MigrationTestHelper (room-testing) rebuilds the
 # exported schema via androidx.sqlite's AndroidSQLiteDriver on that same shadowed SQLite (BundledSQLiteDriver
@@ -188,8 +189,9 @@ wearCompose = "1.7.0"
 # the watch on a tile until they ship stable.
 wearTiles = "1.6.2"
 wearProtolayout = "1.4.2"
-# The peer map's M3 Expressive "cookie" shape; the version Wear Compose 1.7 already pulls in.
-graphicsShapes = "1.0.1"
+# The peer map's M3 Expressive "cookie" shape. 1.1.0 is above the 1.0.1 Wear Compose 1.7 pulls in; its
+# AAR is minCompileSdk 34.
+graphicsShapes = "1.1.0"
 # The watch app's splash screen (Wear OS quality WO-V15: the launcher icon on black at startup). Wear OS 3 is
 # API 30, which has no platform splash screen; the compat library draws one there and sizes it for Wear.
 coreSplashscreen = "1.2.0"
