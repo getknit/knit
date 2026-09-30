@@ -67,6 +67,10 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `to`:** READ ADR 2026-09.4n5p — a Meshtastic DM to a set-up board is answered once with a fixed unicast
   (once per sender per day, once per 30 s for anybody, the room's air share, never from a stock or a
   dedicated-slot board), and that reply is the only unicast the plane sends.
+  **Before touching `MeshtasticSession.connectLoop`, `BoardDialPolicy`, `MeshtasticGatt.dial`'s modes, or what the
+  pacer does while the link is down:** READ ADR 2026-09.hp88 — three direct dials, then the controller's
+  `autoConnect` with an hourly direct net and no arbiter while waiting; a refusal backs off, only a spent window
+  doesn't; the pacer parks on `link.state`, never its 1 s tick.
 - **When touching `BluetoothMeshTransport.superviseAccepted`, `BleAdmissionPolicy`, `teardownLink`, `LinkEvents`,
   `neverSighted`, or what a held link scores for eviction:** READ ADR 2026-09.shzv. A dialer presence holds is
   judged by the old tie-break, unchanged — the Android mesh must not move. Only an unsighted dialer (an iPhone

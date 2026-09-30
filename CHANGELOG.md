@@ -52,6 +52,9 @@ document:
   messages could arrive minutes after the catch-up finished. That wait is now much shorter.
 - If you left the Profile screen right after cropping a new photo, the photo could be lost, and the greyed-out
   Save button made it look unsaved anyway. It now saves when you confirm the crop, and a message tells you so.
+- A paired LoRa board that is switched off or out of range no longer drains your battery while Knit looks for
+  it. After a few quick tries your phone reconnects when the board comes back, without pausing its search for
+  nearby phones every few minutes.
 
 ## [2.7.0](https://github.com/getknit/knit/releases/tag/v2.7.0) — 2026-09-24T21:26:44Z
 

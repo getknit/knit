@@ -243,6 +243,143 @@ class MeshtasticSessionTest {
             session.stop()
         }
 
+    /**
+     * Three failed direct dials, then the controller waits (ADR 2026-09.hp88). With no jitter the direct dials
+     * land at 0, 5 s and 15 s, and the fourth pass at 35 s hands over. Before #67 it direct-dialled every
+     * ~210 s forever, each one a 30 s high-duty scan that also paused the mesh's scan.
+     */
+    private fun threeFailedDirectDials(dialer: FakeGattDialer) {
+        repeat(BoardDialPolicy.DIRECT_ATTEMPTS) { dialer.dialResults.addLast(DialResult.Failed(status = 133, phase = "connect")) }
+    }
+
+    /** Where the fourth dial happens: after the 5 s + 10 s + 20 s backoffs of the three direct ones. */
+    private val handOverAt = 35_000L
+    private val lastDirectAt = 15_000L
+
+    @Test
+    fun afterThreeFailedDirectDialsTheSessionWaitsInTheBackground() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch).apply { timeoutsTakeTheirWindow = true }
+            threeFailedDirectDials(dialer)
+            dialer.dialResults.addLast(DialResult.Timeout)
+            val session = session(dialer, backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+            advanceTimeBy(handOverAt)
+            runCurrent()
+
+            assertEquals(List(3) { DialMode.Direct } + DialMode.Background, dialer.modes)
+            assertEquals("a direct dial keeps its 30 s window", 30_000L, dialer.timeouts.first())
+            val window = lastDirectAt + BoardDialPolicy.DIRECT_NET_MS - handOverAt
+            assertEquals("the background wait runs until the hourly direct dial is due", window, dialer.timeouts.last())
+            val st = session.state.value
+            assertTrue("waiting in the background reads as reconnecting, not connecting, but was $st", st is LinkState.Disconnected)
+            assertEquals(lastDirectAt + BoardDialPolicy.DIRECT_NET_MS, (st as LinkState.Disconnected).retryAtMs)
+            session.stop()
+        }
+
+    @Test
+    fun aBackgroundWindowThatRunsOutFallsBackToOneDirectDialThenBackgroundAgain() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch).apply { timeoutsTakeTheirWindow = true }
+            threeFailedDirectDials(dialer)
+            dialer.dialResults.addLast(DialResult.Timeout) // the hour passes with no board
+            dialer.dialResults.addLast(DialResult.Failed(status = 133, phase = "connect")) // the net finds nothing
+            dialer.dialResults.addLast(DialResult.Timeout)
+            val session = session(dialer, backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+            advanceTimeBy(handOverAt)
+            runCurrent()
+            assertEquals(4, dialer.dials)
+
+            advanceTimeBy(lastDirectAt + BoardDialPolicy.DIRECT_NET_MS - handOverAt)
+            runCurrent()
+            assertEquals("the net's direct dial follows the spent window with no backoff", 5, dialer.dials)
+            assertEquals(DialMode.Direct, dialer.modes.last())
+
+            advanceTimeBy(40_001) // the fourth failure's backoff
+            runCurrent()
+            assertEquals(6, dialer.dials)
+            assertEquals("and the controller takes the wait back", DialMode.Background, dialer.modes.last())
+            session.stop()
+        }
+
+    @Test
+    fun aFastFailingBackgroundDialStillBacksOff() =
+        runTest {
+            // A stack that turns an autoConnect down at once (an address not in its cache) must not be
+            // re-dialled in a loop: a refusal is a failure, not a spent window.
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            threeFailedDirectDials(dialer)
+            repeat(2) { dialer.dialResults.addLast(DialResult.Failed(status = 133, phase = "connect")) }
+            val session = session(dialer, backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+            advanceTimeBy(handOverAt)
+            runCurrent()
+            assertEquals(4, dialer.dials)
+            assertEquals(4, (session.state.value as LinkState.Disconnected).streak)
+
+            advanceTimeBy(39_000)
+            runCurrent()
+            assertEquals("still inside the backoff", 4, dialer.dials)
+            advanceTimeBy(1_001)
+            runCurrent()
+            assertEquals(5, dialer.dials)
+            assertEquals(DialMode.Background, dialer.modes.last())
+            session.stop()
+        }
+
+    @Test
+    fun aSessionReadyForFiveMinutesResetsTheStreak() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            threeFailedDirectDials(dialer) // then the board comes back to the background dial
+            val session = session(dialer, backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+            advanceTimeBy(handOverAt)
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+
+            advanceTimeBy(BoardDialPolicy.HEALTHY_SESSION_MS)
+            ch.disconnect()
+            runCurrent()
+            assertEquals("a healthy session starts the curve over", 1, (session.state.value as LinkState.Disconnected).streak)
+            advanceTimeBy(5_001)
+            runCurrent()
+            assertEquals(DialMode.Direct, dialer.modes.last())
+            session.stop()
+        }
+
+    @Test
+    fun aShortSessionKeepsTheStreak() =
+        runTest {
+            val ch = FakeGattChannel().also(::scriptHandshake)
+            val dialer = FakeGattDialer(ch)
+            threeFailedDirectDials(dialer)
+            val session = session(dialer, backgroundScope) { testScheduler.currentTime }
+            session.start("AA")
+            runCurrent()
+            advanceTimeBy(handOverAt)
+            runCurrent()
+            assertTrue(session.state.value is LinkState.Ready)
+
+            advanceTimeBy(60_000) // a minute of link is a flap, not a recovery
+            ch.disconnect()
+            runCurrent()
+            assertEquals(4, (session.state.value as LinkState.Disconnected).streak)
+            advanceTimeBy(40_001)
+            runCurrent()
+            assertEquals(DialMode.Background, dialer.modes.last())
+            session.stop()
+        }
+
     @Test
     fun adapterOffParksUnavailableThenConnectsWhenItReturns() =
         runTest {

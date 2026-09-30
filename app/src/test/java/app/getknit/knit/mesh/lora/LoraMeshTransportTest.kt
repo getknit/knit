@@ -1351,6 +1351,55 @@ class LoraMeshTransportTest {
         }
 
     /**
+     * A board that is away must not keep the pacer awake. With a frame held over the outage and its due time
+     * long past, the pacer's idle tick used to fire every second for as long as the board was gone — 3,600
+     * wakeups an hour that could send nothing (#67). It parks on the link state now, and the session-up is
+     * what moves it.
+     */
+    @Test
+    fun aPacerWithAQueuedFrameSleepsThroughABoardOutage() =
+        runTest {
+            val air = FakeMeshtasticAir()
+            var reads = 0
+            val clock = {
+                reads++
+                testScheduler.currentTime
+            }
+            val a = rig(air, 1u, "alice", backgroundScope, pace = LoraPacePolicy(minGapMs = 3_000), now = clock)
+            val b = rig(air, 2u, "bob", backgroundScope) { testScheduler.currentTime }
+            a.transport.start()
+            b.transport.start()
+            runCurrent()
+            advanceTimeBy(1)
+            runCurrent()
+
+            a.link.drop()
+            runCurrent()
+            a.transport.fastFanout(frame(FrameType.CHAT, "alice", body = "north gate in ten"))
+            advanceTimeBy(10_000)
+            runCurrent()
+
+            val atRest = reads
+            advanceTimeBy(10 * 60_000L)
+            runCurrent()
+            assertTrue(
+                "the pacer slept through ten minutes of outage (${reads - atRest} clock reads; the old idle tick made 600)",
+                reads - atRest < OUTAGE_READS_PER_TEN_MINUTES,
+            )
+
+            a.link.ready()
+            runCurrent()
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertTrue(
+                "the held frame leaves once the board is back",
+                b.received.any { it.envelope.senderId == "alice" && it.envelope.type == FrameType.CHAT },
+            )
+            a.transport.stop()
+            b.transport.stop()
+        }
+
+    /**
      * The queue is a **time-delayed commitment**, and this is the gap that costs airtime: a DM-form frame is
      * admitted because no better plane held a link to its addressee *at that instant*, then waits behind the
      * pacing floor, a full board queue and a spent airtime share while the answer changes underneath it.
@@ -2818,5 +2867,11 @@ class LoraMeshTransportTest {
 
         /** A minute of idling costs a wake per [LoraMeshTransport.IDLE_TICK_MS] at worst, times a read or two. */
         const val IDLE_WAKES_PER_MINUTE = 200
+
+        /**
+         * Ten minutes of outage with a frame held: the old 1 s idle tick alone made 600 reads, while the other
+         * loops (the 60 s linger sweep, a gossip wake) make a handful.
+         */
+        const val OUTAGE_READS_PER_TEN_MINUTES = 100
     }
 }

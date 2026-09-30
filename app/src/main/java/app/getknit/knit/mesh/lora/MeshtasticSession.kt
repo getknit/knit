@@ -87,6 +87,12 @@ internal class MeshtasticSession(
     private var radio: LoraRadioConfig? = null
     private var lastWriteAt = 0L
 
+    // When the current session went Ready; a long enough one resets the reconnect streak (BoardDialPolicy).
+    private var readyAt: Long? = null
+
+    // When the reconnect loop last dialled direct; the hourly net under a background wait is timed from it.
+    private var lastDirectAt: Long? = null
+
     // Pending sends awaiting their queueStatus, keyed by our packet id, so a late NAK can still be matched.
     private val pending = HashMap<UInt, CompletableDeferred<SendResult>>()
 
@@ -135,6 +141,7 @@ internal class MeshtasticSession(
 
     private suspend fun connectLoop(address: String) {
         var streak = 0
+        lastDirectAt = null
         while (scope.isActive) {
             if (!dialer.adapterOn.value) {
                 _state.value = LinkState.Unavailable
@@ -142,8 +149,10 @@ internal class MeshtasticSession(
                 streak = 0
                 continue
             }
-            _state.value = LinkState.Connecting
-            when (val result = dialer.dial(address)) {
+            val mode = BoardDialPolicy.mode(streak, now(), lastDirectAt)
+            val timeout = armDial(mode, streak)
+            readyAt = null
+            when (val result = dialer.dial(address, mode, timeout)) {
                 is DialResult.Opened -> {
                     val end =
                         try {
@@ -155,7 +164,7 @@ internal class MeshtasticSession(
                         _state.value = end.terminal
                         return
                     }
-                    if (end.resetStreak) streak = 0
+                    if (end.resetStreak || BoardDialPolicy.healthy(readyAt, now())) streak = 0
                     streak = backoffAndWait(end.reason, streak)
                 }
 
@@ -171,11 +180,41 @@ internal class MeshtasticSession(
                     streak = backoffAndWait("dial ${result.phase} ${result.status}", streak)
                 }
 
+                // A background window that ran out is not a failure to back off from: the net's direct dial is
+                // due now, and the policy picks it on the next pass.
                 DialResult.Timeout -> {
-                    streak = backoffAndWait("dial timeout", streak)
+                    if (mode == DialMode.Direct) streak = backoffAndWait("dial timeout", streak)
                 }
             }
         }
+    }
+
+    /**
+     * Publishes the state a [mode] dial waits in and returns its connect timeout. Direct while the drop may be a
+     * blip, then the controller's background connect with an hourly direct dial as the net (ADR 2026-09.hp88):
+     * an absent board used to cost a 30 s high-duty connect and a mesh-scan blackout every ~210 s, forever (#67).
+     * The background wait reads as reconnecting, with the net's due time as its retry, not an hour of connecting.
+     */
+    private fun armDial(
+        mode: DialMode,
+        streak: Int,
+    ): Long {
+        val timeout =
+            when (mode) {
+                DialMode.Direct -> {
+                    lastDirectAt = now()
+                    _state.value = LinkState.Connecting
+                    DIRECT_CONNECT_TIMEOUT_MS
+                }
+
+                DialMode.Background -> {
+                    val window = BoardDialPolicy.backgroundWindowMs(now(), lastDirectAt)
+                    _state.value = LinkState.Disconnected(WAITING_FOR_BOARD, now() + window, streak)
+                    window
+                }
+            }
+        log("lora dial mode=$mode timeout=${timeout}ms streak=$streak")
+        return timeout
     }
 
     private suspend fun backoffAndWait(
@@ -200,6 +239,7 @@ internal class MeshtasticSession(
         val handshake = handshake(address, channel)
         if (handshake != null) return handshake
         _state.value = LinkState.Ready(requireNotNull(board), channels, mtu, radio)
+        readyAt = now()
         lastWriteAt = now()
         val heartbeat = scope.launch { heartbeatTicker() }
         try {
@@ -1248,6 +1288,8 @@ internal class MeshtasticSession(
     private companion object {
         const val BASE_BACKOFF_MS = 5_000L
         const val MAX_BACKOFF_MS = 180_000L
+        const val DIRECT_CONNECT_TIMEOUT_MS = 30_000L
+        const val WAITING_FOR_BOARD = "waiting for the board"
         const val SUBSCRIBE_TIMEOUT_MS = 10_000L
         const val WRITE_TIMEOUT_MS = 10_000L
         const val BONDING_TIMEOUT_MS = 90_000L

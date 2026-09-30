@@ -19,16 +19,23 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import app.getknit.knit.mesh.bluetooth.BleConnectArbiter
 import app.getknit.knit.mesh.lora.BondState
+import app.getknit.knit.mesh.lora.DialMode
 import app.getknit.knit.mesh.lora.DialResult
 import app.getknit.knit.mesh.lora.GattChannel
 import app.getknit.knit.mesh.lora.GattEvent
 import app.getknit.knit.mesh.lora.GattResult
 import app.getknit.knit.mesh.lora.MeshtasticGattDialer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -42,6 +49,13 @@ import java.nio.ByteOrder
  * plane's hard-won idioms: the adapter is a **provider** (re-fetched per dial, never cached, so an adapter
  * off→on cycle doesn't strand us), and every GATT op carries an explicit timeout with the `settled`-race
  * watchdog so a callback that never comes can't wedge the actor.
+ *
+ * Two ways to dial ([DialMode], ADR 2026-09.hp88). A **direct** dial (`autoConnect = false`) is what a board
+ * that just dropped gets: fast, but a high-duty scan for its whole window, so it holds [BleConnectArbiter] and the
+ * mesh's own scan pauses for it. A **background** dial (`autoConnect = true`) is what a board that stayed away
+ * gets: its address goes on the controller's accept list and the controller connects when the board next
+ * advertises, at low duty, so the arbiter is taken only for the setup after that. autoConnect is slow or dead on
+ * some stacks, which is why the session keeps an hourly direct dial as the net rather than trusting it alone.
  *
  * Callbacks land on the **main looper** — we call the four-arg `connectGatt`, which delivers on the
  * caller's looper. A `HandlerThread` named `meshtastic-gatt` used to be started here and never passed to
@@ -95,12 +109,29 @@ internal class MeshtasticGatt(
             else -> BondState.UNKNOWN
         }
 
-    override suspend fun dial(address: String): DialResult {
+    override suspend fun dial(
+        address: String,
+        mode: DialMode,
+        timeoutMs: Long,
+    ): DialResult {
         val device = adapter?.getRemoteDevice(address) ?: return DialResult.NoHardware
         if (adapter?.isEnabled != true) return DialResult.AdapterOff
+        return when (mode) {
+            // The arbiter slot covers the whole connect→MTU→discover window: a direct connect is a high-duty
+            // scan of its own, and the mesh's scan would starve it.
+            DialMode.Direct -> withArbiter { connectAndConfigure(device, autoConnect = false, timeoutMs) }
+
+            // The controller waits for the board off its accept list at low duty, which starves nothing, so the
+            // mesh keeps scanning for however long that takes (ADR 2026-09.hp88); only the setup after the board
+            // has connected pauses it.
+            DialMode.Background -> connectAndConfigure(device, autoConnect = true, timeoutMs)
+        }
+    }
+
+    private inline fun <T> withArbiter(block: () -> T): T {
         arbiter.begin(ARBITER_TAG)
         try {
-            return connectAndConfigure(device) // the arbiter slot covers only the connect→discover→MTU window
+            return block()
         } finally {
             arbiter.end(ARBITER_TAG)
         }
@@ -110,17 +141,36 @@ internal class MeshtasticGatt(
     // API-37 `connectGatt(BluetoothGattConnectionSettings, Executor, callback)`, which is eight releases
     // above minSdk 29 — this is still the only form that reaches the boards we support.
     @Suppress("DEPRECATION")
-    private suspend fun connectAndConfigure(device: BluetoothDevice): DialResult {
+    private suspend fun connectAndConfigure(
+        device: BluetoothDevice,
+        autoConnect: Boolean,
+        timeoutMs: Long,
+    ): DialResult {
         val channel = AndroidGattChannel()
         val gatt =
-            device.connectGatt(appContext, false, channel.callback, BluetoothDevice.TRANSPORT_LE)
+            device.connectGatt(appContext, autoConnect, channel.callback, BluetoothDevice.TRANSPORT_LE)
                 ?: return DialResult.Failed(status = -1, phase = "connectGatt")
         channel.attach(gatt)
-        if (!channel.awaitConnected(CONNECT_TIMEOUT_MS)) {
+        // Every exit but Opened closes the client, cancellation included: a stop() or a board swap inside the
+        // wait used to leave the connect registered with the stack — up to 30 s for a direct dial, and for a
+        // background one until the board next came into range, reconnecting a session nobody owned.
+        try {
+            // A refusal is Failed, never Timeout, so it takes the session's backoff: a background connect the
+            // stack turns down at once (an address not in its cache is status 133 on some stacks) would
+            // otherwise read as a spent window and be re-dialled straight away, in a loop.
+            val result =
+                when (val wait = channel.awaitConnected(timeoutMs, adapterOn)) {
+                    ConnectWait.Connected -> if (autoConnect) withArbiter { finishSetup(channel) } else finishSetup(channel)
+                    is ConnectWait.Refused -> DialResult.Failed(status = wait.status, phase = "connect")
+                    ConnectWait.TimedOut -> DialResult.Timeout
+                    ConnectWait.AdapterOff -> DialResult.AdapterOff
+                }
+            if (result !is DialResult.Opened) channel.close()
+            return result
+        } catch (e: CancellationException) {
             channel.close()
-            return DialResult.Timeout
+            throw e
         }
-        return finishSetup(channel)
     }
 
     private suspend fun finishSetup(channel: AndroidGattChannel): DialResult {
@@ -150,7 +200,9 @@ internal class MeshtasticGatt(
         private var pending: CompletableDeferred<GattResult<ByteArray>>? = null
 
         private var mtuResult: CompletableDeferred<Int>? = null
-        private var connectResult: CompletableDeferred<Boolean>? = null
+
+        // Made with the channel, before `connectGatt` is called, so a connect that lands at once is not missed.
+        private val connectResult = CompletableDeferred<ConnectWait>()
         private var discoverResult: CompletableDeferred<Boolean>? = null
 
         private var fromRadio: BluetoothGattCharacteristic? = null
@@ -170,11 +222,11 @@ internal class MeshtasticGatt(
                 ) {
                     when (newState) {
                         BluetoothProfile.STATE_CONNECTED -> {
-                            connectResult?.complete(true)
+                            connectResult.complete(ConnectWait.Connected)
                         }
 
                         BluetoothProfile.STATE_DISCONNECTED -> {
-                            connectResult?.complete(false)
+                            connectResult.complete(ConnectWait.Refused(status))
                             eventsChannel.trySend(GattEvent.Disconnected(status))
                             pending?.complete(GattResult.Closed)
                         }
@@ -302,11 +354,27 @@ internal class MeshtasticGatt(
             }
         }
 
-        suspend fun awaitConnected(timeoutMs: Long): Boolean {
-            val d = CompletableDeferred<Boolean>()
-            connectResult = d
-            return withTimeoutOrNull(timeoutMs) { d.await() } ?: false
-        }
+        /**
+         * Waits up to [timeoutMs] for the link to come up, or for the adapter to go off — a background wait can
+         * run for most of an hour, and the session has to see the adapter go rather than a window running out.
+         */
+        suspend fun awaitConnected(
+            timeoutMs: Long,
+            adapterOn: StateFlow<Boolean>,
+        ): ConnectWait =
+            withTimeoutOrNull(timeoutMs) {
+                coroutineScope {
+                    val off =
+                        async {
+                            adapterOn.first { !it }
+                            ConnectWait.AdapterOff
+                        }
+                    select {
+                        connectResult.onAwait { it }
+                        off.onAwait { it }
+                    }.also { off.cancel() }
+                }
+            } ?: ConnectWait.TimedOut
 
         /**
          * Negotiates the ATT MTU, letting the link settle first and retrying a refused exchange rather than
@@ -433,10 +501,23 @@ internal class MeshtasticGatt(
             }
     }
 
+    /** How a connect wait ended. */
+    private sealed interface ConnectWait {
+        data object Connected : ConnectWait
+
+        /** The stack reported the link down before it was ever up, with its GATT status. */
+        data class Refused(
+            val status: Int,
+        ) : ConnectWait
+
+        data object TimedOut : ConnectWait
+
+        data object AdapterOff : ConnectWait
+    }
+
     private companion object {
         const val TAG = "MeshtasticGatt"
         const val ARBITER_TAG = "lora-dial"
-        const val CONNECT_TIMEOUT_MS = 30_000L
         const val MTU_TIMEOUT_MS = 10_000L
 
         // The Exchange MTU must not race the SMP handshake a bonded board starts at ACL-up; see

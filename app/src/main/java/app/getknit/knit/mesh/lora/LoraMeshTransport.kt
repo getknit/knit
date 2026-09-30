@@ -1280,20 +1280,21 @@ internal class LoraMeshTransport(
         while (scope.isActive) {
             // Nothing leaves while the board is between sessions, so take nothing: a frame off the queue has
             // no owner but the pacer, and every take during an outage is one more round-trip through
-            // [requeue]. [onLinkState] wakes this the moment the handshake completes, and [waitForNextSend]'s
-            // idle tick is the net under a missed wake.
+            // [requeue]. Park on the link itself rather than [waitForNextSend]: with a frame queued its idle
+            // tick fired every second for the whole outage (#67), and an absent board can be away for days.
+            // Reading the state flow cannot miss the session-up the way a wake could.
+            if (link.state.value !is LinkState.Ready) {
+                link.state.first { it is LinkState.Ready }
+                continue
+            }
             val frame =
-                if (link.state.value is LinkState.Ready) {
-                    pace.take(clock()).also {
-                        // Reported after every take, admitted or not: one bucket can be spent while another
-                        // still flows, and it is the *held* frame that has to be visible — nothing else counts
-                        // it until the queue fills and sheds it as an ordinary drop. Inside this branch
-                        // because [LoraPacePolicy.lastAirtimeHolds] clears on entry to `take` and nowhere
-                        // else: reading it on a wake that took nothing re-reports the previous wake's holds.
-                        pace.lastAirtimeHolds.forEach { hold -> metrics.onLoraAirtimeHeld(hold.name) }
-                    }
-                } else {
-                    null
+                pace.take(clock()).also {
+                    // Reported after every take, admitted or not: one bucket can be spent while another still
+                    // flows, and it is the *held* frame that has to be visible — nothing else counts it until
+                    // the queue fills and sheds it as an ordinary drop. Only after a real take because
+                    // [LoraPacePolicy.lastAirtimeHolds] clears on entry to `take` and nowhere else: reading it
+                    // on a wake that took nothing re-reports the previous wake's holds.
+                    pace.lastAirtimeHolds.forEach { hold -> metrics.onLoraAirtimeHeld(hold.name) }
                 }
             if (frame == null) waitForNextSend() else sendFrame(frame)
         }
@@ -1301,7 +1302,8 @@ internal class LoraMeshTransport(
 
     /**
      * Parks the pacer until the queue could plausibly move: a wake (something enqueued, the board's queue
-     * freed, [heal]), or the pacer's own due time.
+     * freed, [heal]), or the pacer's own due time. Only reached with the link Ready — [pacerLoop] parks on
+     * the link state during an outage.
      *
      * The floor is load-bearing, exactly as it is in [gossipLoop]. A queue can be non-empty while nothing may
      * leave it — the board reports no headroom, or the hour's airtime is spent — and [LoraPacePolicy.take]

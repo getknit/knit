@@ -17,8 +17,17 @@ internal interface MeshtasticGattDialer {
     /** The current bond state of [address] — the session widens the first write's timeout while BONDING. */
     fun bondState(address: String): BondState
 
-    /** Connects, discovers, and negotiates the MTU with the board at [address]. */
-    suspend fun dial(address: String): DialResult
+    /**
+     * Connects, discovers, and negotiates the MTU with the board at [address], waiting at most [timeoutMs] for
+     * the connection itself. A [DialMode.Direct] dial pauses the mesh scan for its whole window; a
+     * [DialMode.Background] one leaves the wait to the controller and pauses it only for the setup after the
+     * board has connected (ADR 2026-09.hp88). A background window that runs out is [DialResult.Timeout].
+     */
+    suspend fun dial(
+        address: String,
+        mode: DialMode,
+        timeoutMs: Long,
+    ): DialResult
 }
 
 /** The outcome of a [MeshtasticGattDialer.dial]. */

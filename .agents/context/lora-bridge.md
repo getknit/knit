@@ -110,7 +110,8 @@ LoraMeshTransport (pure)      fastFanout/longRangeFanout/fastSend · LoraFramePo
                               beacon + reofferTo on first hearing · LoraGatewayPolicy/LoraGossipPolicy/LoraCtl (the bridge)
   └─ MeshtasticLink (seam)    state / packets / outcomes / queue · suspend send()
        └─ MeshtasticSession   pure actor: want_config handshake · drain-until-empty on FromNum · 180s heartbeat ·
-          (pure)              client packet ids ↔ queueStatus/NAK · reconnect-with-backoff (ConnectBackoffPolicy)
+          (pure)              client packet ids ↔ queueStatus/NAK · reconnect-with-backoff (ConnectBackoffPolicy) ·
+                              direct-then-background dial (BoardDialPolicy, ADR 2026-09.hp88)
             └─ MeshtasticGattDialer (seam)   dial() → connect · requestMtu(512, gate ≥263) · discover · resolve chars
                  └─ MeshtasticGatt           the ONLY android.bluetooth importer for the feature (mesh/bluetooth/meshtastic/)
 ```
@@ -380,6 +381,14 @@ receipts are exempt, as are the targeted path (AckSync's verbatim retries) and t
 injected `wallClock` (epoch) — the transport's `clock` is `elapsedRealtime` and is not comparable to a
 frame's `sentAt`. Counted with the sig-window rejections under `loraSuppressed`. `BleConnectArbiter` lets
 the board dial pause the mesh BLE scan for its connect window (scanning starves connects).
+
+**Reconnect (ADR 2026-09.hp88).** A lost board gets three **direct** dials (`autoConnect = false`, 30 s, arbiter
+held). After that the dial goes **background** (`autoConnect = true`, no arbiter while waiting): the controller
+connects at low duty when the board advertises, with one direct dial an hour as the net for stacks whose
+autoConnect never fires. The wait reads as `Disconnected("waiting for the board")`. A session Ready for 5 min
+resets the streak. A background refusal is `Failed` and backs off; only a spent window skips the backoff. The
+dial closes its GATT client on every non-`Opened` exit, cancellation included. While the link is down the pacer
+parks on `link.state`, never on its 1 s idle tick (#67).
 
 ## Limiters that outlive the process (ADR 2026-09.7svb)
 

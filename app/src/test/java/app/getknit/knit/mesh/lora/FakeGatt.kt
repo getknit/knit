@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.lora
 
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
@@ -84,11 +85,26 @@ internal class FakeGattDialer(
     val dialResults = ArrayDeque<DialResult>()
     var dials = 0
 
+    /** Each dial's mode and connect timeout, in order. */
+    val modes = mutableListOf<DialMode>()
+    val timeouts = mutableListOf<Long>()
+
+    /** Virtual time a scripted [DialResult.Timeout] takes, as the real wait would: the dial's own timeout. */
+    var timeoutsTakeTheirWindow = false
+
     override fun bondState(address: String): BondState = bond
 
-    override suspend fun dial(address: String): DialResult {
+    override suspend fun dial(
+        address: String,
+        mode: DialMode,
+        timeoutMs: Long,
+    ): DialResult {
         dials++
-        return if (dialResults.isEmpty()) DialResult.Opened(channel, mtu) else dialResults.removeFirst()
+        modes += mode
+        timeouts += timeoutMs
+        val result = if (dialResults.isEmpty()) DialResult.Opened(channel, mtu) else dialResults.removeFirst()
+        if (result == DialResult.Timeout && timeoutsTakeTheirWindow) delay(timeoutMs)
+        return result
     }
 }
 
