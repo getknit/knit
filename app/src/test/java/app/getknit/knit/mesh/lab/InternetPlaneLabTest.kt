@@ -91,7 +91,15 @@ class InternetPlaneLabTest {
             lab.awaitGroupScope(alice, groupId, bob, carol)
             lab.awaitGroupScope(carol, groupId, alice, bob)
             assertTrue(carol.sendGroup(groupId, "from the far island"))
-            lab.assertConverged(listOf(alice, bob, carol), atLeast = 2, timeoutMs = MeshLab.SPOOL_AWAIT_MS) { groupId }
+            // Custody parity is the near island's alone while Carol is away: the 60 s re-offer re-sends the
+            // group root between Alice and Bob (a DM-form frame the relay never carries to Carol), and on a
+            // slow runner this wait is still open when it fires. The re-link below settles Carol's custody.
+            lab.assertConverged(
+                listOf(alice, bob, carol),
+                atLeast = 2,
+                timeoutMs = MeshLab.SPOOL_AWAIT_MS,
+                custodyAcross = listOf(alice, bob),
+            ) { groupId }
 
             carol.leaveGroup(groupId)
             assertTrue(

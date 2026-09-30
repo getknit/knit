@@ -336,13 +336,17 @@ class MeshLab {
      *    own key, and no custody holds a frame its sender addressed to themselves (the self-pin loop).
      *
      * [carriers] are nodes that relayed and custodied but are not party to the thread — they take part in the
-     * custody and per-store checks only.
+     * custody and per-store checks only. [custodyAcross] narrows the custody leg alone, for a partition the
+     * design does not close: a relay carries only your own scopes, so a node on the far island never holds
+     * the DM-form frames two near-island nodes mint to each other (a seed or root re-send on the 60 s
+     * re-offer) until they meet by radio again.
      */
     suspend fun assertConverged(
         nodes: List<LabNode>,
         atLeast: Int,
         carriers: List<LabNode> = emptyList(),
         timeoutMs: Long = AWAIT_MS,
+        custodyAcross: List<LabNode> = nodes + carriers,
         conversation: (LabNode) -> String,
     ) {
         val names = nodes.map { it.name }
@@ -383,9 +387,12 @@ class MeshLab {
         )
 
         val stores = nodes + carriers
-        val custodied = tryAwait(1, timeoutMs) { if (stores.map { it.custodyFingerprint() }.distinct().size == 1) 1 else 0 }
-        val rows = stores.map { n -> "  ${n.name}: ${n.custodyIds().sorted()}" }.joinToString("\n")
-        assertTrue("custody did not converge across ${stores.map { it.name }} within ${timeoutMs}ms:\n$rows\n${report(stores)}", custodied)
+        val custodied = tryAwait(1, timeoutMs) { if (custodyAcross.map { it.custodyFingerprint() }.distinct().size == 1) 1 else 0 }
+        val rows = custodyAcross.map { n -> "  ${n.name}: ${n.custodyIds().sorted()}" }.joinToString("\n")
+        assertTrue(
+            "custody did not converge across ${custodyAcross.map { it.name }} within ${timeoutMs}ms:\n$rows\n${report(stores)}",
+            custodied,
+        )
 
         assertProfilesAgree(nodes, timeoutMs)
         assertSessionsAgree(nodes, timeoutMs)
