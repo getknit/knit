@@ -42,7 +42,9 @@ import kotlinx.coroutines.withTimeoutOrNull
  * that dialed us is the link's central and runs it at a 720 ms supervision timeout, which drops the link at the first
  * 0.72 s without a good packet. The stack's own update for the discovery asks for 5 s and gets it, then asks for the
  * link's first values back once discovery ends. BALANCED is AOSP's 30–50 ms at no latency with the 5 s timeout every
- * priority carries, inside Apple's accessory limits, and iOS grants it. It is asked after every lookup, so a
+ * priority carries, inside Apple's accessory limits, and iOS grants it. The put-back can still land after the ask, so
+ * the ask is repeated when the link reports a timeout under 5 s after it, and once more at the settle time unless the
+ * 5 s was reported ([DoorbellPolicy.Balanced]). It is asked after every lookup, so a
  * re-lookup's discovery (after a wedge or a services change) is followed by the request again. That is why the lookup
  * runs at link-up: the link spends no time at 720 ms waiting for its first ring, and a replaced link, which gets no
  * link-up push, still gets it.
@@ -73,6 +75,9 @@ internal class BleDoorbell(
     private var doorbell: BluetoothGattCharacteristic? = null
     private var absent = false
 
+    // When the client's BALANCED ask is checked again (DoorbellPolicy.Balanced.onSettle), null when none is owed.
+    private var settleAt: Long? = null
+
     fun start() {
         job = scope.launch(Dispatchers.IO) { loop() }
     }
@@ -91,7 +96,7 @@ internal class BleDoorbell(
         try {
             lookUp() // at link-up, for the connection priority it asks for; it rings nothing
             while (currentCoroutineContext().isActive) {
-                val due = schedule.dueAt
+                val due = listOfNotNull(schedule.dueAt, settleAt).minOrNull()
                 val poked =
                     if (due == null) {
                         pokes.receive()
@@ -100,6 +105,7 @@ internal class BleDoorbell(
                         withTimeoutOrNull((due - now()).coerceAtLeast(0L)) { pokes.receive() } != null
                     }
                 val t = now()
+                settleAt?.let { if (t >= it) settle() }
                 if (if (poked) schedule.afterFrame(t) else schedule.onDue(t)) ring()
             }
         } finally {
@@ -158,13 +164,34 @@ internal class BleDoorbell(
         }
     }
 
-    /** Asks for BALANCED parameters, whose 5 s supervision timeout replaces an iPhone central's 720 ms (#102). */
+    /**
+     * Asks for BALANCED parameters, whose 5 s supervision timeout replaces an iPhone central's 720 ms (#102), and
+     * arms the check that the stack's put-back of the central's own values did not land after it.
+     */
     private fun askForBalanced(c: Client) {
-        val asked =
-            runCatching { c.gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED) == true }
-                .getOrDefault(false)
-        Log.i(TAG, "bt doorbell priority $nodeId requested=$asked")
+        c.balanced.asked()
+        settleAt = now() + DoorbellPolicy.BALANCED_SETTLE_MS
+        Log.i(TAG, "bt doorbell priority $nodeId requested=${requestBalanced(c)}")
     }
+
+    /** The settle time of the client's ask came: ask again unless the link has reported the 5 s since. */
+    private fun settle() {
+        settleAt = null
+        val c = client ?: return
+        if (c.balanced.onSettle()) askAgain(c, "settle")
+    }
+
+    /** Repeats the client's BALANCED ask ([DoorbellPolicy.Balanced]); any thread. */
+    private fun askAgain(
+        c: Client,
+        why: String,
+    ) {
+        Log.i(TAG, "bt doorbell priority $nodeId again ($why) requested=${requestBalanced(c)}")
+    }
+
+    private fun requestBalanced(c: Client): Boolean =
+        runCatching { c.gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED) == true }
+            .getOrDefault(false)
 
     private fun write(
         c: Client,
@@ -190,6 +217,7 @@ internal class BleDoorbell(
         client?.close()
         client = null
         doorbell = null
+        settleAt = null
     }
 
     /** One GATT client, from its attach to its close; the callbacks complete what the loop awaits. */
@@ -207,6 +235,9 @@ internal class BleDoorbell(
 
         @Volatile
         private var servicesChanged = false
+
+        /** This lookup's BALANCED ask, and whether it needs repeating. */
+        val balanced = DoorbellPolicy.Balanced()
 
         /** What this client found can no longer be trusted. */
         val stale: Boolean get() = disconnected || servicesChanged
@@ -273,7 +304,9 @@ internal class BleDoorbell(
         /**
          * The link's parameters changed: interval in 1.25 ms units, timeout in 10 ms units. Hidden since API 26, so
          * not an `override`: the framework calls it virtually, and [Keep] stops R8 dropping a method nothing here
-         * calls. Diagnostics only (#102): the snoop log stays the oracle.
+         * calls. It logs the parameters the link settles on, and a timeout under 5 s after this lookup's BALANCED ask
+         * is the stack's put-back of the central's own, answered by asking again ([DoorbellPolicy.Balanced]). The
+         * settle timer covers a framework that stops calling it.
          */
         @Keep
         @Suppress("unused", "UNUSED_PARAMETER", "UnusedParameter")
@@ -289,6 +322,8 @@ internal class BleDoorbell(
                 "bt conn params $nodeId interval=${interval * INTERVAL_UNIT_US}us latency=$latency " +
                     "timeout=${timeout * TIMEOUT_UNIT_MS}ms status=$status",
             )
+            val timeoutMs = timeout * TIMEOUT_UNIT_MS
+            if (balanced.onParams(timeoutMs)) askAgain(this, "put-back ${timeoutMs}ms")
         }
     }
 

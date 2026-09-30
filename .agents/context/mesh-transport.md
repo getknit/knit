@@ -380,6 +380,11 @@ through it.
   us is the central and runs the link at a 720 ms supervision timeout; the stack's discovery-time update lifts it
   to 5 s and then asks for 720 ms back. BALANCED carries AOSP's fixed 5 s timeout (30–50 ms, no latency), and iOS
   grants it. Asked after each lookup, so a re-lookup's discovery is followed by the request again.
+- **The ask is repeated when the put-back wins** (`DoorbellPolicy.Balanced`). The stack re-sends the central's first
+  values (720 ms from an iPhone, 420 ms from BlueZ) as discovery ends, and over the L2CAP-signalling path nothing
+  orders that put-back against our ask. A timeout under 5 s reported by `onConnectionUpdated` after the ask asks
+  again at once, and 2 s after the ask a settle check asks again unless a report since showed 5 s — the net for a
+  framework that stops calling the hidden callback. At most two repeats per lookup, all for the same values.
 - **A ring is a 1-byte write without response.** Never with a response: a suspended app would have to answer it.
 - **The client lives and dies with the link** (`teardownLink`, and `registerLink`'s replace branch): an open client
   holds the ACL.
@@ -389,7 +394,8 @@ through it.
   advert's low byte, so a dialed iPhone's `CAP_DOORBELL` shows; a dialed Android↔Android link's `Peer.capabilities`
   is full width now, as the accepted side's was.
 
-Oracle: `bt doorbell found|absent|lookup failed|wedged <id>`, `bt doorbell priority <id> requested=<bool>` and
+Oracle: `bt doorbell found|absent|lookup failed|wedged <id>`, `bt doorbell priority <id> requested=<bool>`,
+`bt doorbell priority <id> again (put-back <ms>ms|settle) requested=<bool>` and
 `bt conn params <id> interval=… latency=… timeout=…` (the hidden `onConnectionUpdated`) at info, `bt ring <id>` at
 debug, and
 `doorbells=`/`rings=` on the `bt state` line. Tests: `DoorbellPolicyTest`, `ProtocolTest`; `BleDoorbell` is

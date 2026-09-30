@@ -81,6 +81,8 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   and dies with the link. A ring is a write without response, poked at the enqueue, never after the socket write.
   The lookup runs at link-up and each one that finds the doorbell asks for `CONNECTION_PRIORITY_BALANCED`: an
   iPhone central runs the link at a 720 ms supervision timeout, BALANCED carries 5 s (#102, the ADR's amendment).
+  The stack's put-back of the central's own timeout can land after that ask, so `DoorbellPolicy.Balanced` asks again,
+  on the hidden `onConnectionUpdated` or a 2 s settle check, at most twice a lookup (the put-back amendment).
 - **When touching `mesh/bluetooth/GattPayloads`, `BleGattPayloadReader`, `BleAdvertPayload.FLAG_DIALS_GATT_PEERS`,
   `BuildConfig.BLE_GATT_PEERS`, `BleScanner`'s UUID filter, or `BluetoothMeshTransport.onScanResult` / `sight`:**
   READ ADR 2026-09.kwq2 (companion change A3; knit-ios ADR 2026-09.xzpt) and its section in

@@ -45,6 +45,19 @@ internal object DoorbellPolicy {
     const val MAX_FAILED_LOOKUPS = 3
 
     /**
+     * The supervision timeout [android.bluetooth.BluetoothGatt.CONNECTION_PRIORITY_BALANCED] carries in AOSP, which a
+     * link the peer dialed is asked for after each lookup that finds the doorbell (#102). A report under it after the
+     * ask is the stack's put-back of the central's first values.
+     */
+    const val BALANCED_TIMEOUT_MS = 5_000
+
+    /** How long after the ask the link must have reported [BALANCED_TIMEOUT_MS], or it is asked again. */
+    const val BALANCED_SETTLE_MS = 2_000L
+
+    /** How many times one lookup's ask may be repeated, so a central that lowers the timeout itself is not fought. */
+    const val MAX_BALANCED_REASKS = 2
+
+    /**
      * Whether the peer on a link asked to be rung: its HELLO carries [Protocol.CAP_DOORBELL]. Android never sets
      * the bit, so a link between two Android phones never opens a GATT client.
      */
@@ -94,6 +107,54 @@ internal object DoorbellPolicy {
         private fun ring(now: Long): Boolean {
             rangAt = now
             dueAt = null
+            return true
+        }
+    }
+
+    /**
+     * Whether one lookup's BALANCED request needs asking again (#102). The stack re-sends the link's first parameters
+     * when discovery ends, just before the app hears of it, so the ask races that put-back: where the peripheral's
+     * update goes as an L2CAP request, nothing orders the two, and the central can finish on the put-back — 720 ms
+     * from an iPhone, 420 ms from BlueZ. So the ask is repeated when the link reports a timeout under
+     * [BALANCED_TIMEOUT_MS] after it ([onParams], from the hidden `onConnectionUpdated`), and once more
+     * [BALANCED_SETTLE_MS] after it unless a report since shows the 5 s ([onSettle]), which holds if that callback
+     * ever stops coming. Every repeat asks for the same values, so two of ours colliding cannot end under 5 s; at most
+     * [MAX_BALANCED_REASKS] per lookup.
+     *
+     * Thread-safe: [onParams] runs on a binder thread, the rest on the [BleDoorbell] loop.
+     */
+    class Balanced(
+        private val maxReasks: Int = MAX_BALANCED_REASKS,
+    ) {
+        private var asked = false
+        private var latestTimeoutMs: Int? = null
+        private var reasks = 0
+
+        /** The lookup asked for BALANCED. Reports before this are discovery's own, and count for nothing. */
+        @Synchronized
+        fun asked() {
+            asked = true
+        }
+
+        /** The link reported a supervision timeout of [timeoutMs]. True: ask again now. */
+        @Synchronized
+        fun onParams(timeoutMs: Int): Boolean {
+            if (!asked) return false
+            latestTimeoutMs = timeoutMs
+            return timeoutMs < BALANCED_TIMEOUT_MS && spend()
+        }
+
+        /** [BALANCED_SETTLE_MS] passed since the ask. True: ask again, since no report since it shows the 5 s. */
+        @Synchronized
+        fun onSettle(): Boolean {
+            if (!asked) return false
+            val latest = latestTimeoutMs
+            return (latest == null || latest < BALANCED_TIMEOUT_MS) && spend()
+        }
+
+        private fun spend(): Boolean {
+            if (reasks >= maxReasks) return false
+            reasks += 1
             return true
         }
     }

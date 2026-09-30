@@ -104,4 +104,37 @@ class DoorbellPolicyTest {
         lookups.failed(2 * DoorbellPolicy.LOOKUP_RETRY_MS)
         assertFalse(lookups.mayTry(10 * DoorbellPolicy.LOOKUP_RETRY_MS))
     }
+
+    @Test
+    fun aPutBackAfterTheAskIsAskedAgainAtOnce() {
+        val balanced = DoorbellPolicy.Balanced()
+        assertFalse("discovery's own update comes before the ask", balanced.onParams(420))
+        balanced.asked()
+        assertTrue("BlueZ's 420 ms put back", balanced.onParams(420))
+        assertFalse(balanced.onParams(DoorbellPolicy.BALANCED_TIMEOUT_MS))
+        assertFalse("the 5 s arrived, so the settle check asks nothing", balanced.onSettle())
+    }
+
+    @Test
+    fun theSettleCheckAsksAgainWhenNoReportShowedTheFiveSeconds() {
+        val silent = DoorbellPolicy.Balanced()
+        assertFalse("nothing asked, nothing to settle", silent.onSettle())
+        silent.asked()
+        assertTrue("the hidden callback never came", silent.onSettle())
+
+        val putBack = DoorbellPolicy.Balanced()
+        putBack.asked()
+        assertTrue(putBack.onParams(720))
+        assertTrue("the re-ask did not land either", putBack.onSettle())
+    }
+
+    @Test
+    fun theReasksAreBudgetedPerLookup() {
+        val balanced = DoorbellPolicy.Balanced()
+        balanced.asked()
+        repeat(DoorbellPolicy.MAX_BALANCED_REASKS) { assertTrue(balanced.onParams(720)) }
+        assertFalse("a central that keeps lowering it is not fought", balanced.onParams(720))
+        assertFalse(balanced.onSettle())
+        assertTrue("the next lookup's ask starts a fresh budget", DoorbellPolicy.Balanced().apply { asked() }.onParams(720))
+    }
 }

@@ -138,3 +138,32 @@ capabilities become full width too, as the accepted side's already were. Their o
 `CompositeMeshTransport.richer` (which record of a peer seen on two planes wins), only gains accuracy; `MeshManager`'s
 `CAP_RATCHET` and `CAP_INLINE_ACK` checks read the pinned profile, not the link. Android never sets `CAP_DOORBELL`,
 so no Android↔Android link opens a GATT client.
+
+**Amended 2026-09-29 (#102, the put-back race): the BALANCED ask is repeated when the stack's put-back wins.** On
+links a central dialed, A3's gate showed the ask losing to the put-back. On the Pixel 7 with knit-peer as central,
+the link settled at 420 ms (`bt conn params … timeout=420ms`, 14:18:36.700) and dropped 4 s later. On the rerun, the
+Pixel 3 sat at 420 ms for half a second before 5000 ms came back. AOSP (`l2c_ble_conn_params.cc`) explains both.
+While discovery holds the parameters locked, the link control block keeps the connection's first values. The unlock
+re-sends them through `l2cble_start_conn_update` before the app hears `onServicesDiscovered`, so our ask always
+follows the put-back. When the peripheral's update goes as an HCI request, the stack sets `UPDATE_PENDING` and
+queues our ask behind the put-back, and it lands last: the Pixel 3's trace shows the ask at .758, 420 ms at .837 and
+5000 ms at 40.335. When the update goes as an L2CAP signalling request, no pending flag is set, both requests reach
+the central back to back, and it can finish on the put-back. After our ask the control block holds BALANCED, so any
+later re-send by the stack carries 5 s. Only the first put-back threatens the link.
+
+`DoorbellPolicy.Balanced`, one per lookup, decides when to ask again:
+
+- **On a put-back.** A timeout under 5 s that `onConnectionUpdated` reports after the ask gets an immediate re-ask.
+  The put-back has completed by then, so the re-ask comes last. On the HCI path, a re-ask made while the first is
+  still queued sends the same values once more.
+- **At the settle time.** 2 s after the ask, it asks again unless a report since showed 5 s. That covers a framework
+  that stops calling the hidden callback.
+- **At most two re-asks per lookup,** so a central that lowers the timeout on purpose is not fought. Every ask
+  carries the same values, so no collision among our own requests can end under 5 s.
+
+The maintainer ruled that the hidden callback may drive this behaviour, with the timer as its net. `@Keep` keeps
+the callback, and the framework calls it virtually, so no reflection is involved. A new info line,
+`bt doorbell priority <id> again (put-back <ms>ms|settle) requested=<bool>`, logs each re-ask. The oracle is
+unchanged: after the lookup, the last `bt conn params <id> …` line a link logs shows `timeout=5000ms`.
+`DoorbellPolicyTest` pins the rule. Still owed on hardware: knit-ios's `android-reads --order peer-above` and
+`interop.py iphone` with the iPhone above, ten link-ups per phone on the Pixel 7 and the Pixel 3.
