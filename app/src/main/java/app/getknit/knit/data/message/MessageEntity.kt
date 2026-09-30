@@ -181,6 +181,14 @@ data class MessageEntity(
      * the unverified styling; the rest keep it, and an unsigned post is never held against anybody.
      */
     val originSigned: Int = ORIGIN_UNSIGNED,
+    /**
+     * The image attachment holds more than one frame — a GIF, which the ingest re-encodes to an animated WebP
+     * under the same MIME a still sticker gets, so only the frames tell them apart. **Local only**, derived
+     * from the bytes by [app.getknit.knit.data.AnimatedImage] exactly as [voicePeaks] is: the sender at
+     * ingest, the recipient once the blob lands. It picks a preview label ("GIF" over "Photo") and nothing
+     * else, so false — also the value while a received blob is still on its way — is always a safe answer.
+     */
+    val attachmentAnimated: Boolean = false,
 ) {
     companion object {
         // [originSigned] values. Append-only like every other registry here: the value is stored on the row.

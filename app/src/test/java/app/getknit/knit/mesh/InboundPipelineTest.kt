@@ -2228,6 +2228,7 @@ class InboundPipelineTest {
             rig.deliver(alice, rig.attachmentChat(alice, id = "v1", attachmentHash = "note", mime = VoiceAudio.MIME))
             rig.deliver(alice, rig.attachmentChat(alice, id = "l1", attachmentHash = "card", mime = LinkPreviewBlob.MIME))
             rig.deliver(alice, rig.attachmentChat(alice, id = "u1", attachmentHash = "unknown", mime = null))
+            rig.deliver(alice, rig.attachmentChat(alice, id = "g1", attachmentHash = "gif", mime = "image/gif"))
             rig.deliver(alice, rig.sealedFileDm(alice, id = "f1", attachmentHash = "doc", fileName = "budget.xlsx"))
             rig.deliver(
                 alice,
@@ -2235,7 +2236,7 @@ class InboundPipelineTest {
             )
 
             assertEquals(
-                listOf("📷 Photo", "🎤 Voice message", "🔗 Link", "📷 Photo", "📎 budget.xlsx", "here it is"),
+                listOf("📷 Photo", "🎤 Voice message", "🔗 Link", "📷 Photo", "🎞️ GIF", "📎 budget.xlsx", "here it is"),
                 bodies,
             )
         }
@@ -2262,6 +2263,37 @@ class InboundPipelineTest {
             coVerify(exactly = 1) { rig.messages.setVoiceMeta("note", VoiceAudio.durationMs(note)!!, null) }
             coVerify(exactly = 0) { rig.messages.setVoiceMeta("photo", any(), any()) }
             coVerify(exactly = 0) { rig.messages.setVoiceMeta("nobody-claims-this", any(), any()) }
+        }
+
+    @Test
+    fun aPulledAnimatedImageMarksItsRowsAndAStillOneDoesNot() =
+        runTest {
+            // The recipient's half of the "GIF" label: a picked GIF travels as an animated WebP under the MIME a
+            // still sticker has, so the frames are counted the moment the blob lands — and only for a MIME
+            // whose container can animate.
+            val rig = Rig(backgroundScope)
+            val animated =
+                "RIFF".toByteArray() + ByteArray(4) + "WEBPVP8X".toByteArray() + byteArrayOf(10, 0, 0, 0, 0x02, 0, 0, 0)
+            val still = animated.copyOf().also { it[20] = 0x10 } // alpha only: a transparent sticker
+            coEvery { rig.messages.attachmentMimeForHash("gif") } returns "image/webp"
+            coEvery { rig.messages.attachmentKeyForHash("gif") } returns null
+            coEvery { rig.blobs.bytes("gif") } returns animated
+            coEvery { rig.messages.attachmentMimeForHash("sticker") } returns "image/webp"
+            coEvery { rig.messages.attachmentKeyForHash("sticker") } returns null
+            coEvery { rig.blobs.bytes("sticker") } returns still
+            // Animated bytes under a MIME that cannot animate are never looked at.
+            coEvery { rig.messages.attachmentMimeForHash("jpeg") } returns "image/jpeg"
+            coEvery { rig.blobs.bytes("jpeg") } returns animated
+
+            rig.pipeline.onObtained("gif")
+            rig.pipeline.onObtained("sticker")
+            rig.pipeline.onObtained("jpeg")
+            rig.pipeline.onObtained("nobody-claims-this")
+
+            coVerify(exactly = 1) { rig.messages.markAttachmentAnimated("gif") }
+            coVerify(exactly = 0) { rig.messages.markAttachmentAnimated("sticker") }
+            coVerify(exactly = 0) { rig.messages.markAttachmentAnimated("jpeg") }
+            coVerify(exactly = 0) { rig.messages.markAttachmentAnimated("nobody-claims-this") }
         }
 
     /** A notification names its sender by the collision-aware label when another pinned peer shares the name (ADR 058). */

@@ -3,6 +3,7 @@ package app.getknit.knit.mesh
 import android.util.Log
 import androidx.room3.withWriteTransaction
 import app.getknit.knit.TextLimits
+import app.getknit.knit.data.AnimatedImage
 import app.getknit.knit.data.BlobRepository
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.KnitDatabase
@@ -210,15 +211,16 @@ class InboundPipeline(
     /**
      * A pulled blob just landed (the [BlobExchange] `onObtained` hook): attribute it to whoever advertised
      * it — a peer's avatar, a group's photo — screen its decrypted bytes if it's an E2E attachment we now
-     * hold the key for, and describe it if it's a voice note. The four are order-independent and each is a
-     * no-op when the hash isn't theirs. This is the wrapper [MeshManager] wires as `blobExchange`'s
-     * onObtained callback.
+     * hold the key for, and describe it if it's a voice note or an animated image. The five are
+     * order-independent and each is a no-op when the hash isn't theirs. This is the wrapper [MeshManager] wires
+     * as `blobExchange`'s onObtained callback.
      */
     suspend fun onObtained(hash: String) {
         adoptAdvertisedAvatar(hash)
         adoptAdvertisedGroupPhoto(hash)
         screenObtainedAttachment(hash)
         deriveObtainedVoiceMeta(hash)
+        deriveObtainedAnimation(hash)
     }
 
     /**
@@ -2575,6 +2577,8 @@ class InboundPipeline(
         if (hash != null) {
             if (blobStore.has(hash)) {
                 screenHeldAttachment(hash, sealed?.attachmentKey, content.attachmentMime)
+                // Already held (cached while relaying), so no onObtained is coming to read its frames.
+                deriveObtainedAnimation(hash)
             } else {
                 blobExchange.want(hash)
                 // Arm the fast plane toward the author — the guaranteed holder — so the pull can ride a NAN
@@ -2853,7 +2857,8 @@ class InboundPipeline(
      * Notification stand-in for a message whose only content is an attachment, so it still says something
      * useful on the lock screen. Literal strings rather than resources because this layer holds no
      * `Context` (it is deliberately Android-light, `rules/mesh.md`); they mirror `chat_list_preview_photo`,
-     * `chat_list_preview_voice` and `chat_list_preview_file` and should be changed together with them.
+     * `chat_list_preview_gif`, `chat_list_preview_voice` and `chat_list_preview_file` and should be changed
+     * together with them.
      *
      * A shared position in the body is named the same way, by [GeoUri.describe] at both call sites — a
      * lock-screen line should say "📍 Location", not print coordinates — mirroring `messagePreview` in
@@ -2863,6 +2868,9 @@ class InboundPipeline(
      * an arbitrary file's mime is whatever its sender's provider called it, and "📎 application/zip" would be
      * a worse lock-screen line than the name the sender actually chose. Already normalized on decode
      * ([app.getknit.knit.mesh.protocol.AttachmentName]), so it is safe to draw.
+     *
+     * Only the MIME can speak for a GIF here: the notification fires before the blob is pulled, so the frames
+     * that make an animated WebP a GIF ([deriveObtainedAnimation]) are not in hand yet, and it reads as a photo.
      */
     private fun attachmentPreview(
         content: ChatContent,
@@ -2873,6 +2881,7 @@ class InboundPipeline(
             fileName != null -> "📎 $fileName"
             VoiceAudio.isVoice(content.attachmentMime) -> "🎤 Voice message"
             content.attachmentMime == LinkPreviewBlob.MIME -> "🔗 Link"
+            content.attachmentMime == "image/gif" -> "🎞️ GIF"
             else -> "📷 Photo"
         }
 
@@ -3409,6 +3418,23 @@ class InboundPipeline(
             if (described.isEmpty) return
             messages.setVoiceMeta(hash, described.durationMs, described.peaks)
         }.onFailure { Log.w(TAG, "voice metadata derivation failed: ${it.javaClass.simpleName}") }
+    }
+
+    /**
+     * A blob just landed: if a stored message names it as an image whose container can animate, count its
+     * frames and mark every row that references it — the recipient's half of the "GIF" label, read off the
+     * same bytes the sender read at ingest ([AnimatedImage]), so it costs no wire field. Decrypts as
+     * [deriveObtainedVoiceMeta] does; a no-op for a still image, anything else, and a blob no row claims.
+     * Never throws: a GIF we could not read is labelled a photo, not a dropped delivery.
+     */
+    private suspend fun deriveObtainedAnimation(hash: String) {
+        runCatching {
+            if (messages.attachmentMimeForHash(hash) !in AnimatedImage.ANIMATABLE_MIMES) return
+            val stored = blobs.bytes(hash) ?: return
+            val key = messages.attachmentKeyForHash(hash)
+            val image = if (key == null) stored else AttachmentCrypto.open(stored, b64d(key)) ?: return
+            if (AnimatedImage.isAnimated(image)) messages.markAttachmentAnimated(hash)
+        }.onFailure { Log.w(TAG, "animation check failed: ${it.javaClass.simpleName}") }
     }
 
     private companion object {

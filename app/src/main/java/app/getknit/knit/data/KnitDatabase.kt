@@ -52,7 +52,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 16
+internal const val KNIT_DB_SCHEMA_VERSION = 17
 
 @Database(
     entities = [
@@ -170,6 +170,11 @@ internal const val KNIT_DB_SCHEMA_VERSION = 16
     //     2026-09.g64k). Not columns on `peers`: a `ByteArray` breaks that data class's equality and every
     //     peer flow reads `SELECT *`. Rows go with their pin; carried in a backup like `peers`. Empty on
     //     arrival — each fills as that peer's profile next arrives. Migrated by KnitMigrations.MIGRATION_15_16.
+    // v17: one `messages.attachmentAnimated` column — the image attachment holds more than one frame, so the
+    //     chat list, the message-details screen and a quote say "GIF" rather than "Photo". A picked GIF is
+    //     stored as an animated WebP under the MIME a still sticker gets, so the flag is read off the frames by
+    //     AnimatedImage on both ends, like v5's voice columns — no wire field. Backfilled only where the MIME
+    //     alone says GIF; migrated by KnitMigrations.MIGRATION_16_17.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds

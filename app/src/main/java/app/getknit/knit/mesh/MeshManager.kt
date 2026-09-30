@@ -1005,6 +1005,7 @@ class MeshManager(
                     // in the room (ADR 034), so in practice this is always null here.
                     voiceDurationMs = attachment?.voice?.durationMs,
                     voicePeaks = attachment?.voice?.peaks,
+                    attachmentAnimated = attachment?.animated == true,
                 ).withReply(replyTo),
             )
             val content =
@@ -1082,6 +1083,8 @@ class MeshManager(
                 // ingest here, and are written against the same ciphertext hash for the same reason.
                 attachmentName = attachment?.name,
                 attachmentSize = attachment?.takeIf { it.name != null }?.sizeBytes?.toLong(),
+                // Read off the frames at ingest, and by the recipient off the same bytes when they land.
+                attachmentAnimated = attachment?.animated == true,
                 pendingKey = envelope == null && group == null,
             ).withReply(replyTo),
         )

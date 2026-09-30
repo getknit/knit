@@ -137,6 +137,9 @@ class MessageRepository(
         peaks: String?,
     ) = dao.setVoiceMeta(hash, durationMs, peaks)
 
+    /** Marks attachment [hash] animated on every row naming it — the "GIF" label's locally-derived flag. */
+    suspend fun markAttachmentAnimated(hash: String) = dao.markAttachmentAnimated(hash)
+
     suspend fun hashesNeedingFetch(): List<String> = dao.hashesNeedingFetch()
 
     /**

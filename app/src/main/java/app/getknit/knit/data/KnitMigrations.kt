@@ -417,6 +417,23 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v16 → v17: one `messages.attachmentAnimated` flag — the attachment holds more than one frame, so the
+     * previews say "GIF" rather than "Photo". Local only, derived from the bytes on both ends (`AnimatedImage`),
+     * like MIGRATION_4_5's voice columns. The backfill is what SQL can see without the bytes: an attachment
+     * still carried as `image/gif` is one a GIF sender never re-encoded. A GIF this app stored as animated
+     * WebP before the column existed keeps reading "Photo" — its bytes sit sealed in `blobs` under keys no
+     * migration should be decrypting on the open path. Additive only; the SQL must stay byte-equivalent to
+     * what Room generates for `app/schemas/**/17.json`.
+     */
+    val MIGRATION_16_17 =
+        object : Migration(16, 17) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `attachmentAnimated` INTEGER NOT NULL DEFAULT 0")
+                connection.execSQL("UPDATE `messages` SET `attachmentAnimated` = 1 WHERE `attachmentMime` = 'image/gif'")
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -435,5 +452,6 @@ object KnitMigrations {
             MIGRATION_13_14,
             MIGRATION_14_15,
             MIGRATION_15_16,
+            MIGRATION_16_17,
         )
 }

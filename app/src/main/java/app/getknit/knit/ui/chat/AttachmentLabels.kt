@@ -13,7 +13,8 @@ import app.getknit.knit.location.GeoUri
  * the label a quoted attachment writes into `ReplyRef.snippet`, and the message-details body line.
  *
  * [size] is appended when it is known — a file's declared byte count. An image or a voice note carries none,
- * and the line simply ends after the name rather than inventing one.
+ * and the line simply ends after the name rather than inventing one. An image with more than one frame
+ * ([MessageEntity.attachmentAnimated]) reads "GIF" rather than "Photo".
  *
  * The mirror of this logic without a `Context` lives in `InboundPipeline.attachmentPreview` (that layer is
  * deliberately Android-light, `rules/mesh.md`) and the two are changed together — as are the two callers of
@@ -22,7 +23,14 @@ import app.getknit.knit.location.GeoUri
 fun attachmentPreview(
     context: Context,
     message: MessageEntity,
-): String = attachmentLabel(context, message.attachmentMime, message.attachmentName, message.attachmentSize)
+): String =
+    attachmentLabel(
+        context,
+        message.attachmentMime,
+        message.attachmentName,
+        message.attachmentSize,
+        animated = message.attachmentAnimated,
+    )
 
 /**
  * The one-line preview of a whole message: its body with a shared position named rather than printed
@@ -44,6 +52,7 @@ fun attachmentLabel(
     mime: String?,
     name: String?,
     size: Long? = null,
+    animated: Boolean = false,
 ): String {
     val label =
         when (attachmentKindOf(mime, name)) {
@@ -52,7 +61,7 @@ fun attachmentLabel(
             }
 
             AttachmentKind.Photo -> {
-                context.getString(R.string.chat_list_preview_photo)
+                context.getString(if (animated) R.string.chat_list_preview_gif else R.string.chat_list_preview_photo)
             }
 
             AttachmentKind.File -> {

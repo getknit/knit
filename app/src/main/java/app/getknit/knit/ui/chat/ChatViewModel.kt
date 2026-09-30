@@ -153,6 +153,8 @@ data class ChatRow(
     val moderationFlagged: Boolean = false,
     val attachmentHash: String? = null,
     val attachmentMime: String? = null,
+    // More than one frame (a GIF): a quote of this message says "GIF" rather than "Photo".
+    val attachmentAnimated: Boolean = false,
     // Base64 key for an end-to-end-encrypted attachment (null for plaintext/broadcast attachments);
     // passed to the image loader to decrypt the ciphertext blob before decoding.
     val attachmentKey: String? = null,
@@ -983,6 +985,7 @@ class ChatViewModel(
                         moderationFlagged = hideSensitive && m.moderation == MessageEntity.MODERATION_TEXT_FLAGGED,
                         attachmentHash = m.attachmentHash,
                         attachmentMime = m.attachmentMime,
+                        attachmentAnimated = m.attachmentAnimated,
                         attachmentKey = m.attachmentKey,
                         voiceDurationMs = m.voiceDurationMs,
                         voicePeaks = m.voicePeaks,

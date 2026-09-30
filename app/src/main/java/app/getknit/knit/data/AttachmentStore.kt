@@ -63,6 +63,9 @@ class AttachmentStore(
      * [link] is the same idea for a link-preview card ([ingestLinkPreview]): what the composer draws for the
      * staged card and the link its dismissal is remembered by, carried on the one staged object rather than
      * kept beside it.
+     *
+     * [animated] rides along for [voice]'s reason: an image with more than one frame ([AnimatedImage]), read
+     * off the exact bytes stored here so the sender's "GIF" label agrees with the one the recipient derives.
      */
     data class Ingested(
         val hash: String,
@@ -71,6 +74,7 @@ class AttachmentStore(
         val name: String? = null,
         val sizeBytes: Int = 0,
         val link: LinkCard? = null,
+        val animated: Boolean = false,
     )
 
     /**
@@ -334,7 +338,7 @@ class AttachmentStore(
         val flagged = imageScreening.isImageExplicit(bytes)
         val hash = sha256(bytes)
         blobs.insert(hash, mime, bytes)
-        return IngestResult.Success(Ingested(hash, mime), flagged)
+        return IngestResult.Success(Ingested(hash, mime, animated = AnimatedImage.isAnimated(bytes)), flagged)
     }
 
     private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

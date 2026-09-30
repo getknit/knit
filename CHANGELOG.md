@@ -27,6 +27,8 @@ document:
   you're both in it.
 - You can now clear the Nearby room's messages by long-pressing it in the chat list, as you can with other
   chats. This only removes them from your phone, and the room stays in your list.
+- A GIF now shows as "GIF" rather than "Photo" in the chat list, in message details and when you reply to
+  one. Most GIFs from before this update still show as Photo.
 
 ### Fixed
 

@@ -485,6 +485,7 @@
     <string name="chat_list_hint_nearby">Say hello</string>
     <string name="chat_list_hint_add_contact">Add a contact</string>
     <string name="chat_list_preview_photo">📷 Photo</string>
+    <string name="chat_list_preview_gif">🎞️ GIF</string>
     <string name="chat_list_preview_voice">🎤 Voice message</string>
     <string name="chat_list_preview_file">📎 %1$s</string>
     <string name="chat_list_preview_link">🔗 Link</string>

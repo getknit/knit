@@ -88,6 +88,8 @@ data class MessageDetailsUiState(
     val attachmentMime: String? = null,
     val attachmentName: String? = null,
     val attachmentSize: Long? = null,
+    // More than one frame: the body line says "GIF" rather than "Photo".
+    val attachmentAnimated: Boolean = false,
     val moderationFlagged: Boolean = false,
     val mine: Boolean = false,
     val senderName: String = "",
@@ -210,6 +212,7 @@ class MessageDetailsViewModel(
                         attachmentMime = message.attachmentMime,
                         attachmentName = message.attachmentName,
                         attachmentSize = message.attachmentSize,
+                        attachmentAnimated = message.attachmentAnimated,
                         moderationFlagged = hideSensitive && message.moderation == MessageEntity.MODERATION_TEXT_FLAGGED,
                         mine = message.senderId == me,
                         senderName = directory.label(message.senderId).text,

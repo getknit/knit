@@ -192,6 +192,7 @@ private fun MessageSummary(state: MessageDetailsUiState) {
                             state.attachmentMime,
                             state.attachmentName,
                             state.attachmentSize,
+                            animated = state.attachmentAnimated,
                         )
                     }
 

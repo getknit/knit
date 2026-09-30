@@ -46,7 +46,7 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v16) creates and opens from the exported JSON`() =
+    fun `the current schema (v17) creates and opens from the exported JSON`() =
         runTest {
             helper.createDatabase(CURRENT_VERSION).close()
         }
@@ -603,6 +603,27 @@ class KnitDatabaseMigrationTest {
         }
 
     @Test
+    fun `migrate 16 to 17 marks a stored GIF animated and leaves every other attachment still`() =
+        runTest {
+            helper.createDatabase(16).use { c ->
+                c.execSQL(INSERT_V16 + "VALUES ('gif','n1','peer-1','',1,1,0,'[]',0,0,0,0,0,0,'h1','image/gif')")
+                // A GIF re-encoded to animated WebP is indistinguishable from a still sticker without its bytes.
+                c.execSQL(INSERT_V16 + "VALUES ('webp','n1','peer-1','',2,1,0,'[]',0,0,0,0,0,0,'h2','image/webp')")
+                c.execSQL(INSERT_V16 + "VALUES ('jpeg','n1','peer-1','',3,1,0,'[]',0,0,0,0,0,0,'h3','image/jpeg')")
+                c.execSQL(INSERT_V16 + "VALUES ('text','n1','peer-1','hi',4,1,0,'[]',0,0,0,0,0,0,NULL,NULL)")
+            }
+            helper.runMigrationsAndValidate(17, listOf(KnitMigrations.MIGRATION_16_17)).use { c ->
+                val animated = mutableMapOf<String, Long>()
+                c.prepare("SELECT id, attachmentAnimated FROM messages").use { s ->
+                    while (s.step()) animated[s.getText(0)] = s.getLong(1)
+                }
+                assertEquals(mapOf("gif" to 1L, "webp" to 0L, "jpeg" to 0L, "text" to 0L), animated)
+                // The FTS triggers fired on the backfill's UPDATE and the index still agrees with its table.
+                c.execSQL("INSERT INTO messages_fts(messages_fts) VALUES('integrity-check')")
+            }
+        }
+
+    @Test
     fun `migrate 11 to 12 indexes every existing message and keeps the index in step from then on`() =
         runTest {
             // A device upgrading holds history; 'rebuild' must index all of it, and the sync triggers must
@@ -657,7 +678,13 @@ class KnitDatabaseMigrationTest {
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 16
+        const val CURRENT_VERSION = 17
+
+        /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
+        const val INSERT_V16 =
+            "INSERT INTO messages (id, senderId, conversationId, body, sentAt, received, receivedVia, " +
+                "mentions, replyToHasAttachment, moderation, pendingKey, kind, originViaMqtt, originSigned, " +
+                "attachmentHash, attachmentMime) "
 
         /** The v11 column list, as MIGRATION_10_11's test seeds it. */
         const val INSERT_V11 =

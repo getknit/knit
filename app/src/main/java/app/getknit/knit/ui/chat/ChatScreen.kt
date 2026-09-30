@@ -777,6 +777,7 @@ internal fun ChatScreenContent(
     // buildReplySnippet for why a voice note's quote label rides the snippet rather than the wire.
     val voiceQuoteLabel = stringResource(R.string.chat_reply_voice)
     val fileQuoteLabel = stringResource(R.string.chat_list_preview_file)
+    val gifQuoteLabel = stringResource(R.string.chat_list_preview_gif)
     val locationQuoteLabel = stringResource(R.string.chat_list_preview_location)
 
     // The thread is rendered bottom-anchored (the LazyColumn below uses reverseLayout), so it opens
@@ -1373,6 +1374,10 @@ internal fun ChatScreenContent(
 
                                                                     VoiceAudio.isVoice(msg.attachmentMime) -> {
                                                                         voiceQuoteLabel
+                                                                    }
+
+                                                                    msg.attachmentAnimated -> {
+                                                                        gifQuoteLabel
                                                                     }
 
                                                                     else -> {

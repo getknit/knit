@@ -187,6 +187,14 @@ interface MessageDao {
         peaks: String?,
     )
 
+    /**
+     * Records that the attachment [hash] is animated on every message naming it — keyed by hash for
+     * [setVoiceMeta]'s reason. Only rows not already marked are touched, so a re-landed blob writes nothing
+     * and wakes no observer of the table.
+     */
+    @Query("UPDATE messages SET attachmentAnimated = 1 WHERE attachmentHash = :hash AND attachmentAnimated = 0")
+    suspend fun markAttachmentAnimated(hash: String)
+
     /** Attachment hashes referenced by stored messages whose bytes aren't in the `blobs` table yet. */
     @Query(
         "SELECT DISTINCT attachmentHash FROM messages " +
