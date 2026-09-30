@@ -54,5 +54,8 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "whatsnew@whatsnew-fyi": true
   }
 }
