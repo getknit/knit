@@ -26,11 +26,15 @@ import java.io.OutputStream
  * the duration and never touch the disk.
  *
  * [openDatabase] opens a SQLCipher file under a passphrase with the driver alone (the real one in the
- * app, an unkeyed driver in tests).
+ * app, an unkeyed driver in tests). [secretAt] is the wrap a staged secret goes through (alias, file name,
+ * directory) — the Keystore's in the app, a stand-in on the JVM, where there is no AndroidKeyStore.
  */
 class RestoreStager(
     private val context: Context,
     private val openDatabase: (File, ByteArray) -> SQLiteConnection,
+    private val secretAt: (String, String, File) -> KeystoreSecret = { alias, fileName, dir ->
+        KeystoreSecret(context, alias, fileName, dir)
+    },
 ) {
     /** What the backup is, from its manifest alone — the summary the restore screen shows before asking. */
     fun peek(
@@ -167,8 +171,9 @@ class RestoreStager(
         fileName: String,
         plain: ByteArray,
     ) {
-        val secret = KeystoreSecret(context, alias, fileName, staging)
-        secret.store(plain)
+        val secret = secretAt(alias, fileName, staging)
+        // A Keystore refusal is a GeneralSecurityException, which the restore screen does not catch.
+        runCatching { secret.store(plain) }.onFailure { BackupArchive.fail(BackupProblem.MISMATCH, "$fileName did not wrap", it) }
         val back = secret.load()
         BackupArchive.expect(back != null && back.contentEquals(plain), BackupProblem.MISMATCH) { "$fileName did not wrap" }
         back?.fill(0)

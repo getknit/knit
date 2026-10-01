@@ -276,6 +276,44 @@ class ScopeCryptoTest {
         }
     }
 
+    /**
+     * Everything a relay hands back is untrusted: a blob of the wrong shape is refused as an
+     * [IllegalArgumentException] before a cipher is built, never read past its end, and never confused
+     * with an AEAD failure. The same holds for the local inputs a caller could get wrong.
+     */
+    @Test
+    fun malformedInputsAreRefusedBeforeAnyCipherRuns() {
+        val keys = ScopeCrypto.dmSealKeys(deterministicBytes(1), NODE_A, NODE_B)
+        val scopeId = ScopeCrypto.dmScopeId(deterministicBytes(1), NODE_A, NODE_B)
+        val refused = { block: () -> Unit -> assertThrows(IllegalArgumentException::class.java) { block() } }
+
+        // A commons secret is exactly 32 bytes, for its scope id and its seal keys alike.
+        for (size in listOf(0, 31, 33)) {
+            refused { ScopeCrypto.commonsScopeId(ByteArray(size)) }
+            refused { ScopeCrypto.commonsSealKeys(ByteArray(size)) }
+        }
+        // A frame seal takes a raw 64-byte signature over a non-empty body.
+        refused { ScopeCrypto.seal(keys, scopeId, ByteArray(63), deterministicBytes(5, 40)) }
+        refused { ScopeCrypto.seal(keys, scopeId, deterministicBytes(4, 64), ByteArray(0)) }
+        // Opening: empty, short of a nonce and signature, or a chunk's version byte.
+        refused { ScopeCrypto.open(keys, scopeId, ByteArray(0)) }
+        refused { ScopeCrypto.open(keys, scopeId, byteArrayOf(ScopeCrypto.SEAL_VERSION) + ByteArray(ScopeCrypto.NONCE_BYTES + 10)) }
+        // A chunk seal is keyed to a 32-byte attachment hash.
+        refused { ScopeCrypto.sealChunk(keys, scopeId, ByteArray(16), 0, 1, deterministicBytes(9, 300)) }
+        // Opening a chunk: empty, or too short to hold its header.
+        refused { ScopeCrypto.openChunk(keys, scopeId, ByteArray(0)) }
+        refused {
+            ScopeCrypto.openChunk(
+                keys,
+                scopeId,
+                byteArrayOf(ScopeCrypto.ATTACH_SEAL_VERSION) + ByteArray(ScopeCrypto.NONCE_BYTES + ScopeCrypto.ATTACH_HEADER_BYTES),
+            )
+        }
+        // A scope digest is exactly eight bytes.
+        refused { ScopeCrypto.digestValue(ByteArray(7)) }
+        refused { ScopeCrypto.digestValue(ByteArray(9)) }
+    }
+
     private companion object {
         // Valid-shape fixtures: 26-char base32 node ids, `g-` + 24-hex group id.
         const val NODE_A = "aaaaabbbbbcccccdddddeeeeef"

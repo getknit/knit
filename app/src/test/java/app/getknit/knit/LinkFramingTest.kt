@@ -92,6 +92,21 @@ class LinkFramingTest {
     }
 
     @Test
+    fun aNegativeLengthPrefixThrowsRatherThanAllocating() {
+        // 0xFFFFFFFF reads back as -1: a hostile or desynced peer must get a dropped link, not a NegativeArraySize.
+        val header = byteArrayOf(LinkFraming.Type.FRAME.tag, -1, -1, -1, -1)
+        assertThrows(IOException::class.java) { LinkFraming.read(ByteArrayInputStream(header)) }
+    }
+
+    @Test
+    fun anUnknownRecordTypeThrows() {
+        for (tag in listOf(0, 0x7F, 0xFF)) {
+            val record = byteArrayOf(tag.toByte(), 0, 0, 0, 0)
+            assertThrows(IOException::class.java) { LinkFraming.read(ByteArrayInputStream(record)) }
+        }
+    }
+
+    @Test
     fun encodeRejectsAnOversizePayload() {
         assertThrows(IllegalArgumentException::class.java) {
             LinkFraming.encode(LinkFraming.Type.FILE_CHUNK, ByteArray(LinkFraming.MAX_PAYLOAD_BYTES + 1))
