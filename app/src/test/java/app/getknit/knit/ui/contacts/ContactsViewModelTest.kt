@@ -347,6 +347,8 @@ class ContactsViewModelTest {
             coVerify { messages.save(capture(notice)) }
             assertEquals(MessageEntity.KIND_GROUP_CREATED, notice.captured.kind)
             assertEquals("created:$groupId", notice.captured.id)
+            // Us as the subject is also what accepts the new group before anyone writes in it: the authored
+            // set counts notices (MessageDao.conversationsIAuthoredIn).
             assertEquals("me", notice.captured.senderId)
             assertEquals(groupId, notice.captured.conversationId)
         }

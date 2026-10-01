@@ -290,6 +290,11 @@ interface MessageDao {
      * Distinct conversations the local user ([me]) has authored a message in — the "threads I started" signal.
      * A post heard on the Meshtastic radio sits in our sender column by convention (`originNode` is what says
      * whose words they are), so it is excluded: overhearing a channel is not starting a thread in it.
+     *
+     * Every kind counts, unlike [sendersIn]: the `created` line `createGroup` writes and an outgoing transfer's
+     * row are what make those threads ours before we type a word in them. So a notice may carry [me] as its
+     * subject only for our own action or our own frame — one a peer's frame could point at us would accept
+     * that peer's thread (#107, `InboundPipeline.groupNotices`).
      */
     @Query("SELECT DISTINCT conversationId FROM messages WHERE senderId = :me AND originNode IS NULL")
     suspend fun conversationsIAuthoredIn(me: String): List<String>

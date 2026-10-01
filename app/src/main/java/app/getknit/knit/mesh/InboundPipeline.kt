@@ -2062,7 +2062,7 @@ class InboundPipeline(
                         photoUpdatedAt = decision.clock,
                     ),
                 )
-                groupNotices(group, senderId, sentAt, existing, incomingName, keepName, takeIncoming, decision, createdAt)
+                groupNotices(group, senderId, me, sentAt, existing, incomingName, keepName, takeIncoming, decision, createdAt)
                 if (rejoining) groups.recordRejoin(group.id, senderId, sentAt, rekey = rejoinRekeyDue(group.id, senderId))
                 Reconciled(decision, departed.toSet(), firstSight = existing == null)
             } ?: return false
@@ -2108,10 +2108,19 @@ class InboundPipeline(
      * has not been renamed or re-photographed, it has been *created*, and it gets exactly one line
      * saying so. That is also the only join-shaped notice there is — a group's id is the hash of its
      * founding roster and membership only ever shrinks, so nobody ever joins one.
+     *
+     * That line's subject is the one notice subject a frame gets to *claim*: [GroupInfo.createdBy] is the
+     * sender's word, and our node id is on every advert. A notice keeps its subject as its sender, and
+     * [MessageRepository.conversationsIAuthoredIn] counts notices, so a line naming us makes the thread one
+     * we wrote in and lets a stranger's group past the Message Requests gate (#107). Only our own frame may
+     * name us; any other names its verified sender. The cost: a group we created, met again after a
+     * reinstall with no backup, names another member as its creator. The row's `createdBy` keeps the
+     * frame's word — every member reads the preferred root minter from it, so it must match theirs.
      */
     private suspend fun groupNotices(
         group: GroupInfo,
         senderId: String,
+        me: String,
         sentAt: Long,
         existing: GroupEntity?,
         incomingName: String?,
@@ -2121,7 +2130,8 @@ class InboundPipeline(
         createdAt: Long,
     ) {
         if (existing == null) {
-            messages.save(StatusNotices.groupCreated(group.id, group.createdBy, createdAt))
+            val creator = group.createdBy.takeIf { it != me || senderId == me } ?: senderId
+            messages.save(StatusNotices.groupCreated(group.id, creator, createdAt))
             return
         }
         if (takeIncoming && incomingName != null && incomingName != keepName) {

@@ -60,6 +60,9 @@ document:
   battery.
 - If you came near a few phones that were already connected to each other with their screens off, your phone
   could take ten minutes or more to join them over Bluetooth. It now joins within a few minutes.
+- A stranger could get a group past Message Requests by naming you as its creator, so their first message
+  notified you and showed up among your chats. That group now waits in Message Requests like any other
+  request.
 
 ## [2.7.0](https://github.com/getknit/knit/releases/tag/v2.7.0) — 2026-09-24T21:26:44Z
 

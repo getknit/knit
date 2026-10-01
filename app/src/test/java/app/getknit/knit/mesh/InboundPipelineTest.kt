@@ -1742,6 +1742,21 @@ class InboundPipelineTest {
             )
     }
 
+    /**
+     * Backs the authored set and the request candidates with the fake message map, mirroring the real
+     * queries: any row in our sender column counts as authored, status notices included, heard Meshtastic
+     * posts not. The relaxed default answers "authored nowhere", which hides any row that claims us.
+     */
+    private fun Rig.backAuthoredByMessages() {
+        coEvery { messages.conversationsIAuthoredIn(any()) } answers {
+            msgMap.values
+                .filter { it.senderId == firstArg<String>() && it.originNode == null }
+                .map { it.conversationId }
+                .distinct()
+        }
+        coEvery { messages.distinctConversations() } answers { msgMap.values.map { it.conversationId }.distinct() }
+    }
+
     @Test
     fun groupLeaveFromAMemberRecordsTheDeparture() =
         runTest {
@@ -2486,6 +2501,43 @@ class InboundPipelineTest {
 
             assertEquals("join us", rig.msgMap["gm-req"]?.body) // still delivered/persisted…
             coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) } // …but not notified
+        }
+
+    /**
+     * #107. `createdBy` is the frame's claim and our node id is on every advert, so a stranger can name us as
+     * the creator of their group. The first-sight `created` line stores its subject as its sender, and the
+     * authored set counts notices — so naming us used to make the stranger's group one we "wrote in", and
+     * their first message notified like a chat's, listed among the chats, and stayed out of the requests.
+     */
+    @Test
+    fun aStrangersGroupNamingUsAsCreatorStaysARequest() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            rig.backAuthoredByMessages()
+            val alice = party()
+            rig.pin(alice) // verifies, but neither accepted, verified nor replied to: a stranger
+            val group = rig.group(members = listOf(rig.self.nodeId, alice.nodeId), createdBy = rig.self.nodeId)
+
+            rig.deliver(alice, rig.groupChat(alice, group, id = "gm-forged-creator", body = "hey"))
+
+            coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+            coVerify { rig.notifier.notifyMessageRequests(1) }
+            assertEquals("the line names who sent it", alice.nodeId, rig.msgMap["created:${group.id}"]?.senderId)
+        }
+
+    @Test
+    fun ourOwnGroupFrameServedBackStillNamesUsAsCreator() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            rig.backAuthoredByMessages()
+            val alice = party()
+            rig.pin(alice)
+            // Our own frame, re-served after a wipe took the group's row: the claim is ours, so it stands.
+            val group = rig.group(members = listOf(rig.self.nodeId, alice.nodeId), createdBy = rig.self.nodeId)
+
+            rig.deliver(rig.self, rig.groupChat(rig.self, group, id = "gm-own", body = "mine"))
+
+            assertEquals(rig.self.nodeId, rig.msgMap["created:${group.id}"]?.senderId)
         }
 
     @Test
