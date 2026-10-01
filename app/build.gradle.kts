@@ -684,8 +684,9 @@ kover {
     reports {
         filters {
             excludes {
-                // Only *generated* code — everything hand-written (including di/ wiring and the
-                // Robolectric-tested *ScreenContent composables) stays measured so the number is honest.
+                // Generated code, and the code no release build ships — everything else hand-written
+                // (including di/ wiring and the Robolectric-tested *ScreenContent composables) stays measured
+                // so the number is honest about what users run.
                 // NOTE: in Kover class globs, `*` does NOT cross the package separator `.` — use `**` to
                 // span packages (verified on-report; a bare `*_Impl` matches nothing here). `$$serializer`,
                 // `R`, and `Manifest` never appear in the report, so they need no rule.
@@ -694,7 +695,16 @@ kover {
                     "**_Impl$*", // ...and their nested classes ($1, $Companion, open-delegates)
                     "**ComposableSingletons*", // Compose-generated lambda-holder classes
                     "**BuildConfig", // generated BuildConfig
+                    // The debug source set (src/debug/java) outside the two packages below — the release
+                    // twin of DemoWiring is a no-op stub, and the report is the debug variant's.
+                    "app.getknit.knit.di.DemoWiring*",
+                    "app.getknit.knit.mesh.DemoTransport*",
+                    "app.getknit.knit.mesh.DemoLoraPlane*",
+                    "app.getknit.knit.mesh.DemoBoardDirectory*", // declared in DemoLoraPlane.kt
                 )
+                // The debug bridge and the demo seeder/director (src/debug/java), plus main's DemoComposer —
+                // inert unless the debug director emits, and stripped by R8 from release.
+                packages("app.getknit.knit.debug", "app.getknit.knit.demo")
             }
         }
     }
