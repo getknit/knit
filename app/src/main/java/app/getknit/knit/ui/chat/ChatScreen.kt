@@ -2257,6 +2257,7 @@ private fun MessageBubble(
                                 VoiceNoteBubble(
                                     ready = row.attachmentReady,
                                     wait = row.attachmentWait,
+                                    hash = row.attachmentHash,
                                     durationMs = row.voiceDurationMs,
                                     peaks = bars,
                                     positionMs = live?.positionMs,
@@ -2284,6 +2285,7 @@ private fun MessageBubble(
                                     heldBytes = row.attachmentBytes,
                                     ready = row.attachmentReady,
                                     wait = row.attachmentWait,
+                                    hash = row.attachmentHash,
                                     flagged = row.attachmentFlagged,
                                     onOpen = {
                                         onSaveFile(
@@ -3079,7 +3081,7 @@ private fun AttachmentImage(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                    WaitingIndicator(key = hash, size = 24.dp)
                     Spacer(Modifier.height(8.dp))
                     Text(
                         stringResource(R.string.chat_loading_photo),

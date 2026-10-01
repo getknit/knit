@@ -24,7 +24,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -51,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.relay.AttachmentWait
+import app.getknit.knit.ui.chat.WaitingIndicator
 import app.getknit.knit.ui.chat.attachmentWaitHint
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.theme.KnitMotion
@@ -151,13 +151,15 @@ fun VoiceNoteBubble(
     modifier: Modifier = Modifier,
     // Which plane can still bring the bytes while [ready] is false (the placeholder's second line).
     wait: AttachmentWait = AttachmentWait.Nearby,
+    // The blob's hash, which keys the placeholder's spinner-to-hourglass settle.
+    hash: String? = null,
 ) {
     if (!ready) {
         Row(
             modifier = modifier.width(BUBBLE_WIDTH).padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = accent)
+            WaitingIndicator(key = hash, size = 20.dp, color = accent)
             Spacer(Modifier.width(12.dp))
             Column {
                 Text(

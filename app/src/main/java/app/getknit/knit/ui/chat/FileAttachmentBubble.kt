@@ -19,7 +19,6 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.TableChart
 import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -68,6 +67,8 @@ fun FileAttachmentBubble(
     onLongClick: () -> Unit,
     // Which plane can still bring the bytes while [ready] is false (the placeholder's second line).
     wait: AttachmentWait = AttachmentWait.Nearby,
+    // The blob's hash, which keys the placeholder's spinner-to-hourglass settle.
+    hash: String? = null,
 ) {
     val context = LocalContext.current
     val label = name ?: stringResource(R.string.chat_file_unnamed)
@@ -119,7 +120,7 @@ fun FileAttachmentBubble(
                         contentDescription = null,
                     )
                 } else {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    WaitingIndicator(key = hash, size = 20.dp)
                 }
             }
             Column(

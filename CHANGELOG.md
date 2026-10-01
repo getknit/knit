@@ -55,6 +55,9 @@ document:
 - A paired LoRa board that is switched off or out of range no longer drains your battery while Knit looks for
   it. After a few quick tries your phone reconnects when the board comes back, without pausing its search for
   nearby phones every few minutes.
+- A photo, file or voice message that hasn't reached your phone yet no longer keeps a spinner turning for as
+  long as the chat is open. After half a minute it changes to a still hourglass, so a chat left open uses less
+  battery.
 
 ## [2.7.0](https://github.com/getknit/knit/releases/tag/v2.7.0) — 2026-09-24T21:26:44Z
 
