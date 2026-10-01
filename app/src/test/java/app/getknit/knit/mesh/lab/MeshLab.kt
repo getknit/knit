@@ -1290,7 +1290,7 @@ class LabNode internal constructor(
         val hash = sha256Hex(bytes)
         blobs.insert(hash, IMAGE_MIME, bytes)
         val group = checkNotNull(groups.find(groupId)) { "$name holds no group $groupId" }
-        val updated = group.copy(photoHash = hash, photoUpdatedAt = now())
+        val updated = group.copy(photoHash = hash, photoUpdatedAt = now(), photoShownHash = hash)
         groups.upsert(updated)
         spaced { manager.sendGroupUpdate(updated.toGroupInfo()) }
     }
@@ -1741,6 +1741,16 @@ class LabNode internal constructor(
             .filter { it.kind != MessageEntity.KIND_NORMAL }
             .sortedBy { it.sentAt }
             .map { it.kind }
+
+    /** The status notice [id] in [conversationId] as this node holds it — its subject and `sentAt` — or null. */
+    suspend fun notice(
+        conversationId: String,
+        id: String,
+    ): MessageEntity? =
+        messages
+            .observeNewestMessages(conversationId, MeshLab.WINDOW)
+            .first()
+            .firstOrNull { it.id == id && it.kind != MessageEntity.KIND_NORMAL }
 
     /** Where the intro toward [peer] stands, or null when none is pending. */
     suspend fun introState(peer: LabNode): IntroState? = manager.introState(peer.nodeId).first()

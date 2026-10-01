@@ -567,7 +567,9 @@ that budget is a purely local knob that can differ per node without breaking cue
   - `blob_verdicts`: `hash` (PK), `flagged`, `score` — the on-device NSFW image verdict cached by content
     hash, so identical bytes are scanned once across send/receive (`docs/CONTENT_MODERATION.md`).
   - `groups`: `groupId` (PK), `name`, `members` (JSON roster), `createdBy`, `createdAt`, `nameUpdatedAt`,
-    `left` (leave tombstone), `departed` (JSON set of members who left), `photoHash?` / `photoUpdatedAt`.
+    `left` (leave tombstone), `departed` (JSON set of members who left), `photoHash?` / `photoUpdatedAt` (the
+    decided photo, advertised and last-writer-wins) and `photoShownHash?` (the photo that renders, once its
+    bytes are local and screened — ADR 2026-09.nxcq).
   - `forward_store`: `id` (PK), `recipientId?`, `groupId?`, `senderId`, `type`, `origin`, `signed`, `sig`,
     `sentAt`, `receivedAt`, `expiresAt`, `attachmentHash?` — the encrypted store-and-forward custody set
     (immutable signed frames re-served to newcomers; the id set the cue-plane content digest folds over —

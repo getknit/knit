@@ -105,6 +105,7 @@ fun group(
         createdAt = createdAt,
         left = left,
         photoHash = photoHash,
+        photoShownHash = photoHash,
     )
 
 fun reaction(

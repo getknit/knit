@@ -245,7 +245,8 @@ hop (fixed in `MeshRouter.countOverheard`, pinned by `MeshRouterTest`).
   concurrent renames), `ReactionLabTest` (DM / group / room forms, a retraction
   crossing its reaction, a reaction ahead of its DM, a group reaction founding the group), `ProfileUpdateLabTest`
   (rename to a contact and a stranger, a re-served older profile, status + flag surviving a sealed update, an
-  avatar), `AttachmentLabTest` (image DM, carried bytes, room image screening, group photo),
+  avatar), `AttachmentLabTest` (image DM, carried bytes, room image screening, group photo, a straggler
+  still pulling a new group photo, a group photo pull lost to a restart),
   `KeyExchangeLabTest` (`keyreq` + `PendingInbound`, `pendingKey` retransmit), `BlockAndRequestLabTest`,
   `SessionLabTest` (both-initiate in both orders, a forced reset, old-era custody after a reset, the group
   key request), `RestartLabTest` (sender / carrier / recipient-with-a-park / both sides), `TopologyLabTest`

@@ -350,6 +350,14 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   by your own signed rejoin — nobody can add or remove anyone else. The seed carries the founding roster, so a
   member with no row pins the group from the seed through `reconcileGroup`'s one door (the relay-only case,
   #47); a seed without one (an older build's) is parked, never consumed.
+- **When touching a group's photo — `groupPhotoDecision` / `photoWins` / `settleArrivedGroupPhoto` in
+  `InboundPipeline`, `GroupEntity.photoHash` / `photoShownHash`, `GroupDao.awaitingPhoto` /
+  `photoHashesNeedingFetch`, `BlobRepository.dropRefusedGroupPhoto`, or `GroupDetailsViewModel`'s set path:**
+  READ ADR 2026-09.nxcq. `photoHash` is the photo this device decided on — stored the moment it is heard, and
+  the only one `toGroupInfo` advertises — and `photoShownHash` the one that renders, once its bytes are local
+  and screened; every surface reads the shown one, and a frame carrying the shown one brings #108 back. A clock
+  tie keeps the held photo. The want is the row (no in-memory map), and a refused photo stays decided and keeps
+  its verdict so nothing pulls it again. Regression: `AttachmentLabTest`'s two group-photo-pull scenarios.
 - **When touching `data/backup/`, `ui/backup/`, `RestartActivity`, `KnitApplication.onCreate`'s pre-Koin
   block, `MeshManager.finishRestore`, `SeenSet.reopen`, `SettingsKeys.TRANSIENT_PREFIXES`, or adding a table
   or a DataStore key:** READ `docs/BACKUP_FORMAT.md` and ADR 2026-09.6mj7. A backup is one file sealed by a

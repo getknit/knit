@@ -52,7 +52,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 17
+internal const val KNIT_DB_SCHEMA_VERSION = 18
 
 @Database(
     entities = [
@@ -175,6 +175,11 @@ internal const val KNIT_DB_SCHEMA_VERSION = 17
     //     stored as an animated WebP under the MIME a still sticker gets, so the flag is read off the frames by
     //     AnimatedImage on both ends, like v5's voice columns — no wire field. Backfilled only where the MIME
     //     alone says GIF; migrated by KnitMigrations.MIGRATION_16_17.
+    // v18: one `groups.photoShownHash` column — the group photo that renders, once its bytes are local and
+    //     screened, split from `photoHash`, which now holds the photo this device decided on and advertises
+    //     from the moment it hears of it, so a member still pulling a new photo never re-asserts the old one at
+    //     the new clock (ADR 2026-09.nxcq, #108). No wire change. Backfilled from `photoHash`, which until now
+    //     was stored only once it rendered; migrated by KnitMigrations.MIGRATION_17_18.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds

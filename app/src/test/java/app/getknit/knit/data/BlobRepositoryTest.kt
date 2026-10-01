@@ -124,6 +124,46 @@ class BlobRepositoryTest : RoomDbTest() {
             assertTrue(db.blobDao().exists("h1"))
         }
 
+    /**
+     * ADR 2026-09.nxcq: a group keeps advertising the photo screening refused, so the row still names it; its
+     * bytes go and its verdict stays, which is what stops every re-pull path from fetching it again.
+     */
+    @Test
+    fun `a refused group photo loses its bytes and keeps its verdict`() =
+        runTest {
+            ownAvatar(null)
+            blob("h1")
+            db.blobVerdictDao().upsert(BlobVerdictEntity("h1", flagged = true, score = 0.9f))
+            db.groupDao().upsert(
+                GroupEntity(
+                    groupId = "g",
+                    name = "",
+                    members = GroupMembersStore.encode(listOf("me")),
+                    createdBy = "me",
+                    createdAt = 1L,
+                    photoHash = "h1",
+                    photoShownHash = "h0",
+                ),
+            )
+
+            repo().dropRefusedGroupPhoto("h1")
+
+            assertFalse(db.blobDao().exists("h1"))
+            assertEquals(true, db.blobVerdictDao().find("h1")?.flagged)
+        }
+
+    @Test
+    fun `a refused group photo another surface still needs keeps its bytes`() =
+        runTest {
+            ownAvatar(null)
+            blob("h1")
+            db.peerDao().upsert(PeerEntity(nodeId = "p", avatarHash = "h1"))
+
+            repo().dropRefusedGroupPhoto("h1")
+
+            assertTrue(db.blobDao().exists("h1"))
+        }
+
     @Test
     fun `keeps a blob referenced by a carried store-and-forward frame`() =
         runTest {

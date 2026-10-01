@@ -17,6 +17,7 @@ import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.adts
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
+import app.getknit.knit.data.group.toGroupInfo
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
@@ -88,6 +89,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import io.mockk.slot
+import io.mockk.spyk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -255,7 +257,9 @@ class InboundPipelineTest {
         val selfProfileStamps = mutableListOf<Long>()
         var admitTransfer = true
         val forwardSync = ForwardSync(transport, forwardStore, clock = { 0L })
-        val blobExchange = BlobExchange(transport, blobStore, selfId = { self.nodeId }, onObtained = { _, _ -> })
+
+        // A spy so a test can verify what the pipeline asked to pull (the transport has no neighbor to ask).
+        val blobExchange = spyk(BlobExchange(transport, blobStore, selfId = { self.nodeId }, onObtained = { _, _ -> }))
         val keyExchange = KeyExchange(transport, selfId = { self.nodeId }, signRaw = self.crypto::signRaw, metrics = metrics)
 
         // AckSync's custody-escalation hooks, read lazily so a test can arm them (defaults keep escalation
@@ -363,6 +367,10 @@ class InboundPipelineTest {
             }
             coEvery { groups.find(any()) } answers { groupMap[firstArg()] }
             coEvery { groups.upsert(any()) } answers { groupMap[firstArg<GroupEntity>().groupId] = firstArg() }
+            coEvery { groups.awaitingPhoto(any()) } answers {
+                val hash = firstArg<String>()
+                groupMap.values.filter { !it.left && it.photoHash == hash && it.photoShownHash != hash }
+            }
             // isAccepted's group branch reads the thread's senders; back it with the fake message map.
             // Status notices are excluded exactly as the real query is: a notice's senderId is the
             // event's subject, not an author, so it must not make anyone count as having spoken here.
@@ -1729,6 +1737,9 @@ class InboundPipelineTest {
         name: String = "",
         nameUpdatedAt: Long = 0L,
         left: Boolean = false,
+        photoHash: String? = null,
+        photoUpdatedAt: Long = 0L,
+        photoShownHash: String? = photoHash,
     ) {
         groupMap[id] =
             GroupEntity(
@@ -1739,6 +1750,9 @@ class InboundPipelineTest {
                 createdAt = 1L,
                 nameUpdatedAt = nameUpdatedAt,
                 left = left,
+                photoHash = photoHash,
+                photoUpdatedAt = photoUpdatedAt,
+                photoShownHash = photoShownHash,
             )
     }
 
@@ -2048,16 +2062,17 @@ class InboundPipelineTest {
             rig.deliver(alice, rig.groupUpdate(alice, group))
 
             assertEquals("photoA", rig.groupMap[group.id]?.photoHash)
+            assertEquals("photoA", rig.groupMap[group.id]?.photoShownHash)
             assertEquals(100L, rig.groupMap[group.id]?.photoUpdatedAt)
         }
 
     @Test
-    fun aGroupPhotoWithoutLocalBytesIsPulledThenAdoptedOnArrival() =
+    fun aGroupPhotoWithoutLocalBytesIsDecidedAtOnceAndShownOnArrival() =
         runTest {
             val rig = Rig(backgroundScope)
             val alice = party()
             rig.pin(alice)
-            // blobStore.has("photoB") defaults false → keep the old (null) photo but arm a pull.
+            // blobStore.has("photoB") defaults false → decide on it, keep showing nothing, arm a pull.
             val group =
                 rig.group(
                     members = listOf(rig.self.nodeId, alice.nodeId),
@@ -2067,21 +2082,26 @@ class InboundPipelineTest {
                 )
 
             rig.deliver(alice, rig.groupUpdate(alice, group))
-            assertNull("photo not shown until its bytes arrive", rig.groupMap[group.id]?.photoHash)
+            assertEquals("decided the moment it is heard", "photoB", rig.groupMap[group.id]?.photoHash)
             assertEquals(100L, rig.groupMap[group.id]?.photoUpdatedAt)
+            assertNull("not shown until its bytes arrive", rig.groupMap[group.id]?.photoShownHash)
+            coVerify { rig.blobExchange.want("photoB") }
 
-            // The pulled blob lands → adopt it onto the group now that the clock still matches.
+            // The pulled blob lands → the group shows it now that it still decides on it.
             rig.pipeline.onObtained("photoB")
-            assertEquals("photoB", rig.groupMap[group.id]?.photoHash)
+            assertEquals("photoB", rig.groupMap[group.id]?.photoShownHash)
         }
 
+    /**
+     * ADR 2026-09.nxcq: the group goes on advertising the photo it decided on, so a refused photo stays the
+     * decided one — but never shows, its bytes go, and its kept verdict stops the next frame re-pulling it.
+     */
     @Test
-    fun anExplicitGroupPhotoIsNotAdopted() =
+    fun anExplicitGroupPhotoIsDecidedButNeverShownOrPulledAgain() =
         runTest {
             val rig = Rig(backgroundScope)
             val alice = party()
-            rig.pin(alice)
-            coEvery { rig.imageScreening.isImageFlagged("photoC") } returns true
+            rig.pin(alice) // content filtering is on in the rig
             val group =
                 rig.group(
                     members = listOf(rig.self.nodeId, alice.nodeId),
@@ -2091,10 +2111,128 @@ class InboundPipelineTest {
                 )
 
             rig.deliver(alice, rig.groupUpdate(alice, group))
+            // Screened explicit on arrival (MeshBlobStore.saveIncoming records the verdict before onObtained).
+            coEvery { rig.imageScreening.isImageFlagged("photoC") } returns true
             rig.pipeline.onObtained("photoC")
 
-            assertNull("an explicit photo is dropped, not adopted", rig.groupMap[group.id]?.photoHash)
-            coVerify { rig.blobs.deleteIfUnreferenced("photoC") }
+            assertEquals("still the decided photo", "photoC", rig.groupMap[group.id]?.photoHash)
+            assertNull("an explicit photo is never shown", rig.groupMap[group.id]?.photoShownHash)
+            coVerify { rig.blobs.dropRefusedGroupPhoto("photoC") }
+            coVerify(exactly = 0) { rig.blobs.deleteIfUnreferenced("photoC") }
+
+            rig.deliver(alice, rig.groupUpdate(alice, group, sentAt = 8L))
+            coVerify(exactly = 1) { rig.blobExchange.want("photoC") }
+        }
+
+    /**
+     * #108: a member still pulling a new photo advertises it — never the photo it still shows at the new
+     * clock, which would switch every member already showing the new one back.
+     */
+    @Test
+    fun aMemberStillPullingANewPhotoAdvertisesIt() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val members = listOf(rig.self.nodeId, alice.nodeId)
+            rig.seedGroup("g-p", members = members, createdBy = alice.nodeId, photoHash = "old", photoUpdatedAt = 5L)
+
+            val newer = rig.group(members = members, createdBy = alice.nodeId, id = "g-p", photoHash = "new", photoUpdatedAt = 9L)
+            rig.deliver(alice, rig.groupUpdate(alice, newer, sentAt = 9L))
+
+            val row = checkNotNull(rig.groupMap["g-p"])
+            assertEquals("old", row.photoShownHash)
+            assertEquals("new", row.toGroupInfo().photoHash)
+            assertEquals(9L, row.toGroupInfo().photoUpdatedAt)
+        }
+
+    @Test
+    fun anOlderPhotoAtAnEqualClockNeverReplacesTheNewerOne() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val members = listOf(rig.self.nodeId, alice.nodeId)
+            rig.seedGroup("g-p", members = members, createdBy = alice.nodeId, photoHash = "new", photoUpdatedAt = 9L)
+            coEvery { rig.blobStore.has("old") } returns true
+
+            // The stale pair an older build sends while it pulls: the photo it still shows, at the new clock.
+            val stale = rig.group(members = members, createdBy = alice.nodeId, id = "g-p", photoHash = "old", photoUpdatedAt = 9L)
+            rig.deliver(alice, rig.groupUpdate(alice, stale, sentAt = 10L))
+
+            assertEquals("new", rig.groupMap["g-p"]?.photoHash)
+            assertEquals("new", rig.groupMap["g-p"]?.photoShownHash)
+            assertEquals(0, rig.msgMap.values.count { it.kind == MessageEntity.KIND_GROUP_PHOTO })
+        }
+
+    @Test
+    fun aTieWithNoPhotoHeldStillTakes() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            coEvery { rig.blobStore.has("ph") } returns true
+            val members = listOf(rig.self.nodeId, alice.nodeId)
+            rig.seedGroup("g-p", members = members, createdBy = alice.nodeId)
+
+            // A hash with no clock reads as clock 0 — the clock a photo-less row holds.
+            rig.deliver(alice, rig.groupUpdate(alice, rig.group(members = members, createdBy = alice.nodeId, id = "g-p", photoHash = "ph")))
+
+            assertEquals("ph", rig.groupMap["g-p"]?.photoHash)
+            assertEquals("ph", rig.groupMap["g-p"]?.photoShownHash)
+        }
+
+    /**
+     * The want a restart or the fetch TTL lost comes back with the group's next frame: the row already
+     * decides on the photo, so the frame changes nothing and announces nothing, but its bytes are pulled again.
+     */
+    @Test
+    fun aReAssertedPhotoWithoutItsBytesIsPulledAgainWithoutANotice() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val members = listOf(rig.self.nodeId, alice.nodeId)
+            rig.seedGroup(
+                "g-p",
+                members = members,
+                createdBy = alice.nodeId,
+                photoHash = "new",
+                photoUpdatedAt = 9L,
+                photoShownHash = "old",
+            )
+
+            val same = rig.group(members = members, createdBy = alice.nodeId, id = "g-p", photoHash = "new", photoUpdatedAt = 9L)
+            rig.deliver(alice, rig.groupUpdate(alice, same, sentAt = 12L))
+
+            coVerify { rig.blobExchange.want("new") }
+            assertEquals("old", rig.groupMap["g-p"]?.photoShownHash)
+            assertEquals(0, rig.msgMap.values.count { it.kind == MessageEntity.KIND_GROUP_PHOTO })
+
+            // And if the bytes came by another road (the spool plane), the next frame shows them.
+            coEvery { rig.blobStore.has("new") } returns true
+            rig.deliver(alice, rig.groupUpdate(alice, same, sentAt = 13L))
+            assertEquals("new", rig.groupMap["g-p"]?.photoShownHash)
+            coVerify { rig.blobs.deleteIfUnreferenced("old") }
+        }
+
+    @Test
+    fun aPhotoLandingAfterANewerOneWasDecidedIsNotShown() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val members = listOf(rig.self.nodeId, alice.nodeId)
+            rig.seedGroup("g-p", members = members, createdBy = alice.nodeId)
+            val first = rig.group(members = members, createdBy = alice.nodeId, id = "g-p", photoHash = "p1", photoUpdatedAt = 5L)
+            val second = rig.group(members = members, createdBy = alice.nodeId, id = "g-p", photoHash = "p2", photoUpdatedAt = 6L)
+            rig.deliver(alice, rig.groupUpdate(alice, first, sentAt = 5L))
+            rig.deliver(alice, rig.groupUpdate(alice, second, sentAt = 6L))
+
+            rig.pipeline.onObtained("p1")
+
+            assertEquals("p2", rig.groupMap["g-p"]?.photoHash)
+            assertNull("a superseded photo never shows", rig.groupMap["g-p"]?.photoShownHash)
         }
 
     // --- Tier 3: custody gate, notifications, avatar path, attachment screening, decrypt version ---
@@ -2393,7 +2531,7 @@ class InboundPipelineTest {
             val bob = party()
             rig.pin(alice)
             rig.pin(bob)
-            // A stored photoHash always renders, so the pipeline adopts one only once its bytes are local.
+            // A shown photo always renders, so the pipeline shows one only once its bytes are local.
             coEvery { rig.blobStore.has("group-photo") } returns true
             coEvery { rig.blobs.bytes("group-photo") } returns byteArrayOf(9)
             val group =
@@ -3568,7 +3706,7 @@ class InboundPipelineTest {
         }
 
     @Test
-    fun aFarFutureGroupPhotoClockIsBoundedAndStillAdoptsOnArrival() =
+    fun aFarFutureGroupPhotoClockIsBoundedAndStillShowsOnArrival() =
         runTest {
             val rig = Rig(backgroundScope)
             val alice = party()
@@ -3579,10 +3717,11 @@ class InboundPipelineTest {
             val far = rig.group(members = members, createdBy = alice.nodeId, photoHash = "photoFar", photoUpdatedAt = Long.MAX_VALUE)
             rig.deliver(alice, rig.groupUpdate(alice, far))
             assertEquals(edge, rig.groupMap[far.id]?.photoUpdatedAt)
-            // The pull was armed on the bounded clock, so the adopt-on-arrival equality check still matches.
-            assertNull(rig.groupMap[far.id]?.photoHash)
-            rig.pipeline.onObtained("photoFar")
+            // Decided on the bounded clock at once, and shown once its bytes land.
             assertEquals("photoFar", rig.groupMap[far.id]?.photoHash)
+            assertNull(rig.groupMap[far.id]?.photoShownHash)
+            rig.pipeline.onObtained("photoFar")
+            assertEquals("photoFar", rig.groupMap[far.id]?.photoShownHash)
 
             // Inside the window an honest newer photo is still behind the bound…
             coEvery { rig.blobStore.has("photoNow") } returns true

@@ -155,6 +155,7 @@ carries; never renumber an old one.
 | [2026-09.mhs5](decisions/2026-09-mhs5-a-lora-packet-is-padded-past-the-firmware-s-signature-cliff.md) | A LoRa packet is padded past the firmware's signature cliff | lora, airtime, link |
 | [2026-09.mjaj](decisions/2026-09-mjaj-the-group-seed-carries-the-founding-roster.md) | The group seed carries the founding roster | groups, roster, spool, wire |
 | [2026-09.n752](decisions/2026-09-n752-a-link-preview-is-a-sender-fetched-card-riding-the-photo-path.md) | A link preview is a sender-fetched card riding the photo path | attachments, ui, wire, privacy, moderation, network |
+| [2026-09.nxcq](decisions/2026-09-nxcq-a-group-s-decided-photo-is-stored-at-once-and-the-shown-photo-waits-for-its-byte.md) | A group's decided photo is stored at once and the shown photo waits for its bytes | groups, mesh, convergence |
 | [2026-09.nzpr](decisions/2026-09-nzpr-onboarding-gates-on-the-radio-permissions-only.md) | Onboarding gates on the radio permissions only | ui, onboarding, permissions |
 | [2026-09.p7j8](decisions/2026-09-p7j8-a-missing-ack-is-not-evidence-until-an-ack-could-have-arrived.md) | A missing ack is not evidence until an ack could have arrived, and it is read from both ends of the DM | spool, attachments |
 | [2026-09.ptv8](decisions/2026-09-ptv8-a-missing-attachment-is-re-wanted-from-the-database-at-every-link-up.md) | A missing attachment is re-wanted from the database at every link-up, not only at startup | mesh, attachments, blob-exchange, lora |

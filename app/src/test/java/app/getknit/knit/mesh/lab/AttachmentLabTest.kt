@@ -2,8 +2,10 @@ package app.getknit.knit.mesh.lab
 
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
+import app.getknit.knit.mesh.BlobExchange
 import app.getknit.knit.mesh.lora.FakeMeshtasticAir
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.sha256Hex
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -144,6 +146,107 @@ class AttachmentLabTest {
                 assertTrue(photo.contentEquals(n.blobs.bytes(hash)))
             }
         }
+
+    /**
+     * #108 (ADR 2026-09.nxcq): Bob hears of Alice's new photo but cannot reach its bytes, while Carol pulls them
+     * and shows it. Bob's next message re-asserts the photo he has decided on — the new one — so Carol keeps it
+     * and writes nothing. Before the fix Bob's row held the old hash at the new clock until his pull landed, his
+     * message carried that pair, the clock tie went to it, and Carol switched back under a "changed the photo"
+     * line moved to the end of her thread and credited to Bob.
+     */
+    @Test
+    fun aMemberStillPullingANewGroupPhotoNeverSwitchesTheOthersBack() =
+        runBlocking {
+            val (alice, bob, carol) = groupOfThree()
+            val groupId = alice.createGroup(bob, carol)
+            assertTrue(alice.sendGroup(groupId, "founded"))
+            lab.assertConverged(listOf(alice, bob, carol), atLeast = 1) { groupId }
+            val old = Random(5).nextBytes(4_096)
+            val oldHash = sha256Hex(old)
+            alice.setGroupPhoto(groupId, old)
+            awaitShown(groupId, oldHash, bob, carol)
+
+            // Bob's links are slow: headers cross, the bytes wait.
+            alice.transport.holdFiles(bob.transport)
+            carol.transport.holdFiles(bob.transport)
+            val new = Random(6).nextBytes(4_096)
+            val newHash = sha256Hex(new)
+            alice.setGroupPhoto(groupId, new)
+            lab.await(1) { if (bob.group(groupId)?.photoHash == newHash) 1 else 0 }
+            awaitShown(groupId, newHash, carol)
+            assertEquals("Bob still shows the photo whose bytes he holds", oldHash, bob.group(groupId)?.photoShownHash)
+            val oldNotice = "gphoto:$groupId:$oldHash"
+            val before = checkNotNull(carol.notice(groupId, oldNotice)) { "Carol never noted the first photo" }
+
+            assertTrue(bob.sendGroup(groupId, "still pulling"))
+            lab.assertConverged(listOf(alice, bob, carol), atLeast = 2) { groupId }
+            assertEquals("Carol keeps the new photo", newHash, carol.group(groupId)?.photoShownHash)
+            assertEquals("and the line for the old one is untouched", before, carol.notice(groupId, oldNotice))
+
+            alice.transport.releaseFiles(bob.transport)
+            carol.transport.releaseFiles(bob.transport)
+            awaitShown(groupId, newHash, bob)
+            assertTrue(new.contentEquals(bob.blobs.bytes(newHash)))
+            lab.assertConverged(listOf(alice, bob, carol), atLeast = 2) { groupId }
+        }
+
+    /**
+     * The row is the want: Bob dies while his pull of the new photo is stuck, and no group frame reaches him
+     * after the relaunch (Carol's relay of the update is waited out first). The database re-arm
+     * (`MeshManager.rewantMissingBlobs`) still asks for the photo he decided on and does not show, and it lands.
+     */
+    @Test
+    fun aGroupPhotoPullLostToARestartIsAskedForAgain() =
+        runBlocking {
+            val (alice, bob, carol) = groupOfThree()
+            val groupId = alice.createGroup(bob, carol)
+            assertTrue(alice.sendGroup(groupId, "founded"))
+            lab.assertConverged(listOf(alice, bob, carol), atLeast = 1) { groupId }
+
+            alice.transport.holdFiles(bob.transport)
+            carol.transport.holdFiles(bob.transport)
+            val decided = carol.metrics.snapshot().let { it.framesRelayed + it.framesSuppressed }
+            val photo = Random(8).nextBytes(4_096)
+            val hash = sha256Hex(photo)
+            alice.setGroupPhoto(groupId, photo)
+            lab.await(1) { if (bob.group(groupId)?.photoHash == hash) 1 else 0 }
+            assertEquals(null, bob.group(groupId)?.photoShownHash)
+            // Carol's relay of Alice's update reads its targets after the router's jitter; decided before Bob goes
+            // down, it cannot reach the relaunched Bob, whose empty seen set would take it and re-arm the pull on
+            // the frame path — the path this scenario must keep out.
+            lab.await((decided + 1).toInt()) {
+                carol.metrics
+                    .snapshot()
+                    .let { it.framesRelayed + it.framesSuppressed }
+                    .toInt()
+            }
+
+            bob.restart()
+            // Alice (always) and Carol (when her copy landed before Bob's ask) served onto the held pipe, and a
+            // holder refuses the same (hash, peer) for SERVE_MEMO_MS — a memo Bob's restart does not clear. Past
+            // it, the relink's newcomer re-ask is the first one either can answer.
+            lab.clock.advance(BlobExchange.SERVE_MEMO_MS)
+            lab.linkAll(alice to bob, bob to carol)
+            awaitShown(groupId, hash, bob)
+            assertTrue(photo.contentEquals(bob.blobs.bytes(hash)))
+            lab.assertConverged(listOf(alice, bob, carol), atLeast = 1) { groupId }
+        }
+
+    private suspend fun groupOfThree(): Triple<LabNode, LabNode, LabNode> {
+        val alice = lab.node("alice").apply { setDisplayName("Alice") }
+        val bob = lab.node("bob").apply { setDisplayName("Bob") }
+        val carol = lab.node("carol").apply { setDisplayName("Carol") }
+        lab.linkAll(alice to bob, bob to carol, alice to carol)
+        lab.awaitAcquainted(alice, bob, carol)
+        return Triple(alice, bob, carol)
+    }
+
+    /** Every one of [nodes] shows [hash] as [groupId]'s photo. */
+    private suspend fun awaitShown(
+        groupId: String,
+        hash: String,
+        vararg nodes: LabNode,
+    ) = lab.await(nodes.size) { nodes.count { it.group(groupId)?.photoShownHash == hash } }
 
     /**
      * The 2026-09-15 field trial (ADR 2026-09.ptv8): a picture posted in the room reaches a phone that only

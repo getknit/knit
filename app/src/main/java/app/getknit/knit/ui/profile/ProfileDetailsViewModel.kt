@@ -273,7 +273,7 @@ class ProfileDetailsViewModel(
                     selfId = myNodeId,
                     fallback = context.getString(R.string.group_unnamed),
                 ) { id -> dir.label(id).text },
-            photoHash = group.photoHash,
+            photoHash = group.photoShownHash,
             faces = groupFaces(memberIds, myNodeId, dir),
         )
     }

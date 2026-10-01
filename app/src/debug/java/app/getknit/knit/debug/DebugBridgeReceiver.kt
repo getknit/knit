@@ -1064,7 +1064,7 @@ class DebugBridgeReceiver :
                         group?.let {
                             groupTitle(it.name, memberIds, me, fallback = "") { id -> labels.labelFor(id).text }.ifBlank { null }
                         }
-                    val photo = group?.photoHash?.let { blobs.bytes(it) }
+                    val photo = group?.photoShownHash?.let { blobs.bytes(it) }
                     val faces =
                         if (photo != null) {
                             emptyList()

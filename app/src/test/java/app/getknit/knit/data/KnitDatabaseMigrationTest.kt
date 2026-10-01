@@ -46,7 +46,7 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v17) creates and opens from the exported JSON`() =
+    fun `the current schema (v18) creates and opens from the exported JSON`() =
         runTest {
             helper.createDatabase(CURRENT_VERSION).close()
         }
@@ -624,6 +624,33 @@ class KnitDatabaseMigrationTest {
         }
 
     @Test
+    fun `migrate 17 to 18 shows every stored group photo and leaves a photo-less group without one`() =
+        runTest {
+            // Before v18 a group's photoHash was stored only once its bytes were local and screened, so each
+            // one is a photo that renders: the shown column starts as a copy of it (ADR 2026-09.nxcq).
+            helper.createDatabase(17).use { c ->
+                c.execSQL(
+                    "INSERT INTO groups (groupId, name, members, createdBy, createdAt, nameUpdatedAt, left, departed, " +
+                        "photoHash, photoUpdatedAt) VALUES ('g-photo','Trail','[\"a\",\"b\"]','a',1,1,0,'[]','ph1',5)",
+                )
+                c.execSQL(
+                    "INSERT INTO groups (groupId, name, members, createdBy, createdAt, nameUpdatedAt, left, departed, " +
+                        "photoHash, photoUpdatedAt) VALUES ('g-bare','','[\"a\",\"c\"]','a',2,0,0,'[]',NULL,0)",
+                )
+            }
+            helper.runMigrationsAndValidate(18, listOf(KnitMigrations.MIGRATION_17_18)).use { c ->
+                val shown = mutableMapOf<String, String?>()
+                c.prepare("SELECT groupId, photoHash, photoShownHash FROM groups").use { s ->
+                    while (s.step()) {
+                        shown[s.getText(0)] = if (s.isNull(2)) null else s.getText(2)
+                        if (!s.isNull(1)) assertEquals("the decided photo is untouched", "ph1", s.getText(1))
+                    }
+                }
+                assertEquals(mapOf("g-photo" to "ph1", "g-bare" to null), shown)
+            }
+        }
+
+    @Test
     fun `migrate 11 to 12 indexes every existing message and keeps the index in step from then on`() =
         runTest {
             // A device upgrading holds history; 'rebuild' must index all of it, and the sync triggers must
@@ -678,7 +705,7 @@ class KnitDatabaseMigrationTest {
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 17
+        const val CURRENT_VERSION = 18
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

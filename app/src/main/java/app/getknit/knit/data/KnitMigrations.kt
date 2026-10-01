@@ -434,6 +434,21 @@ object KnitMigrations {
             }
         }
 
+    /**
+     * v17 → v18: one `groups.photoShownHash` column — the group photo that renders, split from `photoHash`, which
+     * now holds the photo this device decided on and advertises from the moment it hears of it (ADR
+     * 2026-09.nxcq, #108). Backfilled from `photoHash`: until now a hash was stored only once its bytes were
+     * local and screened, so every existing photo is one that renders. Additive only; the SQL must stay
+     * byte-equivalent to what Room generates for `app/schemas/**/18.json`.
+     */
+    val MIGRATION_17_18 =
+        object : Migration(17, 18) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `groups` ADD COLUMN `photoShownHash` TEXT")
+                connection.execSQL("UPDATE `groups` SET `photoShownHash` = `photoHash`")
+            }
+        }
+
     /** All migrations, applied by Room in order. */
     val ALL: Array<Migration> =
         arrayOf(
@@ -453,5 +468,6 @@ object KnitMigrations {
             MIGRATION_14_15,
             MIGRATION_15_16,
             MIGRATION_16_17,
+            MIGRATION_17_18,
         )
 }

@@ -139,7 +139,7 @@ class GroupDetailsViewModel(
                         selfId = myId,
                         fallback = context.getString(R.string.group_unnamed),
                     ) { id -> directory.label(id).text },
-                photoHash = group?.photoHash,
+                photoHash = group?.photoShownHash,
                 members = listOfNotNull(self) + others,
                 faces = groupFaces(members, myId, directory),
                 exists = group != null,
@@ -192,11 +192,15 @@ class GroupDetailsViewModel(
             val group = groups.find(groupId) ?: return@launch
             val crop = computeAvatarCrop(source.width, source.height, diameter, scale, offset.x, offset.y)
             val newHash = avatars.saveOwnAvatar(source, crop)
-            val oldHash = group.photoHash
-            val updated = group.copy(photoHash = newHash, photoUpdatedAt = System.currentTimeMillis())
+            // Decided and shown at once: the bytes are already local (ADR 2026-09.nxcq).
+            val updated =
+                group.copy(photoHash = newHash, photoUpdatedAt = System.currentTimeMillis(), photoShownHash = newHash)
             groups.upsert(updated)
             meshManager.sendGroupUpdate(updated.toGroupInfo())
-            if (oldHash != null && oldHash != newHash) blobs.deleteIfUnreferenced(oldHash)
+            listOfNotNull(group.photoHash, group.photoShownHash)
+                .distinct()
+                .filter { it != newHash }
+                .forEach { blobs.deleteIfUnreferenced(it) }
         }
     }
 

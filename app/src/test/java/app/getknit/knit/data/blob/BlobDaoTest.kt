@@ -61,12 +61,14 @@ class BlobDaoTest : RoomDbTest() {
     @Test
     fun `orphanHashes excludes blobs referenced by a message, peer, group, or carried frame`() =
         runTest {
-            listOf("H_msg", "H_peer", "H_group", "H_fwd", "H_orphan1", "H_orphan2").forEach {
+            listOf("H_msg", "H_peer", "H_group", "H_shown", "H_fwd", "H_orphan1", "H_orphan2").forEach {
                 dao.insert(BlobEntity(hash = it, mime = "image/jpeg", bytes = byteArrayOf(0)))
             }
             db.messageDao().upsert(message("m1", attachmentHash = "H_msg"))
             db.peerDao().upsert(PeerEntity(nodeId = "p1", avatarHash = "H_peer"))
             db.groupDao().upsert(group("g1", photoHash = "H_group"))
+            // Decided on another photo while this one still shows (ADR 2026-09.nxcq).
+            db.groupDao().upsert(group("g2", photoHash = "H_pending").copy(photoShownHash = "H_shown"))
             db.forwardDao().insert(carried("f1", attachmentHash = "H_fwd"))
 
             assertEquals(setOf("H_orphan1", "H_orphan2"), dao.orphanHashes().toSet())

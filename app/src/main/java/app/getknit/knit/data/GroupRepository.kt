@@ -32,6 +32,12 @@ class GroupRepository(
     /** Every group we still hold (leave-tombstoned rows excluded). */
     suspend fun active(): List<GroupEntity> = dao.allActive()
 
+    /** The groups we still hold that decided on the photo [hash] and do not show it yet (ADR 2026-09.nxcq). */
+    suspend fun awaitingPhoto(hash: String): List<GroupEntity> = dao.awaitingPhoto(hash)
+
+    /** Decided group photos not shown yet whose bytes are not local — what a pull must still fetch. */
+    suspend fun photoHashesNeedingFetch(): List<String> = dao.photoHashesNeedingFetch()
+
     /**
      * The non-left groups whose effective roster contains [memberId] (the roster is a JSON column, so
      * this filters in memory — bounded by the user's group count). Feeds the seed re-distribution

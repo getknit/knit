@@ -1098,7 +1098,7 @@ class ChatViewModel(
                 avatarHash =
                     when {
                         isRoom || isBridged || isCommons -> null
-                        else -> group?.photoHash ?: peersByNode[conversationId]?.avatarHash
+                        else -> group?.photoShownHash ?: peersByNode[conversationId]?.avatarHash
                     },
                 canSendFile = !isRoom && !isBridged && !isCommons,
                 isBridged = isBridged,

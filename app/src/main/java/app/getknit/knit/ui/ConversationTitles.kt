@@ -103,7 +103,7 @@ internal fun conversationTitle(
                     fallback = context.getString(R.string.group_unnamed),
                 ) { id -> directory.label(id).text },
                 discriminator = null,
-                avatarHash = group?.photoHash,
+                avatarHash = group?.photoShownHash,
                 group = group,
                 faces = groupFaces(memberIds, me, directory),
             )

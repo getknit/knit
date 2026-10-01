@@ -21,12 +21,16 @@ import kotlinx.serialization.json.Json
  * type via [GroupMembersStore]. [createdBy] is the creator's node id, used to refuse a group a blocked
  * user tries to start here.
  *
- * [photoHash] is the content hash (in the encrypted `blobs` table) of the group's photo, or null for the
- * default people glyph. Any member can set it; it converges last-writer-wins on [photoUpdatedAt] (its own
- * clock, distinct from [nameUpdatedAt], so a stale chat message can't revert a newer photo). Mirrors a
- * peer avatar: the hash is stored only once its bytes are present locally and pass on-device screening
- * (`MeshManager.adoptAdvertisedGroupPhoto`), so a non-null [photoHash] always renders. Set/replace only —
- * there is no wire convention to clear it back to the glyph (a null carries "no change", like [name]).
+ * The group's photo is two hashes (ADR 2026-09.nxcq). [photoHash] is the photo this device has **decided** on:
+ * the content hash every frame we send advertises, last-writer-wins on [photoUpdatedAt] (its own clock,
+ * distinct from [nameUpdatedAt], so a stale chat message can't revert a newer photo), stored the moment a
+ * newer one is heard — before its bytes are here — so a member still pulling them re-asserts the new photo,
+ * never the old one at the new clock (#108). [photoShownHash] is the photo that **renders**: it follows
+ * [photoHash] once that blob is local and has passed on-device screening (`InboundPipeline.groupPhotoDecision`
+ * and `settleArrivedGroupPhoto`), so a non-null [photoShownHash] always renders and every surface reads it,
+ * never [photoHash]. Until then the previous photo keeps showing; one screening refused never shows. Both
+ * null is the default people glyph. Set/replace only — there is no wire convention to clear it back to the
+ * glyph (a null carries "no change", like [name]).
  *
  * [left] is the leave tombstone: once true, inbound group frames are dropped and never re-upserted, so
  * a self-describing frame can't resurrect a group the user left. The row is kept (not deleted) so that
@@ -51,13 +55,15 @@ data class GroupEntity(
     val departed: String = "[]",
     val photoHash: String? = null,
     val photoUpdatedAt: Long = 0L,
+    val photoShownHash: String? = null,
 )
 
 /**
  * The self-describing [GroupInfo] flooded on every group frame, built from the local row so each
- * message/update re-asserts the current name **and** photo (both converge last-writer-wins, by their own
- * clocks) and carries the [GroupEntity.departed] tombstones that make the founding roster — the set the
- * group id is derived from — reconstructible by a first-time receiver (see `InboundPipeline.vetRoster`).
+ * message/update re-asserts the current name **and** the decided photo (both converge last-writer-wins, by
+ * their own clocks; never [GroupEntity.photoShownHash], which may still trail it) and carries the
+ * [GroupEntity.departed] tombstones that make the founding roster — the set the group id is derived from —
+ * reconstructible by a first-time receiver (see `InboundPipeline.vetRoster`).
  * The one mapper for the chat-send, rename, set-photo, and notification-reply paths, so they can't drift.
  */
 fun GroupEntity.toGroupInfo(): GroupInfo =

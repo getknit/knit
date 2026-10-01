@@ -2206,6 +2206,14 @@ class MeshManager(
             val own = ownHashes.toHashSet()
             forwardStore.attachmentHashesNeedingFetch().forEach { if (it !in own) blobExchange.want(it) }
         }
+        // A group's decided photo not shown yet (ADR 2026-09.nxcq): the row is the durable want, so a pull lost
+        // to a restart or the fetch TTL comes back here and not only on the group's next frame. A photo
+        // screening refused keeps its verdict and is never asked for again while filtering is on.
+        val photos = groups.photoHashesNeedingFetch()
+        if (photos.isNotEmpty()) {
+            val filtering = settings.contentFilteringEnabled.first()
+            photos.forEach { if (!(filtering && imageScreening.isImageFlagged(it))) blobExchange.want(it) }
+        }
     }
 
     /** Periodically reclaims expired carried DMs, bounding the forward store between heartbeat sweeps. */

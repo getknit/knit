@@ -108,6 +108,24 @@ class BlobRepository(
     }
 
     /**
+     * Drops the bytes of a group photo screening refused while content filtering is on — unless a message,
+     * a peer avatar, a carried frame or the own avatar still needs them — and **keeps its verdict**. The group
+     * goes on advertising the photo it decided on (ADR 2026-09.nxcq), so the row still names [hash]; the kept
+     * verdict is what tells the re-pull paths (`InboundPipeline.groupPhotoDecision`,
+     * `MeshManager.rewantMissingBlobs`) not to fetch it again. The verdict goes with the hash's last group
+     * reference, through [deleteIfUnreferenced], once the group moves on to another photo.
+     */
+    suspend fun dropRefusedGroupPhoto(hash: String) {
+        if (hash == settings.ownAvatarHash.first()) return
+        db.withWriteTransaction {
+            if (messages.countByAttachmentHash(hash) > 0) return@withWriteTransaction
+            if (peers.countByAvatarHash(hash) > 0) return@withWriteTransaction
+            if (forward.countByAttachmentHash(hash) > 0) return@withWriteTransaction
+            blobs.delete(hash)
+        }
+    }
+
+    /**
      * Bytes held purely for store-and-forward custody (referenced by a carried frame but no local message).
      * The eager carrier-pull ([app.getknit.knit.mesh.InboundPipeline.onCarriedFrame]) uses this as a pull-time
      * soft cap so altruistic relay of other peers' images stays bounded; see [BlobDao.carrierOnlyBlobBytes].

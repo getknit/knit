@@ -54,6 +54,7 @@ interface BlobDao {
             "hash NOT IN (SELECT attachmentHash FROM messages WHERE attachmentHash IS NOT NULL) AND " +
             "hash NOT IN (SELECT avatarHash FROM peers WHERE avatarHash IS NOT NULL) AND " +
             "hash NOT IN (SELECT photoHash FROM groups WHERE photoHash IS NOT NULL) AND " +
+            "hash NOT IN (SELECT photoShownHash FROM groups WHERE photoShownHash IS NOT NULL) AND " +
             "hash NOT IN (SELECT attachmentHash FROM forward_store WHERE attachmentHash IS NOT NULL)",
     )
     suspend fun orphanHashes(): List<String>

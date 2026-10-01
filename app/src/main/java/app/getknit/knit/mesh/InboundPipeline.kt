@@ -202,12 +202,6 @@ class InboundPipeline(
     // arriving via the multi-hop BlobExchange can be attributed back to the peer that advertised it.
     private val advertisedAvatars = ConcurrentHashMap<String, String>()
 
-    // groupId -> the group photo (hash + its last-writer-wins clock) a group frame advertised but whose
-    // bytes we're still pulling, so a blob arriving via the multi-hop BlobExchange can be adopted onto the
-    // right group (and only if still current — the clock guards against a superseded photo, see
-    // [adoptAdvertisedGroupPhoto]). The group analogue of [advertisedAvatars].
-    private val advertisedGroupPhotos = ConcurrentHashMap<String, AdvertisedPhoto>()
-
     /**
      * A pulled blob just landed (the [BlobExchange] `onObtained` hook): attribute it to whoever advertised
      * it — a peer's avatar, a group's photo — screen its decrypted bytes if it's an E2E attachment we now
@@ -217,7 +211,7 @@ class InboundPipeline(
      */
     suspend fun onObtained(hash: String) {
         adoptAdvertisedAvatar(hash)
-        adoptAdvertisedGroupPhoto(hash)
+        settleArrivedGroupPhoto(hash)
         screenObtainedAttachment(hash)
         deriveObtainedVoiceMeta(hash)
         deriveObtainedAnimation(hash)
@@ -2022,6 +2016,7 @@ class InboundPipeline(
         // DataStore read hoisted out of the transaction: it can't enroll in a Room transaction, and holding the
         // exclusive DB lock across a DataStore suspend would stall every other writer.
         val blocked = settings.blockedNodeIds.first()
+        val filtering = settings.contentFilteringEnabled.first()
         // find → refuse-check → upsert run in one transaction, re-reading `existing` inside, so the left-tombstone
         // check and the upsert can't tear apart from a concurrent transactional GroupRepository.leave()/
         // delete(): otherwise a find that read left=false just before leave() commits would blind-upsert left=false
@@ -2043,7 +2038,7 @@ class InboundPipeline(
                 val keepName = existing?.name.orEmpty()
                 val keepClock = existing?.nameUpdatedAt ?: 0L
                 val takeIncoming = incomingName != null && sentAt >= keepClock
-                val decision = groupPhotoDecision(existing, group)
+                val decision = groupPhotoDecision(existing, group, filtering)
                 val createdAt = existing?.createdAt ?: sentAt
                 val (_, departed) = storedRoster(existing, senderId, rejoining)
                 groups.upsert(
@@ -2060,16 +2055,17 @@ class InboundPipeline(
                         departed = GroupMembersStore.encode(departed),
                         photoHash = decision.hash,
                         photoUpdatedAt = decision.clock,
+                        photoShownHash = decision.shown,
                     ),
                 )
                 groupNotices(group, senderId, me, sentAt, existing, incomingName, keepName, takeIncoming, decision, createdAt)
                 if (rejoining) groups.recordRejoin(group.id, senderId, sentAt, rekey = rejoinRekeyDue(group.id, senderId))
                 Reconciled(decision, departed.toSet(), firstSight = existing == null)
             } ?: return false
-        // A newer photo whose bytes we don't hold yet: pull it hop-by-hop (after the upsert advanced the clock,
-        // so the adopt-on-arrival clock check matches), then adopt on arrival. Outside the transaction — it's a
-        // network-bound blob fetch, not a DB write.
-        photo.pull?.let { pullGroupPhoto(group.id, it, photo.clock) }
+        // A decided photo whose bytes we don't hold yet: pull it hop-by-hop (after the upsert stored it, so
+        // settleArrivedGroupPhoto finds the row waiting on it). Outside the transaction — a network-bound blob
+        // fetch, and the reclaims below are their own transactions.
+        settleGroupPhotoBlobs(photo)
         // The row exists now: any seed that arrived ahead of it can be adopted. Cheap when nothing is parked
         // (the usual case), and it must run before a chat frame's own decrypt so the first message of a new
         // group opens on its first pass rather than on the custody replay.
@@ -2319,100 +2315,132 @@ class InboundPipeline(
 
     /**
      * Resolves a group's photo last-writer-wins on its own clock ([GroupInfo.photoUpdatedAt]), independent
-     * of the name's sentAt clock so a stale chat message re-asserting an old photo can't revert a newer one.
-     * The clock advances as soon as a newer photo is announced (so a later frame can't re-open the race),
-     * but the visible [PhotoDecision.hash] only swaps to the new photo once its bytes are local (a
-     * peer-avatar-style invariant — a stored photoHash always renders); otherwise [PhotoDecision.pull] names
-     * the hash to fetch and the old photo is kept until it arrives.
+     * of the name's sentAt clock so a stale chat message re-asserting an old photo can't revert a newer one
+     * (ADR 2026-09.nxcq). Two answers, because the row holds two photos:
+     *
+     * - **Decided** ([PhotoDecision.hash], the row's `photoHash`): a newer photo is taken the moment it is
+     *   heard, bytes or no bytes, because every frame this device sends re-asserts it — keeping the old hash
+     *   at the new clock until the bytes landed made a member still pulling them switch everyone who already
+     *   showed the new photo back (#108). A tie keeps the photo held: an equal clock with another hash is that
+     *   same stale pair from an older build, or two members setting a photo in one millisecond, and only the
+     *   first of those ever happens. With no photo held a tie still takes, so a hash with no clock is adopted.
+     * - **Shown** ([PhotoDecision.shown], `photoShownHash`): follows the decided photo once its blob is local
+     *   and, with content filtering on, not flagged explicit; until then the previous photo keeps showing and
+     *   [PhotoDecision.pull] names the hash to fetch. A frame re-asserting the decided photo re-arms that pull,
+     *   so a want lost to a restart or the fetch TTL comes back with the group's next frame.
+     *
+     * A photo screening refused (filtering on, verdict flagged) is still the decided one — the group goes on
+     * advertising it — but is never shown and never fetched again: its kept verdict says so
+     * ([BlobRepository.dropRefusedGroupPhoto]).
      */
     private suspend fun groupPhotoDecision(
         existing: GroupEntity?,
         group: GroupInfo,
+        filtering: Boolean,
     ): PhotoDecision {
         val incomingPhoto = group.photoHash
         // A payload field every member re-asserts in every frame, so a far-future one would circulate as
-        // the group's photo clock forever; bounded here, and the pull/adopt equality check reads the same
-        // bounded value back through [PhotoDecision.clock].
+        // the group's photo clock forever; bounded here.
         val incomingPhotoClock = clampFuture(group.photoUpdatedAt ?: 0L)
         val keepPhoto = existing?.photoHash
         val keepPhotoClock = existing?.photoUpdatedAt ?: 0L
-        val takePhoto =
-            incomingPhoto != null && incomingPhoto != keepPhoto && incomingPhotoClock >= keepPhotoClock
-        if (!takePhoto) return PhotoDecision(keepPhoto, keepPhotoClock, pull = null, changedTo = null)
-        val haveBytes = blobStore.has(incomingPhoto)
+        val shownPhoto = existing?.photoShownHash
+        val takePhoto = photoWins(incomingPhoto, incomingPhotoClock, keepPhoto, keepPhotoClock)
+        val decided = if (takePhoto) incomingPhoto else keepPhoto
+        val clock = if (takePhoto) incomingPhotoClock else keepPhotoClock
+        val pending = decided?.takeIf { it != shownPhoto }
+        val refused = pending != null && filtering && imageScreening.isImageFlagged(pending)
+        val haveBytes = pending != null && !refused && blobStore.has(pending)
+        val shown = if (haveBytes) pending else shownPhoto
         return PhotoDecision(
-            hash = if (haveBytes) incomingPhoto else keepPhoto,
-            clock = incomingPhotoClock,
-            pull = if (haveBytes) null else incomingPhoto,
-            changedTo = incomingPhoto,
+            hash = decided,
+            clock = clock,
+            shown = shown,
+            pull = pending.takeIf { !refused && !haveBytes },
+            refused = pending.takeIf { refused },
+            replaced = listOfNotNull(keepPhoto.takeIf { it != decided }, shownPhoto.takeIf { it != shown }).distinct(),
+            changedTo = incomingPhoto.takeIf { takePhoto },
         )
     }
 
-    /** A reconciled group photo: the hash to store, its clock, and (if its bytes aren't local) the hash to pull. */
+    /**
+     * Whether [incoming] at [incomingClock] replaces the decided photo [held] at [heldClock]: a different photo
+     * on a later clock, or on an equal clock only while nothing is held. A tie never moves a held photo — the
+     * one rule under which a stale pair (the photo a member still shows, at the new clock) cannot win.
+     */
+    private fun photoWins(
+        incoming: String?,
+        incomingClock: Long,
+        held: String?,
+        heldClock: Long,
+    ): Boolean =
+        incoming != null &&
+            incoming != held &&
+            (incomingClock > heldClock || (held == null && incomingClock >= heldClock))
+
+    /** A reconciled group photo: what the row stores, and the blob work its commit leaves behind. */
     private data class PhotoDecision(
+        /** The decided photo, advertised on every frame we send. */
         val hash: String?,
         val clock: Long,
+        /** The photo that renders: [hash] once its bytes are local and screened, else the previous one. */
+        val shown: String?,
+        /** The decided photo's hash to fetch, when its bytes aren't local and screening hasn't refused it. */
         val pull: String?,
+        /** The decided photo screening refused, whose bytes (if any) go and whose verdict stays. */
+        val refused: String?,
+        /** Hashes the row stopped naming — reclaimed once nothing else references them. */
+        val replaced: List<String>,
         /**
-         * The newly-adopted photo when this frame actually changed it, else null — which is **not** the
-         * same question as [hash] or [pull]. [hash] holds the old photo while new bytes are still in
-         * flight and [pull] empties as soon as they land, so neither can tell "the photo changed" from
-         * "the photo is unchanged", and only this distinguishes a real change from the same photo being
-         * re-asserted by every chat frame that carries the group.
+         * The newly-decided photo when this frame actually changed it, else null — which is **not** the
+         * same question as [hash], [shown] or [pull]: those also answer for a frame that merely re-asserts
+         * what we hold, and only this distinguishes a real change from the same photo being re-asserted by
+         * every chat frame that carries the group.
          */
         val changedTo: String?,
     )
 
     /**
-     * Records a group's advertised-but-not-yet-local photo and pulls its bytes over the same
-     * content-addressed [BlobExchange] that carries avatars/attachments. Attributed back to the group in
-     * [adoptAdvertisedGroupPhoto] on arrival. Group photos are pull-only (no direct push like avatars), so
-     * this runs for direct neighbors too — the holder serves the blob when [BlobExchange.want] reaches it.
+     * The blob half of a committed [PhotoDecision]: pulls the decided photo over the same content-addressed
+     * [BlobExchange] that carries avatars and attachments (group photos are pull-only — no direct push like
+     * avatars — so this runs for direct neighbors too, and the holder serves the blob when the want reaches
+     * it; [settleArrivedGroupPhoto] shows it on arrival), drops a refused photo's bytes, and reclaims the
+     * hashes the row stopped naming.
      */
-    private suspend fun pullGroupPhoto(
-        groupId: String,
-        hash: String,
-        clock: Long,
-    ) {
-        advertisedGroupPhotos[groupId] = AdvertisedPhoto(hash, clock)
-        blobExchange.want(hash)
+    private suspend fun settleGroupPhotoBlobs(photo: PhotoDecision) {
+        photo.pull?.let { blobExchange.want(it) }
+        photo.refused?.let { blobs.dropRefusedGroupPhoto(it) }
+        photo.replaced.forEach { blobs.deleteIfUnreferenced(it) }
     }
 
     /**
-     * A pulled blob just landed: if any group advertised it as its photo (see [reconcileGroup]), adopt it
-     * onto that group now that the bytes are local — but only if it's still the group's current photo (the
-     * clock still matches; a newer photo arriving meanwhile supersedes it) and, with content filtering on,
-     * not flagged explicit by the screen in [MeshBlobStore.saveIncoming] — which a group photo, naming no
-     * message row, can never skip. A no-op for blobs no group wants.
+     * A pulled blob just landed: every group that decided on it as its photo and does not show it yet shows
+     * it now — the rows say which ([GroupRepository.awaitingPhoto]), so a pull re-armed after a restart lands
+     * as well as one this process asked for — unless, with content filtering on, the screen in
+     * [MeshBlobStore.saveIncoming] (which a group photo, naming no message row, can never skip) flagged it
+     * explicit: then its bytes go and its verdict stays, and the previous photo keeps showing. Each row is
+     * re-read in its own transaction and shown only while it still decides on [hash], so a newer photo decided
+     * meanwhile wins. A no-op for blobs no group wants.
      */
-    private suspend fun adoptAdvertisedGroupPhoto(hash: String) {
-        val targets = advertisedGroupPhotos.entries.filter { it.value.hash == hash }.map { it.key }
-        if (targets.isEmpty()) return
-        // Mirror the avatar gate: don't adopt an explicit photo when filtering is on (the setting gates
-        // receive-side hiding, so off -> adopt anyway); drop the now-unwanted blob.
+    private suspend fun settleArrivedGroupPhoto(hash: String) {
+        val waiting = groups.awaitingPhoto(hash)
+        if (waiting.isEmpty()) return
+        // Mirror the avatar gate: the setting gates receive-side hiding, so off -> show it anyway.
         if (settings.contentFilteringEnabled.first() && imageScreening.isImageFlagged(hash)) {
-            targets.forEach { advertisedGroupPhotos.remove(it) }
-            blobs.deleteIfUnreferenced(hash)
+            blobs.dropRefusedGroupPhoto(hash)
             return
         }
-        targets.forEach { groupId ->
-            val advertised = advertisedGroupPhotos[groupId] ?: return@forEach
-            if (advertised.hash != hash) return@forEach // superseded by a newer photo; leave it pending
-            advertisedGroupPhotos.remove(groupId)
-            val group = groups.find(groupId) ?: return@forEach
-            // The stored clock must still equal what we recorded — else a newer photo won the race.
-            if (group.photoUpdatedAt != advertised.clock || group.photoHash == hash) return@forEach
-            val oldHash = group.photoHash
-            groups.upsert(group.copy(photoHash = hash))
-            if (oldHash != null && oldHash != hash) blobs.deleteIfUnreferenced(oldHash)
+        waiting.forEach { row ->
+            val replaced =
+                db.withWriteTransaction<String?> {
+                    val group = groups.find(row.groupId) ?: return@withWriteTransaction null
+                    if (group.left || group.photoHash != hash || group.photoShownHash == hash) return@withWriteTransaction null
+                    groups.upsert(group.copy(photoShownHash = hash))
+                    group.photoShownHash
+                }
+            blobs.deleteIfUnreferenced(replaced)
         }
     }
-
-    /** A group's advertised photo (content hash + its last-writer-wins clock) whose bytes are being pulled. */
-    private data class AdvertisedPhoto(
-        val hash: String,
-        val clock: Long,
-    )
 
     /**
      * Whether [conversationId] should surface a notification / be treated as a known chat rather than a
@@ -2975,7 +3003,7 @@ class InboundPipeline(
                     group?.let {
                         groupTitle(it.name, memberIds, me, fallback = "") { id -> namesByNode[id] ?: id }.ifBlank { null }
                     }
-                val photo = group?.photoHash?.let { blobs.bytes(it) }
+                val photo = group?.photoShownHash?.let { blobs.bytes(it) }
                 // Only a photo-less group draws its members, so the reads (at most four peer rows and four
                 // blobs) are skipped when a photo will cover them. The order is groupFaceIds's; the shade
                 // places faces in cells as given.

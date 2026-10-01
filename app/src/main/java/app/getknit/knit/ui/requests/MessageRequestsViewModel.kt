@@ -140,7 +140,7 @@ class MessageRequestsViewModel(
         return RequestRow(
             conversationId = conversationId,
             title = title,
-            avatarHash = if (isGroup) group?.photoHash else directory.byNode[conversationId]?.avatarHash,
+            avatarHash = if (isGroup) group?.photoShownHash else directory.byNode[conversationId]?.avatarHash,
             isGroup = isGroup,
             lastPreview = last?.let { previewFor(it, directory, isGroup) },
             lastMessageAt = last?.sentAt,

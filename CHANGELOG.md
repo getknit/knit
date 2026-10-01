@@ -32,6 +32,9 @@ document:
 
 ### Fixed
 
+- A group's new photo could flip back to the old one, and its "changed the group photo" line could jump to
+  the end of the chat under someone else's name. The new photo now stays put while other phones are still
+  downloading it.
 - When a contact changed their photo along with their name or status, your phone could keep the old name
   or miss the new photo until they edited their profile again. Both changes now arrive together.
 - When a nearby phone passed along messages from someone you hadn't met yet, most of them could take ten
