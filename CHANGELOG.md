@@ -32,6 +32,9 @@ document:
 
 ### Fixed
 
+- If you and a contact added each other from links and could only reach each other through an Internet
+  relay, one of you could see "Waiting for their device to answer" for up to a day. Your phones now connect
+  without either of you having to write first.
 - A group's new photo could flip back to the old one, and its "changed the group photo" line could jump to
   the end of the chat under someone else's name. The new photo now stays put while other phones are still
   downloading it.

@@ -42,11 +42,14 @@ class IntroSyncTest {
         val sent = mutableListOf<String>()
         var refuseSend = false
         var pairsChanged = 0
+
+        // Runs after a sealability read and before its answer is used: a concurrent pin landing in that gap.
+        var afterSealCheck: suspend (String) -> Unit = {}
         val metrics = MeshMetrics()
         val sync =
             IntroSync(
                 store = store,
-                canSeal = { it in sealable },
+                canSeal = { peer -> (peer in sealable).also { afterSealCheck(peer) } },
                 sendIntro = { peer ->
                     if (refuseSend) {
                         false
@@ -163,6 +166,72 @@ class IntroSyncTest {
             rig.now += IntroSync.ANSWER_FLOOR_MS
             rig.sync.onPeerFrameOpened(CAROL, initEph = null)
             assertEquals(2, rig.sent.size)
+        }
+
+    @Test
+    fun `an init that opens before its sender's profile pins is answered when the profile pins`() =
+        runTest {
+            // We imported Bob's card, so his intro opens and confirms our responder session — but the pull listed
+            // it ahead of his cleartext profile, so his prekey is not pinned yet. The open settles our pending
+            // intro, so nothing else would ever answer him: his side stayed unconfirmed until his 20 h re-send.
+            val rig = Rig()
+            rig.sync.want(BOB)
+            rig.confirmed += BOB
+            rig.sync.onPeerFrameOpened(BOB, initEph = INIT_1)
+            assertEquals(emptyList<String>(), rig.sent)
+            assertTrue(BOB !in rig.store.pending)
+
+            rig.sealable += BOB
+            rig.sync.onProfilePinned(BOB)
+            assertEquals(listOf(BOB), rig.sent)
+            assertEquals(1L, rig.metrics.snapshot().introsAnswered)
+
+            // Owed once: a re-flooded profile and a re-serve of the init stay floored.
+            rig.sync.onProfilePinned(BOB)
+            rig.sync.onPeerFrameOpened(BOB, initEph = INIT_1)
+            assertEquals(1, rig.sent.size)
+        }
+
+    @Test
+    fun `a profile that pins while the open checks sealability still answers the init, once`() =
+        runTest {
+            // The intro and the profile arrive on separate coroutines: the open reads "not sealable", and the pin
+            // runs to completion before the open acts on that read. The pin must find the debt, and only one of the
+            // two may answer.
+            val rig = Rig()
+            rig.sync.want(BOB)
+            rig.confirmed += BOB
+            var pinned = false
+            rig.afterSealCheck = { peer ->
+                if (!pinned) {
+                    pinned = true
+                    rig.sealable += peer
+                    rig.sync.onProfilePinned(peer)
+                }
+            }
+            rig.sync.onPeerFrameOpened(BOB, initEph = INIT_1)
+            assertEquals(listOf(BOB), rig.sent)
+            assertEquals(1L, rig.metrics.snapshot().introsAnswered)
+        }
+
+    @Test
+    fun `an open that loses the debt to a concurrent pin leaves the answer to the pin`() =
+        runTest {
+            // The same race with a fresh read: both sides could answer, and the claim lets only one.
+            val rig = Rig()
+            rig.sync.want(BOB)
+            rig.confirmed += BOB
+            rig.sealable += BOB
+            var pinned = false
+            rig.afterSealCheck = { peer ->
+                if (!pinned) {
+                    pinned = true
+                    rig.sync.onProfilePinned(peer)
+                }
+            }
+            rig.sync.onPeerFrameOpened(BOB, initEph = INIT_1)
+            assertEquals(listOf(BOB), rig.sent)
+            assertEquals(1L, rig.metrics.snapshot().introsAnswered)
         }
 
     @Test

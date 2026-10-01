@@ -567,8 +567,8 @@ class InternetPlaneLabTest {
 
     /**
      * ADR 042: two people who only ever exchanged contact cards, out of radio range, one shared relay. Each
-     * import sends an intro over the pair scope; the sessions confirm, the same DM scope derives on both
-     * sides, and a DM crosses.
+     * import starts an intro over the pair scope, each side sends or answers one; the sessions confirm, the
+     * same DM scope derives on both sides, and a DM crosses.
      */
     @Test
     fun twoCardHoldersMeetAtThePairScopeWithNoRadio() =
@@ -582,14 +582,18 @@ class InternetPlaneLabTest {
             alice.importCard(bobCard)
             bob.importCard(aliceCard)
 
-            // One intro at least, not one each: when Alice's lands before Bob's import runs, Bob already holds a
-            // confirmed responder session, so his import needs no intro (`IntroSync.want`) and he answers hers.
-            assertTrue(
-                "no intro ever went out",
+            // Each side speaks, but not necessarily its own intro. Neither can seal until the other's profile pins its
+            // prekey, and a pull lists the pair scope unordered: when Alice's intro opens on Bob's side ahead of her
+            // profile, Bob is a confirmed responder before he could send one, so he owes her the answer instead and
+            // sends it when the profile lands (`IntroSync.onProfilePinned`). Either side can be the one.
+            val bothSpoke =
                 lab.tryAwait(1, timeoutMs = MeshLab.SPOOL_AWAIT_MS) {
-                    (alice.metrics.snapshot().introsSent + bob.metrics.snapshot().introsSent).toInt()
-                },
-            )
+                    minOf(
+                        alice.metrics.snapshot().let { it.introsSent + it.introsAnswered },
+                        bob.metrics.snapshot().let { it.introsSent + it.introsAnswered },
+                    ).toInt()
+                }
+            assertTrue("a side never sent or answered an intro\n${lab.report(listOf(alice, bob))}", bothSpoke)
             assertTrue(
                 "the sessions never confirmed",
                 lab.tryAwait(1, timeoutMs = MeshLab.SPOOL_AWAIT_MS) {

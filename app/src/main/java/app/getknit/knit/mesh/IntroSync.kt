@@ -95,10 +95,19 @@ class IntroSync(
     private val lastSentAt = ConcurrentHashMap<String, Long>()
     private val lastAnswered = ConcurrentHashMap<String, Answered>()
 
+    // Inits that opened before we could seal to their sender, answered when [onProfilePinned] says we can.
+    private val owed = ConcurrentHashMap<String, Owed>()
+
     /** The init we last answered for a peer (its X3DH ephemeral) and when. */
     private class Answered(
         val initEph: ByteArray,
         val at: Long,
+        val resetFlagged: Boolean,
+    )
+
+    /** An init we opened but could not answer yet: the sender's prekey or `CAP_RATCHET` was not pinned. */
+    private class Owed(
+        val initEph: ByteArray,
         val resetFlagged: Boolean,
     )
 
@@ -162,12 +171,17 @@ class IntroSync(
             publish(pending, grace)
         }
 
-    /** A profile for [peerId] was pinned on some plane: if an intro to it is pending, it can be sealed now. */
+    /**
+     * A profile for [peerId] was pinned on some plane: if an intro to it is pending, it can be sealed now, and
+     * so can the answer to an init of theirs that opened before the pin ([onPeerFrameOpened]).
+     */
     suspend fun onProfilePinned(peerId: String) {
-        if (peerId !in lock.withLock { store.pending() }) return
-        // A pair scope needs the bundle the pipeline just pinned; the table can derive it now.
-        onPairsChanged()
-        if (!settle(peerId)) trySend(peerId, clock())
+        if (peerId in lock.withLock { store.pending() }) {
+            // A pair scope needs the bundle the pipeline just pinned; the table can derive it now.
+            onPairsChanged()
+            if (!settle(peerId)) trySend(peerId, clock())
+        }
+        owed.remove(peerId)?.let { onPeerFrameOpened(peerId, it.initEph, it.resetFlagged) }
     }
 
     /**
@@ -187,6 +201,11 @@ class IntroSync(
      * sealing the reset under it (ADR 2026-09.qerd); if we first read that init read-only, as a race remnant,
      * our answer went out under the old session and the marked frame is the one we actually adopt. Only one
      * marked frame reaches here per mark — its re-serves end as duplicates in the ratchet.
+     *
+     * An init that opens before we can seal to its sender is owed, not dropped. Opening needs only the pinned
+     * bundle, a card's, but sealing needs the prekey and `CAP_RATCHET` that only the sender's cleartext profile
+     * pins, and a spool listing is unordered: a card holder's intro can overtake that profile. Its re-serves
+     * end as duplicates and the sender re-sends only every [resendFloorMs], so [onProfilePinned] answers it.
      */
     suspend fun onPeerFrameOpened(
         peerId: String,
@@ -198,7 +217,13 @@ class IntroSync(
         val now = clock()
         val answered = lastAnswered[peerId]?.takeIf { it.initEph.contentEquals(initEph) && (it.resetFlagged || !resetFlagged) }
         if (answered != null && now - answered.at < answerFloorMs) return
+        // The debt is published before the check, not after it: a spool event and a pull deliver on separate
+        // coroutines, so the pin can land between a stale `canSeal` read and the write, and find nothing to answer.
+        val debt = Owed(initEph, resetFlagged)
+        owed[peerId] = debt
         if (!canSeal(peerId)) return
+        // A pin that landed while we checked has claimed the debt and answers it itself.
+        if (!owed.remove(peerId, debt)) return
         lastAnswered[peerId] = Answered(initEph, now, resetFlagged)
         if (sendIntro(peerId)) metrics.onIntroAnswered() else lastAnswered.remove(peerId)
     }

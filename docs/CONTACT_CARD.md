@@ -66,8 +66,10 @@ the first time, nothing stored before the tap.
   the pair scope — and again every 20 h while the session stays unconfirmed (under the 24 h custody TTL,
   so a live copy always exists). A re-send carries the same init; the peer's engine treats it as resolved.
 - **Answer an unconfirmed peer.** A v2 frame whose header still carries the X3DH init proves its sender
-  has seen nothing of ours; one sealed frame back (at most hourly per peer) confirms them. This also cures
-  the older gap where a wiped initiator stayed unconfirmed until the responder edited its profile.
+  has seen nothing of ours; one sealed frame back (at most hourly per peer) confirms them. An init that
+  opens before the sender's profile has pinned its prekey (a spool listing is unordered, so a pulled intro
+  can overtake it) is owed, and answered when that profile pins. This also cures the older gap where a
+  wiped initiator stayed unconfirmed until the responder edited its profile.
 - **Grace.** After our own session confirms, the pair scope stays subscribed and pushed into for 48 h so
   the peer — who holds no DM scope yet — can still pull the answer; then it is dropped.
 - State is two sets in the settings store (`pending_intros`, `intro_grace`, `"<peerId>|<millis>"`);
