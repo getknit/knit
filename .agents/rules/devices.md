@@ -6,8 +6,9 @@ touches a real phone. The emulator is fair game per the usual rules; physical ha
 devices on network adb) is not a default target just because it's reachable. **Ask first each time** —
 prior authorization doesn't carry over to a new task or a new conversation.
 
-The *how* of driving a device once authorized (the headless debug bridge, resource-ids, cold-start
-navigation) is in `context/debug-bridge.md`; emulator adb tips are in `context/testing.md`.
+The *how* of driving a device once authorized is the `debug-bridge` skill (`skills/debug-bridge/SKILL.md`,
+with `scripts/bridge.sh`); the per-action reference, resource-ids and cold-start navigation are in
+`context/debug-bridge.md`; emulator adb tips are in `context/testing.md`.
 
 Before reaching for a physical phone just to get another mesh node: an emulator can be given a **real BLE
 radio** by passing a USB Bluetooth dongle through to it (`scripts/emulator-ble-mesh.sh`, and *Real BLE from

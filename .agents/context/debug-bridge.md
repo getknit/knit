@@ -2,6 +2,10 @@
 
 > **First obey `rules/devices.md`:** never drive a non-emulator (physical) device without the user's
 > explicit go-ahead for that specific session. This file is the *how*; that rule is the *whether*.
+>
+> **For the procedure, RUN the `debug-bridge` skill** (`.agents/skills/debug-bridge/SKILL.md`). It covers the
+> send→verify loop, which oracle answers which question, and `scripts/bridge.sh`, which does the quoting,
+> the stopped-package flag and the reply parsing for you. This file is the per-action reference.
 
 Debug builds carry three affordances so an agent can drive the send→verify loop **without** screenshots
 or hunting the (unlabeled, state-dependent) send button's pixel bounds. All are **debug-only** — the
@@ -17,7 +21,9 @@ logged one-line under tag `KnitBridge` (`adb logcat -d -s KnitBridge:I`). **A ne
 *two* places** — the `when` in `DebugBridgeReceiver` *and* the `<intent-filter>` in
 `app/src/debug/AndroidManifest.xml`; a package-targeted broadcast for an action missing from the filter is
 silently not delivered (the receiver never runs, and you get `Broadcast completed: result=0` with no
-`data=` and nothing under `KnitBridge`). Actions:
+`data=` and nothing under `KnitBridge`). The same empty reply comes back from a package in the **stopped
+state** (a fresh install, `adb install -r`, a force-stop) until someone opens the app, unless the broadcast
+carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always adds it. Actions:
 
 - `…debug.SEND` — `--es text <body>` + a target: `--es conv <id>` (`nearby` room, a peer node id for a
   DM, or a `g-…` group id) or `--es to <peerNodeId>` (DM shorthand). No target ⇒ broadcast room. Text is
@@ -33,8 +39,10 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
   Runs the production pipeline (AttachmentStore.ingest → sendChat), and the reply carries the attachment
   `hash` to poll for on receivers.
 - `…debug.STATE` — self id/name, transport health, reachable peers, and mesh metrics. Add `--es conv <id>`
-  to also dump that thread's latest messages (`--ei limit N`, default 20), each with its `received`
-  delivery tick — this is how you **verify receipt on the other device without a screenshot**.
+  to also dump that thread's latest messages (`--ei limit N`, default 20) — this is how you **verify receipt
+  on the other device without a screenshot**: the body turning up in the receiver's `messages[]`. Each row
+  also carries `received`, which on the sender's own row (`mine: true`) is the ✓✓ — the delivery tick
+  coming home — plus its `reactions`; the top-level `typing` map shows a cue that landed.
 - `…debug.STORE` — dumps the store-and-forward carry set (the **live** rows are the id set the cue-plane
   content digest is folded over; expired-unswept rows are digest/quota/serve-invisible residue awaiting the
   sweep), for diagnosing why two nodes never converge their digests (the churn from a carried-set delta):
@@ -273,6 +281,28 @@ silently not delivered (the receiver never runs, and you get `Broadcast complete
   never runs the pipeline. The reply names the `faces` it sent. Needs `POST_NOTIFICATIONS`
   (`pm grant app.getknit.knit android.permission.POST_NOTIFICATIONS`); expand the shade with
   `cmd statusbar expand-notifications` and screencap.
+- `…debug.REQNOTIF --ei count N` (default 1, capped) — writes N synthetic **unaccepted inbound DMs** from fresh
+  unknown peers, so each is a message request, then posts the coalesced "message request received" heads-up. The
+  radio-less build never runs `InboundPipeline`, its only production caller, so this is the seam the UIAutomator
+  notification test drives. Needs `POST_NOTIFICATIONS`, or the post silently does nothing.
+- `…debug.REVIEW` — dumps the **rate prompt's gate** as the real prompt would evaluate it now (inputs from
+  `ReviewPrompter.gateInputs` / `installedFromPlay`, so it cannot drift from production), plus the installer-aware
+  `rateUrl` and `feedbackUrl`. `--ez reset true` clears the persisted state first; `--ez arm true` also backdates the
+  engagement watermark past the age gate. The message-count gates still need real rows, e.g. `SEND` from a second
+  device.
+- `…debug.TYPING` — fires one best-effort **typing cue** for `--es conv <id>` (or `--es to <peer>`; default the room),
+  exactly as the chat input's throttle does. Fire-and-forget: it answers `ok` whether or not anyone was reachable,
+  so confirm on the receiver through `…debug.STATE`'s `typing` map.
+- `…debug.SHAREAPK` — runs the offline **Share Knit app** prepare step with no share sheet (`prepareKnitApk`). For a
+  Play App Bundle install it merges the on-disk splits into one re-signed APK; `splitInstall` says which path ran, and
+  `files` lists what was staged under `cacheDir/apk`. Pull one with `adb shell run-as app.getknit.knit cat
+  cache/apk/<name>` and verify it.
+- `…debug.WEBPPROBE` / `…debug.WEBPCONV` / `…debug.WEBPCHECK` — the **GIF → animated WebP** path, each on `--es path
+  <file the app can read>` (stage it the SENDIMG way). `WEBPPROBE` estimates what a re-encode would weigh without
+  writing one. `WEBPCONV` runs the real send-side transcode (`WebpTranscode.shrink`), writes it to `--es out <file>`
+  and reports `origBytes` / `outBytes` / `pctSmaller`. `WEBPCHECK` decodes a file through the same `ImageDecoder` path
+  Coil's animated decoder uses and reports `animated` and its dimensions — the proof that a muxed WebP actually plays.
+  `--ei dim` / `--ei fps` / `--ei q` override the production bounds on the first two.
 
 ```
 # send on A, then confirm it landed on B — no UI, no screenshots. Outer quotes matter: adb re-parses

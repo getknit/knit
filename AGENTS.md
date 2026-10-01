@@ -436,8 +436,10 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   black-box UIAutomator + the accessibility/ATF suite that mirrors the Play pre-launch report). A change to
   what two nodes exchange — a new ctl frame, a custody rule, a roster or key path — gets a `mesh/lab/`
   scenario ending in `assertConverged`, not only a single-SUT test against mocked repos.
-- **When driving the app on a device:** obey `.agents/rules/devices.md` first, then use
-  `.agents/context/debug-bridge.md`.
+- **When driving the app on a device:** obey `.agents/rules/devices.md` first, then RUN the `debug-bridge`
+  skill (`scripts/bridge.sh`, the send→verify loop, which oracle answers what); per-action reference in
+  `.agents/context/debug-bridge.md`. A new bridge action goes in the receiver's `when`, the debug manifest's
+  filter, that file and the skill's index.
 - **Before an architectural choice:** CONSULT `.agents/memory/decisions.md` — a generated router table
   over one-file-per-decision ADRs in `.agents/memory/decisions/`; open the files whose row matches, don't
   work from the titles. For what's deliberately deferred, CHECK `.agents/memory/roadmap.md`.
@@ -449,7 +451,8 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
 ## Capabilities
 
 - RUN skills in `.agents/skills/` — `kotlin-patterns` (idiomatic Kotlin), `material-3` (Compose M3),
-  and `dotagents-standard` (maintain this AGENTS.md router / `.agents/` layout). Skills are vendored in
+  `debug-bridge` (drive and verify the app on a device), and `dotagents-standard` (maintain this AGENTS.md
+  router / `.agents/` layout). Skills are vendored in
   the repo (real files under `.agents/skills/`, surfaced to Claude Code via `.claude/skills/` symlinks),
   so cloners get them without any global install.
 - ADD a durable decision with `python3 scripts/adr.py new "<title>" --topics a,b`, write the body it
