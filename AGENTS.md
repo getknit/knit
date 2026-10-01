@@ -42,6 +42,8 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
 - **When touching `vectors/`, `GoldenVectorTest`, `KeyedVectorTest` or `IosEmittedVectorTest`, or when a
   change moves a wire byte:** READ `vectors/README.md` and ADR 2026-09.fzh7. The iOS port tests against the
   same files; regenerate with `KNIT_WRITE_VECTORS=1`, never by hand, and never edit `ios-emitted-v1.json`.
+- **When filing or rewriting a GitLab issue:** obey `.agents/rules/issues.md` — one template
+  (`.gitlab/issue_templates/Agent.md`), one title shape, fixed headings, existing labels only.
 - **When your first prompt opens with "# Paired change", or a message arrives from the `knit-pair` supervisor
   or a `knit-ios-*` worker:** obey `.agents/rules/paired-change.md`. The iOS half runs in its own session
   under knit-ios's rules; never edit that repo.
