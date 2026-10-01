@@ -29,6 +29,7 @@ import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.bluetooth.BleConnectArbiter
 import app.getknit.knit.mesh.bluetooth.BleSideChannel
 import app.getknit.knit.mesh.bluetooth.BluetoothMeshTransport
+import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.bluetooth.meshtastic.BondedBoardDirectory
 import app.getknit.knit.mesh.bluetooth.meshtastic.MeshtasticGatt
 import app.getknit.knit.mesh.bluetooth.wear.WearStatusServer
@@ -62,6 +63,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.qualifier.named
@@ -115,6 +117,8 @@ val meshModule =
                                 }
                             // The debug link cap reads null in release (gated in the store's flow).
                             val linkCap = get<SettingsStore>().debugBleLinkCap
+                            // The Coded PHY experiment's mode reads null while BLE_CODED_PHY keeps it dark: OFF here, the one seam.
+                            val phyMode = get<SettingsStore>().debugBlePhyMode.map { it ?: CodedPhyMode.OFF }
                             // BLE_GATT_PEERS gates the iPhone reader, its scan filter and the advert flag together (A3).
                             add(
                                 BluetoothMeshTransport(
@@ -128,6 +132,7 @@ val meshModule =
                                     sideChannel,
                                     linkCap,
                                     gattPeers = BuildConfig.BLE_GATT_PEERS,
+                                    phyMode = phyMode,
                                 ),
                             )
                         }

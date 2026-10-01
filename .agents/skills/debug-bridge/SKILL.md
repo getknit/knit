@@ -93,7 +93,7 @@ Extras and reply fields: the action's bullet in `.agents/context/debug-bridge.md
 
 - **Messaging:** `SEND`, `SENDIMG` (stage the file into app storage with `run-as` first), `REACT`,
   `TYPING`, `MKGROUP`, `LEAVE`, `PURGE` (clean soak traffic off every phone).
-- **Mesh state:** `STATE`, `STORE`, `HEAL`, `PAUSE`, `RESUME`, `BLECAP`.
+- **Mesh state:** `STATE`, `STORE`, `HEAL`, `PAUSE`, `RESUME`, `BLECAP`, `PHY` (the Coded PHY experiment).
 - **Planes:** `SPOOL`, `COMMONS`, `LORA`, `LORATX`, `LORAPROV`, `XFER`.
 - **Identity, crypto, data:** `INTRO` (contact cards), `RATCHET`, `BACKUP`.
 - **Fault injection and trials:** `NANFAIL`, `NANSTORM`, `NANREFUSE`, `NANICM`, `NANDIAL`, `NANINIT`,

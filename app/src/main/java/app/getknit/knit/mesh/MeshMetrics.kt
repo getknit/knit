@@ -275,6 +275,12 @@ class MeshMetrics {
     private val bleSideDeduped = AtomicLong()
     private val bleSideDrops: Map<BleSideDrop, AtomicLong> = BleSideDrop.entries.associateWith { AtomicLong() }
     private val bleLinkDupSkipped = AtomicLong()
+    private val bleCodedSightings = AtomicLong()
+    private val bleCodedDials = AtomicLong()
+    private val blePhyStepsDown = AtomicLong()
+    private val blePhyStepsUp = AtomicLong()
+    private val blePhyGiveUps = AtomicLong()
+    private val bleCodedAdvertDark = AtomicLong()
     private val digestsReplaced = AtomicLong()
     private val spoolTablesDerived = AtomicLong()
     private val spoolPushed = AtomicLong()
@@ -735,6 +741,31 @@ class MeshMetrics {
         bleLinkDupSkipped.incrementAndGet()
     }
 
+    /** A presence advert was heard on the Coded PHY (the experiment, ADR 2026-10.yvn6) — one per scan callback. */
+    fun onBleCodedSighting() {
+        bleCodedSightings.incrementAndGet()
+    }
+
+    /** A dial went to a peer's Coded address: no fresh 1M advert of it was heard, so the link opens on Coded. */
+    fun onBleCodedDial() {
+        bleCodedDials.incrementAndGet()
+    }
+
+    /** A link's PHY changed under the experiment: down to Coded ([toCoded]) or back up to 1M/2M. */
+    fun onBlePhyStep(toCoded: Boolean) {
+        (if (toCoded) blePhyStepsDown else blePhyStepsUp).incrementAndGet()
+    }
+
+    /** A link's PHY request went unanswered or was answered with another PHY: that link is left where it is. */
+    fun onBlePhyGiveUp() {
+        blePhyGiveUps.incrementAndGet()
+    }
+
+    /** The controller refused the Coded advert set (too many sets, or no feature): dark until the next bring-up. */
+    fun onBleCodedAdvertDark() {
+        bleCodedAdvertDark.incrementAndGet()
+    }
+
     /**
      * A custody digest was handed to a link while an older one still waited there unwritten, and took its id
      * set instead of queueing behind it (`FramedLink.sendDigest`, ADR 2026-09.tjfb). Zero on an idle link;
@@ -1150,6 +1181,12 @@ class MeshMetrics {
             bleSideDeduped = bleSideDeduped.get(),
             bleSideDropsByReason = bleSideDrops.mapValues { it.value.get() }.filterValues { it > 0 },
             bleLinkDupSkipped = bleLinkDupSkipped.get(),
+            bleCodedSightings = bleCodedSightings.get(),
+            bleCodedDials = bleCodedDials.get(),
+            blePhyStepsDown = blePhyStepsDown.get(),
+            blePhyStepsUp = blePhyStepsUp.get(),
+            blePhyGiveUps = blePhyGiveUps.get(),
+            bleCodedAdvertDark = bleCodedAdvertDark.get(),
             digestsReplaced = digestsReplaced.get(),
             spoolTablesDerived = spoolTablesDerived.get(),
             spoolPushed = spoolPushed.get(),
@@ -1276,6 +1313,12 @@ class MeshMetrics {
         val bleSideDeduped: Long = 0,
         val bleSideDropsByReason: Map<BleSideDrop, Long> = emptyMap(),
         val bleLinkDupSkipped: Long = 0,
+        val bleCodedSightings: Long = 0,
+        val bleCodedDials: Long = 0,
+        val blePhyStepsDown: Long = 0,
+        val blePhyStepsUp: Long = 0,
+        val blePhyGiveUps: Long = 0,
+        val bleCodedAdvertDark: Long = 0,
         val digestsReplaced: Long = 0,
         val spoolTablesDerived: Long = 0,
         val spoolPushed: Long = 0,

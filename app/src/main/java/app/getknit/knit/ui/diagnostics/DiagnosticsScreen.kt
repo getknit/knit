@@ -34,6 +34,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -65,6 +68,7 @@ import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
+import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.bluetooth.PromotionConfig
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.spool.SpoolStatus
@@ -98,6 +102,7 @@ fun DiagnosticsScreen(
     val lastCrash by viewModel.lastCrash.collectAsStateWithLifecycle()
     val moderationLatched by viewModel.moderationLatched.collectAsStateWithLifecycle()
     val bleLinkCap by viewModel.bleLinkCap.collectAsStateWithLifecycle()
+    val blePhyMode by viewModel.blePhyMode.collectAsStateWithLifecycle()
     var confirmingModerationReset by remember { mutableStateOf(false) }
     // Inside a NavHost composable the lifecycle owner is this back-stack entry, so this fires again when
     // the crash screen pops — which is how deleting the report over there clears this row over here.
@@ -148,6 +153,8 @@ fun DiagnosticsScreen(
         bleLinkCapOffered = viewModel.bleLinkCapOffered,
         bleLinkCap = bleLinkCap,
         onSetBleLinkCap = viewModel::setBleLinkCap,
+        blePhyMode = blePhyMode,
+        onSetBlePhyMode = viewModel::setBlePhyMode,
     )
 
     if (confirmingModerationReset) {
@@ -188,6 +195,9 @@ internal fun DiagnosticsScreenContent(
     bleLinkCapOffered: Boolean = false,
     bleLinkCap: Int? = null,
     onSetBleLinkCap: (Int) -> Unit = {},
+    // The Coded PHY experiment's mode; null (a build that keeps it dark, and every other caller) hides the row.
+    blePhyMode: CodedPhyMode? = null,
+    onSetBlePhyMode: (CodedPhyMode) -> Unit = {},
 ) {
     Scaffold(
         modifier = Modifier.testTag("screen_diagnostics"),
@@ -248,6 +258,9 @@ internal fun DiagnosticsScreenContent(
             }
             if (bleLinkCapOffered && state.transports.any { it is TransportRow.Live && it.kind == TransportKind.Bluetooth }) {
                 item { BleLinkCapRow(cap = bleLinkCap, onSet = onSetBleLinkCap) }
+            }
+            if (blePhyMode != null && state.transports.any { it is TransportRow.Live && it.kind == TransportKind.Bluetooth }) {
+                item { BlePhyModeRow(mode = blePhyMode, onSet = onSetBlePhyMode) }
             }
 
             item { SectionHeader(stringResource(R.string.diagnostics_metrics)) }
@@ -919,6 +932,53 @@ private fun BleLinkCapRow(
     }
 }
 
+/** The four modes of the Coded PHY experiment, in the row's order, with their labels. */
+private val BLE_PHY_MODES =
+    listOf(
+        CodedPhyMode.OFF to R.string.diagnostics_ble_phy_off,
+        CodedPhyMode.AUTO to R.string.diagnostics_ble_phy_auto,
+        CodedPhyMode.CODED to R.string.diagnostics_ble_phy_coded,
+        CodedPhyMode.ONE_M to R.string.diagnostics_ble_phy_one_m,
+    )
+
+/**
+ * The BLE Coded PHY experiment's mode (`SettingsStore.debugBlePhyMode`, ADR 2026-10.yvn6), so a walk test can switch
+ * between today's Bluetooth, the automatic steps and the two pinned PHYs without adb. The transport applies a change
+ * without a restart.
+ */
+@Composable
+private fun BlePhyModeRow(
+    mode: CodedPhyMode,
+    onSet: (CodedPhyMode) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("ble_phy_mode")) {
+        Text(
+            text = stringResource(R.string.diagnostics_ble_phy_label),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+        )
+        Text(
+            text = stringResource(R.string.diagnostics_ble_phy_body),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
+        )
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            BLE_PHY_MODES.forEachIndexed { index, (value, label) ->
+                SegmentedButton(
+                    selected = value == mode,
+                    onClick = { onSet(value) },
+                    shape = SegmentedButtonDefaults.itemShape(index = index, count = BLE_PHY_MODES.size),
+                    modifier = Modifier.height(48.dp).testTag("ble_phy_${value.wire}"),
+                    icon = {},
+                ) {
+                    Text(stringResource(label))
+                }
+            }
+        }
+    }
+}
+
 /**
  * The one-line "Last crash" entry. Interactive, so it takes the 48 dp minimum touch target — `clickable`
  * goes **before** `padding` so the target covers the whole row, unlike the non-interactive [MetricRow]
@@ -1256,4 +1316,11 @@ fun BleLinkCapRowPreview() =
             BleLinkCapRow(cap = null, onSet = {})
             BleLinkCapRow(cap = 2, onSet = {})
         }
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun BlePhyModeRowPreview() =
+    KnitPreview {
+        BlePhyModeRow(mode = CodedPhyMode.AUTO, onSet = {})
     }

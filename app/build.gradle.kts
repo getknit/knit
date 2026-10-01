@@ -107,6 +107,14 @@ val bleSidePlane = (project.findProperty("bleSidePlane") as? String)?.toBoolean(
 // F-Droid's -P-free rebuild stays identical. Flip the release default after the device trial.
 val bleGattPeers = (project.findProperty("bleGattPeers") as? String)?.toBoolean()
 
+// The BLE Coded PHY experiment (long range, getknit/knit#29, ADR 2026-10.yvn6): a second presence set on the Coded
+// PHY, an all-PHY presence scan, and per-link steps between 1M and Coded S=8 — ON in debug, OFF in a shipped
+// artifact, overridable with `-PbleCodedPhy=true|false`. It gates the one seam, the mode flow the DI hands
+// `BluetoothMeshTransport` (OFF while dark: no Coded set, the legacy scan, no PHY handle), and the Diagnostics row
+// and `…debug.PHY` that set the mode. Not a code strip, and the defaults live in source so F-Droid's -P-free rebuild
+// stays identical. Flip the release default after the field trial.
+val bleCodedPhy = (project.findProperty("bleCodedPhy") as? String)?.toBoolean()
+
 // The Wear OS status service (a read-only GATT characteristic a bonded watch reads the mesh state from; the
 // watch app is the opt-in `:wear` module) — a prototype: ON in debug, OFF in a shipped artifact, overridable
 // with `-PwearStatus=true|false`. It gates the one seam, the `WearStatusServer` definition in the DI graph
@@ -250,6 +258,8 @@ android {
         buildConfigField("boolean", "BLE_SIDE_PLANE", (bleSidePlane ?: true).toString())
         // The GATT payload reader is ON in debug so a lab build finds and dials iPhones; see `bleGattPeers` above.
         buildConfigField("boolean", "BLE_GATT_PEERS", (bleGattPeers ?: true).toString())
+        // The Coded PHY experiment is ON in debug so a lab build can be walk-tested; see `bleCodedPhy` above.
+        buildConfigField("boolean", "BLE_CODED_PHY", (bleCodedPhy ?: true).toString())
         // The Wear OS status service is ON in debug so a lab phone serves a paired watch; see `wearStatus` above.
         buildConfigField("boolean", "WEAR_STATUS", (wearStatus ?: true).toString())
         // Fault injection for the model poison-pill's acceptance test (ADR 037):
@@ -350,6 +360,8 @@ android {
             buildConfigField("boolean", "BLE_SIDE_PLANE", (bleSidePlane ?: false).toString())
             // Finding iPhones through their GATT payload is not introduced yet: dark until its device trial.
             buildConfigField("boolean", "BLE_GATT_PEERS", (bleGattPeers ?: false).toString())
+            // The Coded PHY experiment is not introduced yet: dark in a shipped artifact until its field trial.
+            buildConfigField("boolean", "BLE_CODED_PHY", (bleCodedPhy ?: false).toString())
             // The Wear OS status service is a prototype: dark in a shipped artifact.
             buildConfigField("boolean", "WEAR_STATUS", (wearStatus ?: false).toString())
             // Never ship a fault injector, whatever `-PmodelFaultOnLoad` said.

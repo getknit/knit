@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.emoji.RecentReactions
+import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.bluetooth.PromotionConfig
 import app.getknit.knit.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.Flow
@@ -449,6 +450,17 @@ class SettingsStore(
         }
 
     /**
+     * The BLE Coded PHY experiment's mode (ADR 2026-10.yvn6), or null where the build keeps it dark
+     * (`BuildConfig.BLE_CODED_PHY` — not `DEBUG`, so a `-PbleCodedPhy=true` release-shaped build can be field tested).
+     * Unset reads [CodedPhyMode.AUTO]: a build that carries the experiment runs it. Set from Diagnostics or
+     * `…debug.PHY`; the `debug_` prefix keeps it out of a backup.
+     */
+    val debugBlePhyMode: Flow<CodedPhyMode?> =
+        dataStore.data.map { prefs ->
+            if (BuildConfig.BLE_CODED_PHY) CodedPhyMode.parse(prefs[KEY_DEBUG_BLE_PHY_MODE]) ?: CodedPhyMode.AUTO else null
+        }
+
+    /**
      * The bound board as its last session reported it — its Meshtastic node number and, on firmware that
      * signs, its key — or null while unbound. What the profile advertises (`ProfileContent.loraNode` /
      * `loraKey`) so a contact can line a post their board heard up with this phone and verify it is ours.
@@ -723,6 +735,9 @@ class SettingsStore(
             }
         }
 
+    /** Sets [debugBlePhyMode]. */
+    suspend fun setDebugBlePhyMode(mode: CodedPhyMode) = dataStore.edit { it[KEY_DEBUG_BLE_PHY_MODE] = mode.wire }
+
     /** Records the LoRa plane's limiters; see [loraPlaneState]. */
     suspend fun setLoraPlaneState(json: String) = dataStore.edit { it[KEY_LORA_PLANE_STATE] = json }
 
@@ -947,6 +962,7 @@ class SettingsStore(
         val KEY_LORA_NAME = stringPreferencesKey("lora_device_name")
         val KEY_LORA_CHANNEL = intPreferencesKey("lora_channel_index")
         val KEY_DEBUG_BLE_LINK_CAP = intPreferencesKey("debug_ble_link_cap")
+        val KEY_DEBUG_BLE_PHY_MODE = stringPreferencesKey("debug_ble_phy_mode")
         val KEY_LORA_NODE = longPreferencesKey("lora_board_node")
         val KEY_LORA_KEY = stringPreferencesKey("lora_board_key")
         val KEY_LORA_SETUP_ADDRESS = stringPreferencesKey("lora_setup_address")

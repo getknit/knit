@@ -202,5 +202,23 @@ internal class BleAdvertiser(
                 .setInterval(AdvertisingSetParameters.INTERVAL_MEDIUM)
                 .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_MEDIUM)
                 .build()
+
+        /**
+         * The Coded PHY experiment's second presence set (ADR 2026-10.yvn6): the presence payload again, extended and
+         * connectable (an initiator dials its address, and the link opens on Coded), Coded on both PHYs — primary
+         * advertising on Coded is always S=8 — at the presence cadence. [txPower] is HIGH by default, the point being
+         * reach; a walk test can pin it to the presence advert's MEDIUM to compare PHYs alone (`…debug.PHY`).
+         */
+        fun codedParams(txPower: Int = AdvertisingSetParameters.TX_POWER_HIGH): AdvertisingSetParameters =
+            AdvertisingSetParameters
+                .Builder()
+                .setLegacyMode(false)
+                .setConnectable(true)
+                .setScannable(false)
+                .setPrimaryPhy(BluetoothDevice.PHY_LE_CODED)
+                .setSecondaryPhy(BluetoothDevice.PHY_LE_CODED)
+                .setInterval(AdvertisingSetParameters.INTERVAL_HIGH)
+                .setTxPowerLevel(txPower)
+                .build()
     }
 }

@@ -62,6 +62,14 @@ internal class BleScanner(
     @Volatile
     private var scanning = false
 
+    /**
+     * The presence scan under the Coded PHY experiment (ADR 2026-10.yvn6): extended results on every PHY the
+     * controller has, so it hears a peer's Coded advert beside its legacy one. Taking Coded time-shares the window
+     * with 1M — the cost the side scan avoids — and the field trial is what measures it. Read at each [start].
+     */
+    @Volatile
+    var allPhys: Boolean = false
+
     /** Whether a scan is registered right now (false again after `onScanFailed` or [stop]). */
     val isScanning: Boolean get() = scanning
 
@@ -77,8 +85,12 @@ internal class BleScanner(
                 .Builder()
                 .setScanMode(scanMode)
                 .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
-                .apply { if (extended) setLegacy(false).setPhy(BluetoothDevice.PHY_LE_1M) }
-                .build()
+                .apply {
+                    when {
+                        allPhys -> setLegacy(false).setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
+                        extended -> setLegacy(false).setPhy(BluetoothDevice.PHY_LE_1M)
+                    }
+                }.build()
         // Filter on the presence of service data for our UUID, not a service-UUID list AD — an Android advert
         // carries no such list AD (it was dropped to make budget room for the 16-byte raw nodeId; see
         // [BleAdvertiser]). An empty data/mask matches any advert with service data for the UUID, i.e. every

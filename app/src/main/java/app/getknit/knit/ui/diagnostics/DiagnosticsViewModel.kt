@@ -17,6 +17,7 @@ import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
+import app.getknit.knit.mesh.bluetooth.CodedPhyMode
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.spool.SpoolStatus
@@ -170,6 +171,19 @@ class DiagnosticsViewModel(
     fun setBleLinkCap(cap: Int) {
         if (!bleLinkCapOffered) return
         viewModelScope.launch { settings.setDebugBleLinkCap(cap) }
+    }
+
+    /**
+     * The BLE Coded PHY experiment's mode (ADR 2026-10.yvn6), or null where the build keeps it dark — which is also
+     * whether the row shows. Its own flow for the same reason as [bleLinkCap]; the transport collects the same key.
+     */
+    val blePhyMode: StateFlow<CodedPhyMode?> =
+        settings.debugBlePhyMode.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Sets the Coded PHY mode. A no-op where the build keeps the experiment dark. */
+    fun setBlePhyMode(mode: CodedPhyMode) {
+        if (!BuildConfig.BLE_CODED_PHY) return
+        viewModelScope.launch { settings.setDebugBlePhyMode(mode) }
     }
 
     /** Live radio health, shown as a status line above the mesh controls. */

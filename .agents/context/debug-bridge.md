@@ -269,6 +269,16 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   Bluetooth row's `linked` / `nearby`. It persists across restarts (a `debug_` key, never in a backup) until
   cleared. The transport sheds the weakest links once they are 20 s old and refuses a dialer that would add one
   (`bt refused client <id> (… atCap=true)`); the side channel still reaches unlinked peers, and NAN is untouched.
+- `…debug.PHY` — the **BLE Coded PHY experiment** (ADR 2026-10.yvn6; builds with `BuildConfig.BLE_CODED_PHY`, else
+  an error; also a segmented row under Diagnostics' Transports). `--es mode off|auto|coded|1m` stores the mode
+  (applied live, persists — a `debug_` key), `--es txpower high|medium` re-raises the Coded advert, `--ei stepDown
+  N` / `stepUp` / `stepDownReads` / `minGapMs` / `stepUpHoldMs` override the step thresholds until the process dies
+  (`--ez resetTuning true` restores them); no extras reads. The reply: `mode`, `supported` (the controller has Coded
+  and extended advertising), `advert` (`off` / `starting` / `live` / `dark <status>`), `txPower`, `tuning`,
+  `links[]` (`nodeId`, `phy` ONE_M|TWO_M|CODED|UNKNOWN, `linkRssi`, `drives`, `attached`, `switches`, `gaveUp`) and
+  `peers[]` (`nodeId`, `rssi` on the 1M scale, `oneMSeenAgoMs`, `codedSeenAgoMs`). Oracle for a step: `links[].phy`
+  plus `bt phy <id> ONE_M→CODED` in logcat. Negative control: on a phone without Coded (the Pixel 3) `supported` is
+  false, `advert` stays `off` and no link gets a PHY handle; `mode off` restores the legacy scan and drops every handle.
 - `…debug.FLAGMSG` — injects one inbound message **the text moderator flagged** (the UI collapses it behind a
   tap-to-reveal) as the newest row of `--es conv <id>` (default `nearby`), from `--es from <peerNodeId>`
   (default a synthetic sender) with body `--es text <body>`. The radio-less build never receives a real

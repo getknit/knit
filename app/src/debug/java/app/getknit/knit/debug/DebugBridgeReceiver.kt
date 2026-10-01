@@ -49,6 +49,9 @@ import app.getknit.knit.mesh.MeshStartGate
 import app.getknit.knit.mesh.PublicPostOutcome
 import app.getknit.knit.mesh.StoreDigest
 import app.getknit.knit.mesh.TransportKind
+import app.getknit.knit.mesh.bluetooth.CodedPhyDiag
+import app.getknit.knit.mesh.bluetooth.CodedPhyMode
+import app.getknit.knit.mesh.bluetooth.PhyTuning
 import app.getknit.knit.mesh.bluetooth.PromotionConfig
 import app.getknit.knit.mesh.lora.BoardOwner
 import app.getknit.knit.mesh.lora.BoardSettings
@@ -193,6 +196,13 @@ import java.nio.ByteBuffer
  *   the reply is the stored `cap` (null = shipped budget) and the Bluetooth row's `linked` / `nearby`. The transport
  *   collects the key, so a lower cap sheds the weakest links once they are 20 s old and refuses new inbound dialers;
  *   the side channel still reaches unlinked peers. Persists across restarts until cleared.
+ * - [ACTION_PHY] — the **BLE Coded PHY experiment** (ADR 2026-10.yvn6; `BuildConfig.BLE_CODED_PHY`, else an error).
+ *   `--es mode off|auto|coded|1m` stores the mode (`SettingsStore.debugBlePhyMode`, applied live), `--es txpower
+ *   high|medium` re-raises the Coded advert, and `--ei stepDown|stepUp|stepDownReads|minGapMs|stepUpHoldMs N`
+ *   overrides the step thresholds until the process dies (`--ez resetTuning true` restores them). The reply:
+ *   `mode`, `supported`, `advert` (off|starting|live|dark <status>), `txPower`, the tuning, `links[]` (nodeId, phy,
+ *   linkRssi, drives, attached, switches, gaveUp) and `peers[]` (nodeId, rssi on the 1M scale, oneMSeenAgoMs,
+ *   codedSeenAgoMs).
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  * - [ACTION_PAUSE] / [ACTION_RESUME] — the notification's Pause and Resume, by their store write alone
  *   (`--ei minutes 15|60`, the two offered spans): `MeshService` follows `SettingsStore.meshPausedUntil`, so
@@ -396,6 +406,10 @@ class DebugBridgeReceiver :
 
                         ACTION_BLECAP -> {
                             handleBleCap(intent)
+                        }
+
+                        ACTION_PHY -> {
+                            handlePhy(intent)
                         }
 
                         ACTION_NANICM -> {
@@ -1202,6 +1216,12 @@ class DebugBridgeReceiver :
             .put("bleSideDeduped", snap.bleSideDeduped)
             .put("bleSideDropsByReason", JSONObject(snap.bleSideDropsByReason.mapKeys { it.key.name }))
             .put("bleLinkDupSkipped", snap.bleLinkDupSkipped)
+            .put("bleCodedSightings", snap.bleCodedSightings)
+            .put("bleCodedDials", snap.bleCodedDials)
+            .put("blePhyStepsDown", snap.blePhyStepsDown)
+            .put("blePhyStepsUp", snap.blePhyStepsUp)
+            .put("blePhyGiveUps", snap.blePhyGiveUps)
+            .put("bleCodedAdvertDark", snap.bleCodedAdvertDark)
             .put("digestsReplaced", snap.digestsReplaced)
             .put("spoolTablesDerived", snap.spoolTablesDerived)
             .put("spoolPushed", snap.spoolPushed)
@@ -2040,6 +2060,74 @@ class DebugBridgeReceiver :
             .put("nearby", ble?.nearby ?: JSONObject.NULL)
     }
 
+    /** [ACTION_PHY]: sets the Coded PHY experiment's mode, Coded advert power or step tuning, then reports it. */
+    private suspend fun handlePhy(intent: Intent): JSONObject {
+        if (!BuildConfig.BLE_CODED_PHY) return reply("error", "this build keeps the Coded PHY experiment dark (-PbleCodedPhy)")
+        intent.getStringExtra("mode")?.let { raw ->
+            val mode = CodedPhyMode.parse(raw) ?: return reply("error", "mode must be off|auto|coded|1m")
+            settings.setDebugBlePhyMode(mode)
+        }
+        intent.getStringExtra("txpower")?.let { level ->
+            val apply = CodedPhyDiag.setTxPower ?: return reply("error", "Bluetooth transport is not running")
+            if (!apply(level)) return reply("error", "txpower must be high|medium")
+        }
+        if (intent.getBooleanExtra("resetTuning", false)) CodedPhyDiag.tuning = PhyTuning()
+        val t = CodedPhyDiag.tuning
+
+        fun int(key: String) = if (intent.hasExtra(key)) intent.getIntExtra(key, 0) else null
+        CodedPhyDiag.tuning =
+            t.copy(
+                stepDownDbm = int("stepDown") ?: t.stepDownDbm,
+                stepUpDbm = int("stepUp") ?: t.stepUpDbm,
+                stepDownReads = int("stepDownReads") ?: t.stepDownReads,
+                minSwitchGapMs = int("minGapMs")?.toLong() ?: t.minSwitchGapMs,
+                stepUpHoldMs = int("stepUpHoldMs")?.toLong() ?: t.stepUpHoldMs,
+            )
+        delay(PHY_SETTLE_MS) // the transport collects the stored mode; let it land before reading the status back
+        val status = CodedPhyDiag.status?.invoke() ?: return reply("error", "Bluetooth transport is not running")
+        val tuned = CodedPhyDiag.tuning
+        return JSONObject()
+            .put("status", "ok")
+            .put("mode", status.mode.wire)
+            .put("supported", status.supported)
+            .put("advert", status.advert)
+            .put("txPower", status.txPower)
+            .put(
+                "tuning",
+                JSONObject()
+                    .put("stepDown", tuned.stepDownDbm)
+                    .put("stepDownReads", tuned.stepDownReads)
+                    .put("stepUp", tuned.stepUpDbm)
+                    .put("stepUpHoldMs", tuned.stepUpHoldMs)
+                    .put("minGapMs", tuned.minSwitchGapMs),
+            ).put(
+                "links",
+                JSONArray(
+                    status.links.map {
+                        JSONObject()
+                            .put("nodeId", it.nodeId)
+                            .put("phy", it.phy.name)
+                            .put("linkRssi", it.linkRssi ?: JSONObject.NULL)
+                            .put("drives", it.drives)
+                            .put("attached", it.attached)
+                            .put("switches", it.switches)
+                            .put("gaveUp", it.gaveUp)
+                    },
+                ),
+            ).put(
+                "peers",
+                JSONArray(
+                    status.peers.map {
+                        JSONObject()
+                            .put("nodeId", it.nodeId)
+                            .put("rssi", it.smoothedRssi.toInt())
+                            .put("oneMSeenAgoMs", it.oneMSeenAgoMs ?: JSONObject.NULL)
+                            .put("codedSeenAgoMs", it.codedSeenAgoMs ?: JSONObject.NULL)
+                    },
+                ),
+            )
+    }
+
     private fun handleNanMsg(intent: Intent): JSONObject {
         if (!NanFaultInjector.bound) return reply("error", "Wi-Fi Aware transport is not running")
         val what =
@@ -2138,6 +2226,7 @@ class DebugBridgeReceiver :
         const val ACTION_NANINIT = "app.getknit.knit.debug.NANINIT"
         const val ACTION_NANMSG = "app.getknit.knit.debug.NANMSG"
         const val ACTION_BLECAP = "app.getknit.knit.debug.BLECAP"
+        const val ACTION_PHY = "app.getknit.knit.debug.PHY"
         const val ACTION_REQNOTIF = "app.getknit.knit.debug.REQNOTIF"
         const val ACTION_MSGNOTIF = "app.getknit.knit.debug.MSGNOTIF"
         const val ACTION_FLAGMSG = "app.getknit.knit.debug.FLAGMSG"
@@ -2195,6 +2284,9 @@ class DebugBridgeReceiver :
 
         /** How far past the age gate [ACTION_REVIEW]'s arm backdates the watermark (clock-skew slack). */
         const val ARM_MARGIN_MS = 60_000L
+
+        // How long `…debug.PHY` waits after storing a mode before reading the status back: the transport collects it.
+        const val PHY_SETTLE_MS = 300L
 
         // Mirror AttachmentStore.GIF_MAX_DIMENSION / GIF_MAX_FPS (private there) so this diagnostic
         // shrinks a GIF with the same bounds the real ingest path uses.

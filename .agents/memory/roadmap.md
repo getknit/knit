@@ -603,6 +603,11 @@ doc). **Don't start a deferred item without explicit direction.**
   (this lab links everyone — needs a link budget saturated or a phone in connect backoff). Trial knobs
   deferred with it: a third slot (two saturate at one part per 6 s), a shorter dwell for screen-on rooms,
   2M secondary PHY, hold-until-echoed dwell, DM-form frames on a page (issue scope: DMs stay on L2CAP).
+- **BLE Coded PHY: the release flag** — BUILT 2026-10-01 on `feat/ble-coded-phy` (ADR 2026-10.yvn6, getknit/knit#29):
+  a second presence set on Coded, an all-PHY presence scan, per-link 1M ↔ Coded S=8 steps on link RSSI. Dark in a
+  shipped artifact (`BuildConfig.BLE_CODED_PHY`, debug on / release off) until: a walk-apart field trial (link-drop
+  distance under off, auto and coded), the OFF-vs-AUTO 1M-sighting rate, chat latency behind a blob on a CODED link,
+  and a battery night against OFF. iOS has no Coded PHY; 2M up-shift and PHY-aware blob scheduling are deferred.
 - **Frame compaction: what round 2 (ADR 060, the `0x05` transcoder) left** — round 1 (ADR 059, crypto v3)
   and round 2 (ADR 060: a schema-aware re-encoding of `signed` the receiver rebuilds byte-exact before
   verifying) both landed 2026-08-29; measured after: signed v3 ✓✓ tick **221 B, one packet at 228/231/255**,

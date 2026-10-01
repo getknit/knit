@@ -207,3 +207,4 @@ carries; never renumber an old one.
 | [2026-09.zkma](decisions/2026-09-zkma-the-bridge-offer-and-its-backfill-draw-from-one-ranked-list.md) | The bridge offer and its backfill draw from one ranked list | lora, bridge, custody |
 | [2026-09.zu5t](decisions/2026-09-zu5t-content-capture-is-off.md) | Content capture is off | privacy, ui, performance |
 | [2026-10.47rw](decisions/2026-10-47rw-a-keystore-refusal-is-not-proof-a-secret-is-gone.md) | A Keystore refusal is not proof a secret is gone | crypto, storage, reliability |
+| [2026-10.yvn6](decisions/2026-10-yvn6-ble-links-step-down-to-the-coded-phy-at-range.md) | BLE links step down to the Coded PHY at range | ble, mesh, power |

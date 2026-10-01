@@ -509,3 +509,25 @@ counters `bleSide*` on `…debug.STATE`. In the JVM, `mesh/lab/LabPages` is the 
 `SideChannelLabTest` runs the author-as-hop, linkless-listener and never-DM shapes through the real
 `BleFastRoutePolicy` and codec against the full oracle (`context/testing.md`). Device trial owed before the
 release flag flips — the ADR lists it.
+
+## Links step down to the Coded PHY at range — an experiment (ADR 2026-10.yvn6)
+
+Dark in release behind `BuildConfig.BLE_CODED_PHY`; in debug the mode (`SettingsStore.debugBlePhyMode`: off, auto,
+coded, 1m) is set from Diagnostics or `…debug.PHY` and applied without a restart. With it on, and on a controller
+that reports `isLeCodedPhySupported`:
+
+- **A second presence set on Coded** (`BleAdvertiser.codedParams()`, extended + connectable, HIGH power) carries
+  the same payload bytes as the legacy advert; the presence scan goes extended on every PHY (`BleScanner.allPhys`).
+  The legacy advert stays: legacy-only scanners and the 31-byte budget need it.
+- **One RSSI per PHY.** `BlePresenceTracker` reports the stronger on the 1M scale (Coded + 12 dB,
+  `CodedPhyPolicy.effectiveRssi`), so every −90 floor reads what it always did with the experiment off.
+- **The dial picks the PHY.** No fresh 1M advert and a Coded one → dial the Coded address; a plain L2CAP connect
+  there lands on Coded (spike-verified). The tie-break and every dial rule are untouched.
+- **`BlePhyControl` per capable link** — a GATT client on the link's ACL, the `BleDoorbell` pattern — reads link
+  RSSI and asks `PhyStepper` (pure, JVM-tested) for 1M ↔ Coded S=8. The larger id drives; a request unanswered in
+  3 s, or answered with another PHY, gives up for the link (a controller without Coded answers nothing at all).
+
+Oracles: `bt phy mode=…`, `bt coded advert live|dark <status>`, `via=coded|1m` on `bt initiating to`,
+`bt phy <id> ONE_M→CODED rssi=… (auto)`, `bt phy <id> gave up …`; counters `bleCoded*` / `blePhy*`; the
+`…debug.PHY` reply lists each link's PHY and link RSSI and each peer's per-PHY ages. Link RSSI reads ~20 dB
+stronger than the adverts at the same spot, so step thresholds and advert floors are on different scales.

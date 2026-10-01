@@ -790,6 +790,12 @@
     <string name="diagnostics_ble_link_cap_default">Default (%1$d)</string>
     <string name="diagnostics_ble_link_cap_decrease">Fewer Bluetooth links</string>
     <string name="diagnostics_ble_link_cap_increase">More Bluetooth links</string>
+    <string name="diagnostics_ble_phy_label">Long-range Bluetooth (experiment)</string>
+    <string name="diagnostics_ble_phy_body">Off is today\'s Bluetooth. Auto finds phones further away and slows a link down to keep it as they walk off. Coded and 1M hold every link on one speed, for comparing range.</string>
+    <string name="diagnostics_ble_phy_off">Off</string>
+    <string name="diagnostics_ble_phy_auto">Auto</string>
+    <string name="diagnostics_ble_phy_coded">Coded</string>
+    <string name="diagnostics_ble_phy_one_m">1M</string>
 
     <!-- Your mesh (ui/yourmesh): what keeping Knit running has done for the people around this phone, in
          plain words. Every number is counted on this phone and never leaves it. "Passed along" is a message
