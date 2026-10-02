@@ -55,6 +55,8 @@ internal class BlePhyControl(
     private val onStep: (toCoded: Boolean) -> Unit,
     private val onGiveUp: () -> Unit,
     private val now: () -> Long,
+    // After every PHY report — the first read and each change — so the transport can republish what links are on.
+    private val onPhyKnown: () -> Unit = {},
 ) {
     private val stepper = PhyStepper(tuning)
     private val pokes = Channel<Unit>(Channel.CONFLATED)
@@ -78,13 +80,11 @@ internal class BlePhyControl(
     }
 
     /**
-     * Stop, and let the GATT client go. With [restore] (the experiment switched off under a live link) a Coded link
-     * is asked back to 1M first; the request is the controller's to finish, and the open channel keeps the ACL up.
+     * Stop, and let the GATT client go. The link stays on whatever PHY it is on: the experiment switched off under a
+     * live Coded link used to ask it back to 1M, and at the range Coded was holding it that dropped the link (the
+     * 2026-10-01 walk). The open channel keeps the ACL up.
      */
-    fun close(restore: Boolean) {
-        val g = gatt
-        val putBack = restore && drives && stepper.phy == LinkPhy.CODED
-        if (putBack && g != null && isLive()) ask(g, LinkPhy.ONE_M)
+    fun close() {
         job?.cancel()
     }
 
@@ -187,6 +187,7 @@ internal class BlePhyControl(
             Log.i(TAG, "bt phy $nodeId gave up: update answered ${phyOf(txPhy)} status=$status")
             onGiveUp()
         }
+        onPhyKnown()
     }
 
     private val callback =

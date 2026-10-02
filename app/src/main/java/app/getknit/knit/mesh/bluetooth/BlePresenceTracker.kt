@@ -10,14 +10,18 @@ import app.getknit.knit.mesh.Peer
  *
  * A peer heard on both PHYs (the Coded PHY experiment, ADR 2026-10.yvn6) keeps one smoothed RSSI per PHY — the two
  * read on different scales — and its [Snapshot.smoothedRssi] is the stronger of them on the 1M scale
- * ([CodedPhyPolicy.effectiveRssi]), so every consumer's −90 floor keeps meaning what it meant. A PHY's reading
- * counts only while that PHY was heard in the same burst as the peer's latest sighting.
+ * ([CodedPhyPolicy.effectiveRssi], at the credit [codedCreditDb] names), so every consumer's −90 floor keeps meaning
+ * what it meant. A PHY's reading counts only while that PHY was heard in the same burst as the peer's latest sighting.
+ * Coded hits are far sparser than 1M ones (a 1 s advert, a scan that shares its window), so a Coded sighting that
+ * follows a Coded sighting is continuous presence across [PresenceConfig.codedGapResetMs], not the 1M gap.
  *
  * Pure of Android and driven by an injected clock (all methods take `now`), so it is JVM-unit-testable with a
  * virtual clock ([app.getknit.knit.BlePresenceTrackerTest]) exactly like the other pure mesh components.
  */
 class BlePresenceTracker(
     private val config: PresenceConfig = PresenceConfig(),
+    // Read at every score, so `…debug.PHY --ei credit` moves it live (ADR 2026-10.yvn6).
+    private val codedCreditDb: () -> Double = { CodedPhyPolicy.CODED_RSSI_CREDIT_DB },
 ) {
     /** One scan hit for a peer: RSSI plus the fields decoded from its [BleAdvertPayload]. */
     data class Sighting(
@@ -44,6 +48,9 @@ class BlePresenceTracker(
         /** Since the last 1M / Coded sighting, null when that PHY has not been heard since the peer (re)appeared. */
         val oneMSeenAgoMs: Long? = lastSeenAgoMs,
         val codedSeenAgoMs: Long? = null,
+        /** Each PHY's own smoothed advert RSSI, on its own scale (no credit) — for the trial's readouts. */
+        val rssi1m: Double? = null,
+        val rssiCoded: Double? = null,
     )
 
     private class Entry(
@@ -59,14 +66,30 @@ class BlePresenceTracker(
         var lastCodedAt: Long? = null,
     ) {
         /**
-         * The smoothed RSSI on the 1M scale, counting a PHY only if it was heard in the latest burst. The latest
-         * sighting's own PHY always is, so this is never empty once [note] has run.
+         * The smoothed RSSI on the 1M scale, counting a PHY only if it was heard in the latest burst (within that
+         * PHY's own gap of the latest sighting). The latest sighting's own PHY always is, so this is never empty once
+         * [note] has run.
          */
-        fun smoothed(gapMs: Long): Double {
-            fun fresh(at: Long?) = at != null && lastSeenAt - at <= gapMs
-            return CodedPhyPolicy.effectiveRssi(rssi1m.takeIf { fresh(last1mAt) }, rssiCoded.takeIf { fresh(lastCodedAt) })
-                ?: Double.NEGATIVE_INFINITY
+        fun smoothed(
+            config: PresenceConfig,
+            creditDb: Double,
+        ): Double {
+            fun fresh(
+                at: Long?,
+                gapMs: Long,
+            ) = at != null && lastSeenAt - at <= gapMs
+            return CodedPhyPolicy.effectiveRssi(
+                rssi1m.takeIf { fresh(last1mAt, config.presenceGapResetMs) },
+                rssiCoded.takeIf { fresh(lastCodedAt, config.codedGapResetMs) },
+                creditDb,
+            ) ?: Double.NEGATIVE_INFINITY
         }
+
+        /** The gap past which a sighting on [coded]'s PHY starts presence over: wider only for Coded after Coded. */
+        fun gapFor(
+            coded: Boolean,
+            config: PresenceConfig,
+        ): Long = if (coded && lastCodedAt == lastSeenAt) config.codedGapResetMs else config.presenceGapResetMs
 
         fun note(
             rssi: Int,
@@ -97,9 +120,10 @@ class BlePresenceTracker(
         now: Long,
     ) {
         val existing = entries[s.nodeId]
-        // A new peer, or one back after a gap longer than presenceGapResetMs, restarts the dwell clock and
-        // reseeds the RSSI (it walked away and back — don't average across the gap).
-        if (existing == null || now - existing.lastSeenAt > config.presenceGapResetMs) {
+        val phyGapMs = if (s.coded) config.codedGapResetMs else config.presenceGapResetMs
+        // A new peer, or one back after a gap longer than presenceGapResetMs (codedGapResetMs for Coded after Coded),
+        // restarts the dwell clock and reseeds the RSSI (it walked away and back — don't average across the gap).
+        if (existing == null || now - existing.lastSeenAt > existing.gapFor(s.coded, config)) {
             entries[s.nodeId] =
                 Entry(
                     protoVersion = s.protoVersion,
@@ -108,10 +132,10 @@ class BlePresenceTracker(
                     digestCue = s.digestCue,
                     firstSeenAt = now,
                     lastSeenAt = now,
-                ).also { it.note(s.rssiDbm, s.coded, now, config.rssiEwmaAlpha, config.presenceGapResetMs) }
+                ).also { it.note(s.rssiDbm, s.coded, now, config.rssiEwmaAlpha, phyGapMs) }
             return
         }
-        existing.note(s.rssiDbm, s.coded, now, config.rssiEwmaAlpha, config.presenceGapResetMs)
+        existing.note(s.rssiDbm, s.coded, now, config.rssiEwmaAlpha, phyGapMs)
         existing.protoVersion = s.protoVersion
         existing.capabilities = s.capabilities
         existing.psm = s.psm
@@ -129,11 +153,13 @@ class BlePresenceTracker(
                 capabilities = e.capabilities,
                 psm = e.psm,
                 digestCue = e.digestCue,
-                smoothedRssi = e.smoothed(config.presenceGapResetMs),
+                smoothedRssi = e.smoothed(config, codedCreditDb()),
                 dwellMs = now - e.firstSeenAt,
                 lastSeenAgoMs = now - e.lastSeenAt,
                 oneMSeenAgoMs = e.last1mAt?.let { now - it },
                 codedSeenAgoMs = e.lastCodedAt?.let { now - it },
+                rssi1m = e.rssi1m,
+                rssiCoded = e.rssiCoded,
             )
         }
     }
@@ -148,7 +174,7 @@ class BlePresenceTracker(
 
     /** [nodeId]'s current smoothed RSSI, or null if unseen — a cheap lookup for the scan-demand boost gate. */
     @Synchronized
-    fun smoothedRssiFor(nodeId: String): Double? = entries[nodeId]?.smoothed(config.presenceGapResetMs)
+    fun smoothedRssiFor(nodeId: String): Double? = entries[nodeId]?.smoothed(config, codedCreditDb())
 
     @Synchronized
     fun forget(nodeId: String) {
@@ -169,6 +195,11 @@ data class PresenceConfig(
     val rssiEwmaAlpha: Double = 0.35,
     /** A gap since last sighting longer than this resets the dwell clock and reseeds RSSI (peer left and returned). */
     val presenceGapResetMs: Long = 8_000,
+    /**
+     * The same, for a Coded sighting after a Coded sighting (the Coded PHY experiment, ADR 2026-10.yvn6): a far peer's
+     * Coded hits arrive seconds apart, and an 8 s silence would restart its dwell before it ever reached the threshold.
+     */
+    val codedGapResetMs: Long = 30_000,
     /** How long a peer lingers in `reachable`/snapshots after its last sighting before being pruned. */
     val reachableLingerMs: Long = 90_000,
 )

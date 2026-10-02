@@ -8,6 +8,7 @@ import app.getknit.knit.mesh.bluetooth.PhyStepper
 import app.getknit.knit.mesh.bluetooth.PhyStepper.Action
 import app.getknit.knit.mesh.bluetooth.PhyTuning
 import app.getknit.knit.mesh.bluetooth.PromotionPolicy
+import app.getknit.knit.mesh.bluetooth.ScanPhys
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -76,7 +77,52 @@ class CodedPhyPolicyTest {
         assertEquals(-88.0, t.snapshots(14_000).single().smoothedRssi, 0.0001)
     }
 
-    // --- dialing ---
+    @Test
+    fun codedHitsSecondsApartAreContinuousPresence() {
+        val t = BlePresenceTracker()
+        t.onSighting(sighting(-97, coded = true), now = 0)
+        t.onSighting(sighting(-97, coded = true), now = 20_000) // a far peer's sparse Coded hits
+        val snap = t.snapshots(20_000).single()
+        assertEquals(20_000L, snap.dwellMs)
+        assertEquals(listOf("p"), PromotionPolicy.decide(listOf(snap), emptyList(), emptySet()).promote)
+    }
+
+    @Test
+    fun oneMHitsKeepTheirEightSecondGap() {
+        val t = BlePresenceTracker()
+        t.onSighting(sighting(-70, coded = false), now = 0)
+        t.onSighting(sighting(-70, coded = false), now = 10_000)
+        assertEquals(0L, t.snapshots(10_000).single().dwellMs)
+    }
+
+    @Test
+    fun aCodedHitAfterTheCodedGapStartsOver() {
+        val t = BlePresenceTracker()
+        t.onSighting(sighting(-97, coded = true), now = 0)
+        t.onSighting(sighting(-97, coded = true), now = 40_000)
+        assertEquals(0L, t.snapshots(40_000).single().dwellMs)
+    }
+
+    @Test
+    fun onlyCodedAfterCodedGetsTheWideGap() {
+        val t = BlePresenceTracker()
+        t.onSighting(sighting(-70, coded = false), now = 0)
+        t.onSighting(sighting(-97, coded = true), now = 20_000) // the last sighting was 1M: its 8 s gap applies
+        assertEquals(0L, t.snapshots(20_000).single().dwellMs)
+    }
+
+    @Test
+    fun theCodedCreditIsTunable() {
+        assertEquals(-79.0, CodedPhyPolicy.effectiveRssi(null, -97.0, creditDb = 18.0)!!, 0.0)
+        val t = BlePresenceTracker(codedCreditDb = { 18.0 })
+        t.onSighting(sighting(-97, coded = true), now = 0)
+        val snap = t.snapshots(0).single()
+        assertEquals(-79.0, snap.smoothedRssi, 0.0001)
+        assertEquals(-97.0, snap.rssiCoded!!, 0.0001) // the raw reading stays on its own scale
+        assertNull(snap.rssi1m)
+    }
+
+    // --- dialing and admission ---
 
     @Test
     fun aDialPrefersAFreshOneMAdvert() {
@@ -84,6 +130,64 @@ class CodedPhyPolicyTest {
         assertTrue(CodedPhyPolicy.dialCoded(oneMSeenAgoMs = 30_000, codedSeenAgoMs = 1_000))
         assertTrue(CodedPhyPolicy.dialCoded(oneMSeenAgoMs = null, codedSeenAgoMs = 1_000))
         assertFalse(CodedPhyPolicy.dialCoded(oneMSeenAgoMs = null, codedSeenAgoMs = null))
+        // Both stale together (between scan windows): a close peer, not a Coded-only one.
+        assertFalse(CodedPhyPolicy.dialCoded(oneMSeenAgoMs = 30_000, codedSeenAgoMs = 29_000))
+    }
+
+    @Test
+    fun codedOnlyIsMeasuredByTheOneMLag() {
+        assertTrue(CodedPhyPolicy.codedOnly(oneMSeenAgoMs = null, codedSeenAgoMs = 1_000))
+        assertTrue(CodedPhyPolicy.codedOnly(oneMSeenAgoMs = 20_000, codedSeenAgoMs = 1_000))
+        assertFalse(CodedPhyPolicy.codedOnly(oneMSeenAgoMs = 9_000, codedSeenAgoMs = 1_000))
+        assertFalse(CodedPhyPolicy.codedOnly(oneMSeenAgoMs = 60_000, codedSeenAgoMs = 55_000))
+        assertFalse(CodedPhyPolicy.codedOnly(oneMSeenAgoMs = 1_000, codedSeenAgoMs = null))
+    }
+
+    private fun snapshot(
+        oneMSeenAgoMs: Long?,
+        codedSeenAgoMs: Long?,
+    ) = BlePresenceTracker.Snapshot(
+        nodeId = "p",
+        protoVersion = 1,
+        capabilities = 0,
+        psm = 128,
+        digestCue = 0,
+        smoothedRssi = -95.0,
+        dwellMs = 30_000,
+        lastSeenAgoMs = minOf(oneMSeenAgoMs ?: Long.MAX_VALUE, codedSeenAgoMs ?: Long.MAX_VALUE),
+        oneMSeenAgoMs = oneMSeenAgoMs,
+        codedSeenAgoMs = codedSeenAgoMs,
+    )
+
+    @Test
+    fun aDialerHeardOnCodedAloneIsAdmittedAsUnsighted() {
+        val far = snapshot(oneMSeenAgoMs = null, codedSeenAgoMs = 2_000)
+        assertFalse(CodedPhyPolicy.sightedForAdmission(far, codedOn = true))
+        // The experiment off: judged by presence alone, as always (ADR 2026-09.shzv).
+        assertTrue(CodedPhyPolicy.sightedForAdmission(far, codedOn = false))
+        // Heard on 1M too: the old tie-break.
+        assertTrue(CodedPhyPolicy.sightedForAdmission(snapshot(oneMSeenAgoMs = 2_500, codedSeenAgoMs = 2_000), codedOn = true))
+        assertFalse(CodedPhyPolicy.sightedForAdmission(null, codedOn = true))
+    }
+
+    // --- scan windows ---
+
+    @Test
+    fun aLonePhoneAlternatesCodedOnlyWindows() {
+        assertEquals(ScanPhys.CODED, CodedPhyPolicy.scanPhys(codedOn = true, alone = true, codedOnlyUnlinked = false, lastWasCoded = false))
+        assertEquals(ScanPhys.ALL, CodedPhyPolicy.scanPhys(codedOn = true, alone = true, codedOnlyUnlinked = false, lastWasCoded = true))
+        assertEquals(ScanPhys.CODED, CodedPhyPolicy.scanPhys(codedOn = true, alone = false, codedOnlyUnlinked = true, lastWasCoded = false))
+    }
+
+    @Test
+    fun aLinkedPhoneWithNoFarPeerScansAllPhys() {
+        assertEquals(ScanPhys.ALL, CodedPhyPolicy.scanPhys(codedOn = true, alone = false, codedOnlyUnlinked = false, lastWasCoded = false))
+        assertEquals(ScanPhys.ALL, CodedPhyPolicy.scanPhys(codedOn = true, alone = false, codedOnlyUnlinked = false, lastWasCoded = true))
+    }
+
+    @Test
+    fun theExperimentOffScansLegacy() {
+        assertEquals(ScanPhys.ONE_M, CodedPhyPolicy.scanPhys(codedOn = false, alone = true, codedOnlyUnlinked = true, lastWasCoded = false))
     }
 
     @Test

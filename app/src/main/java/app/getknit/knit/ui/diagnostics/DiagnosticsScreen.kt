@@ -54,6 +54,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -69,6 +71,7 @@ import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
 import app.getknit.knit.mesh.bluetooth.CodedPhyMode
+import app.getknit.knit.mesh.bluetooth.LinkPhy
 import app.getknit.knit.mesh.bluetooth.PromotionConfig
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.spool.SpoolStatus
@@ -103,6 +106,7 @@ fun DiagnosticsScreen(
     val moderationLatched by viewModel.moderationLatched.collectAsStateWithLifecycle()
     val bleLinkCap by viewModel.bleLinkCap.collectAsStateWithLifecycle()
     val blePhyMode by viewModel.blePhyMode.collectAsStateWithLifecycle()
+    val blePhys by viewModel.blePhys.collectAsStateWithLifecycle()
     var confirmingModerationReset by remember { mutableStateOf(false) }
     // Inside a NavHost composable the lifecycle owner is this back-stack entry, so this fires again when
     // the crash screen pops — which is how deleting the report over there clears this row over here.
@@ -155,6 +159,7 @@ fun DiagnosticsScreen(
         onSetBleLinkCap = viewModel::setBleLinkCap,
         blePhyMode = blePhyMode,
         onSetBlePhyMode = viewModel::setBlePhyMode,
+        blePhys = blePhys,
     )
 
     if (confirmingModerationReset) {
@@ -198,6 +203,9 @@ internal fun DiagnosticsScreenContent(
     // The Coded PHY experiment's mode; null (a build that keeps it dark, and every other caller) hides the row.
     blePhyMode: CodedPhyMode? = null,
     onSetBlePhyMode: (CodedPhyMode) -> Unit = {},
+    // The PHY each Bluetooth link with a PHY handle is on, by node id: a chip on its directly-connected row. Empty
+    // (no chips) while the experiment is off or dark.
+    blePhys: Map<String, LinkPhy> = emptyMap(),
 ) {
     Scaffold(
         modifier = Modifier.testTag("screen_diagnostics"),
@@ -281,7 +289,7 @@ internal fun DiagnosticsScreenContent(
             if (state.directNodes.isEmpty()) {
                 item { EmptyLine(stringResource(R.string.diagnostics_none_direct)) }
             } else {
-                items(state.directNodes, key = { it.nodeId }) { NodeRow(it, now) }
+                items(state.directNodes, key = { it.nodeId }) { NodeRow(it, now, phy = blePhys[it.nodeId]) }
             }
 
             item {
@@ -732,10 +740,45 @@ private fun TransportTag(label: String) {
     )
 }
 
+/**
+ * The PHY a Bluetooth link is on (the Coded PHY experiment, ADR 2026-10.yvn6), in the transport tag's style: a Coded
+ * link takes the tertiary colour, so a long-range link stands out on a walk.
+ */
+@Composable
+private fun PhyTag(
+    phy: LinkPhy,
+    nodeId: String,
+) {
+    val label =
+        when (phy) {
+            LinkPhy.ONE_M -> stringResource(R.string.diagnostics_phy_1m)
+            LinkPhy.TWO_M -> stringResource(R.string.diagnostics_phy_2m)
+            LinkPhy.CODED -> stringResource(R.string.diagnostics_phy_coded)
+            LinkPhy.UNKNOWN -> return
+        }
+    val coded = phy == LinkPhy.CODED
+    val description = stringResource(R.string.diagnostics_phy_cd, label)
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Medium,
+        color = if (coded) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier =
+            Modifier
+                .testTag("ble_phy_chip_$nodeId")
+                .semantics { contentDescription = description }
+                .clip(RoundedCornerShape(4.dp))
+                .background(if (coded) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.secondaryContainer)
+                .padding(horizontal = 6.dp, vertical = 2.dp),
+    )
+}
+
 @Composable
 private fun NodeRow(
     node: NodeInfo,
     now: Long,
+    // The PHY of this peer's Bluetooth link, when the experiment holds a handle on it; null draws no chip.
+    phy: LinkPhy? = null,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
@@ -767,7 +810,11 @@ private fun NodeRow(
         val tag = transportTag(node.transports, node.viaSpool)
         val age = node.profileUpdatedAt?.let { compactTimeAgo(it, now) }
         tag?.let { TransportTag(it) }
-        if (tag != null && age != null) Spacer(Modifier.width(8.dp))
+        phy?.let {
+            if (tag != null) Spacer(Modifier.width(4.dp))
+            PhyTag(it, node.nodeId)
+        }
+        if ((tag != null || phy != null) && age != null) Spacer(Modifier.width(8.dp))
         age?.let {
             Text(
                 text = stringResource(R.string.diagnostics_profile_age, it),
@@ -1167,6 +1214,24 @@ fun NodeRowDirectPreview() =
                     transports = setOf(TransportKind.Bluetooth, TransportKind.WifiAware),
                 ),
             now = PREVIEW_NOW,
+        )
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun NodeRowCodedPreview() =
+    KnitPreview {
+        NodeRow(
+            node =
+                NodeInfo(
+                    nodeId = "8f3a2b1c9d4e",
+                    displayName = "Ada Lovelace",
+                    reach = Reach.Direct,
+                    profileUpdatedAt = PREVIEW_NOW - 3 * 60_000L,
+                    transports = setOf(TransportKind.Bluetooth),
+                ),
+            now = PREVIEW_NOW,
+            phy = LinkPhy.CODED,
         )
     }
 

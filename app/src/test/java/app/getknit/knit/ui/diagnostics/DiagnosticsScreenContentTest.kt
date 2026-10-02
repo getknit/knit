@@ -21,8 +21,10 @@ import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
+import app.getknit.knit.mesh.bluetooth.LinkPhy
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.ui.DeviceSupervision
+import app.getknit.knit.ui.Reach
 import app.getknit.knit.ui.theme.KnitTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -245,6 +247,37 @@ class DiagnosticsScreenContentTest {
         }
 
         compose.onNodeWithText(context.getString(R.string.diagnostics_moderation_latched_label)).assertDoesNotExist()
+    }
+
+    /** ADR 2026-10.yvn6: a directly-connected Bluetooth link the experiment holds a handle on carries its PHY chip. */
+    @Test
+    fun aCodedLinkCarriesItsPhyChipAndAnUnhandledOneNone() {
+        val far = NodeInfo("aaaa1111bbbb", "Ada", Reach.Direct, null, setOf(TransportKind.Bluetooth))
+        val plain = NodeInfo("cccc2222dddd", "Grace", Reach.Direct, null, setOf(TransportKind.Bluetooth))
+        compose.setContent {
+            KnitTheme {
+                DiagnosticsScreenContent(
+                    state = state().copy(directNodes = listOf(far, plain)),
+                    health = TransportHealth.Healthy,
+                    lastCrash = null,
+                    now = 0L,
+                    snackbarHostState = SnackbarHostState(),
+                    onBack = {},
+                    onRestartMesh = {},
+                    onScan = {},
+                    onOpenCrashLog = {},
+                    moderationLatched = false,
+                    onResetModeration = {},
+                    blePhys = mapOf(far.nodeId to LinkPhy.CODED),
+                )
+            }
+        }
+
+        compose.onNode(hasScrollAction()).performScrollToNode(hasTestTag("ble_phy_chip_${far.nodeId}"))
+        compose
+            .onNodeWithTag("ble_phy_chip_${far.nodeId}")
+            .assertTextEquals(context.getString(R.string.diagnostics_phy_coded))
+        compose.onNodeWithTag("ble_phy_chip_${plain.nodeId}").assertDoesNotExist()
     }
 
     /** ADR 2026-09.m8kc: a Wi-Fi Aware plane holding its initiator role is tagged, explained, and releasable. */

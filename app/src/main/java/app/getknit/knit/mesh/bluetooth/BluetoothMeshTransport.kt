@@ -164,6 +164,15 @@ class BluetoothMeshTransport(
     private val phyControls = ConcurrentHashMap<FramedLink, BlePhyControl>()
     private val linkDevices = ConcurrentHashMap<FramedLink, BluetoothDevice>()
 
+    // What each unlinked peer's adverts did this minute, logged by [diagLoop] as `bt coded heard` while the experiment
+    // runs — the walk test's record of whether a far peer was heard, how loud, and why it did or did not promote.
+    private val codedTallies = ConcurrentHashMap<String, CodedTally>()
+
+    // Whether the last presence window was Coded-only ([CodedPhyPolicy.scanPhys] alternates), and whether Coded-only
+    // windows are running at all, for the one log line per edge. Touched by [scanLoop] alone.
+    private var lastScanCoded = false
+    private var codedWindows = false
+
     // Whose GATT payload to read and what each read found (companion change A3), and the reader; [gattReads] counts
     // the reads begun, for the debug state line. [gattJob] is the read in progress, cancelled with the radio.
     private val gattPayloads = GattPayloads()
@@ -199,7 +208,7 @@ class BluetoothMeshTransport(
     private val deviceFor = ConcurrentHashMap<String, BluetoothDevice>()
 
     // Presence model (smoothed RSSI + dwell + linger) fed by scan sightings; drives promotion + `reachable`.
-    private val presence = BlePresenceTracker()
+    private val presence = BlePresenceTracker(codedCreditDb = { CodedPhyDiag.tuning.codedCreditDb })
 
     // Connection bookkeeping guarded by [lock]: in-flight initiator connects + per-peer escalating backoff
     // (streak + next-eligible deadline), reset the moment a link comes up.
@@ -414,6 +423,7 @@ class BluetoothMeshTransport(
         phyJob?.cancel()
         CodedPhyDiag.status = null
         CodedPhyDiag.setTxPower = null
+        CodedPhyDiag.publishLinkPhys(emptyMap())
         sideJob?.cancel()
         cancelGattRead()
         sideCapable.clear()
@@ -425,6 +435,7 @@ class BluetoothMeshTransport(
         deviceFor.clear()
         codedDeviceFor.clear()
         codedCapable.clear()
+        codedTallies.clear()
         synchronized(lock) {
             inFlight.clear()
             backoffs.clear()
@@ -605,7 +616,6 @@ class BluetoothMeshTransport(
         codedSupported =
             a != null && a.isEnabled && runCatching { a.isLeCodedPhySupported && a.isLeExtendedAdvertisingSupported }.getOrDefault(false)
         if (codedAdvert.startsWith("dark")) codedAdvert = "off"
-        scanner.allPhys = codedOn()
     }
 
     private fun newCodedAdvertiser(txPower: Int): BleAdvertiser =
@@ -651,21 +661,35 @@ class BluetoothMeshTransport(
         return true
     }
 
-    /** A new mode: the Coded set, the scan's PHYs and every link's PHY handle follow it, with no restart. */
+    /**
+     * A new mode: the Coded set and every link's PHY handle follow it now, the scan's PHYs at its next window, with no
+     * restart. OFF lets the handles go and leaves each link on the PHY it is on — asking a far Coded link back to 1M
+     * dropped it (the 2026-10-01 walk) — and keeps [codedCapable], so the next mode re-attaches them at once.
+     */
     private fun applyPhyMode(mode: CodedPhyMode) {
         codedMode = mode
-        scanner.allPhys = codedOn() // the next scan window takes it
         Log.i(TAG, "bt phy mode=${mode.wire} supported=$codedSupported")
         readvertise()
         if (codedOn()) {
             links.values.forEach(::ensurePhyControl)
             phyControls.values.forEach(BlePhyControl::poke)
         } else {
-            phyControls.values.forEach { it.close(restore = true) }
+            phyControls.values.forEach(BlePhyControl::close)
             phyControls.clear()
             codedDeviceFor.clear()
+            publishLinkPhys()
         }
         wake()
+    }
+
+    /** Republishes the PHY each handled link is on, for Diagnostics' per-link chip ([CodedPhyDiag.linkPhys]). */
+    private fun publishLinkPhys() {
+        CodedPhyDiag.publishLinkPhys(
+            phyControls.values
+                .map(BlePhyControl::status)
+                .filter { it.attached && it.phy != LinkPhy.UNKNOWN }
+                .associate { it.nodeId to it.phy },
+        )
     }
 
     /** Gives [link] a PHY handle if the experiment runs, its peer was heard on Coded, and it has none yet. */
@@ -687,6 +711,7 @@ class BluetoothMeshTransport(
                 onStep = metrics::onBlePhyStep,
                 onGiveUp = metrics::onBlePhyGiveUp,
                 now = SystemClock::elapsedRealtime,
+                onPhyKnown = ::publishLinkPhys,
             )
         if (phyControls.putIfAbsent(link, control) == null) control.start()
     }
@@ -701,7 +726,7 @@ class BluetoothMeshTransport(
             links = phyControls.values.map(BlePhyControl::status),
             peers =
                 presence.snapshots(now).map {
-                    PhyPeerStatus(it.nodeId, it.smoothedRssi, it.oneMSeenAgoMs, it.codedSeenAgoMs)
+                    PhyPeerStatus(it.nodeId, it.smoothedRssi, it.oneMSeenAgoMs, it.codedSeenAgoMs, it.rssi1m, it.rssiCoded)
                 },
         )
     }
@@ -726,12 +751,14 @@ class BluetoothMeshTransport(
             }
             val power = powerState.state.value
             val duty = PowerPolicy.dutyCycle(power)
+            val phys = nextScanPhys()
+            scanner.phys = phys
             scanner.start(if (power.interactive || power.charging) ScanSettings.SCAN_MODE_BALANCED else ScanSettings.SCAN_MODE_LOW_POWER)
             val windowStart = elapsed()
             val scanned = scanner.isScanning
             delay(duty.scanWindowMs)
             scanner.stop()
-            if (gattPeers && scanned) forgetQuietGattPayloads(elapsed() - windowStart)
+            if (scanned) noteQuietScan(phys, elapsed() - windowStart)
             val lonelyFor = lonelyForMs()
             val idle =
                 if (floorScan()) {
@@ -742,6 +769,41 @@ class BluetoothMeshTransport(
             logLonelyTransition(links.isEmpty() && PowerPolicy.lonelyRelaxed(power, lonelyFor), idle, lonelyFor)
             withTimeoutOrNull(idle) { scanWake.receive() }
         }
+    }
+
+    /**
+     * The next presence window's PHYs ([CodedPhyPolicy.scanPhys]): every other one Coded-only while this phone has no
+     * link or an unlinked peer is heard on Coded alone. Logs one line per edge of those windows.
+     */
+    private fun nextScanPhys(): ScanPhys {
+        val on = codedOn()
+        val far =
+            if (on) {
+                presence
+                    .snapshots(elapsed())
+                    .filter { it.nodeId !in links.keys && CodedPhyPolicy.codedOnly(it.oneMSeenAgoMs, it.codedSeenAgoMs) }
+                    .map { it.nodeId }
+            } else {
+                emptyList()
+            }
+        val alone = links.isEmpty()
+        val phys = CodedPhyPolicy.scanPhys(on, alone, far.isNotEmpty(), lastScanCoded)
+        lastScanCoded = phys == ScanPhys.CODED
+        val windows = on && (alone || far.isNotEmpty())
+        if (windows != codedWindows) {
+            codedWindows = windows
+            val why = if (alone) "alone" else "codedOnly=$far"
+            Log.i(TAG, if (windows) "bt scan coded windows on ($why)" else "bt scan coded windows off")
+        }
+        return phys
+    }
+
+    /** A window of [ms] ran on [phys]: GATT-payload quiet time, unless it was Coded-only — which cannot hear an iPhone. */
+    private fun noteQuietScan(
+        phys: ScanPhys,
+        ms: Long,
+    ) {
+        if (gattPeers && phys != ScanPhys.CODED) forgetQuietGattPayloads(ms)
     }
 
     /** One line per edge of the lonely cadence, so a device trial can grep when the scan relaxed and why. */
@@ -834,6 +896,9 @@ class BluetoothMeshTransport(
             metrics.onBleCodedSighting()
         } else {
             deviceFor[parsed.nodeId] = device
+        }
+        if (codedOn() && parsed.nodeId !in links.keys) {
+            codedTallies.compute(parsed.nodeId) { _, t -> (t ?: CodedTally()).also { it.note(rssi, coded) } }
         }
         links[parsed.nodeId]?.let {
             neverSighted.remove(it)
@@ -1163,12 +1228,20 @@ class BluetoothMeshTransport(
         // A dialer at an address whose payload names another node took that address: forget the payload before the
         // verdict, so the ghost it names is not what this dialer is judged by (the contract's payload lifetime, rule 2).
         forgetGattPayloadIfOther(socket.remoteDevice.address, clientNodeId)
-        val sighted = presence.snapshots(elapsed()).any { it.nodeId == clientNodeId }
+        val snap = presence.snapshots(elapsed()).firstOrNull { it.nodeId == clientNodeId }
+        val sighted = snap != null
+        // A dialer heard on Coded alone is judged as unsighted while the experiment runs (ADR 2026-10.yvn6): its sparse
+        // Coded hits hold it in presence but rarely promote it, so "we dial it" left a far pair each waiting.
+        val admitSighted = CodedPhyPolicy.sightedForAdmission(snap, codedOn())
         val heldAgeMs = links[clientNodeId]?.let { elapsed() - it.linkStartedAt }
         val atCap = debugCap?.let { links.size + inFlightSnapshot().size >= it } ?: false
-        val verdict = BleAdmissionPolicy.decide(localNodeId, clientNodeId, sighted, heldAgeMs, atCap)
+        val verdict = BleAdmissionPolicy.decide(localNodeId, clientNodeId, admitSighted, heldAgeMs, atCap)
         if (verdict == BleAdmissionPolicy.Verdict.Refuse) {
-            Log.d(TAG, "bt refused client $clientNodeId (sighted=$sighted heldAgeMs=$heldAgeMs atCap=$atCap)")
+            Log.i(
+                TAG,
+                "bt refused client $clientNodeId (sighted=$sighted codedOnly=${sighted && !admitSighted} " +
+                    "heldAgeMs=$heldAgeMs atCap=$atCap)",
+            )
             link.close()
             return
         }
@@ -1178,7 +1251,7 @@ class BluetoothMeshTransport(
             link.close()
             return
         }
-        Log.i(TAG, "bt accepted client $clientNodeId ($verdict, sighted=$sighted)")
+        Log.i(TAG, "bt accepted client $clientNodeId ($verdict, sighted=$sighted codedOnly=${sighted && !admitSighted})")
         registerLink(clientNodeId, advert, link, sighted, socket.remoteDevice)
     }
 
@@ -1217,7 +1290,8 @@ class BluetoothMeshTransport(
             neverSighted.remove(prev)
             linkAddresses.remove(prev)
             linkDevices.remove(prev)
-            phyControls.remove(prev)?.close(restore = false)
+            phyControls.remove(prev)?.close()
+            publishLinkPhys()
             doorbells.remove(prev)?.close() // teardownLink(only = prev) will find it replaced and release nothing
             prev.close() // a stale link to the same peer — never leak it; its own end releases nothing now
         }
@@ -1259,7 +1333,8 @@ class BluetoothMeshTransport(
         neverSighted.remove(fl)
         linkAddresses.remove(fl)
         linkDevices.remove(fl)
-        phyControls.remove(fl)?.close(restore = false)
+        phyControls.remove(fl)?.close()
+        publishLinkPhys()
         doorbells.remove(fl)?.close()
         fl.close()
         crossings.forget(nodeId)
@@ -1542,6 +1617,31 @@ class BluetoothMeshTransport(
             audioMonitor.refresh() // re-evaluate audio vs live AudioManager state (the playing edge can be missed)
             // R8 strips the Log.d in release, not the string this builds under the lock: debug only.
             if (BuildConfig.DEBUG) logState()
+            // Not debug-gated: a release-shaped `-PbleCodedPhy=true` build is walked too.
+            if (codedOn()) logCodedHeard() else codedTallies.clear()
+        }
+    }
+
+    /**
+     * One `bt coded heard` line per unlinked peer heard on Coded this minute: its Coded hits and their raw RSSI span,
+     * its 1M hits, and what promotion makes of it (effective RSSI, dwell, whether it clears both, whether we dial it).
+     */
+    private fun logCodedHeard() {
+        val now = elapsed()
+        val snaps = presence.snapshots(now).associateBy { it.nodeId }
+        val dwellNeeded = PromotionConfig().dwellThresholdMs
+        codedTallies.keys.toList().forEach { id ->
+            val t = codedTallies.remove(id) ?: return@forEach
+            if (t.hits == 0 || id in links.keys) return@forEach
+            val snap = snaps[id]
+            val promotable = snap != null && snap.smoothedRssi >= PROMOTE_RSSI_FLOOR && snap.dwellMs >= dwellNeeded
+            val backoffS = synchronized(lock) { backoffs[id]?.let { ((it.nextAt - now) / MS_PER_S).coerceAtLeast(0) } ?: 0 }
+            Log.i(
+                TAG,
+                "bt coded heard $id hits=${t.hits} rssi=${t.min}..${t.max} last=${t.last} 1m=${t.oneM} " +
+                    "eff=${snap?.smoothedRssi?.toInt()} dwell=${snap?.dwellMs}ms promotable=$promotable " +
+                    "dials=${localNodeId > id} backoff=${backoffS}s",
+            )
         }
     }
 
@@ -1642,5 +1742,28 @@ class BluetoothMeshTransport(
         // reverse traffic gets connection-event budget. Deliberately conservative — the transfer is a bit slower
         // in exchange for live chat. Field-tune against the `file …/… <N>B in <ms>ms` timing (FramedLink).
         private const val BLE_PACE_BYTES_PER_SEC = 28 * 1024
+    }
+}
+
+/** One unlinked peer's adverts over a minute, for `bt coded heard` (ADR 2026-10.yvn6). Guarded by the map's compute. */
+private class CodedTally {
+    var hits = 0
+    var min = 0
+    var max = 0
+    var last = 0
+    var oneM = 0
+
+    fun note(
+        rssi: Int,
+        coded: Boolean,
+    ) {
+        if (!coded) {
+            oneM++
+            return
+        }
+        min = if (hits == 0) rssi else minOf(min, rssi)
+        max = if (hits == 0) rssi else maxOf(max, rssi)
+        last = rssi
+        hits++
     }
 }

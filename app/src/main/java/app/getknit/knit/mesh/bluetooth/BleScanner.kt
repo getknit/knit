@@ -63,12 +63,13 @@ internal class BleScanner(
     private var scanning = false
 
     /**
-     * The presence scan under the Coded PHY experiment (ADR 2026-10.yvn6): extended results on every PHY the
-     * controller has, so it hears a peer's Coded advert beside its legacy one. Taking Coded time-shares the window
-     * with 1M — the cost the side scan avoids — and the field trial is what measures it. Read at each [start].
+     * The presence scan's PHYs under the Coded PHY experiment (ADR 2026-10.yvn6), read at each [start]: [ScanPhys.ALL]
+     * is extended results on every PHY the controller has, so it hears a peer's Coded advert beside its legacy one
+     * (Coded time-shares the window with 1M — the cost the side scan avoids); [ScanPhys.CODED] gives the whole window
+     * to Coded and hears no legacy advert; [ScanPhys.ONE_M] is the scan as it always was.
      */
     @Volatile
-    var allPhys: Boolean = false
+    var phys: ScanPhys = ScanPhys.ONE_M
 
     /** Whether a scan is registered right now (false again after `onScanFailed` or [stop]). */
     val isScanning: Boolean get() = scanning
@@ -87,7 +88,8 @@ internal class BleScanner(
                 .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
                 .apply {
                     when {
-                        allPhys -> setLegacy(false).setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
+                        phys == ScanPhys.ALL -> setLegacy(false).setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
+                        phys == ScanPhys.CODED -> setLegacy(false).setPhy(BluetoothDevice.PHY_LE_CODED)
                         extended -> setLegacy(false).setPhy(BluetoothDevice.PHY_LE_1M)
                     }
                 }.build()

@@ -517,17 +517,32 @@ coded, 1m) is set from Diagnostics or `…debug.PHY` and applied without a resta
 that reports `isLeCodedPhySupported`:
 
 - **A second presence set on Coded** (`BleAdvertiser.codedParams()`, extended + connectable, HIGH power) carries
-  the same payload bytes as the legacy advert; the presence scan goes extended on every PHY (`BleScanner.allPhys`).
-  The legacy advert stays: legacy-only scanners and the 31-byte budget need it.
+  the same payload bytes as the legacy advert. The presence scan goes extended on every PHY (`BleScanner.phys`
+  = `ScanPhys.ALL`). While the phone has no link, or an unlinked peer is heard on Coded alone, every other
+  window is Coded-only (`CodedPhyPolicy.scanPhys`, never two in a row). The legacy advert stays: legacy-only
+  scanners and the 31-byte budget need it.
 - **One RSSI per PHY.** `BlePresenceTracker` reports the stronger on the 1M scale (Coded + 12 dB,
-  `CodedPhyPolicy.effectiveRssi`), so every −90 floor reads what it always did with the experiment off.
-- **The dial picks the PHY.** No fresh 1M advert and a Coded one → dial the Coded address; a plain L2CAP connect
-  there lands on Coded (spike-verified). The tie-break and every dial rule are untouched.
+  `CodedPhyPolicy.effectiveRssi`; the credit is `PhyTuning.codedCreditDb`), so every −90 floor reads what it always
+  did with the experiment off. A Coded hit after a Coded hit is continuous presence across 30 s
+  (`codedGapResetMs`), not the 1M path's 8 s.
+- **The dial picks the PHY.** A peer heard on Coded alone (`codedOnly`: its last 1M hit trails its last Coded hit
+  by more than 8 s) is dialed at its Coded address, and a plain L2CAP connect there lands on Coded
+  (spike-verified). The tie-break and every dial rule are untouched.
+- **Admission.** While the experiment runs, a dialer heard on Coded alone counts as unsighted
+  (`CodedPhyPolicy.sightedForAdmission`) and is admitted whatever the id order. Otherwise a far pair waits on
+  each other: the responder refuses, and its own dial never clears the dwell (the first walk, the ADR's
+  amendment). A dialer heard on 1M keeps shzv's tie-break.
 - **`BlePhyControl` per capable link** — a GATT client on the link's ACL, the `BleDoorbell` pattern — reads link
-  RSSI and asks `PhyStepper` (pure, JVM-tested) for 1M ↔ Coded S=8. The larger id drives; a request unanswered in
+  RSSI and asks `PhyStepper` (pure, JVM-tested) for 1M ↔ Coded S=8. The larger id drives. A request unanswered in
   3 s, or answered with another PHY, gives up for the link (a controller without Coded answers nothing at all).
+  Mode OFF lets the handles go and leaves each link on its PHY: asking a far Coded link back to 1M drops it.
+- **Diagnostics** draws a PHY chip on each directly-connected row with a handle (`CodedPhyDiag.linkPhys`, testTag
+  `ble_phy_chip_<nodeId>`).
 
 Oracles: `bt phy mode=…`, `bt coded advert live|dark <status>`, `via=coded|1m` on `bt initiating to`,
-`bt phy <id> ONE_M→CODED rssi=… (auto)`, `bt phy <id> gave up …`; counters `bleCoded*` / `blePhy*`; the
-`…debug.PHY` reply lists each link's PHY and link RSSI and each peer's per-PHY ages. Link RSSI reads ~20 dB
+`bt phy <id> ONE_M→CODED rssi=… (auto)`, `bt phy <id> gave up …`, `bt scan coded windows on|off`,
+`bt refused client … codedOnly=`, and once a minute `bt coded heard <id> hits=… rssi=a..b 1m=… eff=… dwell=…
+promotable=… dials=…` per unlinked peer heard on Coded (raise the log ring with `adb logcat -G 16M` before a walk);
+counters `bleCoded*` / `blePhy*`; the `…debug.PHY` reply lists each link's PHY and link RSSI and each peer's
+per-PHY ages and RSSIs. Link RSSI reads ~20 dB
 stronger than the adverts at the same spot, so step thresholds and advert floors are on different scales.

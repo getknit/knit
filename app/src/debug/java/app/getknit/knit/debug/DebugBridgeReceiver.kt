@@ -199,10 +199,11 @@ import java.nio.ByteBuffer
  * - [ACTION_PHY] — the **BLE Coded PHY experiment** (ADR 2026-10.yvn6; `BuildConfig.BLE_CODED_PHY`, else an error).
  *   `--es mode off|auto|coded|1m` stores the mode (`SettingsStore.debugBlePhyMode`, applied live), `--es txpower
  *   high|medium` re-raises the Coded advert, and `--ei stepDown|stepUp|stepDownReads|minGapMs|stepUpHoldMs N`
- *   overrides the step thresholds until the process dies (`--ez resetTuning true` restores them). The reply:
- *   `mode`, `supported`, `advert` (off|starting|live|dark <status>), `txPower`, the tuning, `links[]` (nodeId, phy,
- *   linkRssi, drives, attached, switches, gaveUp) and `peers[]` (nodeId, rssi on the 1M scale, oneMSeenAgoMs,
- *   codedSeenAgoMs).
+ *   overrides the step thresholds, `--ei credit N` the dB a Coded advert reading gains on the 1M scale (12), until the
+ *   process dies (`--ez resetTuning true` restores them). The reply: `mode`, `supported`, `advert`
+ *   (off|starting|live|dark <status>), `txPower`, the tuning, `links[]` (nodeId, phy, linkRssi, drives, attached,
+ *   switches, gaveUp) and `peers[]` (nodeId, rssi on the 1M scale, oneMSeenAgoMs, codedSeenAgoMs, and each PHY's own
+ *   rssi1m / rssiCoded).
  * - [ACTION_HEAL] — nudges the transport to rescan/re-advertise.
  * - [ACTION_PAUSE] / [ACTION_RESUME] — the notification's Pause and Resume, by their store write alone
  *   (`--ei minutes 15|60`, the two offered spans): `MeshService` follows `SettingsStore.meshPausedUntil`, so
@@ -2082,6 +2083,7 @@ class DebugBridgeReceiver :
                 stepDownReads = int("stepDownReads") ?: t.stepDownReads,
                 minSwitchGapMs = int("minGapMs")?.toLong() ?: t.minSwitchGapMs,
                 stepUpHoldMs = int("stepUpHoldMs")?.toLong() ?: t.stepUpHoldMs,
+                codedCreditDb = int("credit")?.toDouble() ?: t.codedCreditDb,
             )
         delay(PHY_SETTLE_MS) // the transport collects the stored mode; let it land before reading the status back
         val status = CodedPhyDiag.status?.invoke() ?: return reply("error", "Bluetooth transport is not running")
@@ -2099,7 +2101,8 @@ class DebugBridgeReceiver :
                     .put("stepDownReads", tuned.stepDownReads)
                     .put("stepUp", tuned.stepUpDbm)
                     .put("stepUpHoldMs", tuned.stepUpHoldMs)
-                    .put("minGapMs", tuned.minSwitchGapMs),
+                    .put("minGapMs", tuned.minSwitchGapMs)
+                    .put("credit", tuned.codedCreditDb.toInt()),
             ).put(
                 "links",
                 JSONArray(
@@ -2123,6 +2126,8 @@ class DebugBridgeReceiver :
                             .put("rssi", it.smoothedRssi.toInt())
                             .put("oneMSeenAgoMs", it.oneMSeenAgoMs ?: JSONObject.NULL)
                             .put("codedSeenAgoMs", it.codedSeenAgoMs ?: JSONObject.NULL)
+                            .put("rssi1m", it.rssi1m?.toInt() ?: JSONObject.NULL)
+                            .put("rssiCoded", it.rssiCoded?.toInt() ?: JSONObject.NULL)
                     },
                 ),
             )

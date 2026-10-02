@@ -17,7 +17,9 @@ import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.TransportKind
 import app.getknit.knit.mesh.TransportStatus
+import app.getknit.knit.mesh.bluetooth.CodedPhyDiag
 import app.getknit.knit.mesh.bluetooth.CodedPhyMode
+import app.getknit.knit.mesh.bluetooth.LinkPhy
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.spool.SpoolStatus
@@ -36,6 +38,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -179,6 +182,14 @@ class DiagnosticsViewModel(
      */
     val blePhyMode: StateFlow<CodedPhyMode?> =
         settings.debugBlePhyMode.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * The PHY each Bluetooth link with a PHY handle is on, by node id — a chip on its row. Empty where the build keeps
+     * the experiment dark. The transport publishes it ([CodedPhyDiag.linkPhys]); its own flow, like [blePhyMode].
+     */
+    val blePhys: StateFlow<Map<String, LinkPhy>> =
+        (if (BuildConfig.BLE_CODED_PHY) CodedPhyDiag.linkPhys else flowOf(emptyMap()))
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
     /** Sets the Coded PHY mode. A no-op where the build keeps the experiment dark. */
     fun setBlePhyMode(mode: CodedPhyMode) {

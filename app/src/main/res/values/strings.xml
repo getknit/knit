@@ -796,6 +796,10 @@
     <string name="diagnostics_ble_phy_auto">Auto</string>
     <string name="diagnostics_ble_phy_coded">Coded</string>
     <string name="diagnostics_ble_phy_one_m">1M</string>
+    <string name="diagnostics_phy_1m">1M</string>
+    <string name="diagnostics_phy_2m">2M</string>
+    <string name="diagnostics_phy_coded">Coded</string>
+    <string name="diagnostics_phy_cd">Bluetooth link on the %1$s PHY</string>
 
     <!-- Your mesh (ui/yourmesh): what keeping Knit running has done for the people around this phone, in
          plain words. Every number is counted on this phone and never leaves it. "Passed along" is a message

@@ -59,6 +59,8 @@ data class PhyTuning(
     val edgeDbm: Int = EDGE_DBM,
     /** EWMA weight on each link-RSSI read. */
     val rssiAlpha: Double = 0.5,
+    /** What a Coded advert reading is worth on the 1M scale ([CodedPhyPolicy.effectiveRssi]); `…debug.PHY --ei credit`. */
+    val codedCreditDb: Double = CodedPhyPolicy.CODED_RSSI_CREDIT_DB,
 ) {
     private companion object {
         // Negative defaults can't be inlined without tripping MagicNumber (as PromotionConfig's floor).
@@ -67,6 +69,12 @@ data class PhyTuning(
         const val EDGE_DBM = -75
     }
 }
+
+/**
+ * What a presence scan window listens on: [ONE_M] is today's legacy scan, [ALL] every PHY the controller has (a Coded
+ * advert beside the legacy one), [CODED] the Coded PHY alone — a window that hears no legacy advert at all.
+ */
+enum class ScanPhys { ONE_M, ALL, CODED }
 
 /** The pure rules behind the Coded PHY experiment: how a Coded sighting is scored, and which address to dial. */
 object CodedPhyPolicy {
@@ -87,8 +95,9 @@ object CodedPhyPolicy {
     fun effectiveRssi(
         rssi1m: Double?,
         rssiCoded: Double?,
+        creditDb: Double = CODED_RSSI_CREDIT_DB,
     ): Double? {
-        val coded = rssiCoded?.plus(CODED_RSSI_CREDIT_DB)
+        val coded = rssiCoded?.plus(creditDb)
         return when {
             rssi1m == null -> coded
             coded == null -> rssi1m
@@ -97,13 +106,53 @@ object CodedPhyPolicy {
     }
 
     /**
-     * Whether a dial should use the peer's Coded address rather than its 1M one: only when no fresh 1M advert was
-     * heard and a Coded one was — a link that can open on 1M opens there (faster, and the stack's own choice).
+     * Whether only the Coded PHY hears this peer now: a Coded advert was heard, and no 1M one was, or the last 1M one
+     * trails the last Coded one by more than [ONE_M_FRESH_MS]. Measured as that *lag*, never as the 1M advert's age:
+     * between scan windows a close peer's two sightings go stale together, and it is no more Coded-only for that.
+     */
+    fun codedOnly(
+        oneMSeenAgoMs: Long?,
+        codedSeenAgoMs: Long?,
+    ): Boolean = codedSeenAgoMs != null && (oneMSeenAgoMs == null || oneMSeenAgoMs - codedSeenAgoMs > ONE_M_FRESH_MS)
+
+    /**
+     * Whether a dial should use the peer's Coded address rather than its 1M one: only when the peer is [codedOnly] —
+     * a link that can open on 1M opens there (faster, and the stack's own choice).
      */
     fun dialCoded(
         oneMSeenAgoMs: Long?,
         codedSeenAgoMs: Long?,
-    ): Boolean = codedSeenAgoMs != null && (oneMSeenAgoMs == null || oneMSeenAgoMs > ONE_M_FRESH_MS)
+    ): Boolean = codedOnly(oneMSeenAgoMs, codedSeenAgoMs)
+
+    /**
+     * Whether the L2CAP responder counts a dialer as sighted for [BleAdmissionPolicy.decide] — [snap] is the dialer's
+     * presence, null when the scan holds none. While the experiment runs ([codedOn]) a dialer heard on Coded alone is
+     * counted as unsighted: its faint, sparse Coded hits are enough to hold it in presence but rarely enough to promote
+     * it, so refusing it on the tie-break ("we dial it") left a far pair each waiting on the other (the 2026-10-01
+     * walk). A dialer heard on 1M is judged exactly as before (ADR 2026-09.shzv).
+     */
+    fun sightedForAdmission(
+        snap: BlePresenceTracker.Snapshot?,
+        codedOn: Boolean,
+    ): Boolean = snap != null && !(codedOn && codedOnly(snap.oneMSeenAgoMs, snap.codedSeenAgoMs))
+
+    /**
+     * What the next presence scan window listens on. While the experiment runs, a phone with no link, or with an
+     * unlinked peer heard on Coded alone, gives every other window to Coded entirely — an all-PHY window splits its
+     * time, and a far peer's Coded hits are sparse — and never two in a row, so a legacy-only peer (an iPhone, a
+     * controller without Coded) is still heard every other window. Otherwise every window is all-PHY.
+     */
+    fun scanPhys(
+        codedOn: Boolean,
+        alone: Boolean,
+        codedOnlyUnlinked: Boolean,
+        lastWasCoded: Boolean,
+    ): ScanPhys =
+        when {
+            !codedOn -> ScanPhys.ONE_M
+            (alone || codedOnlyUnlinked) && !lastWasCoded -> ScanPhys.CODED
+            else -> ScanPhys.ALL
+        }
 
     /** Which side of a link drives its PHY: the larger node id, the side that dials. The other only watches. */
     fun drives(

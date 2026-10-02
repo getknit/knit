@@ -74,3 +74,57 @@ is out: it must stay legacy for legacy-only scanners and the 31-byte budget.
 
 Tests: `CodedPhyPolicyTest` (scoring, dial choice, every step rule), `BlePresenceTrackerTest`,
 `PromotionPolicyTest`. `BlePhyControl` and the Coded set are device-verified only, like `BleDoorbell`.
+
+## Amendment 2026-10-01 — the first walk: a link held, a far peer never came back
+
+**What was observed.** P9 walked 215 m from P7 with both in AUTO. The link stepped to Coded and held, and room
+posts and DMs crossed it well. P9 was then switched to OFF and the link dropped. Back in AUTO it did not re-link
+until P9 was back at about the old 1M range. The 256 KiB log ring had rolled over before anyone read it. P7's
+counters survived: 114 Coded sightings and 4 Coded dials, and P7 is the smaller id, so those were lonely dials.
+Reading the code turned up four causes:
+
+- **The two ends waited on each other.** The responder refused a smaller-id dialer it had sighted at all
+  (`BleAdmissionPolicy`, ADR 2026-09.shzv), on the grounds that it would dial that peer itself. Its own dial,
+  though, needs 12 s of presence at −90 effective. A faint, occasional Coded hit is enough to refuse with and not
+  enough to dial with.
+- **Presence kept restarting.** Any 8 s silence reset the 12 s dwell. A far peer's Coded hits come seconds apart:
+  a 1 s advert, an all-PHY scan that splits its window, and 10% duty with the screen off.
+- **The scan rarely listened on Coded.**
+- **OFF asked the link back to 1M**, and at that range 1M could not hold it.
+
+**What changed.**
+
+- **Admission.** While the experiment runs, a dialer heard on Coded alone counts as unsighted
+  (`CodedPhyPolicy.sightedForAdmission`), so it is admitted whatever the id order, as an iPhone is. "Coded alone"
+  (`codedOnly`) means the peer's last 1M hit trails its last Coded hit by more than 8 s. It is measured as that
+  lag, not the 1M hit's age, because a close peer's two sightings go stale together between scan windows.
+  `dialCoded` now uses the same test. A peer heard on 1M is judged exactly as shzv says, so the Android mesh
+  does not move.
+- **Presence.** A Coded sighting that follows a Coded sighting is continuous across
+  `PresenceConfig.codedGapResetMs` (30 s). Any other pair keeps 8 s, and the 1M path is unchanged byte for byte.
+- **Scan.** `BleScanner.allPhys` became `phys` (`ScanPhys.ONE_M` / `ALL` / `CODED`). While a phone has no link,
+  or an unlinked peer is heard on Coded alone, `CodedPhyPolicy.scanPhys` gives every other window wholly to
+  Coded. It never schedules two in a row, so legacy-only peers are still heard every other window. A Coded-only
+  window does not count as quiet time against an iPhone's GATT payload.
+- **OFF lets the handles go and leaves each link on its PHY.** A link left on Coded stays there until it drops or
+  the mode returns. `codedCapable` survives OFF, so AUTO re-attaches at once.
+- **The record.**
+  - `bt coded heard <id> hits rssi=a..b 1m eff dwell promotable dials backoff` is logged once a minute for each
+    unlinked peer heard on Coded. It is not debug-gated.
+  - `bt scan coded windows on|off` is logged at each edge.
+  - `bt refused client … codedOnly=` is now logged at info level.
+  - `…debug.PHY` reports each PHY's own `rssi1m` / `rssiCoded`.
+  - The 12 dB credit is a tuning field (`PhyTuning.codedCreditDb`, `--ei credit`), read live by the presence
+    tracker.
+  - Raise the log ring (`adb logcat -G 16M`) before a walk.
+- **Diagnostics.** Each directly-connected row whose link has a PHY handle carries a chip for its PHY (`1M` /
+  `2M` / `Coded`, with Coded in the tertiary colour). The transport publishes the map on `CodedPhyDiag.linkPhys`
+  rather than through the `MeshTransport` / `MeshController` seam, which is not worth widening for something dark
+  in release. Plumb it properly if the experiment ships.
+
+**Not done, pending the next walk's numbers:** a faster Coded advert while a far peer is wanted, and any change to
+the 12 dB credit's default. Links reach further than adverts (Android caps advertising at +1 dBm, and a link's own
+transmit power can be higher), so rediscovery is expected to stop short of where a held link drops.
+
+Tests: `CodedPhyPolicyTest` (lag-measured `codedOnly`, admission, scan windows, the Coded gap, the tunable
+credit), `DiagnosticsScreenContentTest` (the chip).
