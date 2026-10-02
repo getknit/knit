@@ -170,6 +170,35 @@ class CodedPhyPolicyTest {
         assertFalse(CodedPhyPolicy.sightedForAdmission(null, codedOn = true))
     }
 
+    @Test
+    fun aDropAtRangeMakesTheDialedSidesAdvertFast() {
+        // "a" sorts below "b": "b" dials, so it is "a"'s advert that matters.
+        assertTrue(CodedPhyPolicy.fastAdvertAfterDrop("a", "b", LinkPhy.CODED, linkRssi = -90, tuning = tuning))
+        assertFalse(
+            "the dialer's own advert is not what brings the link back",
+            CodedPhyPolicy.fastAdvertAfterDrop("b", "a", LinkPhy.CODED, linkRssi = -90, tuning = tuning),
+        )
+        // On 1M at the step-down edge: it died before it could step.
+        assertTrue(CodedPhyPolicy.fastAdvertAfterDrop("a", "b", LinkPhy.ONE_M, linkRssi = tuning.stepDownDbm, tuning = tuning))
+        assertFalse(CodedPhyPolicy.fastAdvertAfterDrop("a", "b", LinkPhy.ONE_M, linkRssi = -60, tuning = tuning))
+        assertFalse(CodedPhyPolicy.fastAdvertAfterDrop("a", "b", LinkPhy.TWO_M, linkRssi = null, tuning = tuning))
+    }
+
+    @Test
+    fun advertIntervalsAreInStackUnits() {
+        assertEquals(400, CodedPhyPolicy.advertIntervalUnits(250))
+        assertEquals(1600, CodedPhyPolicy.advertIntervalUnits(1_000))
+        assertEquals("never under the stack's 100 ms", 160, CodedPhyPolicy.advertIntervalUnits(20))
+    }
+
+    @Test
+    fun aCodedDialGetsTheLongerWatchdog() {
+        assertEquals(12_000L, CodedPhyPolicy.connectTimeoutMs(viaCoded = false))
+        assertEquals(25_000L, CodedPhyPolicy.connectTimeoutMs(viaCoded = true))
+        // Under the stack's own 30 s direct-connect timeout, so the watchdog is still what ends a stalled dial.
+        assertTrue(CodedPhyPolicy.CODED_CONNECT_TIMEOUT_MS < 30_000L)
+    }
+
     // --- scan windows ---
 
     @Test

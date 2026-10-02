@@ -56,13 +56,16 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   trial (CHECK `.agents/memory/roadmap.md`). The receive scan is Off for an all-linked clique with nothing
   streaming (ADR 2026-09.u8qj) — the link copy already reaches every linked peer; don't widen that gate. `hasFastPlane` is now true for Bluetooth: the link copy the
   composite used to send lives inside the transport's `fastFanout`/`fastSend`; don't add it back upstream.
-- **When touching `CodedPhyPolicy`, `PhyStepper`, `BlePhyControl`, `CodedPhyDiag`, `BleAdvertiser.codedParams`,
-  `BleScanner.phys`, `BlePresenceTracker`'s per-PHY RSSI, `BuildConfig.BLE_CODED_PHY` or `…debug.PHY`:** READ ADR
+- **When touching `CodedPhyPolicy`, `PhyStepper`, `BlePhyControl`, `CodedPhyDiag`, `CodedAdvertPace`,
+  `BleAdvertiser.codedParams` / `setInterval`, `BleScanner.phys`, `BlePresenceTracker`'s per-PHY RSSI,
+  `BuildConfig.BLE_CODED_PHY` or `…debug.PHY`:** READ ADR
   2026-10.yvn6 and the Coded PHY section of `.agents/context/mesh-transport.md`. An experiment, dark in release: a
   second presence set on Coded (the legacy advert stays), an all-PHY scan, a Coded sighting scored on the 1M scale
   (+12 dB) so every −90 floor is untouched, and per-link 1M ↔ Coded S=8 steps driven by the larger id through a GATT
   handle on the link's ACL. Capability is inferred from hearing the Coded advert — no flags-byte bit. A dialer heard on
-  Coded alone is admitted as unsighted (shzv's tie-break holds for 1M), and OFF leaves a link on its PHY. CHECK
+  Coded alone is admitted as unsighted (shzv's tie-break holds for 1M), and OFF leaves a link on its PHY. A Coded dial
+  gets a 25 s watchdog, and a link that drops at range makes the dialed side's Coded advert fast for 3 min, its
+  interval moved in place (`CodedAdvertPace`, `BleAdvertiser.setInterval`; the amendment of 2026-10-02). CHECK
   `.agents/memory/roadmap.md` for what the release flag waits on.
 - **When touching `mesh/lora/` or `mesh/bluetooth/meshtastic/` (the LoRa/Meshtastic bridge):** READ
   `.agents/context/lora-bridge.md` — a Meshtastic board over BLE GATT extends the **Nearby room and 1:1

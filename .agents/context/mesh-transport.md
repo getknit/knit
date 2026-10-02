@@ -478,7 +478,7 @@ link. The lab's `LabTransport` keeps the same memo (`dupSkipped`), so the box st
 (`SideChannelLabTest.aFrameCrossesEachPipeOnce`). ADR 2026-09.6nmy.
 
 The loops around the radio no longer poll on a fixed short tick: `scanLoop`'s paused branch waits 60 s while
-the adapter is off (the `STATE_ON` receiver wakes it) and `CONNECT_TIMEOUT_MS + 3 s` while a connect is in
+the adapter is off (the `STATE_ON` receiver wakes it) and the longest connect watchdog + 3 s while a connect is in
 flight (its end wakes it), `connectLoop` sleeps until the earliest connect backoff expires or the lonely dial
 comes due (hj4a), clamped to 1–60 s (`ConnectBackoffPolicy.nextDueWaitMs`), instead of every 5 s, `advertLoop`
 sleeps until the presence set's next re-assert (9utz) — 60 s while the adapter is off, and both
@@ -532,7 +532,17 @@ that reports `isLeCodedPhySupported`:
   (`codedGapResetMs`), not the 1M path's 8 s.
 - **The dial picks the PHY.** A peer heard on Coded alone (`codedOnly`: its last 1M hit trails its last Coded hit
   by more than 8 s) is dialed at its Coded address, and a plain L2CAP connect there lands on Coded
-  (spike-verified). The tie-break and every dial rule are untouched.
+  (spike-verified). That dial's watchdog is 25 s, not 12 (`CodedPhyPolicy.connectTimeoutMs`): Android's initiator
+  listens on Coded 15 ms in every 60 while it connects, and the stack's own direct-connect timeout is 30 s. The
+  tie-break and every dial rule are untouched.
+- **A drop at range makes the dialed side's Coded advert fast.** When a link with a PHY handle ends on its own
+  (`eof`) on Coded or at the step-down edge, the smaller id — the side the other dials back — advertises Coded every
+  250 ms for 3 min (`CodedAdvertPace`, `PhyTuning.fastAdvertMs` / `fastHoldMs`), until that peer links again. The
+  interval moves in place (`BleAdvertiser.setInterval`: disable, `setAdvertisingParameters`, enable; same set, same
+  address), 2.5 s after the drop so it stays out of the stack's pause and resume around the disconnection (9utz). Two
+  refused fast enables give the window up. The Coded set rides the presence set's re-assert turns (9utz) and has
+  retries of its own (`codedKeeper`): a refused enable, and up to five restarts of a start the stack failed
+  internally (status 4); TOO_MANY_ADVERTISERS and FEATURE_UNSUPPORTED stay dark until the next bring-up.
 - **Admission.** While the experiment runs, a dialer heard on Coded alone counts as unsighted
   (`CodedPhyPolicy.sightedForAdmission`) and is admitted whatever the id order. Otherwise a far pair waits on
   each other: the responder refuses, and its own dial never clears the dwell (the first walk, the ADR's
@@ -547,6 +557,8 @@ that reports `isLeCodedPhySupported`:
   `ble_phy_chip_<nodeId>`).
 
 Oracles: `bt phy mode=…`, `bt coded advert live|dark <status>`, `via=coded|1m` on `bt initiating to`,
+`bt phy <id> link dropped on <PHY> rssi=… (<reason>)`, `bt coded advert fast (…)` / `slow`, `bt coded advert
+refused <status>, retry in …` / `enabled again`, `bt coded advert retry n/5`,
 `bt phy <id> ONE_M→CODED rssi=… (auto)`, `bt phy <id> gave up …`, `bt scan coded windows on|off`,
 `bt refused client … codedOnly=`, and once a minute `bt coded heard <id> hits=… rssi=a..b 1m=… eff=… dwell=…
 promotable=… dials=…` per unlinked peer heard on Coded (raise the log ring with `adb logcat -G 16M` before a walk);

@@ -181,6 +181,20 @@ class BluetoothMeshTransport(
     // runs — the walk test's record of whether a far peer was heard, how loud, and why it did or did not promote.
     private val codedTallies = ConcurrentHashMap<String, CodedTally>()
 
+    // When the Coded set advertises fast: after a link at range drops, until its peer is back or the hold runs out (ADR
+    // 2026-10.yvn6, amendment 3). [paceJob] makes the next change — a drop's settle, a link's return, the hold's end.
+    private val codedPace = CodedAdvertPace()
+
+    @Volatile private var paceJob: Job? = null
+
+    @Volatile private var codedFast = false
+
+    // The Coded set's own retries, beside the presence set's turns it rides (9utz): a refused Coded enable, or a start
+    // the stack failed internally, comes back on the doubling wait. No net of its own — the presence turns are that.
+    private val codedKeeper = AdvertReassertPolicy.Keeper(alonePeriodMs = NO_NET_MS, linkedPeriodMs = NO_NET_MS)
+
+    @Volatile private var codedStartRetries = 0
+
     // Whether the last presence window was Coded-only ([CodedPhyPolicy.scanPhys] alternates), and whether Coded-only
     // windows are running at all, for the one log line per edge. Touched by [scanLoop] alone.
     private var lastScanCoded = false
@@ -388,6 +402,7 @@ class BluetoothMeshTransport(
             audioMonitor.start()
             codedMode = phyMode.first() // before bringUp, so the first advert and scan already follow it
             advertKeeper.start(elapsed()) // before bringUp, so a refused first start is kept and retried
+            codedKeeper.start(elapsed())
             if (adapter?.isEnabled == true) bringUp() else _health.value = TransportHealth.Unavailable
             scanJob = scope.launch { scanLoop() }
             connectJob = scope.launch { connectLoop() }
@@ -439,6 +454,7 @@ class BluetoothMeshTransport(
         capJob?.cancel()
         phyJob?.cancel()
         advertJob?.cancel()
+        paceJob?.cancel()
         CodedPhyDiag.status = null
         CodedPhyDiag.setTxPower = null
         CodedPhyDiag.publishLinkPhys(emptyMap())
@@ -605,6 +621,9 @@ class BluetoothMeshTransport(
         advertiser.stop()
         presenceAdvert = "off"
         stopCodedAdvert()
+        // The next bring-up starts the Coded set slow; a link that drops after it makes it fast again.
+        codedFast = false
+        codedAdvertiser.setInterval(BleAdvertiser.CODED_INTERVAL)
         scanner.stop()
         sideChannel?.tearDown()
         closeServer()
@@ -632,9 +651,9 @@ class BluetoothMeshTransport(
 
     /**
      * Enables the presence set again whenever [advertKeeper] says it is due — after a connection edge, a reported
-     * refusal, a heal, or the net — and the Coded set with it while that one is live. The Coded set keeps no schedule of
-     * its own: it rides these turns, and a refusal of it is only logged. Every wait is a timeout, so a lost wake costs
-     * latency, never liveness.
+     * refusal, a heal, or the net — and the Coded set with it while that one is up. The Coded set rides these turns,
+     * and [codedKeeper] adds its own retries: a refused Coded enable, or a start the stack failed internally, comes back
+     * on the doubling wait. Every wait is a timeout, so a lost wake costs latency, never liveness.
      */
     private suspend fun advertLoop() {
         while (scope.isActive) {
@@ -644,12 +663,23 @@ class BluetoothMeshTransport(
                 continue
             }
             val now = elapsed()
-            if (advertKeeper.isDue(now, links.isNotEmpty())) {
+            val linked = links.isNotEmpty()
+            if (advertKeeper.isDue(now, linked)) {
                 advertiser.reassert()
-                if (codedAdvert == "live") codedAdvertiser.reassert()
+                if (codedUp()) codedAdvertiser.reassert()
                 advertKeeper.reasserted(now)
+                codedKeeper.reasserted(now)
             }
-            withTimeoutOrNull(advertKeeper.waitMs(elapsed(), links.isNotEmpty())) { advertWake.receive() }
+            if (codedKeeper.isDue(now, linked)) {
+                if (codedUp()) {
+                    codedAdvertiser.reassert()
+                } else if (codedAdvert == CODED_DARK_INTERNAL) {
+                    retryCodedStart()
+                }
+                codedKeeper.reasserted(now)
+            }
+            val wait = minOf(advertKeeper.waitMs(elapsed(), linked), codedKeeper.waitMs(elapsed(), linked))
+            withTimeoutOrNull(wait) { advertWake.receive() }
         }
     }
 
@@ -689,6 +719,7 @@ class BluetoothMeshTransport(
         codedSupported =
             a != null && a.isEnabled && runCatching { a.isLeCodedPhySupported && a.isLeExtendedAdvertisingSupported }.getOrDefault(false)
         if (codedAdvert.startsWith("dark")) codedAdvert = "off"
+        codedStartRetries = 0
     }
 
     private fun newCodedAdvertiser(txPower: Int): BleAdvertiser =
@@ -697,19 +728,130 @@ class BluetoothMeshTransport(
             log = { Log.d(TAG, "coded $it") },
             params = BleAdvertiser.codedParams(txPower),
             onStartStatus = ::onCodedAdvertStatus,
+            onEnableStatus = ::onCodedEnabled,
+            onIntervalRefused = ::onCodedIntervalRefused,
         )
 
+    /** Whether the Coded set is up: live, or refused an enable that [codedKeeper] is retrying. */
+    private fun codedUp(): Boolean = codedAdvert == "live" || codedAdvert.startsWith("refused")
+
     private fun onCodedAdvertStatus(status: Int) {
+        val retry = codedAdvert == CODED_RETRYING
         if (status == AdvertisingSetCallback.ADVERTISE_SUCCESS) {
             codedAdvert = "live"
+            codedStartRetries = 0
+            codedKeeper.onEnabled(elapsed())
             Log.i(TAG, "bt coded advert live (tx=$codedTxPower)")
-        } else {
-            // TOO_MANY_ADVERTISERS (a fifth set beside presence, two side slots and the watch) or FEATURE_UNSUPPORTED:
-            // dark until the next bring-up; the presence advert and every 1M path carry on as before.
-            codedAdvert = "dark $status"
+            return
+        }
+        // TOO_MANY_ADVERTISERS (a fifth set beside presence, two side slots and the watch) or FEATURE_UNSUPPORTED:
+        // dark until the next bring-up; the presence advert and every 1M path carry on as before. INTERNAL_ERROR, which
+        // the P7 gave twice beside a busy link on 2026-10-01, is the stack's own failure: retried a few times.
+        codedAdvert = "dark $status"
+        if (!retry) {
             metrics.onBleCodedAdvertDark()
             Log.i(TAG, "bt coded advert dark $status")
         }
+        if (codedAdvert != CODED_DARK_INTERNAL) return
+        if (codedStartRetries < MAX_CODED_START_RETRIES) {
+            codedKeeper.onRefused(elapsed())
+            advertWake.trySend(Unit)
+        } else if (retry) {
+            Log.i(TAG, "bt coded advert dark $status, retries spent until the next bring-up")
+        }
+    }
+
+    /** A Coded start the stack failed internally, tried again with the current payload (not the bytes it failed with). */
+    private fun retryCodedStart() {
+        if (!codedOn()) return
+        codedStartRetries += 1
+        Log.i(TAG, "bt coded advert retry $codedStartRetries/$MAX_CODED_START_RETRIES")
+        codedAdvert = CODED_RETRYING
+        readvertise()
+    }
+
+    /**
+     * Every enable outcome the stack reports for the Coded set, asked for or not. A refusal comes back on [codedKeeper]'s
+     * doubling wait and, while the set is fast, counts toward giving the fast window up ([CodedAdvertPace]).
+     */
+    private fun onCodedEnabled(
+        enabled: Boolean,
+        status: Int,
+    ) {
+        if (!enabled) return // a disable nobody here asked for: the next presence turn enables it again
+        val now = elapsed()
+        if (status == AdvertisingSetCallback.ADVERTISE_SUCCESS) {
+            if (codedAdvert.startsWith("refused")) codedAdvert = "live"
+            codedKeeper.onEnabled(now)?.let { Log.i(TAG, "bt coded advert enabled again (refused for ${it}ms)") }
+            return
+        }
+        codedAdvert = "refused $status"
+        val retryIn = codedKeeper.onRefused(now)
+        val fast = if (codedFast) " (fast)" else ""
+        retryIn?.let { Log.i(TAG, "bt coded advert refused $status$fast, retry in ${it}ms") }
+        advertWake.trySend(Unit)
+        if (codedFast) onFastRefused()
+    }
+
+    private fun onCodedIntervalRefused(
+        interval: Int,
+        status: Int,
+    ) {
+        Log.i(TAG, "bt coded advert interval $interval refused $status")
+        if (codedFast) onFastRefused()
+    }
+
+    /** A fast Coded enable the controller would not take: past [CodedAdvertPace]'s limit, slow for the rest of the window. */
+    private fun onFastRefused() {
+        if (!codedPace.onFastRefused()) return
+        Log.i(TAG, "bt coded advert fast refused, slow for the rest of the window")
+        applyCodedPace()
+    }
+
+    /** Puts the Coded set on the interval [codedPace] wants now, and schedules the hold's end. */
+    private fun applyCodedPace() {
+        val now = elapsed()
+        val tuning = CodedPhyDiag.tuning
+        val fast = codedOn() && codedPace.fast(now)
+        codedAdvertiser.setInterval(
+            if (fast) CodedPhyPolicy.advertIntervalUnits(tuning.fastAdvertMs) else BleAdvertiser.CODED_INTERVAL,
+        )
+        if (fast != codedFast) {
+            codedFast = fast
+            Log.i(
+                TAG,
+                if (fast) "bt coded advert fast (${codedPace.wanted(now)}, every ${tuning.fastAdvertMs}ms)" else "bt coded advert slow",
+            )
+        }
+        val end = codedPace.endsAt()
+        if (fast && end != null) schedulePace(end - now)
+    }
+
+    /** [applyCodedPace] in [delayMs], replacing whatever change was scheduled. */
+    private fun schedulePace(delayMs: Long) {
+        paceJob?.cancel()
+        paceJob =
+            scope.launch {
+                delay(delayMs)
+                applyCodedPace()
+            }
+    }
+
+    /**
+     * A link with a PHY handle went down. Logs where it was, and when it went on its own at range, on the side its peer
+     * dials, makes the Coded advert fast ([CodedPhyPolicy.fastAdvertAfterDrop]) — after the settle, so the change's
+     * disable and enable stay out of the stack's own pause and resume around the disconnection (9utz).
+     */
+    private fun notePhyDrop(
+        status: PhyLinkStatus,
+        reason: String,
+    ) {
+        Log.i(TAG, "bt phy ${status.nodeId} link dropped on ${status.phy} rssi=${status.linkRssi} ($reason)")
+        val tuning = CodedPhyDiag.tuning
+        if (reason != "eof" || !codedOn()) return
+        if (!CodedPhyPolicy.fastAdvertAfterDrop(localNodeId, status.nodeId, status.phy, status.linkRssi, tuning)) return
+        codedPace.onDrop(status.nodeId, elapsed(), tuning.fastHoldMs)
+        schedulePace(AdvertReassertPolicy.SETTLE_MS)
     }
 
     private fun stopCodedAdvert() {
@@ -729,6 +871,8 @@ class BluetoothMeshTransport(
             stopCodedAdvert()
             codedTxPower = level
             codedAdvertiser = newCodedAdvertiser(power)
+            codedFast = false
+            applyCodedPace() // before the start, so a fast window carries onto the new set
             readvertise()
         }
         return true
@@ -742,6 +886,7 @@ class BluetoothMeshTransport(
     private fun applyPhyMode(mode: CodedPhyMode) {
         codedMode = mode
         Log.i(TAG, "bt phy mode=${mode.wire} supported=$codedSupported")
+        applyCodedPace() // OFF reads slow; a mode back on picks up a window still running
         readvertise()
         if (codedOn()) {
             links.values.forEach(::ensurePhyControl)
@@ -1215,13 +1360,15 @@ class BluetoothMeshTransport(
             // cherokee) close() can't abort an in-progress L2CAP connect and itself blocks until the *native*
             // connect timeout (~21s ≫ our 12s), which is exactly what used to pin inFlight and blind the scan for
             // that whole window. [settled] lets whichever fires first — the watchdog or connect() returning — own
-            // the single failConnect; the loser just tidies up the socket.
+            // the single failConnect; the loser just tidies up the socket. A dial to a Coded address gets longer
+            // (`CodedPhyPolicy.connectTimeoutMs`): Android listens on Coded a quarter of the time while it connects.
             val settled = AtomicBoolean(false)
+            val timeoutMs = CodedPhyPolicy.connectTimeoutMs(viaCoded)
             val watchdog =
                 scope.launch(Dispatchers.IO) {
-                    delay(CONNECT_TIMEOUT_MS)
+                    delay(timeoutMs)
                     if (settled.compareAndSet(false, true)) {
-                        val cause = TimeoutException("connect watchdog ${CONNECT_TIMEOUT_MS}ms")
+                        val cause = TimeoutException("connect watchdog ${timeoutMs}ms")
                         failConnect(nodeId, ConnectFailReason.TIMEOUT, startedAt, cause, device)
                     }
                     runCatching { socket.close() } // may block until the native connect unwinds; the slot is already freed
@@ -1383,6 +1530,8 @@ class BluetoothMeshTransport(
                 ).also { it.start() }
         }
         ensurePhyControl(framed)
+        codedPace.onLinkUp(nodeId)
+        if (codedFast) schedulePace(AdvertReassertPolicy.SETTLE_MS) // its peer is back: slow again, after the settle
         synchronized(lock) {
             inFlight.remove(nodeId)
             backoffs.remove(nodeId)
@@ -1407,7 +1556,10 @@ class BluetoothMeshTransport(
         neverSighted.remove(fl)
         linkAddresses.remove(fl)
         linkDevices.remove(fl)
-        phyControls.remove(fl)?.close()
+        phyControls.remove(fl)?.let { control ->
+            notePhyDrop(control.status(), reason)
+            control.close()
+        }
         publishLinkPhys()
         doorbells.remove(fl)?.close()
         fl.close()
@@ -1808,16 +1960,23 @@ class BluetoothMeshTransport(
         private const val CONNECT_WAIT_MIN_MS = 1_000L
         private const val CONNECT_WAIT_MAX_MS = 60_000L
 
-        // Scan-pause waits: a connect in flight ends within CONNECT_TIMEOUT_MS and wakes the loop itself; an
-        // adapter that is off wakes it from the STATE_ON receiver. Each is a safety net, not a cadence.
-        private const val CONNECT_PAUSE_WAIT_MS = 15_000L
+        // Scan-pause waits: a connect in flight ends within its watchdog (the longest is a Coded dial's) and wakes
+        // the loop itself; an adapter that is off wakes it from the STATE_ON receiver. Each is a safety net, not a
+        // cadence.
+        private const val CONNECT_PAUSE_WAIT_MS = CodedPhyPolicy.CODED_CONNECT_TIMEOUT_MS + 3_000L
         private const val ADAPTER_OFF_WAIT_MS = 60_000L
+
+        // [codedKeeper] has no net of its own: the presence turns are it, so its period never comes due.
+        private const val NO_NET_MS = Long.MAX_VALUE / 2
+
+        // A Coded start the stack failed internally (ADVERTISE_FAILED_INTERNAL_ERROR) is retried this many times per
+        // bring-up, on [codedKeeper]'s doubling wait; [CODED_RETRYING] marks a retry in flight, so its failure is quiet.
+        private const val MAX_CODED_START_RETRIES = 5
+        private val CODED_DARK_INTERNAL = "dark ${AdvertisingSetCallback.ADVERTISE_FAILED_INTERNAL_ERROR}"
+        private const val CODED_RETRYING = "retrying"
 
         // Bound the responder's HELLO read (BluetoothSocket has no soTimeout) — close the socket if it stalls.
         private const val ACCEPT_HELLO_TIMEOUT_MS = 5_000L
-
-        // Time-box the initiator's blocking L2CAP connect() so a wedged handshake can't pin inFlight forever.
-        private const val CONNECT_TIMEOUT_MS = 12_000L
 
         // Backoff base after the first failed connect; escalates geometrically per peer (see ConnectBackoffPolicy),
         // capped at MAX_CONNECT_BACKOFF_MS. Replaces the old flat retry — a link-up resets the peer's streak.

@@ -199,8 +199,9 @@ import java.nio.ByteBuffer
  * - [ACTION_PHY] — the **BLE Coded PHY experiment** (ADR 2026-10.yvn6; `BuildConfig.BLE_CODED_PHY`, else an error).
  *   `--es mode off|auto|coded|1m` stores the mode (`SettingsStore.debugBlePhyMode`, applied live), `--es txpower
  *   high|medium` re-raises the Coded advert, and `--ei stepDown|stepUp|stepDownReads|minGapMs|stepUpHoldMs N`
- *   overrides the step thresholds, `--ei credit N` the dB a Coded advert reading gains on the 1M scale (12), until the
- *   process dies (`--ez resetTuning true` restores them). The reply: `mode`, `supported`, `advert`
+ *   overrides the step thresholds, `--ei credit N` the dB a Coded advert reading gains on the 1M scale (12), and
+ *   `--ei fastAdvertMs|fastHoldMs N` the Coded advert's interval after a link at range drops (250) and how long it
+ *   holds (180000), until the process dies (`--ez resetTuning true` restores them). The reply: `mode`, `supported`, `advert`
  *   (off|starting|live|dark <status>), `txPower`, the tuning, `links[]` (nodeId, phy, linkRssi, drives, attached,
  *   switches, gaveUp) and `peers[]` (nodeId, rssi on the 1M scale, oneMSeenAgoMs, codedSeenAgoMs, and each PHY's own
  *   rssi1m / rssiCoded).
@@ -2084,6 +2085,8 @@ class DebugBridgeReceiver :
                 minSwitchGapMs = int("minGapMs")?.toLong() ?: t.minSwitchGapMs,
                 stepUpHoldMs = int("stepUpHoldMs")?.toLong() ?: t.stepUpHoldMs,
                 codedCreditDb = int("credit")?.toDouble() ?: t.codedCreditDb,
+                fastAdvertMs = int("fastAdvertMs") ?: t.fastAdvertMs,
+                fastHoldMs = int("fastHoldMs")?.toLong() ?: t.fastHoldMs,
             )
         delay(PHY_SETTLE_MS) // the transport collects the stored mode; let it land before reading the status back
         val status = CodedPhyDiag.status?.invoke() ?: return reply("error", "Bluetooth transport is not running")
@@ -2102,7 +2105,9 @@ class DebugBridgeReceiver :
                     .put("stepUp", tuned.stepUpDbm)
                     .put("stepUpHoldMs", tuned.stepUpHoldMs)
                     .put("minGapMs", tuned.minSwitchGapMs)
-                    .put("credit", tuned.codedCreditDb.toInt()),
+                    .put("credit", tuned.codedCreditDb.toInt())
+                    .put("fastAdvertMs", tuned.fastAdvertMs)
+                    .put("fastHoldMs", tuned.fastHoldMs),
             ).put(
                 "links",
                 JSONArray(

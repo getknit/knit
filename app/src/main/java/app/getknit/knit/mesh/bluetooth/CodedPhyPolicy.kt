@@ -1,5 +1,7 @@
 package app.getknit.knit.mesh.bluetooth
 
+import kotlin.math.roundToInt
+
 /**
  * How the Bluetooth plane uses the LE Coded PHY (getknit/knit#29, ADR 2026-10.yvn6) — an experiment, dark in release
  * behind `BuildConfig.BLE_CODED_PHY`, switched at run time from Diagnostics or `…debug.PHY` (`SettingsStore.debugBlePhyMode`).
@@ -64,6 +66,10 @@ data class PhyTuning(
     val rssiAlpha: Double = 0.5,
     /** What a Coded advert reading is worth on the 1M scale ([CodedPhyPolicy.effectiveRssi]); `…debug.PHY --ei credit`. */
     val codedCreditDb: Double = CodedPhyPolicy.CODED_RSSI_CREDIT_DB,
+    /** The Coded advert's interval while a far peer that just dropped is wanted back ([CodedAdvertPace]). */
+    val fastAdvertMs: Int = 250,
+    /** How long a drop at range keeps the Coded advert fast, unless the peer links again first. */
+    val fastHoldMs: Long = 180_000,
 ) {
     private companion object {
         // Negative defaults can't be inlined without tripping MagicNumber (as PromotionConfig's floor).
@@ -126,6 +132,42 @@ object CodedPhyPolicy {
         oneMSeenAgoMs: Long?,
         codedSeenAgoMs: Long?,
     ): Boolean = codedOnly(oneMSeenAgoMs, codedSeenAgoMs)
+
+    /**
+     * Whether a link that just went down on its own (not evicted or stopped) should make this phone's Coded advert fast
+     * for a while. Only on the side that is dialed — the smaller id; the larger dials back ([drives]) and needs the
+     * other's advert, not its own — and only when the link was on Coded or at the step-down edge as it went, the place
+     * a peer that drops is just out of reach. A Coded advert once a second gave the far dialer of the 2026-10-01 walk
+     * one link in four dials; [PhyTuning.fastAdvertMs] gives it four times the chances.
+     */
+    fun fastAdvertAfterDrop(
+        localNodeId: String,
+        peerNodeId: String,
+        phy: LinkPhy,
+        linkRssi: Int?,
+        tuning: PhyTuning,
+    ): Boolean = !drives(localNodeId, peerNodeId) && (phy == LinkPhy.CODED || (linkRssi != null && linkRssi <= tuning.stepDownDbm))
+
+    /** [ms] as an advertising interval in the stack's 0.625 ms units, no shorter than the 100 ms it allows. */
+    fun advertIntervalUnits(ms: Int): Int = maxOf((ms / ADVERT_UNIT_MS).roundToInt(), MIN_ADVERT_INTERVAL_UNITS)
+
+    private const val ADVERT_UNIT_MS = 0.625
+    private const val MIN_ADVERT_INTERVAL_UNITS = 160
+
+    /** How long a dial may run before the transport's watchdog gives its slot up: [CONNECT_TIMEOUT_MS] on 1M. */
+    fun connectTimeoutMs(viaCoded: Boolean): Long = if (viaCoded) CODED_CONNECT_TIMEOUT_MS else CONNECT_TIMEOUT_MS
+
+    /** An ordinary dial's watchdog. */
+    const val CONNECT_TIMEOUT_MS = 12_000L
+
+    /**
+     * A dial to a peer's Coded address gets longer. While a direct connect is pending, Android's initiator listens on
+     * Coded for 15 ms in every 60 ms (AOSP `le_impl.h`, `kScanWindowCodedFast`), and a far peer's Coded advert is faint
+     * and sparse, so 12 s gives a dial at the edge only a few chances: on the 2026-10-01 walk three of four Coded dials
+     * died at the watchdog, and the one that linked took 7.4 s to its LE Connection Complete. This stays under the
+     * stack's own direct-connect timeout (30 s, `connection_manager.cc`), so the watchdog still owns the failure.
+     */
+    const val CODED_CONNECT_TIMEOUT_MS = 25_000L
 
     /**
      * Whether the L2CAP responder counts a dialer as sighted for [BleAdmissionPolicy.decide] — [snap] is the dialer's

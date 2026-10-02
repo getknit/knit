@@ -273,15 +273,18 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   an error; also a segmented row under Diagnostics' Transports). `--es mode off|auto|coded|1m` stores the mode
   (applied live, persists — a `debug_` key), `--es txpower high|medium` re-raises the Coded advert, `--ei stepDown
   N` / `stepUp` / `stepDownReads` / `minGapMs` / `stepUpHoldMs` override the step thresholds and `--ei credit N` the
-  dB a Coded advert reading gains on the 1M scale (default 12, what every −90 floor reads), until the process dies
-  (`--ez resetTuning true` restores them); no extras reads. The reply: `mode`, `supported` (the controller has Coded
-  and extended advertising), `advert` (`off` / `starting` / `live` / `dark <status>`), `txPower`, `tuning`,
+  dB a Coded advert reading gains on the 1M scale (default 12, what every −90 floor reads), and `--ei fastAdvertMs N`
+  / `fastHoldMs N` the Coded advert's interval after a link at range drops (250) and how long it holds (180000),
+  until the process dies (`--ez resetTuning true` restores them); no extras reads. The reply: `mode`, `supported`
+  (the controller has Coded and extended advertising), `advert` (`off` / `starting` / `live` / `refused <status>` /
+  `retrying` / `dark <status>`), `txPower`, `tuning`,
   `links[]` (`nodeId`, `phy` ONE_M|TWO_M|CODED|UNKNOWN, `linkRssi`, `drives`, `attached`, `switches`, `gaveUp`) and
   `peers[]` (`nodeId`, `rssi` on the 1M scale, `oneMSeenAgoMs`, `codedSeenAgoMs`, each PHY's own `rssi1m` /
   `rssiCoded`). Oracle for a step: `links[].phy` plus `bt phy <id> ONE_M→CODED` in logcat (and the PHY chip on the
   Diagnostics row). A walk's record is logcat: `bt coded heard <id> hits=… rssi=a..b 1m=… eff=… dwell=… promotable=…
   dials=…` once a minute per unlinked peer heard on Coded, `bt scan coded windows on|off`, `bt refused client … codedOnly=`,
-  `bt initiating to … via=coded` — raise the buffer first (`adb logcat -G 16M`; the default 256 KiB holds ~40 min).
+  `bt initiating to … via=coded`, and at a drop `bt phy <id> link dropped on <PHY> rssi=… (<reason>)` then
+  `bt coded advert fast (…)` / `slow` and any `bt coded advert refused` — raise the buffer first (`adb logcat -G 16M`; the default 256 KiB holds ~40 min).
   Negative control: on a phone without Coded (the Pixel 3) `supported` is false, `advert` stays `off` and no link
   gets a PHY handle; `mode off` restores the legacy scan and lets every handle go, leaving each link on its PHY.
 - `…debug.FLAGMSG` — injects one inbound message **the text moderator flagged** (the UI collapses it behind a
