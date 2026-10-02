@@ -380,6 +380,14 @@ class Trial:
         for p in self.phones.values():
             p.bridge("HEAL")
         hit = self.tails[t.label].wait_for("up", o.node_id, time.time() - 1, time.time() + 120)
+        if hit or self.linked():
+            return True
+        # A settled dialer that has lost the other phone from its presence floors its scan and may not sight it again
+        # for tens of minutes; HEAL does not lift that. A Bluetooth cycle on the toggled phone drops it to hunting.
+        log(f"still not linked: cycling Bluetooth on {t.label}")
+        self.recoveries.append({"at": time.time(), "how": "bt-cycle", "on": t.label})
+        t.sh("svc bluetooth disable; sleep 10; svc bluetooth enable")
+        hit = self.tails[t.label].wait_for("up", o.node_id, time.time() - 1, time.time() + 120)
         return bool(hit or self.linked())
 
     def set_screen(self) -> None:
@@ -405,7 +413,11 @@ class Trial:
                      "toggled": t.label, "other": o.label, "role": self.role, "hold_s": a.hold,
                      "pair": "-".join(sorted(self.phones))}
         self.hold_others_paused()
-        if not self.ensure_linked():
+        self.recoveries = []
+        linked = self.ensure_linked()
+        if self.recoveries:
+            rec["recovered_before"] = self.recoveries
+        if not linked:
             rec["outcome"] = "skipped: pair would not link before the rep"
             return rec
         self.set_screen()
