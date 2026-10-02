@@ -75,3 +75,26 @@ except to pull logs — memory `network-adb-keepalive-battery-drain`; grep the `
 4. Walk-up B, larger id on A's side — A links within ≈ 72 s plus the connect; with NAN up on both, the
    `onForeignReachable` wake makes it well under that.
 5. `WifiAwareTransport` tag unchanged from kb68: screen on and lonely still re-arms at `cooldown=15000`.
+
+## Amendment 2026-10-02 — the three minutes run from the last link's end
+
+**What was observed.** On the 2026-10-01 Coded PHY walk (ADR 2026-10.yvn6), P9 lost its last link at the edge of
+range at 23:55:24. Twelve seconds later its scan relaxed: `bt scan lonely: relaxed idle=60000ms (alone 666357ms)`.
+The 666 s was the time since its last link had come *up*, at 23:44:30. `lonelyForMs` read `lastLinkOrStartAt`, which
+only the transport's start and a link's registration wrote. So any phone that had held a link for more than three
+minutes went straight to the relaxed gap when that link dropped. The window above, "alone ≥ 3 min", never ran. P9 got
+three scan windows in the 2m40s before it heard the lost peer again, where the aggressive cadence gives about seven.
+That is the moment a lost peer is most likely to be just out of reach and worth the search. ADR 2026-09.hj4a had noticed
+the clock and kept its own (`noLinkSince`) rather than change this one.
+
+**What changed.** The scan's cadence reads `aloneForMs()`, which counts from `noLinkSince`. That clock starts with the
+transport and restarts when the last link goes down. `lastLinkOrStartAt` and `lonelyForMs()` are gone, and the
+`bt state` line drops `lonely=` and keeps `alone=`.
+
+- Any link coming up still ends loneliness, as before.
+- A peer that is sighted but not linked still does not restart the window, as before.
+- The only new behaviour: each time the last link drops, the phone searches at the 12 s gap for three minutes (about
+  12.5 % receiver duty) before it relaxes. On battery that is at most one extra three-minute search per lost last link.
+
+`PowerPolicy` is unchanged. No JVM harness runs `scanLoop`. Trial step 1 above becomes the oracle: after the last
+`bt link down`, `bt scan lonely: relaxed … (alone ≈180000ms)` appears about three minutes later, never sooner.

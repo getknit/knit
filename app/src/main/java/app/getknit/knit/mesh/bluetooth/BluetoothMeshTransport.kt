@@ -267,10 +267,10 @@ class BluetoothMeshTransport(
 
     @Volatile private var currentPsm = 0
 
-    @Volatile private var lastLinkOrStartAt = 0L
-
-    // When this node last held no link: the transport's start, or the last link going down. Not [lastLinkOrStartAt],
-    // which the scan's lonely cadence reads (ADR 2026-09.w3xk): this one times the lonely dial (ADR 2026-09.hj4a).
+    // When this node last held no link: the transport's start, or the last link going down. It times both the scan's
+    // lonely cadence (ADR 2026-09.w3xk) and the lonely dial (ADR 2026-09.hj4a). The scan's clock used to run from the
+    // last link's *start*, so a phone that lost a link it had held past three minutes slowed its scan within one window,
+    // just as the peer it had lost was worth hunting for (the 2026-10-01 Coded walk).
     @Volatile private var noLinkSince = 0L
     private var availabilityRegistered = false
     private var aclEdgesRegistered = false
@@ -382,8 +382,7 @@ class BluetoothMeshTransport(
         }
         scope.launch {
             localNodeId = identity.nodeId()
-            lastLinkOrStartAt = elapsed()
-            noLinkSince = lastLinkOrStartAt
+            noLinkSince = elapsed()
             registerAvailability()
             registerAclEdges()
             audioMonitor.start()
@@ -833,14 +832,14 @@ class BluetoothMeshTransport(
             delay(duty.scanWindowMs)
             scanner.stop()
             if (scanned) noteQuietScan(phys, elapsed() - windowStart)
-            val lonelyFor = lonelyForMs()
+            val aloneFor = aloneForMs()
             val idle =
                 if (floorScan()) {
-                    PowerPolicy.settledIdleAfterScan(power, links.size, lonelyFor)
+                    PowerPolicy.settledIdleAfterScan(power, links.size, aloneFor)
                 } else {
-                    PowerPolicy.idleAfterScan(power, links.size, lonelyFor)
+                    PowerPolicy.idleAfterScan(power, links.size, aloneFor)
                 }
-            logLonelyTransition(links.isEmpty() && PowerPolicy.lonelyRelaxed(power, lonelyFor), idle, lonelyFor)
+            logLonelyTransition(links.isEmpty() && PowerPolicy.lonelyRelaxed(power, aloneFor), idle, aloneFor)
             withTimeoutOrNull(idle) { scanWake.receive() }
         }
     }
@@ -1384,7 +1383,6 @@ class BluetoothMeshTransport(
                 ).also { it.start() }
         }
         ensurePhyControl(framed)
-        lastLinkOrStartAt = elapsed()
         synchronized(lock) {
             inFlight.remove(nodeId)
             backoffs.remove(nodeId)
@@ -1649,9 +1647,10 @@ class BluetoothMeshTransport(
 
     private fun elapsed() = SystemClock.elapsedRealtime()
 
-    private fun lonelyForMs(): Long = if (links.isEmpty()) elapsed() - lastLinkOrStartAt else 0L
-
-    /** How long this node has held no link at all, the lonely dial's clock; 0 while one is held (ADR 2026-09.hj4a). */
+    /**
+     * How long this node has held no link at all; 0 while one is held. The clock of the scan's lonely cadence (ADR
+     * 2026-09.w3xk) and of the lonely dial (ADR 2026-09.hj4a).
+     */
     private fun aloneForMs(): Long = if (links.isEmpty()) elapsed() - noLinkSince else 0L
 
     private fun inFlightSnapshot(): Set<String> = synchronized(lock) { inFlight.toSet() }
@@ -1777,7 +1776,7 @@ class BluetoothMeshTransport(
             TAG,
             "bt state links=${links.keys} reach=${_reachable.value.map { it.nodeId }} " +
                 "inFlight=${inFlightSnapshot()} backoff=[$backoffStr] a2dp=${audioMonitor.state.value} " +
-                "lonely=${lonelyForMs()}ms alone=${aloneForMs()}ms psm=$currentPsm advert=$presenceAdvert " +
+                "alone=${aloneForMs()}ms psm=$currentPsm advert=$presenceAdvert " +
                 "doorbells=${doorbells.size} rings=${rings.get()}" +
                 (if (gattPeers) " gattPayloads=${gattPayloads.payloadCount} gattReads=${gattReads.get()}" else "") +
                 (if (codedOn()) " phy=${codedMode.wire} coded=$codedAdvert phyLinks=${phyControls.size}" else "") +

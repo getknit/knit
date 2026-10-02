@@ -34,6 +34,9 @@ document:
 
 - When your phone connected to a watch or another Bluetooth device, other phones nearby could lose sight of
   it for up to a minute, and an iPhone couldn't connect in that time. Your phone now reappears within seconds.
+- When your phone lost its last Bluetooth connection to nearby phones, it could start looking for them less
+  often almost at once, so it took longer to reconnect when you came back into range. It now keeps looking at
+  full speed for three minutes first.
 - If the phone's secure storage didn't respond when Knit started, Knit could delete your messages and come
   back as a stranger to your contacts. Knit now waits instead, with Try again to keep everything or Start
   over if the storage never answers.

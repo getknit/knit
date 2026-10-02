@@ -327,11 +327,11 @@ check and splitting a dedicated `scanWake` channel (only `scanLoop` drains it; `
 `healSignal`) that `onScanResult` pokes **only for a genuine boost trigger** (a peer we'd initiate to,
 above the RSSI floor, unlinked, off backoff). Floor (`settledIdleAfterScan`, ~2 min) engages only with
 ≥1 link and no candidate/chase — or while A2DP audio contends the radio. An isolated node never floors; it
-hunts at `PowerPolicy.idleAfterScan`'s 12 s gap for three minutes, then — on battery — relaxes: screen on
+hunts at `PowerPolicy.idleAfterScan`'s 12 s gap for three minutes from its last link's end (`noLinkSince`), then — on battery — relaxes: screen on
 to a 60 s gap between its 12 s BALANCED windows (ADR 2026-09.w3xk, ≈ 4 % receiver duty from 12.5 %), screen
 off to the duty cycle (120 s / 300 s); charging never. Every wake below (heal, a power edge, the adapter
 coming on, a NAN sighting) ends the gap early with an immediate scan. Oracle: `bt scan lonely: relaxed
-idle=…ms (alone …ms)` / `aggressive again`, and `lonely=` on the 60 s `bt state` line. NAN acts as an **early-warning**: `CompositeMeshTransport.onForeignReachable` (the reverse of
+idle=…ms (alone …ms)` / `aggressive again`, and `alone=` on the 60 s `bt state` line. NAN acts as an **early-warning**: `CompositeMeshTransport.onForeignReachable` (the reverse of
 `suppressDataPath`) tells BLE which peers another plane can see, and BLE boosts to chase them onto a link,
 bounded by `PROMOTE_CHASE_MS` so a NAN-only / out-of-range peer can't pin Boost. Advertising is untouched
 (always-on) so BLE-only devices still discover us — and *re-asserted*: the stack's own re-enable of the presence
@@ -371,8 +371,8 @@ links)`, 360–600 s — and the clique's one post-link-down scan lands inside t
 node that has held **zero** links for `LONELY_AGGRESSIVE_WINDOW_MS` (180 s) may dial a sighted peer whose id sorts
 **above** its own: `LonelyDialPolicy.pick`, PromotionPolicy's own gates (−90 dBm, 12 s dwell, off backoff) plus device
 and PSM known, strongest first, one open at a time (an in-flight dial to a larger id can only be the lonely one). Its
-clock is `noLinkSince` — transport start, restarted when the last link goes (`teardownLink`) — not `lonelyForMs`,
-which runs from the last link's start and drives the scan's relaxed cadence (w3xk). The responder is unchanged: a
+clock is `noLinkSince` — transport start, restarted when the last link goes (`teardownLink`) — which the scan's
+relaxed cadence reads too (w3xk's 2026-10-02 amendment; it used to run from the last link's start). The responder is unchanged: a
 peer that has not sighted the newcomer admits it (shzv's unsighted admit), and one that has refuses it and dials it
 by the tie-break; the refusal is an ordinary `HANDSHAKE` failure with the ordinary backoff, and a failure for a peer
 whose own dial already linked bumps no streak. `LonelyDialPolicy.msUntilDue` wakes the connect loop when the window

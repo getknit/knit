@@ -88,8 +88,8 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   advertises no service data, so it is never sighted and never dialed) is admitted whatever the id order, and its
   second link replaces the first only once the held one is 30 s old. A teardown passes the link it means
   (`only =`) — never re-key it by node id alone — and only a never-sighted link scores the −90 floor. The one
-  exception to "larger dials" is hj4a's lonely dial: after 180 s with **no** link (a clock of its own, never
-  `lonelyForMs`) a node dials the strongest larger id it sights, one at a time, and it rests on the unsighted admit:
+  exception to "larger dials" is hj4a's lonely dial: after 180 s with **no** link (`noLinkSince`, the clock the
+  scan's lonely cadence shares) a node dials the strongest larger id it sights, one at a time, and it rests on the unsighted admit:
   a responder that sighted the newcomer refuses it and dials it itself. Its oracle, `bt lonely dial <id> (…)`, is
   keyed by the iOS interop harness — don't reword it.
 - **When touching `BleAdvertiser.reassert` / `onAdvertisingEnabled`, `AdvertReassertPolicy`, or the transport's
