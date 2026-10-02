@@ -138,7 +138,20 @@ class BluetoothMeshTransport(
     // crash/auto-restart) without a process restart. Caching the handles once — as this used to — silently
     // detached the plane from the stack after any such flap (zero scanner/advertiser registration, reach=[]
     // forever) until the app was killed.
-    private val advertiser = BleAdvertiser({ adapter?.bluetoothLeAdvertiser }, log = { Log.d(TAG, it) })
+    private val advertiser =
+        BleAdvertiser(
+            { adapter?.bluetoothLeAdvertiser },
+            log = { Log.d(TAG, it) },
+            onStartStatus = { onPresenceEnabled(true, it) },
+            onEnableStatus = ::onPresenceEnabled,
+        )
+
+    // When the presence set is enabled again (#112): the stack's own re-enable around a connection can be refused, and
+    // only sometimes says so. [presenceAdvert] is how it last fared — off, on, refused <status> or disabled.
+    private val advertKeeper = AdvertReassertPolicy.Keeper()
+    private val advertWake = Channel<Unit>(Channel.CONFLATED)
+
+    @Volatile private var presenceAdvert = "off"
     private val scanner =
         BleScanner({ adapter?.bluetoothLeScanner }, ::onScanResult, log = { Log.d(TAG, it) }, matchesServiceUuid = gattPeers)
 
@@ -260,6 +273,7 @@ class BluetoothMeshTransport(
     // which the scan's lonely cadence reads (ADR 2026-09.w3xk): this one times the lonely dial (ADR 2026-09.hj4a).
     @Volatile private var noLinkSince = 0L
     private var availabilityRegistered = false
+    private var aclEdgesRegistered = false
 
     // Two conflated wake channels so the scan and connect loops never steal each other's wakes: connectLoop
     // drains [healSignal] (poked on every event), scanLoop drains [scanWake] (poked only on events that change
@@ -300,6 +314,7 @@ class BluetoothMeshTransport(
     private var sideJob: Job? = null
     private var capJob: Job? = null
     private var phyJob: Job? = null
+    private var advertJob: Job? = null
 
     // The debug link cap as last read from [linkCap]; null runs the shipped budget untouched.
     @Volatile private var debugCap: Int? = null
@@ -370,8 +385,10 @@ class BluetoothMeshTransport(
             lastLinkOrStartAt = elapsed()
             noLinkSince = lastLinkOrStartAt
             registerAvailability()
+            registerAclEdges()
             audioMonitor.start()
             codedMode = phyMode.first() // before bringUp, so the first advert and scan already follow it
+            advertKeeper.start(elapsed()) // before bringUp, so a refused first start is kept and retried
             if (adapter?.isEnabled == true) bringUp() else _health.value = TransportHealth.Unavailable
             scanJob = scope.launch { scanLoop() }
             connectJob = scope.launch { connectLoop() }
@@ -387,6 +404,7 @@ class BluetoothMeshTransport(
                 }
             powerJob = scope.launch { powerState.state.drop(1).collect { wake() } }
             diagJob = scope.launch { diagLoop() }
+            advertJob = scope.launch { advertLoop() }
             // A2DP forces the scan to its floor (audio contends the radio); wake the scan loop on any change so
             // the falling edge (audio stopped) resumes the normal cadence promptly instead of after the floor gap.
             audioJob = scope.launch { audioMonitor.contended.drop(1).collect { wakeScan() } }
@@ -421,6 +439,7 @@ class BluetoothMeshTransport(
         arbiterJob?.cancel()
         capJob?.cancel()
         phyJob?.cancel()
+        advertJob?.cancel()
         CodedPhyDiag.status = null
         CodedPhyDiag.setTxPower = null
         CodedPhyDiag.publishLinkPhys(emptyMap())
@@ -428,6 +447,7 @@ class BluetoothMeshTransport(
         cancelGattRead()
         sideCapable.clear()
         unregisterAvailability()
+        unregisterAclEdges()
         audioMonitor.stop()
         tearDownRadio()
         links.keys.toList().forEach { teardownLink(it, "stop") }
@@ -445,7 +465,10 @@ class BluetoothMeshTransport(
     }
 
     override fun heal() {
-        if (hasHardware) wake()
+        if (!hasHardware) return
+        advertKeeper.dueNow(elapsed()) // the presence set is enabled again at once, whatever the stack last made of it
+        advertWake.trySend(Unit)
+        wake()
     }
 
     override fun onForeignReachable(peers: Set<String>) {
@@ -581,6 +604,7 @@ class BluetoothMeshTransport(
 
     private fun tearDownRadio() {
         advertiser.stop()
+        presenceAdvert = "off"
         stopCodedAdvert()
         scanner.stop()
         sideChannel?.tearDown()
@@ -603,6 +627,56 @@ class BluetoothMeshTransport(
         } else if (!codedOn()) {
             stopCodedAdvert()
         }
+    }
+
+    // --- Keeping the presence set on the air (#112) ---
+
+    /**
+     * Enables the presence set again whenever [advertKeeper] says it is due — after a connection edge, a reported
+     * refusal, a heal, or the net — and the Coded set with it while that one is live. The Coded set keeps no schedule of
+     * its own: it rides these turns, and a refusal of it is only logged. Every wait is a timeout, so a lost wake costs
+     * latency, never liveness.
+     */
+    private suspend fun advertLoop() {
+        while (scope.isActive) {
+            if (adapter?.isEnabled != true) {
+                // Nothing to enable; bringUp starts the set afresh when the adapter comes back.
+                withTimeoutOrNull(ADAPTER_OFF_WAIT_MS) { advertWake.receive() }
+                continue
+            }
+            val now = elapsed()
+            if (advertKeeper.isDue(now, links.isNotEmpty())) {
+                advertiser.reassert()
+                if (codedAdvert == "live") codedAdvertiser.reassert()
+                advertKeeper.reasserted(now)
+            }
+            withTimeoutOrNull(advertKeeper.waitMs(elapsed(), links.isNotEmpty())) { advertWake.receive() }
+        }
+    }
+
+    /**
+     * Every outcome the stack reports for the presence set: its start, its own re-enable after a connection to the set
+     * (unasked), and each of [advertLoop]'s. A refusal is retried on [advertKeeper]'s doubling wait.
+     */
+    private fun onPresenceEnabled(
+        enabled: Boolean,
+        status: Int,
+    ) {
+        val now = elapsed()
+        if (enabled && status == AdvertisingSetCallback.ADVERTISE_SUCCESS) {
+            presenceAdvert = "on"
+            advertKeeper.onEnabled(now)?.let { Log.i(TAG, "bt advert enabled again (refused for ${it}ms)") }
+            return
+        }
+        presenceAdvert = if (enabled) "refused $status" else "disabled"
+        advertKeeper.onRefused(now)?.let { Log.i(TAG, "bt advert $presenceAdvert, retry in ${it}ms") }
+        advertWake.trySend(Unit)
+    }
+
+    /** A connection opened or closed: the stack re-enabled its sets around it, and that enable may have been refused. */
+    private fun advertEdge() {
+        advertKeeper.onConnectionEdge(elapsed())
+        advertWake.trySend(Unit)
     }
 
     // --- Coded PHY (the experiment, ADR 2026-10.yvn6) ---
@@ -968,6 +1042,7 @@ class BluetoothMeshTransport(
                     }
                 }
                 wake() // the arbiter is free again, and a dial held back for the read may go
+                advertEdge() // the read's connection has closed (#112: it opened at a 15 ms interval)
             }
     }
 
@@ -1319,6 +1394,7 @@ class BluetoothMeshTransport(
         refreshNeighbors()
         publishReachable() // a live link ⇒ reachable, even for an inbound peer we never scan-sighted
         wake() // inFlight cleared + link count changed → resume connectLoop and re-evaluate scan demand
+        advertEdge()
         Log.i(TAG, "bt link up: $nodeId (${links.size} live)")
     }
 
@@ -1344,6 +1420,7 @@ class BluetoothMeshTransport(
         refreshNeighbors()
         publishReachable() // drop the peer from reachable too, unless it's still being scan-sighted
         wakeSide() // the audience may have gone unlinked (the eviction path has no other side wake)
+        advertEdge()
         Log.i(TAG, "bt link down: $nodeId ($reason)")
         return true
     }
@@ -1526,6 +1603,37 @@ class BluetoothMeshTransport(
         availabilityRegistered = false
     }
 
+    // Every ACL that opens or closes on the adapter — a mesh link, our GATT read, a bonded watch, a Meshtastic board,
+    // another app's — is a connection the stack re-enables its advertising sets around (#112). Most never reach this
+    // transport any other way. The receiver only marks the edge; [advertLoop] does the work.
+    private val aclEdgeReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(
+                context: Context,
+                intent: Intent,
+            ) = advertEdge()
+        }
+
+    /** Subscribes to ACL edges, guarded and degrading like [registerAvailability]: without it only the net runs. */
+    private fun registerAclEdges() {
+        if (aclEdgesRegistered) return
+        val filter =
+            IntentFilter().apply {
+                addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+                addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+            }
+        aclEdgesRegistered =
+            runCatching {
+                ContextCompat.registerReceiver(appContext, aclEdgeReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            }.onFailure { Log.w(TAG, "ACL edge receiver registration failed", it) }.isSuccess
+    }
+
+    private fun unregisterAclEdges() {
+        if (!aclEdgesRegistered) return
+        runCatching { appContext.unregisterReceiver(aclEdgeReceiver) }
+        aclEdgesRegistered = false
+    }
+
     // --- Helpers ---
 
     private fun elapsed() = SystemClock.elapsedRealtime()
@@ -1658,7 +1766,8 @@ class BluetoothMeshTransport(
             TAG,
             "bt state links=${links.keys} reach=${_reachable.value.map { it.nodeId }} " +
                 "inFlight=${inFlightSnapshot()} backoff=[$backoffStr] a2dp=${audioMonitor.state.value} " +
-                "lonely=${lonelyForMs()}ms alone=${aloneForMs()}ms psm=$currentPsm doorbells=${doorbells.size} rings=${rings.get()}" +
+                "lonely=${lonelyForMs()}ms alone=${aloneForMs()}ms psm=$currentPsm advert=$presenceAdvert " +
+                "doorbells=${doorbells.size} rings=${rings.get()}" +
                 (if (gattPeers) " gattPayloads=${gattPayloads.payloadCount} gattReads=${gattReads.get()}" else "") +
                 (if (codedOn()) " phy=${codedMode.wire} coded=$codedAdvert phyLinks=${phyControls.size}" else "") +
                 (sideChannel?.let { " ${it.diag()} $sideDecision" } ?: ""),

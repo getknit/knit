@@ -334,7 +334,11 @@ coming on, a NAN sighting) ends the gap early with an immediate scan. Oracle: `b
 idle=…ms (alone …ms)` / `aggressive again`, and `lonely=` on the 60 s `bt state` line. NAN acts as an **early-warning**: `CompositeMeshTransport.onForeignReachable` (the reverse of
 `suppressDataPath`) tells BLE which peers another plane can see, and BLE boosts to chase them onto a link,
 bounded by `PROMOTE_CHASE_MS` so a NAN-only / out-of-range peer can't pin Boost. Advertising is untouched
-(always-on) so BLE-only devices still discover us. **Load-bearing invariant: `reachable ⊇ neighbors`.**
+(always-on) so BLE-only devices still discover us — and *re-asserted*: the stack's own re-enable of the presence
+set around a connection can be refused by the controller (0x0d beside a 15 ms link), silently when the connection
+was ours, so `advertLoop` enables the live set again 2.5 s after every ACL edge, on a doubling wait after a reported
+refusal, and on a 10 s (no link) / 60 s net (`AdvertReassertPolicy`, ADR 2026-10.9utz). Oracle: `bt advert refused
+<status>, retry in <ms>` / `bt advert enabled again (refused for <ms>ms)`, `advert=` on the `bt state` line. **Load-bearing invariant: `reachable ⊇ neighbors`.**
 BLE `reachable` is fed only from scan presence (90 s linger), so once the floor stops re-sighting a
 linked peer it would vanish from the "nearby" UI while still linked — `publishReachable` unions live
 links back in (`_reachable` only, never `_neighbors`, which routes sends). Verify on-device via the
@@ -476,7 +480,8 @@ link. The lab's `LabTransport` keeps the same memo (`dupSkipped`), so the box st
 The loops around the radio no longer poll on a fixed short tick: `scanLoop`'s paused branch waits 60 s while
 the adapter is off (the `STATE_ON` receiver wakes it) and `CONNECT_TIMEOUT_MS + 3 s` while a connect is in
 flight (its end wakes it), `connectLoop` sleeps until the earliest connect backoff expires or the lonely dial
-comes due (hj4a), clamped to 1–60 s (`ConnectBackoffPolicy.nextDueWaitMs`), instead of every 5 s, and both
+comes due (hj4a), clamped to 1–60 s (`ConnectBackoffPolicy.nextDueWaitMs`), instead of every 5 s, `advertLoop`
+sleeps until the presence set's next re-assert (9utz) — 60 s while the adapter is off, and both
 transports' diagnostic state line runs every 60 s and builds its string only in debug builds. Every wait is still a timeout, so a lost wake costs latency,
 never liveness.
 

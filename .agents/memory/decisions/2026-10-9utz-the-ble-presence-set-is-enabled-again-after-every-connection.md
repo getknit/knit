@@ -1,0 +1,92 @@
+---
+id: "2026-10.9utz"
+slug: the-ble-presence-set-is-enabled-again-after-every-connection
+title: "The BLE presence set is enabled again after every connection"
+date: 2026-10-02
+topics: [ble, mesh]
+---
+
+# ADR 2026-10.9utz — The BLE presence set is enabled again after every connection
+
+Status: Accepted (2026-10-02). Built and JVM-tested. The Pixel 7 trial is owed (#112).
+
+**What was observed.** knit-ios's link probe ran on 2026-10-01 against a Pixel 7. A link at a 15 ms interval opened
+just after the presence set started, and the controller then refused an enable of that set:
+`on_set_extended_advertising_enable_complete: … CONNECTION_REJECTED_LIMITED_RESOURCES(0x0d)`. Two kinds of link
+did this: a bonded central (`…12:31`, `Meshtastic_1230`) and Knit's own A3 GATT read of an iPhone.
+
+- After the refusal, the presence advert stayed off the air for 33 to 60 s.
+- A passive ATS2851 scanner heard it 0.07–0.39 times a second, against about once a second when the phone is idle.
+- With the central bonded, the iPhone linked within 30 s in only 2 of 8 samples. The slowest took 109.5 s.
+
+Nothing in the app noticed. `BleAdvertiser` had no `onAdvertisingEnabled`, and a non-null set made `update` swap data
+on a set that was off.
+
+The AOSP source explains it (`system/gd/hci/le_advertising_manager.cc`; the logic is the same on 14, 15, 16 and
+main):
+
+- **A connection to a connectable set.** The connection terminates the set. `handle_set_terminated` re-enables it
+  through `enable_advertiser` with `trigger_callbacks = true`. On an extended-advertising controller the app gets
+  `onAdvertisingEnabled(set, true, 4)`.
+- **Any connection the stack makes or completes.** The address manager pauses and resumes every set around its
+  accept-list and resolving-list writes. `OnResume` re-enables with `trigger_callbacks = false`, so a refusal there
+  reaches the app not at all. That is the A3 case.
+- **The stack never retries, and never rolls back its bookkeeping.** It still believes the set is enabled. The advert
+  returns only when some later pause and resume happens to land after the controller has room again. That later cycle
+  is the "came back on its own" in the logs.
+- **The legacy HCI path reports success always.** On a controller that uses it, the app's enable callback says 0
+  whatever happened.
+
+**What changed.** The transport re-asserts the presence set itself:
+
+- **`BleAdvertiser.reassert()`.**
+  - On a live set it calls `enableAdvertising(true, 0, 0)`. The stack sends that command with no "already enabled"
+    guard and always calls back with the status. The Core spec (Vol 4 Part E §7.8.56) lets an enabled set be enabled
+    again; doing so only resets its duration and event count.
+  - On a set whose start failed, it starts one with the newest payload.
+  - It does nothing while a start is in flight, after `stop()`, or with the adapter off.
+  - `onAdvertisingEnabled` reports every outcome for the live set, asked for or not.
+- **`AdvertReassertPolicy.Keeper`** decides when to call it:
+  - 2.5 s after any connection opens or closes. That is after the stack's own pause and resume, and outside the window
+    in which our enable could make the controller refuse the resolving-list write the pause is for.
+  - After a reported refusal, on a doubling wait: 2.5, 5, 10, then 20 s.
+  - On a net under both: every 10 s while BLE holds no link, every minute while it holds one.
+  - At once on `heal()`.
+- **`BluetoothMeshTransport.advertLoop`** runs that schedule. It enables the presence set first, then the Coded set
+  (ADR 2026-10.yvn6) while that one is live. The Coded set rides the presence set's turns and keeps no schedule of its
+  own.
+- **The connection edges come from an `ACTION_ACL_CONNECTED` / `ACTION_ACL_DISCONNECTED` receiver.** It catches the
+  bonded watch, a Meshtastic board, the A3 read and other apps' connections, none of which reach the transport any
+  other way. The transport also marks an edge itself at link up, link down and the end of a GATT read.
+- **Oracles:** `bt advert refused <status>, retry in <ms>` and `bt advert enabled again (refused for <ms>ms)` (`Log.i`),
+  plus `advert=` on the debug `bt state` line.
+
+**Alternatives.**
+
+- **Overriding `onAdvertisingEnabled` alone** (the issue's option 1) is the fix a reader reaches for first. It covers
+  only the bonded-central case: the `OnResume` re-enable around our own connections, the A3 case, never calls back.
+- **Making room in the controller** (option 3): holding the A3 read until the set has settled, or keeping fewer sets.
+  This narrows the window, does nothing for a central connecting, and costs the reads their timing. Rejected.
+- **A stop-and-restart instead of an enable.** This brings back the old PSM race (`BleAdvertiser`'s doc) and a start
+  budget. Rejected.
+
+**What it costs.**
+
+- One binder call and one HCI command per turn: every 10 s alone, every minute linked, plus one per connection edge.
+- The loop's wait is a plain `delay`, so it never wakes a suspended phone. The cadence does not relax when the node is
+  lonely (kb68), because a lonely node is the one a newcomer must find.
+- The settle cannot fully guarantee that our enable never lands inside some other pause the stack starts. The stack's
+  own terminated-set re-enable has the same exposure.
+
+**What it does not cover.**
+
+- `WearStatusServer`'s pause-only advert and the side channel's page sets still have no re-assert. The first is up
+  only during a mesh pause; the second is non-connectable, dark in release, and already retries its slots. Either can
+  take `reassert()` the same way.
+- On a legacy-HCI controller a refusal is invisible, so recovery waits on the net.
+
+**Tests.** `AdvertReassertPolicyTest` covers the schedule. `BleAdvertiserTest` checks four things: a live set is
+enabled again, a failed start comes back up with the newest bytes, a stopped set stays down, and only the live set's
+callbacks are reported. On hardware, the bar is to repeat the 2026-10-01 probe with the central bonded and with it
+disabled: the ATS2851 should never hear a 30 s silence, and the iPhone should link within 30 s in at least 7 of 8
+samples.

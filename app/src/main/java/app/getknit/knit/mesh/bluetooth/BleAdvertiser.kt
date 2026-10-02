@@ -31,6 +31,13 @@ import android.os.ParcelUuid
  * ([sideParams], [BleSideChannel]): non-connectable, non-scannable **extended** sets under their own
  * [serviceUuid], whose payload is swapped in place exactly as the presence cue is. Permission is gated at
  * onboarding and the transport self-degrades on denial, so the radio calls are [SuppressLint] "MissingPermission".
+ *
+ * **A live set is not proof the advert is on the air.** The stack disables its sets around every connection it makes
+ * or takes and enables them after, and the controller can refuse that enable (0x0d beside a link at a 15 ms interval,
+ * #112). The stack keeps the set, never retries, and tells the app only when the connection was to the set itself
+ * ([AdvertisingSetCallback.onAdvertisingEnabled], reported through [onEnableStatus]). So [reassert] enables the live
+ * set again — harmless on a set that is already on (Core spec, the enable only resets its duration) — and the
+ * transport decides when ([AdvertReassertPolicy]).
  */
 @SuppressLint("MissingPermission")
 internal class BleAdvertiser(
@@ -44,6 +51,9 @@ internal class BleAdvertiser(
     // The start outcome (`AdvertisingSetCallback.ADVERTISE_SUCCESS` or the failure code), for a caller that
     // degrades on it — the side channel drops a slot on TOO_MANY_ADVERTISERS and goes dark on FEATURE_UNSUPPORTED.
     private val onStartStatus: (Int) -> Unit = {},
+    // Every enable outcome the stack reports for the live set, asked for or not: the stack's own re-enable after a
+    // connection to the set, and each [reassert]. `enabled` false is a disable nobody here asked for.
+    private val onEnableStatus: (enabled: Boolean, status: Int) -> Unit = { _, _ -> },
 ) {
     // All mutable state below is guarded by [lock]: [update]/[stop] run on the mesh scope while the callback
     // fires on a binder thread, and they race over the set handle + the start-in-flight bookkeeping.
@@ -57,6 +67,9 @@ internal class BleAdvertiser(
     // arriving in this window can't touch the set yet, so it parks in [pendingData] to be applied on start.
     private var starting = false
     private var pendingData: ByteArray? = null
+
+    // The newest payload asked for since the last [stop], so [reassert] can bring a set whose start failed back up.
+    private var lastData: ByteArray? = null
 
     // The advertiser the live set was started on, so [stop] targets the same one across a post-toggle re-acquire.
     private var current: BluetoothLeAdvertiser? = null
@@ -101,6 +114,18 @@ internal class BleAdvertiser(
             override fun onAdvertisingSetStopped(set: AdvertisingSet?) {
                 synchronized(lock) { advertisingSet = null }
             }
+
+            override fun onAdvertisingEnabled(
+                set: AdvertisingSet?,
+                enable: Boolean,
+                status: Int,
+            ) {
+                synchronized(lock) {
+                    if (set == null || set !== advertisingSet) return // a stopped or replaced set's late word
+                    if (!enable || status != ADVERTISE_SUCCESS) log("advertising enable=$enable status=$status")
+                    onEnableStatus(enable, status)
+                }
+            }
         }
 
     /** (Re)start advertising, or update the live advert **in place**, with fresh [serviceData]; a no-op if the
@@ -108,6 +133,7 @@ internal class BleAdvertiser(
     fun update(serviceData: ByteArray) {
         val adv = advertiserProvider() ?: return // re-acquired fresh each update (survives an adapter off→on cycle)
         synchronized(lock) {
+            lastData = serviceData
             val set = advertisingSet
             when {
                 // Live set: atomic in-place data swap — no stop/start, so the PSM can never lag the socket.
@@ -148,16 +174,46 @@ internal class BleAdvertiser(
             }
     }
 
+    /**
+     * Puts the set back on the air: enables the live set again, or starts one with the newest payload when the last
+     * start failed. Nothing while a start is in flight, after [stop], or with no advertiser (the adapter is off).
+     * Returns whether it asked the stack for anything; the outcome arrives through [onEnableStatus] or [onStartStatus].
+     */
+    fun reassert(): Boolean {
+        val adv = advertiserProvider() ?: return false
+        synchronized(lock) {
+            val set = advertisingSet
+            return when {
+                set != null -> {
+                    runCatching { set.enableAdvertising(true, 0, 0) }
+                        .onFailure { log("advertising enable threw: ${it.message}") }
+                        .isSuccess
+                }
+
+                starting -> {
+                    false
+                }
+
+                else -> {
+                    val data = lastData ?: return false
+                    start(adv, data)
+                    true
+                }
+            }
+        }
+    }
+
     /** Whether a set is up or coming up — the side channel reads it to count its live slots. */
     val active: Boolean get() = synchronized(lock) { advertisingSet != null || starting }
 
     fun stop() {
-        val adv = current ?: return
         synchronized(lock) {
-            if (advertisingSet != null || starting) runCatching { adv.stopAdvertisingSet(callback) }
+            val adv = current
+            if (adv != null && (advertisingSet != null || starting)) runCatching { adv.stopAdvertisingSet(callback) }
             advertisingSet = null
             starting = false
             pendingData = null
+            lastData = null // a stopped set stays down: [reassert] must not raise it again
             current = null
         }
     }

@@ -32,6 +32,8 @@ document:
 
 ### Fixed
 
+- When your phone connected to a watch or another Bluetooth device, other phones nearby could lose sight of
+  it for up to a minute, and an iPhone couldn't connect in that time. Your phone now reappears within seconds.
 - If the phone's secure storage didn't respond when Knit started, Knit could delete your messages and come
   back as a stranger to your contacts. Knit now waits instead, with Try again to keep everything or Start
   over if the storage never answers.

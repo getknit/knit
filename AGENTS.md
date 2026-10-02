@@ -92,6 +92,13 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `lonelyForMs`) a node dials the strongest larger id it sights, one at a time, and it rests on the unsighted admit:
   a responder that sighted the newcomer refuses it and dials it itself. Its oracle, `bt lonely dial <id> (…)`, is
   keyed by the iOS interop harness — don't reword it.
+- **When touching `BleAdvertiser.reassert` / `onAdvertisingEnabled`, `AdvertReassertPolicy`, or the transport's
+  `advertLoop` / ACL edge receiver:** READ ADR 2026-10.9utz. The stack re-enables its advertising sets around every
+  connection and the controller can refuse that (0x0d), reporting it only for a connection *to* the set — never for
+  one the phone made — and never retrying. So the transport enables the live presence set again itself: 2.5 s after
+  each ACL edge, on a doubling wait after a reported refusal, on a 10 s (no link) / 60 s net, and at once on `heal()`.
+  A stopped set must stay down (`stop()` clears what `reassert` would restart). Tests: `AdvertReassertPolicyTest`,
+  `BleAdvertiserTest`.
 - **When touching `mesh/bluetooth/BleDoorbell`, `DoorbellPolicy`, `Protocol.CAP_DOORBELL`, or what
   `BluetoothMeshTransport.writeOnce` rings:** READ ADR 2026-09.dqvb (companion change A4 for the iOS port). A link
   rings only when the peer's HELLO carries `CAP_DOORBELL`, which Android never claims, so Android↔Android links never
