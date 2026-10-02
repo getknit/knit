@@ -1611,10 +1611,21 @@ class BluetoothMeshTransport(
             override fun onReceive(
                 context: Context,
                 intent: Intent,
-            ) = advertEdge()
+            ) {
+                Log.d(TAG, "bt acl edge ${intent.action?.substringAfterLast('.')}")
+                advertEdge()
+            }
         }
 
-    /** Subscribes to ACL edges, guarded and degrading like [registerAvailability]: without it only the net runs. */
+    /**
+     * Subscribes to ACL edges, guarded and degrading like [registerAvailability]: without it only the net runs.
+     *
+     * **Exported, unlike the adapter-state receiver, and it must stay so.** `ACTION_ACL_*` is sent by the Bluetooth
+     * app (`com.android.bluetooth`, uid 1002), not by `system_server`, and a `RECEIVER_NOT_EXPORTED` receiver hears only
+     * root, `system_server` and its own app: registered that way it never fired once on the Pixel 7 (Android 17, #112's
+     * trial), while `ACTION_STATE_CHANGED` comes from `system_server` and reaches the other. Both actions are protected
+     * broadcasts, so no app can forge one — and a forged edge would only bring an enable forward.
+     */
     private fun registerAclEdges() {
         if (aclEdgesRegistered) return
         val filter =
@@ -1624,7 +1635,7 @@ class BluetoothMeshTransport(
             }
         aclEdgesRegistered =
             runCatching {
-                ContextCompat.registerReceiver(appContext, aclEdgeReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+                ContextCompat.registerReceiver(appContext, aclEdgeReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
             }.onFailure { Log.w(TAG, "ACL edge receiver registration failed", it) }.isSuccess
     }
 

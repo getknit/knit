@@ -90,3 +90,33 @@ enabled again, a failed start comes back up with the newest bytes, a stopped set
 callbacks are reported. On hardware, the bar is to repeat the 2026-10-01 probe with the central bonded and with it
 disabled: the ATS2851 should never hear a 30 s silence, and the iPhone should link within 30 s in at least 7 of 8
 samples.
+
+## Amendment (2026-10-02): the ACL receiver is exported
+
+The first Pixel 7 trial (knit-ios link probe, 2026-10-02, eight samples per run) passed with the Meshtastic board off.
+Seven of eight iPhone links came within 30 s, and the longest silence the ATS2851 heard was 11.1 s. With the board
+bonded the trial failed: three of eight links within 30 s and a 22.1 s silence. Before the fix the same case managed
+two of eight, with 33–60 s silences.
+
+The cause was the edge receiver. It never fired on any of the run's 18 ACL edges. The only enables to follow an edge
+were the transport's own marks, at link up and at the end of a GATT read, plus the 10 s net. `ACTION_ACL_*` is sent
+from the Bluetooth app's process (`BluetoothRemoteDevices`, uid 1002), not from `system_server`. A
+`RECEIVER_NOT_EXPORTED` receiver hears only root, `system_server` and its own app, so it never receives these. The
+adapter-state receiver keeps working because `system_server` sends `ACTION_STATE_CHANGED`. The ACL receiver is now
+`RECEIVER_EXPORTED`. Both actions are protected broadcasts, and a forged edge would only bring an enable forward. It
+logs `bt acl edge ACL_CONNECTED|ACL_DISCONNECTED` at debug.
+
+Two observations from the same logs, not acted on here:
+
+- **The Coded set (ADR 2026-10.yvn6) costs the presence set its re-enable.**
+  - The stack's resume enables every set in one HCI command. With the board's link at 15 ms the controller refuses
+    that whole command (0x0d), and the presence set goes down with it.
+  - When `advertLoop` enabled the two sets separately at +11.7 s, presence went back on the air and only the Coded set
+    was refused (`coded advertising enable=true status=4`).
+  - The stack never removes a refused set from its enabled list, so while the Coded set is live, every later pause and
+    resume under load fails as a whole. A shipped build, without the Coded set, should fare better than this trial did.
+- **An enable reported as a success can still leave the set off while the link that caused the refusal is open.** In
+  the 00:35 run, sample 3, enables at +51.3 s and +52.8 s both reported success during an A3 read's link, yet nothing
+  was heard from +49.9 s to +69.5 s, while the ATS2851 kept hearing three other nodes. The first enable after the
+  link closed came at +62.8 s, from the net. The `ACL_DISCONNECTED` edge, now delivered, would have brought one at
+  +56.8 s.

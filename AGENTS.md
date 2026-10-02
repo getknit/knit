@@ -97,8 +97,9 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   connection and the controller can refuse that (0x0d), reporting it only for a connection *to* the set — never for
   one the phone made — and never retrying. So the transport enables the live presence set again itself: 2.5 s after
   each ACL edge, on a doubling wait after a reported refusal, on a 10 s (no link) / 60 s net, and at once on `heal()`.
-  A stopped set must stay down (`stop()` clears what `reassert` would restart). Tests: `AdvertReassertPolicyTest`,
-  `BleAdvertiserTest`.
+  A stopped set must stay down (`stop()` clears what `reassert` would restart). The ACL receiver is
+  `RECEIVER_EXPORTED` on purpose: the Bluetooth app (uid 1002), not `system_server`, sends `ACTION_ACL_*`, so a
+  non-exported receiver never fires (the ADR's amendment). Tests: `AdvertReassertPolicyTest`, `BleAdvertiserTest`.
 - **When touching `mesh/bluetooth/BleDoorbell`, `DoorbellPolicy`, `Protocol.CAP_DOORBELL`, or what
   `BluetoothMeshTransport.writeOnce` rings:** READ ADR 2026-09.dqvb (companion change A4 for the iOS port). A link
   rings only when the peer's HELLO carries `CAP_DOORBELL`, which Android never claims, so Android↔Android links never
