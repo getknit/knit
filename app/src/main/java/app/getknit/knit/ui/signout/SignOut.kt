@@ -23,6 +23,10 @@ import app.getknit.knit.mesh.MeshService
  * ADR 2026-09.nzpr). The pre-wipe checklist is `BackupViewModel.confirmRestore`'s: a plain `stopService`
  * (not `MeshService.stop`, which records "mesh off" — moot here, but the same door), then the notifications
  * and conversation shortcuts that name threads the next identity never had.
+ *
+ * The same wipe is the storage-unavailable screen's Start over (ADR 2026-10.47rw): a phone whose Keystore will not
+ * unwrap its storage key can hold nothing worth keeping that this app could read, and the platform's clear also
+ * drops the app's Keystore keys, so the next open mints under a fresh one.
  */
 object SignOut {
     private const val TAG = "SignOut"

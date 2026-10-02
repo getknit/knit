@@ -20,7 +20,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.GraphicsMode
 
-/** The screen a Keystore refusal shows instead of the app (ADR 2026-10.47rw): says so, and Try again opens again. */
+/**
+ * The screen a Keystore refusal shows instead of the app (ADR 2026-10.47rw): says so, Try again opens again, and Start
+ * over — the way out of a Keystore that never answers — clears the phone only past one confirmation.
+ */
 @RunWith(AndroidJUnit4::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class StorageUnavailableScreenContentTest {
@@ -33,7 +36,7 @@ class StorageUnavailableScreenContentTest {
     @Test
     fun itNamesTheStateAndTryAgainRetries() {
         var retries = 0
-        compose.setContent { KnitTheme { StorageUnavailableScreen(trying = false, onRetry = { retries++ }) } }
+        compose.setContent { KnitTheme { StorageUnavailableScreen(trying = false, onRetry = { retries++ }, onStartOver = {}) } }
 
         compose
             .onNodeWithText(context.getString(R.string.storage_unavailable_title))
@@ -47,8 +50,28 @@ class StorageUnavailableScreenContentTest {
     @Test
     fun aRetryInFlightCannotBeTappedAgain() {
         compose.mainClock.autoAdvance = false // the progress ring spins while a retry runs
-        compose.setContent { KnitTheme { StorageUnavailableScreen(trying = true, onRetry = {}) } }
+        compose.setContent { KnitTheme { StorageUnavailableScreen(trying = true, onRetry = {}, onStartOver = {}) } }
         compose.mainClock.advanceTimeByFrame()
         compose.onNodeWithTag("storage_retry").assertIsNotEnabled()
+        compose.onNodeWithTag("storage_start_over").assertIsNotEnabled()
+    }
+
+    @Test
+    fun startOverClearsOnlyPastItsConfirmation() {
+        var startOvers = 0
+        compose.setContent { KnitTheme { StorageUnavailableScreen(trying = false, onRetry = {}, onStartOver = { startOvers++ }) } }
+
+        compose.onNodeWithText(context.getString(R.string.storage_unavailable_start_over)).performClick()
+        compose.onNodeWithText(context.getString(R.string.storage_start_over_title)).assertIsDisplayed()
+        assertEquals("the tap only asks", 0, startOvers)
+
+        compose.onNodeWithText(context.getString(R.string.action_cancel)).performClick()
+        compose.onNodeWithText(context.getString(R.string.storage_start_over_title)).assertDoesNotExist()
+        assertEquals(0, startOvers)
+
+        compose.onNodeWithText(context.getString(R.string.storage_unavailable_start_over)).performClick()
+        compose.onNodeWithText(context.getString(R.string.storage_start_over_action)).performClick()
+        assertEquals(1, startOvers)
+        compose.onNodeWithText(context.getString(R.string.storage_start_over_title)).assertDoesNotExist()
     }
 }

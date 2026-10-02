@@ -29,6 +29,7 @@ import app.getknit.knit.ui.relay.RelayInviteInbox
 import app.getknit.knit.ui.relay.relayInviteFrom
 import app.getknit.knit.ui.share.ShareInbox
 import app.getknit.knit.ui.share.SharedContent
+import app.getknit.knit.ui.signout.SignOut
 import app.getknit.knit.ui.theme.KnitTheme
 import app.getknit.knit.ui.theme.ThemePreferences
 import kotlinx.coroutines.delay
@@ -87,12 +88,23 @@ class MainActivity : ComponentActivity() {
             val storage by storageGate.state.collectAsStateWithLifecycle()
             KnitTheme(dynamicColor = dynamicColor) {
                 when (val state = storage) {
-                    StorageGate.State.Ready -> KnitApp(startRoute = startRoute)
+                    StorageGate.State.Ready -> {
+                        KnitApp(startRoute = startRoute)
+                    }
 
-                    is StorageGate.State.Unavailable -> StorageUnavailableScreen(trying = state.trying, onRetry = storageGate::open)
+                    is StorageGate.State.Unavailable -> {
+                        // Start over is "Sign out here"'s wipe: the platform's Clear storage, Keystore keys included,
+                        // so the next open is onboarding (where a backup can be restored) under a fresh key.
+                        StorageUnavailableScreen(
+                            trying = state.trying,
+                            onRetry = storageGate::open,
+                            onStartOver = { SignOut.here(this@MainActivity) },
+                        )
+                    }
 
-                    // Nothing to draw yet, and nothing is: see holdFirstDrawWhileOpening.
-                    StorageGate.State.Opening -> Unit
+                    StorageGate.State.Opening -> {
+                        // Nothing to draw yet, and nothing is: see holdFirstDrawWhileOpening.
+                    }
                 }
             }
         }

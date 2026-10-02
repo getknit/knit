@@ -253,7 +253,8 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   proof a secret is gone may wipe or mint: a tag that fails, a key permanently invalidated, a key missing on
   every look, a wrap too short to be one — the same verdict on all three attempts. Everything else, unrecognised
   included, is a refusal: `KeystoreUnavailableException`, every file as it was, and the service and the UI stand
-  down on it (alert / Try again) instead of crashing. Look keys up with `getKey`, never `getEntry` (keystore2
+  down on it (alert / Try again) instead of crashing. The screen's Start over is the user's choice behind a
+  confirmation (`SignOut.here`'s wipe); never trigger it from code or a retry count. Look keys up with `getKey`, never `getEntry` (keystore2
   answers null for a busy backend there); never generate under an alias a live wrap depends on without
   confirmed absence; read a mint back before using it; and a live reader (the backup writer) uses `current()` /
   `read()`, never `getOrCreate()`. Debug builds refuse on cue while `files/keystore-fault` holds a count.

@@ -36,6 +36,10 @@
     <string name="storage_unavailable_title">Waiting for secure storage</string>
     <string name="storage_unavailable_body">This phone\'s secure storage didn\'t respond, so Knit can\'t open your messages yet. Nothing was deleted. Try again in a moment — restarting the phone can also help.</string>
     <string name="storage_unavailable_retry">Try again</string>
+    <string name="storage_unavailable_start_over">Start over</string>
+    <string name="storage_start_over_title">Start over on this phone?</string>
+    <string name="storage_start_over_body">Knit clears everything it holds on this phone: your identity, contacts, groups, messages and photos. It then sets up as new, and your contacts will see someone they don\'t know. If you saved a backup, you can restore it when Knit opens again. If the storage only needs time, Try again keeps everything.</string>
+    <string name="storage_start_over_action">Clear and start over</string>
 
     <!-- Open to chat (App group): the nudge when someone nearby declares the same flag as you -->
     <string name="channel_open_to_chat_name">Open to chat</string>

@@ -79,6 +79,12 @@ empty alias.
   SEED_DEMO) on IO while the first draw is held — the splash looks as it did — and shows `KnitApp`, or on a
   refusal `StorageUnavailableScreen` with Try again, retried on every resume too. Any other failure in the gate
   is re-thrown on the main looper, as before.
+- **Start over is the user's call, never the app's.** The same screen carries a secondary Start over behind one
+  confirmation that names what goes and the way back (restore a backup at onboarding). It is "Sign out here"'s
+  wipe, `SignOut.here` (ADR 2026-09.ypcc): the platform's Clear storage, which also clears the app's Keystore
+  keys (`PackageManagerService.clearApplicationUserDataLIF` → `removeKeystoreDataIfNeeded`), so the next open is
+  onboarding under a fresh key. No count of failed tries unlocks it and nothing offers it automatically: a
+  refusal is usually gone a moment or a reboot later, and the button sits beside Try again, not instead of it.
 - Debug builds wrap the real cipher in `FaultyKeystoreCipher`: while `files/keystore-fault` holds N, the next N
   unwraps throw the P3's exception. That is how a device trial reproduces a refusal.
 
@@ -91,9 +97,9 @@ crash-loops, and "Knit keeps stopping" on every open reads as data loss and invi
 exists to prevent. *Use `android.security.KeyStoreException.isTransientFailure()`*: public only from API 33,
 hidden below, and the classifier needs no codes — unrecognised already means refusal.
 
-**What it costs and does not cover.** A Keystore that is broken for good now leaves the app on Try again instead
-of silently starting over; the only way out is the system's Clear storage (an in-app "start over" would be a
-follow-up). A proven loss costs two seconds of retries before the wipe, and a first run costs none. A legacy
+**What it costs and does not cover.** A Keystore that is broken for good no longer starts over by itself: the
+user does, with Start over, and a phone whose Keystore cannot mint a fresh key either lands back on Try again. A
+proven loss costs two seconds of retries before the wipe, and a first run costs none. A legacy
 (API 29/30) keystore daemon dead for the whole retry window still reads as KEY_MISSING; and
 `ui/invite/ShareSigningKey` has the same `containsAlias ?: generate` shape, out of scope here. Regression:
 `KeystoreFailureTest`, `KeystoreSecretTest`, `DatabaseKeyRecoveryTest`, `IdentityKeyStoreRecoveryTest`,
