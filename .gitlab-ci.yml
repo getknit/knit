@@ -18,8 +18,9 @@ variables:
   # EXITS when the invocation ends, which is what makes the split in .compile-unit-tests work.
   # Its heap is capped in the CI gradle.properties written by before_script below, which overrides
   # the project gradle.properties. Note a Test task forks a THIRD JVM on top of those two, and
-  # nothing here reaches it: it runs at Gradle's Test default of -Xmx512m with Metaspace uncapped,
-  # which is ~1.25 GB RSS once Robolectric and the Kover agent have loaded their classes.
+  # nothing here reaches it: its heap is app/build.gradle.kts's `test.maxHeapSize` (1g; Gradle's 512m
+  # default GC-thrashed pipeline 860 into the job timeout) with Metaspace uncapped, which is ~1.75 GB RSS
+  # once Robolectric and the Kover agent have loaded their classes.
   GRADLE_OPTS: "-Dorg.gradle.daemon=false"
   ANDROID_HOME: "${CI_PROJECT_DIR}/.android-sdk"
   ANDROID_SDK_ROOT: "${CI_PROJECT_DIR}/.android-sdk"
@@ -218,7 +219,9 @@ test:unit:
   needs: [{job: "build:debug", artifacts: false}]
   script:
     - *compile-unit-tests
-    - ./gradlew :app:testDebugUnitTest --stacktrace --console=plain
+    # The mesh/lab scenarios run in test:mesh-lab (three times), not here: they shared this job's one test
+    # JVM, and that heap is what GC-thrashed pipeline 860 into the job timeout.
+    - ./gradlew :app:testDebugUnitTest -Pknit.skipMeshLab=true --stacktrace --console=plain
   artifacts:
     when: always
     reports:
@@ -227,16 +230,17 @@ test:unit:
       - app/build/reports/tests/testDebugUnitTest/
     expire_in: 1 week
 
-# The multi-node JVM scenarios (app/src/test/.../mesh/lab/, see .agents/context/testing.md) already ride
-# test:unit once. They get their own job because they are the one suite where real time and thread
-# scheduling decide the outcome — N complete mesh stacks converging on Dispatchers.Default, polled — so a
-# 1-in-N flake here is a bug, either in the lab or in the mesh (the router overhear-suppression bug and the
-# lost-parked-seed gap both surfaced as flakes). Three consecutive green runs are the bar; `--rerun` forces
-# the Test task past Gradle's up-to-date check. Same compile/run split as test:unit, and each run forks its
-# own test JVM in turn, so the memory profile is test:unit's, three times over. Enforced, not advisory. The
-# awaits (MeshLab.AWAIT_MS, 30 s per convergence) are headroom for a single shared vCPU, not a budget: a
-# scenario converges in seconds even on one core, so a flake here is a fixture racing the mesh, not a slow
-# runner — reproduce it with the throttled loop in .agents/context/testing.md before touching a timeout.
+# The multi-node JVM scenarios (app/src/test/.../mesh/lab/, see .agents/context/testing.md) run only here;
+# test:unit skips them (-Pknit.skipMeshLab). They get their own job because they are the one suite where
+# real time and thread scheduling decide the outcome — N complete mesh stacks converging on
+# Dispatchers.Default, polled — so a 1-in-N flake here is a bug, either in the lab or in the mesh (the
+# router overhear-suppression bug and the lost-parked-seed gap both surfaced as flakes). Three consecutive
+# green runs are the bar; `--rerun` forces the Test task past Gradle's up-to-date check. Same compile/run
+# split as test:unit, and each run forks its own test JVM in turn, so the memory profile is test:unit's,
+# three times over. Enforced, not advisory. The awaits (MeshLab.AWAIT_MS, 30 s per convergence) are
+# headroom for a single shared vCPU, not a budget: a scenario converges in seconds even on one core, so a
+# flake here is a fixture racing the mesh, not a slow runner — reproduce it with the throttled loop in
+# .agents/context/testing.md before touching a timeout.
 # On skuld for now (see build:debug), so CI no longer runs the lab on one slow core; `scripts/lab-chaos.sh
 # --quota` is the slow-runner stand-in until it does again.
 test:mesh-lab:

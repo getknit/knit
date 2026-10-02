@@ -487,6 +487,11 @@ android {
                     "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
                     "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
                 )
+                // Gradle's Test default is -Xmx512m, and the suite outgrew it: pipeline 860's test:unit GC-thrashed
+                // until pure virtual-time tests tripped runTest's 60 s wall-clock timeout, and the job hit its
+                // hour. Kept modest on purpose: the CI runners include a workstation that is also in daily use,
+                // and this fork's RSS is the heap plus ~0.75 GB of uncapped Metaspace (Robolectric's android-all).
+                test.maxHeapSize = "1g"
             }
         }
 
