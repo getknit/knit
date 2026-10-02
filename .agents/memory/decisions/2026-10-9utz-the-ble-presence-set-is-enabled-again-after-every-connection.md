@@ -8,7 +8,7 @@ topics: [ble, mesh]
 
 # ADR 2026-10.9utz — The BLE presence set is enabled again after every connection
 
-Status: Accepted (2026-10-02). Built and JVM-tested. The Pixel 7 trial is owed (#112).
+Status: Accepted (2026-10-02). Device-verified on the Pixel 7 with the amendment below (#112).
 
 **What was observed.** knit-ios's link probe ran on 2026-10-01 against a Pixel 7. A link at a 15 ms interval opened
 just after the presence set started, and the controller then refused an enable of that set:
@@ -120,3 +120,14 @@ Two observations from the same logs, not acted on here:
   was heard from +49.9 s to +69.5 s, while the ATS2851 kept hearing three other nodes. The first enable after the
   link closed came at +62.8 s, from the net. The `ACL_DISCONNECTED` edge, now delivered, would have brought one at
   +56.8 s.
+
+**The re-run (2026-10-02, 288fc0ea, board bonded).**
+
+- **Coded off (the shipped configuration).** The stack refused nothing all run (no 0x0d line). The edge receiver fired
+  21 times, the longest silence was 7.2 s, and 6 of 8 iPhone links came within 30 s. Both misses were on the iPhone's
+  side: the ATS2851 heard the Pixel two to eight times inside each of the iPhone's 9–12 s gaps. The silence half of the
+  bar passes. The link half, at 6 of 8, falls short only on the iPhone.
+- **Coded auto.** 6 of 8 links came within 30 s (up from 3 of 8), and the longest silence was 14.5 s. Each board
+  connect was followed by an edge-driven enable 2.5 s later, and every refusal after it was the Coded set's. In 2
+  of 8 samples, a presence enable that reported success still left the advert off until the next net turn, about 10 s
+  later. That is the Coded experiment's cost to carry (ADR 2026-10.yvn6), not this decision's.
