@@ -77,6 +77,19 @@ object PowerPolicy {
     ): Boolean = !state.charging && lonelyForMs >= LONELY_AGGRESSIVE_WINDOW_MS
 
     /**
+     * Whether the gap [idleAfterScan] gives is the **hunting** one: no link, and not yet [lonelyRelaxed] — the short
+     * [LONELY_IDLE_MS] gap a node scans on while it tries to rejoin. Only that gap keeps wall time while the phone
+     * sleeps (`ElapsedWait`, ADR 2026-10.pj9w), because rejoining is the latency a user waits on. Every other gap is a
+     * power budget, and the battery nights that sized them ran on phones whose gaps stretched with sleep, so they
+     * keep stretching. A settled node never hunts: its floor needs a link.
+     */
+    fun hunting(
+        state: PowerState,
+        neighborCount: Int,
+        lonelyForMs: Long,
+    ): Boolean = neighborCount == 0 && !lonelyRelaxed(state, lonelyForMs)
+
+    /**
      * Idle gap when the node is **settled** — it holds links to every peer it can currently see, so there is no
      * promotion work — or its radio is contended by A2DP audio. At least [SETTLED_INTERVAL_MS], but never shorter
      * than the activity-based [idleAfterScan] (which already grows with neighborCount / screen-off): a settled

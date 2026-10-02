@@ -90,7 +90,9 @@ object CodedPhyPolicy {
     /**
      * What a Coded sighting is worth on the 1M scale every existing RSSI floor is sized for (the −90 of
      * [PromotionConfig], [LonelyDialPolicy], [BleAdmissionPolicy]): the Coded receiver hears ~12 dB deeper, so a
-     * Coded advert read at −102 is a peer at the edge of usable Coded range, the place −90 marks on 1M.
+     * Coded advert read at −102 is a peer at the edge of usable Coded range, the place −90 marks on 1M. A receiver's
+     * margin, so it holds only while both adverts go out at one power: both are HIGH (ADR 2026-10.ryak). While the 1M
+     * advert was MEDIUM, a peer heard on both PHYs read 20 dB above its 1M reading, not 12.
      */
     const val CODED_RSSI_CREDIT_DB = 12.0
 

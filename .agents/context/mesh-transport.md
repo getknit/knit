@@ -381,6 +381,32 @@ closes or a candidate's dwell ripens, because on a screen-off phone every 8 s sc
 `bt lonely dial <id> (alone=<ms>ms rssi=<dBm> dwell=<ms>ms)` straight before that dial's `bt initiating to <id>` —
 the iOS interop harness keys off the pair — and `alone=` on the `bt state` line. Tests: `LonelyDialPolicyTest`.
 
+## Discovery keeps wall time, and its advert runs at full power (ADR 2026-10.pj9w, 2026-10.ryak)
+
+The first Android-to-Android trial (2026-10-02) took 58–92 s to relink two Pixels four metres apart after a
+Bluetooth toggle, and once not at all. Three causes, three rules:
+
+- **A dial wakes when its dwell ripens.** A screen-off scan's gap is longer than `presenceGapResetMs` (8 s), so the
+  next sighting restarts a candidate's 12 s dwell instead of ripening it. `PromotionPolicy.msUntilDue` (ordinary
+  dial) and `LonelyDialPolicy.msUntilDue` (lonely dial) feed `nextConnectWaitMs`, so the connect loop runs between
+  windows, when the dwell comes due. A new rule that gates a dial on the clock needs the same wake.
+- **The waits a relink waits on run on `elapsedRealtime`** (`mesh/power/ElapsedWait`). A coroutine `delay` stops
+  while the CPU is suspended: the Pixel 3's 60 s `bt state` line ran at a median 110 s, its 12 s dial watchdog at up
+  to 26 s. The connect loop, the dial and HELLO watchdogs, the scan's pause behind a dial, the scan window and the
+  **hunting** gap (`PowerPolicy.hunting`: no link, not yet relaxed) go through `elapsedWait`, which looks at the clock
+  every 2 s of awake time; they never wake a sleeping phone, they stop losing the time it slept. The settled, linked
+  and relaxed gaps keep stretching on purpose: they are power budgets measured on phones that stretched them. A new
+  wait a relink waits on that uses `delay` or `withTimeoutOrNull` brings the stretch back, and only a suspending phone
+  shows it. The `bt state` line itself keeps `delay` on purpose: its spacing is how far a phone sleeps.
+- **The presence advert is `TX_POWER_HIGH`** (+1 dBm, the API's most). Every −90 floor reads it, while the link runs
+  at the controller's power; at MEDIUM the pair four metres apart read −79..−90. The side pages and the Coded set go
+  out at the same power (`BleAdvertiserTest.everyDiscoverySetAdvertisesAtFullPower`): a page must reach as far as
+  the sighting that gated it, and the Coded credit's 12 dB holds only at equal power. A threshold on an advert
+  reading is sized against HIGH.
+
+Measure with `scripts/ble-link-trial.py` (`run` toggles one phone and times `bt link up` from both phones' logs on
+the host clock; `summary` tabulates). Tests: `ElapsedWaitTest`, `PromotionPolicyTest`, `BleAdvertiserTest`.
+
 ## The BLE plane rings a peer's GATT doorbell when its HELLO asks (ADR 2026-09.dqvb)
 
 iOS does not resume a suspended app for data on an open L2CAP channel, and does for a write to its own GATT

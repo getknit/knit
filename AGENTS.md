@@ -95,6 +95,16 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   scan's lonely cadence shares) a node dials the strongest larger id it sights, one at a time, and it rests on the unsighted admit:
   a responder that sighted the newcomer refuses it and dials it itself. Its oracle, `bt lonely dial <id> (…)`, is
   keyed by the iOS interop harness — don't reword it.
+- **When touching a TX power in `BleAdvertiser` (`presenceParams` / `sideParams` / `codedParams`), an RSSI threshold
+  on an advert reading, `PromotionPolicy.msUntilDue`, `nextConnectWaitMs`, `mesh/power/ElapsedWait`, or any wait in
+  `BluetoothMeshTransport`'s scan loop, connect loop or dial/HELLO watchdogs:** READ ADR 2026-10.ryak and ADR
+  2026-10.pj9w, and the "Discovery keeps wall time" section of `.agents/context/mesh-transport.md`. The presence
+  advert is `TX_POWER_HIGH` and every discovery set goes out at its power (pinned by `BleAdvertiserTest`); every −90
+  floor reads it, so a new advert threshold is sized against HIGH. A dial gated on the clock gets a wake when it comes
+  due — the next sighting is not one on a screen-off phone. The waits a relink waits on (connect loop, dial/HELLO
+  watchdogs, scan window and pause, the hunting gap) go through `elapsedWait`, never `delay` / `withTimeoutOrNull`,
+  which stop while the CPU sleeps; the settled, linked and relaxed scan gaps keep stretching on purpose (power
+  budgets — moving one is a battery change). Measure with `scripts/ble-link-trial.py`.
 - **When touching `BleAdvertiser.reassert` / `onAdvertisingEnabled`, `AdvertReassertPolicy`, or the transport's
   `advertLoop` / ACL edge receiver:** READ ADR 2026-10.9utz. The stack re-enables its advertising sets around every
   connection and the controller can refuse that (0x0d), reporting it only for a connection *to* the set — never for

@@ -248,6 +248,16 @@ class BleAdvertiserTest {
         assertEquals(before.txPowerLevel, after.txPowerLevel)
     }
 
+    @Test
+    fun everyDiscoverySetAdvertisesAtFullPower() {
+        // ADR 2026-10.ryak: every −90 floor reads the presence advert, so it goes out at the most the API allows; a
+        // side page reaches as far as the sighting that gated it; the Coded credit holds only at one power for both.
+        val presence = BleAdvertiser.presenceParams().txPowerLevel
+        assertEquals(AdvertisingSetParameters.TX_POWER_HIGH, presence)
+        assertEquals(presence, BleAdvertiser.sideParams().txPowerLevel)
+        assertEquals(presence, BleAdvertiser.codedParams().txPowerLevel)
+    }
+
     private companion object {
         const val FAST = 400 // 250 ms
         const val CODED_PHY = 3 // BluetoothDevice.PHY_LE_CODED

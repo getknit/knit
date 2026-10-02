@@ -393,7 +393,12 @@ internal class BleAdvertiser(
                 .setTxPowerLevel(params.txPowerLevel)
                 .build()
 
-        /** The always-on presence cue: legacy, connectable, slow. */
+        /**
+         * The always-on presence cue: legacy, connectable, slow, and at full power (ADR 2026-10.ryak). Every −90 floor
+         * reads this advert, while the link it leads to runs at the controller's own power; at MEDIUM (−7 dBm, the
+         * legacy API's default carried over) the reading stood 8 dB short of the link and two phones four metres apart
+         * in line of sight read −79..−90. One event a second at +1 dBm costs microamps.
+         */
         fun presenceParams(): AdvertisingSetParameters =
             AdvertisingSetParameters
                 .Builder()
@@ -401,7 +406,7 @@ internal class BleAdvertiser(
                 .setConnectable(true) // an initiator opens the L2CAP channel to us
                 .setScannable(true) // legacy connectable adverts are inherently scannable
                 .setInterval(AdvertisingSetParameters.INTERVAL_HIGH) // ~1s: always-on, low power (was LOW_POWER)
-                .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_MEDIUM)
+                .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_HIGH)
                 .build()
 
         /**
@@ -409,7 +414,8 @@ internal class BleAdvertiser(
          * non-connectable and non-scannable (the presence cue is what an initiator dials; a page carries no PSM),
          * 1M on both PHYs (2M would reach less far than the presence advert at the same power, so a peer could be
          * sighted with the flag and never hear a page), ~250 ms so a LOW_POWER scanner's 512 ms window sees
-         * about two events, MEDIUM power so a page reaches no further than the sighting that gated it.
+         * about two events, and the presence advert's power, so a page reaches as far as the sighting that gated it and
+         * no further (HIGH since ADR 2026-10.ryak; MEDIUM while the presence advert was).
          */
         fun sideParams(): AdvertisingSetParameters =
             AdvertisingSetParameters
@@ -420,7 +426,7 @@ internal class BleAdvertiser(
                 .setPrimaryPhy(BluetoothDevice.PHY_LE_1M)
                 .setSecondaryPhy(BluetoothDevice.PHY_LE_1M)
                 .setInterval(AdvertisingSetParameters.INTERVAL_MEDIUM)
-                .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_MEDIUM)
+                .setTxPowerLevel(AdvertisingSetParameters.TX_POWER_HIGH)
                 .build()
 
         /**

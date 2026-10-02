@@ -109,3 +109,12 @@ scan cycle, up to about 128 s plus the dwell, and not by the window. The lab als
 The P3's floor idle measured 120 s, where 240 s was expected: the phones' `PowerState` read interactive while
 dumpsys said Dozing (#105), and a three-phone clique's floor is 360 s screen-off at most anyway. The ten-minute
 wait needs a bigger or truly screen-off clique to reproduce.
+
+## Amendment 2026-10-02 — the ordinary dial gets the same wake
+
+The ordinary dial (a smaller-id candidate) had the problem this ADR fixed for the lonely dial: on a screen-off phone
+the next sighting restarts the dwell, so the dial waited for the connect loop's 60 s ceiling to land in a gap. The
+first Android-to-Android trial measured first dials 58–84 s after a Bluetooth toggle. ADR 2026-10.pj9w adds
+`PromotionPolicy.msUntilDue`, the twin of `LonelyDialPolicy.msUntilDue`, to `nextConnectWaitMs`, and moves the
+discovery path's waits onto the elapsed clock (`ElapsedWait`), so the lonely window and its dwell wake also keep wall
+time on a phone that suspends.

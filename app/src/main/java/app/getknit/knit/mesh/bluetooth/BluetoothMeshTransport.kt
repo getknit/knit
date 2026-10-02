@@ -39,6 +39,7 @@ import app.getknit.knit.mesh.link.FramedLink
 import app.getknit.knit.mesh.link.LinkCallbacks
 import app.getknit.knit.mesh.link.LinkCrossings
 import app.getknit.knit.mesh.link.LinkHandshake
+import app.getknit.knit.mesh.power.ElapsedWait
 import app.getknit.knit.mesh.power.PowerPolicy
 import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.mesh.protocol.Protocol
@@ -294,6 +295,12 @@ class BluetoothMeshTransport(
     // the scan's boost/floor decision — otherwise a settled clique's per-sighting heals keep it scanning forever).
     private val healSignal = Channel<Unit>(Channel.CONFLATED)
     private val scanWake = Channel<Unit>(Channel.CONFLATED)
+
+    // The waits a relink waits on — the scan's window, its pause behind a dial and its hunting gap, the connect loop,
+    // the dial and HELLO watchdogs — run on the elapsed clock, so a phone that suspends between events keeps them in
+    // wall time instead of stretching them by however long it slept (ADR 2026-10.pj9w). The scan's other gaps are
+    // power budgets and keep plain timeouts, as do the waits elsewhere in this file.
+    private val elapsedWait = ElapsedWait(::elapsed)
 
     // Cross-plane early-warning: nodeIds another plane (Wi-Fi Aware) can see that we'd initiate to but haven't
     // linked or BLE-sighted yet — pushed by [CompositeMeshTransport.onForeignReachable] — plus their per-peer
@@ -964,7 +971,7 @@ class BluetoothMeshTransport(
                 // `wake()`), the arbiter freeing (its collector → `wakeScan()`), the adapter coming back
                 // (`STATE_ON` → `wake()`) — with a timeout sized to that event, not a 2 s poll: an adapter left
                 // off used to wake this loop thirty times a minute for as long as it stayed off.
-                withTimeoutOrNull(if (adapterOn) CONNECT_PAUSE_WAIT_MS else ADAPTER_OFF_WAIT_MS) { scanWake.receive() }
+                elapsedWait.receiveWithin(scanWake, if (adapterOn) CONNECT_PAUSE_WAIT_MS else ADAPTER_OFF_WAIT_MS)
                 continue
             }
             val power = powerState.state.value
@@ -974,7 +981,7 @@ class BluetoothMeshTransport(
             scanner.start(if (power.interactive || power.charging) ScanSettings.SCAN_MODE_BALANCED else ScanSettings.SCAN_MODE_LOW_POWER)
             val windowStart = elapsed()
             val scanned = scanner.isScanning
-            delay(duty.scanWindowMs)
+            elapsedWait.sleep(duty.scanWindowMs)
             scanner.stop()
             if (scanned) noteQuietScan(phys, elapsed() - windowStart)
             val aloneFor = aloneForMs()
@@ -985,7 +992,12 @@ class BluetoothMeshTransport(
                     PowerPolicy.idleAfterScan(power, links.size, aloneFor)
                 }
             logLonelyTransition(links.isEmpty() && PowerPolicy.lonelyRelaxed(power, aloneFor), idle, aloneFor)
-            withTimeoutOrNull(idle) { scanWake.receive() }
+            // The hunting gap keeps wall time through sleep; every other gap is a power budget and stretches (pj9w).
+            if (PowerPolicy.hunting(power, links.size, aloneFor)) {
+                elapsedWait.receiveWithin(scanWake, idle)
+            } else {
+                withTimeoutOrNull(idle) { scanWake.receive() }
+            }
         }
     }
 
@@ -1215,19 +1227,39 @@ class BluetoothMeshTransport(
             // becoming eligible again, so the wait runs to the earliest backoff deadline — never a flat 5 s
             // tick, which woke this loop twelve times a minute on a settled or empty mesh — with a ceiling so a
             // lost wake costs at most a minute.
-            withTimeoutOrNull(nextConnectWaitMs()) { healSignal.receive() }
+            elapsedWait.receiveWithin(healSignal, nextConnectWaitMs())
         }
     }
 
     private fun nextConnectWaitMs(): Long {
         val now = elapsed()
+        val snaps = presence.snapshots(now)
         val backoffDue = synchronized(lock) { backoffs.values.filter { it.nextAt > now }.minOfOrNull { it.nextAt } }
         // The lonely dial comes due on the clock too — the window closing, a candidate's dwell ripening — and on a
         // screen-off phone the next sighting would restart that dwell rather than ripen it (ADR 2026-09.hj4a).
-        val lonelyDue = lonelyDialDueMs(presence.snapshots(now))?.let { now + it }
-        val nextDue = listOfNotNull(backoffDue, lonelyDue).minOrNull()
+        val lonelyDue = lonelyDialDueMs(snaps)?.let { now + it }
+        // So does the ordinary dial, for the same reason: a candidate's dwell ripens between scan windows (ADR 2026-10.pj9w).
+        val ripeDue = ordinaryDialDueMs(snaps, now)?.let { now + it }
+        val nextDue = listOfNotNull(backoffDue, lonelyDue, ripeDue).minOrNull()
         return ConnectBackoffPolicy.nextDueWaitMs(now, nextDue, CONNECT_WAIT_MIN_MS, CONNECT_WAIT_MAX_MS)
     }
+
+    /** The sighted peers the tie-break has us dial: a smaller id, not linked, no dial to it in flight. */
+    private fun ordinaryCandidates(snaps: List<BlePresenceTracker.Snapshot>): List<BlePresenceTracker.Snapshot> =
+        snaps.filter { localNodeId > it.nodeId && it.nodeId !in links.keys && it.nodeId !in inFlightSnapshot() }
+
+    private fun ordinaryDialDueMs(
+        snaps: List<BlePresenceTracker.Snapshot>,
+        now: Long,
+    ): Long? =
+        if (!::localNodeId.isInitialized || adapter?.isEnabled != true) {
+            null
+        } else {
+            PromotionPolicy.msUntilDue(ordinaryCandidates(snaps), activeBackoff(now), promotionConfig())
+        }
+
+    /** The promotion tunables, with the debug link cap (if any) as the budget. */
+    private fun promotionConfig() = PromotionConfig(maxLinks = debugCap ?: PromotionConfig.DEFAULT_MAX_LINKS)
 
     /**
      * The sighted peers [LonelyDialPolicy] may pick from: dialable at all (device and PSM known), not linked, with the
@@ -1280,7 +1312,7 @@ class BluetoothMeshTransport(
         publishReachable(now)
         val rssiByNode = snaps.associate { it.nodeId to it.smoothedRssi }
         // Candidates: peers we're the initiator for (tie-break: larger id initiates), not linked, not in flight.
-        val candidates = snaps.filter { localNodeId > it.nodeId && it.nodeId !in links.keys && it.nodeId !in inFlightSnapshot() }
+        val candidates = ordinaryCandidates(snaps)
         // The links this decision scores: an eviction closes the link it scored, never one that replaced it since.
         val scored = links.values.associateBy { it.nodeId }
         val linkSnaps =
@@ -1303,7 +1335,7 @@ class BluetoothMeshTransport(
                 backoffs.filterValues { now < it.nextAt }.keys.toSet()
             }
         val cap = debugCap
-        val config = PromotionConfig(maxLinks = cap ?: PromotionConfig.DEFAULT_MAX_LINKS)
+        val config = promotionConfig()
         val ordinary = PromotionPolicy.decide(candidates, linkSnaps, backoff, config)
         // Alone past the window: one larger-id peer too, which the responder admits unless it has sighted us (hj4a).
         val lonely = LonelyDialPolicy.pick(localNodeId, links.size, aloneForMs(), lonelyCandidates(snaps), lonelyDialInFlight(), config)
@@ -1366,7 +1398,7 @@ class BluetoothMeshTransport(
             val timeoutMs = CodedPhyPolicy.connectTimeoutMs(viaCoded)
             val watchdog =
                 scope.launch(Dispatchers.IO) {
-                    delay(timeoutMs)
+                    elapsedWait.sleep(timeoutMs)
                     if (settled.compareAndSet(false, true)) {
                         val cause = TimeoutException("connect watchdog ${timeoutMs}ms")
                         failConnect(nodeId, ConnectFailReason.TIMEOUT, startedAt, cause, device)
@@ -1397,7 +1429,7 @@ class BluetoothMeshTransport(
             }
             val replyWatchdog =
                 scope.launch {
-                    delay(ACCEPT_HELLO_TIMEOUT_MS)
+                    elapsedWait.sleep(ACCEPT_HELLO_TIMEOUT_MS)
                     runCatching { socket.close() }
                 }
             val reply = runCatching { LinkHandshake.readHello(link.input) }.getOrNull()
@@ -1436,7 +1468,7 @@ class BluetoothMeshTransport(
         // BluetoothSocket has no soTimeout, so bound the HELLO read by closing the socket if it stalls.
         val watchdog =
             scope.launch {
-                delay(ACCEPT_HELLO_TIMEOUT_MS)
+                elapsedWait.sleep(ACCEPT_HELLO_TIMEOUT_MS)
                 runCatching { socket.close() }
             }
         val advert = runCatching { LinkHandshake.readHello(link.input) }.getOrNull()

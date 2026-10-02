@@ -32,6 +32,8 @@ document:
 
 ### Fixed
 
+- Two phones a few metres apart could take over a minute to reconnect over Bluetooth, and sometimes didn't
+  reconnect at all. Your phone now reconnects sooner and can link with phones a little further away.
 - When your phone connected to a watch or another Bluetooth device, other phones nearby could lose sight of
   it for up to a minute, and an iPhone couldn't connect in that time. Your phone now reappears within seconds.
 - When your phone lost its last Bluetooth connection to nearby phones, it could start looking for them less

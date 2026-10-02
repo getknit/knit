@@ -222,3 +222,14 @@ mid-start, cold, or mid-change; and `withInterval`. The controller's own answers
 - On P9: no `bt scan lonely: relaxed` within 3 minutes of the drop.
 - On P9: Coded dials that link in one attempt, or fail at `durMs=25…`.
 - Drop to relink, against 4m44s.
+
+## Amendment 2026-10-02 — both presence sets advertise at HIGH, so the credit means 12 dB
+
+ADR 2026-10.ryak raised the 1M presence advert from MEDIUM (−7 dBm) to HIGH (+1 dBm), the Coded set's power since
+this ADR. The 12 dB credit is a receiver's margin (Coded S=8 hears about 12 dB deeper than 1M), and it holds only
+while both adverts go out at one power. Until now they did not, so a peer heard on both PHYs scored its Coded
+reading + 12, which was its 1M reading + 20. The credit stays 12 dB and now means 12 dB. A Coded-only peer is
+promotable at the same physical range as before (its reading never moved); a 1M peer's reach grew by 8 dB, so the
+1M advert stays fresh further out and `CodedPhyPolicy.dialCoded` picks the 1M address over a slightly wider band,
+leaving the `PhyStepper` to step such a link down by its link RSSI, which no advert power touches. The next walk
+should note where the 1M advert is last heard, against the walks above.

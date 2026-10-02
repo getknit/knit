@@ -4,6 +4,7 @@ import app.getknit.knit.mesh.bluetooth.BlePresenceTracker
 import app.getknit.knit.mesh.bluetooth.PromotionConfig
 import app.getknit.knit.mesh.bluetooth.PromotionPolicy
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -153,5 +154,47 @@ class PromotionPolicyTest {
             )
         assertEquals(setOf("a", "b"), d.evict.toSet())
         assertTrue(d.promote.isEmpty())
+    }
+
+    @Test
+    fun msUntilDueIsTheFirstAdmittedCandidateToRipen() {
+        // 4 s and 9 s into a 12 s dwell: the first ripens in 3 s. The ripe one, the weak one and the backed-off one
+        // wait on nothing the clock can bring (ADR 2026-10.pj9w).
+        val wait =
+            PromotionPolicy.msUntilDue(
+                candidates =
+                    listOf(
+                        cand("young", -60.0, dwell = 4_000),
+                        cand("older", -70.0, dwell = 9_000),
+                        cand("ripe", -60.0, dwell = 12_000),
+                        cand("weak", -85.0, dwell = 11_000),
+                        cand("held", -60.0, dwell = 11_500),
+                    ),
+                backoff = setOf("held"),
+                config = cfg,
+            )
+        assertEquals(3_000L, wait)
+    }
+
+    @Test
+    fun msUntilDueIsNullWhenNothingWaitsOnItsDwell() {
+        val ripe = listOf(cand("a", -60.0, dwell = 12_000), cand("b", -60.0, dwell = 30_000))
+        assertNull(PromotionPolicy.msUntilDue(ripe, emptySet(), cfg))
+        assertNull(PromotionPolicy.msUntilDue(listOf(cand("weak", -81.0, dwell = 0)), emptySet(), cfg))
+        assertNull(PromotionPolicy.msUntilDue(emptyList(), emptySet(), cfg))
+    }
+
+    @Test
+    fun aCandidateWokenAtItsRipeningIsPromoted() {
+        // The wake lands when the dwell reaches the threshold, with no sighting in between: decide() must take it.
+        val wait = PromotionPolicy.msUntilDue(listOf(cand("a", -70.0, dwell = 5_000)), emptySet(), cfg)!!
+        val d =
+            PromotionPolicy.decide(
+                candidates = listOf(cand("a", -70.0, dwell = 5_000 + wait)),
+                links = emptyList(),
+                backoff = emptySet(),
+                config = cfg,
+            )
+        assertEquals(listOf("a"), d.promote)
     }
 }

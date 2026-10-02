@@ -145,3 +145,12 @@ mesh the Moto's fresh links reported up on both ends while its frames crossed no
 probe post round-trips. **Still open before the release flag flips:** a night's battery on a settled clique
 against the dark build, and a sighted-but-unlinked peer (this lab links everyone).
 
+
+## Amendment 2026-10-02 — pages go out at the presence advert's power, now HIGH
+
+ADR 2026-10.ryak raised the presence advert from `TX_POWER_MEDIUM` to `TX_POWER_HIGH`, so `sideParams()` follows it.
+The rule above was that a page must not reach further than the sighting that gated it. At equal power it reaches as
+far and no further. Left at MEDIUM, a peer sighted 8 dB further out than before would be flagged into the audience
+and never hear a page. The airtime is unchanged; each page costs more transmit current while it airs, about
+50–150 µA averaged while a slot is up. `BleAdvertiserTest.everyDiscoverySetAdvertisesAtFullPower` pins the pages to
+the presence advert's power.

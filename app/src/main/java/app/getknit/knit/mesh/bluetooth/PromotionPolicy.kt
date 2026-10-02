@@ -62,6 +62,21 @@ object PromotionPolicy {
         }
         return Decision(promote, evict)
     }
+
+    /**
+     * How long until the first of [candidates] the floor and [backoff] already admit has dwelt long enough to promote,
+     * or null when none is waiting on its dwell. The connection loop sleeps no longer than this (ADR 2026-10.pj9w): on
+     * a screen-off phone the gap between scan windows is longer than `presenceGapResetMs`, so the next sighting would
+     * restart the dwell, not ripen it. The ordinary dial's twin of `LonelyDialPolicy.msUntilDue` (ADR 2026-09.hj4a).
+     */
+    fun msUntilDue(
+        candidates: List<BlePresenceTracker.Snapshot>,
+        backoff: Set<String>,
+        config: PromotionConfig = PromotionConfig(),
+    ): Long? =
+        candidates
+            .filter { it.smoothedRssi >= config.rssiFloorDbm && it.nodeId !in backoff && it.dwellMs < config.dwellThresholdMs }
+            .minOfOrNull { config.dwellThresholdMs - it.dwellMs }
 }
 
 /**
@@ -89,7 +104,9 @@ data class PromotionConfig(
 
         // A negative default can't be inlined without tripping MagicNumber, so it lives here as a named const.
         // -90 keeps a small margin above typical BLE 1M-PHY sensitivity (~-90..-95 dBm): broaden reach to the
-        // edge of usable range without churning connect-backoff on doomed sub-sensitivity attempts.
+        // edge of usable range without churning connect-backoff on doomed sub-sensitivity attempts. It reads the
+        // presence advert, which runs at full power (TX_POWER_HIGH, ADR 2026-10.ryak); at MEDIUM it stood 8 dB
+        // short of that edge, and two Pixels four metres apart in line of sight read -79..-90.
         private const val DEFAULT_RSSI_FLOOR_DBM = -90
     }
 }

@@ -168,4 +168,27 @@ class PowerPolicyTest {
             PowerPolicy.settledIdleAfterScan(PowerState(interactive = false, charging = false), neighborCount = 1, lonelyForMs = 0L),
         )
     }
+
+    @Test
+    fun onlyTheShortLonelyGapIsHunting() {
+        // ADR 2026-10.pj9w: the gap that keeps wall time through sleep is exactly the one idleAfterScan sizes at 12 s.
+        val window = PowerPolicy.LONELY_AGGRESSIVE_WINDOW_MS
+        val states =
+            listOf(
+                PowerState(interactive = true),
+                PowerState(interactive = false),
+                PowerState(interactive = false, charging = true),
+                PowerState(interactive = false, batteryLow = true),
+            )
+        for (state in states) {
+            for (links in 0..2) {
+                for (alone in listOf(0L, window - 1, window, window * 10)) {
+                    val lonelyAlone = if (links == 0) alone else 0L
+                    val hunting = PowerPolicy.hunting(state, links, lonelyAlone)
+                    val shortGap = links == 0 && PowerPolicy.idleAfterScan(state, links, lonelyAlone) == 12_000L
+                    assertEquals("$state links=$links alone=$alone", shortGap, hunting)
+                }
+            }
+        }
+    }
 }

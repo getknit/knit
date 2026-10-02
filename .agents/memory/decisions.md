@@ -208,4 +208,6 @@ carries; never renumber an old one.
 | [2026-09.zu5t](decisions/2026-09-zu5t-content-capture-is-off.md) | Content capture is off | privacy, ui, performance |
 | [2026-10.47rw](decisions/2026-10-47rw-a-keystore-refusal-is-not-proof-a-secret-is-gone.md) | A Keystore refusal is not proof a secret is gone | crypto, storage, reliability |
 | [2026-10.9utz](decisions/2026-10-9utz-the-ble-presence-set-is-enabled-again-after-every-connection.md) | The BLE presence set is enabled again after every connection | ble, mesh |
+| [2026-10.pj9w](decisions/2026-10-pj9w-ble-discovery-waits-run-on-the-elapsed-clock.md) | BLE discovery waits run on the elapsed clock, and a dial wakes when its dwell ripens | ble, transport, power |
+| [2026-10.ryak](decisions/2026-10-ryak-the-ble-presence-advert-runs-at-full-power.md) | The BLE presence advert runs at full power | ble, mesh, power |
 | [2026-10.yvn6](decisions/2026-10-yvn6-ble-links-step-down-to-the-coded-phy-at-range.md) | BLE links step down to the Coded PHY at range | ble, mesh, power |
