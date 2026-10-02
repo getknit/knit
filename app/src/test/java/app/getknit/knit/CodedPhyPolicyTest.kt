@@ -228,7 +228,35 @@ class CodedPhyPolicyTest {
         val s = stepper(LinkPhy.CODED, -60)
         assertEquals(Action.STAY, s.decide(CodedPhyMode.AUTO, now = 29_000))
         s.onRssi(-60, now = 30_000)
-        assertEquals(Action.REQUEST_ONE_M, s.decide(CodedPhyMode.AUTO, now = 30_000))
+        assertEquals(Action.REQUEST_FAST, s.decide(CodedPhyMode.AUTO, now = 30_000))
+    }
+
+    @Test
+    fun aStepUpAnsweredWith2MIsTakenNotGivenUp() {
+        val s = stepper(LinkPhy.CODED, -60)
+        assertEquals(Action.REQUEST_FAST, s.decide(CodedPhyMode.AUTO, now = 30_000))
+        assertTrue(s.onPhy(LinkPhy.TWO_M, succeeded = true, now = 30_400)) // the controller picked 2M
+        assertFalse(s.gaveUp)
+        assertEquals(LinkPhy.TWO_M, s.phy)
+        // A strong 2M link is already fast: AUTO asks nothing more of it.
+        s.onRssi(-55, now = 60_000)
+        assertEquals(Action.STAY, s.decide(CodedPhyMode.AUTO, now = 60_000))
+    }
+
+    @Test
+    fun aStepUpAnsweredWith1MIsTakenToo() {
+        val s = stepper(LinkPhy.CODED, -60)
+        assertEquals(Action.REQUEST_FAST, s.decide(CodedPhyMode.AUTO, now = 30_000))
+        assertTrue(s.onPhy(LinkPhy.ONE_M, succeeded = true, now = 30_400)) // the peer has no 2M
+        assertFalse(s.gaveUp)
+    }
+
+    @Test
+    fun thePinnedOneMModeStaysStrict() {
+        val s = stepper(LinkPhy.TWO_M, -60)
+        assertEquals(Action.REQUEST_ONE_M, s.decide(CodedPhyMode.ONE_M, now = 1_000))
+        assertFalse(s.onPhy(LinkPhy.TWO_M, succeeded = true, now = 1_200)) // 1M alone was asked
+        assertTrue(s.gaveUp)
     }
 
     @Test
@@ -237,13 +265,13 @@ class CodedPhyPolicyTest {
         s.onRssi(-120, now = 20_000) // smoothed −90: no longer strong
         s.onRssi(-50, now = 25_000) // smoothed −70: strong again from here
         assertEquals(Action.STAY, s.decide(CodedPhyMode.AUTO, now = 40_000))
-        assertEquals(Action.REQUEST_ONE_M, s.decide(CodedPhyMode.AUTO, now = 55_000))
+        assertEquals(Action.REQUEST_FAST, s.decide(CodedPhyMode.AUTO, now = 55_000))
     }
 
     @Test
     fun noAutomaticSwitchInsideTheMinimumGap() {
         val s = stepper(LinkPhy.CODED, -60)
-        assertEquals(Action.REQUEST_ONE_M, s.decide(CodedPhyMode.AUTO, now = 30_000))
+        assertEquals(Action.REQUEST_FAST, s.decide(CodedPhyMode.AUTO, now = 30_000))
         assertTrue(s.onPhy(LinkPhy.ONE_M, succeeded = true, now = 30_500))
         // Straight back out of range: weak enough to step down (smoothed −80, −90, −95, −97.5)…
         listOf(31_000L, 32_000L, 33_000L, 34_000L).forEach { s.onRssi(-100, now = it) }

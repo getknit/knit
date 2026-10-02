@@ -533,7 +533,9 @@ that reports `isLeCodedPhySupported`:
   each other: the responder refuses, and its own dial never clears the dwell (the first walk, the ADR's
   amendment). A dialer heard on 1M keeps shzv's tie-break.
 - **`BlePhyControl` per capable link** — a GATT client on the link's ACL, the `BleDoorbell` pattern — reads link
-  RSSI and asks `PhyStepper` (pure, JVM-tested) for 1M ↔ Coded S=8. The larger id drives. A request unanswered in
+  RSSI and asks `PhyStepper` (pure, JVM-tested) to step down to Coded S=8 and back up to 1M or 2M — the step-up
+  passes both masks and the controller picks, so a link that visited Coded is never pinned to 1M; only the `1m`
+  mode asks for 1M alone. The larger id drives. A request unanswered in
   3 s, or answered with another PHY, gives up for the link (a controller without Coded answers nothing at all).
   Mode OFF lets the handles go and leaves each link on its PHY: asking a far Coded link back to 1M drops it.
 - **Diagnostics** draws a PHY chip on each directly-connected row with a handle (`CodedPhyDiag.linkPhys`, testTag

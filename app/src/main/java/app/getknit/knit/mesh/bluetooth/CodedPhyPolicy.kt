@@ -8,7 +8,10 @@ enum class CodedPhyMode {
     /** Today's plane: the legacy presence advert, a legacy scan, links on whatever PHY the stack picks. The baseline. */
     OFF,
 
-    /** A Coded advert and an all-PHY scan; each capable link steps between 1M and Coded S=8 on its link RSSI. */
+    /**
+     * A Coded advert and an all-PHY scan; each capable link steps down to Coded S=8 on its link RSSI, and back up to
+     * 1M or 2M, whichever the controller picks.
+     */
     AUTO,
 
     /** As [AUTO], but every capable link is held on Coded S=8 whatever its RSSI — the range ceiling of a walk test. */
@@ -169,7 +172,23 @@ class PhyStepper(
     private val tuning: () -> PhyTuning,
 ) {
     /** What to ask the controller for now. */
-    enum class Action { STAY, REQUEST_CODED, REQUEST_ONE_M, GIVE_UP }
+    enum class Action {
+        STAY,
+
+        /** Coded S=8 both ways: the range end. */
+        REQUEST_CODED,
+
+        /** 1M alone — the pinned [CodedPhyMode.ONE_M], an A/B against today's PHY. */
+        REQUEST_ONE_M,
+
+        /**
+         * 1M or 2M, the controller's pick — AUTO's step-up. Asking 1M alone pinned the link there for the rest of its
+         * life, where it could otherwise have run on the 2M the stack upgrades links to by itself.
+         */
+        REQUEST_FAST,
+
+        GIVE_UP,
+    }
 
     @get:Synchronized
     var phy: LinkPhy = LinkPhy.UNKNOWN
@@ -187,7 +206,8 @@ class PhyStepper(
     var smoothedRssi: Double? = null
         private set
 
-    private var pending: LinkPhy? = null
+    // The PHYs that answer the request in flight, null when none is.
+    private var pending: Set<LinkPhy>? = null
     private var pendingAt = 0L
     private var lastSwitchAt: Long? = null
     private var weakReads = 0
@@ -195,7 +215,8 @@ class PhyStepper(
 
     /**
      * The controller reported [reported] (a read, an update this side asked for, or one the peer asked for). An
-     * update that answers our request with another PHY, or with a failure, means the pair cannot make it: given up.
+     * update that answers our request with a PHY it did not allow, or with a failure, means the pair cannot make it:
+     * given up.
      * Returns whether the PHY changed.
      */
     @Synchronized
@@ -207,7 +228,7 @@ class PhyStepper(
         val asked = pending
         if (asked != null) {
             pending = null
-            if (!succeeded || reported != asked) gaveUp = true
+            if (!succeeded || reported !in asked) gaveUp = true
         }
         val changed = succeeded && reported != phy && phy != LinkPhy.UNKNOWN
         if (changed) {
@@ -242,11 +263,21 @@ class PhyStepper(
         val t = tuning()
         if (gaveUp || mode == CodedPhyMode.OFF || phy == LinkPhy.UNKNOWN) return Action.STAY
         if (pending != null) return pendingVerdict(t, now)
-        val target = target(mode, t, now)?.takeIf { it != phy } ?: return Action.STAY
-        pending = target
+        val want = target(mode, t, now) ?: return Action.STAY
+        val answers = answering(want)
+        if (phy in answers) return Action.STAY
+        pending = answers
         pendingAt = now
-        return if (target == LinkPhy.CODED) Action.REQUEST_CODED else Action.REQUEST_ONE_M
+        return want
     }
+
+    /** The PHYs a report may name and still have done what [request] asked. */
+    private fun answering(request: Action): Set<LinkPhy> =
+        when (request) {
+            Action.REQUEST_CODED -> setOf(LinkPhy.CODED)
+            Action.REQUEST_FAST -> setOf(LinkPhy.ONE_M, LinkPhy.TWO_M)
+            else -> setOf(LinkPhy.ONE_M)
+        }
 
     /** A request is out: wait for its answer until the timeout, then give the link up. */
     private fun pendingVerdict(
@@ -259,26 +290,26 @@ class PhyStepper(
         return Action.GIVE_UP
     }
 
-    /** The PHY [mode] wants now, or null for none; AUTO waits out the minimum gap since the last switch. */
+    /** The request [mode] wants now, or null for none; AUTO waits out the minimum gap since the last switch. */
     private fun target(
         mode: CodedPhyMode,
         t: PhyTuning,
         now: Long,
-    ): LinkPhy? =
+    ): Action? =
         when (mode) {
-            CodedPhyMode.CODED -> LinkPhy.CODED
-            CodedPhyMode.ONE_M -> LinkPhy.ONE_M
+            CodedPhyMode.CODED -> Action.REQUEST_CODED
+            CodedPhyMode.ONE_M -> Action.REQUEST_ONE_M
             else -> autoTarget(t, now)?.takeIf { lastSwitchAt.let { at -> at == null || now - at >= t.minSwitchGapMs } }
         }
 
     private fun autoTarget(
         t: PhyTuning,
         now: Long,
-    ): LinkPhy? {
+    ): Action? {
         val up = strongSince
         return when {
-            phy != LinkPhy.CODED && weakReads >= t.stepDownReads -> LinkPhy.CODED
-            phy == LinkPhy.CODED && up != null && now - up >= t.stepUpHoldMs -> LinkPhy.ONE_M
+            phy != LinkPhy.CODED && weakReads >= t.stepDownReads -> Action.REQUEST_CODED
+            phy == LinkPhy.CODED && up != null && now - up >= t.stepUpHoldMs -> Action.REQUEST_FAST
             else -> null
         }
     }

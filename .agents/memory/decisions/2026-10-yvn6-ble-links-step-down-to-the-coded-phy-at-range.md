@@ -128,3 +128,18 @@ transmit power can be higher), so rediscovery is expected to stop short of where
 
 Tests: `CodedPhyPolicyTest` (lag-measured `codedOnly`, admission, scan windows, the Coded gap, the tunable
 credit), `DiagnosticsScreenContentTest` (the chip).
+
+## Amendment 2026-10-01 (2) — the step-up lets the controller pick 2M
+
+A link opens on 1M, the PHY its advert was heard on. The stack then upgrades it to 2M by itself when both ends
+support it; the spike's Pixel 3 link was on 2M by its first read. AUTO's step-up from Coded asked
+`setPreferredPhy` for the 1M mask alone. That preference lasts the link's life, so a link that once visited Coded
+was pinned to 1M for good, even where it would otherwise have run on 2M.
+
+The step-up is now `PhyStepper.Action.REQUEST_FAST`. It passes the 1M and 2M masks together and leaves the pick to
+the controller, and either answer completes the request. Only the pinned `ONE_M` mode still asks for 1M alone,
+since it exists to compare against today's PHY, so a 2M answer to it gives the link up as before.
+
+AUTO never asks for 2M on its own account; a strong 1M link stays where the stack put it. A deliberate 2M step,
+which trades range for airtime, is a separate experiment, and it waits on evidence of a throughput or battery
+problem. Tests: `CodedPhyPolicyTest`'s step-up cases.

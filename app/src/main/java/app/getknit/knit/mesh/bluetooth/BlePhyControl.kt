@@ -137,18 +137,20 @@ internal class BlePhyControl(
         g: BluetoothGatt,
         action: PhyStepper.Action,
     ) {
-        val rssi = stepper.smoothedRssi?.toInt()
         when (action) {
             PhyStepper.Action.STAY -> {}
 
             PhyStepper.Action.REQUEST_CODED -> {
-                Log.i(TAG, "bt phy $nodeId ask CODED (rssi=$rssi ${mode().wire})")
-                ask(g, LinkPhy.CODED)
+                ask(g, BluetoothDevice.PHY_LE_CODED_MASK, BluetoothDevice.PHY_OPTION_S8, "CODED")
             }
 
             PhyStepper.Action.REQUEST_ONE_M -> {
-                Log.i(TAG, "bt phy $nodeId ask 1M (rssi=$rssi ${mode().wire})")
-                ask(g, LinkPhy.ONE_M)
+                ask(g, BluetoothDevice.PHY_LE_1M_MASK, BluetoothDevice.PHY_OPTION_NO_PREFERRED, "1M")
+            }
+
+            PhyStepper.Action.REQUEST_FAST -> {
+                val mask = BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_2M_MASK
+                ask(g, mask, BluetoothDevice.PHY_OPTION_NO_PREFERRED, "1M|2M")
             }
 
             PhyStepper.Action.GIVE_UP -> {
@@ -158,14 +160,17 @@ internal class BlePhyControl(
         }
     }
 
-    /** Asks the controller for [phy] both ways: Coded at S=8, the range end; 1M with no coding preference. */
+    /**
+     * Asks the controller for the PHYs in [mask] both ways, [what] in the log: Coded at S=8, the range end; 1M alone;
+     * or 1M and 2M, leaving the pick to the controller (which takes 2M when both ends have it).
+     */
     private fun ask(
         g: BluetoothGatt,
-        phy: LinkPhy,
+        mask: Int,
+        option: Int,
+        what: String,
     ) {
-        val coded = phy == LinkPhy.CODED
-        val mask = if (coded) BluetoothDevice.PHY_LE_CODED_MASK else BluetoothDevice.PHY_LE_1M_MASK
-        val option = if (coded) BluetoothDevice.PHY_OPTION_S8 else BluetoothDevice.PHY_OPTION_NO_PREFERRED
+        Log.i(TAG, "bt phy $nodeId ask $what (rssi=${stepper.smoothedRssi?.toInt()} ${mode().wire})")
         runCatching { g.setPreferredPhy(mask, mask, option) }
     }
 
