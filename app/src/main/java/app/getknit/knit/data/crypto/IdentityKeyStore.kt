@@ -47,10 +47,14 @@ class SignedPrekey(
  *
  * This lives **outside** the Room database on purpose: the identity (and the prekeys peers may hold
  * in-flight session initiations against) must survive anything that takes `knit.db` down — the
- * [DatabaseKey] unrecoverable-wrap wipe path — otherwise every such event would mint a new nodeId and
+ * [DatabaseKey] lost-wrap wipe path — otherwise every such event would mint a new nodeId and
  * break peers' pinned keys and decryptability of stored ciphertext.
  *
- * Mirrors [DatabaseKey]'s "generate once, transparently load thereafter" lifecycle.
+ * Mirrors [DatabaseKey]'s "generate once, transparently load thereafter" lifecycle, and its rule for a failed
+ * unwrap (ADR 2026-10.47rw): a new identity is minted only when there is no file or the old one is proven lost
+ * (kept aside first); a Keystore refusal throws [KeystoreUnavailableException] and caches nothing, so the next
+ * call tries again and finds the same identity. A wrap that opens but does not parse is a code or version
+ * mismatch, never a reason to mint: every peer pins the node id this file certifies.
  */
 class IdentityKeyStore(
     private val secret: KeystoreSecret,
@@ -126,14 +130,27 @@ class IdentityKeyStore(
     @Synchronized
     private fun loaded(): Loaded {
         cached?.let { return it }
-        val fromDisk =
-            secret.load()?.let { blob ->
-                runCatching { parse(blob) }.getOrElse { error ->
-                    Log.w(TAG, "Identity keys unrecoverable; regenerating", error)
-                    null
+        val state =
+            when (val read = secret.read()) {
+                is Unwrapped.Present -> {
+                    runCatching { parse(read.bytes) }
+                        .getOrElse { throw IllegalStateException("identity keys unwrapped but do not parse; not minting over them", it) }
+                }
+
+                Unwrapped.Absent -> {
+                    generateAndStore(freshKey = false)
+                }
+
+                is Unwrapped.Lost -> {
+                    Log.w(TAG, "Identity keys lost (${read.reason}); regenerating", read.cause)
+                    secret.keepAside()
+                    generateAndStore(freshKey = read.reason == Loss.KEY_INVALIDATED)
+                }
+
+                is Unwrapped.Unavailable -> {
+                    throw KeystoreUnavailableException("identity keys", read.cause)
                 }
             }
-        val state = fromDisk ?: generateAndStore()
         cached = state
         return state
     }
@@ -146,7 +163,12 @@ class IdentityKeyStore(
         return Loaded(IdentityKeys(hybrid, sig, PublicKeyBundle.fromPrivate(hybrid, sig)), stored)
     }
 
-    private fun generateAndStore(): Loaded {
+    /**
+     * Mints the identity and proves its wrap reads back before anything signs with it: a Keystore that seals but
+     * never opens again would otherwise have the next start read the file as lost and mint a second node id.
+     */
+    @OptIn(ExperimentalSerializationApi::class)
+    private fun generateAndStore(freshKey: Boolean): Loaded {
         val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE))
         val sig = KeysetHandle.generateNew(KeyTemplates.get(SIG_TEMPLATE))
         val stored =
@@ -155,7 +177,12 @@ class IdentityKeyStore(
                 sigPriv = TinkProtoKeysetFormat.serializeKeyset(sig, InsecureSecretKeyAccess.get(), RegistryConfiguration.get()),
             )
         val state = Loaded(IdentityKeys(hybrid, sig, PublicKeyBundle.fromPrivate(hybrid, sig)), stored)
-        persist(state)
+        val blob = cryptoCbor.encodeToByteArray(stored)
+        runCatching { secret.store(blob, freshKey) }.onFailure { throw KeystoreUnavailableException("new identity keys", it) }
+        val back = secret.read()
+        if (back !is Unwrapped.Present || !back.bytes.contentEquals(blob)) {
+            throw KeystoreUnavailableException("new identity keys", (back as? Unwrapped.Unavailable)?.cause)
+        }
         return state
     }
 
@@ -223,8 +250,8 @@ class IdentityKeyStore(
         /**
          * The node id the identity in [blob] (a [KeystoreSecret]'s plaintext, as [keys] would load it)
          * certifies — parsed without persisting anything, so a backup restore can check the identity it is
-         * about to install against its manifest. Throws on a blob that is not an identity; [loaded] would
-         * regenerate, which is exactly what a verification must never do.
+         * about to install against its manifest. Throws on a blob that is not an identity, and never mints or
+         * stores anything — which is exactly what a verification must never do.
          */
         @OptIn(ExperimentalSerializationApi::class)
         fun nodeIdOf(blob: ByteArray): String {

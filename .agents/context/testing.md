@@ -435,14 +435,18 @@ before "simplifying":
   driver and a v1-era database walking the whole `KnitMigrations` chain under it. It uses a throwaway db
   name and a literal passphrase — it never touches the real `knit.db` or `DatabaseKey`. That is the carve-out
   to the rule above; it does not license a `KnitDatabase.build()` call in a Robolectric test. The backup
-  round trip (`BackupRoundTripTest`: real writer → stager → applier) and `DatabaseKeyTest` (the destructive
-  wipe-on-bad-wrap contract) run there too, through `SandboxContext`, which moves `filesDir`,
+  round trip (`BackupRoundTripTest`: real writer → stager → applier) and `DatabaseKeyTest` (the
+  wipe-on-proven-loss, never-on-refusal contract, the refusal injected by the debug `FaultyKeystoreCipher` over
+  the real Keystore) run there too, through `SandboxContext`, which moves `filesDir`,
   `noBackupFilesDir` and the database path under a temp root, so the live aliases are reused but the
   installed app's files are never read or written. Run them on the managed emulator
   (`:app:pixel8api34DebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=…`), one class per
   run: under the orchestrator, a comma-separated class list ran only the first. Their JVM half is
   `RestoreStagerTest`, every refusal over a stand-in wrap (`RestoreStager`'s `secretAt` seam), because
-  Robolectric has no AndroidKeyStore.
+  Robolectric has no AndroidKeyStore — and, for the verdicts themselves (ADR 2026-10.47rw), `KeystoreSecretTest`,
+  `DatabaseKeyRecoveryTest`, `IdentityKeyStoreRecoveryTest` and `BackupWriterKeystoreTest` over
+  `FakeKeystoreCipher`: real JCE AES-GCM behind the `KeystoreCipher` seam, with scripted lookups and unwraps.
+  Pass `sleep = {}` to a `KeystoreSecret` under test, or every refusal costs the real two seconds of retries.
 - **`robolectric.properties` forces `application=android.app.Application`.** The real `KnitApplication.onCreate`
   starts Koin, whose static `GlobalContext` isn't reset between tests → `KoinApplicationAlreadyStartedException`
   on the 2nd test. DAO tests bypass Koin, so a plain Application is correct. `sdk=36` deliberately trails

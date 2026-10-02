@@ -1,118 +1,97 @@
 package app.getknit.knit.data.crypto
 
 import android.content.Context
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
-import android.security.keystore.StrongBoxUnavailableException
 import android.util.Log
 import java.io.File
-import java.security.GeneralSecurityException
-import java.security.KeyStore
 import java.security.SecureRandom
-import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
-import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
 
 /**
  * Supplies the SQLCipher passphrase for [app.getknit.knit.data.KnitDatabase].
  *
- * A random 256-bit passphrase is generated on first run and stored on disk wrapped (AES-256-GCM)
- * by a hardware-backed key held in the [AndroidKeyStore]. The Keystore key never leaves the device
- * and is excluded from cloud backup, so the encrypted DB cannot be decrypted off-device even if the
- * wrapped passphrase file and the database are copied elsewhere.
+ * A random 256-bit passphrase is generated on first run and stored on disk wrapped (AES-256-GCM) by a
+ * hardware-backed key held in the AndroidKeyStore, through a [KeystoreSecret] under [KEY_ALIAS]. The Keystore key
+ * never leaves the device and is excluded from cloud backup, so the encrypted DB cannot be decrypted off-device
+ * even if the wrapped passphrase file and the database are copied elsewhere.
  *
  * SQLCipher is keyed with these bytes as a **raw key** ([SqlCipherKey.raw]), not as a passphrase through its
  * KDF: they are already uniformly random, and the KDF cost ~850 ms to ~4.2 s per pooled connection
  * (ADR 2026-09.uzkm).
  *
- * Opening is transparent — no user authentication is required ([KeyGenParameterSpec] does not set
- * `setUserAuthenticationRequired`). If the wrapped passphrase cannot be recovered (Keystore key lost
- * or the wrap file corrupt), we fall back to wipe-and-recreate: the unreadable database is deleted
- * and a fresh encrypted one is provisioned. The same wipe runs on first encryption to drop any
- * pre-existing plaintext `knit.db` (which SQLCipher cannot open).
+ * Opening is transparent — no user authentication is required. What a failed unwrap does depends on what it
+ * proves (ADR 2026-10.47rw):
+ * - **no wrap file** (first run, or the first encryption over an old build's plaintext `knit.db`, which SQLCipher
+ *   cannot open): the database files are deleted and a passphrase is minted;
+ * - **proven lost** ([Unwrapped.Lost] — the key gone, the tag rejected, the file malformed): the passphrase is
+ *   gone and with it every byte of the database, so the same, after the old wrap is kept aside
+ *   ([KeystoreSecret.keepAside]);
+ * - **refused** ([Unwrapped.Unavailable]): nothing is touched and [KeystoreUnavailableException] is thrown — the
+ *   open fails, and the next one tries again. This used to wipe too: a keystore2 KM_ERROR_UNKNOWN_ERROR on a
+ *   locked Pixel 3 deleted its database on 2026-10-01.
  *
- * The wrap file's layout (`iv ‖ AES-256-GCM ciphertext` under [KEY_ALIAS]) is the same one [KeystoreSecret]
- * writes, on purpose: a backup restore installs a passphrase it carried by writing it through
- * `KeystoreSecret(context, KEY_ALIAS, KEY_FILE, dir)` and moving that file into place, and this class
- * reads it as its own (`app.getknit.knit.data.backup.RestoreStager`).
+ * The wrap file's layout (`iv ‖ AES-256-GCM ciphertext` under [KEY_ALIAS]) is [KeystoreSecret]'s, on purpose: a
+ * backup restore installs a passphrase it carried by writing it through
+ * `KeystoreSecret(context, KEY_ALIAS, KEY_FILE, dir)` and moving that file into place, and this class reads it
+ * as its own (`app.getknit.knit.data.backup.RestoreStager`).
  */
 class DatabaseKey(
     private val context: Context,
+    private val secret: KeystoreSecret = KeystoreSecret(context, KEY_ALIAS, KEY_FILE),
 ) {
-    private val keyFile: File get() = File(context.filesDir, KEY_FILE)
-
-    /** Returns the 32-byte SQLCipher passphrase, generating and persisting it on first use. */
+    /**
+     * Returns the 32-byte SQLCipher passphrase, generating and persisting it on first use. Throws
+     * [KeystoreUnavailableException], with every file as it was, when the Keystore refuses.
+     */
     @Synchronized
-    fun getOrCreate(): ByteArray {
-        if (keyFile.exists()) {
-            runCatching { decryptPassphrase() }
-                .onSuccess { return it }
-                .onFailure { Log.w(TAG, "DB passphrase unrecoverable; wiping and regenerating", it) }
-        }
-        // First encryption (no wrap file yet) or recovery after a failed decrypt: the on-disk DB is
-        // either plaintext (old build) or encrypted-but-unopenable, so drop it and start fresh.
-        wipeDatabase()
-        return createPassphrase()
-    }
+    fun getOrCreate(): ByteArray =
+        when (val read = secret.read()) {
+            is Unwrapped.Present -> {
+                checkLength(read.bytes)
+            }
 
-    private fun createPassphrase(): ByteArray {
+            Unwrapped.Absent -> {
+                // First encryption: whatever is on disk is plaintext from an old build, which SQLCipher cannot open.
+                wipeDatabase()
+                mint(freshKey = false)
+            }
+
+            is Unwrapped.Lost -> {
+                Log.w(TAG, "DB passphrase lost (${read.reason}); wiping and regenerating", read.cause)
+                secret.keepAside()
+                wipeDatabase()
+                mint(freshKey = read.reason == Loss.KEY_INVALIDATED)
+            }
+
+            is Unwrapped.Unavailable -> {
+                throw KeystoreUnavailableException("database passphrase", read.cause)
+            }
+        }
+
+    /**
+     * The passphrase as it stands, read without ever wiping or minting — for a reader beside the open database
+     * (the backup writer), where a refusal must be an error and never a fresh, empty database.
+     */
+    @Synchronized
+    fun current(): Unwrapped = secret.read()
+
+    /**
+     * A wrap that verified but holds the wrong number of bytes was written by *some* Knit build under our key:
+     * a code or version mismatch, not a lost key. Loud, and nothing is wiped.
+     */
+    private fun checkLength(passphrase: ByteArray): ByteArray =
+        passphrase.also { check(it.size == PASSPHRASE_BYTES) { "unwrapped DB passphrase is ${it.size} bytes; not wiping" } }
+
+    /** Mints a passphrase and proves its wrap reads back before anything is keyed with it. */
+    private fun mint(freshKey: Boolean): ByteArray {
         val passphrase = ByteArray(PASSPHRASE_BYTES).also { SecureRandom().nextBytes(it) }
-        val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.ENCRYPT_MODE, keystoreKey()) }
-        val ciphertext = cipher.doFinal(passphrase)
-        keyFile.writeBytesAtomically(cipher.iv + ciphertext)
+        runCatching { secret.store(passphrase, freshKey) }
+            .onFailure { throw KeystoreUnavailableException("new database passphrase", it) }
+        // A Keystore that seals but never opens again would otherwise have the next start read the wrap as lost and
+        // wipe the database this one is about to fill. Read back now, and fail the open if it does not.
+        val back = secret.read()
+        val same = back is Unwrapped.Present && back.bytes.contentEquals(passphrase)
+        if (back is Unwrapped.Present) back.bytes.fill(0)
+        if (!same) throw KeystoreUnavailableException("new database passphrase", (back as? Unwrapped.Unavailable)?.cause)
         return passphrase
-    }
-
-    private fun decryptPassphrase(): ByteArray {
-        val blob = keyFile.readBytes()
-        require(blob.size > IV_LENGTH) { "wrapped passphrase too short" }
-        val iv = blob.copyOfRange(0, IV_LENGTH)
-        val ciphertext = blob.copyOfRange(IV_LENGTH, blob.size)
-        val key = existingKeystoreKey() ?: throw GeneralSecurityException("Keystore key missing")
-        val cipher =
-            Cipher.getInstance(TRANSFORMATION).apply {
-                init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, iv))
-            }
-        return cipher.doFinal(ciphertext).also {
-            require(it.size == PASSPHRASE_BYTES) { "unexpected passphrase length ${it.size}" }
-        }
-    }
-
-    private fun keystoreKey(): SecretKey = existingKeystoreKey() ?: generateKeystoreKey()
-
-    private fun existingKeystoreKey(): SecretKey? {
-        val store = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        return (store.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry)?.secretKey
-    }
-
-    // Prefer a StrongBox (secure-element) backed key; fall back to a TEE-backed key on devices without
-    // one. We deliberately do NOT set setUnlockedDeviceRequired: the passphrase is unwrapped during DB
-    // construction, which can happen while the device is locked (the mesh foreground service is
-    // START_STICKY and may be restarted screen-off) — and since an unrecoverable unwrap here triggers a
-    // destructive wipe, an unlocked-device requirement would risk wiping the database on a routine
-    // background restart.
-    private fun generateKeystoreKey(): SecretKey =
-        runCatching { generateKeystoreKey(strongBox = true) }
-            .getOrElse { e ->
-                if (e is StrongBoxUnavailableException) generateKeystoreKey(strongBox = false) else throw e
-            }
-
-    private fun generateKeystoreKey(strongBox: Boolean): SecretKey {
-        val spec =
-            KeyGenParameterSpec
-                .Builder(
-                    KEY_ALIAS,
-                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-                ).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setKeySize(KEY_SIZE_BITS)
-                .setIsStrongBoxBacked(strongBox)
-                .build()
-        return KeyGenerator
-            .getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
-            .apply { init(spec) }
-            .generateKey()
     }
 
     /** Deletes the database and its WAL/SHM/journal sidecars so it can be recreated encrypted. */
@@ -128,16 +107,11 @@ class DatabaseKey(
 
     internal companion object {
         const val TAG = "DatabaseKey"
-        const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val KEY_ALIAS = "knit_db_key"
         const val KEY_FILE = "db.key"
         const val DB_NAME = "knit.db"
-        const val TRANSFORMATION = "AES/GCM/NoPadding"
 
         /** The passphrase is 32 random bytes — what a backup carries and a restore hands back to [KeystoreSecret]. */
         const val PASSPHRASE_BYTES = 32
-        const val KEY_SIZE_BITS = 256
-        const val GCM_TAG_BITS = 128
-        const val IV_LENGTH = 12
     }
 }

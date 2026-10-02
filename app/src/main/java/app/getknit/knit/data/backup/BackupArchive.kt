@@ -38,6 +38,12 @@ enum class BackupProblem {
 
     /** Not enough free space on this phone to stage the backup. */
     NO_SPACE,
+
+    /**
+     * This phone's Keystore refused to unwrap or wrap a secret — a property of the phone at that moment, never of
+     * the file, so the user is told to try again rather than that the backup is bad (ADR 2026-10.47rw).
+     */
+    KEYSTORE_UNAVAILABLE,
 }
 
 class BackupException(

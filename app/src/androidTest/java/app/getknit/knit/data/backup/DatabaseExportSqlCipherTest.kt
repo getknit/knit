@@ -8,6 +8,7 @@ import app.getknit.knit.data.blob.BlobEntity
 import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.crypto.KeystoreSecret
 import app.getknit.knit.data.crypto.SqlCipherKey
+import app.getknit.knit.data.crypto.Unwrapped
 import app.getknit.knit.data.forward.ForwardEntity
 import app.getknit.knit.data.message.MessageEntity
 import kotlinx.coroutines.runBlocking
@@ -113,10 +114,10 @@ class DatabaseExportSqlCipherTest {
         val staging = File(dir, "staging").apply { mkdirs() }
         val staged = KeystoreSecret(context, DatabaseKey.KEY_ALIAS, DatabaseKey.KEY_FILE, staging)
         staged.store(passphrase)
-        assertArrayEquals(passphrase, staged.load())
+        assertArrayEquals(passphrase, (staged.read() as Unwrapped.Present).bytes)
         // The same alias, the same layout, a different directory: exactly what RestoreApplier moves into filesDir.
-        val asRead = KeystoreSecret(context, DatabaseKey.KEY_ALIAS, DatabaseKey.KEY_FILE, staging).load()
-        assertArrayEquals(passphrase, asRead)
+        val asRead = KeystoreSecret(context, DatabaseKey.KEY_ALIAS, DatabaseKey.KEY_FILE, staging).read()
+        assertArrayEquals(passphrase, (asRead as Unwrapped.Present).bytes)
     }
 
     private companion object {

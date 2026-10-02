@@ -1,7 +1,10 @@
 package app.getknit.knit.mesh
 
+import android.Manifest
+import android.app.AlarmManager
 import android.app.Application
 import android.app.Notification
+import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.os.Looper
@@ -9,10 +12,14 @@ import android.os.SystemClock
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.R
+import app.getknit.knit.data.crypto.KeystoreUnavailableException
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.mesh.power.PowerMonitor
 import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.moderation.MlTextModerator
+import app.getknit.knit.notifications.NotificationChannels
+import app.getknit.knit.notifications.StorageAlert
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CoroutineDispatcher
@@ -33,6 +40,7 @@ import org.koin.core.context.stopKoin
 import org.koin.dsl.module
 import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
+import java.security.InvalidKeyException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -56,6 +64,7 @@ import kotlin.concurrent.thread
 class MeshServiceGraphOffMainTest {
     private val app: Application = ApplicationProvider.getApplicationContext()
     private val mesh = FakeMeshController()
+    private val settings = mockk<SettingsStore>(relaxed = true)
 
     /** Opened by the test to let the controller's factory return: the moment the "keystore" is done. */
     private val gate = CountDownLatch(1)
@@ -77,7 +86,6 @@ class MeshServiceGraphOffMainTest {
             mesh
         },
     ) {
-        val settings = mockk<SettingsStore>(relaxed = true)
         every { settings.meshEnabled } returns flowOf(true)
         every { settings.meshPausedUntil } returns flowOf(null)
         startKoin {
@@ -184,6 +192,50 @@ class MeshServiceGraphOffMainTest {
         assertEquals(0, mesh.startCount)
         assertNotNull("the build failure reached the main looper as an uncaught exception", thrown)
         assertTrue(generateSequence(thrown) { it.cause }.any { it is IllegalStateException && it.message == "no keystore" })
+    }
+
+    @Test
+    fun `a Keystore refusal stands the service down instead of crashing`() {
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        // The refusal DatabaseKey throws, under the InstanceCreationException Koin wraps a factory's throw in.
+        startGraph(Dispatchers.Unconfined) {
+            throw KeystoreUnavailableException("database passphrase", InvalidKeyException("Keystore operation failed"))
+        }
+        val controller = Robolectric.buildService(MeshService::class.java)
+        val thrown =
+            runCatching {
+                controller.create()
+                shadowOf(Looper.getMainLooper()).idle()
+            }.exceptionOrNull()
+        assertNull("a refusal is not a crash (ADR 2026-10.47rw)", thrown)
+
+        val service = controller.get()
+        val shadow = shadowOf(service)
+        assertEquals(0, mesh.startCount)
+        assertTrue("stood down", shadow.isStoppedBySelf)
+        assertTrue("the foreground state is dropped", shadow.isForegroundStopped)
+        val alert = shadowOf(app.getSystemService(NotificationManager::class.java)).getNotification(StorageAlert.ID)
+        assertEquals(NotificationChannels.ALERTS, alert!!.channelId)
+
+        // The system's onDestroy after stopSelf keeps the heartbeat — the next tick may find the Keystore answering —
+        // and nothing turns the mesh off: the next app open starts it as usual.
+        controller.destroy()
+        assertNotNull(shadowOf(app.getSystemService(AlarmManager::class.java)).peekNextScheduledAlarm())
+        coVerify(exactly = 0) { settings.setMeshEnabled(any()) }
+    }
+
+    @Test
+    fun `a start takes back the notice a refusal left`() {
+        shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
+        StorageAlert.post(app)
+        val notifications = shadowOf(app.getSystemService(NotificationManager::class.java))
+        assertNotNull(notifications.getNotification(StorageAlert.ID))
+
+        startGraph(Dispatchers.Unconfined) { mesh }
+        val controller = Robolectric.buildService(MeshService::class.java).create()
+        awaitStart()
+        assertNull(notifications.getNotification(StorageAlert.ID))
+        controller.destroy()
     }
 
     private companion object {

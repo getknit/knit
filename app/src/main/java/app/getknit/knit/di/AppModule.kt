@@ -28,6 +28,7 @@ import app.getknit.knit.data.backup.RestoreStager
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.crypto.IdentityKeyStore
+import app.getknit.knit.data.crypto.KeystoreCipher
 import app.getknit.knit.data.crypto.KeystoreSecret
 import app.getknit.knit.data.draft.DraftRepository
 import app.getknit.knit.data.emoji.AndroidGlyphCheck
@@ -102,8 +103,15 @@ val appModule =
         single { EmojiCatalogLoader(open = { androidContext().assets.open(EmojiCatalogLoader.ASSET) }, canRender = AndroidGlyphCheck()) }
         // Stable per-device id (ANDROID_ID) — seeds the soft block-continuity DeviceTag, not the nodeId.
         single<DeviceIdSource> { AndroidDeviceIdSource(androidContext()) }
+        // The AndroidKeyStore, behind the seam KeystoreSecret's verdicts are tested through; the debug variant can
+        // make it refuse on cue for a device trial (di/KeystoreWiring, ADR 2026-10.47rw).
+        single<KeystoreCipher> { keystoreCipher(androidContext()) }
         // E2E identity keypair, wrapped under a hardware AndroidKeyStore key in filesDir (outside the DB).
-        single { IdentityKeyStore(KeystoreSecret(androidContext(), IdentityKeyStore.KEYSTORE_ALIAS, IdentityKeyStore.FILE_NAME)) }
+        single {
+            IdentityKeyStore(
+                KeystoreSecret(androidContext(), IdentityKeyStore.KEYSTORE_ALIAS, IdentityKeyStore.FILE_NAME, cipher = get()),
+            )
+        }
         // nodeId is derived from the keypair's public bundle; the device id only feeds the block tag.
         single { Identity(get(), get()) }
         single { AvatarStore(androidContext(), get()) }
@@ -159,13 +167,20 @@ val appModule =
         // Decides when to ask for an app rating and where to route it (installer-aware); no-op in demo builds.
         single { ReviewPrompter(androidContext(), get(), get(), get(), get()) }
 
-        single { DatabaseKey(androidContext()) }
+        single {
+            DatabaseKey(
+                androidContext(),
+                KeystoreSecret(androidContext(), DatabaseKey.KEY_ALIAS, DatabaseKey.KEY_FILE, cipher = get()),
+            )
+        }
+        // Throws KeystoreUnavailableException, with every file left as it was, when the Keystore refuses the unwrap:
+        // MeshService stands down and ui/StorageGate offers Try again (ADR 2026-10.47rw).
         single { KnitDatabase.build(androidContext(), get<DatabaseKey>().getOrCreate()) }
         // Backup and restore (docs/BACKUP_FORMAT.md). The writer reads the identity file through its own
         // KeystoreSecret over the same alias and file IdentityKeyStore uses; the stager verifies a staged
         // database by opening it with the SQLCipher driver alone. Neither touches the live database's
         // write lock; the apply itself runs pre-Koin in KnitApplication (data/backup/RestoreApplier).
-        single { BackupWriter(androidContext(), get(), BackupWriter.identitySecret(androidContext()), get(), get(), get()) }
+        single { BackupWriter(androidContext(), get(), BackupWriter.identitySecret(androidContext(), get()), get(), get(), get()) }
         single { RestoreStager(androidContext(), BackupWriter::openSqlCipher) }
         single { get<KnitDatabase>().messageDao() }
         single { get<KnitDatabase>().peerDao() }

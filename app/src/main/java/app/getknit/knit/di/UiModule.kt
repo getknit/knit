@@ -1,8 +1,10 @@
 package app.getknit.knit.di
 
 import app.getknit.knit.BuildConfig
+import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.commons.CommonsRepository
+import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.linkpreview.LinkPreviewService
@@ -11,6 +13,7 @@ import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.lora.LoraStatusRepository
 import app.getknit.knit.transfer.TransferManager
+import app.getknit.knit.ui.StorageGate
 import app.getknit.knit.ui.addcontact.AddContactViewModel
 import app.getknit.knit.ui.backup.BackupViewModel
 import app.getknit.knit.ui.blocked.BlockedUsersViewModel
@@ -158,4 +161,19 @@ val uiModule =
             )
         }
         viewModel { LoraRadioViewModel(get(), get(), get(), get()) }
+        // What MainActivity opens on a worker before KnitApp composes — exactly what KnitApp's first composition
+        // reads (ReviewPrompter → the database, MeshController → the identity keys), so those become cache hits —
+        // and the Try again screen when the Keystore refuses (ADR 2026-10.47rw). SEED_DEMO builds skip the
+        // controller, as KnitApp does.
+        single {
+            val koin = getKoin()
+            StorageGate(
+                scope = get(),
+                openStorage = {
+                    koin.get<KnitDatabase>()
+                    koin.get<IdentityKeyStore>().keys()
+                    if (!BuildConfig.SEED_DEMO) koin.get<MeshController>()
+                },
+            )
+        }
     }

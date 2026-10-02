@@ -6,6 +6,7 @@ import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.crypto.KeystoreSecret
+import app.getknit.knit.data.crypto.Unwrapped
 import app.getknit.knit.data.settings.SettingsKeys
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -18,8 +19,8 @@ import java.io.OutputStream
 /**
  * Reads a backup into the staging directory [RestoreApplier] installs from, and proves every piece
  * before it writes [RestoreApplier.READY] — because the two readers on the other side fail
- * *destructively*: [DatabaseKey] wipes the database on a passphrase it cannot unwrap, and
- * [IdentityKeyStore] mints a fresh identity on a file it cannot parse. So the secrets are wrapped here,
+ * *destructively*: [DatabaseKey] wipes the database on a passphrase whose wrap is proven lost, and
+ * [IdentityKeyStore] mints a fresh identity over one. So the secrets are wrapped here,
  * under the live Keystore aliases, into the staging directory, read back and compared; the identity is
  * parsed and its node id checked against the manifest; the database is opened under the passphrase and
  * integrity-checked; the settings are parsed. The plaintext identity and passphrase live in memory for
@@ -109,7 +110,10 @@ class RestoreStager(
         BackupArchive.expect(missing.isEmpty(), BackupProblem.NOT_A_BACKUP) { "no ${missing.joinToString()} entry" }
     }
 
-    /** The chain the app's own readers will walk, walked here first; every failure is a [BackupProblem.MISMATCH]. */
+    /**
+     * The chain the app's own readers will walk, walked here first; every failure is a [BackupProblem.MISMATCH],
+     * except this phone's Keystore refusing a wrap ([BackupProblem.KEYSTORE_UNAVAILABLE]).
+     */
     private suspend fun verifyAndWrap(
         staging: File,
         manifest: BackupManifest,
@@ -164,7 +168,11 @@ class RestoreStager(
         return sink
     }
 
-    /** Wraps [plain] under [alias] into [staging]/[fileName] and proves the wrap reads back. */
+    /**
+     * Wraps [plain] under [alias] into [staging]/[fileName] and proves the wrap reads back. A wrap that fails or
+     * reads back refused is this phone's Keystore, never the file, so it is [BackupProblem.KEYSTORE_UNAVAILABLE];
+     * a read-back that proves anything else wrong is a [BackupProblem.MISMATCH] (ADR 2026-10.47rw).
+     */
     private fun wrap(
         staging: File,
         alias: String,
@@ -173,10 +181,27 @@ class RestoreStager(
     ) {
         val secret = secretAt(alias, fileName, staging)
         // A Keystore refusal is a GeneralSecurityException, which the restore screen does not catch.
-        runCatching { secret.store(plain) }.onFailure { BackupArchive.fail(BackupProblem.MISMATCH, "$fileName did not wrap", it) }
-        val back = secret.load()
-        BackupArchive.expect(back != null && back.contentEquals(plain), BackupProblem.MISMATCH) { "$fileName did not wrap" }
-        back?.fill(0)
+        runCatching { secret.store(plain) }
+            .onFailure { BackupArchive.fail(BackupProblem.KEYSTORE_UNAVAILABLE, "$fileName did not wrap", it) }
+        when (val back = secret.read()) {
+            is Unwrapped.Present -> {
+                val same = back.bytes.contentEquals(plain)
+                back.bytes.fill(0)
+                BackupArchive.expect(same, BackupProblem.MISMATCH) { "$fileName did not read back" }
+            }
+
+            is Unwrapped.Unavailable -> {
+                BackupArchive.fail(BackupProblem.KEYSTORE_UNAVAILABLE, "$fileName did not read back", back.cause)
+            }
+
+            is Unwrapped.Lost -> {
+                BackupArchive.fail(BackupProblem.MISMATCH, "$fileName did not read back (${back.reason})", back.cause)
+            }
+
+            Unwrapped.Absent -> {
+                BackupArchive.fail(BackupProblem.MISMATCH, "$fileName was not written")
+            }
+        }
     }
 
     private fun checkDatabase(

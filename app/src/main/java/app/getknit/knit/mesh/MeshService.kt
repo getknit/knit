@@ -25,12 +25,14 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import app.getknit.knit.MainActivity
 import app.getknit.knit.R
+import app.getknit.knit.data.crypto.keystoreUnavailable
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.isKoinStarted
 import app.getknit.knit.mesh.bluetooth.wear.WearStatusServer
 import app.getknit.knit.mesh.power.PowerMonitor
 import app.getknit.knit.moderation.MlTextModerator
 import app.getknit.knit.notifications.NotificationChannels
+import app.getknit.knit.notifications.StorageAlert
 import app.getknit.knit.ui.isIgnoringBatteryOptimizations
 import app.getknit.knit.ui.requiredRadioPermissions
 import kotlinx.coroutines.CoroutineScope
@@ -77,6 +79,13 @@ class MeshService : LifecycleService() {
      * refused, and its next tick lands in a normal process and starts the mesh properly.
      */
     private var graphless = false
+
+    /**
+     * The third: the graph could not be built because the Keystore refused to unwrap a storage key, and this
+     * instance stood down instead of crashing ([declineStorage]). Like [graphless] it leaves the heartbeat armed —
+     * nothing was refused but the Keystore, and the next tick may find it answering. ADR 2026-10.47rw.
+     */
+    private var storageDeclined = false
 
     /**
      * The graph is resolved and the start tail ran on this instance — set by [startMesh], on the main thread,
@@ -190,10 +199,36 @@ class MeshService : LifecycleService() {
                     // A graph that cannot be built was a crash out of onCreate and still is one: re-thrown as
                     // an uncaught exception on the main thread — past the scope's handler, which would only
                     // log it and leave a "searching" notification that never resolves — so CrashHandler
-                    // records it exactly as before.
-                    .onFailure { failure -> Handler(Looper.getMainLooper()).post { throw failure } }
+                    // records it exactly as before. The one exception is a Keystore refusal, which wiped
+                    // nothing and is worth another try: that stands down instead (ADR 2026-10.47rw).
+                    .onFailure { failure ->
+                        if (failure.keystoreUnavailable() != null) {
+                            declineStorage(failure)
+                        } else {
+                            Handler(Looper.getMainLooper()).post { throw failure }
+                        }
+                    }
             }
         }
+    }
+
+    /**
+     * The graph build failed because the Keystore refused to unwrap the database passphrase or the identity —
+     * a refusal, not a loss, so every file was left as it was (ADR 2026-10.47rw). Crashing would only buy a
+     * sticky restart that the system refuses from the background, or a crash loop on a battery-exempt phone, and
+     * a "Knit keeps stopping" dialog that reads as data loss. So stand down: say so in a notification, drop the
+     * foreground state, keep the heartbeat for the next try, and stop. `meshEnabled` is left alone, so the next
+     * app open (whose own open retries — `ui/StorageGate`) or reboot starts the mesh as usual; that start takes
+     * the notification back ([startMesh]).
+     */
+    private fun declineStorage(failure: Throwable) {
+        Log.w(TAG, "mesh graph not built: the Keystore refused; standing down until the next start", failure)
+        if (destroyed) return
+        storageDeclined = true
+        StorageAlert.post(this)
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        scheduleHeartbeat()
+        stopSelf()
     }
 
     /**
@@ -215,6 +250,7 @@ class MeshService : LifecycleService() {
      * paused — radios down, resume alarms armed — instead of raising the links a pause exists to keep down.
      */
     private fun startMesh(pausedSeed: Long?) {
+        StorageAlert.cancel(this) // a start after a Keystore refusal takes its notice back
         observeStatus()
         warmModelOnFirstPeer()
         powerMonitor.start() // seed power state before the discovery loop first reads it
@@ -403,10 +439,13 @@ class MeshService : LifecycleService() {
         }
         // Taken down while the graph was still building on a worker: nothing is running yet, and the build's
         // return to the main thread reads [destroyed] and starts nothing. Reading the injected fields here
-        // would block on that build.
+        // would block on that build. A [storageDeclined] instance stopped itself and keeps the alarms, as a
+        // [graphless] one does: its start was never refused, only the Keystore was.
         if (!meshStarted) {
-            cancelHeartbeat()
-            cancelResume()
+            if (!storageDeclined) {
+                cancelHeartbeat()
+                cancelResume()
+            }
             super.onDestroy()
             return
         }

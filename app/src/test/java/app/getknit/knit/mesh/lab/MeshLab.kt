@@ -27,6 +27,7 @@ import app.getknit.knit.data.backup.BackupTables
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.crypto.KeystoreSecret
+import app.getknit.knit.data.crypto.Unwrapped
 import app.getknit.knit.data.draft.DraftRepository
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.group.GroupEntity
@@ -766,14 +767,12 @@ class LabNode internal constructor(
 
     // --- persistent across restarts ---
 
-    // The keystore-wrapped identity file, held as bytes: IdentityKeyStore only ever calls load()/store().
+    // The keystore-wrapped identity file, held as bytes: IdentityKeyStore only ever calls read()/store().
     private var secretBytes: ByteArray? = seedIdentity?.copyOf()
     private val secret =
         mockk<KeystoreSecret> {
-            every { exists() } answers { secretBytes != null }
-            every { load() } answers { secretBytes }
-            every { store(any()) } answers { secretBytes = firstArg<ByteArray>().copyOf() }
-            every { delete() } answers { secretBytes = null }
+            every { read() } answers { secretBytes?.let { Unwrapped.Present(it.copyOf()) } ?: Unwrapped.Absent }
+            every { store(any(), any()) } answers { secretBytes = firstArg<ByteArray>().copyOf() }
         }
     private val keyStore = IdentityKeyStore(secret)
     val identity = Identity(keyStore) { "device-$name" }

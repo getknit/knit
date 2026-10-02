@@ -412,6 +412,7 @@ private fun problemText(problem: BackupProblem?): String =
             BackupProblem.WRONG_KEY_OR_DAMAGED -> R.string.backup_problem_wrong_key
             BackupProblem.TRUNCATED, BackupProblem.MISMATCH -> R.string.backup_problem_damaged
             BackupProblem.NO_SPACE -> R.string.backup_problem_no_space
+            BackupProblem.KEYSTORE_UNAVAILABLE -> R.string.backup_problem_keystore
             null -> R.string.backup_problem_io
         },
     )

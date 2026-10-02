@@ -47,9 +47,10 @@ class KnitApplication :
         // it; it must not build a Koin graph, open the DataStore a second time or seed anything of its own.
         if (getProcessName().endsWith(RestartActivity.PROCESS_SUFFIX)) return
         // Before startKoin, deliberately. The crashes worth capturing most are the ones in startup itself:
-        // an AndroidKeyStore fault in KeystoreSecret/DatabaseKey, a SQLCipher or tflite .so that won't load,
-        // a Koin graph that throws while building KnitDatabase. Every one of those kills the app before any
-        // injectable object exists, which is also why the store is built by hand here rather than resolved.
+        // a SQLCipher or tflite .so that won't load, a Koin graph that throws while building KnitDatabase.
+        // Every one of those kills the app before any injectable object exists, which is also why the store is
+        // built by hand here rather than resolved. (A Keystore *refusal* is not one of them: MeshService and
+        // ui/StorageGate stand down on it rather than crash, and nothing is wiped — ADR 2026-10.47rw.)
         // Chains to whatever handler was already default, so the "Knit keeps stopping" dialog and the
         // process kill still happen exactly as before.
         CrashHandler.install(crashStore(this), currentCrashEnvironment())

@@ -13,6 +13,7 @@ import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.crypto.KeystoreSecret
+import app.getknit.knit.data.crypto.Unwrapped
 import app.getknit.knit.data.settings.SettingsKeys
 import io.mockk.every
 import io.mockk.mockk
@@ -56,6 +57,9 @@ class RestoreStagerTest {
     /** A wrap that reads back something other than what it was handed. */
     private var wrapReadsBackWrong = false
 
+    /** A wrap whose read-back the Keystore refuses. */
+    private var readBackRefused = false
+
     private val stager =
         RestoreStager(
             context,
@@ -69,6 +73,7 @@ class RestoreStagerTest {
         staging.deleteRecursively()
         wrapThrows = null
         wrapReadsBackWrong = false
+        readBackRefused = false
     }
 
     private fun fakeSecret(
@@ -77,13 +82,17 @@ class RestoreStagerTest {
     ): KeystoreSecret {
         val file = File(dir, fileName)
         return mockk {
-            every { store(any()) } answers {
+            every { store(any(), any()) } answers {
                 wrapThrows?.let { throw it }
                 file.writeBytes(byteArrayOf(WRAP_TAG) + firstArg<ByteArray>())
             }
-            every { load() } answers {
+            every { read() } answers {
                 val plain = file.readBytes().copyOfRange(1, file.length().toInt())
-                if (wrapReadsBackWrong) plain.also { it[0] = (it[0] + 1).toByte() } else plain
+                when {
+                    readBackRefused -> Unwrapped.Unavailable(GeneralSecurityException("keystore unavailable"))
+                    wrapReadsBackWrong -> Unwrapped.Present(plain.also { it[0] = (it[0] + 1).toByte() })
+                    else -> Unwrapped.Present(plain)
+                }
             }
         }
     }
@@ -298,10 +307,17 @@ class RestoreStagerTest {
         }
 
     @Test
-    fun aKeystoreThatRefusesTheWrapIsAMismatch() =
+    fun aKeystoreThatRefusesTheWrapIsTheKeystoreNotTheFile() =
         runTest {
             wrapThrows = GeneralSecurityException("keystore unavailable")
-            assertRefused(BackupProblem.MISMATCH, backup())
+            assertRefused(BackupProblem.KEYSTORE_UNAVAILABLE, backup())
+        }
+
+    @Test
+    fun aKeystoreThatRefusesTheReadBackIsTheKeystoreNotTheFile() =
+        runTest {
+            readBackRefused = true
+            assertRefused(BackupProblem.KEYSTORE_UNAVAILABLE, backup())
         }
 
     @Test
@@ -323,8 +339,8 @@ class RestoreStagerTest {
             var stored: ByteArray? = null
             val secret =
                 mockk<KeystoreSecret> {
-                    every { load() } answers { stored }
-                    every { store(any()) } answers { stored = firstArg<ByteArray>().copyOf() }
+                    every { read() } answers { stored?.let { Unwrapped.Present(it.copyOf()) } ?: Unwrapped.Absent }
+                    every { store(any(), any()) } answers { stored = firstArg<ByteArray>().copyOf() }
                 }
             IdentityKeyStore(secret).keys()
             checkNotNull(stored)

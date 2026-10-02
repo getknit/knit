@@ -10,11 +10,12 @@ import java.nio.file.StandardCopyOption
  * renames it over the target. After this returns — or after a crash at any point — the target holds
  * either the complete previous contents or the complete new contents, **never** a truncated file.
  *
- * This matters because the callers' read paths treat a corrupt file as "key lost" and respond
- * *destructively*: [DatabaseKey] wipes the entire encrypted database, and [KeystoreSecret] (via
- * [IdentityKeyStore]) mints a fresh identity keypair — a new nodeId that breaks every peer's pinned key.
- * A plain [File.writeBytes] truncates the live file first, so a mid-write crash could trigger exactly
- * those destructive fallbacks. See ARCHITECTURE_REVIEW.md item #12.
+ * This matters because the callers' read paths treat a malformed or unverifiable file as proof the key is
+ * lost and respond *destructively*: [DatabaseKey] wipes the entire encrypted database, and [IdentityKeyStore]
+ * mints a fresh identity keypair — a new nodeId that breaks every peer's pinned key. A truncated wrap *is* such
+ * proof ([Loss.MALFORMED], or a tag that fails), so a plain [File.writeBytes], which truncates the live file
+ * first, could hand a mid-write crash exactly those destructive fallbacks. See ARCHITECTURE_REVIEW.md item #12;
+ * a Keystore that merely refuses no longer takes them (ADR 2026-10.47rw).
  *
  * Hardens the [app.getknit.knit.ui.invite.ApkMerger] temp+rename precedent with an fsync and
  * `ATOMIC_MOVE` (vs. [File.renameTo]), since the blast radius here is the DB/identity rather than a

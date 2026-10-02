@@ -8,6 +8,7 @@ import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.crypto.KeystoreSecret
 import app.getknit.knit.data.crypto.SqlCipherKey
+import app.getknit.knit.data.crypto.Unwrapped
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.settings.SettingsKeys
 import app.getknit.knit.data.settings.SettingsStore
@@ -102,10 +103,10 @@ class BackupRoundTripTest {
 
             // The same passphrase and the same identity come back through the live aliases' wraps...
             val filesDir = targets.identity.parentFile!!
-            val restoredPassphrase = KeystoreSecret(context, DatabaseKey.KEY_ALIAS, DatabaseKey.KEY_FILE, filesDir).load()
-            assertArrayEquals(passphrase, restoredPassphrase)
-            val restoredIdentity = KeystoreSecret(context, IdentityKeyStore.KEYSTORE_ALIAS, IdentityKeyStore.FILE_NAME, filesDir).load()
-            assertEquals(nodeId, IdentityKeyStore.nodeIdOf(checkNotNull(restoredIdentity)))
+            val restoredPassphrase = KeystoreSecret(context, DatabaseKey.KEY_ALIAS, DatabaseKey.KEY_FILE, filesDir).read()
+            assertArrayEquals(passphrase, (restoredPassphrase as Unwrapped.Present).bytes)
+            val restoredIdentity = KeystoreSecret(context, IdentityKeyStore.KEYSTORE_ALIAS, IdentityKeyStore.FILE_NAME, filesDir).read()
+            assertEquals(nodeId, IdentityKeyStore.nodeIdOf((restoredIdentity as Unwrapped.Present).bytes))
             // ...and the database opens under it with the message in it.
             SqlCipherKey.open(targets.database, passphrase).use { c ->
                 c.prepare("SELECT body FROM messages WHERE id = 'm1'").use {

@@ -30,6 +30,12 @@
     <!-- Connection &amp; error alerts (App group) -->
     <string name="channel_alerts_name">Connection &amp; alerts</string>
     <string name="channel_alerts_desc">Mesh connection changes and errors</string>
+    <!-- The Keystore refused to unwrap the storage key on a start; nothing was wiped (ADR 2026-10.47rw). -->
+    <string name="storage_alert_title">Knit couldn\'t start the mesh</string>
+    <string name="storage_alert_text">This phone\'s secure storage didn\'t respond, so Knit couldn\'t open your messages. Nothing was deleted. Tap to try again.</string>
+    <string name="storage_unavailable_title">Waiting for secure storage</string>
+    <string name="storage_unavailable_body">This phone\'s secure storage didn\'t respond, so Knit can\'t open your messages yet. Nothing was deleted. Try again in a moment — restarting the phone can also help.</string>
+    <string name="storage_unavailable_retry">Try again</string>
 
     <!-- Open to chat (App group): the nudge when someone nearby declares the same flag as you -->
     <string name="channel_open_to_chat_name">Open to chat</string>
@@ -873,6 +879,7 @@
     <string name="backup_problem_wrong_key">the recovery key doesn\'t open it, or the file has changed since it was saved</string>
     <string name="backup_problem_damaged">the file is incomplete or damaged</string>
     <string name="backup_problem_no_space">this phone doesn\'t have enough free space</string>
+    <string name="backup_problem_keystore">this phone\'s secure storage didn\'t respond — try again in a moment</string>
     <string name="backup_problem_io">the file couldn\'t be read or written</string>
     <string name="onboarding_restore">Restore from a backup</string>
 

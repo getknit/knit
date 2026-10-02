@@ -7,10 +7,14 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.sqlite.SQLiteConnection
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.KnitDatabase
+import app.getknit.knit.data.crypto.AndroidKeystoreCipher
 import app.getknit.knit.data.crypto.DatabaseKey
 import app.getknit.knit.data.crypto.IdentityKeyStore
+import app.getknit.knit.data.crypto.KeystoreCipher
 import app.getknit.knit.data.crypto.KeystoreSecret
 import app.getknit.knit.data.crypto.SqlCipherKey
+import app.getknit.knit.data.crypto.Unwrapped
+import app.getknit.knit.data.crypto.keystoreUnavailable
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
 import kotlinx.coroutines.flow.first
@@ -18,6 +22,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
+import java.io.IOException
 import java.io.OutputStream
 
 /**
@@ -26,7 +31,7 @@ import java.io.OutputStream
  * running throughout — [DatabaseExport] reads the live database under a snapshot, never its write lock.
  *
  * The identity and the passphrase are read through the same wrap the app reads them through
- * ([KeystoreSecret], [DatabaseKey]) and held in memory until the archive is written; the only thing that
+ * ([KeystoreSecret], [DatabaseKey.current]) and held in memory until the archive is written; the only thing that
  * touches the disk in the clear is the database copy, under `noBackupFilesDir` (never in a cloud
  * backup) and deleted before this returns.
  */
@@ -60,10 +65,10 @@ class BackupWriter(
                 ?: context.noBackupFilesDir.usableSpace
         if (room < needed) throw BackupException(BackupProblem.NO_SPACE, "need $needed B free")
         runCatching { storage?.allocateBytes(StorageManager.UUID_DEFAULT, needed) }
-        val passphrase = databaseKey.getOrCreate()
+        val passphrase = secretBytes(databaseKey.current(), "database passphrase")
         try {
-            val nodeId = identity.nodeId() // mints the identity if this phone never had one
-            val identityBytes = identitySecret.load() ?: throw IllegalStateException("identity file unreadable")
+            val nodeId = keystoreRead("identity keys") { identity.nodeId() } // mints the identity if this phone never had one
+            val identityBytes = secretBytes(identitySecret.read(), "identity file")
             try {
                 val dbCopy = File(scratch, BackupFormat.ENTRY_DATABASE)
                 onProgress(0, 0)
@@ -109,6 +114,33 @@ class BackupWriter(
         }
     }
 
+    /**
+     * The bytes of a secret the live app already holds. Read, never [DatabaseKey.getOrCreate]: the database is open
+     * beside this, and a refusal must fail the backup — never wipe the live database or mint a second passphrase
+     * (ADR 2026-10.47rw). A refusal is [BackupProblem.KEYSTORE_UNAVAILABLE], worth another try; anything else is an
+     * unreadable file.
+     */
+    private fun secretBytes(
+        read: Unwrapped,
+        what: String,
+    ): ByteArray =
+        when (read) {
+            is Unwrapped.Present -> read.bytes
+            is Unwrapped.Unavailable -> BackupArchive.fail(BackupProblem.KEYSTORE_UNAVAILABLE, "Keystore refused the $what", read.cause)
+            is Unwrapped.Lost -> throw IOException("$what unreadable (${read.reason})", read.cause)
+            Unwrapped.Absent -> throw IOException("no $what")
+        }
+
+    /** Runs [block], turning a Keystore refusal anywhere under it into [BackupProblem.KEYSTORE_UNAVAILABLE]. */
+    private inline fun <T> keystoreRead(
+        what: String,
+        block: () -> T,
+    ): T =
+        runCatching(block).getOrElse { failure ->
+            val refusal = failure.keystoreUnavailable() ?: throw failure
+            BackupArchive.fail(BackupProblem.KEYSTORE_UNAVAILABLE, "Keystore refused the $what", refusal)
+        }
+
     companion object {
         /** Under `noBackupFilesDir`; holds the database copy while the archive streams it out. */
         const val SCRATCH_DIR = "backup-scratch"
@@ -117,8 +149,10 @@ class BackupWriter(
         private const val SPACE_MARGIN = 32L * 1024 * 1024
 
         /** The identity file, read through the same wrap [IdentityKeyStore] uses; DI passes this to the writer. */
-        fun identitySecret(context: Context): KeystoreSecret =
-            KeystoreSecret(context, IdentityKeyStore.KEYSTORE_ALIAS, IdentityKeyStore.FILE_NAME)
+        fun identitySecret(
+            context: Context,
+            cipher: KeystoreCipher = AndroidKeystoreCipher,
+        ): KeystoreSecret = KeystoreSecret(context, IdentityKeyStore.KEYSTORE_ALIAS, IdentityKeyStore.FILE_NAME, cipher = cipher)
 
         /**
          * A SQLCipher file opened with the driver alone, under [passphrase]'s raw key — the stager's verifier.

@@ -78,3 +78,10 @@ any device. (`am start-foreground-service` cannot reach the service from the she
 The trap: any new
 read of an injected field from `onStartCommand`, `onDestroy` or a sensor callback must sit behind `meshStarted`,
 or it is the ANR again in the one process type the UI never covers.
+
+*Amended by ADR 2026-10.47rw (2026-10-01): one failure is no longer a crash. A build that fails with a
+`KeystoreUnavailableException` down its cause chain — the Keystore refused to unwrap the database passphrase or
+the identity, and nothing was wiped — makes the service post an alert, drop the foreground state, keep the
+heartbeat and stop; and the UI opens storage off the main thread through `ui/StorageGate`, before `KnitApp`
+composes, with a Try again screen for the same failure. Every other build failure is still the crash this ADR
+describes.*

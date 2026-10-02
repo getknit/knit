@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
+import android.view.ViewTreeObserver
 import android.view.contentcapture.ContentCaptureManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,6 +20,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import app.getknit.knit.ui.KnitApp
 import app.getknit.knit.ui.RouteInbox
+import app.getknit.knit.ui.StorageGate
+import app.getknit.knit.ui.StorageUnavailableScreen
 import app.getknit.knit.ui.WindowWedgePolicy
 import app.getknit.knit.ui.addcontact.ContactCardInbox
 import app.getknit.knit.ui.addcontact.contactLinkFrom
@@ -49,6 +52,9 @@ class MainActivity : ComponentActivity() {
     // The theme flags, already warmed by KnitApplication so the first composition reads a settled value.
     private val themePrefs: ThemePreferences by inject()
 
+    // Opens the database and the identity off the main thread before KnitApp composes (ADR 2026-10.47rw).
+    private val storageGate: StorageGate by inject()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -72,12 +78,53 @@ class MainActivity : ComponentActivity() {
             } else {
                 null
             }
+        storageGate.open()
+        retryStorageOnResume()
         setContent {
             // collectAsStateWithLifecycle seeds the first composition from the StateFlow's current value,
             // and keeps the theme live when the switch is toggled in Settings without leaving the app.
             val dynamicColor by themePrefs.dynamicColor.collectAsStateWithLifecycle()
+            val storage by storageGate.state.collectAsStateWithLifecycle()
             KnitTheme(dynamicColor = dynamicColor) {
-                KnitApp(startRoute = startRoute)
+                when (val state = storage) {
+                    StorageGate.State.Ready -> KnitApp(startRoute = startRoute)
+
+                    is StorageGate.State.Unavailable -> StorageUnavailableScreen(trying = state.trying, onRetry = storageGate::open)
+
+                    // Nothing to draw yet, and nothing is: see holdFirstDrawWhileOpening.
+                    StorageGate.State.Opening -> Unit
+                }
+            }
+        }
+        holdFirstDrawWhileOpening()
+    }
+
+    /**
+     * Keeps the first frame back while [storageGate] opens storage on its worker, so the launch looks exactly as it
+     * did when `KnitApp` opened it on the main thread: the system splash (or, below API 31, the splash-coloured
+     * window background) until the app's first real frame. The standard way to hold a splash — what
+     * `SplashScreen.setKeepOnScreenCondition` does inside — and it cannot trip [WindowWedgePolicy], which acts on
+     * a window the platform reports *not visible*; a held draw leaves the window visible. A healthy open is the
+     * few hundred milliseconds the main thread used to block for; a refusal ends in the Try again screen.
+     */
+    private fun holdFirstDrawWhileOpening() {
+        val content = findViewById<View>(android.R.id.content)
+        content.viewTreeObserver.addOnPreDrawListener(
+            object : ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if (storageGate.state.value == StorageGate.State.Opening) return false
+                    content.viewTreeObserver.removeOnPreDrawListener(this)
+                    return true
+                }
+            },
+        )
+    }
+
+    /** A refusal is worth another try every time the user comes back to the app; [StorageGate.open] is idempotent. */
+    private fun retryStorageOnResume() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                if (storageGate.state.value is StorageGate.State.Unavailable) storageGate.open()
             }
         }
     }

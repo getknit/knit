@@ -32,6 +32,9 @@ document:
 
 ### Fixed
 
+- If the phone's secure storage didn't respond when Knit started, Knit could delete your messages and come
+  back as a stranger to your contacts. It now shows a Try again screen and opens as usual once the phone
+  answers.
 - If you and a contact added each other from links and could only reach each other through an Internet
   relay, one of you could see "Waiting for their device to answer" for up to a day. Your phones now connect
   without either of you having to write first.

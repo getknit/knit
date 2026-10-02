@@ -128,13 +128,16 @@ would save its empty field over the restored name) and `restore_pending = true` 
 
 `RestoreStager` decrypts into `noBackupFilesDir/restore-staging/` and proves every piece before it writes
 `READY`, because the two readers on the other side fail *destructively* (`DatabaseKey` wipes the database
-on a passphrase it cannot unwrap; `IdentityKeyStore` mints a new identity on a file it cannot parse):
+on a passphrase whose wrap is proven lost; `IdentityKeyStore` mints a new identity over one — a Keystore that
+merely refuses fails the open instead, ADR 2026-10.47rw):
 
 1. the manifest's `schemaVersion` is at most this build's — Room has no way down;
 2. every entry's size and SHA-256 match the manifest as it is written;
 3. the identity parses and its node id is the manifest's;
 4. the identity and the passphrase are wrapped under the **live** Keystore aliases into the staging
-   directory (`KeystoreSecret(…, dir = staging)`) and read back;
+   directory (`KeystoreSecret(…, dir = staging)`) and read back — a wrap or read-back the phone's Keystore
+   refuses is `KEYSTORE_UNAVAILABLE` (try again), never `MISMATCH`, and the wrap never generates a key over
+   the live one on a lookup that merely missed it;
 5. the staged database opens under the passphrase's raw key, is at `schemaVersion`, and passes `quick_check`
    (a copy a pre-2026-09.uzkm development build keyed with the passphrase itself is rekeyed onto the raw
    key first, by the same `SqlCipherKey.upgrade` the live database goes through);

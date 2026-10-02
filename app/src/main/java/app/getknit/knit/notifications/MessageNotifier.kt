@@ -708,6 +708,8 @@ class MessageNotifier(
         // A direct-transfer offer (standalone, one per peer by tag — it is answered, not read).
         private const val ID_TRANSFER = 10
 
+        // 11 is StorageAlert's: the mesh could not open its storage because the Keystore refused (ADR 2026-10.47rw).
+
         // Its PendingIntent tag: a request code of its own so its deep link never clobbers a chat's.
         private const val TAG_OPEN_TO_CHAT = "open-to-chat"
 

@@ -131,7 +131,9 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   (`onCreate` claims the state before anything, then resolves the graph on the **app scope**, never on the main
   thread — `onCreate` + the `onStartCommand` behind it share a separate 20 s "executing service" ANR budget, and a
   process born for the service is the one the UI never pre-built the graph for; every later callback keys on
-  `meshStarted`, never on an injected field). The foreground deadline is 30 s on Android 15 (10 s before), and
+  `meshStarted`, never on an injected field; a build failure is a crash on the main looper, except a
+  `KeystoreUnavailableException` down its cause chain, which stands the service down with an alert — ADR
+  2026-10.47rw). The foreground deadline is 30 s on Android 15 (10 s before), and
   `getForegroundServiceType()` cannot tell you it was lost. `BootReceiver` starts through
   `MeshService.startFromBoot`, never `start` — ADR 2026-09.29dw: the pre-check reads process state, a
   receiver's is `IMPORTANCE_SERVICE`, and the boot exemption is the platform's. Regression:
@@ -245,6 +247,18 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `SqlCipherKey.upgrade` before Room opens it. Never hand SQLCipher the bare passphrase: every pooled connection
   would pay a 256,000-iteration derivation under the pool's lock (≈46 s of cold start on a 32-bit phone). The pool
   is capped at four. Regression: `SqlCipherKeyTest`, `SqlCipherRawKeyTest`.
+- **When touching `data/crypto/KeystoreSecret`, `KeystoreCipher`, `KeystoreFailure`, `DatabaseKey.getOrCreate` /
+  `current`, `IdentityKeyStore.loaded` / `generateAndStore`, the `.lost` slot, `ui/StorageGate`, the `StorageGate`
+  half of `MainActivity`, or anything else that reads a Keystore-wrapped secret:** READ ADR 2026-10.47rw. Only
+  proof a secret is gone may wipe or mint: a tag that fails, a key permanently invalidated, a key missing on
+  every look, a wrap too short to be one — the same verdict on all three attempts. Everything else, unrecognised
+  included, is a refusal: `KeystoreUnavailableException`, every file as it was, and the service and the UI stand
+  down on it (alert / Try again) instead of crashing. Look keys up with `getKey`, never `getEntry` (keystore2
+  answers null for a busy backend there); never generate under an alias a live wrap depends on without
+  confirmed absence; read a mint back before using it; and a live reader (the backup writer) uses `current()` /
+  `read()`, never `getOrCreate()`. Debug builds refuse on cue while `files/keystore-fault` holds a count.
+  Regression: `KeystoreSecretTest`, `DatabaseKeyRecoveryTest`, `IdentityKeyStoreRecoveryTest`,
+  `BackupWriterKeystoreTest`, `StorageGateTest`; on a device `DatabaseKeyTest`.
 - **When touching `data/draft/`, what the composer keeps between visits, or the chat list's `Draft: …`
   preview:** READ ADR 2026-09.qtg9. An unsent draft is a row in the encrypted DB (never the DataStore —
   it is message text), written debounced on the *application* scope, and handed to the composer exactly
