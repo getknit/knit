@@ -53,6 +53,7 @@ beyond an Android phone, though it will happily use a Meshtastic board if you ha
 | **Encryption** | E2E on 1:1 DMs & group chats, forward-secret between current builds (X3DH-style bootstrap + epoch ratchet, AES-256-GCM, Ed25519); at-rest DB via SQLCipher |
 | **Works without** | Internet, cellular, Wi-Fi routers, accounts, phone numbers, or any server |
 | **Optional extras** | A Meshtastic LoRa board for kilometre-scale hops; Internet relays for when nobody is in range — each off until you turn it on |
+| **Watch** | A Wear OS 3+ app, tile, and five complications that read the mesh from your phone — [in preview](#-on-your-watch) |
 | **License** | GPL-3.0-or-later — free and open source |
 
 ## Contents
@@ -61,6 +62,7 @@ beyond an Android phone, though it will happily use a Meshtastic board if you ha
 - [How it works](#how-it-works)
 - [Use it when](#-use-it-when)
 - [Features](#-features)
+- [On your watch](#-on-your-watch)
 - [Requirements](#-requirements)
 - [Tech stack](#-tech-stack)
 - [Build](#-build)
@@ -187,7 +189,7 @@ Knit is built for situations where there's **no reliable network but people are 
 - **See what your phone did for the mesh** — tap the nearby count above the chat list for **Your
   mesh**: messages your phone passed along or handed straight to the person they were for, what it is
   carrying right now, and how many people it has met. Every number is counted on the phone and stays
-  there.
+  there, apart from the totals the [watch app](#-on-your-watch) preview reads from it.
 - **Kilometres of range from a Meshtastic radio, if you want them** — pair a LoRa board over Bluetooth
   and the **Nearby room and your 1:1 messages** get a hop measured in kilometres instead of metres,
   shared by every phone meshed with yours: one board extends the whole group. LoRa spends speed to buy
@@ -221,6 +223,31 @@ Knit is built for situations where there's **no reliable network but people are 
   you start and don't send is still waiting in that chat when you come back, and the chat list shows it
   as `Draft:` until it goes.
 
+## ⌚ On your watch
+
+<div align="center">
+
+<img src="docs/images/wear-app-callouts.webp"
+     alt="Knit's Wear OS app on a round watch, with callouts. The watch shows a peer map: a badge reading 5 in the middle, five people joined to it by lines, and two hollow circles further out, above the words &quot;Linked&quot; and &quot;5 nearby · 2 far&quot;. The callouts explain the count of people in reach, one line style per radio, people further out over LoRa or a relay, and the mesh state. Along the bottom are the tile, Today, Your day, and a watch face carrying Knit complications."
+     width="800">
+
+</div>
+
+Knit is coming to Wear OS. The watch app shows who your phone can reach without you taking the phone out
+of your pocket. Its map draws a line to each person in the style of the radio that links you: thin for
+Bluetooth, a wide ribbon for Wi-Fi Aware, a wave for LoRa, dots for an Internet relay. People reached only
+over LoRa or a relay sit further out as hollow circles. The Knit tile is a swipe away from the time, and
+five complications can put the mesh state, people nearby, messages relayed today, messages carried for
+others, or a breakdown of your day on your watch face. It needs Wear OS 3 or newer.
+
+The watch gets all of this from the Knit app on the phone it's paired with, directly over Bluetooth, so
+neither end needs Google Play services. The phone answers only a device it's paired with, over an encrypted
+connection, and what it sends names nobody: counts, the mesh state, and which radios reach each person, with
+no ids, names, or keys. The watch keeps the history of your day to itself.
+
+The watch app is a preview for now. Release builds of the phone app don't serve it yet, and it's headed
+for Google Play once they do. To try it from source, see [Build](#-build).
+
 ## 📋 Requirements
 
 - **Android 10 (API 29) or newer**, with **Wi-Fi Aware** and/or **Bluetooth LE** hardware. Nearly all
@@ -231,6 +258,8 @@ Knit is built for situations where there's **no reliable network but people are 
     `ACCESS_FINE_LOCATION` (location-scoped, no ICM) on **API 29–32**. The location permissions are
     declared on every version for **Send location**, which asks for them the first time you pick it from
     a chat's menu.
+- **For the [watch app](#-on-your-watch) (a preview):** a watch on **Wear OS 3 or newer**, paired with
+  the phone over Bluetooth.
 - **JDK 21** and the **Android SDK** to build (versions in [Tech stack](#-tech-stack)).
 - Real mesh testing needs **two or more physical devices** — see [Running](#-running).
 
@@ -276,6 +305,17 @@ cd knit
 ```
 
 The debug APK lands at `app/build/outputs/apk/debug/app-debug.apk`.
+
+The Wear OS app is a separate module that is in the build only when you ask for it:
+
+```bash
+./gradlew :wear:assembleDebug -Pknit.wear=true
+adb -s <watch-serial> install wear/build/outputs/apk/debug/wear-debug.apk
+```
+
+It shares the phone app's package name, so install it with an explicit `-s` (or `ANDROID_SERIAL`): a
+`./gradlew installDebug -Pknit.wear=true` with a phone attached can replace the phone app with the watch
+build. Debug builds of the phone app serve the watch; release builds don't yet.
 
 ## 📱 Running
 
@@ -457,6 +497,9 @@ protocol is specified in [`docs/SPOOL_PROTOCOL.md`](docs/SPOOL_PROTOCOL.md) with
 vectors; the client implements it, and the reference spool daemon lives in
 [`getknit/knit-spool`](https://github.com/getknit/knit-spool). Knit is built around proximity meshing
 either way.
+
+**In preview, debug builds only:** a **Wear OS app** with a tile and five complications that read the mesh
+from your phone ([On your watch](#-on-your-watch)).
 
 **Explicitly deferred (don't start without direction):**
 

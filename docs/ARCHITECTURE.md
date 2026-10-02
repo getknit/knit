@@ -30,7 +30,9 @@ side-by-side, (3) a Signal-like Compose UI, and (4) reliable background operatio
 
 ## 2. Module / package map
 
-Single Gradle module `:app`, package root `app.getknit.knit`.
+The phone app is the Gradle module `:app`, package root `app.getknit.knit`. The Wear OS app is the opt-in
+`:wear` module (in the build only under `-Pknit.wear=true`, ADR 2026-09.wetm): it shares the package name and
+compiles `wearstatus/` from `:app`'s source, so that package imports nothing but `java.*` and `kotlin.*`.
 
 | Package | Responsibility |
 |---|---|
@@ -46,6 +48,7 @@ Single Gradle module `:app`, package root `app.getknit.knit`.
 | `notifications/` | `Notifier` (interface) + `MessageNotifier`, `NotificationChannels`, `NotificationHistory`, `NotificationActionReceiver` |
 | `crash/` | Manual crash reporting (ADR 028): `CrashHandler` (uncaught-exception capture, installed before Koin so startup crashes are caught), `CrashStore` (five reports under `noBackupFilesDir`), `CrashRedactor` (structural at capture, contact names on read), `CrashReports` (reader + share staging), `CrashIssueUrl` (prefilled GitHub bug form). No upload path — the user hands the report over |
 | `location/` | "Send location" (ADR 2026-09.tss4): `GeoUri` (the `geo:` token a message body carries — format, strict parse, strip, describe; pure), `LocationFix` + `LocationFixPolicy` (which reading to keep, the refine window; pure), `LocationSource` (seam), `AndroidLocationSource` — the **only** code that touches `android.location.*`, listening only while the composer's staged tile collects it |
+| `wearstatus/`, `mesh/wear/`, `mesh/bluetooth/wear/` | The mesh status a paired Wear OS watch reads (ADR 2026-09.wetm): `WearStatusCodec` (the 20-byte snapshot: state, counts, and a radio mask per drawn peer, never an id) and `WearStatusFrame`, both compiled into `:wear` too; `WearStatusSource` (computes it from the flows the app's own screens read); `WearStatusServer` (a secure RFCOMM socket first, a read-only encrypted GATT characteristic as the fallback, bonded devices only). Dark in release behind `BuildConfig.WEAR_STATUS` |
 | `di/` | Koin modules: `appModule`, `meshModule`, `moderationModule`, `uiModule` |
 
 ### Data flow
