@@ -1,0 +1,18 @@
+Remove a contact, clear the Nearby room, and see stuck messages get through
+
+Someone's profile now has Remove contact in its menu. It deletes your chat with them from this phone and
+doesn't tell them; people you share a group with stay in your contacts while you're both in it. A long press
+on the Nearby room in the chat list clears it, as with any other chat, and only your phone forgets the
+messages. A GIF now shows as "GIF" rather than "Photo".
+
+A lot of messages that used to stall now get through: one left on a single tick after you both wrote first
+out of range, posts from someone you hadn't met that took ten minutes or a day to appear, chats unreadable
+for hours after a restore, and two contacts who added each other by link waiting on "Waiting for their
+device to answer". If the phone's secure storage doesn't respond when Knit starts, Knit waits and offers Try
+again, where before it could delete your messages.
+
+Fixed: a group photo flipping back to the old one, a contact's new name or photo going missing, a cropped
+profile photo lost when you left the screen, a slow Bluetooth join near phones with their screens off,
+battery spent looking for a LoRa board that's switched off, attachment spinners that never stopped, LoRa
+airtime spent re-sending delivery ticks, a relay indicator promising coverage for a contact on an older Knit,
+and a stranger's group skipping Message Requests.

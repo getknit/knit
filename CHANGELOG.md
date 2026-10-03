@@ -9,7 +9,7 @@ product:
   platforms: [android]
   category: Communication
 document:
-  updated: 2026-09-24T21:26:44Z
+  updated: 2026-10-03T03:55:42Z
   coverage: partial
   canonical: https://github.com/getknit/knit/blob/main/CHANGELOG.md
   locale: en
@@ -18,7 +18,9 @@ document:
 
 # Knit changelog
 
-## Unreleased
+## [2.8.0](https://github.com/getknit/knit/releases/tag/v2.8.0) — 2026-10-03T03:55:42Z
+
+> Remove a contact, clear the Nearby room, and see stuck messages get through
 
 ### Added
 
@@ -72,6 +74,12 @@ document:
 - A stranger could get a group past Message Requests by naming you as its creator, so their first message
   notified you and showed up among your chats. That group now waits in Message Requests like any other
   request.
+- When two phones near each other each had a LoRa board, Knit could spend the radio's airtime for hours
+  re-sending delivery ticks, and new LoRa messages waited behind them. A tick now goes over LoRa only when the
+  radio is how it reaches that person, and Knit waits longer between retries.
+- In a chat with someone on an older Knit, the relay indicator said "Not covered yet", but relays were never
+  going to carry that chat. It now explains that relays need forward secrecy, and will carry the chat once
+  that person updates Knit.
 
 ## [2.7.0](https://github.com/getknit/knit/releases/tag/v2.7.0) — 2026-09-24T21:26:44Z
 
