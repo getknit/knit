@@ -122,7 +122,7 @@ Builds:
 
   - versionName: 2.8.0
     versionCode: 25
-    commit: v2.8.0
+    commit: 45e09f190bd94423ef83330f4b136450a3df225d
     subdir: app
     gradle:
       - yes
