@@ -241,6 +241,7 @@ carries; never renumber an old one.
 | [2026-10.a4pm](decisions/2026-10-a4pm-a-lora-dm-waits-for-its-recipient-to-be-heard.md) | A LoRa DM waits for its recipient to be heard | lora, dm |
 | [2026-10.aajj](decisions/2026-10-aajj-knit-teaches-its-board-a-pinned-contact-s-key-with-add-contact-on-a-pki-refusal.md) | Knit teaches its board a pinned contact's key with add_contact on a PKI refusal | lora |
 | [2026-10.am8d](decisions/2026-10-am8d-voice-notes-are-transcribed-on-tap-and-the-text-is-kept-on-the-row.md) | Voice notes are transcribed on tap and the text is kept on the row | voice, ml |
+| [2026-10.a5yj](decisions/2026-10-a5yj-a-contact-s-direct-internet-link-is-an-on-demand.md) | A contact's direct Internet link is an on-demand, long-range MeshTransport child | mesh, spool, transport, privacy, wire |
 | [2026-10.b8yf](decisions/2026-10-b8yf-a-bluetooth-link-s-acl-is-armed-to-idle-out-when-its-channel-closes.md) | A Bluetooth link's ACL is armed to idle out when its channel closes | ble, transport |
 | [2026-10.d44b](decisions/2026-10-d44b-low-power-mode-makes-the-phone-a-bluetooth-leaf.md) | Low-power mode makes the phone a Bluetooth leaf | battery, mesh, bluetooth, wifi-aware, power |
 | [2026-10.d62w](decisions/2026-10-d62w-identity-slurs-are-blocked-by-a-word-list-in-every-conversation.md) | Identity slurs are blocked by a word list in every conversation, not only the Nearby room | moderation, privacy |
