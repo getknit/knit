@@ -11,6 +11,7 @@ import app.getknit.knit.call.CallLog
 import app.getknit.knit.call.CallManager
 import app.getknit.knit.call.CallMedia
 import app.getknit.knit.call.CallMediaSampler
+import app.getknit.knit.call.CallPhase
 import app.getknit.knit.call.CallReach
 import app.getknit.knit.call.CallReachRule
 import app.getknit.knit.call.CallSignals
@@ -27,9 +28,14 @@ import app.getknit.knit.call.SystemCallSync
 import app.getknit.knit.call.SystemCalls
 import app.getknit.knit.call.TalkLink
 import app.getknit.knit.call.TurnSource
+import app.getknit.knit.call.VoiceNoteSpeech
+import app.getknit.knit.call.VoiceNoteTranscriber
 import app.getknit.knit.call.WalkieTranscriber
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
+import app.getknit.knit.data.VoiceAudio
+import app.getknit.knit.data.blob.BlobDao
+import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.data.settings.CallIntake
 import app.getknit.knit.data.settings.CallTombStore
@@ -46,6 +52,8 @@ import app.getknit.knit.mesh.BulkRoute
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshManager
 import app.getknit.knit.mesh.MeshTransport
+import app.getknit.knit.mesh.crypto.AttachmentCrypto
+import app.getknit.knit.mesh.crypto.b64d
 import app.getknit.knit.mesh.indirectPeers
 import app.getknit.knit.mesh.power.AppVisibility
 import app.getknit.knit.mesh.protocol.Protocol
@@ -392,6 +400,46 @@ private fun Module.speechGraph() {
                 dispatcher = Dispatchers.Default.limitedParallelism(1),
                 log = { Log.i(TAG, it) },
             )
+        }
+    }
+    // A chat voice note's text, on the person's tap (ADR 2026-10.am8d): the walkie's model over the note's held bytes,
+    // decoded to 16 kHz mono, the text kept on every row naming the note. A call comes first.
+    single {
+        val blobs = get<BlobDao>()
+        val messages = get<MessageDao>()
+        val calls = get<CallManager>()
+        VoiceNoteTranscriber(
+            speech = get<MoonshineSpeech>(),
+            pcm = { hash, key ->
+                val raw = blobs.bytes(hash)
+                val audio = if (raw == null || key == null) raw else AttachmentCrypto.open(raw, b64d(key))
+                audio?.let { VoiceAudio.speechPcm(it) }
+            },
+            save = messages::setVoiceTranscript,
+            callActive = { calls.state.value?.let { it.phase != CallPhase.Ended } == true },
+            scope = get<CoroutineScope>(),
+            dispatcher = Dispatchers.Default.limitedParallelism(1),
+            log = { Log.i(TAG, it) },
+        )
+    }
+    single<VoiceNoteSpeech> {
+        val store = get<SttModelStore>()
+        val transcriber = get<VoiceNoteTranscriber>()
+        val switch = get<TranscriptStore>().enabled
+        object : VoiceNoteSpeech {
+            override val enabled = switch
+            override val model = store.state
+            override val notes = transcriber.state
+            override val modelBytes = store.model.bytes
+
+            override fun metered() = store.metered()
+
+            override fun transcribe(
+                hash: String,
+                key: String?,
+            ) = transcriber.transcribe(hash, key)
+
+            override fun download() = store.download()
         }
     }
     if (WALKIE_WIRED) {

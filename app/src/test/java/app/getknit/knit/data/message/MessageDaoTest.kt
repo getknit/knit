@@ -697,6 +697,21 @@ class MessageDaoTest : RoomDbTest() {
         }
 
     @Test
+    fun `setVoiceTranscript writes the text on every row naming the note and no other`() =
+        runTest {
+            // ADR 2026-10.am8d: the same bytes say the same words in every bubble, so the text is keyed by hash.
+            dao.upsert(msg("v1", attachmentHash = "note"))
+            dao.upsert(msg("v2", attachmentHash = "note", sentAt = 2L))
+            dao.upsert(msg("other", attachmentHash = "else", sentAt = 3L))
+
+            dao.setVoiceTranscript("note", "See you at six.")
+
+            assertEquals("See you at six.", checkNotNull(dao.findById("v1")).voiceTranscript)
+            assertEquals("See you at six.", checkNotNull(dao.findById("v2")).voiceTranscript)
+            assertNull(checkNotNull(dao.findById("other")).voiceTranscript)
+        }
+
+    @Test
     fun `setVideoMeta replaces a described video's claim and leaves an mp4 sent as a file alone`() =
         runTest {
             // ADR 2026-10.hmfe: the bytes' own duration and size win over the sender's claim, but only on a row the

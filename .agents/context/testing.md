@@ -685,8 +685,8 @@ before "simplifying":
   downgrade `Migration(higher, lower)` — Room takes a descending path — and when the fold changed no columns
   its body is empty, because Room hashes schema *content* rather than version numbers, so only the stamp
   moves. Ship it, install across the fleet, then delete it; the alternative is wiping the drawer. The v12 → v11
-  shim did exactly that on 2026-09-10 and is gone; the v27 → v22 one (`KnitMigrations.LAB_DOWNGRADE_27_22`,
-  registered beside `ALL`, outside it) is the same move, to be deleted once the lab has opened it. Before writing
+  shim did exactly that on 2026-09-10 and is gone; the v27 → v22 one (now `KnitMigrations.LAB_DOWNGRADE_27_23`,
+  registered beside `ALL`, outside it, and landing on v23 since Room never descends past its target) is the same move, to be deleted once the lab has opened it. Before writing
   one, read the identity hash each lab phone holds out of its installed APK's dex (the `identityHash` of every
   `<version>.json`, grepped in `classes*.dex`) and check the fold's regenerated JSON carries the same hash: an
   empty shim is only right from a version whose schema the fold reproduces exactly. **An FTS table's sync triggers are the migration's job

@@ -598,15 +598,28 @@ object KnitMigrations {
         }
 
     /**
+     * v23 — `messages.voiceTranscript`: a voice note's words, written out on this phone when the person taps
+     * Transcribe (ADR 2026-10.am8d). Local only, derived from the held bytes like `voicePeaks`; null on every existing
+     * row. The SQL must stay byte-equivalent to what Room generates for `app/schemas/**/23.json`.
+     */
+    val MIGRATION_22_23 =
+        object : Migration(22, 23) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `voiceTranscript` TEXT DEFAULT NULL")
+            }
+        }
+
+    /**
      * Lab only, and temporary: walks a development database stamped v27 back down to v22. Before the fold above, the
      * post-2.9.0 schema was numbered v22…v27 and the lab phones installed it at v27; Room throws at every open on a
-     * `user_version` above the app's, but takes a registered descending path. The body is empty because v27 *is* the
-     * folded v22 — Room hashes schema content, not the version, so only the stamp moves. Delete it once every lab
-     * phone has opened its database on a build that carries it. Not in [ALL], which is the upgrade chain.
+     * `user_version` above the app's, but takes a registered descending path — and only one that never passes below
+     * its target, so it lands on v23 directly. v27 *is* the folded v22 (Room hashes schema content, not the version),
+     * so the body is v23's one step, [MIGRATION_22_23]. Delete it once every lab phone has opened its database on a
+     * build that carries it. Not in [ALL], which is the upgrade chain.
      */
-    val LAB_DOWNGRADE_27_22 =
-        object : Migration(27, 22) {
-            override suspend fun migrate(connection: SQLiteConnection) = Unit
+    val LAB_DOWNGRADE_27_23 =
+        object : Migration(27, 23) {
+            override suspend fun migrate(connection: SQLiteConnection) = MIGRATION_22_23.migrate(connection)
         }
 
     /** All migrations, applied by Room in order. */
@@ -633,8 +646,9 @@ object KnitMigrations {
             MIGRATION_19_20,
             MIGRATION_20_21,
             MIGRATION_21_22,
+            MIGRATION_22_23,
         )
 
     /** What [KnitDatabase.build] registers: the upgrade chain plus the temporary lab downgrade. */
-    val REGISTERED: Array<Migration> = ALL + LAB_DOWNGRADE_27_22
+    val REGISTERED: Array<Migration> = ALL + LAB_DOWNGRADE_27_23
 }

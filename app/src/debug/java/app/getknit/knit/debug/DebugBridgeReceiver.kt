@@ -28,6 +28,7 @@ import app.getknit.knit.call.CaptureHealth
 import app.getknit.knit.call.CaptureProfile
 import app.getknit.knit.call.DirectCallPath
 import app.getknit.knit.call.DirectMode
+import app.getknit.knit.call.NoteStt
 import app.getknit.knit.call.OverridingTurnSource
 import app.getknit.knit.call.PassGate
 import app.getknit.knit.call.SttModelState
@@ -35,6 +36,7 @@ import app.getknit.knit.call.SttPolicy
 import app.getknit.knit.call.StunServers
 import app.getknit.knit.call.SystemCallSync
 import app.getknit.knit.call.TranscriptLine
+import app.getknit.knit.call.VoiceNoteSpeech
 import app.getknit.knit.call.WalkieStats
 import app.getknit.knit.call.WalkieTranscriber
 import app.getknit.knit.crash.ProcessExitReasons
@@ -57,6 +59,7 @@ import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.group.toGroupInfo
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.hiddenByFilter
 import app.getknit.knit.data.message.quoteHasAttachment
@@ -763,6 +766,8 @@ class DebugBridgeReceiver :
         // `--ez video true` takes the video door as the composer does: re-encoded, and for the room screened (poster and
         // frames, ADR 2026-10.hmfe) with a flagged one dropped and refused, as `ChatViewModel.stage` does.
         val asVideo = intent.getBooleanExtra(EXTRA_VIDEO, false)
+        // `--ez voice true` sends the file's bytes as a recorded voice note (AAC-LC ADTS), through the composer's door.
+        val asVoice = intent.getBooleanExtra(EXTRA_VOICE, false)
         val isRoom = Conversations.kindFor(conv) == ConversationKind.NEARBY
         // `--ez fit true` fits a photo to the relays' ticket `am` exactly as the composer does (ADR 2026-10.s3ep): the
         // same `FreeUploads.photoChunks`, the same `photoFitBytes`. Off by default, so every older script is unchanged.
@@ -779,6 +784,7 @@ class DebugBridgeReceiver :
             }
         val picked =
             when {
+                asVoice -> attachments.ingestVoice(withContext(Dispatchers.IO) { file.readBytes() })
                 asVideo -> attachments.ingestVideo(Uri.fromFile(file), screen = isRoom)
                 asFile -> attachments.ingestFile(Uri.fromFile(file))
                 else -> attachments.ingest(Uri.fromFile(file), fitBytes = fitBytes)
@@ -824,9 +830,26 @@ class DebugBridgeReceiver :
                 }
             }
         return when (sent) {
-            null -> reply("error", "unknown group (not joined on this device): $conv")
-            true -> reply("ok", "sent ${if (asVideo) "video" else "image"} to $conv")
-            false -> reply("blocked", "blocked by on-device content filter")
+            null -> {
+                reply("error", "unknown group (not joined on this device): $conv")
+            }
+
+            true -> {
+                reply(
+                    "ok",
+                    "sent ${if (asVoice) {
+                        "voice note"
+                    } else if (asVideo) {
+                        "video"
+                    } else {
+                        "image"
+                    }} to $conv",
+                )
+            }
+
+            false -> {
+                reply("blocked", "blocked by on-device content filter")
+            }
         }.put("conversation", conv)
             .put("hash", ingested.hash)
             .put("mime", ingested.mime)
@@ -1192,7 +1215,10 @@ class DebugBridgeReceiver :
                     // with its score (a video's highest frame), and a video poster's own verdict, kept on the row.
                     .put("attachmentFlagged", verdict?.flagged ?: JSONObject.NULL)
                     .put("attachmentScore", verdict?.score?.toDouble() ?: JSONObject.NULL)
-                    .put("videoPosterFlagged", m.videoPosterFlagged),
+                    .put("videoPosterFlagged", m.videoPosterFlagged)
+                    // A voice note's text, kept on the row once this phone transcribed it (ADR 2026-10.am8d).
+                    .put("voiceDurationMs", m.voiceDurationMs ?: JSONObject.NULL)
+                    .put("voiceTranscript", m.voiceTranscript ?: JSONObject.NULL),
             )
         }
         return arr
@@ -2971,11 +2997,28 @@ class DebugBridgeReceiver :
                 return reply("ok", "streaming $file; poll status for `pcm`")
             }
 
+            "note" -> {
+                // `--es hash <attachmentHash>`: the voice bubble's Transcribe (ADR 2026-10.am8d), opened with the row's
+                // key. `notes` in the dump below is where it stands; `STATE`'s row carries the saved text.
+                val hash = intent.getStringExtra("hash") ?: return reply("error", "missing 'hash' extra")
+                val notes = getKoin().get<VoiceNoteSpeech>()
+                if (store.state.value !is SttModelState.Ready) return reply("error", "the model isn't installed")
+                val key = getKoin().get<MessageDao>().attachmentKeyForHash(hash)
+                if (!notes.transcribe(
+                        hash,
+                        key,
+                    )
+                ) {
+                    return reply("refused", "busy, a call is up, or already running").put("notes", notesJson())
+                }
+            }
+
             else -> {
                 return reply("error", "unknown op '$op'")
             }
         }
         return reply("ok", "stt")
+            .put("notes", notesJson())
             .put("model", store.model.id)
             .put("bytes", store.model.bytes)
             .put("stt", sttStateJson(store.state.value))
@@ -2998,6 +3041,38 @@ class DebugBridgeReceiver :
                 } ?: JSONObject.NULL,
             )
     }
+
+    private fun notesJson(): JSONObject =
+        JSONObject().apply {
+            getKoin().getOrNull<VoiceNoteSpeech>()?.notes?.value?.forEach { (hash, stt) ->
+                put(
+                    hash,
+                    when (stt) {
+                        is NoteStt.Running -> {
+                            JSONObject()
+                                .put(
+                                    "state",
+                                    "running",
+                                ).put("settled", stt.heard.settled)
+                                .put("live", stt.heard.live)
+                        }
+
+                        // The text is the person's own; the bridge is a debug build's, and the row already holds it.
+                        is NoteStt.Done -> {
+                            JSONObject().put("state", "done").put("text", stt.text)
+                        }
+
+                        NoteStt.Busy -> {
+                            JSONObject().put("state", "busy")
+                        }
+
+                        NoteStt.Failed -> {
+                            JSONObject().put("state", "failed")
+                        }
+                    },
+                )
+            }
+        }
 
     // The `loop` op: [file] through the recorder's encoder, then the player's decoder and tap, into the transcript —
     // twice over: the recorder's tap writes the file out as spoken (before Opus), the player's as heard (after it).
@@ -3860,6 +3935,7 @@ class DebugBridgeReceiver :
         const val EXTRA_PATH = "path"
         const val EXTRA_FILE = "file"
         const val EXTRA_VIDEO = "video"
+        const val EXTRA_VOICE = "voice"
         const val EXTRA_OUT = "out"
         const val EXTRA_COUNT = "count"
         const val EXTRA_FROM = "from"

@@ -238,6 +238,16 @@ interface MessageDao {
     )
 
     /**
+     * Records a voice note's transcript ([MessageEntity.voiceTranscript], ADR 2026-10.am8d) on every message naming the
+     * attachment [hash], as [setVoiceMeta] records its waveform: the same bytes say the same words in every bubble.
+     */
+    @Query("UPDATE messages SET voiceTranscript = :text WHERE attachmentHash = :hash")
+    suspend fun setVoiceTranscript(
+        hash: String,
+        text: String,
+    )
+
+    /**
      * Records what a held video's own bytes say — its duration and upright size — on every message naming [hash]
      * that the sender described as a video (ADR 2026-10.hmfe), replacing the sender's claim; keyed by hash for
      * [setVoiceMeta]'s reason. A row with no description is an `.mp4` sent as a file, by an older build or another

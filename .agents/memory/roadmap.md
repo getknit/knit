@@ -151,6 +151,11 @@ doc). **Don't start a deferred item without explicit direction.**
     Tagalog and Vietnamese (MIT), but the walkie has no language setting to pick one by.
   - **Hosting.** The nine files of each model must be uploaded to `getknit.app/models/stt/<id>/` before Download
     works (`scripts/stt-model.py --out`); until then `…debug.STT --es op sideload` is the way on.
+  - **Voice-note transcripts** (ADR 2026-10.am8d, on tap and kept on the row). Still to build:
+    - Searching them through `messages_fts`, which would touch the FTS triggers and ADR 2026-09.wdfz's invariants.
+    - An automatic mode behind a switch.
+    - The thread's names as key terms (`sttKeyterms`, as a call gets).
+    - Transcribing a staged note before it is sent.
 
 - **Enforcing the mesh-lab chaos job** (`mesh-lab-chaos` in `.github/workflows/ci.yml`, 2026-09-24). The first
   whole-package heavy-tail sweep failed nine scenarios on main; triaged 2026-09-24. Four are mesh bugs, filed as

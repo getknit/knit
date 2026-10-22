@@ -47,7 +47,7 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v22) creates and opens from the exported JSON`() =
+    fun `the current schema (v23) creates and opens from the exported JSON`() =
         runTest {
             helper.createDatabase(CURRENT_VERSION).close()
         }
@@ -886,22 +886,45 @@ class KnitDatabaseMigrationTest {
         }
 
     @Test
-    fun `a lab database stamped 27 walks back down to the folded 22 and keeps every row`() =
+    fun `migrate 22 to 23 keeps a voice note and leaves its transcript null`() =
         runTest {
-            // The fold's pre-merge numbering put the same schema at v27; only the stamp differs.
+            helper.createDatabase(22).use { c ->
+                c.execSQL(
+                    INSERT_V21.replace(
+                        ") ",
+                        ", replyCheck, replyToFlagged, attachmentFetchApproved, videoPosterFlagged, attachmentHash, " +
+                            "attachmentMime, voiceDurationMs) ",
+                    ) + "VALUES ('v1','n1','peer-1','',1,1,0,'[]',0,0,0,0,0,0,0,0,0,0,0,'H1','audio/aac',7400)",
+                )
+            }
+            helper.runMigrationsAndValidate(23, listOf(KnitMigrations.MIGRATION_22_23)).use { c ->
+                c.prepare("SELECT voiceDurationMs, voiceTranscript FROM messages WHERE id = 'v1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(7_400L, s.getLong(0))
+                    // ADR 2026-10.am8d: a note is written out only on the person's tap, never at upgrade.
+                    assertTrue(s.isNull(1))
+                }
+            }
+        }
+
+    @Test
+    fun `a lab database stamped 27 walks back down to the current schema and keeps every row`() =
+        runTest {
+            // The fold's pre-merge numbering put v22's schema at v27; only the stamp differs, so the way down is
+            // v23's one step.
             helper.createDatabase(22).use { c ->
                 c.execSQL("INSERT INTO attachment_holders (hash, holderId, plane, provedAt) VALUES ('h1', 'p1', 1, 5)")
                 c.execSQL("PRAGMA user_version = 27")
             }
             // What the builder registers, so a shim dropped from `build` goes red here.
-            helper.runMigrationsAndValidate(22, KnitMigrations.REGISTERED.toList()).use { c ->
+            helper.runMigrationsAndValidate(CURRENT_VERSION, KnitMigrations.REGISTERED.toList()).use { c ->
                 c.prepare("SELECT COUNT(*) FROM attachment_holders").use { s ->
                     assertTrue(s.step())
                     assertEquals(1L, s.getLong(0))
                 }
                 c.prepare("PRAGMA user_version").use { s ->
                     assertTrue(s.step())
-                    assertEquals(22L, s.getLong(0))
+                    assertEquals(CURRENT_VERSION.toLong(), s.getLong(0))
                 }
             }
         }
@@ -911,7 +934,7 @@ class KnitDatabaseMigrationTest {
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 22
+        const val CURRENT_VERSION = 23
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

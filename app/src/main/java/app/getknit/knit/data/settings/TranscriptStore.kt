@@ -8,9 +8,10 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 /**
- * The speech model's choices — the walkie's transcript and a live call's captions (experimental, docs/VOICE_CALLS.md
- * C-3.11-9 and C-3.7-5, ADR 2026-10.nz3g) — over the settings DataStore rather than grown into [SettingsStore]. Bound
- * only where calls are wired; all ride a Knit backup like every other choice the person made.
+ * The speech model's choices — the walkie's transcript, a live call's captions and a chat voice note's text
+ * (experimental, docs/VOICE_CALLS.md C-3.11-9 and C-3.7-5, ADRs 2026-10.nz3g and 2026-10.am8d) — over the settings
+ * DataStore rather than grown into [SettingsStore]. Bound only where calls are wired; all ride a Knit backup like every
+ * other choice the person made.
  */
 class TranscriptStore(
     private val dataStore: DataStore<Preferences>,
@@ -18,7 +19,7 @@ class TranscriptStore(
     /**
      * The Calls screen's "Transcripts and captions" switch, on by default (the model is still a download the person asks
      * for). Off, `WalkieTranscriber` takes no burst, `CallCaptioner` no audio, and the call screen draws neither the
-     * walkie's transcript card nor a live call's CC button.
+     * walkie's transcript card nor a live call's CC button, and no voice bubble offers Transcribe or shows a stored text.
      */
     val enabled: Flow<Boolean> = dataStore.data.map { it[KEY_ENABLED] ?: true }
 

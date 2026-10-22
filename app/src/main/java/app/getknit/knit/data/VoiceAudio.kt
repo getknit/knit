@@ -4,6 +4,8 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.util.Log
+import app.getknit.knit.call.BurstPcm
+import app.getknit.knit.call.SttPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.ByteOrder
@@ -67,26 +69,33 @@ object VoiceAudio {
     }
 
     /**
-     * Hands every PCM sample in one decoder output buffer to [onSample], returning whether it held any.
-     * Split out of [decodePcm] so that loop stays readable, and because the offset handling here is the
-     * subtle part: a codec may return a buffer whose payload starts at `info.offset`, and a decoder that
-     * reuses one large buffer per output would otherwise replay the previous frame's samples.
+     * Hands the PCM in one decoder output buffer to [onChunk] as a view of its payload, returning whether it held any.
+     * Split out of [decodeChunks] so that loop stays readable, and because the offset handling here is the subtle part:
+     * a codec may return a buffer whose payload starts at `info.offset`, and a decoder that reuses one large buffer per
+     * output would otherwise replay the previous frame's samples.
      */
     private fun drainOutput(
         output: java.nio.ByteBuffer?,
         info: MediaCodec.BufferInfo,
-        onSample: (sample: Short, timeUs: Long) -> Unit,
+        layout: PcmLayout,
+        onChunk: (pcm: java.nio.ByteBuffer, timeUs: Long, rate: Int, channels: Int) -> Unit,
     ): Boolean {
         if (output == null || info.size <= 0) return false
         output.position(info.offset)
         output.limit(info.offset + info.size)
-        val shorts = output.slice().order(ByteOrder.nativeOrder()).asShortBuffer()
-        var any = false
-        while (shorts.hasRemaining()) {
-            any = true
-            onSample(shorts.get(), info.presentationTimeUs)
+        onChunk(output.slice().order(ByteOrder.nativeOrder()), info.presentationTimeUs, layout.rate, layout.channels)
+        return true
+    }
+
+    /** The decoder's output layout: what its format says, updated when the codec announces a change. */
+    private class PcmLayout(
+        var rate: Int,
+        var channels: Int,
+    ) {
+        fun from(format: MediaFormat) {
+            if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
         }
-        return any
     }
 
     /** See [scaleFor]: the percentile the waveform normalises to, so one transient can't flatten it. */
@@ -100,6 +109,12 @@ object VoiceAudio {
     private const val SILENCE_FLOOR = 328L
 
     private const val DEQUEUE_TIMEOUT_US = 10_000L
+
+    /** [speechPcm]'s cap past the stated length: the decoder's priming and tail. */
+    private const val SPEECH_CAP_SLACK_MS = 1_000L
+
+    /** [speechPcm]'s cap for audio whose headers state no length (not ADTS): a little past the recorder's five minutes. */
+    private const val SPEECH_FALLBACK_CAP_MS = 6 * 60_000L
 
     private const val TAG = "VoiceAudio"
 
@@ -143,12 +158,16 @@ object VoiceAudio {
             val buckets = LongArray(PEAK_COUNT)
             var any = false
             val ok =
-                decodePcm(bytes) { sample, timeUs ->
-                    any = true
+                decodeChunks(bytes) { pcm, timeUs, _, _ ->
                     val bucket = ((timeUs * PEAK_COUNT) / totalUs).toInt().coerceIn(0, PEAK_COUNT - 1)
-                    // Guard against Short.MIN_VALUE, whose negation overflows a Short.
-                    val magnitude = if (sample < 0) -sample.toLong() else sample.toLong()
-                    if (magnitude > buckets[bucket]) buckets[bucket] = magnitude
+                    val shorts = pcm.asShortBuffer()
+                    while (shorts.hasRemaining()) {
+                        any = true
+                        val sample = shorts.get()
+                        // Guard against Short.MIN_VALUE, whose negation overflows a Short.
+                        val magnitude = if (sample < 0) -sample.toLong() else sample.toLong()
+                        if (magnitude > buckets[bucket]) buckets[bucket] = magnitude
+                    }
                 }
             if (!ok || !any) return@withContext null
             ByteArray(PEAK_COUNT) { i -> ((buckets[i] * 255 / scaleFor(buckets)).coerceAtMost(255L)).toInt().toByte() }
@@ -256,14 +275,32 @@ object VoiceAudio {
     }
 
     /**
-     * Streams [bytes] through the platform AAC decoder, handing every PCM sample to [onSample] with the
-     * presentation time of the buffer it came from. Returns false when the bytes carry no decodable audio
-     * track. Deliberately materializes no PCM buffer of its own: a 5-minute note is ~13 M samples, and
-     * holding them all to pick [PEAK_COUNT] peaks would be pure waste.
+     * The note in [bytes] as the speech model takes it (ADR 2026-10.am8d): mono, at [SttPolicy.SAMPLE_RATE], in
+     * −1..1, or null when it can't be decoded or holds no audio. Mixed down and resampled by the walkie's own
+     * [BurstPcm] as the decoder hands each buffer over, so no 16-bit copy of the whole note is held; the result is
+     * about 19 MB for the recorder's five-minute cap, and is the caller's to drop once the model has had it. Capped
+     * at the length the frame headers state ([durationMs]), so a stream that decodes past its own claim cannot grow
+     * the buffer without bound.
      */
-    private fun decodePcm(
+    suspend fun speechPcm(bytes: ByteArray): FloatArray? =
+        withContext(Dispatchers.IO) {
+            val claimed = durationMs(bytes)?.toLong() ?: SPEECH_FALLBACK_CAP_MS
+            val audio = BurstPcm(capMs = claimed + SPEECH_CAP_SLACK_MS)
+            val ok = decodeChunks(bytes) { pcm, _, rate, channels -> audio.add(pcm, rate, channels) }
+            if (!ok) return@withContext null
+            audio.drain().takeIf { it.isNotEmpty() }
+        }
+
+    /**
+     * Streams [bytes] through the platform AAC decoder, handing each output buffer's PCM (16-bit, native order,
+     * [channels] interleaved at [rate] Hz) to [onChunk] with the presentation time of the buffer it came from.
+     * The buffer is the callee's to read, never to keep. Returns false when the bytes carry no decodable audio
+     * track. Deliberately materializes no PCM buffer of its own: a 5-minute note is ~13 M samples, and holding
+     * them all to pick [PEAK_COUNT] peaks would be pure waste.
+     */
+    private fun decodeChunks(
         bytes: ByteArray,
-        onSample: (sample: Short, timeUs: Long) -> Unit,
+        onChunk: (pcm: java.nio.ByteBuffer, timeUs: Long, rate: Int, channels: Int) -> Unit,
     ): Boolean {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
@@ -280,6 +317,7 @@ object VoiceAudio {
             codec = MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
             codec.start()
+            val layout = PcmLayout(rate = 0, channels = 1).apply { from(format) }
 
             val info = MediaCodec.BufferInfo()
             var sawInputEnd = false
@@ -287,8 +325,10 @@ object VoiceAudio {
             while (!sawOutputEnd) {
                 if (!sawInputEnd) sawInputEnd = feedInput(codec, extractor)
                 val outIndex = codec.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
+                // HE-AAC and some decoders only state the real rate and layout here, before the first buffer.
+                if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) layout.from(codec.outputFormat)
                 if (outIndex >= 0) {
-                    if (drainOutput(codec.getOutputBuffer(outIndex), info, onSample)) decoded = true
+                    if (drainOutput(codec.getOutputBuffer(outIndex), info, layout, onChunk)) decoded = true
                     codec.releaseOutputBuffer(outIndex, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) sawOutputEnd = true
                 }

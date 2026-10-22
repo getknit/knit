@@ -12,6 +12,9 @@ import app.getknit.knit.TextLimits
 import app.getknit.knit.call.CallKind
 import app.getknit.knit.call.CallManager
 import app.getknit.knit.call.CallRefusal
+import app.getknit.knit.call.NoteStt
+import app.getknit.knit.call.SttModelState
+import app.getknit.knit.call.VoiceNoteSpeech
 import app.getknit.knit.clampToUtf16
 import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.AttachmentStore
@@ -286,6 +289,9 @@ data class ChatRow(
     // would recompose every voice bubble on screen. The bubble decodes once, under `remember`.
     val voiceDurationMs: Int? = null,
     val voicePeaks: String? = null,
+    // A voice note's words, written out on this phone on the person's tap (ADR 2026-10.am8d); null until then, empty
+    // when the model heard no speech. Never on the wire.
+    val voiceTranscript: String? = null,
     val mentions: List<Mention> = emptyList(),
     val reactions: List<ReactionSummary> = emptyList(),
     // The message this row quotes (Signal-style reply), or null when it isn't a reply: what the reader may be
@@ -581,6 +587,8 @@ class ChatViewModel(
     // The Calls screen's "Prefer mesh calls" (C-3.11-3): on, [meshCallFirst] holds whatever the route says and a DM
     // offers only the calls its peer takes. A plain parameter, read by the initializers alone.
     preferMeshCalls: Flow<Boolean> = flowOf(false),
+    // A voice note's text on tap (ADR 2026-10.am8d): null where speech is not wired, which draws no control.
+    private val noteSpeech: VoiceNoteSpeech? = null,
 ) : ViewModel() {
     /** This thread is the broadcast room (vs a 1:1 DM keyed by the peer's node id). */
     private val isRoom = conversationId == Conversations.NEARBY
@@ -661,6 +669,67 @@ class ChatViewModel(
 
     /** Playback state of whichever voice note is loaded app-wide; a bubble matches it against its own hash. */
     val voicePlayback: StateFlow<VoicePlayer.Playback?> = voicePlayer.nowPlaying
+
+    /**
+     * What the voice bubbles may offer for their text (ADR 2026-10.am8d): null where speech is not wired or the Calls
+     * screen's switch is off, which draws no control at all.
+     */
+    val voiceSpeech: StateFlow<VoiceSpeechView?> =
+        noteSpeech
+            ?.let { speech ->
+                combine(speech.enabled, speech.model, speech.notes) { on, model, notes ->
+                    if (on) VoiceSpeechView(model, notes, speech.modelBytes) else null
+                }
+            }?.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+            ?: MutableStateFlow(null)
+
+    // The note a download was started for: transcribed once the model is in, if this chat is still open.
+    private var awaitingModel: Pair<String, String?>? = null
+
+    init {
+        noteSpeech?.let { speech ->
+            viewModelScope.launch {
+                speech.model.collect { state ->
+                    if (state !is SttModelState.Ready) return@collect
+                    val (hash, key) = awaitingModel ?: return@collect
+                    awaitingModel = null
+                    speech.transcribe(hash, key)
+                }
+            }
+        }
+    }
+
+    /**
+     * Transcribes the voice note under [hash] (opened with [key] when sealed). False when the model is not on the
+     * phone, so the bubble offers its download instead.
+     */
+    fun transcribeVoice(
+        hash: String,
+        key: String?,
+    ): Boolean {
+        val speech = noteSpeech ?: return false
+        if (speech.model.value !is SttModelState.Ready) return false
+        speech.transcribe(hash, key)
+        return true
+    }
+
+    /** Whether the model's download would ride a metered route now, for the offer to say so. */
+    fun speechDownloadMetered(): Boolean = noteSpeech?.metered() == true
+
+    /** Starts the speech model's download, then transcribes the note under [hash] once it is in. */
+    fun downloadSpeechThenTranscribe(
+        hash: String,
+        key: String?,
+    ) {
+        val speech = noteSpeech ?: return
+        awaitingModel = hash to key
+        if (speech.model.value is SttModelState.Ready) {
+            awaitingModel = null
+            speech.transcribe(hash, key)
+        } else if (speech.model.value !is SttModelState.Downloading) {
+            speech.download()
+        }
+    }
 
     // Built lazily so a chat that never records never opens a recorder, and torn down in onCleared: the
     // microphone is exclusive, and leaking it would block every other app until this process died.
@@ -1172,6 +1241,7 @@ class ChatViewModel(
                         attachmentKey = m.attachmentKey,
                         voiceDurationMs = m.voiceDurationMs,
                         voicePeaks = m.voicePeaks,
+                        voiceTranscript = m.voiceTranscript,
                         attachmentReady = heldBytes != null,
                         attachmentName = m.attachmentName,
                         attachmentSize = m.attachmentSize,
@@ -2855,3 +2925,13 @@ class ChatViewModel(
         const val MIN_VOICE_MS = 700
     }
 }
+
+/**
+ * The voice bubbles' speech offer (ADR 2026-10.am8d): where the shared model stands, each note asked for in this
+ * process by its attachment hash, and what the model's download costs.
+ */
+data class VoiceSpeechView(
+    val model: SttModelState,
+    val notes: Map<String, NoteStt>,
+    val modelBytes: Long,
+)

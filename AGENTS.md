@@ -176,6 +176,8 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   and the live call's CC button (`TranscriptStore.liveCaptions`),
   `call/WalkieClips.kt` and `WalkieClipFiles` (a debug build's saved bursts, off by default), `call/SttKeytermPolicy.kt` and
   `SttKeytermFeed` (the names the model listens for),
+  `call/VoiceNoteTranscript.kt` (`VoiceNoteTranscriber`, `VoiceNoteSpeech`), `VoiceAudio.speechPcm`, `messages.voiceTranscript`
+  and the voice bubble's Transcribe (also ADR 2026-10.am8d),
   `call/SttModel.kt` (the pins, `SttModelInstaller`), `ui/call/stt/` (`MoonshineSpeech`, `SttModelStore`,
   `SttDownloadService`), the Calls screen's transcripts section (`data/settings/TranscriptStore`), `TalkPlayer`'s `TalkPcmTap`,
   `WalkieTranscriptCard`, `ModelLoadGuard.STT`, the `moonshineVoice` pin or `scripts/stt-model.py`:** READ ADR
@@ -186,7 +188,8 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   tap-to-download from getknit.app (the walkie card, whose offer can be dismissed for good, or the Calls screen, held
   past a hang-up by a `dataSync` service; the Calls screen's switch turns transcripts off), pinned by size and SHA-256 (never hand-edit the pins: the script derives them),
   fetched with `Network.openConnection` on the gate's network, not okhttp; each burst is one stream fed as the audio
-  comes, looked at on `PassGate`'s cadence, one model call at a time, and every stream call holds the lease.
+  comes, looked at on `PassGate`'s cadence, one model call at a time, and every stream call holds the lease. A chat voice note
+  is written out only on the person's tap, kept on the row, never during a call, and never on the wire (ADR 2026-10.am8d).
 - **When touching `badge/`, `ProfilePayload.badges` / `BadgeEntry` / `ProfileV2` label 8, `peer_badges` /
   `PeerBadgeEntity`, `data/settings/BadgeStore`, `OkHttpTicketIssuer.issueBadge`, `ui/components/BadgeVisuals` (`BadgeMark`) or
   `Avatar`'s `badge`:** READ `docs/SUPPORTER_BADGE.md` and ADR 2026-10.r99s (knit-spool-coordinator owns the

@@ -5,6 +5,7 @@ import app.getknit.knit.badge.BadgeKeys
 import app.getknit.knit.call.CallManager
 import app.getknit.knit.call.CaptureHealth
 import app.getknit.knit.call.OwnIceServers
+import app.getknit.knit.call.VoiceNoteSpeech
 import app.getknit.knit.data.AttachmentIdentities
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.LinkCardStore
@@ -88,6 +89,7 @@ val uiModule =
                 if (CALLS_WIRED) get<CallManager>() else null,
                 freeUploads = if (ANYWHERE_WIRED) get<FreeUploads>() else null,
                 preferMeshCalls = if (LIVE_CALLS_WIRED && WALKIE_WIRED) get<CallPreferenceStore>().preferMesh else flowOf(false),
+                noteSpeech = if (STT_WIRED) get<VoiceNoteSpeech>() else null,
             )
         }
         viewModel {

@@ -236,3 +236,10 @@ The speech graph moved again, from `CALLS_WIRED` to `STT_WIRED` (`BuildConfig.ST
 a call kind is (ADR 2026-10.swvp). Moonshine, `SttDownloadService` and `FOREGROUND_SERVICE_DATA_SYNC` are packaged from
 `src/stt/` only there, and `moonshine.keep` moved there with them. The transcriber is built only with the walkie, the
 captioner only with live calls.
+
+## Amendment (2026-10-21): chat voice notes use the same model
+
+A chat voice note can now be written out with this model on the person's tap. The text is kept on the message row,
+unlike a walkie burst's (ADR 2026-10.am8d). It shares the model, its download and the Calls screen's switch, and a
+call always comes first: no note runs while a call is up.
+

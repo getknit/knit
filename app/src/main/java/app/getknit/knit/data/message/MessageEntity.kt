@@ -261,6 +261,13 @@ data class MessageEntity(
      * **Local only.**
      */
     val videoPosterFlagged: Boolean = false,
+    /**
+     * A voice note's words, written out on this phone by the speech model when the person tapped Transcribe (ADR
+     * 2026-10.am8d): derived from the held bytes like [voicePeaks] and keyed by [attachmentHash] across rows, never on
+     * the wire. Null until transcribed; empty when the model heard no speech. Debug builds only (`STT_WIRED`).
+     * **Local only.**
+     */
+    val voiceTranscript: String? = null,
 ) {
     companion object {
         // [originSigned] values. Append-only like every other registry here: the value is stored on the row.

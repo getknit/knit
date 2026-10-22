@@ -258,12 +258,14 @@ import app.getknit.knit.ui.theme.readableOn
 import app.getknit.knit.ui.theme.rememberPressScale
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import app.getknit.knit.ui.voice.MicGate
+import app.getknit.knit.ui.voice.SpeechModelOfferDialog
 import app.getknit.knit.ui.voice.VoiceNoteBubble
 import app.getknit.knit.ui.voice.VoiceNotePreview
 import app.getknit.knit.ui.voice.VoicePlayer
 import app.getknit.knit.ui.voice.VoiceRecordingBar
 import app.getknit.knit.ui.voice.VoiceStopButton
 import app.getknit.knit.ui.voice.rememberMicGate
+import app.getknit.knit.ui.voice.voiceTranscriptView
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -317,6 +319,9 @@ fun ChatScreen(
     val freeUploadOffer by viewModel.freeUploadOffer.collectAsStateWithLifecycle()
     val voiceRecording by viewModel.voiceRecording.collectAsStateWithLifecycle()
     val voicePlayback by viewModel.voicePlayback.collectAsStateWithLifecycle()
+    val voiceSpeech by viewModel.voiceSpeech.collectAsStateWithLifecycle()
+    // The note a Transcribe tap was for while the speech model was not on the phone: the download offer is up.
+    var speechOffer by remember { mutableStateOf<Pair<String, String?>?>(null) }
     val arrivals by viewModel.arrivals.collectAsStateWithLifecycle()
     val recentReactions by viewModel.recentReactions.collectAsStateWithLifecycle()
     val inputState = rememberTextFieldState()
@@ -634,7 +639,21 @@ fun ChatScreen(
         onCancelVoice = viewModel::cancelVoiceRecording,
         onVoicePlay = viewModel::playVoice,
         onVoiceSeek = viewModel::seekVoice,
+        voiceSpeech = voiceSpeech,
+        onTranscribeVoice = { hash, key -> if (!viewModel.transcribeVoice(hash, key)) speechOffer = hash to key },
     )
+
+    speechOffer?.let { (hash, key) ->
+        SpeechModelOfferDialog(
+            modelBytes = voiceSpeech?.modelBytes ?: 0L,
+            metered = remember(hash) { viewModel.speechDownloadMetered() },
+            onDownload = {
+                speechOffer = null
+                viewModel.downloadSpeechThenTranscribe(hash, key)
+            },
+            onDismiss = { speechOffer = null },
+        )
+    }
 
     // Nothing on the device can classify an archive or an executable, so a save of one says so first. This
     // is the honest complement to the fact that Knit never offers to *open* a file it cannot screen: the
@@ -814,6 +833,9 @@ internal fun ChatScreenContent(
     onCancelVoice: () -> Unit = {},
     onVoicePlay: (hash: String, key: String?) -> Unit = { _, _ -> },
     onVoiceSeek: (hash: String, positionMs: Int) -> Unit = { _, _ -> },
+    // A voice note's text (ADR 2026-10.am8d): null where speech is off, which draws no control.
+    voiceSpeech: VoiceSpeechView? = null,
+    onTranscribeVoice: (hash: String, key: String?) -> Unit = { _, _ -> },
     // History paging. `onLoadOlder` asks for the next page as the reader approaches the oldest loaded
     // message; `onRevealMessage` pulls a specific older message in, for a quote whose original the window
     // has not reached. Defaulted so previews and the content-level tests need not name them.
@@ -1520,6 +1542,8 @@ internal fun ChatScreenContent(
                                         voicePlayback = voicePlayback,
                                         onVoicePlay = onVoicePlay,
                                         onVoiceSeek = onVoiceSeek,
+                                        voiceSpeech = voiceSpeech,
+                                        onTranscribeVoice = onTranscribeVoice,
                                         arrival = row.attachmentHash?.let(arrivals::get),
                                     )
                                 }
@@ -2202,6 +2226,9 @@ private fun MessageBubble(
     voicePlayback: VoicePlayer.Playback? = null,
     onVoicePlay: (hash: String, key: String?) -> Unit = { _, _ -> },
     onVoiceSeek: (hash: String, positionMs: Int) -> Unit = { _, _ -> },
+    // The voice note's text slot and its Transcribe (ADR 2026-10.am8d); null where speech is off.
+    voiceSpeech: VoiceSpeechView? = null,
+    onTranscribeVoice: (hash: String, key: String?) -> Unit = { _, _ -> },
     // How far this row's attachment has got while its bytes stream in over a nearby link (#115). Defaulted for
     // the @Preview call sites and for every row whose attachment is held or not on its way.
     arrival: ArrivingFile? = null,
@@ -2450,6 +2477,14 @@ private fun MessageBubble(
                                     },
                                     onLongClick = { showPicker = true },
                                     arrival = arrival,
+                                    transcript =
+                                        voiceTranscriptView(
+                                            stored = row.voiceTranscript,
+                                            hash = row.attachmentHash,
+                                            ready = row.attachmentReady,
+                                            speech = voiceSpeech,
+                                        ),
+                                    onTranscribe = { onTranscribeVoice(row.attachmentHash, row.attachmentKey) },
                                 )
                             } else if (row.attachmentName != null) {
                                 // A named attachment is a file: nothing here decodes, so the bubble names it
@@ -2690,15 +2725,14 @@ private fun MessageBubble(
                             onReply(row)
                             showPicker = false
                         },
-                        // Image-only messages have no text to copy, so omit the action.
+                        // Image-only messages have no text to copy, so omit the action; a voice note with none copies
+                        // its transcript, where it has one (ADR 2026-10.am8d).
                         onCopy =
-                            if (row.body.isNotBlank()) {
+                            (row.body.takeIf { it.isNotBlank() } ?: row.voiceTranscript?.takeIf { it.isNotBlank() })?.let { text ->
                                 {
-                                    onCopy(row.body)
+                                    onCopy(text)
                                     showPicker = false
                                 }
-                            } else {
-                                null
                             },
                         onDetails = {
                             showPicker = false

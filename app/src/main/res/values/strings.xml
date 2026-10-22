@@ -366,6 +366,17 @@
     <string name="chat_voice_too_short">Hold the button to record</string>
     <string name="chat_voice_mic_denied">Knit needs microphone access to record a voice message.</string>
     <string name="chat_voice_mic_denied_title">Microphone access is off</string>
+    <!-- A voice message's text, on the person's tap (ADR 2026-10.am8d). -->
+    <string name="chat_voice_transcribe">Transcribe</string>
+    <string name="chat_voice_transcribing">Transcribing…</string>
+    <string name="chat_voice_no_speech">No speech heard</string>
+    <string name="chat_voice_transcribe_busy">The speech model is busy with a call. Try again after it ends.</string>
+    <string name="chat_voice_transcribe_failed">Couldn\'t transcribe this voice message</string>
+    <string name="chat_voice_transcribe_retry">Try again</string>
+    <string name="chat_voice_model_title">Download the speech model?</string>
+    <string name="chat_voice_model_body">Transcribing needs a one-time %1$s download from getknit.app. The words are worked out on this phone and never sent.</string>
+    <string name="chat_voice_model_not_now">Not now</string>
+    <string name="chat_voice_model_downloading">Downloading the speech model · %1$s of %2$s</string>
     <string name="chat_voice_mic_denied_settings">Turn on the microphone for Knit in Settings to record voice messages. Knit uses it only while you\'re recording.</string>
     <string name="chat_voice_play">Play voice message</string>
     <string name="chat_voice_pause">Pause voice message</string>
@@ -762,7 +773,7 @@
     <string name="call_settings_prefer_mesh_title">Prefer mesh calls</string>
     <string name="call_settings_prefer_mesh_subtitle">The call button in a chat places a mesh call. Live calls move to the chat\'s menu.</string>
     <string name="call_settings_transcripts_title">Transcripts and captions</string>
-    <string name="call_settings_transcripts_subtitle">Turn what you hear on a call into text, on this phone: walkie-talkie bursts as they play, and live calls when you turn on CC. The text never leaves the phone.</string>
+    <string name="call_settings_transcripts_subtitle">Turn speech into text, on this phone: walkie-talkie bursts as they play, live calls when you turn on CC, and voice messages when you tap Transcribe. The text is never sent.</string>
     <string name="call_settings_speech_model_title">Speech model</string>
     <string name="call_settings_speech_model_absent">A one-time %1$s download from getknit.app. Transcripts start once it\'s on this phone.</string>
     <string name="call_settings_speech_model_metered">You\'re on mobile data or Data Saver now.</string>

@@ -42,6 +42,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `hash` to poll for on receivers (the plaintext's, as staged) and `reused`: the identity a pick of bytes this phone
   already holds went out under, else null (ADR 2026-10.mptm). `--ez file true` takes the file picker's door
   (`ingestFile`) instead, for a PDF or any non-image; a file:// path has no display name, so the file's own name stands in.
+  `--ez voice true` sends the file's bytes as a recorded voice note (`ingestVoice`, AAC-LC ADTS), for a transcript
+  trial (`…debug.STT`'s `note` op).
   `--ez video true` takes the video door (`ingestVideo`) as the composer does: re-encoded, and for the Nearby room
   screened (poster and 12 frames, ADR 2026-10.hmfe) and refused when flagged — the reply is `blocked` with `flagged:
   true` and nothing is sent. The image door never screens; only this one does. A sent video's reply adds
@@ -391,6 +393,13 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
     button's choice. `captions --ez on true|false` sets it (persisted, as the button is; read as the peer's audio
     comes, so a call already up is captioned from then on). Logcat (`KnitCall`): `captions: run <n>: <ms> ms of audio,
     <n> look(s), <ms> ms in the model, <n> chars` per settled line, and `captions: stopped: behind|failed`.
+  - **A chat voice note's text** (ADR 2026-10.am8d). `note --es hash <attachmentHash>` is the bubble's Transcribe:
+    the note opened with its row's key and queued on `VoiceNoteTranscriber` (refused, with `notes`, during a call or
+    while that note already runs; an error without the model). Every `status` carries `notes`, each note asked for in
+    this process by hash, with `state` `running` (`settled`, `live`), `done` (`text`), `busy` or `failed`; `STATE`'s
+    message rows carry the saved `voiceTranscript` and `voiceDurationMs`. Send the note with `SENDIMG --ez voice true`
+    (an AAC-LC ADTS file, e.g. `ffmpeg -i in.wav -ac 1 -ar 16000 -c:a aac -b:a 32k -f adts note.aac`). Logcat
+    (`KnitCall`): `voice note <hash>: <ms> ms of audio, whole|split, <n> look(s), <ms> ms, <n> chars`, never the text.
   - `keyterms --es terms 'Ada,Grace Hopper'` replaces the names the model listens for from the next burst
     (`MoonshineSpeech.keyterms`; a call's start sets its own through `SttKeytermFeed`, and its end clears them), `--ez
     clear true` empties them; `status` lists them (`keyterms`). For an A/B of the biasing on `pcm` clips.

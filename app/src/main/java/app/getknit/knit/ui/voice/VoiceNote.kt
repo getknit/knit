@@ -9,6 +9,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,14 +22,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -45,13 +50,20 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
+import app.getknit.knit.call.NoteStt
+import app.getknit.knit.call.SttModelState
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.relay.AttachmentWait
 import app.getknit.knit.mesh.ArrivingFile
+import app.getknit.knit.ui.call.mb
 import app.getknit.knit.ui.chat.ArrivalIndicator
+import app.getknit.knit.ui.chat.VoiceSpeechView
 import app.getknit.knit.ui.chat.arrivalText
 import app.getknit.knit.ui.chat.attachmentWaitHint
 import app.getknit.knit.ui.preview.KnitPreview
@@ -157,6 +169,9 @@ fun VoiceNoteBubble(
     hash: String? = null,
     // How far the bytes have got while they stream in over a nearby link (#115); null while none is carrying them.
     arrival: ArrivingFile? = null,
+    // The note's text and its control (ADR 2026-10.am8d); null where speech is off, which draws the row alone.
+    transcript: VoiceTranscriptView? = null,
+    onTranscribe: () -> Unit = {},
 ) {
     if (!ready) {
         Row(
@@ -192,6 +207,29 @@ fun VoiceNoteBubble(
     val progress = if (total > 0) position.toFloat() / total else 0f
     val label = stringResource(R.string.chat_voice_desc, formatDuration(shown))
 
+    if (transcript == null) {
+        VoiceNoteRow(label, shown, progress, playing, accent, peaks, onToggle, onSeek, onLongClick, modifier)
+        return
+    }
+    Column(modifier = modifier.width(BUBBLE_WIDTH), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        VoiceNoteRow(label, shown, progress, playing, accent, peaks, onToggle, onSeek, onLongClick)
+        VoiceTranscript(transcript, onTranscribe)
+    }
+}
+
+@Composable
+private fun VoiceNoteRow(
+    label: String,
+    shown: Int,
+    progress: Float,
+    playing: Boolean,
+    accent: Color,
+    peaks: FloatArray?,
+    onToggle: () -> Unit,
+    onSeek: (Float) -> Unit,
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Row(
         modifier = modifier.width(BUBBLE_WIDTH).padding(vertical = 2.dp).semantics { contentDescription = label },
         verticalAlignment = Alignment.CenterVertically,
@@ -215,6 +253,185 @@ fun VoiceNoteBubble(
             modifier = Modifier.clearAndSetSemantics {},
         )
     }
+}
+
+/**
+ * What a voice bubble shows of its note's text (ADR 2026-10.am8d), from [voiceTranscriptView]: the words, the words so
+ * far while the model runs, or the control that asks for them.
+ */
+sealed interface VoiceTranscriptView {
+    /** The note's words; empty when the model heard no speech. */
+    data class Text(
+        val text: String,
+    ) : VoiceTranscriptView
+
+    /** The model is on it: [settled] will stay, [live] may still change. */
+    data class Running(
+        val settled: String,
+        val live: String,
+    ) : VoiceTranscriptView
+
+    /** Not transcribed yet: the Transcribe control. */
+    data object Offer : VoiceTranscriptView
+
+    /** The speech model is coming down: how far. */
+    data class Downloading(
+        val done: Long,
+        val total: Long,
+    ) : VoiceTranscriptView
+
+    /** A call holds the model: try once it is over. */
+    data object Busy : VoiceTranscriptView
+
+    /** The model would not run on this note. */
+    data object Failed : VoiceTranscriptView
+}
+
+/**
+ * The bubble's text slot for the note under [hash], or null to draw none: speech is off ([speech] null), or the bytes
+ * are not here yet ([ready]). The row's stored text wins; then this process's work on the note; then the model's own
+ * download; else the offer. Pure.
+ */
+fun voiceTranscriptView(
+    stored: String?,
+    hash: String?,
+    ready: Boolean,
+    speech: VoiceSpeechView?,
+): VoiceTranscriptView? {
+    if (speech == null || hash == null || !ready) return null
+    if (stored != null) return VoiceTranscriptView.Text(stored)
+    return when (val note = speech.notes[hash]) {
+        is NoteStt.Running -> {
+            VoiceTranscriptView.Running(note.heard.settled.trim(), note.heard.live.trim())
+        }
+
+        is NoteStt.Done -> {
+            VoiceTranscriptView.Text(note.text)
+        }
+
+        NoteStt.Busy -> {
+            VoiceTranscriptView.Busy
+        }
+
+        NoteStt.Failed -> {
+            VoiceTranscriptView.Failed
+        }
+
+        null -> {
+            when (val model = speech.model) {
+                is SttModelState.Downloading -> VoiceTranscriptView.Downloading(model.done, model.total)
+                else -> VoiceTranscriptView.Offer
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoiceTranscript(
+    view: VoiceTranscriptView,
+    onTranscribe: () -> Unit,
+) {
+    val dim = MaterialTheme.colorScheme.onSurfaceVariant
+    when (view) {
+        is VoiceTranscriptView.Text -> {
+            if (view.text.isBlank()) {
+                Note(stringResource(R.string.chat_voice_no_speech))
+            } else {
+                Text(
+                    view.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.testTag("chat_voice_transcript"),
+                )
+            }
+        }
+
+        is VoiceTranscriptView.Running -> {
+            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // On the first line, not the middle of a long one.
+                CircularProgressIndicator(modifier = Modifier.padding(top = 4.dp).size(14.dp), strokeWidth = 2.dp)
+                Text(
+                    buildAnnotatedString {
+                        append(view.settled)
+                        if (view.live.isNotBlank()) {
+                            if (view.settled.isNotBlank()) append(" ")
+                            withStyle(SpanStyle(color = dim)) { append(view.live) }
+                        }
+                        if (view.settled.isBlank() && view.live.isBlank()) {
+                            withStyle(SpanStyle(color = dim)) { append(stringResource(R.string.chat_voice_transcribing)) }
+                        }
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.testTag("chat_voice_transcribing"),
+                )
+            }
+        }
+
+        is VoiceTranscriptView.Downloading -> {
+            Note(stringResource(R.string.chat_voice_model_downloading, mb(view.done), mb(view.total)))
+        }
+
+        VoiceTranscriptView.Offer -> {
+            TranscribeButton(R.string.chat_voice_transcribe, onTranscribe)
+        }
+
+        VoiceTranscriptView.Busy -> {
+            Note(stringResource(R.string.chat_voice_transcribe_busy))
+            TranscribeButton(R.string.chat_voice_transcribe, onTranscribe)
+        }
+
+        VoiceTranscriptView.Failed -> {
+            Note(stringResource(R.string.chat_voice_transcribe_failed))
+            TranscribeButton(R.string.chat_voice_transcribe_retry, onTranscribe)
+        }
+    }
+}
+
+@Composable
+private fun Note(text: String) {
+    Text(text, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+private fun TranscribeButton(
+    label: Int,
+    onClick: () -> Unit,
+) {
+    // No start padding: the icon lines up with the play button and the text above, as part of the bubble's column.
+    TextButton(
+        onClick = onClick,
+        contentPadding = PaddingValues(start = 0.dp, end = 12.dp),
+        modifier = Modifier.heightIn(min = 48.dp).testTag("chat_voice_transcribe"),
+    ) {
+        Icon(Icons.Filled.ClosedCaption, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(stringResource(label))
+    }
+}
+
+/**
+ * The offer a Transcribe tap makes while the speech model is not on the phone (ADR 2026-10.am8d): its size, a word
+ * when the route is metered, and the same download the Calls screen starts.
+ */
+@Composable
+fun SpeechModelOfferDialog(
+    modelBytes: Long,
+    metered: Boolean,
+    onDownload: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.chat_voice_model_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(R.string.chat_voice_model_body, mb(modelBytes)))
+                if (metered) Text(stringResource(R.string.call_settings_speech_model_metered))
+            }
+        },
+        confirmButton = { TextButton(onClick = onDownload) { Text(stringResource(R.string.call_settings_speech_model_download)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.chat_voice_model_not_now)) } },
+        modifier = Modifier.testTag("chat_voice_model_offer"),
+    )
 }
 
 /**
@@ -530,4 +747,61 @@ fun VoiceRecordingBarPreview() =
 fun VoiceRecordingBarLockedPreview() =
     KnitPreview {
         VoiceRecordingBar(elapsedMs = 12_000, amplitude = 0.3f, locked = true, onCancel = {})
+    }
+
+/** A voice note written out on tap (ADR 2026-10.am8d). */
+@Preview(showBackground = true)
+@Composable
+fun VoiceNoteTranscribedPreview() =
+    KnitPreview {
+        VoiceNoteBubble(
+            ready = true,
+            durationMs = 7_400,
+            peaks = previewPeaks(),
+            positionMs = null,
+            playing = false,
+            accent = MaterialTheme.colorScheme.primary,
+            onToggle = {},
+            onSeek = {},
+            onLongClick = {},
+            transcript = VoiceTranscriptView.Text("Running ten minutes late, save me a seat by the window."),
+        )
+    }
+
+/** A voice note the model is on: the settled words, then its guess at the rest. */
+@Preview(showBackground = true)
+@Composable
+fun VoiceNoteTranscribingPreview() =
+    KnitPreview {
+        VoiceNoteBubble(
+            ready = true,
+            durationMs = 41_000,
+            peaks = previewPeaks(),
+            positionMs = null,
+            playing = false,
+            accent = MaterialTheme.colorScheme.primary,
+            onToggle = {},
+            onSeek = {},
+            onLongClick = {},
+            transcript = VoiceTranscriptView.Running("So the plan for Saturday is", "we meet at"),
+        )
+    }
+
+/** A voice note not yet transcribed: the Transcribe control under the row. */
+@Preview(showBackground = true)
+@Composable
+fun VoiceNoteTranscribeOfferPreview() =
+    KnitPreview {
+        VoiceNoteBubble(
+            ready = true,
+            durationMs = 7_400,
+            peaks = previewPeaks(),
+            positionMs = null,
+            playing = false,
+            accent = MaterialTheme.colorScheme.primary,
+            onToggle = {},
+            onSeek = {},
+            onLongClick = {},
+            transcript = VoiceTranscriptView.Offer,
+        )
     }

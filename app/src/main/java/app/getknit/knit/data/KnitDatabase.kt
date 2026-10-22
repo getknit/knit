@@ -56,7 +56,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 22
+internal const val KNIT_DB_SCHEMA_VERSION = 23
 
 @Database(
     entities = [
@@ -224,6 +224,9 @@ internal const val KNIT_DB_SCHEMA_VERSION = 22
     //     a DM photo's recipient holds its bytes: the recipient's own radio arrival, or the peer's answer to a holder
     //     query. A DM photo so proved never goes up to a spool (docs/SPOOL_PROTOCOL.md C-9.5-8, ADR 2026-10.vy27).
     //     Rows go with their blob and ride a backup like `blobs`. Empty on arrival.
+    // v23: `messages.voiceTranscript` — a voice note's words, written out on this phone on the person's tap by the
+    //     speech model (ADR 2026-10.am8d). Local only, no wire change; null on existing rows. Migrated by
+    //     KnitMigrations.MIGRATION_22_23.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds

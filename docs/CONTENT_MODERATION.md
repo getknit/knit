@@ -310,6 +310,9 @@ What protects a recipient instead:
   gate and raises no notification (ADR 009), so an unsolicited voice note from an unknown node cannot
   interrupt.
 
+A voice note's transcript (ADR 2026-10.am8d, debug builds only) changes none of this. It is this phone's own
+reading of audio the person already chose to hear, written out on their tap, and it is not screened.
+
 This is a gap, recorded as one, and files widen it: an archive can hold anything and no classifier of any
 kind exists for one. If a small on-device speech classifier ever becomes practical, the hook point already
 exists: `InboundPipeline.onObtained` decrypts a landed attachment and is where the waveform
