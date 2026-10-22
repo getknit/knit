@@ -48,5 +48,5 @@ These are not oversights; leave them unless the plan changes.
 - Content filtering's word lists and toxicity model are English (`docs/CONTENT_MODERATION.md`): a room post in
   another language is screened far less.
 - Speech-to-text is an English model (Moonshine, ADR 2026-10.nz3g).
-- Right-to-left layouts are unchecked. Known so far: the voice note's slide-to-cancel always reads a leftward drag
-  (`ChatScreen`'s record button), whatever the layout direction.
+- Right-to-left layouts are unchecked beyond the voice note's slide-to-cancel, which follows the layout direction
+  (`ChatScreen`'s `MicButton`). Check each screen under a right-to-left locale when the first one lands.

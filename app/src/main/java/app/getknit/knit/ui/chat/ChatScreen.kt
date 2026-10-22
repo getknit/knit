@@ -162,6 +162,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalInspectionMode
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.toClipEntry
@@ -4664,6 +4665,9 @@ private fun MicButton(
     // moments in the app a user is least able to *see* the state they just entered. `combinedClickable`'s
     // free long-press haptic never applies here: this is a raw pointerInput, not a click.
     val haptics = LocalHapticFeedback.current
+    // Cancel is a slide away from the field's end, where the mic sits, and the way the "‹ Slide to cancel"
+    // label points (its ‹ is a mirrored glyph): leftward in a left-to-right layout, rightward in a right-to-left one.
+    val towardStart = if (LocalLayoutDirection.current == LayoutDirection.Rtl) 1f else -1f
     Box(
         modifier =
             modifier
@@ -4683,7 +4687,7 @@ private fun MicButton(
                         gate.runOrRequest { onStart(true) }
                         true
                     }
-                }.pointerInput(gate) {
+                }.pointerInput(gate, towardStart) {
                     awaitPointerEventScope {
                         while (true) {
                             val down = awaitFirstDown(requireUnconsumed = false)
@@ -4705,7 +4709,7 @@ private fun MicButton(
                                     haptics.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
                                     onLock()
                                 }
-                                if (!locked && dx < -CANCEL_SLOP_PX) {
+                                if (!locked && dx * towardStart > CANCEL_SLOP_PX) {
                                     cancelled = true
                                     haptics.performHapticFeedback(HapticFeedbackType.Reject)
                                     onCancel()

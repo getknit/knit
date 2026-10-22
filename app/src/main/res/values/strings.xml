@@ -588,7 +588,9 @@
     <string name="chat_attach_location">Send your location</string>
     <string name="chat_location_finding">Finding your location…</string>
     <string name="chat_location_accuracy">Accurate to %1$s</string>
-    <string name="chat_location_approximate">Rough, to about %1$s. Allow precise location for Knit in Settings to tighten it.</string>
+    <string name="chat_location_approximate">Rough, to about %1$s</string>
+    <!-- Shown on its own line under chat_location_approximate while Knit holds only the approximate-location grant. -->
+    <string name="chat_location_precise_hint">Allow precise location for Knit in Settings to tighten it.</string>
     <!-- %1$s is how sure the fix is (chat_location_accuracy, chat_location_approximate or chat_location_card_label), %2$s its clock time. -->
     <string name="chat_location_as_of">%1$s, as of %2$s</string>
     <string name="chat_location_failed">Couldn\'t get a fix. Try somewhere with a clear view of the sky.</string>

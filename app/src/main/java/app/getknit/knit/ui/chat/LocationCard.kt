@@ -160,6 +160,14 @@ fun StagedLocationTile(
     val context = LocalContext.current
     val fix = staged.fix
     val coordinates = fix?.let { GeoUri.coordinates(it.toPoint()) }
+    val coarse = staged.precision == LocationPrecision.Coarse
+    // An approximate-only grant says how to tighten the fix on a line of its own, so the time stays with the radius.
+    val preciseHint =
+        if (coarse && fix?.toPoint()?.accuracyM != null && staged.status in FIXED) {
+            stringResource(R.string.chat_location_precise_hint)
+        } else {
+            null
+        }
     val detail =
         when (staged.status) {
             ChatViewModel.StagedLocation.Status.Acquiring -> {
@@ -175,7 +183,7 @@ fun StagedLocationTile(
             }
 
             ChatViewModel.StagedLocation.Status.Refining, ChatViewModel.StagedLocation.Status.Ready -> {
-                val accuracy = accuracyLine(fix?.toPoint()?.accuracyM, coarse = staged.precision == LocationPrecision.Coarse)
+                val accuracy = accuracyLine(fix?.toPoint()?.accuracyM, coarse = coarse)
                 if (staged.status == ChatViewModel.StagedLocation.Status.Ready && fix != null) {
                     val at = DateFormat.getTimeFormat(context).format(Date(fix.timeMs))
                     stringResource(R.string.chat_location_as_of, accuracy, at)
@@ -186,7 +194,7 @@ fun StagedLocationTile(
         }
     // One sentence for TalkBack: the coordinates, the state and who will see it, since the texts below sit
     // inside a node whose semantics are replaced by this description.
-    val summary = listOfNotNull(coordinates, detail, scope).joinToString(", ")
+    val summary = listOfNotNull(coordinates, detail, preciseHint, scope).joinToString(", ")
     val description = stringResource(R.string.chat_location_staged_desc, summary)
     Column(
         modifier =
@@ -237,6 +245,13 @@ fun StagedLocationTile(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (preciseHint != null) {
+                        Text(
+                            text = preciseHint,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Text(
                         text = scope,
                         style = MaterialTheme.typography.labelSmall,
@@ -319,6 +334,9 @@ private fun distanceLabel(metres: Int): String =
     }
 
 private const val METRES_PER_KM = 1000
+
+/** The states whose detail line carries a radius: the fix is in, or still tightening. */
+private val FIXED = setOf(ChatViewModel.StagedLocation.Status.Refining, ChatViewModel.StagedLocation.Status.Ready)
 
 private val previewPoint = GeoPoint(37.421998, -122.084, 12)
 
