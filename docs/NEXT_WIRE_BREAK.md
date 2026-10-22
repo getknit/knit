@@ -347,6 +347,70 @@ what lets a member refuse a forged departure, and moving it inside the seal move
 Re-read ADR 2026-09.v6fu before touching either. The roster cap is a bound on storage and fan-out, so
 inbound first sight still enforces `MAX_MEMBERS`, now on the sealed roster.
 
+### 12. Carry DMs and groups for 7 days, with quotas sized to match
+
+**What.** Raise the mesh custody TTL (`ForwardRepository.DEFAULT_TTL_MS`) from 24 h to 7 days, and raise the
+count bounds beside it (`DEFAULT_MAX_ROWS` 1,000, `DEFAULT_MAX_PER_SENDER` / `DEFAULT_MAX_PER_GROUP` /
+`DEFAULT_MAX_BROADCAST` 200 each). Today a contact who is out of reach for more than a day never gets a DM
+unless a spool carries it; a week covers the weekly meeting, the weekend away and the phone left in a drawer.
+
+**Why it is parked.** Nothing on the wire changes, and every build decodes the same frames, so this is not
+a break by `WIRE_COMPAT.md`'s definition. It is parked because the TTL and the quotas are
+**convergence-critical** (`.agents/context/store-and-forward.md`, "A bounded custody quota must be
+*convergent*"): the content digest folds each node's live set, and the cue plane brings up an NDP whenever two
+digests differ. A 7-day node holds frames that a 24-hour node refuses as dead on arrival, so the two digests
+differ as long as there is any traffic in the 1–7 day band, and every mixed pair churns NDPs for the whole
+rollout window. That window is weeks long (see "What a break costs now"). A break partitions the two
+populations, so the lockstep comes free. The additive route would be a capability-gated second digest (a new
+node folding a 24-hour digest for old peers). That costs scarce cue-plane bytes and only buys the transition,
+so it is not worth building unless this item has to ship without a break.
+
+**The TTL alone buys little.** Every bucket is trimmed to its newest N by `(sentAt, id)`, so a sender who
+sends more than 200 custodial frames a week loses their oldest frames to the count bound long before day 7.
+Only quiet senders benefit unless the quotas grow too. At constant traffic, holding 7× the window needs
+roughly 7× the rows. Size the new bounds from a measured mean carried-row size and from `…debug.STORE` counts
+on the lab and field phones, not from a guess. The SQLCipher file grows with the global cap, and so does every
+digest exchange's re-serve burst to a newcomer (worst over BLE and Coded PHY). Fix the numbers before the
+break, in this entry.
+
+**At the break.** Move every constant that is defined as a multiple of the custody TTL or a copy of a quota,
+on Android and iOS (`knit-ios`'s `KnitStore/Custody/CustodyLimits.swift`) in the same release:
+
+- **Custody.** `DEFAULT_TTL_MS` and the four count bounds. `ForwardSync.ACK_TOMBSTONE_TTL_MS` must stay
+  ≥ the TTL, or a delivered DM's still-circulating copy is re-stored after its tombstone lapses. It is an
+  in-memory `SeenSet`, so 7 days of tombstones is a memory bound to check, not just a number to change.
+  `PendingInbound.MAX_PER_SENDER` mirrors the per-sender quota.
+- **Ratchet retention (crypto-owner territory).** `RatchetRepository.SKIPPED_TTL_MS` / `RECV_EPOCH_TTL_MS`,
+  `GroupRatchetRepository.SKIPPED_TTL_MS` and `RatchetSessions.STRANDED_TAIL_MS` are all "2× custody" (48 h).
+  If they stay at 48 h, a re-served frame aged 2–7 days is undecryptable, so custody carries it for nothing.
+  Worse, `STRANDED_TAIL_MS` is the bound past which an unreadable frame counts as live reset evidence (ADR
+  026), so an old-era remnant arriving on day 3 would trigger spurious session resets. If they move to 14
+  days, receive keys live 14 days instead of 2, which is a real forward-secrecy cost. Decide it with
+  crypto-reviewer, and record it in an ADR. `MAX_EPOCH_AGE_MS` in `RatchetEngine` / `GroupRatchetEngine` is a
+  rotation cadence that can stay at 24 h, but its doc comment ("no legitimately re-deliverable frame belongs to
+  an older epoch") stops being true. A 7-day backlog then spans about 7 epochs, not about 2, so the
+  skipped-key work bound beside `MAX_EPOCH_MESSAGES` needs to be reargued.
+- **Spool.** `ScopeRegistry.DEFAULT_TTL_MS` is 48 h by definition as 2× custody (`docs/SPOOL_PROTOCOL.md`
+  §12.2, the 24–48 h band §9.6 / ADR 062 is written around, and the §3.5 intro re-send floor of 20 h "under the
+  24 h custody TTL"). Keeping 2× means 14-day scopes and 7× the operator's storage. Keeping 48 h means the
+  spool holds less than custody, which flips §9.6's reasoning. Either way the spec, its changelog and
+  `knit-spool`'s daemon defaults move in the same pass.
+- **Derived, check only.** `CallManager`'s `TOMB_KEEP_MS`, `ContributionLedger`, `PullThroughGate`,
+  `AttachmentDeferPolicy` and the carrier's DM attachment pull window in `InboundPipeline` (`sentAt +
+  DEFAULT_TTL_MS`, #195) all derive from the constant. That last one means a carrier pulls a DM's attachment
+  for 7 days, so `CARRIER_BLOB_BUDGET_BYTES` (128 MiB) becomes the binding bound. Check that it is the bound
+  you want.
+
+**Watch out.** `forward_store.expiresAt` is stamped at store time from the local constant
+(`sentAt + ttl`), so rows stored before the upgrade keep their 24-hour expiry while the same frame stored
+after the upgrade gets 7 days. That is a digest divergence on exactly the frames that straddle the
+release. The break's DB migration must restamp `expiresAt` from `sentAt` and the row's TTL class. Leave the
+broadcast room's 6-hour `DEFAULT_BROADCAST_TTL_MS` alone unless there is a separate reason: it is ambient,
+unencrypted chatter to strangers with no ack to purge it, and a week of it would crowd addressed traffic
+out of the global cap. Like every custody rule change, this one needs a `mesh/lab/` scenario that ends in
+`assertConverged` across a frame older than 24 hours, and `liveFingerprint` must match across the lab phones
+after the trial.
+
 ---
 
 ## Deliberately *not* on this list
