@@ -262,6 +262,7 @@ carries; never renumber an old one.
 | [2026-10.s3ep](decisions/2026-10-s3ep-a-free-ticket-lets-a-phone-send-small-photos-through-a-files-gated-relay.md) | A free ticket lets a phone send small photos through a files-gated relay | calls, spool, tickets, attachments |
 | [2026-10.swst](decisions/2026-10-swst-art-s-whitespace-is-the-law-for-both-ports.md) | ART's whitespace is the law for both ports | text, interop, testing |
 | [2026-10.swvp](decisions/2026-10-swvp-live-calls.md) | Live calls, mesh calls, speech and Knit Anywhere are four build flags | calls, build, tickets |
+| [2026-10.t2h6](decisions/2026-10-t2h6-a-message-is-translated-on-the-reader-s-tap-by-a-model-the-phone-downloads.md) | A message is translated on the reader's tap by a model the phone downloads | ml, ui, moderation, privacy |
 | [2026-10.unqn](decisions/2026-10-unqn-a-clean-bounded-picture-is-stripped-not-re-encoded.md) | A clean, bounded picture is stripped, not re-encoded | attachments, privacy |
 | [2026-10.vy27](decisions/2026-10-vy27-a-dm-photo-its-recipient-provably-holds-never-goes-up-to-a-spool.md) | A DM photo its recipient provably holds never goes up to a spool | spool, attachments |
 | [2026-10.w3dw](decisions/2026-10-w3dw-a-phone-that-cannot-survive-hosting-a-wi-fi-direct-group-never-hosts-one.md) | A phone that cannot survive hosting a Wi-Fi Direct group never hosts one | wifi-direct, transfer, calls, reliability |
