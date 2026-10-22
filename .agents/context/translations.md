@@ -5,8 +5,8 @@ How Knit's text reaches other languages. The app ships English only today; this 
 ## The plan: one language at a time, complete or not at all
 
 - **Hybrid.** A language starts as a machine (LLM) pass over every string, glossary in hand, then native speakers
-  correct it. Corrections arrive as merge requests against the committed `values-<locale>/strings.xml`, or through a
-  Weblate instance pointed at the repo once there is one. Either way the repo's XML is the source of truth.
+  correct it, in Weblate or as a pull request against the committed `values-<locale>/strings.xml`. Either way the
+  repo's XML is the source of truth.
 - **One locale lands whole.** Android Lint's `MissingTranslation` stays an error (`lint { warningsAsErrors }`,
   `context/toolchain.md`), so a locale is added only with every translatable string in it. A new English string
   then fails lint until each shipped locale has it: that failure is the reminder, not noise. Never relax the check,
@@ -16,6 +16,25 @@ How Knit's text reaches other languages. The app ships English only today; this 
   `app/build.gradle.kts`, the default's language in `app/src/main/res/resources.properties`). It is derived from the
   tree, so the F-Droid rebuild stays byte-identical (`context/distribution.md`). There is no in-app picker for older
   phones, which would need AppCompat.
+
+## Weblate
+
+The project is `knit` on Hosted Weblate (https://hosted.weblate.org/projects/knit/), set up 2026-10-22 on the Libre
+plan. Its one component, `app`, reads `app/src/main/res/values/strings.xml` as the template and
+`values-*/strings.xml` as the translations, in Android format with Android locale folders (`values-pt-rBR`).
+
+- **It never pushes.** The component's VCS is `github`: Weblate's bot commits in its fork of `getknit/knit` and opens
+  a pull request against `main`, so a correction goes through CI like any other. Each commit carries
+  `Signed-off-by: {{ author }}` (the translator) for the DCO check, and a `chore(i18n): …` subject.
+- **New languages are requested, not created** (`new_lang: contact`). A language starts in the repo as a complete
+  machine pass; Weblate finds the new `values-<locale>/` on its next pull and from then on carries corrections.
+  Adding one in Weblate instead would open a pull request with a partial locale, which lint fails.
+- **Source strings are edited in the repo only** (`edit_template: false`). Weblate picks them up from `main`.
+- **Placeholders are enforced** (`java-printf-format`, enforced): a translation that drops or renumbers a `%1$s`
+  cannot be saved.
+- **The translator instructions** (tone, the glossary, plurals, length) live in the project's settings on Weblate.
+  Change them there.
+- A GitHub webhook to `https://hosted.weblate.org/hooks/github/` makes Weblate pull on every push to `main`.
 
 ## Writing a string
 
