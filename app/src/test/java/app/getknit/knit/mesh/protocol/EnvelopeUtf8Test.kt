@@ -6,6 +6,7 @@ import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
+import com.google.crypto.tink.RegistryConfiguration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -20,11 +21,14 @@ import org.junit.Test
 class EnvelopeUtf8Test {
     private val hybrid by lazy {
         TinkInit.ensure()
-        KeysetHandle.generateNew(KeyTemplates.get("DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW"))
+        KeysetHandle.generateNew(
+            KeyTemplates.get("DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW").toParameters(),
+            RegistryConfiguration.get(),
+        )
     }
     private val sigKey by lazy {
         TinkInit.ensure()
-        KeysetHandle.generateNew(KeyTemplates.get("ED25519_RAW"))
+        KeysetHandle.generateNew(KeyTemplates.get("ED25519_RAW").toParameters(), RegistryConfiguration.get())
     }
     private val crypto by lazy { MessageCrypto(hybrid, sigKey) }
     private val bundle by lazy { PublicKeyBundle.fromPrivate(hybrid, sigKey) }

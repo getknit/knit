@@ -23,6 +23,7 @@ python3 scripts/gen-screenshot-tests.py     # ...after adding/renaming a @Previe
 ./gradlew -Pknit.baselineProfile=true :baselineprofile:connectedNonMinifiedReleaseAndroidTest
 python3 scripts/adr.py new "<title>" --topics a,b  # scaffold an ADR (mints a collision-free id; never pick a number)
 python3 scripts/adr.py index                      # regenerate .agents/memory/decisions.md (--check to verify, as CI does)
+python3 scripts/catalog-outdated.py gradle/libs.versions.toml  # newer versions per catalog ref (--all lists every pin); then run the upgrade-notes skill
 bash scripts/ide-diagnostics.sh --list          # changed .kt/.kts/.java files — what to iterate for IDE inspections
 bash scripts/ide-diagnostics.sh <file>          # ...focus one in the RUNNING Studio, then read it via getDiagnostics
 bash scripts/qodana.sh                          # the SAME engine over the whole tree, headless in Docker (~14 GB, slow)

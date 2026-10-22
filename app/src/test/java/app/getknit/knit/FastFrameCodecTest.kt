@@ -15,6 +15,7 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
+import com.google.crypto.tink.RegistryConfiguration
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -81,8 +82,12 @@ class FastFrameCodecTest {
     @Test
     fun aRealSignatureStillVerifiesAfterCompactRoundTrip() {
         TinkInit.ensure()
-        val hybrid = KeysetHandle.generateNew(KeyTemplates.get("DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW"))
-        val sigKeys = KeysetHandle.generateNew(KeyTemplates.get("ED25519_RAW"))
+        val hybrid =
+            KeysetHandle.generateNew(
+                KeyTemplates.get("DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW").toParameters(),
+                RegistryConfiguration.get(),
+            )
+        val sigKeys = KeysetHandle.generateNew(KeyTemplates.get("ED25519_RAW").toParameters(), RegistryConfiguration.get())
         val crypto = MessageCrypto(hybrid, sigKeys)
         val signed = cborSigned()
         val original = WireEnvelope(sig = crypto.signRaw(signed), signed = signed)
@@ -344,8 +349,12 @@ class FastFrameCodecTest {
     @Test
     fun aRealSignatureStillVerifiesAfterTranscodedRoundTrip() {
         TinkInit.ensure()
-        val hybrid = KeysetHandle.generateNew(KeyTemplates.get("DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW"))
-        val sigKeys = KeysetHandle.generateNew(KeyTemplates.get("ED25519_RAW"))
+        val hybrid =
+            KeysetHandle.generateNew(
+                KeyTemplates.get("DHKEM_X25519_HKDF_SHA256_HKDF_SHA256_AES_256_GCM_RAW").toParameters(),
+                RegistryConfiguration.get(),
+            )
+        val sigKeys = KeysetHandle.generateNew(KeyTemplates.get("ED25519_RAW").toParameters(), RegistryConfiguration.get())
         val crypto = MessageCrypto(hybrid, sigKeys)
         val signed = cborSigned()
         val original = WireEnvelope(sig = crypto.signRaw(signed), signed = signed)

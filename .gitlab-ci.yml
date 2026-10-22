@@ -1,7 +1,7 @@
 # Knit — GitLab CI. Stages: build -> test -> verify, but ordered by `needs:`: the test jobs wait for
 # build:debug alone (its build cache, see .android) and the verify jobs wait for nothing, so a slow
 # build:release holds up nothing but itself.
-# Bleeding-edge toolchain (AGP 9.4.1 / Kotlin 2.4.20 / JDK 21 / compileSdk 37.1).
+# Bleeding-edge toolchain (AGP 9.4.1 / Kotlin 2.4.21 / JDK 21 / compileSdk 37.1).
 # Static analysis (detekt/ktlint) and coverage (Kover) run as Gradle plugins via `./gradlew` tasks.
 
 stages:

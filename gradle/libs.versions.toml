@@ -16,7 +16,7 @@ activityCompose = "1.13.0"
 # `navigation-compose-android` AAR, minCompileSdk=37 / minAGP 9.1.0 — cleared by compileSdk 37.1 and
 # AGP 9.4.0. It declares androidx.compose.* 1.10.5 floors, well under the Compose BOM's 1.12.1.
 navigationCompose = "2.10.2"
-kotlin = "2.4.20"
+kotlin = "2.4.21"
 # Compose UI 1.12.1 / Material3 1.4.0. UI 1.12.1's AAR sets minCompileSdk=37, which compileSdk 37.1 clears.
 # 2026.09.00 is a pure Compose 1.12.0 → 1.12.1 patch — material3 and material-icons-extended are unmoved.
 composeBom = "2026.09.00"
@@ -42,14 +42,14 @@ room3 = "3.0.3"
 # still 0x4000 on all four ABIs.
 sqlcipher = "4.19.1"
 coroutines = "1.11.0"
-kotlinxSerializationJson = "1.11.0"
-# Alpha on purpose (the stable-only rule's second exception, toolchain.md): 1.3.0-alpha03 fixed the dropped
-# update a `data` collector that subscribes mid-write never sees (b/431787506, work item #97), which no stable
-# line carries — 1.2.1 postdates it and still has the race. Not alpha03-05: their libdatastore_shared_counter.so
-# ends RELRO mid-page inside its writable segment, so a 16 KB-page device runs the whole app in page-size compat
-# mode (pageSizeCompat=256) and shows the "isn't 16 KB compatible" warning; alpha06+ relinked it. Back to stable
-# once 1.3.0 ships. Pulls androidx.tracing 2.x, whose 1.x `Trace` / `trace {}` surface is unchanged.
-datastore = "1.3.0-alpha11"
+kotlinxSerializationJson = "1.12.0"
+# 1.3.0 is the first stable line with the fix for the dropped update a `data` collector that subscribes mid-write
+# never sees (b/431787506, work item #97; 1.2.1 still has the race), which is why this sat on the 1.3.0 alphas.
+# Never alpha03-05: their libdatastore_shared_counter.so ends RELRO mid-page inside its writable segment, so a 16
+# KB-page device runs the whole app in page-size compat mode (pageSizeCompat=256). 1.3.0's .so files are
+# byte-identical to alpha11's on all four ABIs (LOAD align 0x4000, RELRO filling its RW LOAD) — re-check with
+# `readelf -lW` after any bump. Pulls androidx.tracing 2.x, whose 1.x `Trace` / `trace {}` surface is unchanged.
+datastore = "1.3.0"
 # The WSS client for the spool (Internet-relay) plane. Pure Java/Kotlin — no native code, so nothing to
 # 16 KB-align and nothing that can make the F-Droid rebuild machine-dependent; its only non-stdlib
 # dependency is okio, already on the classpath via DataStore. Chosen over a Ktor client because its
@@ -59,10 +59,10 @@ datastore = "1.3.0-alpha11"
 # else in the app may import okhttp3.
 # NOTE the `okhttp` coordinate looks like a plain JVM jar but its Gradle module redirects an Android
 # consumer (`available-at`) to the okhttp-android AAR, so it is subject to that AAR's minCompileSdk —
-# 37 as of 5.5.0, which compileSdk 37.1 clears. Check okhttp-android, not okhttp, when bumping.
-okhttp = "5.5.0"
+# 37 as of 5.5.0 (still in 5.5.1), which compileSdk 37.1 clears. Check okhttp-android, not okhttp, when bumping.
+okhttp = "5.5.1"
 koin = "4.2.2"
-# Coil 3.4.0+ is built with Kotlin 2.4.x. We now compile :app with Kotlin 2.4.20 (built-in Kotlin is
+# Coil 3.4.0+ is built with Kotlin 2.4.x. We now compile :app with Kotlin 2.4.21 (built-in Kotlin is
 # overridden off AGP's bundled 2.2.10 — see the buildscript classpath in the root build.gradle.kts), so
 # the 2.4 metadata is readable again and Coil is free to track latest.
 coil = "3.6.3"
@@ -86,8 +86,10 @@ litert = "1.4.2"
 # Kotlin-2.4 toolchain. Works on minSdk 29 (the platform XDH/Ed25519 APIs are API 33+, which is why we
 # don't use java.security directly). 1.23.0 deprecated the two-arg TinkProtoKeysetFormat
 # parseKeyset/serializeKeyset overloads in favour of the RegistryConfiguration-taking ones — same wire
-# bytes, pure inlining; IdentityKeyStore already passes RegistryConfiguration.get() explicitly.
-tink = "1.23.0"
+# bytes, pure inlining; IdentityKeyStore already passes RegistryConfiguration.get() explicitly. 1.24.0 adds the
+# `*Config2026` configurations beside it (RegistryConfiguration stays the registry-based behaviour) and deprecates
+# generateNew(KeyTemplate), unannounced in its notes; IdentityKeyStore inlines it as Tink's @InlineMe says.
+tink = "1.24.0"
 # WebRTC (libwebrtc's Android SDK: Opus over DTLS-SRTP, ICE/TURN) for the experimental voice calls
 # (docs/VOICE_CALLS.md, ADR 2026-10.3tee). `compileOnly` everywhere and packaged only where `BuildConfig.CALLS` is on
 # (debug by default; `-Pcalls`, app/build.gradle.kts), so the release APK carries none of its ~10 MB per ABI and
@@ -215,10 +217,10 @@ exifinterface = "1.4.2"
 media3 = "1.11.1"
 # Wear OS — used ONLY by the opt-in :wear module (the watch app for the mesh-status prototype), which is in
 # the build only under `-Pknit.wear=true`: never in :app's graph, app/gradle.lockfile or a shipped artifact.
-# Complications 1.3.0 AARs are minCompileSdk 34; Wear Compose 1.7.0 is minCompileSdk 37 + AGP 9.1, both
+# Complications 1.3.0 AARs are minCompileSdk 34; Wear Compose 1.7.1 is minCompileSdk 37 + AGP 9.1, both
 # cleared by compileSdk 37.1 / AGP 9.4.1.
 wearComplications = "1.3.0"
-wearCompose = "1.7.0"
+wearCompose = "1.7.1"
 # Tiles 1.6.2 / ProtoLayout 1.4.2: Material3TileService and the M3 Expressive tile layouts; tiles ask for
 # compileSdk 35. Wear Widgets (glance-wear, compose-remote) are alpha only, so the stable-only rule keeps
 # the watch on a tile until they ship stable.
@@ -338,7 +340,7 @@ androidx-camera-view = { group = "androidx.camera", name = "camera-view", versio
 reandroid-arsclib = { group = "io.github.reandroid", name = "ARSCLib", version.ref = "arsclib" }
 apksig = { group = "com.android.tools.build", name = "apksig", version.ref = "apksig" }
 
-# Put onto the root buildscript classpath so AGP 9's built-in Kotlin compiles with this KGP (2.4.20)
+# Put onto the root buildscript classpath so AGP 9's built-in Kotlin compiles with this KGP (2.4.21)
 # instead of AGP's bundled default (2.2.10). Kotlin 2.4 is supported on AGP 9.1+ per Google's
 # AGP↔Kotlin matrix; this is what lets us read Coil 3.4+/latest Compose's Kotlin-2.4 metadata.
 kotlin-gradle-plugin = { group = "org.jetbrains.kotlin", name = "kotlin-gradle-plugin", version.ref = "kotlin" }

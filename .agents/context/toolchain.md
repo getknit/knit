@@ -1,6 +1,6 @@
 # Toolchain (bleeding-edge — do not "fix" these without reading why)
 
-This project intentionally runs on very new tooling (AGP 9.4.1, Gradle 9.7.1, Kotlin 2.4.20,
+This project intentionally runs on very new tooling (AGP 9.4.1, Gradle 9.7.1, Kotlin 2.4.21,
 Compose BOM 2026.09.00, compileSdk 37.1). That forces several non-obvious choices. **Read this before
 changing build config, dependencies, or the DI graph.**
 
@@ -50,10 +50,10 @@ notes, the two linter/CI pins and the READMEs are the places to re-grep after an
   (dagger#5083 / #5099). Koin is pure-Kotlin runtime DI with no Gradle plugin / no annotation
   processor, so it can't be broken by AGP. Koin is started in `KnitApplication`; modules live in
   `app/src/main/java/app/getknit/knit/di/`.
-- **Built-in Kotlin is overridden to 2.4.20, not AGP's bundled 2.2.10.** AGP 9.4.1 ships KGP 2.2.10,
+- **Built-in Kotlin is overridden to 2.4.21, not AGP's bundled 2.2.10.** AGP 9.4.1 ships KGP 2.2.10,
   whose Kotlin-2.2 compiler cannot read class metadata produced by Kotlin 2.4 (this is what used to
-  pin Coil to 3.3.0). The root `build.gradle.kts` puts KGP 2.4.20 on the buildscript classpath
-  (`classpath(libs.kotlin.gradle.plugin)`) so built-in Kotlin compiles with 2.4.20 — a supported combo
+  pin Coil to 3.3.0). The root `build.gradle.kts` puts KGP 2.4.21 on the buildscript classpath
+  (`classpath(libs.kotlin.gradle.plugin)`) so built-in Kotlin compiles with 2.4.21 — a supported combo
   (Kotlin 2.4 requires AGP 9.1+ per Google's AGP/Kotlin matrix). **Bumping AGP does not move Kotlin**:
   the 9.4 line we now build on still bundles it (9.3 did too), so the override — not an AGP bump — is
   the lever. Keep KGP and the `ksp` version in lockstep with `kotlin`; KSP adopted independent (KSP2)
@@ -76,26 +76,26 @@ notes, the two linter/CI pins and the READMEs are the places to re-grep after an
   `kotlin.plugin.compose`, `kotlin.plugin.serialization`, and `ksp` plugins are applied.
 - Pin third-party versions in `gradle/libs.versions.toml` (version catalog); probe Maven before
   bumping anything that could pull in a newer Kotlin stdlib.
-- **Stable releases only**, with four standing exceptions: `detekt` 2.0.0-alpha.x, because the 1.23.x
-  stable line cannot run on Gradle 9 at all, and `datastore` 1.3.0-alpha11, because no stable line carries
-  the fix for a `data` collector that subscribes mid-write and never sees the write (b/431787506, work item
-  #97: `watchProfileChanges` missed a rename made while the mesh started) — 1.2.1 is newer and still has it.
-  It sat on alpha03, the first alpha with the fix, until that alpha's `libdatastore_shared_counter.so` put the
-  app in 16 KB page-size compat mode (RELRO ends mid-page inside its writable segment; alphas 03-05 only, see
-  `context/distribution.md`); alpha11 is the newest alpha with the old link layout. Move it to 1.3.0 when that
-  goes stable, and to a later alpha only for a reason like that one. The third is the Compose Preview Screenshot
+- **Stable releases only**, with three standing exceptions: `detekt` 2.0.0-alpha.x, because the 1.23.x
+  stable line cannot run on Gradle 9 at all. The second is the Compose Preview Screenshot
   Testing plugin (`com.android.compose.screenshot` + `screenshot-validation-api`, `composeScreenshot` in the
   catalog), which has never shipped a stable release: it is test-only (the `screenshotTest*` configurations —
   `releaseRuntimeClasspath` and the debug runtime are untouched) and the release APK is byte-identical with it
-  applied (ADR 2026-10.gtmm). Take its newest alpha. The fourth is `core-telecom` 1.1.0-rc01 (`coreTelecom`), which
+  applied (ADR 2026-10.gtmm). Take its newest alpha. The third is `core-telecom` 1.1.0-rc01 (`coreTelecom`), which
   owns the experimental calls' audio route (`docs/VOICE_CALLS.md` §3.13): like `webrtc` it is `compileOnly` and packaged
   only where a call kind is on (`BuildConfig.LIVE_CALLS` / `MESH_CALLS`, `-PliveCalls` / `-PmeshCalls`, off in release), so `releaseRuntimeClasspath` is untouched, and 1.0.1, the newest stable, reverts a call switched to speaker during setup
   (where a walkie starts) and can start an audio call on speaker on Android 14-16. Move it to 1.1.0 when that goes
   stable. So `cameraX` stays on 1.6.2 (1.7.0 is
   alpha), `lifecycle` on 2.11.0 (2.12.0 is alpha), `activity-compose` on 1.13.0
-  (1.14.0 is alpha), `kotlinx-serialization` on 1.11.0 (1.12.0 is an RC), and AGP on 9.4.1 (9.5.0 is
+  (1.14.0 is alpha), and AGP on 9.4.1 (9.5.0 is
   alpha). `navigation-compose` was held at 2.9.8 by this rule until 2.10.0 went stable, `robolectric`
-  at 4.16.1 until 4.17 did, and `benchmark` at 1.5.0-rc02 until 1.5.0 did.
+  at 4.16.1 until 4.17 did, and `benchmark` at 1.5.0-rc02 until 1.5.0 did. `datastore` was the fourth exception
+  until 1.3.0 went stable (2026-10-21): no stable line before it carried the fix for a `data` collector that
+  subscribes mid-write and never sees the write (b/431787506, work item #97: `watchProfileChanges` missed a rename
+  made while the mesh started; 1.2.1 still has it), so it sat on alpha03, then alpha11 once alpha03's
+  `libdatastore_shared_counter.so` put the app in 16 KB page-size compat mode (RELRO ends mid-page inside its
+  writable segment; alphas 03-05 only, see `context/distribution.md`). 1.3.0's `.so` files are byte-identical to
+  alpha11's.
 
 ## Kotlin warnings are errors (`allWarningsAsErrors`)
 

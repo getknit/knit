@@ -10,6 +10,7 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
+import com.google.crypto.tink.RegistryConfiguration
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -33,8 +34,8 @@ class FrameSignatureTest {
 
     private fun party(): Party {
         TinkInit.ensure()
-        val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE))
-        val sig = KeysetHandle.generateNew(KeyTemplates.get("ED25519_RAW"))
+        val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE).toParameters(), RegistryConfiguration.get())
+        val sig = KeysetHandle.generateNew(KeyTemplates.get("ED25519_RAW").toParameters(), RegistryConfiguration.get())
         return Party(MessageCrypto(hybrid, sig), PublicKeyBundle.fromPrivate(hybrid, sig))
     }
 

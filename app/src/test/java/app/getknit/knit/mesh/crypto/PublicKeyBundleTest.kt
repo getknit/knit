@@ -2,6 +2,7 @@ package app.getknit.knit.mesh.crypto
 
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
+import com.google.crypto.tink.RegistryConfiguration
 import com.google.crypto.tink.hybrid.HpkePublicKey
 import com.google.crypto.tink.signature.Ed25519PublicKey
 import org.junit.Assert.assertEquals
@@ -22,8 +23,8 @@ class PublicKeyBundleTest {
     }
 
     private fun newBundle(): PublicKeyBundle {
-        val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE))
-        val sig = KeysetHandle.generateNew(KeyTemplates.get(SIG_TEMPLATE))
+        val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE).toParameters(), RegistryConfiguration.get())
+        val sig = KeysetHandle.generateNew(KeyTemplates.get(SIG_TEMPLATE).toParameters(), RegistryConfiguration.get())
         return PublicKeyBundle.fromPrivate(hybrid, sig)
     }
 
@@ -59,8 +60,8 @@ class PublicKeyBundleTest {
      */
     @Test
     fun rawKeysAndHpkeParamsMatchTheRawTemplates() {
-        val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE))
-        val sig = KeysetHandle.generateNew(KeyTemplates.get(SIG_TEMPLATE))
+        val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE).toParameters(), RegistryConfiguration.get())
+        val sig = KeysetHandle.generateNew(KeyTemplates.get(SIG_TEMPLATE).toParameters(), RegistryConfiguration.get())
         val hpkeKey = hybrid.publicKeysetHandle.primary.key as HpkePublicKey
         val sigKey = sig.publicKeysetHandle.primary.key as Ed25519PublicKey
 

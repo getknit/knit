@@ -5,6 +5,7 @@ import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.crypto.TinkInit
 import com.google.crypto.tink.KeyTemplates
 import com.google.crypto.tink.KeysetHandle
+import com.google.crypto.tink.RegistryConfiguration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -20,8 +21,8 @@ import org.junit.Test
 class SelfCertifyingIdentityTest {
     private fun freshBundle(): PublicKeyBundle {
         TinkInit.ensure()
-        val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE))
-        val sig = KeysetHandle.generateNew(KeyTemplates.get("ED25519_RAW"))
+        val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE).toParameters(), RegistryConfiguration.get())
+        val sig = KeysetHandle.generateNew(KeyTemplates.get("ED25519_RAW").toParameters(), RegistryConfiguration.get())
         return PublicKeyBundle.fromPrivate(hybrid, sig)
     }
 

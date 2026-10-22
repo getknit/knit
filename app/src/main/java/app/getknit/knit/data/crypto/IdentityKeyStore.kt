@@ -169,8 +169,8 @@ class IdentityKeyStore(
      */
     @OptIn(ExperimentalSerializationApi::class)
     private fun generateAndStore(freshKey: Boolean): Loaded {
-        val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE))
-        val sig = KeysetHandle.generateNew(KeyTemplates.get(SIG_TEMPLATE))
+        val hybrid = KeysetHandle.generateNew(KeyTemplates.get(HYBRID_TEMPLATE).toParameters(), RegistryConfiguration.get())
+        val sig = KeysetHandle.generateNew(KeyTemplates.get(SIG_TEMPLATE).toParameters(), RegistryConfiguration.get())
         val stored =
             Stored(
                 hybridPriv = TinkProtoKeysetFormat.serializeKeyset(hybrid, InsecureSecretKeyAccess.get(), RegistryConfiguration.get()),

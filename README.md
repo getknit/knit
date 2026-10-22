@@ -9,7 +9,7 @@ Phones talk straight to each other over Wi-Fi Aware and Bluetooth LE, relaying f
 🌐 **[getknit.app](https://getknit.app)** — the Knit website
 
 ![Platform](https://img.shields.io/badge/Android-10%2B%20(API%2029)-3DDC84?logo=android&logoColor=white)
-![Kotlin](https://img.shields.io/badge/Kotlin-2.4.20-7F52FF?logo=kotlin&logoColor=white)
+![Kotlin](https://img.shields.io/badge/Kotlin-2.4.21-7F52FF?logo=kotlin&logoColor=white)
 ![Compose](https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4?logo=jetpackcompose&logoColor=white)
 ![Transports](https://img.shields.io/badge/radios-Wi--Fi%20Aware%20%2B%20BLE-00BCD4)
 ![Encryption](https://img.shields.io/badge/DMs%20%26%20groups-E2E%20%2B%20forward%20secrecy-2EA043?logo=signal&logoColor=white)
@@ -314,7 +314,7 @@ for Google Play once they do. To try it from source, see [Build](#-build).
 
 | Area | Choice |
 |------|--------|
-| Language / UI | Kotlin 2.4.20 · Jetpack Compose (Material 3) + Navigation Compose |
+| Language / UI | Kotlin 2.4.21 · Jetpack Compose (Material 3) + Navigation Compose |
 | Build | AGP 9.4.1 / Gradle 9.7.1 · JDK 21 · minSdk 29 / targetSdk 36 / compileSdk 37.1 |
 | DI | Koin (pure-Kotlin, no Gradle plugin) |
 | Storage | Room 3 + SQLCipher (encrypted at rest) · DataStore |
