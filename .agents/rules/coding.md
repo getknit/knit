@@ -27,6 +27,11 @@ Invariants for all Kotlin/Compose/data code. (Mesh-specific invariants are in `r
   in a local `MutableStateFlow` in the ViewModel and persist to DataStore in the background — see
   `ProfileViewModel`.
 
+- **Text the user reads or hears is a string resource, never a literal.** detekt's `HardcodedUiText` fails one in
+  `Text`, a `contentDescription` or a notification; a helper that words something returns a `@StringRes` id or takes
+  a `Context`. Positional placeholders, `<plurals>` for counts, no sentence assembled in code.
+  `context/translations.md`.
+
 ## Data layer
 
 - **Multi-step data-layer mutations must be transactional — the "single writer" was a myth.** The mesh

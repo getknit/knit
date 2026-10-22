@@ -2,6 +2,8 @@
 
 package app.getknit.knit.ui.call
 
+import android.content.Context
+import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,7 +35,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
@@ -43,6 +47,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import app.getknit.knit.R
 import app.getknit.knit.call.CaptionStatus
 import app.getknit.knit.call.Captions
 import app.getknit.knit.call.SttModelState
@@ -101,7 +106,13 @@ internal fun WalkieTranscript(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
     ) {
         Column(Modifier.padding(top = 16.dp)) {
-            Box(Modifier.padding(horizontal = 16.dp)) { Title("Transcript", "ON DEVICE", Icons.Outlined.ClosedCaption) }
+            Box(Modifier.padding(horizontal = 16.dp)) {
+                Title(
+                    stringResource(R.string.call_transcript_title),
+                    stringResource(R.string.call_transcript_marker),
+                    Icons.Outlined.ClosedCaption,
+                )
+            }
             // Everything under the title is one list, so a short screen scrolls the card rather than clipping it.
             LazyColumn(
                 modifier = Modifier.weight(1f, fill = false),
@@ -134,14 +145,22 @@ private fun LazyListScope.transcriptItems(
     } else if (ui.lines.isEmpty()) {
         item(key = "empty") {
             Text(
-                "What you and ${name.ifBlank { "the other phone" }} say shows here as text, as you talk.",
+                stringResource(R.string.call_transcript_empty, name.ifBlank { stringResource(R.string.call_transcript_other_phone) }),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
     items(ui.lines, key = { "${if (it.mine) "s" else "h"}${it.burst}" }) { line ->
-        Line(line, if (line.mine) "You" else name.ifBlank { "Them" }, times.format(Instant.ofEpochMilli(line.heardAt)))
+        val who =
+            if (line.mine) {
+                stringResource(
+                    R.string.call_transcript_you,
+                )
+            } else {
+                name.ifBlank { stringResource(R.string.call_transcript_them) }
+            }
+        Line(line, who, times.format(Instant.ofEpochMilli(line.heardAt)))
     }
 }
 
@@ -161,7 +180,7 @@ private fun Line(
         Column(Modifier.weight(1f)) {
             // Who spoke; a line of this phone's own is the microphone's audio, before Opus.
             Text(
-                if (line.mine) "$who · mic, before Opus" else who,
+                if (line.mine) stringResource(R.string.call_transcript_mine, who) else who,
                 style = MaterialTheme.typography.labelMedium,
                 color = if (line.mine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -225,17 +244,37 @@ private fun Streaming(
 }
 
 // What a line without text says.
+@Composable
 private fun noteOf(
     state: TranscriptLine.State,
     mine: Boolean,
 ): String =
     when (state) {
-        TranscriptLine.State.Listening -> if (mine) "Recording…" else "Listening…"
-        TranscriptLine.State.Pending -> "Transcribing…"
-        TranscriptLine.State.NoSpeech -> "No speech heard"
-        TranscriptLine.State.NoModel -> "Not transcribed: the speech model isn't on this phone"
-        TranscriptLine.State.Failed -> "Couldn't transcribe this one"
-        is TranscriptLine.State.Text -> state.text
+        TranscriptLine.State.Listening -> {
+            stringResource(
+                if (mine) R.string.call_transcript_recording else R.string.call_transcript_listening,
+            )
+        }
+
+        TranscriptLine.State.Pending -> {
+            stringResource(R.string.call_transcript_pending)
+        }
+
+        TranscriptLine.State.NoSpeech -> {
+            stringResource(R.string.call_transcript_no_speech)
+        }
+
+        TranscriptLine.State.NoModel -> {
+            stringResource(R.string.call_transcript_no_model)
+        }
+
+        TranscriptLine.State.Failed -> {
+            stringResource(R.string.call_transcript_failed)
+        }
+
+        is TranscriptLine.State.Text -> {
+            state.text
+        }
     }
 
 /**
@@ -249,9 +288,10 @@ private fun ModelPanel(
     onCancel: () -> Unit,
     onDismiss: () -> Unit,
     // What the model would do here, before its cost, and what the button beside Download says.
-    offer: String = "Turn the bursts you hear and speak into text, on this phone.",
-    dismiss: String = "Dismiss",
+    offer: String = stringResource(R.string.call_transcript_offer),
+    dismiss: String = stringResource(R.string.call_transcript_dismiss),
 ) {
+    val context = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         when (val model = ui.model) {
             // The card draws no panel then.
@@ -259,12 +299,11 @@ private fun ModelPanel(
 
             SttModelState.Absent -> {
                 Text(
-                    "$offer The speech model is a one-time ${mb(ui.modelBytes)} download from getknit.app, here or any " +
-                        "time in Settings › Calls.",
+                    stringResource(R.string.call_transcript_model_absent, offer, mb(context, ui.modelBytes)),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 if (ui.metered) MeteredNote()
-                OfferButtons("Download", onDownload, onDismiss, dismiss)
+                OfferButtons(stringResource(R.string.call_transcript_download), onDownload, onDismiss, dismiss)
             }
 
             is SttModelState.Downloading -> {
@@ -274,23 +313,23 @@ private fun ModelPanel(
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "Downloading the speech model · ${mb(model.done)} of ${mb(model.total)}",
+                        stringResource(R.string.call_transcript_downloading, mb(context, model.done), mb(context, model.total)),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = onCancel) { Text("Cancel") }
+                    TextButton(onClick = onCancel) { Text(stringResource(R.string.call_settings_speech_model_cancel)) }
                 }
             }
 
             is SttModelState.Failed -> {
                 Text(
-                    "The speech model didn't download. ${model.reason}.",
+                    stringResource(R.string.call_settings_speech_model_failed, model.reason),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error,
                 )
                 if (ui.metered) MeteredNote()
-                OfferButtons("Try again", onDownload, onDismiss, dismiss)
+                OfferButtons(stringResource(R.string.call_settings_speech_model_retry), onDownload, onDismiss, dismiss)
             }
         }
     }
@@ -299,7 +338,7 @@ private fun ModelPanel(
 @Composable
 private fun MeteredNote() {
     Text(
-        "You're on mobile data or Data Saver now.",
+        stringResource(R.string.call_settings_speech_model_metered),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -351,6 +390,7 @@ internal fun LiveCaptions(
 ) {
     val ready = ui.model == SttModelState.Ready
     val lines = ui.captions.lines
+    val note = captionNote(ui, ready)?.let { stringResource(it) }
     val list = rememberLazyListState()
     val reduceMotion = LocalReduceMotion.current
     LaunchedEffect(lines.size, lines.lastOrNull()?.state, lines.lastOrNull()?.words, ready) {
@@ -364,14 +404,20 @@ internal fun LiveCaptions(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
     ) {
         Column(Modifier.padding(top = 16.dp)) {
-            Box(Modifier.padding(horizontal = 16.dp)) { Title("Captions", "ON DEVICE", Icons.Outlined.ClosedCaption) }
+            Box(Modifier.padding(horizontal = 16.dp)) {
+                Title(
+                    stringResource(R.string.call_captions_title),
+                    stringResource(R.string.call_transcript_marker),
+                    Icons.Outlined.ClosedCaption,
+                )
+            }
             LazyColumn(
                 modifier = Modifier.weight(1f, fill = false),
                 state = list,
                 contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                captionNote(ui, ready)?.let { note ->
+                note?.let { note ->
                     item(key = "note") { Note(note, error = ui.captions.status != CaptionStatus.ON) }
                 }
                 if (!ready) {
@@ -381,14 +427,21 @@ internal fun LiveCaptions(
                             onDownload,
                             onCancel,
                             onOff,
-                            offer = "See what ${name.ifBlank { "the other phone" }} says as text, written on this phone as you hear it.",
-                            dismiss = "Not now",
+                            offer =
+                                stringResource(
+                                    R.string.call_captions_offer,
+                                    name.ifBlank { stringResource(R.string.call_transcript_other_phone) },
+                                ),
+                            dismiss = stringResource(R.string.call_captions_not_now),
                         )
                     }
                 } else if (lines.isEmpty() && ui.captions.status == CaptionStatus.ON) {
                     item(key = "empty") {
                         Text(
-                            "What ${name.ifBlank { "the other phone" }} says shows here as text.",
+                            stringResource(
+                                R.string.call_captions_empty,
+                                name.ifBlank { stringResource(R.string.call_transcript_other_phone) },
+                            ),
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -416,14 +469,15 @@ private fun Caption(line: TranscriptLine) {
 }
 
 // What the captions say above their lines: why they stopped, else that the earpiece hides them.
+@StringRes
 private fun captionNote(
     ui: CaptionsUi,
     ready: Boolean,
-): String? =
+): Int? =
     when (ui.captions.status) {
-        CaptionStatus.BEHIND -> "Captions stopped: this phone couldn't keep up with the call. Turn CC off and on to try again."
-        CaptionStatus.FAILED -> "Captions stopped: the speech model wouldn't run on this phone."
-        CaptionStatus.ON -> if (ready && ui.earpiece) "Captions are easier to read with the call on speaker or a headset." else null
+        CaptionStatus.BEHIND -> R.string.call_captions_behind
+        CaptionStatus.FAILED -> R.string.call_captions_failed
+        CaptionStatus.ON -> if (ready && ui.earpiece) R.string.call_captions_earpiece else null
     }
 
 @Composable
@@ -439,7 +493,10 @@ private fun Note(
 }
 
 /** "44 MB": whole megabytes (10^6 bytes, as a download size is read). */
-internal fun mb(bytes: Long): String = "${(bytes + BYTES_PER_MB / 2) / BYTES_PER_MB} MB"
+internal fun mb(
+    context: Context,
+    bytes: Long,
+): String = context.getString(R.string.call_megabytes, (bytes + BYTES_PER_MB / 2) / BYTES_PER_MB)
 
 private const val BYTES_PER_MB = 1_000_000L
 private val TimeWidth = 64.dp

@@ -182,8 +182,11 @@ internal fun relayStatusLine(
         }
 
         relay.connected -> {
-            stringResource(R.string.relays_status_connected) + " · " +
-                pluralStringResource(R.plurals.relays_scope_count, relay.scopeCount ?: 0, relay.scopeCount ?: 0)
+            stringResource(
+                R.string.joined_with_dot,
+                stringResource(R.string.relays_status_connected),
+                pluralStringResource(R.plurals.relays_scope_count, relay.scopeCount ?: 0, relay.scopeCount ?: 0),
+            )
         }
 
         offline -> {

@@ -112,3 +112,7 @@ knit:
       - 'runRound'                         # mesh/MeshCoroutines.kt, what everyRound runs each round through
     excludes:
       - '**/test/**'                       # a test's loop ending early fails that test; production loops are the hazard
+  HardcodedUiText:
+    active: true                           # a literal the user reads never reaches a translator (MissingTranslation is an error)
+    excludes:
+      - '**/test/**'

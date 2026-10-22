@@ -1,5 +1,7 @@
 package app.getknit.knit.ui.call
 
+import android.content.Context
+import app.getknit.knit.R
 import app.getknit.knit.data.GroupRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
@@ -51,32 +53,56 @@ internal data class Relationship(
  * the lock screen) the count gives way to the names: "Contact · in Climbing, Lab +1".
  */
 internal fun relationshipText(
+    context: Context,
     r: Relationship,
     groupNames: List<String> = emptyList(),
 ): String {
     val standing =
         when {
-            r.blocked -> "Blocked"
-            r.verified -> "Verified contact"
-            r.contact -> "Contact"
-            else -> "Not a contact"
-        }
+            r.blocked -> R.string.call_caller_blocked
+            r.verified -> R.string.call_caller_verified
+            r.contact -> R.string.call_caller_contact
+            else -> R.string.call_caller_stranger
+        }.let(context::getString)
     val extra =
         when {
-            groupNames.isNotEmpty() -> groupsLine(groupNames)
-            r.groupsTogether == 1 -> "1 group together"
-            r.groupsTogether > 1 -> "${r.groupsTogether} groups together"
-            !r.contact && !r.anyMessages -> "no messages yet"
-            else -> null
+            groupNames.isNotEmpty() -> {
+                groupsLine(context, groupNames)
+            }
+
+            r.groupsTogether > 0 -> {
+                context.resources.getQuantityString(
+                    R.plurals.call_caller_groups_together,
+                    r.groupsTogether,
+                    r.groupsTogether,
+                )
+            }
+
+            !r.contact && !r.anyMessages -> {
+                context.getString(R.string.call_caller_no_messages)
+            }
+
+            else -> {
+                null
+            }
         }
-    return listOfNotNull(standing, extra).joinToString(" · ")
+    return extra?.let { context.getString(R.string.joined_with_dot, standing, it) } ?: standing
 }
 
 /** "in Climbing, Lab", then "+N" for the rest: the screen has one line for it. */
-private fun groupsLine(names: List<String>): String {
-    val shown = names.take(NAMED_GROUPS)
-    val rest = names.size - shown.size
-    return "in " + shown.joinToString(", ") + if (rest > 0) " +$rest" else ""
+private fun groupsLine(
+    context: Context,
+    names: List<String>,
+): String {
+    val shown = names.take(NAMED_GROUPS).joinToString(", ")
+    val rest = names.size - NAMED_GROUPS
+    return if (rest >
+        0
+    ) {
+        context.getString(R.string.call_caller_in_groups_more, shown, rest)
+    } else {
+        context.getString(R.string.call_caller_in_groups, shown)
+    }
 }
 
 /**
@@ -84,15 +110,16 @@ private fun groupsLine(names: List<String>): String {
  * the way `ContactRemover` reads it, so the call screen cannot call someone a contact the list does not.
  */
 internal suspend fun callerContext(
+    context: Context,
     peerId: String,
     peers: PeerRepository,
     messages: MessageRepository,
     groups: GroupRepository,
     settings: SettingsStore,
     identity: Identity,
-    // The title of a group with no stored name and no other member (R.string.group_unnamed).
-    unnamedGroup: String,
 ): CallerContext {
+    // The title of a group with no stored name and no other member.
+    val unnamedGroup = context.getString(R.string.group_unnamed)
     val me = identity.nodeId()
     val peer = peers.find(peerId)
     val signals = observeContactSignals(messages, groups, settings, flowOf(me)).first()
@@ -123,8 +150,8 @@ internal suspend fun callerContext(
         )
     return CallerContext(
         status = peer?.status.orEmpty().trim(),
-        relationship = relationshipText(relationship),
-        namedRelationship = relationshipText(relationship, groupNames),
+        relationship = relationshipText(context, relationship),
+        namedRelationship = relationshipText(context, relationship, groupNames),
         lastMessage = newest?.let { LastMessage(fromMe = it.senderId == me, sentAt = it.sentAt, message = it) },
     )
 }

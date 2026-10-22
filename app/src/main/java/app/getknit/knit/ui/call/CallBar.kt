@@ -33,9 +33,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import app.getknit.knit.R
 import app.getknit.knit.call.CallManager
 import app.getknit.knit.call.CallPhase
 import app.getknit.knit.call.CallState
@@ -137,7 +139,13 @@ internal fun CallBar(
             Column(Modifier.weight(1f)) {
                 Text(name, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    if (incoming) "Incoming call · tap to answer" else "${statusOf(state, clock)} · tap to return to the call",
+                    if (incoming) {
+                        stringResource(
+                            R.string.call_bar_incoming,
+                        )
+                    } else {
+                        stringResource(R.string.call_bar_return, statusOf(state, clock))
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -148,7 +156,10 @@ internal fun CallBar(
                 shape = CircleShape,
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = HangUpRed, contentColor = Color.White),
             ) {
-                Icon(Icons.Filled.CallEnd, contentDescription = if (incoming) "Decline" else "End call")
+                Icon(
+                    Icons.Filled.CallEnd,
+                    contentDescription = stringResource(if (incoming) R.string.call_action_decline else R.string.call_action_end_call),
+                )
             }
         }
     }

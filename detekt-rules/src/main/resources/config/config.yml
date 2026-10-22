@@ -3,3 +3,5 @@ knit:
     active: false
     guards:
       - 'runCatching'
+  HardcodedUiText:
+    active: false

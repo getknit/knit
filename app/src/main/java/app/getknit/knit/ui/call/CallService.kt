@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.util.Log
+import androidx.annotation.StringRes
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
 import androidx.core.app.ServiceCompat
@@ -89,12 +90,12 @@ class CallService :
         routing: CallRouting?,
     ) {
         val id = state?.id.orEmpty()
-        val person = face?.person ?: Person.Builder().setName(UNNAMED).build()
+        val person = face?.person ?: Person.Builder().setName(getString(R.string.call_notif_unnamed)).build()
         val notification =
             NotificationCompat
                 .Builder(this, CallNotifications.CHANNEL_STATUS)
                 .setSmallIcon(R.drawable.ic_stat_mesh)
-                .setContentTitle(face?.name ?: UNNAMED)
+                .setContentTitle(face?.name ?: getString(R.string.call_notif_unnamed))
                 .setContentText(textOf(state))
                 .setCategory(NotificationCompat.CATEGORY_CALL)
                 .setOngoing(true)
@@ -171,39 +172,42 @@ class CallService :
         return NotificationCompat.Action
             .Builder(
                 IconCompat.createWithResource(this, icon),
-                routeLabel(target),
+                routeLabel(this, target),
                 CallActionReceiver.pending(this, CallActionReceiver.ACTION_ROUTE, id, route = target.key),
             ).build()
     }
 
     private fun textOf(state: CallState?): String =
-        when (state?.phase) {
-            CallPhase.Calling -> callingText(state)
-            CallPhase.Ringing -> "Ringing…"
-            CallPhase.Connecting -> "Connecting…"
-            CallPhase.Connected -> connectedText(state)
-            CallPhase.Reconnecting -> "Reconnecting…"
-            else -> "Knit call"
-        }
+        getString(
+            when (state?.phase) {
+                CallPhase.Calling -> callingText(state)
+                CallPhase.Ringing -> R.string.call_status_ringing
+                CallPhase.Connecting -> R.string.call_status_connecting
+                CallPhase.Connected -> connectedText(state)
+                CallPhase.Reconnecting -> R.string.call_status_reconnecting
+                else -> R.string.call_notif_unnamed
+            },
+        )
 
     /** An outgoing call with no RINGING back: whether anything reaches the peer (C-3.3-5), and whether it answered (C-3.3-6). */
-    private fun callingText(state: CallState): String =
+    @StringRes
+    private fun callingText(state: CallState): Int =
         when {
-            state.unreachable -> "Can't reach them right now"
-            state.unproven -> "Waiting for their phone to respond"
-            else -> "Calling…"
+            state.unreachable -> R.string.call_notif_unreachable
+            state.unproven -> R.string.call_notif_unproven
+            else -> R.string.call_status_calling
         }
 
-    private fun connectedText(state: CallState): String =
+    @StringRes
+    private fun connectedText(state: CallState): Int =
         when {
-            state.walkie -> "Walkie-talkie"
-            state.muted -> "Voice call · muted"
-            else -> "Voice call"
+            state.walkie -> R.string.call_notif_walkie
+            state.muted -> R.string.call_notif_voice_muted
+            else -> R.string.call_notif_voice
         }
 
     companion object {
         private const val TAG = "KnitCall"
-        private const val UNNAMED = "Knit call"
 
         /**
          * Starts the service for a call the system answered — a headset's button, a watch, a car — where the call screen

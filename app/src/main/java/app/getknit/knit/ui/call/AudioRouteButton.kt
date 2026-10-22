@@ -1,5 +1,6 @@
 package app.getknit.knit.ui.call
 
+import android.content.Context
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -31,10 +32,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.getknit.knit.R
 import app.getknit.knit.call.CallAudioRoute
 import app.getknit.knit.call.CallAudioRoute.Kind
 import app.getknit.knit.call.CallRouting
@@ -55,7 +59,7 @@ internal fun AudioRouteButton(
     if (available.size <= 2) {
         val other = available.firstOrNull { it.kind != Kind.SPEAKER }
         CallToggle(
-            label = "Speaker",
+            label = stringResource(R.string.call_audio_speaker),
             icon = Icons.AutoMirrored.Filled.VolumeUp,
             checked = routing?.current?.kind == Kind.SPEAKER,
             onCheckedChange = { on -> (if (on) speaker else other)?.let(onRoute) },
@@ -65,7 +69,8 @@ internal fun AudioRouteButton(
     }
     var open by remember { mutableStateOf(false) }
     val current = routing?.current
-    val label = current?.let(::routeLabel) ?: "Audio"
+    val context = LocalContext.current
+    val label = current?.let { routeLabel(context, it) } ?: stringResource(R.string.call_audio)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         // Filled as the loudspeaker's toggle is when on: a route is in use, whichever it is. Unfilled reads as off.
         val on = IconButtonDefaults.filledTonalIconToggleButtonColors()
@@ -85,7 +90,7 @@ internal fun AudioRouteButton(
         ) {
             Icon(
                 routeIcon(current?.kind),
-                contentDescription = "Audio: $label. Choose where the call plays",
+                contentDescription = stringResource(R.string.call_audio_description, label),
                 modifier = Modifier.size(28.dp),
             )
         }
@@ -121,7 +126,7 @@ private fun RouteSheet(
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
             Text(
-                "Audio",
+                stringResource(R.string.call_audio),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
@@ -129,7 +134,7 @@ private fun RouteSheet(
             for (route in routing.available) {
                 val selected = route.key == routing.current?.key
                 ListItem(
-                    headlineContent = { Text(route.name.ifBlank { routeLabel(route) }) },
+                    headlineContent = { Text(route.name.ifBlank { routeLabel(LocalContext.current, route) }) },
                     leadingContent = { Icon(routeIcon(route.kind), contentDescription = null) },
                     trailingContent = { if (selected) Icon(Icons.Filled.Check, contentDescription = null) },
                     modifier = Modifier.selectable(selected = selected, role = Role.RadioButton) { onPick(route) },
@@ -140,12 +145,36 @@ private fun RouteSheet(
 }
 
 /** A route as a button, a notification action or a log line names it: the headset's own name for a Bluetooth one. */
-internal fun routeLabel(route: CallAudioRoute): String =
+internal fun routeLabel(
+    context: Context,
+    route: CallAudioRoute,
+): String =
     when (route.kind) {
-        Kind.EARPIECE -> "Earpiece"
-        Kind.SPEAKER -> "Speaker"
-        Kind.WIRED -> "Headset"
-        Kind.BLUETOOTH, Kind.OTHER -> route.name.ifBlank { if (route.kind == Kind.BLUETOOTH) "Bluetooth" else "Audio" }
+        Kind.EARPIECE -> {
+            context.getString(R.string.call_audio_earpiece)
+        }
+
+        Kind.SPEAKER -> {
+            context.getString(R.string.call_audio_speaker)
+        }
+
+        Kind.WIRED -> {
+            context.getString(R.string.call_audio_headset)
+        }
+
+        Kind.BLUETOOTH, Kind.OTHER -> {
+            route.name.ifBlank {
+                context.getString(
+                    if (route.kind ==
+                        Kind.BLUETOOTH
+                    ) {
+                        R.string.call_audio_bluetooth
+                    } else {
+                        R.string.call_audio
+                    },
+                )
+            }
+        }
     }
 
 private fun routeIcon(kind: Kind?): ImageVector =

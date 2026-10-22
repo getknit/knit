@@ -22,12 +22,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.getknit.knit.R
 import app.getknit.knit.call.WalkiePolicy
 import app.getknit.knit.call.WalkieStats
 import java.util.Locale
@@ -51,40 +53,43 @@ internal fun CallDiagnostics(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Title("Call diagnostics", "LIVE")
+            Title(stringResource(R.string.call_diag_title), stringResource(R.string.call_diag_marker_live))
             Row(Modifier.fillMaxWidth()) {
-                Metric("Round trip", ms(stats.rttMs), Modifier.weight(1f))
-                Metric("Jitter", ms(stats.jitterMs), Modifier.weight(1f))
-                Metric("Buffer", ms(stats.jitterBufferMs), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_round_trip), ms(stats.rttMs), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_jitter), ms(stats.jitterMs), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_buffer), ms(stats.jitterBufferMs), Modifier.weight(1f))
             }
             Row(Modifier.fillMaxWidth()) {
-                Metric("↑ Send", kbps(stats.sendKbps), Modifier.weight(1f))
-                Metric("↓ Receive", kbps(stats.receiveKbps), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_send), kbps(stats.sendKbps), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_receive), kbps(stats.receiveKbps), Modifier.weight(1f))
                 Spacer(Modifier.weight(1f))
             }
             // What the microphone hands WebRTC and what is heard: "silent" with packets flowing is a dead microphone.
             Row(Modifier.fillMaxWidth()) {
-                Metric("↑ Mic", level(stats.micLevel), Modifier.weight(1f))
-                Metric("↓ Heard", level(stats.heardLevel), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_mic_level), level(stats.micLevel), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_heard_level), level(stats.heardLevel), Modifier.weight(1f))
                 Spacer(Modifier.weight(1f))
             }
             // Loss each way now, then over the whole call: the first two are what the screen's warning reads.
             Row(Modifier.fillMaxWidth()) {
-                Metric("↑ Loss now", percent(stats.sentLossPercent), Modifier.weight(1f))
-                Metric("↓ Loss now", percent(stats.recentLossPercent), Modifier.weight(1f))
-                Metric("↓ Loss, call", percent(stats.lossPercent), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_sent_loss_now), percent(stats.sentLossPercent), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_heard_loss_now), percent(stats.recentLossPercent), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_heard_loss_call), percent(stats.lossPercent), Modifier.weight(1f))
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Detail("Path", pathOf(stats))
-                Detail("Relay", relayOf(stats))
-                Detail("Prefer", stats.prefer?.replace('_', ' ') ?: NONE)
-                Detail("Mic", captureOf(capture))
-                Detail("Codec", codecOf(stats))
-                Detail("DTLS", dtlsOf(stats))
-                Detail("SRTP", stats.srtpCipher ?: NONE)
-                Detail("ICE", "${stats.localCandidates} local · ${stats.remoteCandidates} remote candidates")
-                Detail("Pairs", pairsText(stats), lines = stats.pairs.size + 1)
+                Detail(stringResource(R.string.call_diag_path), pathOf(stats))
+                Detail(stringResource(R.string.call_diag_relay), relayOf(stats))
+                Detail(stringResource(R.string.call_diag_prefer), stats.prefer?.replace('_', ' ') ?: NONE)
+                Detail(stringResource(R.string.call_diag_mic), captureOf(capture))
+                Detail(stringResource(R.string.call_diag_codec), codecOf(stats))
+                Detail(stringResource(R.string.call_diag_dtls), dtlsOf(stats))
+                Detail(stringResource(R.string.call_diag_srtp), stats.srtpCipher ?: NONE)
+                Detail(
+                    stringResource(R.string.call_diag_ice),
+                    "${stats.localCandidates} local · ${stats.remoteCandidates} remote candidates",
+                )
+                Detail(stringResource(R.string.call_diag_pairs), pairsText(stats), lines = stats.pairs.size + 1)
             }
         }
     }
@@ -106,24 +111,24 @@ internal fun WalkieDiagnostics(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Title("Walkie diagnostics", "MESH")
+            Title(stringResource(R.string.call_diag_walkie_title), stringResource(R.string.call_diag_marker_mesh))
             Row(Modifier.fillMaxWidth()) {
-                Metric("Transit", ms(stats.transitMs), Modifier.weight(1f))
-                Metric("Jitter", ms(stats.jitterMs), Modifier.weight(1f))
-                Metric("Loss", percent(stats.lossPercent), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_transit), ms(stats.transitMs), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_jitter), ms(stats.jitterMs), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_loss), percent(stats.lossPercent), Modifier.weight(1f))
             }
             Row(Modifier.fillMaxWidth()) {
-                Metric("↑ Send", kbps(stats.sendKbps), Modifier.weight(1f))
-                Metric("↓ Receive", kbps(stats.receiveKbps), Modifier.weight(1f))
-                Metric("Buffer", ms(stats.bufferMs), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_send), kbps(stats.sendKbps), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_receive), kbps(stats.receiveKbps), Modifier.weight(1f))
+                Metric(stringResource(R.string.call_diag_buffer), ms(stats.bufferMs), Modifier.weight(1f))
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Detail("Path", stats.path ?: NONE)
-                Detail("Codec", WALKIE_CODEC)
-                Detail("Chunks", chunksOf(stats))
-                Detail("Frame", framesOf(stats))
-                Detail("Bursts", "${stats.burstsOut} sent · ${stats.burstsIn} heard")
+                Detail(stringResource(R.string.call_diag_path), stats.path ?: NONE)
+                Detail(stringResource(R.string.call_diag_codec), WALKIE_CODEC)
+                Detail(stringResource(R.string.call_diag_chunks), chunksOf(stats))
+                Detail(stringResource(R.string.call_diag_frame), framesOf(stats))
+                Detail(stringResource(R.string.call_diag_bursts), "${stats.burstsOut} sent · ${stats.burstsIn} heard")
             }
         }
     }
@@ -168,7 +173,8 @@ private fun Detail(
     value: String,
     lines: Int = 2,
 ) {
-    Row(Modifier.clearAndSetSemantics { contentDescription = "$label: $value" }) {
+    val description = stringResource(R.string.call_diag_detail_description, label, value)
+    Row(Modifier.clearAndSetSemantics { contentDescription = description }) {
         Text(
             label,
             style = MaterialTheme.typography.labelMedium,

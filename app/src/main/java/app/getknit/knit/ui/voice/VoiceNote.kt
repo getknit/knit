@@ -44,6 +44,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -367,7 +368,13 @@ private fun VoiceTranscript(
         }
 
         is VoiceTranscriptView.Downloading -> {
-            Note(stringResource(R.string.chat_voice_model_downloading, mb(view.done), mb(view.total)))
+            Note(
+                stringResource(
+                    R.string.chat_voice_model_downloading,
+                    mb(LocalContext.current, view.done),
+                    mb(LocalContext.current, view.total),
+                ),
+            )
         }
 
         VoiceTranscriptView.Offer -> {
@@ -424,7 +431,7 @@ fun SpeechModelOfferDialog(
         title = { Text(stringResource(R.string.chat_voice_model_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.chat_voice_model_body, mb(modelBytes)))
+                Text(stringResource(R.string.chat_voice_model_body, mb(LocalContext.current, modelBytes)))
                 if (metered) Text(stringResource(R.string.call_settings_speech_model_metered))
             }
         },

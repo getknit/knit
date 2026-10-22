@@ -433,7 +433,7 @@ private fun SpeechModelRow(
     onCancel: () -> Unit,
     onRemove: () -> Unit,
 ) {
-    val size = mb(ui.bytes)
+    val size = mb(LocalContext.current, ui.bytes)
     Column(
         modifier = Modifier.fillMaxWidth().testTag("call_settings_speech_model"),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -470,7 +470,11 @@ private fun SpeechModelRow(
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        stringResource(R.string.call_settings_speech_model_downloading, mb(model.done), mb(model.total)),
+                        stringResource(
+                            R.string.call_settings_speech_model_downloading,
+                            mb(LocalContext.current, model.done),
+                            mb(LocalContext.current, model.total),
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f),

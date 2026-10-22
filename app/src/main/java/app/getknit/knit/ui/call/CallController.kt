@@ -96,7 +96,7 @@ internal class CallController(
                 .Builder(context, CallNotifications.CHANNEL_RING)
                 .setSmallIcon(R.drawable.ic_stat_mesh)
                 .setContentTitle(face.name)
-                .setContentText(if (state.walkie) "Knit walkie-talkie" else "Knit voice call")
+                .setContentText(context.getString(if (state.walkie) R.string.call_notif_ring_walkie else R.string.call_notif_ring_voice))
                 .setCategory(NotificationCompat.CATEGORY_CALL)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setOngoing(true)
@@ -124,8 +124,8 @@ internal class CallController(
             NotificationCompat
                 .Builder(context, CallNotifications.CHANNEL_STATUS)
                 .setSmallIcon(R.drawable.ic_stat_mesh)
-                .setContentTitle("Allow full-screen calls")
-                .setContentText("That call couldn't ring on the lock screen")
+                .setContentTitle(context.getString(R.string.call_notif_full_screen_title))
+                .setContentText(context.getString(R.string.call_notif_full_screen_body))
                 .setAutoCancel(true)
                 .setContentIntent(PendingIntent.getActivity(context, 3, settings, CallNotifications.FLAGS))
                 .build()
@@ -142,8 +142,8 @@ internal class CallController(
             NotificationCompat
                 .Builder(context, CallNotifications.CHANNEL_STATUS)
                 .setSmallIcon(R.drawable.ic_stat_mesh)
-                .setContentTitle("Missed call")
-                .setContentText(if (missed.noRelay) "${face.name} · couldn't ring: Relay all calls has no TURN server" else face.name)
+                .setContentTitle(context.getString(R.string.call_notif_missed))
+                .setContentText(if (missed.noRelay) context.getString(R.string.call_notif_missed_no_relay, face.name) else face.name)
                 .setLargeIcon(face.icon.toIcon(context))
                 .setCategory(NotificationCompat.CATEGORY_MISSED_CALL)
                 .setWhen(missed.at)
@@ -179,7 +179,7 @@ internal object CallNotifications {
         manager.createNotificationChannel(
             NotificationChannelCompat
                 .Builder(CHANNEL_RING, NotificationManagerCompat.IMPORTANCE_HIGH)
-                .setName("Calls (experimental)")
+                .setName(context.getString(R.string.call_notif_channel_ring))
                 .setSound(
                     RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
                     AudioAttributes
@@ -193,14 +193,14 @@ internal object CallNotifications {
         manager.createNotificationChannel(
             NotificationChannelCompat
                 .Builder(CHANNEL_STATUS, NotificationManagerCompat.IMPORTANCE_DEFAULT)
-                .setName("Call status (experimental)")
+                .setName(context.getString(R.string.call_notif_channel_status))
                 .build(),
         )
         if (STT_WIRED) {
             manager.createNotificationChannel(
                 NotificationChannelCompat
                     .Builder(CHANNEL_DOWNLOAD, NotificationManagerCompat.IMPORTANCE_LOW)
-                    .setName("Speech model download (experimental)")
+                    .setName(context.getString(R.string.call_notif_channel_download))
                     .build(),
             )
         }

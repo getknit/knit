@@ -159,6 +159,10 @@ renamed several config keys — `LongParameterList.constructorThreshold/function
   found when it arrived are in `config/detekt/baseline.xml` (#207). An entry is keyed on the loop's text, so editing a
   baselined loop fails detekt until it is guarded: guard it then and delete its entry. Never add an entry, and never
   regenerate the file to silence a new finding.
+- `HardcodedUiText` fails a string literal with a letter in it at a sink the user reads: the text of `Text` /
+  `BasicText`, a `contentDescription`-style argument or semantics assignment, and a notification, shortcut, toast or
+  dialog setter (its `methods` list, `name:index` for an argument past the first). Each branch of an `if`, a `when`
+  or an elvis is read; a `@Preview` function is skipped. `context/translations.md`.
 
 `ktlint` runs via the **`org.jlleitschuh.gradle.ktlint` plugin**, applied on the root project (which
 lints the `*.gradle.kts` scripts) and on `:app` (which lints the Kotlin sources). The ktlint *tool*

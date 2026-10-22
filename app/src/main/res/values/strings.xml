@@ -1,5 +1,9 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name">Knit</string>
+    <!-- Joins a short line to its detail, wherever one is built from two parts: "Connected · 3 chats",
+         "Contact · in Climbing", "Relayed · Wi-Fi". Change the separator, or the order, if your language reads
+         them another way. -->
+    <string name="joined_with_dot">%1$s · %2$s</string>
 
     <!-- Notification channel groups -->
     <string name="notif_group_messages">Messages</string>
@@ -300,6 +304,200 @@
     <!-- A call's sentence, then a detail: its length, or the time it was placed. -->
     <string name="chat_call_record_with_detail">%1$s · %2$s</string>
 
+    <!-- The call screen (ui/call/CallActivity, docs/VOICE_CALLS.md). %1$s in these is always the other person's name. -->
+    <string name="call_mic_needed_to_answer">Knit needs the microphone to answer</string>
+    <string name="call_status_calling">Calling…</string>
+    <string name="call_status_ringing">Ringing…</string>
+    <string name="call_status_incoming_walkie">Incoming walkie-talkie</string>
+    <string name="call_status_incoming_voice">Incoming voice call</string>
+    <string name="call_status_connecting">Connecting…</string>
+    <string name="call_status_connected">Connected</string>
+    <string name="call_status_reconnecting">Reconnecting…</string>
+    <string name="call_status_dropped">Call dropped</string>
+    <string name="call_status_ended">Call ended</string>
+    <!-- How long the call has run: minutes, then seconds, "3:07". -->
+    <string name="call_elapsed">%1$d:%2$02d</string>
+    <string name="call_calling_unreachable">Can\'t reach %1$s right now</string>
+    <string name="call_calling_unproven">Waiting for %1$s\'s phone to respond</string>
+    <string name="call_ended_connection_lost">The connection was lost</string>
+    <string name="call_ended_unreachable">Couldn\'t reach %1$s</string>
+    <string name="call_ended_unproven">%1$s\'s phone didn\'t respond</string>
+    <string name="call_ended_busy">Busy</string>
+    <string name="call_ended_no_answer">No answer</string>
+    <string name="call_ended_no_route">No route between the phones</string>
+    <string name="call_ended_media">Media not supported</string>
+    <string name="call_ended_error">Something went wrong</string>
+    <string name="call_captions_show">Show captions</string>
+    <string name="call_captions_hide">Hide captions</string>
+    <string name="call_diagnostics_show">Show call diagnostics</string>
+    <string name="call_diagnostics_hide">Hide call diagnostics</string>
+    <string name="call_walkie_diagnostics_show">Show walkie diagnostics</string>
+    <string name="call_walkie_diagnostics_hide">Hide walkie diagnostics</string>
+    <!-- The labels under the call screen's round buttons. -->
+    <string name="call_action_close">Close</string>
+    <string name="call_action_call_back">Call back</string>
+    <string name="call_action_decline">Decline</string>
+    <string name="call_action_answer">Answer</string>
+    <string name="call_action_mute">Mute</string>
+    <string name="call_action_end">End</string>
+    <string name="call_action_end_call">End call</string>
+    <string name="call_walkie_degraded">No live connection — switched to walkie-talkie</string>
+    <string name="call_walkie_link_none">Not linked to %1$s yet. Linking…</string>
+    <string name="call_walkie_link_spool">No radio link to %1$s. Going through your relay</string>
+    <string name="call_walkie_link_mesh">No direct link to %1$s. Going through other phones</string>
+    <!-- While the talk button is held: minutes, then seconds, "Talking 0:07". -->
+    <string name="call_talk_recording">Talking %1$d:%2$02d</string>
+    <string name="call_talk_sending">Sending…</string>
+    <string name="call_talk_hearing">%1$s is talking…</string>
+    <string name="call_talk_sent">Sent</string>
+    <string name="call_talk_no_mic">The microphone is busy</string>
+    <string name="call_talk_not_sent">Couldn\'t send that one</string>
+    <string name="call_talk_no_link">Not linked, so that one didn\'t go</string>
+    <string name="call_talk_hold">Hold to talk</string>
+    <string name="call_talk_release">Release to send</string>
+    <!-- TalkBack's two actions on the hold-to-talk button. -->
+    <string name="call_talk_action_start">Start talking</string>
+    <string name="call_talk_action_send">Stop and send</string>
+    <string name="call_walkie_pill">Walkie-talkie · mesh</string>
+    <string name="call_caller_locked">Unlock to see your last messages</string>
+    <string name="call_caller_you">You</string>
+    <!-- Who wrote the caller's last message, then how long ago: "Ada · 5 minutes ago". -->
+    <string name="call_caller_last_message">%1$s · %2$s</string>
+    <!-- Where the caller stands with you, over the lock screen too: "Verified contact · 2 groups together". -->
+    <string name="call_caller_blocked">Blocked</string>
+    <string name="call_caller_verified">Verified contact</string>
+    <string name="call_caller_contact">Contact</string>
+    <string name="call_caller_stranger">Not a contact</string>
+    <plurals name="call_caller_groups_together">
+        <item quantity="one">%d group together</item>
+        <item quantity="other">%d groups together</item>
+    </plurals>
+    <string name="call_caller_no_messages">no messages yet</string>
+    <!-- The groups you share with the caller, named once the phone is unlocked: "in Climbing, Lab". -->
+    <string name="call_caller_in_groups">in %1$s</string>
+    <!-- …and how many more there are past the two named: "in Climbing, Lab +1". -->
+    <string name="call_caller_in_groups_more">in %1$s +%2$d</string>
+    <!-- The route pill: which way the audio goes, then over which network ("Relayed · Wi-Fi"). -->
+    <string name="call_route_wifi_direct">Wi-Fi Direct</string>
+    <string name="call_route_relayed">Relayed</string>
+    <string name="call_route_direct">Direct</string>
+    <string name="call_route_same_network">Direct · same network</string>
+    <string name="call_network_wifi">Wi-Fi</string>
+    <string name="call_network_cellular">Cellular</string>
+    <string name="call_network_ethernet">Ethernet</string>
+    <string name="call_network_vpn">VPN</string>
+    <!-- %1$s is the route the call just moved to, "Relayed · Cellular". -->
+    <string name="call_route_switched">Switched to %1$s</string>
+    <string name="call_capture_dead">%1$s can\'t hear you: this phone\'s microphone isn\'t giving Knit any sound</string>
+    <string name="call_capture_silenced">%1$s can\'t hear you: Android silenced the microphone</string>
+    <string name="call_quality_not_hearing">Can\'t hear %1$s right now</string>
+    <string name="call_quality_hearing_breaks">%1$s\'s audio is breaking up</string>
+    <string name="call_quality_heard_breaks">Your audio is breaking up for %1$s</string>
+    <string name="call_quality_both_break">Poor connection both ways</string>
+    <string name="call_quality_delay">Long delay on this connection</string>
+    <!-- Where the call's audio plays (AudioRouteButton). -->
+    <string name="call_audio">Audio</string>
+    <!-- %1$s is the route in use, "Speaker". -->
+    <string name="call_audio_description">Audio: %1$s. Choose where the call plays</string>
+    <string name="call_audio_earpiece">Earpiece</string>
+    <string name="call_audio_speaker">Speaker</string>
+    <string name="call_audio_headset">Headset</string>
+    <string name="call_audio_bluetooth">Bluetooth</string>
+    <!-- The bar over the app while a call is up (CallBar). %1$s is the call's status, "3:07" or "Ringing…". -->
+    <string name="call_bar_incoming">Incoming call · tap to answer</string>
+    <string name="call_bar_return">%1$s · tap to return to the call</string>
+    <!-- The call's notifications and their channels (CallController, CallService). -->
+    <string name="call_notif_channel_ring">Calls (experimental)</string>
+    <string name="call_notif_channel_status">Call status (experimental)</string>
+    <string name="call_notif_channel_download">Speech model download (experimental)</string>
+    <string name="call_notif_ring_walkie">Knit walkie-talkie</string>
+    <string name="call_notif_ring_voice">Knit voice call</string>
+    <string name="call_notif_full_screen_title">Allow full-screen calls</string>
+    <string name="call_notif_full_screen_body">That call couldn\'t ring on the lock screen</string>
+    <string name="call_notif_missed">Missed call</string>
+    <!-- %1$s is the caller's name. -->
+    <string name="call_notif_missed_no_relay">%1$s · couldn\'t ring: Relay all calls has no TURN server</string>
+    <string name="call_notif_unnamed">Knit call</string>
+    <string name="call_notif_unreachable">Can\'t reach them right now</string>
+    <string name="call_notif_unproven">Waiting for their phone to respond</string>
+    <string name="call_notif_walkie">Walkie-talkie</string>
+    <string name="call_notif_voice_muted">Voice call · muted</string>
+    <string name="call_notif_voice">Voice call</string>
+    <!-- The call screen's diagnostics card (CallDiagnostics). Its values are a technical readout and stay as measured. -->
+    <string name="call_diag_title">Call diagnostics</string>
+    <string name="call_diag_walkie_title">Walkie diagnostics</string>
+    <!-- The badge beside the card's title: the numbers are live, or the walkie's come over the mesh. -->
+    <string name="call_diag_marker_live">LIVE</string>
+    <string name="call_diag_marker_mesh">MESH</string>
+    <string name="call_diag_round_trip">Round trip</string>
+    <string name="call_diag_jitter">Jitter</string>
+    <string name="call_diag_buffer">Buffer</string>
+    <string name="call_diag_send">↑ Send</string>
+    <string name="call_diag_receive">↓ Receive</string>
+    <string name="call_diag_mic_level">↑ Mic</string>
+    <string name="call_diag_heard_level">↓ Heard</string>
+    <string name="call_diag_sent_loss_now">↑ Loss now</string>
+    <string name="call_diag_heard_loss_now">↓ Loss now</string>
+    <string name="call_diag_heard_loss_call">↓ Loss, call</string>
+    <string name="call_diag_transit">Transit</string>
+    <string name="call_diag_loss">Loss</string>
+    <string name="call_diag_path">Path</string>
+    <string name="call_diag_relay">Relay</string>
+    <string name="call_diag_prefer">Prefer</string>
+    <string name="call_diag_mic">Mic</string>
+    <string name="call_diag_codec">Codec</string>
+    <string name="call_diag_dtls" translatable="false">DTLS</string>
+    <string name="call_diag_srtp" translatable="false">SRTP</string>
+    <string name="call_diag_ice" translatable="false">ICE</string>
+    <string name="call_diag_pairs">Pairs</string>
+    <string name="call_diag_chunks">Chunks</string>
+    <string name="call_diag_frame">Frame</string>
+    <string name="call_diag_bursts">Bursts</string>
+    <!-- What TalkBack reads for one row of the card: its label, then its value. -->
+    <string name="call_diag_detail_description">%1$s: %2$s</string>
+    <!-- The call screen's transcript and captions cards (WalkieTranscriptCard, docs/VOICE_CALLS.md C-3.11-9, C-3.7-5). -->
+    <string name="call_transcript_title">Transcript</string>
+    <string name="call_captions_title">Captions</string>
+    <!-- The badge beside those cards' titles: the speech is turned into text on this phone, never sent anywhere. -->
+    <string name="call_transcript_marker">ON DEVICE</string>
+    <!-- %1$s is the other person's name, or call_transcript_other_phone when there is none. -->
+    <string name="call_transcript_empty">What you and %1$s say shows here as text, as you talk.</string>
+    <string name="call_captions_empty">What %1$s says shows here as text.</string>
+    <string name="call_transcript_other_phone">the other phone</string>
+    <string name="call_transcript_you">You</string>
+    <!-- Who said a line when the other person has no name. -->
+    <string name="call_transcript_them">Them</string>
+    <!-- Over a line of your own: it is the microphone's audio, before the call's Opus encoding. %1$s is call_transcript_you. -->
+    <string name="call_transcript_mine">%1$s · mic, before Opus</string>
+    <string name="call_transcript_recording">Recording…</string>
+    <string name="call_transcript_listening">Listening…</string>
+    <string name="call_transcript_pending">Transcribing…</string>
+    <string name="call_transcript_no_speech">No speech heard</string>
+    <string name="call_transcript_no_model">Not transcribed: the speech model isn\'t on this phone</string>
+    <string name="call_transcript_failed">Couldn\'t transcribe this one</string>
+    <string name="call_transcript_offer">Turn the bursts you hear and speak into text, on this phone.</string>
+    <!-- %1$s is the other person's name, or call_transcript_other_phone. -->
+    <string name="call_captions_offer">See what %1$s says as text, written on this phone as you hear it.</string>
+    <!-- %1$s is call_transcript_offer or call_captions_offer; %2$s is the download's size, "44 MB". -->
+    <string name="call_transcript_model_absent">%1$s The speech model is a one-time %2$s download from getknit.app, here or any time in Settings › Calls.</string>
+    <string name="call_transcript_download">Download</string>
+    <string name="call_transcript_dismiss">Dismiss</string>
+    <string name="call_captions_not_now">Not now</string>
+    <!-- %1$s and %2$s are sizes: what has come so far, of the whole, "12 MB of 44 MB". -->
+    <string name="call_transcript_downloading">Downloading the speech model · %1$s of %2$s</string>
+    <string name="call_captions_behind">Captions stopped: this phone couldn\'t keep up with the call. Turn CC off and on to try again.</string>
+    <string name="call_captions_failed">Captions stopped: the speech model wouldn\'t run on this phone.</string>
+    <string name="call_captions_earpiece">Captions are easier to read with the call on speaker or a headset.</string>
+    <!-- A download's size in whole megabytes (10^6 bytes): "44 MB". -->
+    <string name="call_megabytes">%1$d MB</string>
+    <!-- The speech model's download (SttModelStore, SttDownloadService). -->
+    <string name="stt_no_internet">No Internet connection</string>
+    <string name="stt_download_failed">The download failed</string>
+    <string name="stt_notif_title">Downloading the speech model</string>
+    <string name="stt_notif_starting">Starting…</string>
+    <!-- %1$s and %2$s are sizes, "12 MB of 44 MB". -->
+    <string name="stt_notif_progress">%1$s of %2$s</string>
+
     <!-- Direct file transfer (transfer/): a large file over a one-shot Wi-Fi Direct link, never through the mesh -->
     <string name="chat_send_large_file">Direct file send</string>
     <string name="chat_transfer_needs_dm">Direct transfers work in a one-to-one chat</string>
@@ -391,7 +589,8 @@
     <string name="chat_location_finding">Finding your location…</string>
     <string name="chat_location_accuracy">Accurate to %1$s</string>
     <string name="chat_location_approximate">Rough, to about %1$s. Allow precise location for Knit in Settings to tighten it.</string>
-    <string name="chat_location_as_of">as of %1$s</string>
+    <!-- %1$s is how sure the fix is (chat_location_accuracy, chat_location_approximate or chat_location_card_label), %2$s its clock time. -->
+    <string name="chat_location_as_of">%1$s, as of %2$s</string>
     <string name="chat_location_failed">Couldn\'t get a fix. Try somewhere with a clear view of the sky.</string>
     <string name="chat_location_retry">Try again</string>
     <string name="chat_location_refresh">Refresh</string>

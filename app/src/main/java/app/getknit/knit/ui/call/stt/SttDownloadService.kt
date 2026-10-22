@@ -91,9 +91,11 @@ class SttDownloadService :
             NotificationCompat
                 .Builder(this, CallNotifications.CHANNEL_DOWNLOAD)
                 .setSmallIcon(R.drawable.ic_stat_mesh)
-                .setContentTitle("Downloading the speech model")
-                .setContentText(downloading?.let { "${mb(it.done)} of ${mb(it.total)}" } ?: "Starting…")
-                .setProgress(PROGRESS_MAX, downloading?.let(::percentOf) ?: 0, downloading == null)
+                .setContentTitle(getString(R.string.stt_notif_title))
+                .setContentText(
+                    downloading?.let { getString(R.string.stt_notif_progress, mb(this, it.done), mb(this, it.total)) }
+                        ?: getString(R.string.stt_notif_starting),
+                ).setProgress(PROGRESS_MAX, downloading?.let(::percentOf) ?: 0, downloading == null)
                 .setCategory(NotificationCompat.CATEGORY_PROGRESS)
                 .setOngoing(true)
                 .setSilent(true)
@@ -101,7 +103,7 @@ class SttDownloadService :
                 .apply { openApp()?.let(::setContentIntent) }
                 .addAction(
                     0,
-                    "Cancel",
+                    getString(R.string.call_settings_speech_model_cancel),
                     PendingIntent.getService(
                         this,
                         0,

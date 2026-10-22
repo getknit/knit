@@ -2,6 +2,7 @@ package app.getknit.knit.ui.call.stt
 
 import android.content.Context
 import android.net.Network
+import app.getknit.knit.R
 import app.getknit.knit.call.SttFile
 import app.getknit.knit.call.SttModel
 import app.getknit.knit.call.SttModelInstaller
@@ -41,7 +42,7 @@ import javax.net.ssl.HttpsURLConnection
  * preview fetcher's hostile-URL machinery.
  */
 class SttModelStore(
-    context: Context,
+    private val context: Context,
     private val gate: AndroidInternetGate,
     private val scope: CoroutineScope,
     val model: SttModel = SttModel.MOONSHINE_SMALL_STREAMING_EN,
@@ -95,7 +96,7 @@ class SttModelStore(
     fun download(): Boolean {
         val network = gate.currentNetwork()
         if (network == null) {
-            _state.value = SttModelState.Failed("No Internet connection")
+            _state.value = SttModelState.Failed(context.getString(R.string.stt_no_internet))
             return false
         }
         return install("download") { file -> open(network, file) }
@@ -140,7 +141,7 @@ class SttModelStore(
                         throw cancelled
                     } catch (e: IOException) {
                         log("walkie stt: $what failed: ${e.javaClass.simpleName}: ${e.message}")
-                        _state.value = SttModelState.Failed(e.message ?: "The download failed")
+                        _state.value = SttModelState.Failed(e.message ?: context.getString(R.string.stt_download_failed))
                     }
                 }
         }

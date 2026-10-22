@@ -9,5 +9,12 @@ import dev.detekt.api.RuleSetProvider
 class KnitRuleSetProvider : RuleSetProvider {
     override val ruleSetId = RuleSetId("knit")
 
-    override fun instance() = RuleSet(ruleSetId, mapOf(RuleName("BarePeriodicLoop") to ::BarePeriodicLoop))
+    override fun instance() =
+        RuleSet(
+            ruleSetId,
+            mapOf(
+                RuleName("BarePeriodicLoop") to ::BarePeriodicLoop,
+                RuleName("HardcodedUiText") to ::HardcodedUiText,
+            ),
+        )
 }

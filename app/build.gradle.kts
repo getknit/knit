@@ -511,6 +511,10 @@ android {
     androidResources {
         // On-device model files must stay uncompressed so TFLite can mmap them from the APK.
         noCompress += listOf("tflite")
+        // Android 13+ lists the app's languages under Settings › Apps › Knit › Language: AGP writes the locale config
+        // from the res/values-<locale>/ directories, with res/resources.properties naming the default one's language.
+        // Derived from the tree alone, so the release build stays byte-reproducible.
+        generateLocaleConfig = true
     }
 
     // AGP otherwise embeds a "Dependency metadata" blob (a compressed, signed dependency list, for Play's

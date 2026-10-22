@@ -31,6 +31,9 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   build must not depend on the build machine (no NDK on the APK path, no foojay JDK download, no Git LFS on the
   release path — the screenshot references are its one test-only LFS rule).
 - **When editing any Kotlin/Compose/data code:** obey `.agents/rules/coding.md`.
+- **When adding or changing text the user reads, a string resource, or a `values-<locale>/` translation:** READ
+  `.agents/context/translations.md` — every user-facing word is a resource (detekt's `HardcodedUiText`), a locale
+  lands whole because `MissingTranslation` stays a lint error, and some text is deliberately English.
 - **When renaming, moving or removing a class, member, file, constant or ADR, or editing anything under `.agents/` or
   `docs/`:** run `python3 scripts/doc-lint.py` and fix what it names. It checks every code span, path and ADR id in
   the docs against the tracked sources and their history (a retired symbol, a missing member or path, a line ref past

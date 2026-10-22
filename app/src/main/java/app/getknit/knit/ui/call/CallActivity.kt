@@ -15,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -83,6 +84,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -187,7 +189,7 @@ class CallActivity :
             if (granted && id != null) {
                 answer(id)
             } else if (!granted) {
-                Toast.makeText(this, "Knit needs the microphone to answer", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, R.string.call_mic_needed_to_answer, Toast.LENGTH_LONG).show()
             }
         }
 
@@ -235,8 +237,7 @@ class CallActivity :
             if (peerId == null) return@LaunchedEffect
             name = callerName(peers, peerId)
             avatarHash = peers.find(peerId)?.avatarHash
-            val unnamed = getString(R.string.group_unnamed)
-            caller = runCatching { callerContext(peerId, peers, messages, groups, settings, identity, unnamed) }.getOrNull()
+            caller = runCatching { callerContext(this@CallActivity, peerId, peers, messages, groups, settings, identity) }.getOrNull()
         }
         // Over the lock screen the last message stays hidden; unlocking with the call up shows it without a restart.
         val keyguard = remember { getSystemService(KeyguardManager::class.java) }
@@ -490,7 +491,7 @@ internal fun CallScreen(
         BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 24.dp, vertical = 16.dp)) {
             // With the card up, a phone too short for the stacked face puts it beside the name instead.
             val inline = card && maxHeight < StackedMinHeight
-            val view = route?.let { routeView(it, stats) }
+            val view = route?.let { routeView(LocalContext.current, it, stats) }
             val note = callNote(state, name, quality, view, capture)
             val callerShown = phase != null && phase != CallPhase.Ended && !walkieUp
             Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -629,7 +630,7 @@ private fun StackedFace(
                 }
 
                 phase == CallPhase.Ended -> {
-                    (if (state.dropped) "The connection was lost" else endedNote(state, name))?.let {
+                    (if (state.dropped) stringResource(R.string.call_ended_connection_lost) else endedNote(state, name))?.let {
                         Text(
                             it,
                             style = MaterialTheme.typography.bodyMedium,
@@ -734,7 +735,7 @@ private fun Header(
                 IconToggleButton(checked = captionsOn, onCheckedChange = onCaptions) {
                     Icon(
                         if (captionsOn) Icons.Filled.ClosedCaption else Icons.Outlined.ClosedCaptionDisabled,
-                        contentDescription = if (captionsOn) "Hide captions" else "Show captions",
+                        contentDescription = stringResource(if (captionsOn) R.string.call_captions_hide else R.string.call_captions_show),
                     )
                 }
             }
@@ -752,12 +753,12 @@ private fun StatsToggle(
     IconToggleButton(checked = stats, onCheckedChange = onStats) {
         val description =
             when {
-                walkie && stats -> "Hide walkie diagnostics"
-                walkie -> "Show walkie diagnostics"
-                stats -> "Hide call diagnostics"
-                else -> "Show call diagnostics"
+                walkie && stats -> R.string.call_walkie_diagnostics_hide
+                walkie -> R.string.call_walkie_diagnostics_show
+                stats -> R.string.call_diagnostics_hide
+                else -> R.string.call_diagnostics_show
             }
-        Icon(Icons.Outlined.Insights, contentDescription = description)
+        Icon(Icons.Outlined.Insights, contentDescription = stringResource(description))
     }
 }
 
@@ -815,16 +816,16 @@ private fun Controls(
     Box(Modifier.fillMaxWidth().heightIn(min = 112.dp), contentAlignment = Alignment.BottomCenter) {
         if (state?.dropped == true) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                CallAction("Close", Icons.Filled.Close, MaterialTheme.colorScheme.secondary, onClose)
-                CallAction("Call back", Icons.Filled.Call, AnswerGreen, onCallBack)
+                CallAction(stringResource(R.string.call_action_close), Icons.Filled.Close, MaterialTheme.colorScheme.secondary, onClose)
+                CallAction(stringResource(R.string.call_action_call_back), Icons.Filled.Call, AnswerGreen, onCallBack)
             }
             return@Box
         }
         if (state == null || state.phase == CallPhase.Ended) return@Box
         if (state.phase == CallPhase.Alerting) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                CallAction("Decline", Icons.Filled.CallEnd, HangUpRed, onDecline)
-                CallAction("Answer", Icons.Filled.Call, AnswerGreen, onAnswer)
+                CallAction(stringResource(R.string.call_action_decline), Icons.Filled.CallEnd, HangUpRed, onDecline)
+                CallAction(stringResource(R.string.call_action_answer), Icons.Filled.Call, AnswerGreen, onAnswer)
             }
         } else {
             Row(
@@ -832,8 +833,13 @@ private fun Controls(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.Bottom,
             ) {
-                CallToggle("Mute", if (state.muted) Icons.Filled.MicOff else Icons.Filled.Mic, state.muted, onMute)
-                CallAction("End", Icons.Filled.CallEnd, HangUpRed, onHangUp)
+                CallToggle(
+                    stringResource(R.string.call_action_mute),
+                    if (state.muted) Icons.Filled.MicOff else Icons.Filled.Mic,
+                    state.muted,
+                    onMute,
+                )
+                CallAction(stringResource(R.string.call_action_end), Icons.Filled.CallEnd, HangUpRed, onHangUp)
                 AudioRouteButton(routing, onRoute)
             }
         }
@@ -865,7 +871,7 @@ private fun WalkieControls(
         }
         if (state.degraded) {
             Text(
-                "No live connection — switched to walkie-talkie",
+                stringResource(R.string.call_walkie_degraded),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -877,7 +883,7 @@ private fun WalkieControls(
         // The talk button takes the centre a call screen gives its red hang-up; the hang-up steps aside to the start.
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
             Box(Modifier.weight(1f), contentAlignment = Alignment.BottomCenter) {
-                CallAction("End", Icons.Filled.CallEnd, HangUpRed, onHangUp)
+                CallAction(stringResource(R.string.call_action_end), Icons.Filled.CallEnd, HangUpRed, onHangUp)
             }
             Box(Modifier.weight(1f), contentAlignment = Alignment.BottomCenter) {
                 TalkButton(recording = talk is Talk.Recording, onTalk, onTalkSend, onTalkCancel)
@@ -918,17 +924,21 @@ private fun LinkNotice(
                 }
             Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
             Text(
-                when (link) {
-                    TalkLink.NONE -> "Not linked to $name yet. Linking…"
-                    TalkLink.SPOOL -> "No radio link to $name. Going through your relay"
-                    else -> "No direct link to $name. Going through other phones"
-                },
+                stringResource(
+                    when (link) {
+                        TalkLink.NONE -> R.string.call_walkie_link_none
+                        TalkLink.SPOOL -> R.string.call_walkie_link_spool
+                        else -> R.string.call_walkie_link_mesh
+                    },
+                    name,
+                ),
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
     }
 }
 
+@Composable
 private fun talkLine(
     talk: Talk,
     name: String,
@@ -936,25 +946,27 @@ private fun talkLine(
     when (talk) {
         is Talk.Recording -> {
             val seconds = talk.elapsedMs / 1_000
-            "Talking %d:%02d".format(seconds / SECONDS_PER_MINUTE, seconds % SECONDS_PER_MINUTE)
+            stringResource(R.string.call_talk_recording, seconds / SECONDS_PER_MINUTE, seconds % SECONDS_PER_MINUTE)
         }
 
         Talk.Sending -> {
-            "Sending…"
+            stringResource(R.string.call_talk_sending)
         }
 
         Talk.Hearing -> {
-            "$name is talking…"
+            stringResource(R.string.call_talk_hearing, name)
         }
 
         is Talk.Idle -> {
-            when (talk.note) {
-                Talk.Note.SENT -> "Sent"
-                Talk.Note.NO_MIC -> "The microphone is busy"
-                Talk.Note.NOT_SENT -> "Couldn't send that one"
-                Talk.Note.NO_LINK -> "Not linked, so that one didn't go"
-                Talk.Note.TOO_SHORT, null -> "Hold to talk"
-            }
+            stringResource(
+                when (talk.note) {
+                    Talk.Note.SENT -> R.string.call_talk_sent
+                    Talk.Note.NO_MIC -> R.string.call_talk_no_mic
+                    Talk.Note.NOT_SENT -> R.string.call_talk_not_sent
+                    Talk.Note.NO_LINK -> R.string.call_talk_no_link
+                    Talk.Note.TOO_SHORT, null -> R.string.call_talk_hold
+                },
+            )
         }
     }
 
@@ -970,6 +982,9 @@ private fun TalkButton(
     val talk by rememberUpdatedState(onTalk)
     val send by rememberUpdatedState(onTalkSend)
     val cancel by rememberUpdatedState(onTalkCancel)
+    val hold = stringResource(R.string.call_talk_hold)
+    val start = stringResource(R.string.call_talk_action_start)
+    val stop = stringResource(R.string.call_talk_action_send)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Surface(
             shape = CircleShape,
@@ -980,11 +995,11 @@ private fun TalkButton(
                 Modifier
                     .size(TalkSize)
                     .semantics {
-                        contentDescription = "Hold to talk"
+                        contentDescription = hold
                         customActions =
                             listOf(
-                                CustomAccessibilityAction("Start talking") { true.also { talk() } },
-                                CustomAccessibilityAction("Stop and send") { true.also { send() } },
+                                CustomAccessibilityAction(start) { true.also { talk() } },
+                                CustomAccessibilityAction(stop) { true.also { send() } },
                             )
                     }.pointerInput(Unit) {
                         detectTapGestures(
@@ -1000,7 +1015,7 @@ private fun TalkButton(
                 Icon(Icons.Filled.Mic, contentDescription = null, modifier = Modifier.size(48.dp))
             }
         }
-        ButtonLabel(if (recording) "Release to send" else "Hold to talk")
+        ButtonLabel(if (recording) stringResource(R.string.call_talk_release) else hold)
     }
 }
 
@@ -1014,7 +1029,7 @@ private fun WalkiePill() {
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Icon(Icons.Outlined.WifiCalling3, contentDescription = null, modifier = Modifier.size(16.dp))
-            Text("Walkie-talkie · mesh", style = MaterialTheme.typography.labelLarge)
+            Text(stringResource(R.string.call_walkie_pill), style = MaterialTheme.typography.labelLarge)
         }
     }
 }
@@ -1097,7 +1112,7 @@ private fun CallerCard(
         val last = caller.lastMessage ?: return@Column
         if (locked) {
             Text(
-                "Unlock to see your last messages",
+                stringResource(R.string.call_caller_locked),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -1106,7 +1121,7 @@ private fun CallerCard(
         }
         val preview = messagePreview(LocalContext.current, last.message, hideFlagged)
         if (preview.isBlank()) return@Column
-        val who = if (last.fromMe) "You" else name
+        val who = if (last.fromMe) stringResource(R.string.call_caller_you) else name
         val ago = DateUtils.getRelativeTimeSpanString(last.sentAt, clock(), DateUtils.MINUTE_IN_MILLIS).toString()
         Surface(
             onClick = onOpenChat,
@@ -1116,7 +1131,7 @@ private fun CallerCard(
         ) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    "$who · $ago",
+                    stringResource(R.string.call_caller_last_message, who, ago),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -1142,18 +1157,38 @@ internal enum class RouteKind { WIFI_DIRECT, RELAYED, DIRECT }
  * phone sends it over, from [stats]: "Relayed · Cellular", "Direct · Wi-Fi".
  */
 internal fun routeView(
+    context: Context,
     route: String,
     stats: CallStats?,
 ): RouteView {
     val parts = route.split('/')
     val types = parts - ROUTE_DIRECT
-    val network = stats?.let(::networkOf)
+    val network = stats?.let { networkLabel(context, it) }
+
+    fun over(way: Int) = context.getString(way).let { w -> network?.let { context.getString(R.string.joined_with_dot, w, it) } ?: w }
     return when {
-        ROUTE_DIRECT in parts -> RouteView("Wi-Fi Direct", RouteKind.WIFI_DIRECT)
-        "relay" in types -> RouteView(listOfNotNull("Relayed", network).joinToString(" · "), RouteKind.RELAYED)
-        types.all { it == "host" } -> RouteView("Direct · same network", RouteKind.DIRECT)
-        else -> RouteView(listOfNotNull("Direct", network).joinToString(" · "), RouteKind.DIRECT)
+        ROUTE_DIRECT in parts -> RouteView(context.getString(R.string.call_route_wifi_direct), RouteKind.WIFI_DIRECT)
+        "relay" in types -> RouteView(over(R.string.call_route_relayed), RouteKind.RELAYED)
+        types.all { it == "host" } -> RouteView(context.getString(R.string.call_route_same_network), RouteKind.DIRECT)
+        else -> RouteView(over(R.string.call_route_direct), RouteKind.DIRECT)
     }
+}
+
+/** The selected pair's network on this phone, in the reader's words: "Wi-Fi", "Cellular"; null when unknown. */
+internal fun networkLabel(
+    context: Context,
+    stats: CallStats,
+): String? {
+    val words =
+        when {
+            stats.wifiDirect -> R.string.call_route_wifi_direct
+            stats.networkType == "wifi" -> R.string.call_network_wifi
+            stats.networkType == "cellular" -> R.string.call_network_cellular
+            stats.networkType == "ethernet" -> R.string.call_network_ethernet
+            stats.networkType == "vpn" -> R.string.call_network_vpn
+            else -> return stats.networkType
+        }
+    return context.getString(words)
 }
 
 @Composable
@@ -1211,33 +1246,38 @@ private fun callNote(
         }
     }
     if (state?.phase != CallPhase.Connected || state.walkie) return null
-    captureText(capture, name)?.let { return CallNote(it, QualityLevel.POOR) }
-    quality?.issue?.takeIf { quality.level != QualityLevel.GOOD }?.let { return CallNote(issueText(it, name), quality.level) }
-    return moved?.let { CallNote("Switched to $it", QualityLevel.GOOD) }
+    val context = LocalContext.current
+    captureText(context, capture, name)?.let { return CallNote(it, QualityLevel.POOR) }
+    quality?.issue?.takeIf { quality.level != QualityLevel.GOOD }?.let {
+        return CallNote(issueText(context, it, name), quality.level)
+    }
+    return moved?.let { CallNote(stringResource(R.string.call_route_switched, it), QualityLevel.GOOD) }
 }
 
 /** What the screen says of a microphone that gives the call no sound, or null while it does. */
 internal fun captureText(
+    context: Context,
     capture: CaptureStatus?,
     name: String,
 ): String? =
     when (capture?.health) {
-        CaptureWatch.Health.DEAD -> "$name can't hear you: this phone's microphone isn't giving Knit any sound"
-        CaptureWatch.Health.SILENCED -> "$name can't hear you: Android silenced the microphone"
+        CaptureWatch.Health.DEAD -> context.getString(R.string.call_capture_dead, name)
+        CaptureWatch.Health.SILENCED -> context.getString(R.string.call_capture_silenced, name)
         else -> null
     }
 
 /** How the screen words an issue: a direction ("breaking up for Ada"), never whose network is to blame. */
 internal fun issueText(
+    context: Context,
     issue: QualityIssue,
     name: String,
 ): String =
     when (issue) {
-        QualityIssue.NOT_HEARING -> "Can't hear $name right now"
-        QualityIssue.HEARING_BREAKS -> "$name's audio is breaking up"
-        QualityIssue.HEARD_BREAKS -> "Your audio is breaking up for $name"
-        QualityIssue.BOTH_BREAK -> "Poor connection both ways"
-        QualityIssue.DELAY -> "Long delay on this connection"
+        QualityIssue.NOT_HEARING -> context.getString(R.string.call_quality_not_hearing, name)
+        QualityIssue.HEARING_BREAKS -> context.getString(R.string.call_quality_hearing_breaks, name)
+        QualityIssue.HEARD_BREAKS -> context.getString(R.string.call_quality_heard_breaks, name)
+        QualityIssue.BOTH_BREAK -> context.getString(R.string.call_quality_both_break)
+        QualityIssue.DELAY -> context.getString(R.string.call_quality_delay)
     }
 
 /** The note, with bars for a warning; read out by TalkBack as it changes. */
@@ -1274,50 +1314,55 @@ internal fun statusOf(
             }
         }
         val seconds = ((now - connectedAt) / 1_000).coerceAtLeast(0)
-        return "%d:%02d".format(seconds / 60, seconds % 60)
+        return stringResource(R.string.call_elapsed, seconds / 60, seconds % 60)
     }
-    return when (state?.phase) {
-        null -> ""
-        CallPhase.Calling -> "Calling…"
-        CallPhase.Ringing -> "Ringing…"
-        CallPhase.Alerting -> if (state.walkie) "Incoming walkie-talkie" else "Incoming voice call"
-        CallPhase.Connecting -> "Connecting…"
-        CallPhase.Connected -> "Connected"
-        CallPhase.Reconnecting -> "Reconnecting…"
-        CallPhase.Ended -> if (state.dropped) "Call dropped" else "Call ended"
-    }
+    val words =
+        when (state?.phase) {
+            null -> return ""
+            CallPhase.Calling -> R.string.call_status_calling
+            CallPhase.Ringing -> R.string.call_status_ringing
+            CallPhase.Alerting -> if (state.walkie) R.string.call_status_incoming_walkie else R.string.call_status_incoming_voice
+            CallPhase.Connecting -> R.string.call_status_connecting
+            CallPhase.Connected -> R.string.call_status_connected
+            CallPhase.Reconnecting -> R.string.call_status_reconnecting
+            CallPhase.Ended -> if (state.dropped) R.string.call_status_dropped else R.string.call_status_ended
+        }
+    return stringResource(words)
 }
 
 /**
  * An outgoing call with no RINGING back: nothing this phone can see reaches [name] (C-3.3-5), or something does and
  * still no RINGING came back (C-3.3-6).
  */
+@Composable
 private fun callingNote(
     state: CallState,
     name: String,
-): String = if (state.unreachable) "Can't reach $name right now" else "Waiting for $name's phone to respond"
+): String = stringResource(if (state.unreachable) R.string.call_calling_unreachable else R.string.call_calling_unproven, name)
 
 /** Why [state] ended, when it is anything but somebody hanging up: [reasonOf], or that it never reached [name]. */
+@Composable
 private fun endedNote(
     state: CallState,
     name: String,
 ): String? =
     when {
-        state.reason != CallPayload.REASON_NO_ROUTE || state.connectedAt != null -> reasonOf(state.reason)
-        state.unreachable -> "Couldn't reach $name"
-        state.unproven -> "$name's phone didn't respond"
-        else -> reasonOf(state.reason)
+        state.reason != CallPayload.REASON_NO_ROUTE || state.connectedAt != null -> reasonOf(state.reason)?.let { stringResource(it) }
+        state.unreachable -> stringResource(R.string.call_ended_unreachable, name)
+        state.unproven -> stringResource(R.string.call_ended_unproven, name)
+        else -> reasonOf(state.reason)?.let { stringResource(it) }
     }
 
 /** Why it ended, when it is anything but somebody hanging up. */
-private fun reasonOf(reason: Int?): String? =
+@StringRes
+private fun reasonOf(reason: Int?): Int? =
     when (reason) {
         CallPayload.REASON_USER -> null
-        CallPayload.REASON_BUSY -> "Busy"
-        CallPayload.REASON_TIMEOUT -> "No answer"
-        CallPayload.REASON_NO_ROUTE -> "No route between the phones"
-        CallPayload.REASON_MEDIA -> "Media not supported"
-        else -> "Something went wrong"
+        CallPayload.REASON_BUSY -> R.string.call_ended_busy
+        CallPayload.REASON_TIMEOUT -> R.string.call_ended_no_answer
+        CallPayload.REASON_NO_ROUTE -> R.string.call_ended_no_route
+        CallPayload.REASON_MEDIA -> R.string.call_ended_media
+        else -> R.string.call_ended_error
     }
 
 private const val PREVIEW_PEER = "hzwyqdbj74hu6gkurmcyxomaca"

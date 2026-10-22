@@ -58,15 +58,4 @@ class CallQualityTest {
         // At the shown level the issue follows the reading at once.
         assertEquals(QualityIssue.HEARD_BREAKS, judge.next(clean.copy(sentLossPercent = 5.0)).issue)
     }
-
-    @Test
-    fun theRoutePillNamesTheNetwork() {
-        val wifi = CallStats(networkType = "wifi")
-        assertEquals(RouteView("Relayed · Wi-Fi", RouteKind.RELAYED), routeView("relay/srflx", wifi))
-        assertEquals(RouteView("Direct · Cellular", RouteKind.DIRECT), routeView("srflx/prflx", CallStats(networkType = "cellular")))
-        assertEquals(RouteView("Direct", RouteKind.DIRECT), routeView("srflx/srflx", null))
-        assertEquals(RouteView("Direct · same network", RouteKind.DIRECT), routeView("host/host", wifi))
-        assertEquals(RouteView("Wi-Fi Direct", RouteKind.WIFI_DIRECT), routeView("host/host/wifi-direct", wifi))
-        assertEquals("Your audio is breaking up for Ada", issueText(QualityIssue.HEARD_BREAKS, "Ada"))
-    }
 }

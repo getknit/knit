@@ -178,7 +178,7 @@ fun StagedLocationTile(
                 val accuracy = accuracyLine(fix?.toPoint()?.accuracyM, coarse = staged.precision == LocationPrecision.Coarse)
                 if (staged.status == ChatViewModel.StagedLocation.Status.Ready && fix != null) {
                     val at = DateFormat.getTimeFormat(context).format(Date(fix.timeMs))
-                    "$accuracy, ${stringResource(R.string.chat_location_as_of, at)}"
+                    stringResource(R.string.chat_location_as_of, accuracy, at)
                 } else {
                     accuracy
                 }
