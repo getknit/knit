@@ -716,9 +716,9 @@ private fun InlineFace(
 }
 
 /**
- * The experimental label, with the diagnostics card's toggle at its end while there is a card to show ([stats]). The CC
- * button ([captionsOn]: a live call's captions, C-3.7-5, or a [walkie]'s transcript, C-3.11-9) sits just before it, so
- * the controls below keep their three buttons.
+ * The top row: the diagnostics card's toggle at its end while there is a card to show ([stats]). The CC button
+ * ([captionsOn]: a live call's captions, C-3.7-5, or a [walkie]'s transcript, C-3.11-9) sits just before it, so the
+ * controls below keep their three buttons. It holds its height when empty, so the face doesn't jump as the call connects.
  */
 @Composable
 private fun Header(
@@ -728,15 +728,7 @@ private fun Header(
     captionsOn: Boolean? = null,
     onCaptions: (Boolean) -> Unit = {},
 ) {
-    Box(Modifier.fillMaxWidth().heightIn(min = 48.dp), contentAlignment = Alignment.Center) {
-        // Two buttons at the end would run into the centred label on a narrow phone: keep it clear of both sides.
-        Text(
-            "Experimental · internal testing",
-            modifier = if (captionsOn != null) Modifier.padding(horizontal = 96.dp) else Modifier,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = if (captionsOn != null) TextAlign.Center else null,
-        )
+    Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
         Row(Modifier.align(Alignment.CenterEnd)) {
             if (captionsOn != null) {
                 IconToggleButton(checked = captionsOn, onCheckedChange = onCaptions) {
