@@ -43,6 +43,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -58,16 +59,20 @@ import app.getknit.knit.call.ProbeResult
 import app.getknit.knit.call.ProbeVerdict
 import app.getknit.knit.call.SttModelState
 import app.getknit.knit.data.settings.CallIntake
+import app.getknit.knit.di.CALLS_WIRED
 import app.getknit.knit.ui.call.mb
 import app.getknit.knit.ui.components.noAutofillMenu
+import app.getknit.knit.ui.fullScreenCalls
+import app.getknit.knit.ui.openFullScreenCallSettings
 import app.getknit.knit.ui.preview.KnitPreview
+import app.getknit.knit.ui.rememberOnResume
 import org.koin.androidx.compose.koinViewModel
 
 /**
  * Calls (experimental, docs/VOICE_CALLS.md §3.14, ADR 2026-10.mr88): whether this phone takes incoming live and mesh
- * calls (C-3.3-7), a switch per kind the build wires; "Relay all calls" where live calls are wired (`LIVE_CALLS_WIRED`),
- * and the person's own STUN and TURN servers, each replacing what the relays supply, where own servers are too
- * (`OWN_ICE_WIRED`, debug builds only for now); the transcripts
+ * calls (C-3.3-7), a switch per kind the build wires, and whether they ring on the lock screen (Android 14+); "Relay
+ * all calls" where live calls are wired (`LIVE_CALLS_WIRED`), and the person's own STUN and TURN servers, each replacing
+ * what the relays supply, where own servers are too (`OWN_ICE_WIRED`, debug builds only for now); the transcripts
  * and captions switch and their speech model (C-3.11-9, C-3.7-5) where speech is (`STT_WIRED`). Reached only where a
  * call kind is wired (`CALL_SETTINGS_WIRED`): the route is not registered otherwise.
  */
@@ -81,6 +86,10 @@ fun CallSettingsScreen(
     val transcripts by viewModel.transcripts.collectAsStateWithLifecycle()
     val intake by viewModel.intake.collectAsStateWithLifecycle()
     val preferMesh by viewModel.preferMesh.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    // The route exists only where calls are wired (`CALL_SETTINGS_WIRED` is `CALLS_WIRED`); re-read on every resume,
+    // since the switch lives on a system page.
+    val fullScreen = rememberOnResume { fullScreenCalls(context, callsWired = CALLS_WIRED) }
     val snackbarHostState = remember { SnackbarHostState() }
     val saved = stringResource(R.string.call_settings_saved)
     val busy = stringResource(R.string.call_settings_test_busy)
@@ -100,6 +109,8 @@ fun CallSettingsScreen(
         ownServers = viewModel.ownServers,
         walkie = viewModel.walkie,
         intake = intake,
+        fullScreen = fullScreen,
+        onOpenFullScreenSettings = { openFullScreenCallSettings(context) },
         onToggleTakeLive = viewModel::setTakeLive,
         onToggleTakeWalkie = viewModel::setTakeWalkie,
         choosesFirstCall = viewModel.choosesFirstCall,
@@ -134,6 +145,9 @@ internal fun CallSettingsScreenContent(
     // Whether mesh calls are wired, so "Incoming calls" has a mesh switch.
     walkie: Boolean = false,
     intake: CallIntake = CallIntake(),
+    // Whether an incoming call can ring full screen; null, and no line, where there is nothing to ask (below Android 14).
+    fullScreen: Boolean? = null,
+    onOpenFullScreenSettings: () -> Unit = {},
     onToggleTakeLive: (Boolean) -> Unit = {},
     onToggleTakeWalkie: (Boolean) -> Unit = {},
     // "Prefer mesh calls": shown where the build wires both kinds, so the chat has a choice of which to put first.
@@ -186,6 +200,7 @@ internal fun CallSettingsScreenContent(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             IncomingCallRows(live, walkie, intake, onToggleTakeLive, onToggleTakeWalkie)
+            FullScreenRow(fullScreen, onOpenFullScreenSettings)
             if (choosesFirstCall) {
                 HorizontalDivider()
                 ToggleRow(
@@ -280,6 +295,26 @@ private fun IncomingCallRows(
             onToggle = onToggleTakeWalkie,
             modifier = Modifier.testTag("call_settings_take_walkie"),
         )
+    }
+}
+
+/**
+ * Whether a call can ring on the lock screen, in Settings' unused-app shape: a status line, and "Open settings" while it
+ * can't — the switch is on a system page no prompt of ours can flip. Absent where there is nothing to ask.
+ */
+@Composable
+private fun FullScreenRow(
+    fullScreen: Boolean?,
+    onOpenSettings: () -> Unit,
+) {
+    fullScreen ?: return
+    Column(modifier = Modifier.fillMaxWidth().testTag("call_settings_full_screen")) {
+        Note(stringResource(if (fullScreen) R.string.call_settings_full_screen_on else R.string.call_settings_full_screen_off))
+        if (!fullScreen) {
+            TextButton(onClick = onOpenSettings, modifier = Modifier.testTag("call_settings_full_screen_settings")) {
+                Text(stringResource(R.string.action_open_settings))
+            }
+        }
     }
 }
 
@@ -521,6 +556,7 @@ fun CallSettingsScreenIncomingPreview() =
             onBack = {},
             walkie = true,
             intake = CallIntake(live = false, walkie = true),
+            fullScreen = false,
             preferMesh = true,
         )
     }

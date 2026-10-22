@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.BatteryChargingFull
 import androidx.compose.material.icons.outlined.Bluetooth
+import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Info
@@ -235,8 +236,9 @@ internal fun NamePage(
 
 /**
  * Page 3: one row per thing Android will ask about — not per Android permission, since the radio set is
- * one dialog sequence to the user. The first row is the gate (Start needs it); notifications (33+ only), the
- * battery exemption and the unused-app switch (11+ only) sit under an "Optional" header and never block.
+ * one dialog sequence to the user. The first row is the gate (Start needs it); notifications (33+ only),
+ * full-screen calls (14+, a build with calls only), the battery exemption and the unused-app switch (11+ only)
+ * sit under an "Optional" header and never block.
  * [meshSupported] false puts a notice above the rows so the user knows why granting won't find anyone; Start
  * stays available regardless, so a phone with neither radio can still open the app and read what it has.
  */
@@ -251,6 +253,7 @@ internal fun PermissionsPage(
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
     onOpenUnusedPauseSettings: () -> Unit = {},
+    onOpenFullScreenSettings: () -> Unit = {},
 ) {
     // Centred when it fits, scrolling when it doesn't — the Box/scroll pairing is what makes both true.
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -312,6 +315,21 @@ internal fun PermissionsPage(
                     onOpenSettings = onOpenSettings,
                     actionTag = "onboarding_notifications",
                     settingsHint = deniedHint(supervisedHint(rows.supervision, tier, GrantRow.Notifications)),
+                )
+            }
+            if (rows.fullScreenCalls != null) {
+                PermissionRow(
+                    icon = Icons.Outlined.Call,
+                    title = stringResource(R.string.onboarding_perm_full_screen_title),
+                    rationale = stringResource(R.string.onboarding_perm_full_screen_body),
+                    // A switch on a system page, as the unused-app one is: no dialog to ask with, so the only
+                    // action is that page. Off is where a sideloaded build starts, not a fault, so the hint is quiet.
+                    state = rowState(granted = rows.fullScreenCalls, needsSettings = true),
+                    onAllow = {},
+                    onOpenSettings = onOpenFullScreenSettings,
+                    actionTag = "onboarding_full_screen",
+                    settingsHint = stringResource(R.string.onboarding_perm_full_screen_hint),
+                    quietHint = true,
                 )
             }
             PermissionRow(

@@ -233,11 +233,13 @@ private fun Module.recordGraph() {
     }
     single { CallFaces(androidContext(), peers = { get() }, blobs = { get() }, theme = { get() }) }
     single {
+        val calls = get<CallManager>()
         CallController(
             context = androidContext(),
-            calls = get(),
+            calls = calls.state,
+            missedCalls = calls.missed,
             scope = get<CoroutineScope>(),
-            faces = get(),
+            faceOf = get<CallFaces>()::of,
             alertMs = CallTimings().alertMs,
         )
     }

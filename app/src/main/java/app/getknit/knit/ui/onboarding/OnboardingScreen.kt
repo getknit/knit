@@ -94,6 +94,7 @@ fun OnboardingScreen(
         onRequestNotifications = permissions.requestNotifications,
         onAllowBattery = permissions.requestBattery,
         onOpenUnusedPauseSettings = permissions.openUnusedPauseSettings,
+        onOpenFullScreenSettings = permissions.openFullScreenSettings,
         onOpenSettings = permissions.openSettings,
         onReady = onReady,
         onRestore = onRestore,
@@ -126,6 +127,7 @@ internal fun OnboardingScreenContent(
     onOpenSettings: () -> Unit,
     onReady: () -> Unit,
     onOpenUnusedPauseSettings: () -> Unit = {},
+    onOpenFullScreenSettings: () -> Unit = {},
     onRestore: () -> Unit = {},
 ) {
     BackHandler(enabled = step != OnboardingStep.WELCOME, onBack = onBack)
@@ -185,6 +187,7 @@ internal fun OnboardingScreenContent(
                         onAllowBattery = onAllowBattery,
                         onOpenSettings = onOpenSettings,
                         onOpenUnusedPauseSettings = onOpenUnusedPauseSettings,
+                        onOpenFullScreenSettings = onOpenFullScreenSettings,
                     )
                 }
             }

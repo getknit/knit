@@ -134,6 +134,9 @@
     <string name="onboarding_perm_unused_title">Keep permissions while unused</string>
     <string name="onboarding_perm_unused_body">Android takes an app\'s permissions back after a few months without use. Meshing counts as use, so this only matters if you stop the mesh and leave Knit alone for a while.</string>
     <string name="onboarding_perm_unused_hint">Turn off \"Pause app activity if unused\" on Knit\'s app info page.</string>
+    <string name="onboarding_perm_full_screen_title">Ring on the lock screen</string>
+    <string name="onboarding_perm_full_screen_body">Lets a Knit call fill the screen and ring while the phone is locked. Without it, a call arrives as a notification.</string>
+    <string name="onboarding_perm_full_screen_hint">Turn on \"Allow full screen notifications\" for Knit.</string>
     <string name="onboarding_optional">Optional</string>
     <string name="onboarding_allow">Allow</string>
     <!-- Screen-reader labels for the per-row buttons; %1$s is the row title ("Allow, Nearby devices") -->
@@ -770,6 +773,8 @@
     <string name="call_settings_take_live_subtitle">Calls over the internet or Wi-Fi Direct. When this is off, they don\'t ring here and the caller sees \"No answer\".</string>
     <string name="call_settings_take_walkie_title">Take mesh calls</string>
     <string name="call_settings_take_walkie_subtitle">Walkie-talkie calls over the mesh radios. When this is off, they don\'t ring here and the caller sees \"No answer\".</string>
+    <string name="call_settings_full_screen_on">Calls ring full screen, on the lock screen too.</string>
+    <string name="call_settings_full_screen_off">Calls can\'t ring on the lock screen: they arrive as a notification. Turn on \"Allow full screen notifications\" for Knit.</string>
     <string name="call_settings_prefer_mesh_title">Prefer mesh calls</string>
     <string name="call_settings_prefer_mesh_subtitle">The call button in a chat places a mesh call. Live calls move to the chat\'s menu.</string>
     <string name="call_settings_transcripts_title">Transcripts and captions</string>

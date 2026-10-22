@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import app.getknit.knit.di.CALLS_WIRED
 import app.getknit.knit.ui.BackgroundBattery
 import app.getknit.knit.ui.DeviceSupervision
 import app.getknit.knit.ui.MeshPermissionTier
@@ -25,6 +26,8 @@ import app.getknit.knit.ui.UnusedAppPause
 import app.getknit.knit.ui.backgroundBattery
 import app.getknit.knit.ui.camera.openAppSettings
 import app.getknit.knit.ui.deviceSupervision
+import app.getknit.knit.ui.fullScreenCalls
+import app.getknit.knit.ui.openFullScreenCallSettings
 import app.getknit.knit.ui.openUnusedAppPauseSettings
 import app.getknit.knit.ui.optionalNotificationPermission
 import app.getknit.knit.ui.requestIgnoreBatteryOptimizations
@@ -60,6 +63,13 @@ data class PermissionRows(
      * action is "Open settings" — there is no dialog for it — and it never touches Start.
      */
     val unusedPause: UnusedAppPause? = null,
+    /**
+     * Whether an incoming call may ring full screen over the lock screen; `null` where there is nothing to ask
+     * (a build without calls, or below Android 14) and the row is not drawn. Like [unusedPause] it is a switch on a
+     * system page, not a dialog, so its only action is that page — and this row is the one place Knit asks for it
+     * unprompted (`fullScreenCalls`).
+     */
+    val fullScreenCalls: Boolean? = null,
 ) {
     companion object {
         /** A fresh install: nothing asked, nothing held. */
@@ -84,7 +94,7 @@ data class PermissionRows(
     }
 }
 
-/** The rows plus the five things a row can do. Handed to the page by [rememberOnboardingPermissions]. */
+/** The rows plus the six things a row can do. Handed to the page by [rememberOnboardingPermissions]. */
 @Stable
 class OnboardingPermissions(
     val rows: PermissionRows,
@@ -93,6 +103,7 @@ class OnboardingPermissions(
     val requestBattery: () -> Unit,
     val openSettings: () -> Unit,
     val openUnusedPauseSettings: () -> Unit,
+    val openFullScreenSettings: () -> Unit,
 )
 
 /**
@@ -143,8 +154,8 @@ internal fun supervisedHint(
     }
 
 /**
- * The permissions page's state: the four probes (radio set, notification grant, battery position, the
- * unused-app switch), the two permission launchers, and the battery / app-settings intents. Everything
+ * The permissions page's state: the five probes (radio set, notification grant, battery position, the
+ * unused-app switch, full-screen calls), the two permission launchers, and the battery / app-settings intents. Everything
  * that needs an `Activity` or a `Context` lives here rather than in the ViewModel, in the
  * `rememberLocationGate` / `MicGate` idiom.
  *
@@ -156,7 +167,10 @@ internal fun supervisedHint(
  * wasted tap and not worth a DataStore key.
  */
 @Composable
-internal fun rememberOnboardingPermissions(sdkInt: Int = Build.VERSION.SDK_INT): OnboardingPermissions {
+internal fun rememberOnboardingPermissions(
+    sdkInt: Int = Build.VERSION.SDK_INT,
+    callsWired: Boolean = CALLS_WIRED,
+): OnboardingPermissions {
     val context = LocalContext.current
     val activity = LocalActivity.current
     val radioSet = remember(sdkInt) { requiredRadioPermissions(sdkInt) }
@@ -184,6 +198,7 @@ internal fun rememberOnboardingPermissions(sdkInt: Int = Build.VERSION.SDK_INT):
             batteryRestricted = battery == BackgroundBattery.Restricted,
             supervision = supervision,
             unusedPause = unusedAppPause(context),
+            fullScreenCalls = fullScreenCalls(context, callsWired),
         )
     }
     var rows by remember { mutableStateOf(probe()) }
@@ -212,6 +227,7 @@ internal fun rememberOnboardingPermissions(sdkInt: Int = Build.VERSION.SDK_INT):
         requestBattery = { requestIgnoreBatteryOptimizations(context) },
         openSettings = { openAppSettings(context) },
         openUnusedPauseSettings = { openUnusedAppPauseSettings(context) },
+        openFullScreenSettings = { openFullScreenCallSettings(context) },
     )
 }
 

@@ -47,6 +47,8 @@ class CallSettingsScreenContentTest {
         onDownloadSpeechModel: () -> Unit = {},
         onCancelSpeechModel: () -> Unit = {},
         onRemoveSpeechModel: () -> Unit = {},
+        fullScreen: Boolean? = null,
+        onOpenFullScreenSettings: () -> Unit = {},
     ) {
         compose.setContent {
             KnitTheme {
@@ -63,9 +65,34 @@ class CallSettingsScreenContentTest {
                     onDownloadSpeechModel = onDownloadSpeechModel,
                     onCancelSpeechModel = onCancelSpeechModel,
                     onRemoveSpeechModel = onRemoveSpeechModel,
+                    fullScreen = fullScreen,
+                    onOpenFullScreenSettings = onOpenFullScreenSettings,
                 )
             }
         }
+    }
+
+    /** Below Android 14 every call may ring full screen, so there is no line to draw. */
+    @Test
+    fun theFullScreenLineIsAbsentWhereThereIsNothingToAsk() {
+        render(CallSettingsUiState())
+        compose.onNodeWithTag("call_settings_full_screen").assertDoesNotExist()
+    }
+
+    @Test
+    fun aCallThatCannotRingFullScreenOffersTheSystemPage() {
+        var opened = 0
+        render(CallSettingsUiState(), fullScreen = false, onOpenFullScreenSettings = { opened++ })
+        compose.onNodeWithText(context.getString(R.string.call_settings_full_screen_off)).assertIsDisplayed()
+        compose.onNodeWithTag("call_settings_full_screen_settings").performClick()
+        assertEquals(1, opened)
+    }
+
+    @Test
+    fun aCallThatCanRingFullScreenSaysSoWithNothingToPress() {
+        render(CallSettingsUiState(), fullScreen = true)
+        compose.onNodeWithText(context.getString(R.string.call_settings_full_screen_on)).assertIsDisplayed()
+        compose.onNodeWithTag("call_settings_full_screen_settings").assertDoesNotExist()
     }
 
     @Test

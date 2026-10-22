@@ -49,6 +49,7 @@ class OnboardingScreenContentTest {
         var battery = 0
         var settings = 0
         var unused = 0
+        var fullScreen = 0
         var ready = 0
         var restore = 0
         var typed = ""
@@ -82,6 +83,7 @@ class OnboardingScreenContentTest {
                     onOpenSettings = { calls.settings++ },
                     onReady = { calls.ready++ },
                     onOpenUnusedPauseSettings = { calls.unused++ },
+                    onOpenFullScreenSettings = { calls.fullScreen++ },
                     onRestore = { calls.restore++ },
                 )
             }
@@ -226,6 +228,36 @@ class OnboardingScreenContentTest {
         render(OnboardingStep.PERMISSIONS, rows = PermissionRows.ALL.copy(unusedPause = UnusedAppPause.Off))
         compose.onNodeWithTag("onboarding_unused_granted", useUnmergedTree = true).performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("onboarding_unused_settings").assertDoesNotExist()
+    }
+
+    /** A build without calls, or a phone below Android 14, has nothing to ask about full-screen calls. */
+    @Test
+    fun theFullScreenRowIsAbsentWhereThereIsNothingToAsk() {
+        render(OnboardingStep.PERMISSIONS, rows = PermissionRows.ALL)
+        compose.onNodeWithText(context.getString(R.string.onboarding_perm_full_screen_title)).assertDoesNotExist()
+    }
+
+    /**
+     * Full-screen calls are a switch on a system page, not a dialog: while off (where a sideloaded build starts) the row
+     * offers only that page, through its own callback, with the quiet hint — and Start does not care.
+     */
+    @Test
+    fun theFullScreenRowOffersItsOwnSettingsWhileOff() {
+        val calls = render(OnboardingStep.PERMISSIONS, rows = PermissionRows.ALL.copy(fullScreenCalls = false))
+        compose.onNodeWithTag("onboarding_full_screen").assertDoesNotExist()
+        compose.onNodeWithTag("onboarding_full_screen_granted", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithText(context.getString(R.string.onboarding_perm_full_screen_hint)).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("onboarding_full_screen_settings").performScrollTo().performClick()
+        assertEquals(1, calls.fullScreen)
+        assertEquals(0, calls.settings)
+        compose.onNodeWithTag("onboarding_start").assertIsEnabled()
+    }
+
+    @Test
+    fun theFullScreenRowShowsTheCheckOnceAllowed() {
+        render(OnboardingStep.PERMISSIONS, rows = PermissionRows.ALL.copy(fullScreenCalls = true))
+        compose.onNodeWithTag("onboarding_full_screen_granted", useUnmergedTree = true).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("onboarding_full_screen_settings").assertDoesNotExist()
     }
 
     @Test
