@@ -198,14 +198,27 @@ interface MeshController {
 
     /**
      * Posts [text] in the commons [conversationId] (docs/SPOOL_PROTOCOL.md §7.4): signed, stored, and handed
-     * to the Internet plane for the one relay that runs the room — never the radios. False when the text is
-     * refused by moderation or the room is not one this device has joined.
+     * to the Internet plane for the one relay that runs the room — never the radios. An [attachment] goes key-less,
+     * its bytes sealed under the room's key chunk by chunk (§4.5) and pushed by the room's own pass. False when the
+     * room is not one this device has joined.
      */
     suspend fun sendCommons(
         conversationId: String,
         text: String,
         mentions: List<Mention>,
         replyTo: ReplyRef?,
+        attachment: AttachmentStore.Ingested? = null,
+    ): Boolean = false
+
+    /**
+     * Toggles this device's [emoji] reaction on [messageId] in the commons [conversationId] (add, replace or, on the
+     * emoji already chosen, retract) and posts it into the room for every member to read — the spool only, never the
+     * radios. False when the emoji is refused or the room is not one this device has joined.
+     */
+    suspend fun sendCommonsReaction(
+        conversationId: String,
+        messageId: String,
+        emoji: String,
     ): Boolean = false
 
     /** The relay list or a joined commons changed: re-derive the scope table now rather than at the next tick. */

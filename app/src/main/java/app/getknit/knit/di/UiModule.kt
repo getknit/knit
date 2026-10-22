@@ -35,6 +35,7 @@ import app.getknit.knit.ui.blocked.BlockedUsersViewModel
 import app.getknit.knit.ui.chat.ChatViewModel
 import app.getknit.knit.ui.chat.MessageDetailsViewModel
 import app.getknit.knit.ui.chatlist.ChatListViewModel
+import app.getknit.knit.ui.commons.CommonsDetailsViewModel
 import app.getknit.knit.ui.contacts.ContactsViewModel
 import app.getknit.knit.ui.diagnostics.CrashLogViewModel
 import app.getknit.knit.ui.diagnostics.DiagnosticsViewModel
@@ -195,6 +196,18 @@ val uiModule =
         // GroupDetailsViewModel takes the group id as a runtime param; the rest are resolved by type.
         viewModel { params ->
             GroupDetailsViewModel(params.get(), get(), get(), get(), get(), get(), get(), get(), androidContext())
+        }
+        // A commons' room details, keyed by its conversation id; no store while the commons is hidden.
+        viewModel { params ->
+            CommonsDetailsViewModel(
+                params.get(),
+                if (BuildConfig.COMMONS) get<CommonsRepository>() else null,
+                get(),
+                get<MeshController>(),
+                get<RelayStatusRepository>().facts,
+                get(),
+                androidContext(),
+            )
         }
         viewModel { BlockedUsersViewModel(get(), get()) }
         viewModel { MessageRequestsViewModel(get(), get(), get(), get(), get(), get(), androidContext()) }

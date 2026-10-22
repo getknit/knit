@@ -44,6 +44,14 @@ data class RelayFacts(
     val coveredLabels: Set<String> = emptySet(),
     val maxAttachBytes: Int? = null,
     val uploadRooms: List<UploadRoom> = listOfNotNull(maxAttachBytes?.let { UploadRoom(it) }),
+    // The commons live on a connected relay that takes no attachments for them, by conversation id: its HELLO's
+    // commons said no `attach` (S-7.4-5), or it carries frames only. Covered, so [coveredLabels] has them, but no
+    // attachment record may name them there, and that relay is the only one a commons is on.
+    val textOnlyRooms: Set<String> = emptySet(),
+    // The joined commons whose relay does not run them, by conversation id (`SpoolStatus.staleCommons`): the
+    // operator rotated the invite, or the relay runs no room at all. Read from every relay, connected or not — what
+    // a relay said about the invite we hold stays true of it.
+    val staleRooms: Set<String> = emptySet(),
 )
 
 /**
@@ -78,6 +86,13 @@ data class UploadRoom(
 fun coveredLabelsOf(live: List<SpoolStatus>): Set<String> =
     live
         .flatMap { spool -> spool.scopes.filterNot { it.retiring || it.pendingReset }.map { it.label } }
+        .toSet()
+
+/** The [RelayFacts.textOnlyRooms] of the **connected** spools in [live]: a commons whose relay takes no attachment for it. */
+fun textOnlyRoomsOf(live: List<SpoolStatus>): Set<String> =
+    live
+        .filter { it.commons?.attach != true || it.maxAttachBytes == null }
+        .flatMap { spool -> spool.scopes.map { it.label }.filter { Conversations.kindFor(it) == ConversationKind.COMMONS } }
         .toSet()
 
 /**
@@ -291,7 +306,7 @@ fun attachmentReach(
     facts: RelayFacts,
 ): AttachmentRelay {
     if (reachFor(conversationId, facts) != RelayReach.Covered) return AttachmentRelay.Silent
-    if (facts.maxAttachBytes == null) return AttachmentRelay.Unsupported
+    if (facts.maxAttachBytes == null || conversationId in facts.textOnlyRooms) return AttachmentRelay.Unsupported
     if (facts.uploadRooms.isEmpty()) return AttachmentRelay.Locked
     return if (facts.uploadRooms.any { it.takes(sizeBytes) }) AttachmentRelay.Relayable else AttachmentRelay.TooLarge
 }
@@ -312,7 +327,7 @@ fun attachmentWait(
 ): AttachmentWait =
     when {
         reachFor(conversationId, facts) != RelayReach.Covered -> AttachmentWait.Nearby
-        facts.maxAttachBytes != null -> AttachmentWait.Relay
+        facts.maxAttachBytes != null && conversationId !in facts.textOnlyRooms -> AttachmentWait.Relay
         else -> AttachmentWait.RelayFramesOnly
     }
 

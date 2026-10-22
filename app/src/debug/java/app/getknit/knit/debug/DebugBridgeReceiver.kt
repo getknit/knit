@@ -2143,15 +2143,28 @@ class DebugBridgeReceiver :
             mesh.refreshRelays()
             return reply("ok", "left $it")
         }
+        // `--es react <messageId> --es emoji <e> --es room <c-…>`: the room's own reaction path (C-7.4-13), a toggle.
+        intent.getStringExtra("react")?.takeIf { it.isNotBlank() }?.let { messageId ->
+            val room = intent.getStringExtra("room")?.trim() ?: return reply("error", "react needs --es room <c-…>")
+            val emoji = intent.getStringExtra("emoji") ?: return reply("error", "react needs --es emoji <e>")
+            val sent = mesh.sendCommonsReaction(room, messageId.trim(), emoji)
+            return reply(if (sent) "ok" else "error", if (sent) "reacted on $messageId" else "not a joined room, or the emoji was refused")
+        }
+        val spools = mesh.spoolStatus()
         val rooms = JSONArray()
         commons.observeAll().first().forEach { room ->
+            val relay = spools.firstOrNull { it.url == room.spoolUrl }
             rooms.put(
                 JSONObject()
                     .put("conversation", room.conversationId)
                     .put("url", room.spoolUrl)
                     .put("name", room.name ?: JSONObject.NULL)
                     .put("joinedAt", room.joinedAt)
-                    .put("members", JSONArray(commons.members(room.conversationId))),
+                    .put("members", JSONArray(commons.members(room.conversationId)))
+                    // What the room's relay said: whether it takes the room's attachments (S-7.4-5), null while it is
+                    // down; and whether it runs this room at all (a rotated invite, or no commons there).
+                    .put("attach", relay?.commons?.attach ?: JSONObject.NULL)
+                    .put("stale", relay?.staleCommons?.contains(room.conversationId) == true),
             )
         }
         return JSONObject().put("status", "ok").put("rooms", rooms)

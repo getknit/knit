@@ -457,10 +457,14 @@ doc). **Don't start a deferred item without explicit direction.**
   dark: no room in the scope table, no subscription, no post, no member sweep, no Join / Leave line on the
   relay row) and the room's notification channel. The code is **not** stripped (R8 prunes the
   `if (COMMONS)` branches), and DB v13's three tables ship empty. **To introduce it:** flip the release
-  default in `app/build.gradle.kts`, the way ADR 064 / ADR 2026-09.6gtm did for the two planes, after the
-  follow-ons the ADR lists (attachments, reactions, a members list, ~~deep-linked invites~~ — **done
-  2026-09-14**, ADR 2026-09.tmbq / `docs/RELAY_INVITE.md`: one `getknit.app/r` link carries the relay, its
-  token and the room secret, applied on one sheet; device trial still owed) are decided.
+  default in `app/build.gradle.kts`, the way ADR 064 / ADR 2026-09.6gtm did for the two planes. The follow-ons
+  the ADR listed are **built** (2026-10-22, ADR 2026-10.xhfr): reactions in the room, keyed attachments through
+  the scope alone, a room details screen with its members, and a rotated-invite notice; ~~deep-linked invites~~
+  were **done 2026-09-14** (ADR 2026-09.tmbq / `docs/RELAY_INVITE.md`). Owed before the flip: the device trial
+  ADR 2026-10.xhfr names (attachments, reactions, a rotated invite) together with the relay-invite trial ADR
+  2026-09.tmbq still owes, and on the daemon side `knit-spool commons-invite` printing the `getknit.app/r` link
+  (spec SHOULD) and its `SpecVectorTest` pinning the §13 commons derivation rows. Still not covered: typing
+  (no cast lane outside a DM scope) and carrying posts over the radios.
 - **The spool plane beyond the spec** — everything that makes the protocol run, in order: ~~the
   `knit-spool` reference daemon + conformance suite~~ (**done 2026-08-16** in the `knit-spool`
   repo — full v1 daemon with SQLite persistence, rate limits, watermark, ops surface, plus the

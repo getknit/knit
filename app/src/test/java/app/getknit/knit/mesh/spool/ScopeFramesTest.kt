@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.RatchetInit
+import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.frameIdOf
@@ -416,6 +417,53 @@ class ScopeFramesTest {
             spoolUrl = "wss://home.test/spool/v1",
         )
 
+    private fun commonsEnv(
+        id: String,
+        chat: ChatContent? = null,
+        reaction: ReactionContent? = null,
+    ) = RelayEnvelope(
+        type = FrameType.COMMONS,
+        id = id,
+        senderId = alice,
+        payload = WireCodec.encodePayload(CommonsPost(scope = commonsId, chat = chat, reaction = reaction)),
+    )
+
+    @Test
+    fun `a commons takes an attachment that names its type and its key, and a reaction to a post`() {
+        val scope = commonsScope()
+        val photo = ChatContent(body = "pic", attachmentHash = "ab".repeat(32), attachmentMime = "image/webp", attachmentKey = "a2V5")
+        assertTrue(ScopeFrames.eligibleFor(commonsEnv("i1", chat = photo), alice, scope))
+        val file =
+            ChatContent(
+                attachmentHash = "cd".repeat(32),
+                attachmentMime = "application/pdf",
+                attachmentName = "menu.pdf",
+                attachmentKey = "a2V5",
+            )
+        assertTrue(ScopeFrames.eligibleFor(commonsEnv("f1", chat = file), alice, scope))
+        assertTrue(ScopeFrames.eligibleFor(commonsEnv("r1", reaction = ReactionContent(FrameId.new(), "👍")), alice, scope))
+        // A retraction is a reaction with no emoji.
+        assertTrue(ScopeFrames.eligibleFor(commonsEnv("r2", reaction = ReactionContent(FrameId.new(), null)), alice, scope))
+        assertTrue(ScopeFrames.pushableToCommons(commonsEnv("r3", reaction = ReactionContent(FrameId.new(), "👍")), alice, commonsId))
+    }
+
+    @Test
+    fun `a commons post carries exactly one content, and a reaction names a canonical post with an emoji the wire takes`() {
+        val scope = commonsScope()
+        val target = FrameId.new()
+        assertFalse(ScopeFrames.eligibleFor(commonsEnv("n1"), alice, scope))
+        assertFalse(
+            ScopeFrames.eligibleFor(
+                commonsEnv("b1", chat = ChatContent(body = "hi"), reaction = ReactionContent(target, "👍")),
+                alice,
+                scope,
+            ),
+        )
+        assertFalse(ScopeFrames.eligibleFor(commonsEnv("r1", reaction = ReactionContent("not-a-frame-id", "👍")), alice, scope))
+        assertFalse(ScopeFrames.eligibleFor(commonsEnv("r2", reaction = ReactionContent(target, "👍".repeat(17))), alice, scope))
+        assertFalse(ScopeFrames.eligibleFor(commonsEnv("r3", reaction = ReactionContent(target, " ")), alice, scope))
+    }
+
     @Test
     fun `a commons takes a post naming it and a profile from anyone`() {
         val scope = commonsScope()
@@ -425,7 +473,7 @@ class ScopeFramesTest {
     }
 
     @Test
-    fun `a commons refuses a post naming another room, a sealed post, an attachment, and every other type`() {
+    fun `a commons refuses a post naming another room, a sealed post, a malformed attachment, and every other type`() {
         val scope = commonsScope()
         val otherRoom = ScopeCrypto.commonsScopeId(ByteArray(32) { (it + 41).toByte() })
         assertFalse(ScopeFrames.eligibleFor(commonsFrame("x1", alice, otherRoom).envelope, alice, scope))
@@ -451,6 +499,12 @@ class ScopeFramesTest {
                 payload = WireCodec.encodePayload(CommonsPost(scope = commonsId, chat = ChatContent(body = "pic", attachmentHash = "ab"))),
             )
         assertFalse(ScopeFrames.eligibleFor(withImage, alice, scope))
+        // A well-formed address with no type, or no key, beside it: a commons attachment has no sealed content to carry
+        // either, and a key-less one's address would be its plaintext's.
+        val noType = ChatContent(body = "pic", attachmentHash = "ab".repeat(32), attachmentKey = "a2V5")
+        assertFalse(ScopeFrames.eligibleFor(commonsEnv("i2", noType), alice, scope))
+        val noKey = ChatContent(body = "pic", attachmentHash = "ab".repeat(32), attachmentMime = "image/webp")
+        assertFalse(ScopeFrames.eligibleFor(commonsEnv("i3", noKey), alice, scope))
         // Addressed to someone, or to a group: not a room post, whatever the payload says.
         val addressed = commonsFrame("a1", alice, commonsId).envelope
         assertFalse(

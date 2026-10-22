@@ -81,6 +81,8 @@ class RelayStatusRepository(
                     live
                         .filter { it.uploads == SpoolUploads.Open }
                         .mapNotNull { spool -> spool.maxAttachBytes?.let { UploadRoom(it, spool.uploadLimitChunks) } },
+                textOnlyRooms = textOnlyRoomsOf(live),
+                staleRooms = spools.flatMapTo(HashSet()) { it.staleCommons },
             )
         }.distinctUntilChanged()
 

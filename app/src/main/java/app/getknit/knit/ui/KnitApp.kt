@@ -57,6 +57,7 @@ import app.getknit.knit.ui.callsettings.CallSettingsScreen
 import app.getknit.knit.ui.chat.ChatScreen
 import app.getknit.knit.ui.chat.MessageDetailsScreen
 import app.getknit.knit.ui.chatlist.ChatListScreen
+import app.getknit.knit.ui.commons.CommonsDetailsScreen
 import app.getknit.knit.ui.components.LocalPeerBadges
 import app.getknit.knit.ui.contacts.ContactsScreen
 import app.getknit.knit.ui.diagnostics.CrashLogScreen
@@ -149,6 +150,11 @@ private object Routes {
     const val GROUP_DETAILS = "groupDetails/{groupId}"
 
     fun groupDetails(groupId: String) = "groupDetails/$groupId"
+
+    // A commons id is `c-` + 64 hex characters, so it needs no escaping.
+    const val COMMONS_DETAILS = "commonsDetails/{conversationId}"
+
+    fun commonsDetails(conversationId: String) = "commonsDetails/$conversationId"
 
     // A License's routeId is its lower-cased SPDX id (`gpl-3.0-or-later`), so it needs no escaping.
     const val LICENSE = "license/{licenseId}"
@@ -483,6 +489,7 @@ fun KnitApp(startRoute: String? = null) {
                     onOpenProfile = { id -> navController.navigate(Routes.profileDetails(id)) },
                     onOpenGroupDetails = { id -> navController.navigate(Routes.groupDetails(id)) },
                     onOpenMessageDetails = { id -> navController.navigate(Routes.messageDetails(id)) },
+                    onOpenCommonsDetails = { id -> navController.navigate(Routes.commonsDetails(id)) },
                 )
             }
             composable(
@@ -540,6 +547,19 @@ fun KnitApp(startRoute: String? = null) {
                 val groupId = backStackEntry.arguments?.getString("groupId") ?: return@composable
                 GroupDetailsScreen(
                     groupId = groupId,
+                    onBack = { navController.popBackStack() },
+                    onOpenMemberProfile = { id -> navController.navigate(Routes.profileDetails(id)) },
+                    // Leaving deletes the thread, so pop past this screen AND the chat, back to the list.
+                    onLeft = { navController.popBackStack(Routes.CHAT_LIST, inclusive = false) },
+                )
+            }
+            composable(
+                route = Routes.COMMONS_DETAILS,
+                arguments = listOf(navArgument("conversationId") { type = NavType.StringType }),
+            ) { backStackEntry ->
+                val conversationId = backStackEntry.arguments?.getString("conversationId") ?: return@composable
+                CommonsDetailsScreen(
+                    conversationId = conversationId,
                     onBack = { navController.popBackStack() },
                     onOpenMemberProfile = { id -> navController.navigate(Routes.profileDetails(id)) },
                     // Leaving deletes the thread, so pop past this screen AND the chat, back to the list.

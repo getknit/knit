@@ -5,7 +5,9 @@ import app.getknit.knit.data.RoomDbTest
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
+import app.getknit.knit.mesh.protocol.CommonsPost
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.spool.hex
@@ -74,6 +76,43 @@ class CommonsRepositoryTest : RoomDbTest() {
             repo.leaveBoundTo("wss://a/spool/v1")
             assertNull(repo.find(a))
             assertEquals(b, repo.find(b)?.conversationId)
+        }
+
+    private fun reaction(
+        id: String,
+        messageId: String,
+        emoji: String?,
+        sentAt: Long,
+    ): ByteArray =
+        WireCodec.encodeEnvelope(
+            RelayEnvelope(
+                type = FrameType.COMMONS,
+                id = id,
+                senderId = "me",
+                sentAt = sentAt,
+                payload =
+                    WireCodec.encodePayload(
+                        CommonsPost(scope = ScopeCrypto.commonsScopeId(secret), reaction = ReactionContent(messageId, emoji)),
+                    ),
+            ),
+        )
+
+    @Test
+    fun aReactionReplacesOurEarlierOneToTheSamePostInTheOutboxAndNothingElse() =
+        runTest {
+            val repo = repo()
+            val id = repo.join("wss://a/spool/v1", secret, null, now = 1L)
+            repo.post(row("m1", id), sig = ByteArray(64), signed = signed("m1"))
+            repo.postReaction(id, "m1", "r1", 6L, ByteArray(64), reaction("r1", "m1", "👍", 6L))
+            repo.postReaction(id, "m2", "r2", 7L, ByteArray(64), reaction("r2", "m2", "🎉", 7L))
+
+            // A replace, then a retraction: each leaves only the newest reaction to m1 to push.
+            repo.postReaction(id, "m1", "r3", 8L, ByteArray(64), reaction("r3", "m1", "❤️", 8L))
+            assertEquals(setOf("m1", "r2", "r3"), repo.frames(id).map { it.envelope.id }.toSet())
+            repo.postReaction(id, "m1", "r4", 9L, ByteArray(64), reaction("r4", "m1", null, 9L))
+            assertEquals(setOf("m1", "r2", "r4"), repo.frames(id).map { it.envelope.id }.toSet())
+            // No message row for a reaction: the reactions table holds what it shows.
+            assertFalse(db.messageDao().exists("r4"))
         }
 
     @Test

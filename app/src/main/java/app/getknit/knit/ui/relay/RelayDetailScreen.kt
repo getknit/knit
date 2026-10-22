@@ -499,6 +499,15 @@ private fun RoomSection(
                 }
             }
         }
+        // The room joined here is not the one this relay runs: Leave, then Join with the operator's new invite.
+        if (room.stale) {
+            Text(
+                text = stringResource(R.string.commons_stale),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp).testTag("relay_commons_stale_${relay.host}"),
+            )
+        }
     }
 }
 

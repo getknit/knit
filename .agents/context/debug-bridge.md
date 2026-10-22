@@ -192,7 +192,10 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
 - `…debug.COMMONS` — joins, leaves and inspects the **commons** (spec §7.4, ADR 2026-09.wx8e) — the relay
   row's Join/Leave, for a locked lab device. `--es url <spoolUrl> --es invite <knit-commons:v1:…>` joins the
   room that relay runs (add the relay with `…debug.SPOOL --es url` first; the reply carries the `c-…`
-  conversation id), `--es leave <c-…>` leaves one, no extras dumps every joined room with its members.
+  conversation id), `--es leave <c-…>` leaves one, `--es react <messageId> --es emoji <e> --es room <c-…>` toggles
+  a reaction in the room (C-7.4-13), and no extras dumps every joined room with its members, `attach` (whether the
+  room's relay takes its attachments, S-7.4-5; null while it is down) and `stale` (the relay does not run this room:
+  a rotated invite, or no commons there).
   `…debug.SEND --es conv <c-…>` posts into it (with `--es replyTo <id>` for a quote), `…debug.STATE --es conv
   <c-…>` reads it back (`received` flips once a member's sealed tick lands over that pair's DM scope — the
   group's route, never the room's), and `…debug.SPOOL` shows the room's scope under the **bound relay only** plus the

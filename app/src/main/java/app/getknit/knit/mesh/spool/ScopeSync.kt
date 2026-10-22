@@ -10,7 +10,6 @@ import app.getknit.knit.mesh.SPOOL_COVER_MS
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.crypto.scope.SpoolPow
 import app.getknit.knit.mesh.isPresenceEvidence
-import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.CommonsPost
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
@@ -174,6 +173,10 @@ class SpoolStatus(
     // The commons this spool advertised in its HELLO (§7.4), null while disconnected or when it runs none —
     // what the relay row's Join reads.
     val commons: SpoolCommonsInfo? = null,
+    // The joined commons bound here that this spool does not run, by conversation id: the invite was rotated
+    // (its answers showed the room is not this spool's commons), or its HELLO advertises none. Kept across a
+    // disconnect for the probe's half — what the spool said stays true of the invite we hold.
+    val staleCommons: Set<String> = emptySet(),
     // What this spool answered at `/source`, null until that lands and while disconnected: a build is a fact
     // about the live connection like every other field here, not a remembered one.
     val software: SpoolSoftware? = null,
@@ -288,9 +291,9 @@ class ScopeSync(
     // `false`. A commons post from a sender not pinned *yet* is deferred for the profile that is on its
     // way, never quarantined as a forgery.
     private val hasKey: suspend (String) -> Boolean = { true },
-    // The commons door: a verified post, the chat content it carries, its conversation, the source. Posts
-    // never go through [deliver] — that door relays onto the radios, and a commons post lives on its spool.
-    private val deliverCommons: suspend (RelayEnvelope, ChatContent, String, String) -> Unit = { _, _, _, _ -> },
+    // The commons door: a verified post (a chat or a reaction), its decoded content, its conversation, the source.
+    // Posts never go through [deliver] — that door relays onto the radios, and a commons post lives on its spool.
+    private val deliverCommons: suspend (RelayEnvelope, CommonsPost, String, String) -> Unit = { _, _, _, _ -> },
     // A node's frame (profile or post) was pulled from a commons: (conversationId, nodeId).
     private val onCommonsMember: suspend (String, String) -> Unit = { _, _ -> },
     // A commons refused our own profile as tombstoned — count-evicted inside the republish window — so a
@@ -673,6 +676,9 @@ class ScopeSync(
          * accepted here, whose `am` may differ, or the connection is replaced. Uploads stay open for the rest.
          */
         TOO_LARGE(0),
+
+        /** Someone else's commons attachment that landed since the room's rows were read: nothing left to push or fetch. */
+        LANDED(0),
     }
 
     /**
@@ -721,6 +727,12 @@ class ScopeSync(
         // A commons' bounds as the spool pinned them in its DIGEST (§7.4) — the truth this worker sizes
         // events and dead-on-arrival against, since what the scope table declared was only a guess.
         private val pinnedBounds = ConcurrentHashMap<String, ScopeBounds>()
+
+        // Joined commons this spool showed it does not run ([markStale]): its operator rotated the invite, so the
+        // id we derive is an ordinary scope there now. Never subscribed again for this worker's life — a SUB would
+        // keep a junk scope alive on the operator's relay — and reported, so the room can say why it went quiet.
+        // Not in [forgetScopesNotIn]'s list on purpose: leaving [mine] is what being stale does.
+        private val staleCommons: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
         // Commons posts held back because their author is not pinned yet, per scope: blob id hex → how many
         // rounds it has waited. Bounded like the other sets; a post whose profile never comes is quarantined
@@ -1146,6 +1158,7 @@ class ScopeSync(
                 uploadLimitChunks = connection?.takeIf { it.isReady }?.uploadLimitChunks(),
                 seenAttachments = seenAttachments,
                 seenGates = seenGates,
+                staleCommons = staleRooms(all),
                 scopes =
                     mine(all, connection).map { scope ->
                         ScopeStatus(
@@ -1470,17 +1483,67 @@ class ScopeSync(
         /**
          * The scopes this worker carries: every scope, minus a commons bound to another relay, minus a
          * commons at a spool that advertised none — a SUB for it there would read as an unknown scope and
-         * meet the §6.4 creation gates (PoW, the new-scope bucket) for a room that does not exist.
+         * meet the §6.4 creation gates (PoW, the new-scope bucket) for a room that does not exist — and minus a
+         * commons this spool has shown it no longer runs ([staleCommons]).
          */
         private fun mine(
             all: List<Scope>,
             conn: SpoolConnection?,
-        ): List<Scope> = all.filter { it.belongsAt(url) && (it.commonsId == null || conn?.commons != null) }
+        ): List<Scope> =
+            all.filter {
+                it.belongsAt(url) && (it.commonsId == null || (conn?.commons != null && it.idHex !in staleCommons))
+            }
+
+        /**
+         * The joined commons bound here that this spool does not run, by conversation id: one its answers marked
+         * stale ([markStale]), or any while a completed HELLO advertises no commons at all.
+         */
+        private fun staleRooms(all: List<Scope>): Set<String> {
+            val noCommons = connection?.let { it.isReady && it.commons == null } == true
+            return all
+                .filter { it.commonsId != null && it.belongsAt(url) && (noCommons || it.idHex in staleCommons) }
+                .mapNotNullTo(HashSet()) { it.commonsId }
+        }
+
+        /**
+         * A commons this spool answered as no commons (§7.4): its DIGEST echoed what we declared rather than the
+         * bounds its HELLO pinned (S-7.4-2), or it asked a creation gate of us (S-7.4-3). Either way the invite we
+         * hold is not the one this spool runs — the operator rotated it.
+         */
+        private fun markStale(scope: Scope) {
+            if (staleCommons.add(scope.idHex)) {
+                log("${SpoolUrl.host(url)}: ${scope.label} is no longer run there: the invite changed")
+            }
+            wake()
+        }
+
+        /**
+         * The `ttlMs` a commons SUB declares: the HELLO's, one millisecond short. The spool running the room
+         * substitutes its pinned bounds (S-7.4-2), so its DIGEST echoes the HELLO's own; a stale id is an
+         * ordinary scope that applies what we declared, and echoes this. [markStale] reads the difference.
+         */
+        private fun probeTtl(advertised: SpoolCommonsInfo): Long =
+            if (advertised.ttlMs > PROBE_SHORTFALL_MS) advertised.ttlMs - PROBE_SHORTFALL_MS else advertised.ttlMs
+
+        /**
+         * Whether [digest], the answer to a commons SUB, came from a spool that does not run that room: anything but the
+         * TTL its HELLO pinned (S-7.4-2) is what an ordinary scope applying our [probeTtl] echoes. No verdict without a
+         * HELLO's commons, or with a TTL too short to probe.
+         */
+        private fun answeredAsNoCommons(
+            scope: Scope,
+            digest: SpoolDigest,
+        ): Boolean {
+            if (scope.commonsId == null) return false
+            val advertised = connection?.commons ?: return false
+            return advertised.ttlMs > PROBE_SHORTFALL_MS && digest.bounds.ttlMs != advertised.ttlMs
+        }
 
         /**
          * What we declare at SUB. For a commons the spool ignores the declaration and pins its own (§7.4),
-         * so we declare exactly what its HELLO advertised — then [SpoolConnection.inboundCap] and the pinned
-         * truth agree and no honest event is dropped as oversize.
+         * so we declare what its HELLO advertised — then [SpoolConnection.inboundCap] and the pinned truth agree
+         * and no honest event is dropped as oversize — except the TTL, a millisecond short: the probe that tells
+         * the room from a stale id ([probeTtl]).
          */
         private fun declaredBounds(
             scope: Scope,
@@ -1488,7 +1551,7 @@ class ScopeSync(
         ): ScopeBounds {
             if (scope.commonsId == null) return scope.bounds
             val advertised = conn.commons ?: return scope.bounds
-            return ScopeBounds(maxFrames = advertised.maxFrames, ttlMs = advertised.ttlMs, maxBlob = advertised.maxBlob)
+            return ScopeBounds(maxFrames = advertised.maxFrames, ttlMs = probeTtl(advertised), maxBlob = advertised.maxBlob)
         }
 
         /** The bounds to size against: the spool's pinned truth for a commons once a DIGEST has said, else what we declared. */
@@ -1556,12 +1619,11 @@ class ScopeSync(
             localCounts[scope.idHex] = local.size + accountedHere.size
             val anchor = spoolDigests[scope.idHex] ?: return // the SUB hasn't been answered yet
             if (anchor == localFold) {
-                if (scope.commonsId == null) healAttachments(conn, scope, frames, timed)
+                healAttachments(conn, scope, frames, timed)
                 return
             }
             reconcileListing(conn, scope, local, accountedHere)
-            // Text only in this revision: a commons never exchanges attachment records, whatever its HELLO says.
-            if (scope.commonsId == null) healAttachments(conn, scope, frames, timed)
+            healAttachments(conn, scope, frames, timed)
         }
 
         /**
@@ -1906,14 +1968,9 @@ class ScopeSync(
         ) {
             val blobStore = blobs ?: return
             if (conn.limits?.attachments != true) return
-            val quarantined = quarantinedAttachments(scope)
-            val settled = settledAttachmentsFor(scope, recheckOlder = timed)
-            val candidates =
-                ScopeAttachments
-                    .references(frames, scope, selfId())
-                    .filterNot { it.aHash in quarantined || it.aHash in settled }
-                    .mapNotNull { ref -> ScopeAttachments.hashBytes(ref.aHash)?.let { ref to it } }
-                    .take(ATTACHMENT_SCAN_PER_ROUND)
+            // S-7.4-5: a spool answers attachment records naming its commons `err malformed` unless its HELLO said so.
+            if (scope.commonsId != null && conn.commons?.attach != true) return
+            val (candidates, fetchOnly) = attachmentCandidates(scope, frames, timed)
             var handled = 0
             var pending = 0
             for ((ref, aHashBytes) in candidates) {
@@ -1922,26 +1979,89 @@ class ScopeSync(
                     continue
                 }
                 val mine = blobStore.has(ref.aHash)
-                val passed = passLocally(conn, scope, ref, mine, blobStore)
+                val passed = passLocally(conn, scope, ref, mine, blobStore, theirs = ref.aHash in fetchOnly)
                 if (passed != null) {
                     pending += passed.owed
                 } else {
                     handled++
-                    val aid = ScopeCrypto.attachmentId(scope.keys, scope.id, aHashBytes)
                     // A dead socket ends the round; there is nothing useful to try against it.
-                    val presence = conn.ahave(scope.id, aid) ?: return
-                    val done =
-                        if (mine) {
-                            pushAttachment(conn, scope, ref, aid, aHashBytes, presence, blobStore)
-                        } else {
-                            fetchAttachment(conn, scope, ref, aid, presence, blobStore)
-                        }
+                    val done = exchangeAttachment(conn, scope, ref, aHashBytes, mine, ref.aHash in fetchOnly, blobStore) ?: return
                     if (!settledAfter(conn, scope, ref.aHash, mine, done)) pending++
                 }
             }
             // Something is still in flight or still owed: look again on the old reconcile's cadence rather
             // than the tick's, and only for this scope. A settled scope schedules nothing.
             if (pending > 0) scheduleAttachmentRetry(scope)
+        }
+
+        /**
+         * The attachments a round may work for [scope], newest of each kind first and at most [ATTACHMENT_SCAN_PER_ROUND],
+         * with the hashes among them that are only ever fetched: ours from [frames], and — in a commons — every other
+         * member's from our record of the room (C-7.4-6: each member pushes its own). Quarantined and settled ones are
+         * left out of both, the room's read included, so its limit counts live candidates.
+         */
+        private suspend fun attachmentCandidates(
+            scope: Scope,
+            frames: List<CarriedFrame>,
+            timed: Boolean,
+        ): Pair<List<Pair<ScopeAttachments.Ref, ByteArray>>, Set<String>> {
+            val skip = quarantinedAttachments(scope) + settledAttachmentsFor(scope, recheckOlder = timed)
+            val ours = ScopeAttachments.references(frames, scope, selfId())
+            val theirs = scope.commonsId?.let { commonsTheirs(scope, it, ours, skip) }.orEmpty()
+            val candidates =
+                (ours + theirs)
+                    .filterNot { it.aHash in skip }
+                    .mapNotNull { ref -> ScopeAttachments.hashBytes(ref.aHash)?.let { ref to it } }
+                    .take(ATTACHMENT_SCAN_PER_ROUND)
+            return candidates to theirs.mapTo(HashSet()) { it.aHash }
+        }
+
+        /**
+         * One attachment's round trip: `ahave`, then the push of one we hold or the fetch of one we lack. True when it is
+         * done with, null when the socket died. Someone else's commons attachment the spool still lacks past
+         * [ABSENT_GRACE_MS] counts as done too ([fetchOnly]): the room's relay is its only way here and its author may
+         * never put it (uploads locked, over its `am`, gone), so asking every 15 s would only spend round trips, and the
+         * timed recheck asks again. A fresh post keeps the short retry — its author's chunks are usually on their way.
+         */
+        @Suppress("LongParameterList") // the round trip's inputs, threaded once from the loop
+        private suspend fun exchangeAttachment(
+            conn: SpoolConnection,
+            scope: Scope,
+            ref: ScopeAttachments.Ref,
+            aHashBytes: ByteArray,
+            mine: Boolean,
+            fetchOnly: Boolean,
+            blobStore: ScopeBlobs,
+        ): Boolean? {
+            val aid = ScopeCrypto.attachmentId(scope.keys, scope.id, aHashBytes)
+            val presence = conn.ahave(scope.id, aid) ?: return null
+            if (mine) return pushAttachment(conn, scope, ref, aid, aHashBytes, presence, blobStore)
+            return fetchAttachment(conn, scope, ref, aid, presence, blobStore) ||
+                (fetchOnly && presence.total <= 0 && clock() - ref.sentAt > ABSENT_GRACE_MS)
+        }
+
+        /**
+         * The attachments other members' posts in the commons [conversationId] name and this device lacks, inside the
+         * room's pinned window (spec §7.4). A received post is never held, so they come from its rows rather than from
+         * a frame; one of [ours] (a hash both sides posted) stays ours, to push. [skip] (settled, quarantined) is left
+         * out in the read itself, so its limit counts only what this round could act on.
+         */
+        private suspend fun commonsTheirs(
+            scope: Scope,
+            conversationId: String,
+            ours: List<ScopeAttachments.Ref>,
+            skip: Set<String>,
+        ): List<ScopeAttachments.Ref> {
+            val store = commons ?: return emptyList()
+            val own = ours.mapTo(HashSet()) { it.aHash }
+            return store
+                .attachmentRefs(
+                    conversationId,
+                    selfId(),
+                    since = clock() - boundsFor(scope).ttlMs,
+                    skip = skip + own,
+                    limit = ATTACHMENT_SCAN_PER_ROUND,
+                ).filterNot { it.aHash in own }
         }
 
         /**
@@ -1964,15 +2084,23 @@ class ScopeSync(
          * - **Too large** (C-7.6-32): ours to push, over the chunks this connection's files ticket admits ([tooLargeFor]):
          *   no `ahave`, no `aput`, settled until a files ticket is accepted here. It locks nothing else.
          * - **Deferred**: the radios are still carrying an attachment we hold, so its push waits (§9.5).
+         * - **Landed**: someone else's commons attachment ([theirs]) that arrived since the room's rows were read — never
+         *   ours to push (C-7.4-6), and nothing left to fetch.
          */
+        @Suppress("LongParameterList") // the gates' inputs: the attachment, whose it is, and where it would go
         private suspend fun passLocally(
             conn: SpoolConnection,
             scope: Scope,
             ref: ScopeAttachments.Ref,
             mine: Boolean,
             blobStore: ScopeBlobs,
+            theirs: Boolean = false,
         ): LocalPass? =
             when {
+                mine && theirs -> {
+                    LocalPass.LANDED
+                }
+
                 !mine && blobStore.refused(ref.aHash) -> {
                     metrics.onSpoolAttachmentRefused()
                     settleAttachment(scope, ref.aHash)
@@ -2334,7 +2462,7 @@ class ScopeSync(
             scope: Scope,
             ref: ScopeAttachments.Ref,
             presence: SpoolReply.Presence,
-        ): Boolean = !scope.retiring && !presence.dead && ref.sentAt + scope.bounds.ttlMs > clock()
+        ): Boolean = !scope.retiring && !presence.dead && ref.sentAt + boundsFor(scope).ttlMs > clock()
 
         /**
          * Stores one sealed chunk: [ChunkPut.NEXT] when the next one is worth trying, [ChunkPut.STOP] when the rest of this
@@ -2406,6 +2534,10 @@ class ScopeSync(
             // Anchors are keyed by scope with no other bound, so a spool naming scopes we do not carry
             // would grow these maps without limit. We only ever asked about our own.
             val scope = scopes.firstOrNull { it.idHex == scopeHex } ?: return
+            if (answeredAsNoCommons(scope, digest)) {
+                markStale(scope)
+                return
+            }
             // A digest is the spool holding the scope, so it asks no stamp for it again until it sheds it.
             stampDemanded.remove(scopeHex)
             val value = ScopeCrypto.digestValue(digest.digest)
@@ -2455,6 +2587,12 @@ class ScopeSync(
             code: String,
             retryMs: Long?,
         ) {
+            // A creation gate is never asked for a commons (S-7.4-3): one asked for ours means the room is gone.
+            val commons = scopeHex?.let { hex -> scopes.firstOrNull { it.idHex == hex && it.commonsId != null } }
+            if (commons != null && (code == SpoolErrCode.POW || code == SpoolErrCode.QUOTA)) {
+                markStale(commons)
+                return
+            }
             if (scopeHex != null && code == SpoolErrCode.POW && demanded(scopeHex, stamped = scopeHex in stampedSubs)) return
             refused(code)
             if (scopeHex == null) return
@@ -2567,7 +2705,7 @@ class ScopeSync(
             if (post == null || !canCarry(opened.wire, opened.env)) return refuse(scope, idHex, source)
             unpark(scope.idHex, idHex)
             metrics.onSpoolPulled()
-            deliverCommons(opened.env, post.chat, conversationId, SPOOL_SOURCE_PREFIX + url)
+            deliverCommons(opened.env, post, conversationId, SPOOL_SOURCE_PREFIX + url)
             metrics.onSpoolBridged()
             onCommonsMember(conversationId, sender)
             // Never custodied, so never in `local`: accounted unconditionally, or the room never converges.
@@ -2872,6 +3010,16 @@ class ScopeSync(
 
         /** How long a settled attachment goes unasked-about before a timed round checks the spool still has it. */
         private const val ATTACHMENT_RECHECK_MS = 10 * 60_000L
+
+        /**
+         * How long after its post someone else's commons attachment the spool lacks keeps the short retry before it is
+         * left to [ATTACHMENT_RECHECK_MS]: an author pushes its post and its chunks in the same round, so a reader
+         * often asks first, and two minutes covers a slow upload without asking for a lost one all day.
+         */
+        private const val ABSENT_GRACE_MS = 2 * 60_000L
+
+        /** How far short of the HELLO's TTL a commons SUB declares its own: the probe [answeredAsNoCommons] reads. */
+        private const val PROBE_SHORTFALL_MS = 1L
         private const val MAX_RATE_WAIT_MS = 5_000L
 
         /** How long a scope the spool refused (`quota`, `pow`) waits before it is SUBbed again — the floor and the cap. */

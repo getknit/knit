@@ -90,6 +90,7 @@ import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
@@ -302,6 +303,8 @@ fun ChatScreen(
     onOpenProfile: (nodeId: String) -> Unit,
     onOpenGroupDetails: (conversationId: String) -> Unit,
     onOpenMessageDetails: (messageId: String) -> Unit,
+    // A commons' room details (its members, its relay, Leave); defaulted for every caller that opens no commons.
+    onOpenCommonsDetails: (conversationId: String) -> Unit = {},
     // The message a search hit opened the thread on, or null to open at the newest — see ChatScreenContent.
     jumpToMessageId: String? = null,
     viewModel: ChatViewModel = koinViewModel { parametersOf(conversationId) },
@@ -551,6 +554,7 @@ fun ChatScreen(
         onOpenProfile = onOpenProfile,
         onOpenGroupDetails = onOpenGroupDetails,
         onOpenMessageDetails = onOpenMessageDetails,
+        onOpenCommonsDetails = onOpenCommonsDetails,
         onSend = {
             val text = inputState.text.toString()
             val applied = mentionsStillIn(text, pendingMentions)
@@ -750,6 +754,8 @@ internal fun ChatScreenContent(
     // Opens a message's details screen from its long-press menu. Defaulted so previews and the
     // content-level tests can leave it out.
     onOpenMessageDetails: (messageId: String) -> Unit = {},
+    // Opens a commons' room details, from its header or its overflow. Defaulted likewise.
+    onOpenCommonsDetails: (conversationId: String) -> Unit = {},
     onSend: () -> Unit,
     // The bridged room's first-use disclosure. Raised by the ViewModel when a post is attempted before it
     // has been accepted, so the draft the user already wrote is what gets sent once they accept.
@@ -1044,8 +1050,18 @@ internal fun ChatScreenContent(
                         state.isCommons -> {
                             // A commons: the room glyph, the relay's name for it, and a subtitle saying what it
                             // is. Its members are pinned peers, so every bubble below carries a real name and
-                            // avatar — but the header stays a room's: it is nobody's thread in particular.
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            // avatar — but the header stays a room's: it is nobody's thread in particular. Tapping it
+                            // opens the room's details, as a group's avatar does.
+                            Row(
+                                modifier =
+                                    Modifier
+                                        .clickable(
+                                            onClickLabel = stringResource(R.string.commons_details_title),
+                                            role = Role.Button,
+                                        ) { onOpenCommonsDetails(conversationId) }
+                                        .testTag("chat_commons_header"),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 RoomAvatar(size = 36.dp)
                                 Spacer(Modifier.width(10.dp))
                                 Column(modifier = Modifier.weight(1f, fill = false)) {
@@ -1151,10 +1167,9 @@ internal fun ChatScreenContent(
                     // the field keeps to the mic and the paperclip and a position is a deliberate reach, not a
                     // thumb-slip away from the keyboard. Then a DM offers Block/Unblock; a group offers Settings,
                     // which opens the same group-details screen as tapping the group avatar (the avatar tap
-                    // stays too). The bridged room and the commons have no menu at all: neither carries a
-                    // position (a text-only channel, and a text-only room), and the bridged one has no peer to
-                    // block — its authors are not peers, and blocking the gateway would silence a contact over
-                    // somebody else's post.
+                    // stays too); a commons offers its room details the same way. The bridged room has no menu at
+                    // all: it carries no position (a text-only channel), and it has no peer to block — its authors
+                    // are not peers, and blocking the gateway would silence a contact over somebody else's post.
                     // The call this chat puts first sits in the bar and the other in the overflow (§3.11): the live one
                     // while a live path looks possible, the mesh one while none does — or always, while the person
                     // prefers mesh calls or in a build that takes mesh calls only.
@@ -1167,7 +1182,7 @@ internal fun ChatScreenContent(
                             CallButton(callGate, Icons.Filled.Call, R.string.chat_call, "chat_call", onStartCall)
                         }
                     }
-                    if (!state.isBridged && !state.isCommons) {
+                    if (!state.isBridged) {
                         Box {
                             IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(48.dp)) {
                                 Icon(
@@ -1194,7 +1209,17 @@ internal fun ChatScreenContent(
                                     )
                                 }
                                 // The room's menu ends there: nobody to block, nothing to configure.
-                                if (state.isGroup) {
+                                if (state.isCommons) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.commons_details_title)) },
+                                        leadingIcon = { Icon(Icons.Outlined.Info, contentDescription = null) },
+                                        modifier = Modifier.testTag("chat_commons_details"),
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            onOpenCommonsDetails(conversationId)
+                                        },
+                                    )
+                                } else if (state.isGroup) {
                                     DropdownMenuItem(
                                         text = { Text(stringResource(R.string.chat_group_settings)) },
                                         leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
@@ -1296,8 +1321,7 @@ internal fun ChatScreenContent(
                         // one, and the room floods unencrypted to everyone in range. See docs/CONTENT_MODERATION.md §7.
                         fileEnabled = state.canSendFile,
                         // The staged position's tile. The offer itself lives in the top bar's overflow, which is
-                        // absent from the bridged room (a channel of one line of text) and the commons (text-only
-                        // in this revision), so no tile can be staged there.
+                        // absent from the bridged room (a channel of one line of text), so no tile can be staged there.
                         locationScopeIsRoom = state.isRoom,
                         stagedLocation = stagedLocation,
                         onClearLocation = onClearLocation,
@@ -1342,8 +1366,8 @@ internal fun ChatScreenContent(
                         // Voice notes are DM/group only: the Nearby room floods unencrypted to everyone in range and
                         // no on-device model can screen speech, so it is the one place unscreenable audio is not
                         // offered. See docs/CONTENT_MODERATION.md.
-                        attachEnabled = !state.isBridged && !state.isCommons,
-                        voiceEnabled = !state.isRoom && !state.isBridged && !state.isCommons,
+                        attachEnabled = !state.isBridged && !state.commonsTextOnly,
+                        voiceEnabled = !state.isRoom && !state.isBridged && !state.commonsTextOnly,
                         voiceRecording = voiceRecording,
                         voicePlayback = voicePlayback,
                         onStartVoice = onStartVoice,
@@ -1378,6 +1402,7 @@ internal fun ChatScreenContent(
                         onClick = { showMeshInfo = true },
                     )
                 }
+                if (state.commonsStale) CommonsStaleNotice(onClick = { onOpenCommonsDetails(conversationId) })
             }
             // Cold open: the state is a five-way combine, and its Room arm reads the *whole* thread and folds
             // every row before it first emits. On a conversation with a lot of history that gap is long
@@ -1498,6 +1523,9 @@ internal fun ChatScreenContent(
                                         onDownloadAttachment = onDownloadAttachment,
                                         onOpenProfile = onOpenProfile,
                                         onReact = onReact,
+                                        // The Meshtastic room has no tapback form, so it offers no emoji row and a tap can
+                                        // never fall through to the radios' cleartext flood.
+                                        canReact = !state.isBridged,
                                         quickReactions = quickReactions,
                                         onMoreReactions = { emojiSheetFor = it },
                                         onReply = { msg ->
@@ -1867,6 +1895,34 @@ private fun RelayNotice(
 }
 
 /**
+ * The standing statement that this commons' relay no longer runs it: the operator minted a new invite, so nothing
+ * will arrive here again until the user applies the new one. Pinned under the header like [RelayNotice] and in the
+ * error container, because unlike every relay state it never clears itself. Tapping it opens the room's details,
+ * where Leave is.
+ */
+@Composable
+private fun CommonsStaleNotice(onClick: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        modifier = Modifier.fillMaxWidth().testTag("chat_commons_stale"),
+    ) {
+        Row(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onClick, role = Role.Button)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(imageVector = Icons.Filled.LinkOff, contentDescription = null, modifier = Modifier.size(16.dp))
+            Text(text = stringResource(R.string.commons_stale), style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+/**
  * The standing statement that this DM's peer is reachable over the LoRa board alone — or, in the room,
  * that the board's airtime window is spent while somebody is behind it. Pinned under the header beside the
  * relay notice; renders nothing for [LoraReach.Silent]. The same `surfaceVariant` tint as [RelayNotice],
@@ -2205,6 +2261,9 @@ private fun MessageBubble(
     onDownloadAttachment: (hash: String) -> Unit = {},
     onOpenProfile: (nodeId: String) -> Unit,
     onReact: (messageId: String, emoji: String) -> Unit,
+    // False where the thread carries no reaction (the long-press menu keeps its actions, minus the emoji row);
+    // defaulted for previews.
+    canReact: Boolean = true,
     // The long-press menu's quick-reaction row and its "+" (opens the full picker); defaulted for previews.
     quickReactions: List<String> = RecentReactions.DEFAULTS,
     onMoreReactions: (messageId: String) -> Unit = {},
@@ -2714,6 +2773,7 @@ private fun MessageBubble(
                 if (showPicker) {
                     ReactionPicker(
                         quickReactions = quickReactions,
+                        canReact = canReact,
                         onPick = { emoji ->
                             onReact(row.id, emoji)
                             showPicker = false
@@ -2786,7 +2846,7 @@ private fun MessageBubble(
                 // height, so the next message moves up too (no dead gap left behind).
                 ReactionRow(
                     reactions = row.reactions,
-                    onToggle = { emoji -> onReact(row.id, emoji) },
+                    onToggle = { emoji -> if (canReact) onReact(row.id, emoji) },
                     modifier = Modifier.overlapTop(REACTION_OVERLAP),
                 )
             }
@@ -2907,6 +2967,8 @@ private fun ReactionPicker(
     onDelete: () -> Unit,
     onBlock: (() -> Unit)?,
     onDismiss: () -> Unit,
+    // False drops the emoji row (and its divider), leaving the actions: a thread that carries no reaction.
+    canReact: Boolean = true,
 ) {
     val spacingPx = with(LocalDensity.current) { 8.dp.roundToPx() }
     // 48 dp cells with 4 dp gaps inside 8 dp side padding, plus the "+" cell: six recents need 376 dp, past
@@ -2950,31 +3012,33 @@ private fun ReactionPicker(
         ) {
             // Size the menu to the emoji row's width so the divider/copy row span it, not the screen.
             Column(modifier = Modifier.width(IntrinsicSize.Max)) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    quickReactions.take(shown).forEach { emoji ->
-                        val reactWith = stringResource(R.string.chat_react_with, emoji)
-                        Text(
-                            text = emoji,
-                            style = MaterialTheme.typography.headlineSmall,
-                            modifier =
-                                Modifier
-                                    .clip(CircleShape)
-                                    .clickable(role = Role.Button, onClick = { onPick(emoji) })
-                                    .minimumInteractiveComponentSize()
-                                    .semantics { contentDescription = reactWith }
-                                    .padding(8.dp),
-                        )
+                if (canReact) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        quickReactions.take(shown).forEach { emoji ->
+                            val reactWith = stringResource(R.string.chat_react_with, emoji)
+                            Text(
+                                text = emoji,
+                                style = MaterialTheme.typography.headlineSmall,
+                                modifier =
+                                    Modifier
+                                        .clip(CircleShape)
+                                        .clickable(role = Role.Button, onClick = { onPick(emoji) })
+                                        .minimumInteractiveComponentSize()
+                                        .semantics { contentDescription = reactWith }
+                                        .padding(8.dp),
+                            )
+                        }
+                        IconButton(onClick = onMore, modifier = Modifier.testTag("chat_react_more")) {
+                            Icon(Icons.Outlined.AddReaction, contentDescription = stringResource(R.string.chat_react_more))
+                        }
                     }
-                    IconButton(onClick = onMore, modifier = Modifier.testTag("chat_react_more")) {
-                        Icon(Icons.Outlined.AddReaction, contentDescription = stringResource(R.string.chat_react_more))
-                    }
+                    // Delete is always offered, so an emoji row always has actions below it to divide from.
+                    HorizontalDivider()
                 }
-                // Delete is always offered, so the divider below the emoji row always shows.
-                HorizontalDivider()
                 // Reply leads the action list (Signal-style: it's the primary action).
                 PickerAction(
                     icon = Icons.AutoMirrored.Filled.Reply,

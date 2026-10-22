@@ -70,6 +70,7 @@ import app.getknit.knit.mesh.spool.CommonsRoom
 import app.getknit.knit.mesh.spool.CommonsRoots
 import app.getknit.knit.mesh.spool.CommonsStore
 import app.getknit.knit.mesh.spool.GroupRootStore
+import app.getknit.knit.mesh.spool.ScopeFrames
 import app.getknit.knit.mesh.spool.hex
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.moderation.ScopedTextModerator
@@ -374,6 +375,7 @@ class MeshManagerTest {
         val secret: ByteArray,
     ) : CommonsStore {
         val posted = mutableListOf<Triple<MessageEntity, ByteArray, ByteArray>>()
+        val reacted = mutableListOf<Pair<String, CarriedFrame>>()
         val members = mutableListOf<Pair<String, String>>()
         var swept: Long? = null
 
@@ -390,6 +392,17 @@ class MeshManagerTest {
             signed: ByteArray,
         ) {
             posted += Triple(row, sig, signed)
+        }
+
+        override suspend fun postReaction(
+            conversationId: String,
+            messageId: String,
+            frameId: String,
+            sentAt: Long,
+            sig: ByteArray,
+            signed: ByteArray,
+        ) {
+            reacted += messageId to CarriedFrame(envelope = WireCodec.decodeEnvelope(signed)!!, sig = sig, signed = signed)
         }
 
         override suspend fun recordMember(
@@ -864,8 +877,10 @@ class MeshManagerTest {
             assertEquals(row.id, env.id)
             val post = checkNotNull(WireCodec.decodePayload<CommonsPost>(env.payload))
             assertArrayEquals(ScopeCrypto.commonsScopeId(roomSecret), post.scope)
-            assertEquals("dinner at 7?", post.chat.body)
-            assertNull(post.chat.enc)
+            val chat = checkNotNull(post.chat)
+            assertEquals("dinner at 7?", chat.body)
+            assertNull(chat.enc)
+            assertNull(post.reaction)
             // Spool only: nothing originated, nothing custodied, and the row went through the commons store.
             assertTrue(rig.transport.sent.isEmpty())
             assertTrue(rig.transport.fastFanouts.isEmpty())
@@ -889,6 +904,111 @@ class MeshManagerTest {
             assertEquals(listOf("something vile"), store.posted.map { it.first.body })
             assertTrue(rig.transport.sent.isEmpty())
             coVerify(exactly = 0) { rig.textModeration.classify(any(), any()) }
+        }
+
+    @Test
+    fun aCommonsAttachmentIsSealedToItsOwnKeyWithItsTypeAndNameAndNeverLeavesForTheRadios() =
+        runTest(UnconfinedTestDispatcher()) {
+            val store = FakeCommonsStore(roomId, roomSecret)
+            val rig = Rig(backgroundScope, commons = store)
+            val plainHash = "ab".repeat(32)
+            coEvery { rig.blobs.bytes(plainHash) } returns "raw-pdf-bytes".toByteArray()
+            val file = AttachmentStore.Ingested(hash = plainHash, mime = "application/pdf", name = "menu.pdf", sizeBytes = 3_000_000)
+
+            assertTrue(rig.manager.sendCommons(roomId, "menu", emptyList(), null, file))
+            advanceUntilIdle()
+
+            val (row, _, signed) = store.posted.single()
+            val chat = checkNotNull(WireCodec.decodePayload<CommonsPost>(checkNotNull(WireCodec.decodeEnvelope(signed)).payload)?.chat)
+            // The blob is the ciphertext under a fresh key: its address names nothing a holder of the PDF could compute.
+            val ctHash = checkNotNull(chat.attachmentHash)
+            assertNotEquals(plainHash, ctHash)
+            coVerify { rig.blobs.insert(ctHash, "application/pdf", any()) }
+            assertEquals(ctHash, row.attachmentHash)
+            assertEquals(plainHash, row.attachmentPlainHash)
+            assertEquals(checkNotNull(chat.attachmentKey), row.attachmentKey)
+            assertEquals("application/pdf", chat.attachmentMime)
+            assertEquals("menu.pdf", chat.attachmentName)
+            assertEquals("menu.pdf", row.attachmentName)
+            assertEquals(3_000_000L, chat.attachmentSize)
+            assertNull(chat.enc)
+            assertTrue(rig.transport.sent.isEmpty())
+            assertTrue(rig.forwardStore.frames().isEmpty())
+        }
+
+    @Test
+    fun aRoomPictureReusedInACommonsIsSealedFreshNeverPostedUnderItsPlaintextAddress() =
+        runTest(UnconfinedTestDispatcher()) {
+            // ADR 2026-10.mptm hands a picture this phone holds from the Nearby room its key-less identity; the room's
+            // post must not name that (ADR 2026-10.xhfr), and one with no key would be refused by every member, us too.
+            val store = FakeCommonsStore(roomId, roomSecret)
+            val rig = Rig(backgroundScope, commons = store)
+            val plainHash = "cd".repeat(32)
+            coEvery { rig.blobs.exists(plainHash) } returns true
+            coEvery { rig.blobs.bytes(plainHash) } returns "raw-image-bytes".toByteArray()
+            val held = AttachmentIdentities.Held(hash = plainHash, key = null, mime = "image/jpeg", animated = false, plainHash = plainHash)
+            val photo = AttachmentStore.Ingested(hash = plainHash, mime = "image/jpeg", reuse = held)
+
+            assertTrue(rig.manager.sendCommons(roomId, "look", emptyList(), null, photo))
+            advanceUntilIdle()
+
+            val frame = checkNotNull(WireCodec.decodeEnvelope(store.posted.single().third))
+            val chat = checkNotNull(WireCodec.decodePayload<CommonsPost>(frame.payload)?.chat)
+            assertNotEquals(plainHash, chat.attachmentHash)
+            assertNotNull(chat.attachmentKey)
+            assertTrue(ScopeFrames.pushableToCommons(frame, rig.me.nodeId, ScopeCrypto.commonsScopeId(roomSecret)))
+        }
+
+    @Test
+    fun aCommonsReactionIsPostedIntoTheRoomSignedAndNeverTakesTheMeshPath() =
+        runTest(UnconfinedTestDispatcher()) {
+            val store = FakeCommonsStore(roomId, roomSecret)
+            val rig = Rig(backgroundScope, commons = store)
+            val target = FrameId.new()
+
+            assertTrue(rig.manager.sendCommonsReaction(roomId, target, "👍"))
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { rig.reactions.apply(ReactionEntity(target, rig.me.nodeId, "👍", rig.now)) }
+            val (messageId, frame) = store.reacted.single()
+            assertEquals(target, messageId)
+            assertTrue(MessageCrypto.verify(rig.me.bundle, frame.sig, frame.signed))
+            assertEquals(FrameType.COMMONS, frame.envelope.type)
+            val post = checkNotNull(WireCodec.decodePayload<CommonsPost>(frame.envelope.payload))
+            assertArrayEquals(ScopeCrypto.commonsScopeId(roomSecret), post.scope)
+            assertNull(post.chat)
+            assertEquals(ReactionContent(target, "👍"), post.reaction)
+            assertTrue(ScopeFrames.pushableToCommons(frame.envelope, rig.me.nodeId, ScopeCrypto.commonsScopeId(roomSecret)))
+            // Neither the sealed nor the cleartext form, and nothing for the radios or custody.
+            assertTrue(rig.transport.sent.isEmpty())
+            assertTrue(rig.sentReactionFrames().isEmpty())
+            assertTrue(rig.forwardStore.frames().isEmpty())
+            assertTrue(store.posted.isEmpty())
+        }
+
+    @Test
+    fun aCommonsReactionOnTheEmojiAlreadyChosenRetractsAndARoomThisDeviceIsNotInRefusesIt() =
+        runTest(UnconfinedTestDispatcher()) {
+            val store = FakeCommonsStore(roomId, roomSecret)
+            val rig = Rig(backgroundScope, commons = store)
+            val target = FrameId.new()
+            coEvery { rig.reactions.currentEmoji(target, rig.me.nodeId) } returns "👍"
+
+            assertTrue(rig.manager.sendCommonsReaction(roomId, target, "👍"))
+            assertFalse(rig.manager.sendCommonsReaction(Conversations.commonsIdFor("ff".repeat(32)), target, "👍"))
+            assertFalse(rig.manager.sendCommonsReaction(roomId, target, "👍".repeat(17)))
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { rig.reactions.apply(ReactionEntity(target, rig.me.nodeId, null, rig.now)) }
+            val post =
+                checkNotNull(
+                    WireCodec.decodePayload<CommonsPost>(
+                        store.reacted
+                            .single()
+                            .second.envelope.payload,
+                    ),
+                )
+            assertEquals(ReactionContent(target, null), post.reaction)
         }
 
     @Test
@@ -2884,6 +3004,23 @@ class MeshManagerTest {
             assertTrue(rig.sentChatFrames().isEmpty())
             assertTrue(rig.sentReactionFrames().isEmpty())
             assertEquals(0L, rig.metrics.seals().reactionsSealed)
+            assertEquals(0L, rig.metrics.seals().reactionsSealedFallback)
+        }
+
+    @Test
+    fun aReactionAddressedToARoomIdIsRefusedBeforeItTouchesTheRowOrTheWire() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A room id is no peer: nothing to seal for, so it used to reach the cleartext flood and name a commons
+            // message (or a Meshtastic room post) to every node in range.
+            val rig = Rig(backgroundScope)
+
+            rig.manager.sendReaction("m1", "👍", recipientId = Conversations.COMMONS_PREFIX + "ab".repeat(32))
+            rig.manager.sendReaction("m2", "👍", recipientId = Conversations.MESHTASTIC)
+            advanceUntilIdle()
+
+            coVerify(exactly = 0) { rig.reactions.apply(any()) }
+            assertTrue(rig.sentChatFrames().isEmpty())
+            assertTrue(rig.sentReactionFrames().isEmpty())
             assertEquals(0L, rig.metrics.seals().reactionsSealedFallback)
         }
 

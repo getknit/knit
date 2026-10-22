@@ -13,6 +13,7 @@ import app.getknit.knit.mesh.protocol.GroupLeaveContent
 import app.getknit.knit.mesh.protocol.GroupRatchetHeader
 import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.RatchetHeader
+import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireCodec
 import kotlinx.coroutines.channels.Channel
@@ -55,6 +56,10 @@ class FakeSpool(
     // The commons this spool runs (§7.4): its scope id and what the HELLO advertises about it. Null = no
     // commons, the HELLO omits the field, and a SUB for one is an ordinary unknown scope.
     private val commons: Pair<ByteArray, SpoolCommonsInfo>? = null,
+    // The daemon's store rule for an ordinary scope: a SUB's declared bounds are applied (last writer wins) and
+    // echoed in its DIGEST. Off by default, where the DIGEST carries this spool's fixed defaults; a commons always
+    // answers with its pinned bounds whatever the SUB declared (S-7.4-2).
+    private val echoesDeclaredBounds: Boolean = false,
     // The spool-wide scope cap the HELLO advertises, and — separately — the count past which a SUB for a
     // scope not yet held is refused `quota` (null = never), the way the daemon's store enforces it.
     private val maxScopes: Int = 64,
@@ -104,6 +109,9 @@ class FakeSpool(
     }
 
     private val scopes = ConcurrentHashMap<String, ScopeState>()
+
+    // What the latest SUB for each scope declared ([echoesDeclaredBounds]).
+    private val declaredBounds = ConcurrentHashMap<String, ScopeBounds>()
     private val sockets = mutableListOf<FakeSocket>()
 
     /** Every PUSH the spool accepted, in order — the outbound-side assertion hook. */
@@ -300,6 +308,7 @@ class FakeSpool(
                     )
                 }?.second
                 ?.let { ScopeBounds(maxFrames = it.maxFrames, ttlMs = it.ttlMs, maxBlob = it.maxBlob) }
+                ?: declaredBounds[scopeHex]?.takeIf { echoesDeclaredBounds }
                 ?: ScopeBounds(maxFrames = maxFrames, ttlMs = ScopeRegistry.DEFAULT_TTL_MS, maxBlob = maxBlob)
         return SpoolDigest(
             t = SpoolRecordType.DIGEST,
@@ -600,6 +609,7 @@ class FakeSpool(
                     return@forEach
                 }
                 entry.pow?.let { stamps[scopeHex] = it }
+                declaredBounds[scopeHex] = entry.bounds
                 // Check-and-park under the spool's monitor: `handle` runs every record inside synchronized(this@FakeSpool),
                 // the monitor [holdSubscriptions] and [releaseSubscriptions] take, so a release cannot slip between them.
                 if (scopeHex in heldSubScopes) {
@@ -1144,6 +1154,10 @@ fun commonsFrame(
     scope: ByteArray,
     sentAt: Long = 1_000L,
     body: String = "hello room",
+    // An attachment the post names, with its type and its own key beside it (§7.4).
+    attachmentHash: String? = null,
+    attachmentMime: String? = attachmentHash?.let { "image/webp" },
+    attachmentKey: String? = attachmentHash?.let { "a2V5" },
 ): CarriedFrame =
     carried(
         id,
@@ -1152,7 +1166,39 @@ fun commonsFrame(
             id = id,
             senderId = from,
             sentAt = sentAt,
-            payload = WireCodec.encodePayload(CommonsPost(scope = scope, chat = ChatContent(body = body))),
+            payload =
+                WireCodec.encodePayload(
+                    CommonsPost(
+                        scope = scope,
+                        chat =
+                            ChatContent(
+                                body = body,
+                                attachmentHash = attachmentHash,
+                                attachmentMime = attachmentMime,
+                                attachmentKey = attachmentKey,
+                            ),
+                    ),
+                ),
+        ),
+    )
+
+/** A member's reaction in a commons (C-7.4-13): a `commons` frame carrying a [ReactionContent] in place of a chat. */
+fun commonsReactionFrame(
+    id: String,
+    from: String,
+    scope: ByteArray,
+    messageId: String,
+    emoji: String?,
+    sentAt: Long = 1_000L,
+): CarriedFrame =
+    carried(
+        id,
+        RelayEnvelope(
+            type = FrameType.COMMONS,
+            id = id,
+            senderId = from,
+            sentAt = sentAt,
+            payload = WireCodec.encodePayload(CommonsPost(scope = scope, reaction = ReactionContent(messageId, emoji))),
         ),
     )
 

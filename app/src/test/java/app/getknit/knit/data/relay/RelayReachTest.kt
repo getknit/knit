@@ -4,6 +4,7 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.spool.ScopeStatus
+import app.getknit.knit.mesh.spool.SpoolCommonsInfo
 import app.getknit.knit.mesh.spool.SpoolStatus
 import app.getknit.knit.ui.peer
 import org.junit.Assert.assertEquals
@@ -166,6 +167,39 @@ class RelayReachTest {
         assertEquals(RelayReach.Covered, reachFor(room, covered.copy(coveredLabels = setOf(room))))
         assertEquals(RelayReach.Silent, reachFor(room, covered))
         assertEquals(RelayReach.Silent, reachFor(room, covered.copy(connected = 0)))
+    }
+
+    @Test
+    fun `a commons whose relay takes no attachments for it is text-only, and one whose relay does is not`() {
+        // S-7.4-5: the commons' own `attach`, not the relay's support for every other scope, decides.
+        val room = Conversations.commonsIdFor("cd".repeat(32))
+        val scope =
+            ScopeStatus(room.removePrefix(Conversations.COMMONS_PREFIX), room, 0, 0, converged = true, invalidCount = 0, retiring = false)
+        val dm = dmScope("dm")
+
+        fun relay(commons: SpoolCommonsInfo?) =
+            SpoolStatus(
+                url = "wss://relay.test/spool/v1",
+                connected = true,
+                powBits = 0,
+                lastError = null,
+                scopes = listOf(scope, dm),
+                maxAttachBytes = 16 * 1024 * 1024,
+                commons = commons,
+            )
+        val info = SpoolCommonsInfo(maxFrames = 500, ttlMs = 86_400_000L, maxBlob = 65_536)
+        assertEquals(setOf(room), textOnlyRoomsOf(listOf(relay(info))))
+        assertEquals(
+            emptySet<String>(),
+            textOnlyRoomsOf(listOf(relay(SpoolCommonsInfo(maxFrames = 500, ttlMs = 86_400_000L, maxBlob = 65_536, attach = true)))),
+        )
+
+        val textOnly = covered.copy(coveredLabels = setOf(room, "peer-a"), textOnlyRooms = setOf(room))
+        assertEquals(AttachmentRelay.Unsupported, attachmentReach(room, 1_000, textOnly))
+        assertEquals(AttachmentWait.RelayFramesOnly, attachmentWait(room, textOnly))
+        // A DM on the same relay still relays its photos.
+        assertEquals(AttachmentRelay.Relayable, attachmentReach("peer-a", 1_000, textOnly))
+        assertEquals(AttachmentRelay.Relayable, attachmentReach(room, 1_000, textOnly.copy(textOnlyRooms = emptySet())))
     }
 
     @Test

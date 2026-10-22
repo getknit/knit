@@ -135,8 +135,9 @@ identical bytes are scanned once across send/receive):
   out to carry an image signature (§7). `ChatViewModel` asks only in the Nearby room (`screen = isRoom`):
   - **Public Nearby broadcast room — hard-blocked (no confirmation bypass):** the flag drops the image
     with a toast and GCs the blob, because it broadcasts to everyone in range.
-  - **DMs / groups — not screened** (ADR 2026-10.9rh6; until then a "send anyway?" dialog). Every
-    recipient screens the picture on arrival and blurs it behind its own toggle.
+  - **DMs / groups / the commons — not screened** (ADR 2026-10.9rh6; until then a "send anyway?" dialog). Every
+    recipient screens the picture on arrival and blurs it behind its own toggle — a commons attachment, keyed like a
+    group's (ADR 2026-10.xhfr), is screened after it is decrypted, exactly as one from a group is.
 
   A clean image stages immediately. The room's check always runs (it is not gated by the toggle).
 - **Inbound (flag-on-receive):** `MeshBlobStore.ingest()` → `ImageScreeningService.screenImage()`

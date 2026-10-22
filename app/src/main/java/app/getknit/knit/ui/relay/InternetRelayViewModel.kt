@@ -110,6 +110,8 @@ sealed interface RelayUploads {
 data class RelayCommons(
     val name: String?,
     val joinedId: String?,
+    // The room joined here is not the one this relay runs (`SpoolStatus.staleCommons`): its invite was replaced.
+    val stale: Boolean = false,
 )
 
 /**
@@ -302,7 +304,15 @@ class InternetRelayViewModel(
                             // than no line, so a store-less build (`BuildConfig.COMMONS` off) shows no room.
                             commons =
                                 if (commons != null) {
-                                    live?.commons?.let { RelayCommons(name = it.name, joinedId = joinedByUrl[url]?.conversationId) }
+                                    live?.commons?.let {
+                                        val joined = joinedByUrl[url]?.conversationId
+                                        RelayCommons(
+                                            name = it.name,
+                                            joinedId = joined,
+                                            stale =
+                                                joined != null && joined in live.staleCommons,
+                                        )
+                                    }
                                 } else {
                                     null
                                 },

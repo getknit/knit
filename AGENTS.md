@@ -583,15 +583,24 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   sheet (host named, cost stated, the master switch's disclosure folded in), by the one applier both doors
   share — `acceptSpoolConsent()` stays the only consent write (ADR 063), a relay is matched by
   `SpoolUrl.redact`, and a different room secret at the same relay is a rotation.
-- **When touching `data/commons/`, `mesh/spool/Commons*`, `ConversationKind.COMMONS`, or the relay row's
+- **When touching `data/commons/`, `mesh/spool/Commons*`, `ConversationKind.COMMONS`, `ui/commons/`, or the relay row's
   Join/Leave:** READ ADR 2026-09.wx8e and `docs/SPOOL_PROTOCOL.md` §7.4. The commons is a private relay's
   group chat: members' `profile` frames pin them through the ordinary door and make them accepted contacts,
   posts are a non-custodial `commons` frame that lives on the one spool that runs the room and never touches
-  the radios (`ScopeSync`'s second door, `InboundPipeline.deliverCommonsPost`), and a post ahead of its
+  the radios (`ScopeSync`'s second door, `InboundPipeline.deliverCommons`), and a post ahead of its
   author's profile is parked, never quarantined. `Conversations.isPublicRoom` is true for it on purpose.
+  **Before touching a commons reaction (`CommonsPost.reaction`, `sendCommonsReaction`, `applyCommonsReaction`,
+  `CommonsStore.postReaction`), a commons attachment (`ChatContent.attachmentKey` / `attachmentName`,
+  `CommonsStore.attachmentRefs`, `MessageDao.commonsAttachmentsMissing`, the commons arm of
+  `ScopeSync.healAttachments`, `RelayFacts.textOnlyRooms`) or the rotated-invite probe (`ScopeSync.markStale`,
+  `SpoolStatus.staleCommons`, `RelayFacts.staleRooms`):** READ ADR 2026-10.xhfr. A reaction rides the room and never
+  `sendReaction` (its fallback flooded a private room's message in cleartext); an attachment is keyed like a group's,
+  pushed only by its author and fetched only through the scope, so no radio path — a want, a tap, a fetch row — may
+  treat a `c-` row like a Nearby one; and a commons SUB declares a TTL one millisecond short on purpose.
   **Hidden in shipped builds** behind `BuildConfig.COMMONS` (on in debug, off in release, `-Pcommons=`
-  overrides): the one seam is the `CommonsStore` the DI hands `MeshManager` and `InternetRelayViewModel`,
-  null while dark — don't add a second gate downstream of it; flip the release default when it is introduced.
+  overrides): the one seam is the `CommonsStore` the DI hands `MeshManager`, `InternetRelayViewModel` and
+  `CommonsDetailsViewModel`, null while dark — don't add a second gate downstream of it; flip the release default
+  when it is introduced.
 - **When touching `mesh/crypto/scope/`, `mesh/spool/`, or the spool/internet-relay plane:** READ
   `docs/SPOOL_PROTOCOL.md` (the normative public spec; its §13 vectors are pinned by
   `ScopeVectorTest`/`SpoolRecordsTest` — change them only together), then the `ScopeSync` invariants in

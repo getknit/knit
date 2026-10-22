@@ -4,6 +4,7 @@ import app.getknit.knit.mesh.CarriedFrame
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.isValidBlobHash
 import app.getknit.knit.mesh.protocol.ChatContent
+import app.getknit.knit.mesh.protocol.CommonsPost
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.sha256Hex
@@ -114,6 +115,8 @@ object ScopeAttachments {
      *   hint for an older peer's frame — since ADR 035 a sealed frame sets the hash and nothing else.
      * - **`groupupdate`** — `GroupInfo.photoHash`, the group's own picture. A groupupdate is already
      *   scope-eligible (§4.4), so its photo is legitimately scope content; only the bytes were missing.
+     * - **`commons`** — the post's `ChatContent.attachmentHash` and its type, cleartext inside the room's seal
+     *   (§7.4). The frames a commons round reads are our own outbox, so this is only ever an attachment to push.
      *
      * `groupleave` names no image, and everything else fails the frame-set rule first.
      */
@@ -132,6 +135,8 @@ object ScopeAttachments {
                 // photo is JPEG like an avatar, and the fetcher's local lookup plus fallback cover it either
                 // way.
                 FrameType.GROUP_UPDATE -> env.group?.photoHash to null
+
+                FrameType.COMMONS -> WireCodec.decodePayload<CommonsPost>(env.payload)?.chat?.let { it.attachmentHash to it.attachmentMime }
 
                 else -> null
             } ?: return null

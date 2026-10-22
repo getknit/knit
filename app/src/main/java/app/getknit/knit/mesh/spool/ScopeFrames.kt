@@ -1,6 +1,8 @@
 package app.getknit.knit.mesh.spool
 
+import app.getknit.knit.isValidReactionEmoji
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
+import app.getknit.knit.mesh.isValidBlobHash
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.CommonsPost
 import app.getknit.knit.mesh.protocol.EncEnvelope
@@ -157,12 +159,15 @@ object ScopeFrames {
      *   everyone this device ever met.
      * - `type = commons` — a [CommonsPost] naming *this* scope, addressed to nobody, in the clear inside
      *   the room's seal (every member shares the key; `enc` set is a frame from nowhere). The scope check
-     *   is what stops a member of two rooms re-sealing one room's signed post into the other.
+     *   is what stops a member of two rooms re-sealing one room's signed post into the other. It carries
+     *   exactly one content ([commonsContentOk]): a chat, whose attachment names its type and its key, or a
+     *   reaction to a post by a canonical id.
      *
      * Nothing else: no receipts (N of them per post would evict the posts out of a 500-frame room — a post's
-     * tick takes the group's route, a sealed DM to the author in the pair's own scope), no
-     * reactions, no DM-form chat — a pair's DM has its own scope. The in-direction asymmetry on `profile`
-     * is deliberate and is the one place [eligibleFor] is not the same rule both ways.
+     * tick takes the group's route, a sealed DM to the author in the pair's own scope), no DM-form chat — a
+     * pair's DM has its own scope. A reaction is a person's act, like a post, so it costs the room what a post
+     * does. The in-direction asymmetry on `profile` is deliberate and is the one place [eligibleFor] is not
+     * the same rule both ways.
      */
     fun eligibleForCommons(
         env: RelayEnvelope,
@@ -179,13 +184,39 @@ object ScopeFrames {
 
             env.type == FrameType.COMMONS -> {
                 val post = WireCodec.decodePayload<CommonsPost>(env.payload)
-                post != null && post.scope.contentEquals(scopeId) && post.chat.enc == null && post.chat.attachmentHash == null
+                post != null && post.scope.contentEquals(scopeId) && commonsContentOk(post)
             }
 
             else -> {
                 false
             }
         }
+
+    /**
+     * A commons post's content shape: exactly one of chat and reaction. A chat is cleartext (`enc` null) and an
+     * attachment it names is a well-formed address with its type and its key beside it: there is no sealed content
+     * to carry them, and a key-less blob's address would be its plaintext's, which anyone holding the same bytes
+     * could ask the radios about. A reaction targets a canonical frame id with an emoji the wire takes, or none (a
+     * retraction).
+     */
+    private fun commonsContentOk(post: CommonsPost): Boolean {
+        val chat = post.chat
+        val reaction = post.reaction
+        return when {
+            chat != null && reaction == null -> {
+                val hash = chat.attachmentHash
+                chat.enc == null && (hash == null || (isValidBlobHash(hash) && chat.attachmentMime != null && chat.attachmentKey != null))
+            }
+
+            reaction != null && chat == null -> {
+                FrameId.toBytesOrNull(reaction.messageId) != null && reaction.emoji?.let(::isValidReactionEmoji) != false
+            }
+
+            else -> {
+                false
+            }
+        }
+    }
 
     /** The push-side narrowing of [eligibleForCommons]: only our own frames leave this device for a commons. */
     fun pushableToCommons(

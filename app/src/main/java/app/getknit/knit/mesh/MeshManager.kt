@@ -764,7 +764,7 @@ class MeshManager(
                 canCarry = pipeline::canCarry,
                 commons = commons,
                 hasKey = { peers.find(it)?.pubKey != null },
-                deliverCommons = { env, chat, conversationId, _ -> pipeline.deliverCommonsPost(env, chat, conversationId) },
+                deliverCommons = { env, post, conversationId, _ -> pipeline.deliverCommons(env, post, conversationId) },
                 onCommonsMember = ::onCommonsMember,
                 onOwnProfileTombstoned = { republishProfile(force = true) },
                 onPresenceChanged = ::onSpoolPresenceChanged,
@@ -2362,10 +2362,14 @@ class MeshManager(
      * Unless the file already goes by an identity here ([AttachmentStore.Ingested.reuse], ADR 2026-10.mptm): then
      * that identity is the answer and nothing is sealed, so every phone holding it — carriers included — pulls nothing.
      * A room picture keeps its key-less name and its blob; a sealed one keeps its ciphertext and key. If that blob
-     * went between the pick and the send, it is sealed fresh as ever.
+     * went between the pick and the send, it is sealed fresh as ever. [requireKey] (a commons post, ADR 2026-10.xhfr)
+     * reuses a sealed identity only: a key-less one's address is its plaintext's, which the room must never name.
      */
-    private suspend fun sealAttachment(attachment: AttachmentStore.Ingested): SealedAttachment? {
-        attachment.reuse?.takeIf { blobs.exists(it.hash) }?.let { held ->
+    private suspend fun sealAttachment(
+        attachment: AttachmentStore.Ingested,
+        requireKey: Boolean = false,
+    ): SealedAttachment? {
+        attachment.reuse?.takeIf { blobs.exists(it.hash) && (!requireKey || it.key != null) }?.let { held ->
             if (held.hash != attachment.hash) blobs.deleteIfUnreferenced(attachment.hash)
             return SealedAttachment(held.hash, held.key)
         }
@@ -2434,6 +2438,12 @@ class MeshManager(
     ) {
         if (!isValidReactionEmoji(emoji)) {
             Log.w(TAG, "reaction refused: ${emoji.length} units on $messageId")
+            return
+        }
+        // Only a peer is a recipient. A room id (the Meshtastic room, a commons) has no session to seal for, so it
+        // would reach the cleartext flood below and name a private room's message to every node in range.
+        if (recipientId != null && Conversations.kindFor(recipientId) != ConversationKind.DM) {
+            Log.w(TAG, "reaction refused: $recipientId is not a peer")
             return
         }
         val me = identity.nodeId()
@@ -3857,16 +3867,27 @@ class MeshManager(
      * carrier, and the plane is woken to push it now. Cleartext inside the room's seal, like a Nearby post
      * on the air: every member holds the room key, so there is nobody to seal for.
      */
+    @Suppress("LongMethod") // the post's own row and its signed frame, built side by side from one attachment
     override suspend fun sendCommons(
         conversationId: String,
         text: String,
         mentions: List<Mention>,
         replyTo: ReplyRef?,
+        attachment: AttachmentStore.Ingested?,
     ): Boolean {
         val room = commons?.find(conversationId) ?: return false
         val me = identity.nodeId()
         val id = FrameId.new()
         val sentAt = clock()
+        // Sealed to its own key as a group's attachment is, the key riding cleartext inside the room's seal: the
+        // blob's address is then the ciphertext's, which nobody outside the room can compute or ask the radios for.
+        val sealedAttachment = attachment?.let { sealAttachment(it, requireKey = true) ?: return false }
+        // Declared by the sealed path's rule: only a large one says its size, a named file by the lower bar.
+        val size =
+            attachment
+                ?.takeIf { BluetoothFetchGate.declaresSize(it.sizeBytes.toLong(), named = it.name != null) }
+                ?.sizeBytes
+                ?.toLong()
         val env =
             RelayEnvelope(
                 type = FrameType.COMMONS,
@@ -3877,7 +3898,18 @@ class MeshManager(
                     WireCodec.encodePayload(
                         CommonsPost(
                             scope = ScopeCrypto.commonsScopeId(room.secret),
-                            chat = ChatContent(body = text, mentions = mentions, replyTo = replyTo),
+                            chat =
+                                ChatContent(
+                                    body = text,
+                                    mentions = mentions,
+                                    attachmentHash = sealedAttachment?.hash,
+                                    attachmentMime = attachment?.mime,
+                                    replyTo = replyTo,
+                                    attachmentSize = size,
+                                    video = attachment?.video,
+                                    attachmentName = attachment?.name,
+                                    attachmentKey = sealedAttachment?.key,
+                                ),
                         ),
                     ),
             )
@@ -3892,10 +3924,61 @@ class MeshManager(
                 received = false,
                 receivedVia = DeliveryPlane.Internet.code,
                 mentions = MentionStore.encode(mentions),
-            ).withReply(replyTo),
+                attachmentHash = sealedAttachment?.hash,
+                attachmentMime = attachment?.mime,
+                attachmentKey = sealedAttachment?.key,
+                // Derived at ingest; a member derives the same pair from the bytes when they land (onObtained).
+                voiceDurationMs = attachment?.voice?.durationMs,
+                voicePeaks = attachment?.voice?.peaks,
+                attachmentName = attachment?.name,
+                attachmentSize = size,
+                attachmentAnimated = attachment?.animated == true,
+                // What a later forward or repeat of this file finds it by (ADR 2026-10.mptm), as the sealed path keeps.
+                attachmentPlainHash = attachment?.hash?.takeIf { sealedAttachment?.key != null },
+                attachmentSourceHash = attachment?.sourceHash,
+            ).withReply(replyTo)
+                .withVideo(attachment?.video),
             sig = wire.sig,
             signed = wire.signed,
         )
+        scopeSync?.onCustodyChanged()
+        return true
+    }
+
+    /**
+     * A reaction in a commons (C-7.4-13): the toggle [sendReaction] makes, stored optimistically, then posted into the
+     * room as a signed `commons` frame every member reads — never the sealed DM or group form (the room has no
+     * session to seal for) and never the cleartext flood (a private room's message named on the air). Our earlier
+     * reaction to the same post leaves the outbox in the same write ([CommonsStore.postReaction]).
+     */
+    override suspend fun sendCommonsReaction(
+        conversationId: String,
+        messageId: String,
+        emoji: String,
+    ): Boolean {
+        if (!isValidReactionEmoji(emoji)) {
+            Log.w(TAG, "commons reaction refused: ${emoji.length} units on $messageId")
+            return false
+        }
+        val room = commons?.find(conversationId) ?: return false
+        val me = identity.nodeId()
+        val next = if (reactions.currentEmoji(messageId, me) == emoji) null else emoji
+        val id = FrameId.new()
+        val now = clock()
+        val env =
+            RelayEnvelope(
+                type = FrameType.COMMONS,
+                id = id,
+                senderId = me,
+                sentAt = now,
+                payload =
+                    WireCodec.encodePayload(
+                        CommonsPost(scope = ScopeCrypto.commonsScopeId(room.secret), reaction = ReactionContent(messageId, next)),
+                    ),
+            )
+        val wire = sign(env)
+        reactions.apply(ReactionEntity(messageId, me, next, now))
+        commons.postReaction(conversationId, messageId, id, now, wire.sig, wire.signed)
         scopeSync?.onCustodyChanged()
         return true
     }

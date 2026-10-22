@@ -9,9 +9,11 @@ import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.frameIdOf
+import app.getknit.knit.mesh.sha256Hex
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -29,6 +31,7 @@ import org.junit.Test
  * the feature — nothing here crosses the radio mesh, so `mesh/lab/` has no scenario to add.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
+@Suppress("LargeClass") // the commons' one convergence harness: posts, reactions, attachments and the stale probe over one rig
 class CommonsSyncTest {
     private val alice = "aaaaaaaaaaaaaaaaaaaaaaaaaa"
     private val bob = "bbbbbbbbbbbbbbbbbbbbbbbbbe"
@@ -47,18 +50,41 @@ class CommonsSyncTest {
     private val conversationId = Conversations.commonsIdFor(scopeHex)
     private val advertised = SpoolCommonsInfo(name = "Home", maxFrames = 5, ttlMs = 24 * 60 * 60_000L, maxBlob = 65_536)
 
+    /** The same room on a relay that takes its attachments (S-7.4-5). */
+    private fun SpoolCommonsInfo.attaching() = SpoolCommonsInfo(name, maxFrames, ttlMs, maxBlob, attach = true)
+
     private fun spool(
         powBits: Int = 0,
         commons: Pair<ByteArray, SpoolCommonsInfo>? = scopeId to advertised,
-    ) = FakeSpool(powBits = powBits, commons = commons)
+        echoesDeclaredBounds: Boolean = false,
+    ) = FakeSpool(powBits = powBits, commons = commons, echoesDeclaredBounds = echoesDeclaredBounds)
 
-    /** The in-memory [CommonsStore]: one joined room, its outbox, its members. */
+    /** The rooms [this] member's worker at [url] reports stale. */
+    private fun Member.staleRooms(): Set<String> = sync.status().single { it.url == url }.staleCommons
+
+    /** The in-memory [CommonsStore]: one joined room, its outbox, its members, and its received attachments. */
     private class FakeCommons(
         // Read live, so a test can leave a room mid-run.
         private val rooms: List<CommonsRoots>,
+        private val held: suspend (String) -> Boolean,
     ) : CommonsStore {
+        // False lists a ref whose bytes are already held, as a read that raced their landing would.
+        var filtersHeld = true
+
         val outbox = LinkedHashMap<String, MutableList<CarriedFrame>>()
         val members = mutableListOf<Pair<String, String>>()
+
+        // What delivered posts named, the rows `MessageDao.commonsAttachmentsMissing` reads in the app.
+        val received = mutableListOf<ScopeAttachments.Ref>()
+
+        override suspend fun attachmentRefs(
+            conversationId: String,
+            selfId: String,
+            since: Long,
+            skip: Set<String>,
+            limit: Int,
+        ): List<ScopeAttachments.Ref> =
+            received.filter { it.sentAt >= since && it.aHash !in skip && (!filtersHeld || !held(it.aHash)) }.take(limit)
 
         override suspend fun roots(): List<CommonsRoots> = rooms.toList()
 
@@ -69,6 +95,15 @@ class CommonsSyncTest {
 
         override suspend fun post(
             row: MessageEntity,
+            sig: ByteArray,
+            signed: ByteArray,
+        ) = error("the plane never writes the outbox")
+
+        override suspend fun postReaction(
+            conversationId: String,
+            messageId: String,
+            frameId: String,
+            sentAt: Long,
             sig: ByteArray,
             signed: ByteArray,
         ) = error("the plane never writes the outbox")
@@ -86,13 +121,40 @@ class CommonsSyncTest {
         override suspend fun sweepOutbox(before: Long) = Unit
     }
 
+    /** The local content-addressed store, in memory. */
+    private class FakeBlobs(
+        vararg initial: Pair<String, ByteArray>,
+    ) : ScopeBlobs {
+        val stored = LinkedHashMap<String, ByteArray>().apply { putAll(initial) }
+
+        override suspend fun has(aHash: String): Boolean = aHash in stored
+
+        override suspend fun bytes(aHash: String): ByteArray? = stored[aHash]
+
+        override suspend fun save(
+            aHash: String,
+            mime: String,
+            bytes: ByteArray,
+        ) {
+            stored[aHash] = bytes
+        }
+    }
+
+    /** Bytes plus their content address — what a post's `attachmentHash` names. */
+    private fun image(size: Int = 100_000): Pair<String, ByteArray> {
+        val bytes = ByteArray(size) { ((it * 13) and 0xFF).toByte() }
+        return sha256Hex(bytes) to bytes
+    }
+
     private class Member(
         val custody: FakeCustody,
         val commons: FakeCommons,
+        val blobs: FakeBlobs,
         val sync: ScopeSync,
         val metrics: MeshMetrics,
         val delivered: MutableList<RelayEnvelope>,
         val posts: MutableList<Pair<RelayEnvelope, ChatContent>>,
+        val reactions: MutableList<Pair<RelayEnvelope, ReactionContent>>,
         val pinned: MutableSet<String>,
         val tombstoneReports: MutableList<Unit>,
     )
@@ -109,11 +171,13 @@ class CommonsSyncTest {
         // delivered profile pins its author, the shape of `handleProfile`.
         pinned: MutableSet<String> = mutableSetOf(self),
         refuse: Set<String> = emptySet(),
+        blobs: FakeBlobs = FakeBlobs(),
     ): Member {
         val metrics = MeshMetrics()
         val delivered = mutableListOf<RelayEnvelope>()
         val posts = mutableListOf<Pair<RelayEnvelope, ChatContent>>()
-        val commons = FakeCommons(rooms)
+        val reactions = mutableListOf<Pair<RelayEnvelope, ReactionContent>>()
+        val commons = FakeCommons(rooms, held = { blobs.has(it) })
         val reports = mutableListOf<Unit>()
         val sync =
             ScopeSync(
@@ -129,15 +193,22 @@ class CommonsSyncTest {
                     custody.store(CarriedFrame(env, wire.sig, wire.signed), ForwardStore.ORIGIN_RELAY, now)
                 },
                 commons = commons,
+                blobs = blobs,
                 hasKey = { it in pinned },
-                deliverCommons = { env, chat, _, _ -> posts.add(env to chat) },
+                deliverCommons = { env, post, _, _ ->
+                    post.chat?.let { chat ->
+                        posts.add(env to chat)
+                        chat.attachmentHash?.let { commons.received.add(ScopeAttachments.Ref(it, chat.attachmentMime, env.sentAt)) }
+                    }
+                    post.reaction?.let { reactions.add(env to it) }
+                },
                 onCommonsMember = { id, node -> commons.recordMember(id, node, now) },
                 onOwnProfileTombstoned = { reports.add(Unit) },
                 metrics = metrics,
                 clock = { now },
                 jitter = { 0L },
             )
-        return Member(custody, commons, sync, metrics, delivered, posts, pinned, reports)
+        return Member(custody, commons, blobs, sync, metrics, delivered, posts, reactions, pinned, reports)
     }
 
     private suspend fun Member.seedOwnProfile(
@@ -180,8 +251,10 @@ class CommonsSyncTest {
         scope: ByteArray = scopeId,
         keys: ScopeCrypto.SealKeys = ScopeCrypto.commonsSealKeys(secret),
         sealAs: ByteArray = scopeId,
+        sentAt: Long = 1_000L,
+        attachmentHash: String? = null,
     ): Pair<String, ByteArray> {
-        val frame = commonsFrame(id, from, scope)
+        val frame = commonsFrame(id, from, scope, sentAt = sentAt, attachmentHash = attachmentHash)
         val blob = ScopeCrypto.seal(keys, sealAs, frame.sig, frame.signed)
         return hex(ScopeCrypto.blobId(blob)) to blob
     }
@@ -220,6 +293,204 @@ class CommonsSyncTest {
             assertEquals(2, b.status().accountedCount)
             assertEquals(1, a.status().accountedCount)
             assertEquals(0, b.status().invalidCount)
+        }
+
+    @Test
+    fun `a reaction reaches every member through the commons door and never custody`() =
+        runTest {
+            val spool = spool()
+            val a = member(spool, alice)
+            val b = member(spool, bob)
+            val c = member(spool, carol)
+            a.seedOwnProfile(alice)
+            b.seedOwnProfile(bob)
+            c.seedOwnProfile(carol)
+            a.post(commonsFrame(fid("p1"), alice, scopeId))
+            // Bob reacts to Alice's post. (Applying one that lands ahead of its post is InboundPipelineTest's.)
+            b.post(commonsReactionFrame(fid("r1"), bob, scopeId, messageId = fid("p1"), emoji = "👍"))
+            a.sync.start(backgroundScope)
+            b.sync.start(backgroundScope)
+            c.sync.start(backgroundScope)
+            pump()
+
+            for (reader in listOf(a, c)) {
+                val (env, reaction) = reader.reactions.single()
+                assertEquals(bob, env.senderId)
+                assertEquals(fid("p1"), reaction.messageId)
+                assertEquals("👍", reaction.emoji)
+                // Never a chat, never custody: a reaction lives on the spool exactly as a post does.
+                assertTrue(reader.posts.none { it.first.id == fid("r1") })
+                assertFalse(reader.custody.has(fid("r1")))
+                assertTrue(reader.status().converged)
+            }
+            assertEquals(setOf(conversationId to alice, conversationId to bob), c.commons.members.toSet())
+        }
+
+    @Test
+    fun `a photo posted to a room whose relay takes attachments reaches the other member sealed under the room key`() =
+        runTest {
+            val spool =
+                spool(
+                    commons =
+                        scopeId to SpoolCommonsInfo("Home", maxFrames = 5, ttlMs = 24 * 60 * 60_000L, maxBlob = 65_536, attach = true),
+                )
+            val (aHash, bytes) = image()
+            val a = member(spool, alice, blobs = FakeBlobs(aHash to bytes))
+            val b = member(spool, bob)
+            a.seedOwnProfile(alice)
+            b.seedOwnProfile(bob)
+            a.post(commonsFrame(fid("p1"), alice, scopeId, sentAt = now, attachmentHash = aHash))
+            a.sync.start(backgroundScope)
+            b.sync.start(backgroundScope)
+            pump(rounds = 16)
+
+            assertEquals(listOf(fid("p1")), b.posts.map { it.first.id })
+            assertTrue("the room's own pass fetched the bytes", bytes.contentEquals(b.blobs.stored[aHash]))
+            val aid = hex(ScopeCrypto.attachmentId(ScopeCrypto.commonsSealKeys(secret), scopeId, unhex(aHash)))
+            assertEquals(3, spool.chunkCount(scopeHex, aid))
+            // Pushed exactly once, by its author.
+            assertTrue(spool.chunksPut.all { it.startsWith("$aid:") })
+            assertEquals(3, spool.chunksPut.size)
+            a.sync.stop()
+            b.sync.stop()
+        }
+
+    @Test
+    fun `someone else's attachment the relay never got is asked once, and older ones still arrive`() =
+        runTest {
+            // Four newer posts, past the upload grace, whose authors never uploaded (uploads locked, over their `am`,
+            // gone) and one older one that did: the room's relay is the only way any of them comes, and the four must
+            // not hold the fifth back.
+            val spool =
+                spool(
+                    commons =
+                        scopeId to SpoolCommonsInfo("Home", maxFrames = 5, ttlMs = 24 * 60 * 60_000L, maxBlob = 65_536, attach = true),
+                )
+            val (aHash, bytes) = image()
+            val a = member(spool, alice, blobs = FakeBlobs(aHash to bytes))
+            val b = member(spool, bob)
+            a.seedOwnProfile(alice)
+            b.seedOwnProfile(bob)
+            a.post(commonsFrame(fid("p1"), alice, scopeId, sentAt = now - 6 * 60_000L, attachmentHash = aHash))
+            val never = (1..4).map { sha256Hex(byteArrayOf(it.toByte())) }
+            never.forEach { b.commons.received.add(ScopeAttachments.Ref(it, "image/webp", now - 5 * 60_000L)) }
+            // Alice's upload lands first, so the older one is never asked about while absent (that is the next test's).
+            a.sync.start(backgroundScope)
+            pump()
+            assertEquals(3, spool.chunksPut.size)
+            b.sync.start(backgroundScope)
+            pump(rounds = 40)
+            tick(times = 2)
+
+            assertTrue("the older one still landed", bytes.contentEquals(b.blobs.stored[aHash]))
+            val keys = ScopeCrypto.commonsSealKeys(secret)
+            for (missing in never) {
+                val aid = hex(ScopeCrypto.attachmentId(keys, scopeId, unhex(missing)))
+                assertEquals("asked once, then left to the timed recheck", 1, spool.presenceAsks.count { it == aid })
+            }
+            a.sync.stop()
+            b.sync.stop()
+        }
+
+    @Test
+    fun `a fresh post whose chunks are not up yet keeps the short retry and lands once they are`() =
+        runTest {
+            // The ordinary race: Bob meets Alice's post before her chunks. Fresh, so the absent answer is retried.
+            val spool = spool(commons = scopeId to advertised.attaching())
+            val (aHash, bytes) = image()
+            val (_, blob) = sealedPost(fid("p1"), alice, sentAt = now, attachmentHash = aHash)
+            spool.plantGarbage(scopeHex, blob)
+            val b = member(spool, bob, pinned = mutableSetOf(bob, alice))
+            b.seedOwnProfile(bob)
+            b.sync.start(backgroundScope)
+            pump()
+            val aid = hex(ScopeCrypto.attachmentId(ScopeCrypto.commonsSealKeys(secret), scopeId, unhex(aHash)))
+            assertTrue("asked, and absent", spool.presenceAsks.any { it == aid })
+            assertFalse(b.blobs.stored.containsKey(aHash))
+
+            val a = member(spool, alice, blobs = FakeBlobs(aHash to bytes))
+            a.seedOwnProfile(alice)
+            a.post(commonsFrame(fid("p1"), alice, scopeId, sentAt = now, attachmentHash = aHash))
+            a.sync.start(backgroundScope)
+            pump(rounds = (ScopeSync.ATTACHMENT_RETRY_MS / 1_000).toInt() + 2)
+
+            assertTrue("the short retry fetched it", bytes.contentEquals(b.blobs.stored[aHash]))
+            a.sync.stop()
+            b.sync.stop()
+        }
+
+    @Test
+    fun `a post past the upload grace whose chunks are not up is left to the slow recheck`() =
+        runTest {
+            val spool = spool(commons = scopeId to advertised.attaching())
+            val (aHash, bytes) = image()
+            val old = now - 6 * 60_000L
+            val (_, blob) = sealedPost(fid("p1"), alice, sentAt = old, attachmentHash = aHash)
+            spool.plantGarbage(scopeHex, blob)
+            val b = member(spool, bob, pinned = mutableSetOf(bob, alice))
+            b.seedOwnProfile(bob)
+            b.sync.start(backgroundScope)
+            pump()
+            val aid = hex(ScopeCrypto.attachmentId(ScopeCrypto.commonsSealKeys(secret), scopeId, unhex(aHash)))
+            assertEquals("asked once, absent, settled", 1, spool.presenceAsks.count { it == aid })
+
+            val a = member(spool, alice, blobs = FakeBlobs(aHash to bytes))
+            a.seedOwnProfile(alice)
+            a.post(commonsFrame(fid("p1"), alice, scopeId, sentAt = old, attachmentHash = aHash))
+            a.sync.start(backgroundScope)
+            pump(rounds = (ScopeSync.ATTACHMENT_RETRY_MS / 1_000).toInt() + 2)
+
+            assertEquals(3, spool.chunkCount(scopeHex, aid))
+            // The one new ask is Alice's own, before her push: Bob does not ask again inside the recheck.
+            assertEquals(2, spool.presenceAsks.count { it == aid })
+            assertFalse(b.blobs.stored.containsKey(aHash))
+            a.sync.stop()
+            b.sync.stop()
+        }
+
+    @Test
+    fun `someone else's attachment already held is neither asked about nor pushed`() =
+        runTest {
+            // A room read that raced the bytes' landing lists a ref Bob now holds: never his to push (C-7.4-6's own-only
+            // rule, LocalPass.LANDED), and nothing left to fetch.
+            val spool = spool(commons = scopeId to advertised.attaching())
+            val (aHash, bytes) = image()
+            val b = member(spool, bob, blobs = FakeBlobs(aHash to bytes))
+            b.seedOwnProfile(bob)
+            b.commons.filtersHeld = false
+            b.commons.received.add(ScopeAttachments.Ref(aHash, "image/webp", now))
+            b.sync.start(backgroundScope)
+            pump()
+            tick()
+
+            val aid = hex(ScopeCrypto.attachmentId(ScopeCrypto.commonsSealKeys(secret), scopeId, unhex(aHash)))
+            assertEquals(0, spool.presenceAsks.count { it == aid })
+            assertTrue(spool.chunksPut.none { it.startsWith("$aid:") })
+            b.sync.stop()
+        }
+
+    @Test
+    fun `a room whose relay takes no attachments for it is never sent an attachment record`() =
+        runTest {
+            // S-7.4-5: the spool carries attachments for its other scopes, but its commons said no `attach`.
+            val spool = spool()
+            val (aHash, bytes) = image()
+            val a = member(spool, alice, blobs = FakeBlobs(aHash to bytes))
+            val b = member(spool, bob)
+            a.seedOwnProfile(alice)
+            b.seedOwnProfile(bob)
+            a.post(commonsFrame(fid("p1"), alice, scopeId, sentAt = now, attachmentHash = aHash))
+            a.sync.start(backgroundScope)
+            b.sync.start(backgroundScope)
+            pump(rounds = 16)
+
+            // The post itself still crosses: the frame plane is unaffected.
+            assertEquals(listOf(fid("p1")), b.posts.map { it.first.id })
+            assertEquals(emptyList<String>(), spool.presenceAsks)
+            assertEquals(emptyList<String>(), spool.chunksPut)
+            assertFalse(b.blobs.stored.containsKey(aHash))
+            a.sync.stop()
+            b.sync.stop()
         }
 
     @Test
@@ -342,6 +613,81 @@ class CommonsSyncTest {
             a.sync.start(backgroundScope)
             pump()
             assertFalse(scopeHex in spool.subscribedScopes)
+        }
+
+    @Test
+    fun `a room whose invite was rotated is reported stale and never subscribed again`() =
+        runTest {
+            // The operator minted a new invite: the spool runs another room, and the id our invite derives is an
+            // ordinary scope there, which applies what we declared — as the daemon's store does — and echoes it.
+            val spool = spool(commons = ScopeCrypto.commonsScopeId(otherSecret) to advertised, echoesDeclaredBounds = true)
+            val a = member(spool, alice)
+            a.seedOwnProfile(alice)
+            a.sync.start(backgroundScope)
+            pump()
+            tick(times = 3)
+
+            assertEquals(setOf(conversationId), a.staleRooms())
+            assertEquals("asked once, then left alone", 1, spool.subAttempts[scopeHex])
+            assertTrue(
+                a.sync
+                    .status()
+                    .single { it.url == url }
+                    .scopes
+                    .none { it.scopeHex == scopeHex },
+            )
+            // Still true across a reconnect: what the spool said is true of the invite we hold.
+            spool.dropSockets()
+            pump()
+            assertEquals(setOf(conversationId), a.staleRooms())
+            assertEquals(1, spool.subAttempts[scopeHex])
+        }
+
+    @Test
+    fun `a creation gate asked of a commons reports it stale, and no stamp is mined`() =
+        runTest {
+            // On a mining spool the rotated id is an unknown scope: S-7.4-3 says the room is never gated, so `err pow` is
+            // the spool saying it does not run it.
+            val spool = spool(powBits = 8, commons = ScopeCrypto.commonsScopeId(otherSecret) to advertised)
+            val a = member(spool, alice)
+            a.seedOwnProfile(alice)
+            a.sync.start(backgroundScope)
+            pump()
+            tick(times = 2)
+
+            assertEquals(setOf(conversationId), a.staleRooms())
+            assertTrue(spool.subStamped.none { it.first == scopeHex && it.second })
+        }
+
+    @Test
+    fun `a room its relay runs is never reported stale, whatever the relay's scopes echo`() =
+        runTest {
+            val spool = spool(echoesDeclaredBounds = true)
+            val a = member(spool, alice)
+            val b = member(spool, bob)
+            a.seedOwnProfile(alice)
+            b.seedOwnProfile(bob)
+            a.post(commonsFrame(fid("p1"), alice, scopeId))
+            a.sync.start(backgroundScope)
+            b.sync.start(backgroundScope)
+            pump()
+            tick(times = 2)
+
+            assertEquals(emptySet<String>(), a.staleRooms())
+            assertEquals(emptySet<String>(), b.staleRooms())
+            assertEquals(listOf(fid("p1")), b.posts.map { it.first.id })
+        }
+
+    @Test
+    fun `a relay whose hello advertises no commons reports the room joined there stale`() =
+        runTest {
+            val spool = spool(commons = null)
+            val a = member(spool, alice)
+            a.seedOwnProfile(alice)
+            a.sync.start(backgroundScope)
+            pump()
+
+            assertEquals(setOf(conversationId), a.staleRooms())
         }
 
     @Test

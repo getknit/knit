@@ -359,25 +359,54 @@ interface MessageDao {
      * whether [me] sent it; and, for `PullThroughGate` (#195), when it was sent and whether it is a DM's. One entry per
      * *row*, not per hash: a stranger's row naming a contact's attachment hash must not decide the contact's fetch, so the
      * rule folds over the rows in Kotlin (`MessageRepository.attachmentsNeedingFetch`), and the earliest row's sender is
-     * the one holder a re-armed want can name (ADR 2026-10.f7gg).
+     * the one holder a re-armed want can name (ADR 2026-10.f7gg). A commons row ([commonsGlob]) is left out: its bytes
+     * live on the room's relay alone (spec §7.4), which [commonsAttachmentsMissing] fetches from, never the radios.
      */
     @Query(
         "SELECT attachmentHash AS hash, senderId, attachmentSize, attachmentFetchApproved AS approved, " +
             "(senderId = :me) AS own, sentAt, (recipientId IS NOT NULL) AS dm FROM messages " +
             "WHERE attachmentHash IS NOT NULL AND attachmentHash NOT IN (SELECT hash FROM blobs) " +
+            "AND conversationId NOT GLOB :commonsGlob " +
             "ORDER BY sentAt, id",
     )
-    suspend fun attachmentFetchRows(me: String): List<AttachmentFetchRow>
+    suspend fun attachmentFetchRows(
+        me: String,
+        commonsGlob: String,
+    ): List<AttachmentFetchRow>
 
-    /** [attachmentFetchRows] for the one attachment [hash], held or not: what a delivery judges its want on. */
+    /**
+     * A commons' attachments still to fetch (spec §7.4): one entry per hash another member's row in [conversationId]
+     * names, sent since [since], not held and none of [skip], newest first, at most [limit]. A received commons post is
+     * never in custody, so this, not a frame, is where the room's attachment pass finds what to pull; [skip] is what
+     * that pass has settled or quarantined, kept out here so the limit counts only what it could act on.
+     */
+    @Query(
+        "SELECT attachmentHash AS hash, attachmentMime AS mime, MAX(sentAt) AS sentAt FROM messages " +
+            "WHERE conversationId = :conversationId AND senderId != :me AND attachmentHash IS NOT NULL " +
+            "AND sentAt >= :since AND attachmentHash NOT IN (SELECT hash FROM blobs) AND attachmentHash NOT IN (:skip) " +
+            "GROUP BY attachmentHash ORDER BY sentAt DESC LIMIT :limit",
+    )
+    suspend fun commonsAttachmentsMissing(
+        conversationId: String,
+        me: String,
+        since: Long,
+        skip: List<String>,
+        limit: Int,
+    ): List<CommonsAttachmentRow>
+
+    /**
+     * [attachmentFetchRows] for the one attachment [hash], held or not: what a delivery judges its want on, and what a
+     * tap asks the radios for. A commons row ([commonsGlob]) is left out for the same reason as there.
+     */
     @Query(
         "SELECT attachmentHash AS hash, senderId, attachmentSize, attachmentFetchApproved AS approved, " +
             "(senderId = :me) AS own, sentAt, (recipientId IS NOT NULL) AS dm FROM messages " +
-            "WHERE attachmentHash = :hash ORDER BY sentAt, id",
+            "WHERE attachmentHash = :hash AND conversationId NOT GLOB :commonsGlob ORDER BY sentAt, id",
     )
     suspend fun attachmentFetchRowsFor(
         hash: String,
         me: String,
+        commonsGlob: String,
     ): List<AttachmentFetchRow>
 
     /**
@@ -763,6 +792,13 @@ data class ConversationActivity(
 data class ConversationSender(
     val conversationId: String,
     val senderId: String,
+)
+
+/** An attachment a commons row names and the store lacks ([MessageDao.commonsAttachmentsMissing]). */
+data class CommonsAttachmentRow(
+    val hash: String,
+    val mime: String?,
+    val sentAt: Long,
 )
 
 /** A blob a carried frame names but the store lacks, and the frame's sender (`ForwardDao.attachmentsNeedingFetch`). */

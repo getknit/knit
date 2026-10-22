@@ -2,6 +2,7 @@ package app.getknit.knit.data
 
 import app.getknit.knit.data.message.AttachmentFetchRow
 import app.getknit.knit.data.message.AttachmentIdentityRow
+import app.getknit.knit.data.message.CommonsAttachmentRow
 import app.getknit.knit.data.message.ConversationActivity
 import app.getknit.knit.data.message.ConversationSender
 import app.getknit.knit.data.message.Conversations
@@ -180,13 +181,25 @@ class MessageRepository(
      * naming it, for `BluetoothFetchGate` to fold ([me] is this node, ADR 2026-10.js2p).
      */
     suspend fun attachmentsNeedingFetch(me: String): List<MissingAttachment> =
-        dao.attachmentFetchRows(me).groupBy { it.hash }.map { (hash, rows) -> MissingAttachment(hash, rows.first().senderId, rows) }
+        dao
+            .attachmentFetchRows(me, commonsGlob = Conversations.COMMONS_PREFIX + "*")
+            .groupBy { it.hash }
+            .map { (hash, rows) -> MissingAttachment(hash, rows.first().senderId, rows) }
+
+    /** The attachments other members' rows in the commons [conversationId] name and the store lacks (spec §7.4). */
+    suspend fun commonsAttachmentsMissing(
+        conversationId: String,
+        me: String,
+        since: Long,
+        skip: List<String>,
+        limit: Int,
+    ): List<CommonsAttachmentRow> = dao.commonsAttachmentsMissing(conversationId, me, since, skip, limit)
 
     /** Every row naming attachment [hash], earliest first, as `BluetoothFetchGate` judges it ([me] is this node). */
     suspend fun attachmentFetchRows(
         hash: String,
         me: String,
-    ): List<AttachmentFetchRow> = dao.attachmentFetchRowsFor(hash, me)
+    ): List<AttachmentFetchRow> = dao.attachmentFetchRowsFor(hash, me, commonsGlob = Conversations.COMMONS_PREFIX + "*")
 
     /** The user's "Tap to download" on attachment [hash], kept on every row naming it (ADR 2026-10.js2p). */
     suspend fun approveAttachmentFetch(hash: String) = dao.approveAttachmentFetch(hash)

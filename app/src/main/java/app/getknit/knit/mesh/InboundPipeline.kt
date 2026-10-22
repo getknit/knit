@@ -70,6 +70,7 @@ import app.getknit.knit.mesh.protocol.BlobProgressContent
 import app.getknit.knit.mesh.protocol.BlobReqContent
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.ChatContent
+import app.getknit.knit.mesh.protocol.CommonsPost
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.protocol.FrameType
@@ -516,6 +517,42 @@ class InboundPipeline(
                 ?.takeIf { EncEnvelope.isDmRatchetVersion(it.v) && it.g == null && nonceShapeValid(it) }
         val r = enc?.r ?: return null
         return TalkSealed(r, enc.nonce.takeIf { enc.v != EncEnvelope.VERSION_DM_V3 }, enc.ct)
+    }
+
+    /**
+     * The commons door's dispatch (spec §7.4): a [CommonsPost] carries exactly one content (`ScopeFrames` refused
+     * any other shape), a chat for the room's thread or a member's reaction to one of its posts.
+     */
+    internal suspend fun deliverCommons(
+        env: RelayEnvelope,
+        post: CommonsPost,
+        conversationId: String,
+    ) {
+        post.chat?.let { return deliverCommonsPost(env, it, conversationId) }
+        post.reaction?.let { applyCommonsReaction(env, it, conversationId) }
+    }
+
+    /**
+     * A member's reaction pulled from a commons (C-7.4-13): applied latest-stamp-wins exactly as every other
+     * reaction ([ReactionRepository.apply]), so the room's unordered listing and a restart's re-pull converge. It
+     * reaches this room's posts only: a target held in another thread is someone naming an id from elsewhere, and
+     * is dropped. A target not held yet is kept, as on every reaction path — the post may be later in the listing.
+     */
+    internal suspend fun applyCommonsReaction(
+        env: RelayEnvelope,
+        reaction: ReactionContent,
+        conversationId: String,
+    ) {
+        // The block gate, as on the post's own door: the carry gate never reads the block list (ADR 010).
+        if (env.senderId in settings.blockedNodeIds.first()) return
+        if (reaction.emoji != null && !isValidReactionEmoji(reaction.emoji)) {
+            metrics.onDropped(DropReason.REACTION_REFUSED)
+            return
+        }
+        val target = messages.find(reaction.messageId)
+        if (target != null && target.conversationId != conversationId) return
+        val row = ReactionEntity(reaction.messageId, env.senderId, reaction.emoji, clampFuture(env.sentAt))
+        if (reactions.apply(row)) noticeReaction(env, row)
     }
 
     /**
@@ -2297,6 +2334,37 @@ class InboundPipeline(
         own: Boolean,
     ) = AttachmentFetchRow(hash, env.senderId, declaredSize, approved, own, sentAt = clampFuture(env.sentAt), dm = env.recipientId != null)
 
+    /**
+     * Starts pulling a delivered row's [hash] unless we already hold it (the UI observes the blobs table and flips the
+     * attachment from "loading" to shown once the bytes land, and onObtained describes it). If we already hold it
+     * (carried while its frame was parked for a key, fetched off a spool first, or a forward of a file we have), no
+     * onObtained is coming, so the row is described here, now that it and the key are in hand — the same hooks through
+     * the same helper, so neither order can miss one (#132). Off the [radio] (a commons attachment, which the room's
+     * relay alone brings, ADR 2026-10.xhfr) nothing is asked of a neighbour.
+     */
+    @Suppress("LongParameterList") // the delivery's attachment facts, threaded once from deliverChat
+    private suspend fun pullOrDescribe(
+        hash: String,
+        key: String?,
+        mime: String?,
+        env: RelayEnvelope,
+        via: String?,
+        fetch: DeliveredFetch,
+        radio: Boolean,
+    ) {
+        if (blobStore.has(hash)) {
+            describeHeldAttachment(hash, key, mime)
+        } else if ((key != null || !copyFromOwnStore(hash, env.senderId)) && radio) {
+            // The delivery read every row naming the hash, or its own is no DM's: its deadline, none included, is known.
+            blobExchange.want(hash, author = env.senderId, via = via, fastOnly = fetch.fastOnly, until = fetch.until, untilKnown = true)
+            // Arm the fast plane toward the author — the guaranteed holder — so the pull can ride a NAN
+            // NDP instead of crawling over BLE (the serve side arms its own half in the composite; only
+            // the larger nodeId of a pair ever initiates, so an inert mark here is harmless). Freshness/
+            // cooldown gating lives in the transport; a multi-hop author simply isn't fresh and no-ops.
+            transport.expectBulkTransfer(env.senderId)
+        }
+    }
+
     /** [deliveredFetch]'s verdict: whether the new row comes in tapped, and whether its want is fast-only. */
     private class DeliveredFetch(
         val inheritsTap: Boolean,
@@ -3005,9 +3073,14 @@ class InboundPipeline(
         // The save below leaves an existing row untouched, so only the notification needs gating.
         val isNew = !messages.exists(env.id)
         val hash = content.attachmentHash
+        // A commons post's attachment lives on the room's relay alone (spec §7.4): its key and name ride cleartext
+        // inside the room's seal, and the room's own pass fetches its bytes — never the radios.
+        val commons = Conversations.kindFor(conversationId) == ConversationKind.COMMONS
+        val attachmentKey = sealed?.attachmentKey ?: content.attachmentKey?.takeIf { commons }
         val moderation = inboundModeration(isNew, content.body, conversationId)
         val (declaredSize, video) = deliveredDescription(content, sealed)
-        val fetch = deliveredFetch(hash, declaredSize, isNew, env, me)
+        // No radio fetch for a commons attachment, so no fetch rule to judge it by.
+        val fetch = if (commons) DeliveredFetch.PLAIN else deliveredFetch(hash, declaredSize, isNew, env, me)
         val built =
             MessageEntity(
                 id = env.id,
@@ -3035,8 +3108,8 @@ class InboundPipeline(
                 mentions = MentionStore.encode(content.mentions),
                 attachmentHash = hash,
                 attachmentMime = content.attachmentMime,
-                attachmentKey = sealed?.attachmentKey,
-                attachmentName = sealed?.attachmentName,
+                attachmentKey = attachmentKey,
+                attachmentName = sealed?.attachmentName ?: content.attachmentName?.takeIf { commons },
                 attachmentSize = declaredSize,
                 attachmentFetchApproved = fetch.inheritsTap,
                 moderation = moderation,
@@ -3052,24 +3125,7 @@ class InboundPipeline(
         val stored = persistQuoted(built.withVideo(video), isNew, me, conversationId, persist)
         screenPoster(stored, fresh = isNew, own = env.senderId == me)
         val hidden = stored.hiddenByFilter(settings.contentFilteringEnabled.first())
-        // Start pulling the referenced blob unless we already hold it (the UI observes the blobs table
-        // and flips the attachment from "loading" to shown once the bytes land, and onObtained describes it).
-        // If we already hold it (carried while its frame was parked for a key, fetched off a spool first, or
-        // a forward of a file we have), no onObtained is coming, so the row is described here, now that it and
-        // the key are in hand — the same hooks through the same helper, so neither order can miss one (#132).
-        if (hash != null) {
-            if (blobStore.has(hash)) {
-                describeHeldAttachment(hash, sealed?.attachmentKey, content.attachmentMime)
-            } else if (sealed?.attachmentKey != null || !copyFromOwnStore(hash, env.senderId)) {
-                // The delivery read every row naming the hash, or its own is no DM's: its deadline, none included, is known.
-                blobExchange.want(hash, author = env.senderId, via = via, fastOnly = fetch.fastOnly, until = fetch.until, untilKnown = true)
-                // Arm the fast plane toward the author — the guaranteed holder — so the pull can ride a NAN
-                // NDP instead of crawling over BLE (the serve side arms its own half in the composite; only
-                // the larger nodeId of a pair ever initiates, so an inert mark here is harmless). Freshness/
-                // cooldown gating lives in the transport; a multi-hop author simply isn't fresh and no-ops.
-                transport.expectBulkTransfer(env.senderId)
-            }
-        }
+        if (hash != null) pullOrDescribe(hash, attachmentKey, content.attachmentMime, env, via, fetch, radio = !commons)
         // A message that @-mentions us notifies on the dedicated Mentions channel only; everything else
         // takes the per-context channel (Nearby / Group messages / Direct messages), keyed off conversationId.
         // Only on first delivery — a re-served carried DM must not re-notify.

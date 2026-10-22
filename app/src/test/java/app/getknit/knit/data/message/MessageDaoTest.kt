@@ -32,7 +32,7 @@ class MessageDaoTest : RoomDbTest() {
             assertEquals(
                 "one entry per row, the earliest first: its sender is whom a re-armed want asks",
                 listOf("H1" to "author", "H1" to "forwarder"),
-                dao.attachmentFetchRows(me = "me").map { it.hash to it.senderId },
+                dao.attachmentFetchRows(me = "me", commonsGlob = COMMONS_GLOB).map { it.hash to it.senderId },
             )
         }
 
@@ -51,15 +51,28 @@ class MessageDaoTest : RoomDbTest() {
                     AttachmentFetchRow("H1", "me", 1_500_000L, approved = false, own = true, sentAt = 2L, dm = false),
                     AttachmentFetchRow("H3", "peer", null, approved = false, own = false, sentAt = 3L, dm = true),
                 ),
-                dao.attachmentFetchRows(me = "me"),
+                dao.attachmentFetchRows(me = "me", commonsGlob = COMMONS_GLOB),
             )
 
             dao.approveAttachmentFetch("H1")
-            assertTrue("every row naming the hash", dao.attachmentFetchRows(me = "me").filter { it.hash == "H1" }.all { it.approved })
-            assertEquals(2, dao.attachmentFetchRowsFor("H1", me = "me").size)
-            assertEquals(listOf(3L to true), dao.attachmentFetchRowsFor("H3", me = "me").map { it.sentAt to it.dm })
+            assertTrue(
+                "every row naming the hash",
+                dao
+                    .attachmentFetchRows(me = "me", commonsGlob = COMMONS_GLOB)
+                    .filter {
+                        it.hash == "H1"
+                    }.all { it.approved },
+            )
+            assertEquals(2, dao.attachmentFetchRowsFor("H1", me = "me", commonsGlob = COMMONS_GLOB).size)
+            assertEquals(
+                listOf(3L to true),
+                dao.attachmentFetchRowsFor("H3", me = "me", commonsGlob = COMMONS_GLOB).map {
+                    it.sentAt to
+                        it.dm
+                },
+            )
             db.blobDao().insert(BlobEntity(hash = "H1", mime = "image/jpeg", bytes = ByteArray(0)))
-            assertEquals("by hash, held or not", 2, dao.attachmentFetchRowsFor("H1", me = "me").size)
+            assertEquals("by hash, held or not", 2, dao.attachmentFetchRowsFor("H1", me = "me", commonsGlob = COMMONS_GLOB).size)
         }
 
     @Test
@@ -775,6 +788,7 @@ class MessageDaoTest : RoomDbTest() {
     )
 
     private companion object {
+        const val COMMONS_GLOB = Conversations.COMMONS_PREFIX + "*"
         const val ME = "me"
         const val PEER = "peer"
         const val THREAD = "thread"

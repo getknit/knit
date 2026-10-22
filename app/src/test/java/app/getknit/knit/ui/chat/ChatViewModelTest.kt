@@ -1376,6 +1376,40 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun aReactionInTheMeshtasticRoomIsNeverSent() =
+        runTest {
+            // No tapback form there, and the manager's fallback is a cleartext flood over the radios.
+            val vm = vm(conversationId = Conversations.MESHTASTIC)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value = listOf(msg(senderId = "bob", id = "m1", conversationId = Conversations.MESHTASTIC))
+            advanceUntilIdle()
+
+            vm.react("m1", "🦄")
+            advanceUntilIdle()
+
+            assertTrue(mesh.sentReactions.isEmpty())
+            assertTrue(mesh.sentCommonsReactions.isEmpty())
+            coVerify(exactly = 0) { settings.recordReaction(any()) }
+        }
+
+    @Test
+    fun aReactionInACommonsIsPostedToTheRoomAndNeverTakesTheMeshPath() =
+        runTest {
+            val room = Conversations.COMMONS_PREFIX + "ab".repeat(32)
+            val vm = vm(conversationId = room)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value = listOf(msg(senderId = "bob", id = "m1", conversationId = room))
+            advanceUntilIdle()
+
+            vm.react("m1", "🦄")
+            advanceUntilIdle()
+
+            assertEquals(listOf(Triple(room, "m1", "🦄")), mesh.sentCommonsReactions)
+            assertTrue(mesh.sentReactions.isEmpty())
+            coVerify(exactly = 1) { settings.recordReaction("🦄") }
+        }
+
+    @Test
     fun retractingYourOwnReactionSendsButLeavesTheRecentsAlone() =
         runTest {
             val vm = vm()
@@ -1845,6 +1879,54 @@ class ChatViewModelTest {
             assertNull("flagged image is not staged in the public room", vm.pendingAttachment.value)
             coVerify { blobs.deleteIfUnreferenced("h1") }
             coVerify { attachments.ingest(uri, true) }
+        }
+
+    @Test
+    fun aCommonsTakesAPictureUnscreenedAndSendsItThroughTheRoomsOwnPath() =
+        runTest {
+            val room = Conversations.commonsIdFor("ab".repeat(32))
+            val uri = Uri.parse("content://images/2")
+            val ingested = AttachmentStore.Ingested(hash = "h2", mime = "image/jpeg")
+            coEvery { attachments.ingest(uri, any()) } returns AttachmentStore.IngestResult.Success(ingested, flagged = false)
+            stubDm(room)
+            val vm = vm(conversationId = room)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+            assertTrue("a commons takes files as a group does", vm.state.value.canSendFile)
+
+            vm.attach(uri)
+            advanceUntilIdle()
+            assertEquals(ingested, vm.pendingAttachment.value)
+            // Never screened on the way out: only the Nearby room's sender screens (ADR 2026-10.9rh6).
+            coVerify { attachments.ingest(uri, false) }
+
+            vm.send("look")
+            advanceUntilIdle()
+            assertEquals(listOf(room to "look"), mesh.sentCommons)
+            assertEquals(listOf<AttachmentStore.Ingested?>(ingested), mesh.sentCommonsAttachments)
+        }
+
+    @Test
+    fun aCommonsWhoseRelayTakesNoAttachmentsRefusesOneAndSaysWhenTheRoomIsGone() =
+        runTest {
+            val room = Conversations.commonsIdFor("ab".repeat(32))
+            val uri = Uri.parse("content://images/3")
+            coEvery { attachments.ingest(uri, any()) } returns
+                AttachmentStore.IngestResult.Success(AttachmentStore.Ingested(hash = "h3", mime = "image/jpeg"), flagged = false)
+            relayFactsFlow.value = RelayFacts(textOnlyRooms = setOf(room), staleRooms = setOf(room))
+            stubDm(room)
+            val vm = vm(conversationId = room)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            advanceUntilIdle()
+            assertTrue(vm.state.value.commonsTextOnly)
+            assertTrue(vm.state.value.commonsStale)
+            assertFalse(vm.state.value.canSendFile)
+
+            vm.attach(uri)
+            advanceUntilIdle()
+
+            assertNull(vm.pendingAttachment.value)
+            coVerify { blobs.deleteIfUnreferenced("h3") }
         }
 
     @Test

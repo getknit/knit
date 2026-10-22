@@ -648,6 +648,17 @@ null — every member shares the room key, so there is nobody to seal for, exact
 *Metadata cost:* none on the radios, which never see one; to the spool, one more opaque blob in a scope it
 already cannot read.
 
+**Precedent — the commons' follow-ons (`CommonsPost.reaction`, `ChatContent.attachmentKey` and
+`attachmentName`, ADR 2026-10.xhfr, October 2026).** Three nullable fields, each elided when absent, so
+`commonsPost`/`commonsPostFull` and every `ChatContent` fixture stayed put and `vectors/wire-v1.json` only gained
+`commonsPostAttachment` and `commonsReaction`. `CommonsPost.chat` became nullable to carry exactly one of a chat and a
+reaction: the decoder that predates it fails on a post with no `chat` and the member quarantines that blob, which is
+rule 5's outcome (delivered by nobody, an older room's fold left to its own accounting) and the reason no reaction can
+render as an empty bubble on an old build. The two `ChatContent` fields are cleartext only inside a commons' seal and
+read only there: a Nearby room post carrying either has the field dropped on delivery, so the room stays key-less and
+nameless by design. *Metadata cost:* none on the radios; to the spool, nothing — the post is sealed under the room's key,
+and a keyed attachment's address is its ciphertext's, which correlates with nothing outside the room.
+
 **Precedent — the spool plane's second mesh-wire field (`GroupKeyPayload.group`, the founding roster on the
 seed, ADR 2026-09.mjaj, 2026-09-18).** The `gr` precedent above, applied once more to the same payload:
 `GroupKeyPayload` gained the nullable `group: GroupInfo?` — the roster half of the row (`toFoundingInfo`: id,

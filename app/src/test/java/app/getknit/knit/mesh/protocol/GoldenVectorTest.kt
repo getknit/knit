@@ -582,6 +582,27 @@ class GoldenVectorTest {
                             ),
                     ),
                 ),
+            // The commons' follow-ons (spec §7.4, C-7.4-13), additive — nothing above moves. An attachment that names
+            // its type, its own key and (for a file) its name, and a member's reaction in place of the chat.
+            "commonsPostAttachment" to
+                WireCodec.encodePayload(
+                    CommonsPost(
+                        scope = bytes(32, 14),
+                        chat =
+                            ChatContent(
+                                body = "menu",
+                                attachmentHash = hex(bytes(32, 4)),
+                                attachmentMime = "application/pdf",
+                                attachmentSize = 3_000_000L,
+                                attachmentName = "menu.pdf",
+                                attachmentKey = b64(bytes(32, 5)),
+                            ),
+                    ),
+                ),
+            "commonsReaction" to
+                WireCodec.encodePayload(
+                    CommonsPost(scope = bytes(32, 14), reaction = ReactionContent(messageId = frameId(6), emoji = "👍")),
+                ),
             // The seed's founding roster (work item #47): the additive `group` beside `keys` and `gr`. The
             // roster half of GroupInfo only — no photo fields — which is what GroupEntity.toFoundingInfo emits.
             "groupKeyPayloadRoster" to

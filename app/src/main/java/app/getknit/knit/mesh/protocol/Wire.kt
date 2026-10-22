@@ -231,6 +231,14 @@ data class ChatContent(
     // A room video's duration, size and poster (additive; ADR 2026-10.hmfe). Sealed for a DM or a group
     // (`MessageContent.video`), cleartext here like the rest of a room post.
     val video: VideoInfo? = null,
+    // A commons file's name (additive; spec §7.4), so a document keeps it. Sealed for a DM or a group
+    // (`MessageContent.attachmentName`); the Nearby room takes no files, so only a commons post sets it.
+    val attachmentName: String? = null,
+    // A commons attachment's own key (additive; spec §7.4), base64 as `MessageContent.attachmentKey`: its blob is the
+    // ciphertext a fresh key sealed, as a group's is, so its address correlates with nothing — a phone holding the
+    // same picture cannot compute it and ask the radios who else does. Cleartext only inside the room's seal; a
+    // Nearby room post is key-less by design and never sets it.
+    val attachmentKey: String? = null,
 )
 
 /**
@@ -272,18 +280,25 @@ class VideoInfo(
  * Content of a [FrameType.COMMONS] frame: one post in a spool's commons (docs/SPOOL_PROTOCOL.md §7.4).
  * [scope] is the commons' 32-byte scope id, inside the signed bytes on purpose: the outer seal's aad
  * already binds the *blob* to its scope, but a member of two rooms holds both keys and could re-seal
- * room X's signed post into room Y — naming the room here is what makes that fail on open. [chat] is an
- * ordinary [ChatContent] — body, mentions, reply quote — cleartext inside the scope's seal, exactly the
- * broadcast room's shape: every member shares the room key, so there is no recipient to seal for and
- * [ChatContent.enc] MUST be null. Attachments are not carried in this revision (the spool gates them
- * separately); a post naming one is refused.
+ * room X's signed post into room Y — naming the room here is what makes that fail on open.
+ *
+ * Exactly one of the two contents is set:
+ * - [chat] — an ordinary [ChatContent] (body, mentions, reply quote, an attachment), cleartext inside the
+ *   scope's seal, exactly the broadcast room's shape: every member shares the room key, so there is no
+ *   recipient to seal for and [ChatContent.enc] MUST be null. An attachment is sealed to its own key as a
+ *   group's is, the key beside its hash ([ChatContent.attachmentKey]); its ciphertext rides the scope's chunk
+ *   seal (§4.5).
+ * - [reaction] — a member's reaction to a post in this room (additive; C-7.4-13), applied latest-`sentAt`-wins
+ *   per (message, reactor) like every other reaction. A build that predates it fails to decode a post with no
+ *   [chat] and quarantines it, so it never draws an empty bubble.
  *
  * `class` rather than `data class` for the same reason as [WrappedKey]: the byte-string field.
  */
 @Serializable
 class CommonsPost(
     @ByteString val scope: ByteArray,
-    val chat: ChatContent,
+    val chat: ChatContent? = null,
+    val reaction: ReactionContent? = null,
 )
 
 /**

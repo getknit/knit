@@ -491,10 +491,16 @@ data class ChatUiState(
     // that reads that flag is really asking "is this Nearby", and answering yes here would put a stranger's
     // unauthenticated name wherever Knit shows a person it vouches for.
     val isBridged: Boolean = false,
-    // True when this thread is a **commons** — a relay's private room (§7.4). A room: no attachments, no
-    // location, no link cards, no typing cue; but its authors are pinned peers, so every bubble
-    // wears a real name and avatar and taps through to a profile.
+    // True when this thread is a **commons** — a relay's private room (§7.4). A room with no typing cue, taking
+    // what a group takes; its authors are pinned peers, so every bubble wears a real name and avatar and taps
+    // through to a profile.
     val isCommons: Boolean = false,
+    // True for a commons whose relay takes no attachments for it (S-7.4-5, [RelayFacts.textOnlyRooms]): the composer
+    // offers text alone. False while that relay is down, when what it takes is not known.
+    val commonsTextOnly: Boolean = false,
+    // True for a commons its relay does not run ([RelayFacts.staleRooms]): the operator rotated the invite, so the
+    // room has gone quiet for good and the thread says why.
+    val commonsStale: Boolean = false,
     // The UTF-8 bytes a post's words may occupy here, or null in every thread that is not the Meshtastic
     // room. A hard cap rather than the soft LoRa length hint: a Meshtastic frame carries one short line and
     // the transmit path trims a longer one without asking, so the field refuses the overflow while the
@@ -1247,9 +1253,11 @@ class ChatViewModel(
                         attachmentSize = m.attachmentSize,
                         attachmentBytes = heldBytes,
                         // The rule the fetch asks too, so the card shows exactly while the fetch waits on it (ADR
-                        // 2026-10.js2p). A link card is never gated: it never draws a placeholder.
+                        // 2026-10.js2p). A link card is never gated: it never draws a placeholder. Nor is a commons
+                        // attachment: the room's relay brings it whatever Bluetooth would take, and a tap asks no radio.
                         attachmentAwaitsTap =
-                            heldBytes == null &&
+                            !isCommons &&
+                                heldBytes == null &&
                                 m.attachmentHash != null &&
                                 m.attachmentMime != LinkPreviewBlob.MIME &&
                                 BluetoothFetchGate.fastOnly(m.attachmentSize, downloadLimit, m.attachmentFetchApproved, own = mine),
@@ -1374,9 +1382,11 @@ class ChatViewModel(
                         isRoom || isBridged || isCommons -> null
                         else -> group?.photoShownHash ?: peersByNode[conversationId]?.avatarHash
                     },
-                canSendFile = !isRoom && !isBridged && !isCommons,
+                canSendFile = !isRoom && !isBridged && !(isCommons && conversationId in relay.textOnlyRooms),
                 isBridged = isBridged,
                 isCommons = isCommons,
+                commonsTextOnly = isCommons && conversationId in relay.textOnlyRooms,
+                commonsStale = isCommons && conversationId in relay.staleRooms,
                 // 166 bytes on a board that signs (so every post leaves signed), the 200-byte client convention on one that does not.
                 publicPostBudget = if (isBridged) PublicPostPolicy.onAirBudget(mesh.lora.facts.signs) else null,
                 publicChannelKeyIsPublic = mesh.lora.facts.primaryKeyIsPublic,
@@ -1651,11 +1661,11 @@ class ChatViewModel(
             settings.linkPreviewsEnabled.first() &&
             // A card is an attachment, and the bridged room takes none — see [stage]. Read from the id rather
             // than from `loraCarry`, which is None here precisely because the room's length rule is its own.
-            // A commons takes none either, in this revision. A thread that rides LoRa takes a card exactly as
+            // Nor does a commons whose relay takes none. A thread that rides LoRa takes a card exactly as
             // it takes a photo (ADR 2026-09.7x8k): the frame carries its reference under the same body reserve
             // and a board-only reader sees the bare link, which is what the bubble draws for a card it lacks.
             !isBridged &&
-            !isCommons &&
+            !state.value.commonsTextOnly &&
             !audienceCannotRenderCards()
 
     /** One fetch for [url], flagged for the composer's "Loading preview…" line while it runs; stages what it yields. */
@@ -1855,8 +1865,8 @@ class ChatViewModel(
      * reads the disclosure; after that the screen is asked to clear the grant and start.
      */
     fun attachLocation() {
-        if (isBridged || isCommons) {
-            _events.tryEmit(if (isCommons) R.string.chat_commons_text_only else R.string.chat_mesh_text_only)
+        if (isBridged) {
+            _events.tryEmit(R.string.chat_mesh_text_only)
             return
         }
         viewModelScope.launch {
@@ -2052,10 +2062,9 @@ class ChatViewModel(
 
     /**
      * Hands one send to the path its thread kind takes. A commons post has its own (spool only, never the
-     * radios): `sendChat` would read a no-recipient, no-group shape as the Nearby room. Text and a quote only
-     * there — the staging funnel refused everything else already. The group is re-read at send time so it is
-     * never misrouted as a DM in a startup race, and so a pending rename rides this message (its
-     * GroupInfo.name converges last-writer-wins).
+     * radios): `sendChat` would read a no-recipient, no-group shape as the Nearby room. The group is re-read at
+     * send time so it is never misrouted as a DM in a startup race, and so a pending rename rides this message
+     * (its GroupInfo.name converges last-writer-wins).
      */
     private suspend fun route(
         body: String,
@@ -2063,7 +2072,7 @@ class ChatViewModel(
         mentions: List<Mention>,
         replyTo: ReplyRef?,
     ): Boolean {
-        if (isCommons) return meshManager.sendCommons(conversationId, body, mentions, replyTo)
+        if (isCommons) return meshManager.sendCommons(conversationId, body, mentions, replyTo, attachment)
         val group = if (isRoom) null else groups.find(conversationId)
         if (group != null) {
             return meshManager.sendChat(body, attachment, mentions, recipientId = null, group = group.toGroupInfo(), replyTo = replyTo)
@@ -2106,6 +2115,9 @@ class ChatViewModel(
         messageId: String,
         emoji: String,
     ) {
+        // The Meshtastic room has no tapback form: a reaction there would fall through to the manager's cleartext
+        // flood over the radios. A commons posts its own into the room (C-7.4-13), never by that path.
+        if (isBridged) return
         // Tapping the chip you already own retracts — undoing a choice, not making one — so only an add or a
         // replace fronts the recents. Judged from the highlighted chip the user is looking at, after the send.
         val retracting =
@@ -2114,9 +2126,13 @@ class ChatViewModel(
                 ?.reactions
                 ?.any { it.mine && it.emoji == emoji } == true
         viewModelScope.launch {
-            val group = if (isRoom) null else groups.find(conversationId)?.toGroupInfo()
-            val recipientId = if (isRoom || group != null) null else conversationId
-            meshManager.sendReaction(messageId, emoji, recipientId, group)
+            if (isCommons) {
+                if (!meshManager.sendCommonsReaction(conversationId, messageId, emoji)) return@launch
+            } else {
+                val group = if (isRoom) null else groups.find(conversationId)?.toGroupInfo()
+                val recipientId = if (isRoom || group != null) null else conversationId
+                meshManager.sendReaction(messageId, emoji, recipientId, group)
+            }
             if (!retracting) settings.recordReaction(emoji)
         }
     }
@@ -2193,8 +2209,8 @@ class ChatViewModel(
 
     /**
      * Re-encodes a picked video small (ADR 2026-10.hmfe) and stages it, the composer showing the encode's progress
-     * meanwhile. Refused up front where a video can never go — the Meshtastic room and a commons carry text — rather
-     * than after a half-minute encode. A new pick cancels one still encoding, as does [cancelVideoEncoding] and
+     * meanwhile. Refused up front where a video can never go — the Meshtastic room, and a commons whose relay takes
+     * text only — rather than after a half-minute encode. A new pick cancels one still encoding, as does [cancelVideoEncoding] and
      * leaving the chat (the job is the screen's). Every failure speaks: unlike a photo, the user waited for it.
      *
      * [orAsFile] is the file button's pick: a video the encoder cannot read or encode is still a file, so it goes out
@@ -2205,7 +2221,7 @@ class ChatViewModel(
         uri: Uri,
         orAsFile: Boolean = false,
     ) {
-        if (isBridged || isCommons) {
+        if (isBridged || state.value.commonsTextOnly) {
             _events.tryEmit(R.string.chat_video_text_only)
             return
         }
@@ -2529,8 +2545,8 @@ class ChatViewModel(
                         _events.tryEmit(R.string.chat_mesh_text_only)
                     }
 
-                    // A commons carries text only in this revision (the spool gates attachments separately).
-                    isCommons -> {
+                    // A commons whose relay takes no attachments for it (S-7.4-5): the bytes would have no way there.
+                    state.value.commonsTextOnly -> {
                         blobs.deleteIfUnreferenced(result.ingested.hash)
                         _events.tryEmit(R.string.chat_commons_text_only)
                     }

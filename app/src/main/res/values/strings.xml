@@ -1877,7 +1877,7 @@
     <string name="chat_mesh_post_length">%1$d/%2$d</string>
     <string name="chat_mesh_post_length_a11y">Post length: %1$d of %2$d</string>
     <string name="chat_mesh_text_only">The radio channel carries text only</string>
-    <string name="chat_commons_text_only">The commons carries text only</string>
+    <string name="chat_commons_text_only">This relay\'s room takes text only</string>
     <string name="chat_commons_not_joined">Not sent: this phone is no longer in this commons</string>
     <string name="chat_mesh_consent_title">Post to the radio channel?</string>
     <string name="chat_mesh_consent_can_title">Who can see this</string>
@@ -1889,6 +1889,15 @@
     <string name="chat_mesh_consent_decline">Not now</string>
     <string name="chat_mesh_subtitle">Your radio\'s primary channel</string>
     <string name="chat_commons_subtitle">Everyone on this relay</string>
+    <!-- A commons' details screen: its name, its relay, its members and Leave. -->
+    <string name="commons_details_title">Room info</string>
+    <string name="commons_details_relay">On %1$s</string>
+    <string name="commons_details_members">Members</string>
+    <!-- Shown when the relay no longer runs this room: its operator replaced the invite. -->
+    <string name="commons_stale">This room\'s invite changed. Ask the relay\'s operator for the new link.</string>
+    <string name="commons_leave">Leave room</string>
+    <string name="commons_leave_confirm_title">Leave this room?</string>
+    <string name="commons_leave_confirm_action">Leave</string>
 
     <!-- Message details ("Message info", from a message's long-press menu) -->
     <string name="message_details_title">Message info</string>

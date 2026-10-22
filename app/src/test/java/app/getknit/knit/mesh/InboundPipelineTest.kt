@@ -4340,6 +4340,138 @@ class InboundPipelineTest {
             assertTrue(rig.msgMap.isEmpty())
         }
 
+    private fun commonsReaction(
+        author: Party,
+        id: String,
+        messageId: String,
+        emoji: String?,
+    ): Pair<RelayEnvelope, CommonsPost> {
+        val post = CommonsPost(scope = ByteArray(32) { 0xab.toByte() }, reaction = ReactionContent(messageId, emoji))
+        return RelayEnvelope(
+            type = FrameType.COMMONS,
+            id = id,
+            senderId = author.nodeId,
+            sentAt = 7L,
+            payload = WireCodec.encodePayload(post),
+        ) to post
+    }
+
+    @Test
+    fun aCommonsAttachmentKeepsItsNameAndIsNeverWantedOverTheRadios() =
+        runTest {
+            // Its bytes live on the room's relay alone (§7.4): the room's own pass fetches them, never a blob ask.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val file =
+                ChatContent(
+                    body = "menu",
+                    attachmentHash = "ab".repeat(32),
+                    attachmentMime = "application/pdf",
+                    attachmentName = "menu.pdf",
+                    attachmentKey = "a2V5",
+                )
+
+            rig.pipeline.deliverCommonsPost(commonsEnv(alice, "cp1", "menu"), file, room)
+            advanceUntilIdle()
+
+            val row = checkNotNull(rig.msgMap["cp1"])
+            assertEquals("ab".repeat(32), row.attachmentHash)
+            assertEquals("application/pdf", row.attachmentMime)
+            assertEquals("menu.pdf", row.attachmentName)
+            assertEquals("its own key, from inside the room's seal", "a2V5", row.attachmentKey)
+            coVerify(exactly = 0) { rig.blobExchange.want(any(), any(), any(), any(), any(), any()) }
+        }
+
+    @Test
+    fun aNearbyRoomPostCannotNameOrKeyItsAttachment() =
+        runTest {
+            // The cleartext name and key are commons fields; the Nearby room takes no files and seals nothing.
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val post =
+                ChatContent(
+                    body = "pic",
+                    attachmentHash = "cd".repeat(32),
+                    attachmentMime = "image/webp",
+                    attachmentName = "x.exe",
+                    attachmentKey = "a2V5",
+                )
+
+            rig.deliver(
+                alice,
+                RelayEnvelope(
+                    type = FrameType.CHAT,
+                    id = "r1",
+                    senderId = alice.nodeId,
+                    sentAt = 5L,
+                    payload = WireCodec.encodePayload(post),
+                ),
+            )
+            advanceUntilIdle()
+
+            val row = checkNotNull(rig.msgMap["r1"])
+            assertNull(row.attachmentName)
+            assertNull("the Nearby room is key-less by design", row.attachmentKey)
+        }
+
+    @Test
+    fun aCommonsReactionAppliesOnTheFramesSentAtAndNotifiesOnMyPost() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.ownMessage("mine", conversationId = room)
+
+            val (env, post) = commonsReaction(alice, "cr1", messageId = "mine", emoji = "👍")
+            rig.pipeline.deliverCommons(env, post, room)
+            advanceUntilIdle()
+
+            coVerify(exactly = 1) { rig.reactions.apply(ReactionEntity("mine", alice.nodeId, "👍", 7L)) }
+            assertEquals(reactionNotificationKey("mine", alice.nodeId), rig.postedLines().single().key)
+            assertTrue("a commons reaction never leaves for the radios", rig.originated.isEmpty())
+        }
+
+    @Test
+    fun aCommonsReactionReachesOnlyItsRoomsPostsAndKeepsOneNotHeldYet() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.ownMessage("dm1", conversationId = alice.nodeId)
+
+            // An id from another thread is someone naming it from elsewhere: dropped.
+            val (elsewhere, elsewherePost) = commonsReaction(alice, "cr1", messageId = "dm1", emoji = "👍")
+            rig.pipeline.deliverCommons(elsewhere, elsewherePost, room)
+            // A post the unordered listing has not brought yet: kept, for the row to join when it lands.
+            val (early, earlyPost) = commonsReaction(alice, "cr2", messageId = "later", emoji = "🎉")
+            rig.pipeline.deliverCommons(early, earlyPost, room)
+            advanceUntilIdle()
+
+            coVerify(exactly = 0) { rig.reactions.apply(match { it.messageId == "dm1" }) }
+            coVerify(exactly = 1) { rig.reactions.apply(ReactionEntity("later", alice.nodeId, "🎉", 7L)) }
+        }
+
+    @Test
+    fun aCommonsReactionFromABlockedMemberOrWithARefusedEmojiWritesNothing() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            val bob = party()
+            rig.pin(alice)
+            rig.pin(bob)
+            rig.settings.blocked.value = setOf(alice.nodeId)
+
+            val (blocked, blockedPost) = commonsReaction(alice, "cr1", messageId = "m1", emoji = "👍")
+            rig.pipeline.deliverCommons(blocked, blockedPost, room)
+            val (oversized, oversizedPost) = commonsReaction(bob, "cr2", messageId = "m1", emoji = "👍".repeat(17))
+            rig.pipeline.deliverCommons(oversized, oversizedPost, room)
+            advanceUntilIdle()
+
+            coVerify(exactly = 0) { rig.reactions.apply(any()) }
+        }
+
     @Test
     fun aCommonsFrameMetOnARadioIsNeverDelivered() =
         runTest {

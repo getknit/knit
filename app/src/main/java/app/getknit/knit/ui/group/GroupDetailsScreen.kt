@@ -318,10 +318,11 @@ internal fun GroupDetailsScreenContent(
 /**
  * One member row: avatar + display name, tappable to open that member's profile. The local user's own
  * row shows a "You" label instead of an online dot and is not tappable; other members show a live
- * online dot when reachable (matching the contact list / profile-details presence indicator).
+ * online dot when reachable (matching the contact list / profile-details presence indicator). Shared with a
+ * commons' room details, whose members are pinned peers like a group's.
  */
 @Composable
-private fun MemberRow(
+internal fun MemberRow(
     member: GroupMemberRow,
     onOpen: (nodeId: String) -> Unit,
 ) {

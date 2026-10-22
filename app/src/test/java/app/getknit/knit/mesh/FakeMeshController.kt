@@ -141,10 +141,15 @@ class FakeMeshController : MeshController {
         text: String,
         mentions: List<Mention>,
         replyTo: ReplyRef?,
+        attachment: AttachmentStore.Ingested?,
     ): Boolean {
         sentCommons += conversationId to text
+        sentCommonsAttachments += attachment
         return sendCommonsResult
     }
+
+    /** The attachment each [sendCommons] carried, in order (null for text alone). */
+    val sentCommonsAttachments = mutableListOf<AttachmentStore.Ingested?>()
 
     /** Whether a screen asked the plane to re-derive its scope table (a commons joined or left). */
     var relaysRefreshed = false
@@ -168,6 +173,18 @@ class FakeMeshController : MeshController {
         group: GroupInfo?,
     ) {
         sentReactions += (messageId to emoji)
+    }
+
+    /** Commons reactions passed to [sendCommonsReaction], as (conversation, message, emoji), in order. */
+    val sentCommonsReactions = mutableListOf<Triple<String, String, String>>()
+
+    override suspend fun sendCommonsReaction(
+        conversationId: String,
+        messageId: String,
+        emoji: String,
+    ): Boolean {
+        sentCommonsReactions += Triple(conversationId, messageId, emoji)
+        return sendCommonsResult
     }
 
     override suspend fun sendTyping(conversationId: String) {

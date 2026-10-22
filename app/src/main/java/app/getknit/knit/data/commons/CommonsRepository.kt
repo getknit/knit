@@ -12,6 +12,8 @@ import app.getknit.knit.mesh.spool.CommonsMember
 import app.getknit.knit.mesh.spool.CommonsRoom
 import app.getknit.knit.mesh.spool.CommonsRoots
 import app.getknit.knit.mesh.spool.CommonsStore
+import app.getknit.knit.mesh.spool.ScopeAttachments
+import app.getknit.knit.mesh.spool.commonsReactionTarget
 import app.getknit.knit.mesh.spool.hex
 import kotlinx.coroutines.flow.Flow
 
@@ -79,10 +81,38 @@ class CommonsRepository(
         }
     }
 
+    override suspend fun postReaction(
+        conversationId: String,
+        messageId: String,
+        frameId: String,
+        sentAt: Long,
+        sig: ByteArray,
+        signed: ByteArray,
+    ) {
+        db.withWriteTransaction {
+            val superseded = dao.outboxFor(conversationId).filter { commonsReactionTarget(it.signed) == messageId }.map { it.frameId }
+            if (superseded.isNotEmpty()) dao.deleteOutbox(superseded)
+            dao.putOutbox(
+                CommonsOutboxEntity(frameId = frameId, conversationId = conversationId, sig = sig, signed = signed, sentAt = sentAt),
+            )
+        }
+    }
+
     override suspend fun frames(conversationId: String): List<CarriedFrame> =
         dao.outboxFor(conversationId).mapNotNull { row ->
             WireCodec.decodeEnvelope(row.signed)?.let { CarriedFrame(envelope = it, sig = row.sig, signed = row.signed) }
         }
+
+    override suspend fun attachmentRefs(
+        conversationId: String,
+        selfId: String,
+        since: Long,
+        skip: Set<String>,
+        limit: Int,
+    ): List<ScopeAttachments.Ref> =
+        messages
+            .commonsAttachmentsMissing(conversationId, selfId, since, skip.toList(), limit)
+            .map { ScopeAttachments.Ref(it.hash, it.mime, it.sentAt) }
 
     override suspend fun recordMember(
         conversationId: String,

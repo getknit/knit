@@ -2,6 +2,9 @@ package app.getknit.knit.mesh.spool
 
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.mesh.CarriedFrame
+import app.getknit.knit.mesh.protocol.CommonsPost
+import app.getknit.knit.mesh.protocol.FrameType
+import app.getknit.knit.mesh.protocol.WireCodec
 
 /** One joined commons as the plane sees it: where it lives, what unlocks it, what to call it. */
 class CommonsRoom(
@@ -40,6 +43,34 @@ interface CommonsStore {
         signed: ByteArray,
     )
 
+    /**
+     * Stores our own reaction to [messageId] in [conversationId] as the frame it was signed as, and drops from the
+     * outbox our earlier reaction to the same post ([commonsReactionTarget]): it is superseded latest-stamp-wins on
+     * every reader (C-7.4-13), so pushing it again could only spend the room's frames. No message row: a reaction
+     * lives in the reactions table, which the caller has already written.
+     */
+    suspend fun postReaction(
+        conversationId: String,
+        messageId: String,
+        frameId: String,
+        sentAt: Long,
+        sig: ByteArray,
+        signed: ByteArray,
+    )
+
+    /**
+     * The attachments other members' posts in [conversationId] name and this device lacks, sent since [since], newest
+     * first, at most [limit], none of [skip] (spec §7.4). A received post is never held, so the room's attachment pass
+     * reads what to fetch from here, not from a frame; our own come from [frames], and are the only ones it pushes.
+     */
+    suspend fun attachmentRefs(
+        conversationId: String,
+        selfId: String,
+        since: Long,
+        skip: Set<String>,
+        limit: Int,
+    ): List<ScopeAttachments.Ref> = emptyList()
+
     /** Notes that [nodeId]'s frame was pulled from [conversationId] — idempotent, stamps the latest sighting. */
     suspend fun recordMember(
         conversationId: String,
@@ -69,3 +100,9 @@ class CommonsMember(
     val nodeId: String,
     val seenAt: Long,
 )
+
+/** The post a signed commons frame reacts to, when it is a reaction (C-7.4-13); null for a post or anything else. */
+fun commonsReactionTarget(signed: ByteArray): String? {
+    val env = WireCodec.decodeEnvelope(signed)?.takeIf { it.type == FrameType.COMMONS } ?: return null
+    return WireCodec.decodePayload<CommonsPost>(env.payload)?.reaction?.messageId
+}

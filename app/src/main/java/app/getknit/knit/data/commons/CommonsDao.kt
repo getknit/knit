@@ -46,6 +46,9 @@ interface CommonsDao {
     @Query("DELETE FROM commons_outbox WHERE conversationId = :conversationId")
     suspend fun deleteOutboxFor(conversationId: String)
 
+    @Query("DELETE FROM commons_outbox WHERE frameId IN (:frameIds)")
+    suspend fun deleteOutbox(frameIds: List<String>)
+
     @Query("DELETE FROM commons_outbox WHERE sentAt < :before")
     suspend fun sweepOutbox(before: Long)
 
