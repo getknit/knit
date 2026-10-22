@@ -282,10 +282,10 @@ internal fun VideoBubble(
                         modifier = Modifier.padding(12.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        ArrivalIndicator(key = hash, arrival = arrival, size = 24.dp)
+                        ArrivalIndicator(key = hash, arrival = arrival, size = 24.dp, stopped = wait.stopped)
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            arrival?.let { arrivalText(it) } ?: stringResource(R.string.chat_video_loading),
+                            arrival?.let { arrivalText(it) } ?: attachmentWaitTitle(wait) ?: stringResource(R.string.chat_video_loading),
                             style = MaterialTheme.typography.labelSmall,
                             color = Color.White,
                             textAlign = TextAlign.Center,

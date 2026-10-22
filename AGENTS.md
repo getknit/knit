@@ -596,7 +596,8 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `SpoolStatus.staleCommons`, `RelayFacts.staleRooms`):** READ ADR 2026-10.xhfr. A reaction rides the room and never
   `sendReaction` (its fallback flooded a private room's message in cleartext); an attachment is keyed like a group's,
   pushed only by its author and fetched only through the scope, so no radio path — a want, a tap, a fetch row — may
-  treat a `c-` row like a Nearby one; and a commons SUB declares a TTL one millisecond short on purpose.
+  treat a `c-` row like a Nearby one; and a commons SUB declares a TTL one millisecond short on purpose — once per
+  connection for a room already stale, which takes no post while it stays so.
   **Hidden in shipped builds** behind `BuildConfig.COMMONS` (on in debug, off in release, `-Pcommons=`
   overrides): the one seam is the `CommonsStore` the DI hands `MeshManager`, `InternetRelayViewModel` and
   `CommonsDetailsViewModel`, null while dark — don't add a second gate downstream of it; flip the release default

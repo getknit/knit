@@ -90,7 +90,7 @@ fun FileAttachmentBubble(
             arriving?.let { arrivalText(it) },
             sizeBytes?.takeUnless { arriving?.fraction != null }?.let { Formatter.formatShortFileSize(context, it) },
             FileTypes.extensionOf(name).uppercase().ifEmpty { null },
-            if (ready || arriving != null) null else stringResource(R.string.chat_file_loading),
+            if (ready || arriving != null) null else attachmentWaitTitle(wait) ?: stringResource(R.string.chat_file_loading),
         ).joinToString(SEPARATOR)
 
     // The card paints its own container, so it has to carry the matching content colour too. Without
@@ -129,7 +129,7 @@ fun FileAttachmentBubble(
                         contentDescription = null,
                     )
                 } else {
-                    ArrivalIndicator(key = hash, arrival = arriving, size = 20.dp)
+                    ArrivalIndicator(key = hash, arrival = arriving, size = 20.dp, stopped = wait.stopped)
                 }
             }
             Column(

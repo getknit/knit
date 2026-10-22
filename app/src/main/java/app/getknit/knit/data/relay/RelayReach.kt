@@ -185,6 +185,18 @@ enum class AttachmentWait {
 
     /** A connected relay covers the thread, but none of the connected relays carries attachments (spec §7.3). */
     RelayFramesOnly,
+
+    /** A commons whose relay is connected and takes its attachments: the bytes come from there, and only there. */
+    CommonsRelay,
+
+    /** A commons whose relay is not connected: nothing brings the bytes until it is. */
+    CommonsOffline,
+
+    /** A commons whose relay takes no attachments for it (S-7.4-5): nothing will bring the bytes. */
+    CommonsTextOnly,
+
+    /** A commons its relay no longer runs (a rotated invite): nothing will bring the bytes. */
+    CommonsGone,
 }
 
 /**
@@ -319,16 +331,35 @@ fun attachmentReach(
  * promise about a relay that is not there — and since `SpoolStatus.connected` requires a completed hello,
  * a route that swallows the socket is not there either. The line names the connected set honestly and
  * flips by itself the moment that relay is back. Anything short of [RelayReach.Covered] says nothing:
- * an outage stays silent for the reason [reachFor] gives, and the room's exclusion has its own notice.
+ * an outage stays silent for the reason [reachFor] gives, and the room's exclusion has its own notice. A commons
+ * is the exception: its one relay is the only way the bytes can come, so it always says which state that relay
+ * is in ([AttachmentWait.CommonsRelay] and its three siblings).
  */
 fun attachmentWait(
     conversationId: String,
     facts: RelayFacts,
 ): AttachmentWait =
     when {
+        // A commons attachment never touches the radios (ADR 2026-10.xhfr): its one relay is the whole answer,
+        // and "nearby" or "your relays" would both be untrue.
+        Conversations.kindFor(conversationId) == ConversationKind.COMMONS -> commonsWait(conversationId, facts)
+
         reachFor(conversationId, facts) != RelayReach.Covered -> AttachmentWait.Nearby
+
         facts.maxAttachBytes != null && conversationId !in facts.textOnlyRooms -> AttachmentWait.Relay
+
         else -> AttachmentWait.RelayFramesOnly
+    }
+
+private fun commonsWait(
+    conversationId: String,
+    facts: RelayFacts,
+): AttachmentWait =
+    when {
+        conversationId in facts.staleRooms -> AttachmentWait.CommonsGone
+        reachFor(conversationId, facts) != RelayReach.Covered -> AttachmentWait.CommonsOffline
+        conversationId in facts.textOnlyRooms -> AttachmentWait.CommonsTextOnly
+        else -> AttachmentWait.CommonsRelay
     }
 
 /**

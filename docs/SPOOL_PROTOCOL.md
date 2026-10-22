@@ -1012,8 +1012,10 @@ spool cannot read its own commons" structural rather than a promise.
 > reference client declares the HELLO's bounds with `ttlMs` one millisecond short and reads a DIGEST that
 > echoes its own declaration — what an ordinary scope applies — as "not this spool's commons"; and a creation
 > gate asked for it (`err pow`, `err quota`) says the same (S-7.4-3). The client then stops subscribing that
-> room on that spool, so it keeps no junk scope alive there, and tells its user to ask the operator for the
-> new link. A HELLO that advertises no commons at all reads the same way for every room joined there.
+> room on that spool for the rest of the connection, so it keeps no junk scope alive there, takes no new post
+> in it, and tells its user to ask the operator for the new link. Each new connection asks once more, so a
+> slip the operator fixes (a restart without the room's setting, a reverted invite) opens the room again. A
+> HELLO that advertises no commons at all reads the same way for every room joined there.
 >
 > **Why members are contacts (client policy, non-normative).** The invite is the trust boundary the operator
 > drew, so the reference client accepts every member it sees in the room as a contact, and bootstraps a DM

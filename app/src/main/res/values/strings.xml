@@ -214,6 +214,16 @@
     <string name="chat_attachment_wait_relay">Can also arrive over the Internet through your relays</string>
     <string name="chat_attachment_wait_frames_only">Your connected relays carry messages only</string>
     <!--
+      A commons attachment's placeholder (ADR 2026-10.xhfr): the room's relay is the only thing that can bring its
+      bytes, so these replace both lines above, whose "a device that has it" and other relays are never true there.
+    -->
+    <string name="chat_commons_attachment_coming">Coming from this room\'s relay</string>
+    <string name="chat_commons_attachment_offline">Arrives when this room\'s relay is connected</string>
+    <string name="chat_commons_attachment_text_only">This room carries messages only</string>
+    <string name="chat_commons_attachment_text_only_hint">Its relay doesn\'t take photos or files</string>
+    <string name="chat_commons_attachment_gone">No longer carried here</string>
+    <string name="chat_commons_attachment_gone_hint">This room\'s invite changed</string>
+    <!--
       In place of a missing attachment's first line while its bytes stream in over a nearby link (#115): how much
       has crossed, against the size the sender's phone declared. The bytes alone when it declared none.
     -->
@@ -1799,6 +1809,18 @@
     <string name="chat_relay_locked_title">Your relays are not taking files from this phone</string>
     <string name="chat_relay_locked_body">They take attachments from phones with a ticket for sending files, up to a daily amount for each ticket. This phone has none there, or has sent today\'s amount, so this one is not being uploaded. It still arrives when you and %1$s are in Wi-Fi or Bluetooth range of each other, and attachments sent to you still come through your relays.</string>
     <string name="chat_relay_staged_locked">Nearby only — your relays are not taking your files</string>
+    <!-- The same three causes in a commons, where nothing else carries an attachment the room's relay will not. -->
+    <string name="chat_relay_commons_not_uploaded">Not uploaded</string>
+    <string name="chat_relay_commons_not_uploaded_desc">The room won\'t receive this attachment</string>
+    <string name="chat_relay_commons_unsupported_title">This room carries messages only</string>
+    <string name="chat_relay_commons_unsupported_body">Its relay doesn\'t take attachments, so this one is not being uploaded, and the room won\'t see it.</string>
+    <string name="chat_relay_commons_too_large_title">Too large for this room\'s relay</string>
+    <string name="chat_relay_commons_too_large_body">This attachment is bigger than the room\'s relay takes from this phone, so it is not being uploaded, and the room won\'t see it.</string>
+    <string name="chat_relay_commons_locked_title">This room\'s relay is not taking files from this phone</string>
+    <string name="chat_relay_commons_locked_body">It takes attachments from phones with a ticket for sending files, up to a daily amount for each ticket. This phone has none there, or has sent today\'s amount, so this one is not being uploaded, and the room won\'t see it.</string>
+    <string name="chat_relay_commons_staged_too_large">Won\'t reach the room — too large for its relay</string>
+    <string name="chat_relay_commons_staged_unsupported">Won\'t reach the room — it carries messages only</string>
+    <string name="chat_relay_commons_staged_locked">Won\'t reach the room — its relay is not taking your files</string>
     <!-- The free-ticket notice (docs/VOICE_CALLS.md C-7.6-34), shown once before this phone first contacts a free
          issuer; %1$s is that issuer's host name. Name no product, price or shop, and never "Get" or "Upgrade"; the
          daily amount is a sending allowance, never storage. -->
@@ -1895,6 +1917,7 @@
     <string name="commons_details_members">Members</string>
     <!-- Shown when the relay no longer runs this room: its operator replaced the invite. -->
     <string name="commons_stale">This room\'s invite changed. Ask the relay\'s operator for the new link.</string>
+    <string name="commons_stale_footer">This room no longer takes new messages</string>
     <string name="commons_leave">Leave room</string>
     <string name="commons_leave_confirm_title">Leave this room?</string>
     <string name="commons_leave_confirm_action">Leave</string>

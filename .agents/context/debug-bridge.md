@@ -196,7 +196,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   a reaction in the room (C-7.4-13), and no extras dumps every joined room with its members, `attach` (whether the
   room's relay takes its attachments, S-7.4-5; null while it is down) and `stale` (the relay does not run this room:
   a rotated invite, or no commons there).
-  `…debug.SEND --es conv <c-…>` posts into it (with `--es replyTo <id>` for a quote), `…debug.STATE --es conv
+  `…debug.SEND --es conv <c-…>` posts into it (with `--es replyTo <id>` for a quote), `…debug.SENDIMG --es conv
+  <c-…>` posts an attachment (any of its doors; keyed, and carried by the room's relay alone), `…debug.STATE --es conv
   <c-…>` reads it back (`received` flips once a member's sealed tick lands over that pair's DM scope — the
   group's route, never the room's), and `…debug.SPOOL` shows the room's scope under the **bound relay only** plus the
   relay's advertised `commons` block. The convergence oracle is the same `local`/`spool` pair — everything a

@@ -1197,7 +1197,7 @@ internal fun ChatScreenContent(
                                 // Gone while a position is staged: the tile above the field already carries
                                 // Refresh, and a second entry that restarted the same fix would only look like
                                 // it did something else.
-                                if (stagedLocation == null) {
+                                if (stagedLocation == null && !state.commonsStale) {
                                     DropdownMenuItem(
                                         text = { Text(stringResource(R.string.chat_attach_location)) },
                                         leadingIcon = { Icon(Icons.Filled.LocationOn, contentDescription = null) },
@@ -1292,21 +1292,28 @@ internal fun ChatScreenContent(
             // type into: the composer gives way to a line saying so. A radio that is merely down keeps the
             // composer — that state flaps on every Bluetooth reconnect, and unmounting the field would drop
             // the keyboard mid-sentence — and only the hint changes.
-            when (state.publicPostGate) {
-                PublicPostGate.NoRadio -> {
-                    MeshRoomFooter(stringResource(R.string.chat_mesh_no_radio))
+            // A commons its relay no longer runs takes nothing more (a rotated invite): its history stays readable,
+            // and the field gives way to a line saying so, as the Meshtastic room's does with no radio.
+            when {
+                state.commonsStale -> {
+                    ComposerFooter(stringResource(R.string.commons_stale_footer), tag = "chat_commons_stale_footer")
                 }
 
-                PublicPostGate.ChannelUnusable -> {
-                    MeshRoomFooter(stringResource(R.string.chat_mesh_channel_unusable))
+                state.publicPostGate == PublicPostGate.NoRadio -> {
+                    ComposerFooter(stringResource(R.string.chat_mesh_no_radio))
                 }
 
-                PublicPostGate.Open, PublicPostGate.RadioDown -> {
+                state.publicPostGate == PublicPostGate.ChannelUnusable -> {
+                    ComposerFooter(stringResource(R.string.chat_mesh_channel_unusable))
+                }
+
+                else -> {
                     MessageInput(
                         state = inputState,
                         isSending = isSending,
                         pendingAttachment = pendingAttachment,
                         stagedAttachmentRelay = stagedAttachmentRelay,
+                        relayIsCommons = state.isCommons,
                         candidates = state.mentionCandidates,
                         everyone = state.everyoneMentions,
                         replyingTo = replyingTo,
@@ -1524,8 +1531,11 @@ internal fun ChatScreenContent(
                                         onOpenProfile = onOpenProfile,
                                         onReact = onReact,
                                         // The Meshtastic room has no tapback form, so it offers no emoji row and a tap can
-                                        // never fall through to the radios' cleartext flood.
-                                        canReact = !state.isBridged,
+                                        // never fall through to the radios' cleartext flood. A stale commons takes no
+                                        // reaction or reply either: nothing posted there reaches anyone.
+                                        canReact = !state.isBridged && !state.commonsStale,
+                                        canReply = !state.commonsStale,
+                                        relayIsCommons = state.isCommons,
                                         quickReactions = quickReactions,
                                         onMoreReactions = { emojiSheetFor = it },
                                         onReply = { msg ->
@@ -1756,9 +1766,12 @@ internal fun ChatScreenContent(
             title = {
                 Text(
                     stringResource(
-                        when (cause) {
-                            AttachmentRelay.Unsupported -> R.string.chat_relay_unsupported_title
-                            AttachmentRelay.Locked -> R.string.chat_relay_locked_title
+                        when {
+                            state.isCommons && cause == AttachmentRelay.Unsupported -> R.string.chat_relay_commons_unsupported_title
+                            state.isCommons && cause == AttachmentRelay.Locked -> R.string.chat_relay_commons_locked_title
+                            state.isCommons -> R.string.chat_relay_commons_too_large_title
+                            cause == AttachmentRelay.Unsupported -> R.string.chat_relay_unsupported_title
+                            cause == AttachmentRelay.Locked -> R.string.chat_relay_locked_title
                             else -> R.string.chat_relay_too_large_title
                         },
                     ),
@@ -1767,9 +1780,18 @@ internal fun ChatScreenContent(
             text = {
                 Text(
                     stringResource(
-                        when (cause) {
-                            AttachmentRelay.Unsupported -> R.string.chat_relay_unsupported_body
-                            AttachmentRelay.Locked -> R.string.chat_relay_locked_body
+                        when {
+                            // No peer to name: in a commons nothing else carries it, so there is no "arrives when".
+                            state.isCommons && cause == AttachmentRelay.Unsupported -> R.string.chat_relay_commons_unsupported_body
+
+                            state.isCommons && cause == AttachmentRelay.Locked -> R.string.chat_relay_commons_locked_body
+
+                            state.isCommons -> R.string.chat_relay_commons_too_large_body
+
+                            cause == AttachmentRelay.Unsupported -> R.string.chat_relay_unsupported_body
+
+                            cause == AttachmentRelay.Locked -> R.string.chat_relay_locked_body
+
                             else -> R.string.chat_relay_too_large_body
                         },
                         other,
@@ -2110,11 +2132,14 @@ private fun DirectTransferConsentBody(
  * text field is a puzzle — the user taps it, nothing happens, and nothing explains why.
  */
 @Composable
-private fun MeshRoomFooter(text: String) {
+private fun ComposerFooter(
+    text: String,
+    tag: String = "chat_mesh_footer",
+) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.fillMaxWidth().testTag("chat_mesh_footer"),
+        modifier = Modifier.fillMaxWidth().testTag(tag),
     ) {
         Text(
             text = text,
@@ -2214,7 +2239,11 @@ private fun EncryptionBadge(onClick: () -> Unit) {
  * appears and then quietly disappears once a retry succeeds; see `attachmentReach`.
  */
 @Composable
-private fun ColumnScope.NearbyOnlyMarker(onClick: () -> Unit) {
+private fun ColumnScope.NearbyOnlyMarker(
+    // In a commons nothing else carries the attachment, so the marker says it was not uploaded at all.
+    commons: Boolean = false,
+    onClick: () -> Unit,
+) {
     Row(
         modifier =
             Modifier
@@ -2228,12 +2257,13 @@ private fun ColumnScope.NearbyOnlyMarker(onClick: () -> Unit) {
     ) {
         Icon(
             imageVector = Icons.Filled.CloudOff,
-            contentDescription = stringResource(R.string.chat_relay_nearby_only_desc),
+            contentDescription =
+                stringResource(if (commons) R.string.chat_relay_commons_not_uploaded_desc else R.string.chat_relay_nearby_only_desc),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(12.dp),
         )
         Text(
-            text = stringResource(R.string.chat_relay_nearby_only),
+            text = stringResource(if (commons) R.string.chat_relay_commons_not_uploaded else R.string.chat_relay_nearby_only),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -2264,6 +2294,10 @@ private fun MessageBubble(
     // False where the thread carries no reaction (the long-press menu keeps its actions, minus the emoji row);
     // defaulted for previews.
     canReact: Boolean = true,
+    // False where nothing can be posted (a stale commons), so the long-press menu offers no Reply.
+    canReply: Boolean = true,
+    // A commons, where an attachment its relay will not take reaches nobody: the marker says so, not "Nearby only".
+    relayIsCommons: Boolean = false,
     // The long-press menu's quick-reaction row and its "+" (opens the full picker); defaulted for previews.
     quickReactions: List<String> = RecentReactions.DEFAULTS,
     onMoreReactions: (messageId: String) -> Unit = {},
@@ -2671,7 +2705,7 @@ private fun MessageBubble(
                         // visually separate. This says the photo will not take the Internet shortcut; the
                         // tick below still reports whether the message itself got there.
                         if (row.attachmentRelay.marksNearbyOnly()) {
-                            NearbyOnlyMarker(onClick = { onExplainRelay(row.attachmentRelay) })
+                            NearbyOnlyMarker(commons = relayIsCommons, onClick = { onExplainRelay(row.attachmentRelay) })
                         }
                         Row(
                             modifier = Modifier.align(Alignment.End),
@@ -2782,10 +2816,15 @@ private fun MessageBubble(
                             showPicker = false
                             onMoreReactions(row.id)
                         },
-                        onReply = {
-                            onReply(row)
-                            showPicker = false
-                        },
+                        onReply =
+                            if (canReply) {
+                                {
+                                    onReply(row)
+                                    showPicker = false
+                                }
+                            } else {
+                                null
+                            },
                         // Image-only messages have no text to copy, so omit the action; a voice note with none copies
                         // its transcript, where it has one (ADR 2026-10.am8d).
                         onCopy =
@@ -2961,7 +3000,8 @@ private fun ReactionPicker(
     onPick: (String) -> Unit,
     // The trailing "+": opens the full emoji picker for this message.
     onMore: () -> Unit,
-    onReply: () -> Unit,
+    // Null where nothing can be posted (a stale commons): no Reply action.
+    onReply: (() -> Unit)?,
     onCopy: (() -> Unit)?,
     onDetails: () -> Unit,
     onDelete: () -> Unit,
@@ -3040,11 +3080,13 @@ private fun ReactionPicker(
                     HorizontalDivider()
                 }
                 // Reply leads the action list (Signal-style: it's the primary action).
-                PickerAction(
-                    icon = Icons.AutoMirrored.Filled.Reply,
-                    label = stringResource(R.string.chat_action_reply),
-                    onClick = onReply,
-                )
+                if (onReply != null) {
+                    PickerAction(
+                        icon = Icons.AutoMirrored.Filled.Reply,
+                        label = stringResource(R.string.chat_action_reply),
+                        onClick = onReply,
+                    )
+                }
                 if (onCopy != null) {
                     PickerAction(
                         icon = Icons.Filled.ContentCopy,
@@ -3399,10 +3441,10 @@ private fun AttachmentImage(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    ArrivalIndicator(key = hash, arrival = arrival, size = 24.dp)
+                    ArrivalIndicator(key = hash, arrival = arrival, size = 24.dp, stopped = wait.stopped)
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        arrival?.let { arrivalText(it) } ?: stringResource(R.string.chat_loading_photo),
+                        arrival?.let { arrivalText(it) } ?: attachmentWaitTitle(wait) ?: stringResource(R.string.chat_loading_photo),
                         style = MaterialTheme.typography.labelSmall,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(horizontal = 12.dp),
@@ -3921,6 +3963,8 @@ private fun MessageInput(
     isSending: Boolean = false,
     pendingAttachment: AttachmentStore.Ingested?,
     stagedAttachmentRelay: AttachmentRelay = AttachmentRelay.Silent,
+    // A commons: the staged caption says the room won't get an attachment its relay refuses, not "Nearby only".
+    relayIsCommons: Boolean = false,
     candidates: List<MentionCandidate>,
     // What the `@everyone` row would mention, or null where the row is not offered (see [everyoneMentions]).
     everyone: List<Mention>? = null,
@@ -4211,6 +4255,7 @@ private fun MessageInput(
                     AttachmentPreview(
                         attachment = pendingAttachment,
                         relay = stagedAttachmentRelay,
+                        commons = relayIsCommons,
                         onClear = onClearAttachment,
                     )
                 }
@@ -4905,14 +4950,18 @@ private fun ReplyPreview(
 private fun AttachmentPreview(
     attachment: AttachmentStore.Ingested,
     relay: AttachmentRelay,
+    commons: Boolean = false,
     onClear: () -> Unit,
 ) {
     val caption =
-        when (relay) {
-            AttachmentRelay.TooLarge -> R.string.chat_relay_staged_too_large
-            AttachmentRelay.Unsupported -> R.string.chat_relay_staged_unsupported
-            AttachmentRelay.Locked -> R.string.chat_relay_staged_locked
-            AttachmentRelay.Silent, AttachmentRelay.Relayable -> null
+        when {
+            relay == AttachmentRelay.TooLarge && commons -> R.string.chat_relay_commons_staged_too_large
+            relay == AttachmentRelay.Unsupported && commons -> R.string.chat_relay_commons_staged_unsupported
+            relay == AttachmentRelay.Locked && commons -> R.string.chat_relay_commons_staged_locked
+            relay == AttachmentRelay.TooLarge -> R.string.chat_relay_staged_too_large
+            relay == AttachmentRelay.Unsupported -> R.string.chat_relay_staged_unsupported
+            relay == AttachmentRelay.Locked -> R.string.chat_relay_staged_locked
+            else -> null
         }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Box {

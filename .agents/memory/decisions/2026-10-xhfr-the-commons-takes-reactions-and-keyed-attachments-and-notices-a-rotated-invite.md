@@ -53,16 +53,29 @@ sign that the operator had replaced the invite (a rotated room simply went quiet
   spool running the room substitutes its pinned bounds (S-7.4-2); a rotated id is an ordinary scope whose store
   applies what we declared (both of knit-spool's stores do), so a DIGEST echoing anything but the HELLO's TTL — or a
   creation gate asked for it (S-7.4-3) — marks it stale (`ScopeSync.markStale`). A stale room leaves `mine()` for the
-  worker's life, so we keep no junk scope alive on the operator's relay; a HELLO with no commons marks every room
-  joined there. `SpoolStatus.staleCommons` → `RelayFacts.staleRooms` drives a notice in the room, on the relay row and
-  in the details.
+  rest of the connection, so we keep no junk scope alive on the operator's relay; each new connection probes it once
+  more (`ScopeSync`'s `reprobing`), still reported stale meanwhile, and a DIGEST with the pinned bounds clears it, so
+  a slip the operator fixes (a restart without the room's setting, a reverted invite) opens the room again without an
+  app restart. A HELLO with no commons marks every room joined there, for that connection only.
+  `SpoolStatus.staleCommons` → `RelayFacts.staleRooms` drives a notice in the room, on the relay row and in the
+  details, and the room takes nothing more: its composer gives way to a footer and it offers no reaction, reply or
+  location (`ChatViewModel.send` and `react` refuse one too).
+- **What a room cannot carry says so.** A commons attachment waits on its one relay, so its placeholder names that
+  relay's state (`AttachmentWait.CommonsRelay`, `CommonsOffline`, `CommonsTextOnly`, `CommonsGone`) instead of "a
+  device that has it", and the sender's marker reads "Not uploaded" with a room-worded explanation instead of "Nearby
+  only".
+- **Our own frames come back accounted.** A member's own commons frame pulled back from the spool — a reaction its
+  newer one superseded in the outbox, which the spool keeps to its TTL — is accounted and never applied or parked
+  (`ScopeSync.acceptCommonsPost`): the app pins no key for itself, so it would park, then be quarantined, and the
+  reactor's own room would never read converged. Found on the device trial.
 
 **What it costs.** Two additive `ChatContent` fields and one `CommonsPost` field (vectors `commonsPostAttachment`,
-`commonsReaction`); a SUB that differs from the HELLO by a millisecond; a stale verdict held in memory (one SUB per
-process start to re-learn it, and a stale room returns only after a restart if an operator ever reverts an invite). A
+`commonsReaction`); a SUB that differs from the HELLO by a millisecond; a stale verdict held in memory (one probe SUB
+per connection to re-learn it, which keeps a junk scope at the operator's relay alive for that connection). A
 spool that does not substitute its pinned bounds breaks S-7.4-2 and would read every room as stale. Not covered: typing
 (the cast lane is DM-scope only and experimental), carrying posts over the radios, the release flip. **The trap:** a
 reaction in a commons must never reach `sendReaction`, and nothing that serves or asks for blobs may treat a commons
-row like a Nearby one. Kept true by `CommonsSyncTest` (reactions, attachments, the fetch loop, the four stale cases),
+row like a Nearby one. Kept true by `CommonsSyncTest` (reactions, our own superseded reaction pulled back, attachments, the fetch loop, the stale
+cases and their re-probe),
 `ScopeFramesTest`'s commons arms, `MessageDaoTest`, `InboundPipelineTest`'s commons door, `MeshManagerTest`
 (`aReactionAddressedToARoomIdIsRefused…`) and `GoldenVectorTest`.

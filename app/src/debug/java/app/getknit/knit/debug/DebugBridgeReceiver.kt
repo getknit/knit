@@ -824,9 +824,9 @@ class DebugBridgeReceiver :
                     return reply("error", "the Meshtastic room carries text only: $conv")
                 }
 
-                // So does a commons, in this revision.
+                // Keyed and relay-only (ADR 2026-10.xhfr); false when the room is not joined or the seal failed.
                 ConversationKind.COMMONS -> {
-                    return reply("error", "a commons carries text only: $conv")
+                    mesh.sendCommons(conv, text, emptyList(), replyTo = null, attachment = ingested)
                 }
             }
         return when (sent) {

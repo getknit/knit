@@ -4,6 +4,7 @@ import android.text.format.Formatter
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.outlined.Downloading
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -26,7 +27,8 @@ import app.getknit.knit.ui.theme.KnitMotion
  * (#115). While they stream in against a declared total, a ring fills toward it; while they stream in with no
  * total (a sender whose build predates the field, or one the bytes have overrun), a still download glyph, and
  * the count beside it ([arrivalText]) shows the movement; before any link carries them, the [WaitingIndicator]
- * that settles to an hourglass (#72).
+ * that settles to an hourglass (#72) — or, when nothing will ever bring them ([stopped]: a commons whose relay takes no
+ * attachments or no longer runs the room), the cloud-off glyph at once, since a wait that cannot end is no wait.
  *
  * Nothing here is infinite: the ring eases to each new sample on a finite spec, so a stalled transfer lets
  * Compose idle like a settled screen (ADR 047), and it is the plain determinate indicator — the wavy one
@@ -39,6 +41,7 @@ internal fun ArrivalIndicator(
     size: Dp,
     modifier: Modifier = Modifier,
     color: Color = LocalContentColor.current,
+    stopped: Boolean = false,
 ) {
     val fraction = arrival?.fraction
     when {
@@ -61,6 +64,15 @@ internal fun ArrivalIndicator(
                 contentDescription = null,
                 tint = color,
                 modifier = modifier.size(size).testTag("chat_attachment_arriving"),
+            )
+        }
+
+        stopped -> {
+            Icon(
+                Icons.Filled.CloudOff,
+                contentDescription = null,
+                tint = color,
+                modifier = modifier.size(size).testTag("chat_attachment_stopped"),
             )
         }
 

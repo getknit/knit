@@ -67,6 +67,8 @@ import app.getknit.knit.ui.chat.ArrivalIndicator
 import app.getknit.knit.ui.chat.VoiceSpeechView
 import app.getknit.knit.ui.chat.arrivalText
 import app.getknit.knit.ui.chat.attachmentWaitHint
+import app.getknit.knit.ui.chat.attachmentWaitTitle
+import app.getknit.knit.ui.chat.stopped
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.theme.KnitMotion
 
@@ -179,11 +181,11 @@ fun VoiceNoteBubble(
             modifier = modifier.width(BUBBLE_WIDTH).padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ArrivalIndicator(key = hash, arrival = arrival, size = 20.dp, color = accent)
+            ArrivalIndicator(key = hash, arrival = arrival, size = 20.dp, color = accent, stopped = wait.stopped)
             Spacer(Modifier.width(12.dp))
             Column {
                 Text(
-                    text = arrival?.let { arrivalText(it) } ?: stringResource(R.string.chat_voice_loading),
+                    text = arrival?.let { arrivalText(it) } ?: attachmentWaitTitle(wait) ?: stringResource(R.string.chat_voice_loading),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

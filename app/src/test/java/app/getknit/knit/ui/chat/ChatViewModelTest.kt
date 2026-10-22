@@ -1907,6 +1907,34 @@ class ChatViewModelTest {
         }
 
     @Test
+    fun aRoomItsRelayNoLongerRunsTakesNoPostAndNoReaction() =
+        runTest {
+            val room = Conversations.commonsIdFor("ab".repeat(32))
+            relayFactsFlow.value = RelayFacts(staleRooms = setOf(room))
+            stubDm(room)
+            val vm = vm(conversationId = room)
+            backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
+            messagesFlow.value = listOf(msg(senderId = "bob", id = "m1", conversationId = room))
+            advanceUntilIdle()
+            assertTrue(vm.state.value.commonsStale)
+
+            vm.send("anyone there?")
+            vm.react("m1", "🦄")
+            advanceUntilIdle()
+
+            assertTrue(mesh.sentCommons.isEmpty())
+            assertTrue(mesh.sentCommonsReactions.isEmpty())
+            coVerify(exactly = 0) { settings.recordReaction(any()) }
+
+            // The relay runs it again (the operator fixed a slip): the room takes posts once more.
+            relayFactsFlow.value = RelayFacts()
+            advanceUntilIdle()
+            vm.send("back again")
+            advanceUntilIdle()
+            assertEquals(listOf(room to "back again"), mesh.sentCommons)
+        }
+
+    @Test
     fun aCommonsWhoseRelayTakesNoAttachmentsRefusesOneAndSaysWhenTheRoomIsGone() =
         runTest {
             val room = Conversations.commonsIdFor("ab".repeat(32))

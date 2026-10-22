@@ -55,7 +55,7 @@ class FakeSpool(
     private val maxAttachBytes: Int = 16_777_216,
     // The commons this spool runs (§7.4): its scope id and what the HELLO advertises about it. Null = no
     // commons, the HELLO omits the field, and a SUB for one is an ordinary unknown scope.
-    private val commons: Pair<ByteArray, SpoolCommonsInfo>? = null,
+    commons: Pair<ByteArray, SpoolCommonsInfo>? = null,
     // The daemon's store rule for an ordinary scope: a SUB's declared bounds are applied (last writer wins) and
     // echoed in its DIGEST. Off by default, where the DIGEST carries this spool's fixed defaults; a commons always
     // answers with its pinned bounds whatever the SUB declared (S-7.4-2).
@@ -92,6 +92,12 @@ class FakeSpool(
     // accepted ticket carries the cast flag for. Null = a spool without casts, which skips a CAST unanswered.
     private val cast: SpoolCastInfo? = null,
 ) : SpoolDialer {
+    // Settable, so a test can play the operator changing it — a rotated invite reverted, a restart without the
+    // room's setting. A HELLO reads it as a connection opens and a DIGEST as it is answered: change it, then
+    // [dropSockets], as a daemon restart would.
+    @Volatile
+    var commons: Pair<ByteArray, SpoolCommonsInfo>? = commons
+
     private class Attachment(
         val total: Int,
         val arrivedAt: Int,
@@ -225,10 +231,10 @@ class FakeSpool(
         return socket
     }
 
-    private fun isCommons(scopeHex: String): Boolean = commons != null && hex(commons.first) == scopeHex
+    private fun isCommons(scopeHex: String): Boolean = commons?.let { hex(it.first) == scopeHex } == true
 
     /** The room's own cap for the commons, the spool-wide one for everything else. */
-    private fun maxFramesFor(scopeHex: String): Int = if (isCommons(scopeHex)) commons!!.second.maxFrames else maxFrames
+    private fun maxFramesFor(scopeHex: String): Int = commons?.takeIf { isCommons(scopeHex) }?.second?.maxFrames ?: maxFrames
 
     /**
      * Says something the client never asked for. The one hostile primitive on this otherwise honest

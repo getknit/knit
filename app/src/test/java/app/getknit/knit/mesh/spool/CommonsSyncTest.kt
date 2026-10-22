@@ -327,6 +327,38 @@ class CommonsSyncTest {
         }
 
     @Test
+    fun `our own reaction a newer one superseded is accounted when the room hands it back, never applied or quarantined`() =
+        runTest {
+            val spool = spool()
+            val a = member(spool, alice)
+            // The app pins no key for itself (the peers table holds no row for self), so neither does Bob here.
+            val b = member(spool, bob, pinned = mutableSetOf())
+            a.seedOwnProfile(alice)
+            b.seedOwnProfile(bob)
+            a.post(commonsFrame(fid("p1"), alice, scopeId))
+            b.post(commonsReactionFrame(fid("r1"), bob, scopeId, messageId = fid("p1"), emoji = "👍"))
+            a.sync.start(backgroundScope)
+            b.sync.start(backgroundScope)
+            pump()
+            // Bob changes his mind. The newer reaction replaces the older in his outbox (CommonsStore.postReaction),
+            // while the spool keeps r1 to its TTL and lists it back to him.
+            b.commons.outbox
+                .getValue(conversationId)
+                .removeAll { it.envelope.id == fid("r1") }
+            b.post(commonsReactionFrame(fid("r2"), bob, scopeId, messageId = fid("p1"), emoji = "❤️"))
+            pump()
+            // Past ScopeSync's park budget (8 rounds): a frame of ours parked for a key we never pin would be
+            // quarantined by now.
+            tick(9)
+
+            assertEquals(listOf("👍", "❤️"), a.reactions.map { it.second.emoji })
+            assertTrue(a.status().converged)
+            assertTrue("Bob's own room converges", b.status().converged)
+            assertEquals(0, b.status().invalidCount)
+            assertTrue("his own superseded reaction is never applied back", b.reactions.isEmpty())
+        }
+
+    @Test
     fun `a photo posted to a room whose relay takes attachments reaches the other member sealed under the room key`() =
         runTest {
             val spool =
@@ -616,7 +648,7 @@ class CommonsSyncTest {
         }
 
     @Test
-    fun `a room whose invite was rotated is reported stale and never subscribed again`() =
+    fun `a room whose invite was rotated is reported stale and asked about once per connection`() =
         runTest {
             // The operator minted a new invite: the spool runs another room, and the id our invite derives is an
             // ordinary scope there, which applies what we declared — as the daemon's store does — and echoes it.
@@ -636,11 +668,13 @@ class CommonsSyncTest {
                     .scopes
                     .none { it.scopeHex == scopeHex },
             )
-            // Still true across a reconnect: what the spool said is true of the invite we hold.
+            // A new connection looks once more — the operator may have fixed a slip — and the spool, still running
+            // another room, says the same: stale again, and left alone for the rest of the connection.
             spool.dropSockets()
             pump()
+            tick(times = 3)
             assertEquals(setOf(conversationId), a.staleRooms())
-            assertEquals(1, spool.subAttempts[scopeHex])
+            assertEquals("one look per connection", 2, spool.subAttempts[scopeHex])
         }
 
     @Test
@@ -688,6 +722,56 @@ class CommonsSyncTest {
             pump()
 
             assertEquals(setOf(conversationId), a.staleRooms())
+        }
+
+    @Test
+    fun `a stale room whose relay runs it again is cleared on the next connection and carries posts again`() =
+        runTest {
+            val spool = spool(commons = ScopeCrypto.commonsScopeId(otherSecret) to advertised, echoesDeclaredBounds = true)
+            val a = member(spool, alice)
+            val b = member(spool, bob)
+            a.seedOwnProfile(alice)
+            b.seedOwnProfile(bob)
+            a.sync.start(backgroundScope)
+            b.sync.start(backgroundScope)
+            pump()
+            tick(times = 2)
+            assertEquals(setOf(conversationId), a.staleRooms())
+            assertEquals(setOf(conversationId), b.staleRooms())
+
+            // The operator puts the old invite back and restarts the relay.
+            spool.commons = scopeId to advertised
+            spool.dropSockets()
+            pump()
+
+            assertEquals(emptySet<String>(), a.staleRooms())
+            assertEquals(emptySet<String>(), b.staleRooms())
+            a.post(commonsFrame(fid("p1"), alice, scopeId))
+            pump()
+            assertEquals(listOf(fid("p1")), b.posts.map { it.first.id })
+            assertTrue(b.status().converged)
+        }
+
+    @Test
+    fun `a room its relay restarted without is reported stale only until a hello advertises it again`() =
+        runTest {
+            val spool = spool()
+            val a = member(spool, alice)
+            a.seedOwnProfile(alice)
+            a.sync.start(backgroundScope)
+            pump()
+            assertEquals(emptySet<String>(), a.staleRooms())
+
+            // A restart that lost the room's setting, then one that has it back.
+            spool.commons = null
+            spool.dropSockets()
+            pump()
+            assertEquals(setOf(conversationId), a.staleRooms())
+            spool.commons = scopeId to advertised
+            spool.dropSockets()
+            pump()
+            assertEquals(emptySet<String>(), a.staleRooms())
+            assertTrue(a.status().converged)
         }
 
     @Test

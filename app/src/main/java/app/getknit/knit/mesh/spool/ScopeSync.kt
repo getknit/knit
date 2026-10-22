@@ -729,10 +729,17 @@ class ScopeSync(
         private val pinnedBounds = ConcurrentHashMap<String, ScopeBounds>()
 
         // Joined commons this spool showed it does not run ([markStale]): its operator rotated the invite, so the
-        // id we derive is an ordinary scope there now. Never subscribed again for this worker's life — a SUB would
-        // keep a junk scope alive on the operator's relay — and reported, so the room can say why it went quiet.
+        // id we derive is an ordinary scope there now. Reported, so the room can say why it went quiet and refuse
+        // new posts, and subscribed again only as one probe per connection ([reprobing]) — a SUB on every round
+        // would keep a junk scope alive on the operator's relay, and none at all would leave a room locked after
+        // the operator fixed a slip (a restart without the room's setting, a reverted invite) until the app restarts.
         // Not in [forgetScopesNotIn]'s list on purpose: leaving [mine] is what being stale does.
         private val staleCommons: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        // The stale commons this connection re-subscribes once to look again: filled from [staleCommons] when a
+        // hello completes, emptied as each answer comes. Still reported stale meanwhile, so the room does not
+        // flicker open; a DIGEST with the HELLO's pinned bounds clears the verdict, a probe echo renews it.
+        private val reprobing: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
         // Commons posts held back because their author is not pinned yet, per scope: blob id hex → how many
         // rounds it has waited. Bounded like the other sets; a post whose profile never comes is quarantined
@@ -811,6 +818,10 @@ class ScopeSync(
         private fun rememberHello(conn: SpoolConnection) {
             seenAttachments = conn.limits?.attachments == true
             seenGates = conn.gates
+            // Each stale commons gets one look per connection, in the SUB that follows: a slip its operator has fixed
+            // unlocks the room.
+            reprobing.clear()
+            reprobing.addAll(staleCommons)
         }
 
         // scopeHex → the one pending re-look for an attachment a round could not finish (the spool has no
@@ -1484,14 +1495,16 @@ class ScopeSync(
          * The scopes this worker carries: every scope, minus a commons bound to another relay, minus a
          * commons at a spool that advertised none — a SUB for it there would read as an unknown scope and
          * meet the §6.4 creation gates (PoW, the new-scope bucket) for a room that does not exist — and minus a
-         * commons this spool has shown it no longer runs ([staleCommons]).
+         * commons this spool has shown it no longer runs ([staleCommons]), but for the one look a new connection
+         * takes at it ([reprobing]).
          */
         private fun mine(
             all: List<Scope>,
             conn: SpoolConnection?,
         ): List<Scope> =
             all.filter {
-                it.belongsAt(url) && (it.commonsId == null || (conn?.commons != null && it.idHex !in staleCommons))
+                it.belongsAt(url) &&
+                    (it.commonsId == null || (conn?.commons != null && (it.idHex !in staleCommons || it.idHex in reprobing)))
             }
 
         /**
@@ -1511,10 +1524,20 @@ class ScopeSync(
          * hold is not the one this spool runs — the operator rotated it.
          */
         private fun markStale(scope: Scope) {
+            reprobing.remove(scope.idHex)
             if (staleCommons.add(scope.idHex)) {
                 log("${SpoolUrl.host(url)}: ${scope.label} is no longer run there: the invite changed")
             }
             wake()
+        }
+
+        /** A stale commons whose probe this spool answered as the room it runs: the operator fixed the slip. */
+        private fun clearStale(scope: Scope) {
+            reprobing.remove(scope.idHex)
+            if (staleCommons.remove(scope.idHex)) {
+                log("${SpoolUrl.host(url)}: ${scope.label} is run there again")
+                wake()
+            }
         }
 
         /**
@@ -2538,6 +2561,7 @@ class ScopeSync(
                 markStale(scope)
                 return
             }
+            if (scope.commonsId != null) clearStale(scope)
             // A digest is the spool holding the scope, so it asks no stamp for it again until it sheds it.
             stampDemanded.remove(scopeHex)
             val value = ScopeCrypto.digestValue(digest.digest)
@@ -2697,6 +2721,15 @@ class ScopeSync(
             countPark: Boolean,
         ): Accept {
             val sender = opened.env.senderId
+            if (sender == selfId()) {
+                // Our own frame pulled back: a reaction our newer one superseded in the outbox, which the spool keeps
+                // to its TTL, or anything of ours after a leave and rejoin. It is accounted, never applied (our rows
+                // hold its effect or a newer one; a rejoin does not bring our own posts back) — and never parked: we
+                // pin no key for ourselves, so it would wait for a profile that never pins and then be quarantined,
+                // and our own room would never read converged.
+                if (account(scope.idHex, idHex, blobId)) metrics.onSpoolAccounted()
+                return Accept.DELIVERED
+            }
             if (!hasKey(sender)) {
                 if (!countPark || park(scope.idHex, idHex)) return Accept.PARKED
                 return refuse(scope, idHex, source)

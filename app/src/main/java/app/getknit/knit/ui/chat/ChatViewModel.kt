@@ -499,7 +499,7 @@ data class ChatUiState(
     // offers text alone. False while that relay is down, when what it takes is not known.
     val commonsTextOnly: Boolean = false,
     // True for a commons its relay does not run ([RelayFacts.staleRooms]): the operator rotated the invite, so the
-    // room has gone quiet for good and the thread says why.
+    // room has gone quiet for good, the thread says why, and nothing more can be posted, quoted or reacted there.
     val commonsStale: Boolean = false,
     // The UTF-8 bytes a post's words may occupy here, or null in every thread that is not the Meshtastic
     // room. A hard cap rather than the soft LoRa length hint: a Meshtastic frame carries one short line and
@@ -1995,6 +1995,9 @@ class ChatViewModel(
         val trimmed = text.trim().clampToUtf16(TextLimits.MESSAGE)
         val staged = _stagedLocation.value
         if (trimmed.isEmpty() && _pendingAttachment.value == null && staged == null) return
+        // A room its relay no longer runs takes nothing: a post would sit in the outbox of a scope we stopped
+        // subscribing. The screen draws no composer there; this covers a send already in flight past it.
+        if (state.value.commonsStale) return
         // The Meshtastic room is not addressed to anybody: no recipient, no group, no attachment, no reply.
         // `sendChat` would read that shape as the Nearby room and put the post there, so it has its own path
         // to the board, with its own gate, disclosure and refusals.
@@ -2118,6 +2121,8 @@ class ChatViewModel(
         // The Meshtastic room has no tapback form: a reaction there would fall through to the manager's cleartext
         // flood over the radios. A commons posts its own into the room (C-7.4-13), never by that path.
         if (isBridged) return
+        // Nor does a room its relay no longer runs: the frame would go nowhere.
+        if (state.value.commonsStale) return
         // Tapping the chip you already own retracts — undoing a choice, not making one — so only an add or a
         // replace fronts the recents. Judged from the highlighted chip the user is looking at, after the send.
         val retracting =
