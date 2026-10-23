@@ -1,5 +1,6 @@
 package app.getknit.knit.ui.components
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.text.KeyboardActions
@@ -9,13 +10,13 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import app.getknit.knit.R
 import app.getknit.knit.TextLimits
@@ -91,19 +92,22 @@ private fun AliasLine(
     Text(text = annotated, modifier = modifier)
 }
 
-/** Right-aligned "used / limit" counter shown beneath a capped single-line field. */
+/**
+ * The "used / limit" counter at the end of the line beneath a capped single-line field. It reads left to right in
+ * every layout, so the box takes it to the end rather than the text's own alignment.
+ */
 @Composable
 fun CharCounter(
     length: Int,
     limit: Int,
 ) {
-    Text(
-        text = "$length / $limit",
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = TextAlign.End,
-        modifier = Modifier.fillMaxWidth(),
-    )
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+        Text(
+            text = "$length / $limit",
+            style = MaterialTheme.typography.labelSmall.leftToRight(),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Preview(showBackground = true)

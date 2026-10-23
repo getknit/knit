@@ -75,6 +75,15 @@ layout has to take the longer text.
   that wraps grows downwards. Text in a fixed height (a top bar's title, its status line)
   keeps one line and steps its size down before it ellipsizes: a top bar's plain title is `ui/components/BarTitle`.
   A card's actions sit outside its scrolling list, so a long explanation scrolls and the buttons stay in view.
+- **Direction comes from the text, alignment from the layout.** The theme's type scale (`ui/theme/Type.kt`,
+  `knitTypography`) gives every style `TextDirection.Content`, so an English message keeps its full stop in an Arabic
+  interface and an Arabic one reads right to left in English, and aligns unaligned text to the layout's start, so a
+  Latin name or value still lines up with its column there. Text read as written in every language (a safety number,
+  a recovery key, a stack trace, a log line, a measured value, a "12 / 40" count) takes `leftToRight()` from
+  `ui/components/LeftToRight.kt`. A `Canvas` or a hand-placed `Layout` does not mirror on its own: draw from the
+  layout's start and hit-test the same way (the voice waveform, the emoji grid), and place with `placeRelative`.
+  A translated string that opens with a placeholder takes the placeholder's direction, so an RTL translation wraps
+  a leading name in an isolate.
 
 ## Deliberately English
 

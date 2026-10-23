@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.call.WalkiePolicy
 import app.getknit.knit.call.WalkieStats
+import app.getknit.knit.ui.components.leftToRight
 import java.util.Locale
 import kotlin.math.log10
 
@@ -183,7 +184,10 @@ private fun Detail(
         )
         Text(
             value,
-            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            style =
+                MaterialTheme.typography.bodySmall
+                    .copy(fontFamily = FontFamily.Monospace)
+                    .leftToRight(),
             maxLines = lines,
             overflow = TextOverflow.Ellipsis,
         )

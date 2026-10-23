@@ -42,6 +42,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.ui.components.ButtonRow
+import app.getknit.knit.ui.components.leftToRight
 import app.getknit.knit.ui.image.QrCode
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.theme.KnitMotion
@@ -132,7 +133,7 @@ fun EncryptionSection(
                 Card {
                     Text(
                         text = number,
-                        style = MaterialTheme.typography.bodyLarge,
+                        style = MaterialTheme.typography.bodyLarge.leftToRight(),
                         fontFamily = FontFamily.Monospace,
                         textAlign = TextAlign.Center,
                         modifier =

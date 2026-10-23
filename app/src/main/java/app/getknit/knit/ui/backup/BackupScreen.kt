@@ -64,6 +64,7 @@ import app.getknit.knit.data.backup.BackupKeys
 import app.getknit.knit.data.backup.BackupProblem
 import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.DetailCard
+import app.getknit.knit.ui.components.leftToRight
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import java.text.SimpleDateFormat
@@ -300,7 +301,7 @@ private fun KeyCard(
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = BackupKeys.display(key),
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleMedium.leftToRight(),
             fontFamily = FontFamily.Monospace,
             modifier = Modifier.weight(1f).testTag("backup_key"),
         )

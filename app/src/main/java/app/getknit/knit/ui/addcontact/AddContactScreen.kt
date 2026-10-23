@@ -60,6 +60,7 @@ import app.getknit.knit.mesh.spool.SpoolUrl
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.ButtonRow
+import app.getknit.knit.ui.components.leftToRight
 import app.getknit.knit.ui.components.noAutofillMenu
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.relay.RelayInviteSheet
@@ -351,7 +352,7 @@ private fun PreviewCard(
         Card {
             Text(
                 text = ready.safetyNumber,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyLarge.leftToRight(),
                 fontFamily = FontFamily.Monospace,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(12.dp),

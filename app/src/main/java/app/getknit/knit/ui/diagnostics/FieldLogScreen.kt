@@ -52,6 +52,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.SectionHeader
+import app.getknit.knit.ui.components.leftToRight
 import app.getknit.knit.ui.preview.KnitPreview
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
@@ -148,7 +149,7 @@ internal fun FieldLogScreenContent(
                 items(state.preview) { line ->
                     Text(
                         text = line,
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodySmall.leftToRight(),
                         fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
