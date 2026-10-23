@@ -34,8 +34,8 @@ fun ConversationListItemDm() = ConversationListItemDmPreview()
 
 /** The DM row at the largest system font scale, where the title, preview and time compete for one line. */
 @PreviewTest
-@Preview(name = "Light-2x", showBackground = true, fontScale = 2f)
-@Preview(name = "Dark-2x", showBackground = true, fontScale = 2f, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Preview(name = "Light-2x", showBackground = true, fontScale = 2f, locale = ENGLISH)
+@Preview(name = "Dark-2x", showBackground = true, fontScale = 2f, locale = ENGLISH, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun ConversationListItemDmLargeText() = ConversationListItemDmPreview()
 

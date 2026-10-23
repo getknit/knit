@@ -11,7 +11,8 @@ Then re-render the references with `./gradlew :app:updateDebugScreenshotTest` an
 `fun ChatScreenDm() = ChatScreenDmPreview()`. One file per UI package (`ui.chat` -> `ChatScreenshots.kt`), in
 source order, the wrapper named for the preview without its `Preview` suffix. The wrapper's own annotations
 decide how it renders: `@ScreenShots` (a fixed phone-sized canvas, light + dark) for a preview that draws a
-whole screen, `@ComponentShots` (content-sized, light + dark) for everything else — both in
+whole screen, `@ComponentShots` (content-sized) for everything else, each light, dark, long text (en-XA) and
+right to left (ar-XB) — both in
 `ScreenshotPreviews.kt`, which this script does not touch. The sample data stays in main, in one place.
 
 **The judgement calls live in the tables below**: which previews draw a screen (`SCREEN_CALLS`), which keep a
@@ -51,24 +52,33 @@ FILE_NAMES = {
     "yourmesh": "YourMesh",
 }
 
-# Previews whose own @Preview carries something the light/dark pair would drop.
+# Previews whose own @Preview carries something the shared annotations would drop. Each keeps the long-text and
+# right-to-left renders `@ComponentShots` and `@ScreenShots` give every other subject (`ScreenshotPreviews.kt`).
 CUSTOM = {
     # The skeleton fills its height; main pins it at 420 dp.
     "ChatSkeletonPreview": [
-        '@Preview(name = "Light", showBackground = true, heightDp = 420)',
-        '@Preview(name = "Dark", showBackground = true, heightDp = 420, uiMode = Configuration.UI_MODE_NIGHT_YES)',
+        '@Preview(name = "Light", showBackground = true, heightDp = 420, locale = ENGLISH)',
+        (
+            '@Preview(name = "Dark", showBackground = true, heightDp = 420, locale = ENGLISH, '
+            "uiMode = Configuration.UI_MODE_NIGHT_YES)"
+        ),
+        '@Preview(name = "LongText", showBackground = true, heightDp = 420, locale = LONG_TEXT)',
+        '@Preview(name = "Rtl", showBackground = true, heightDp = 420, locale = RIGHT_TO_LEFT)',
     ],
     # The caller's context is the one call screen main also checks on a small phone, where it competes with the
     # answer buttons for height.
     "CallScreenCallerContextPreview": [
-        '@Preview(name = "Light", showBackground = true, device = "spec:width=411dp,height=891dp")',
+        '@Preview(name = "Light", showBackground = true, device = "spec:width=411dp,height=891dp", locale = ENGLISH)',
         '@Preview(',
         '    name = "Dark",',
         '    showBackground = true,',
         '    device = "spec:width=411dp,height=891dp",',
+        '    locale = ENGLISH,',
         '    uiMode = Configuration.UI_MODE_NIGHT_YES,',
         ')',
-        '@Preview(name = "Small", showBackground = true, device = "spec:width=360dp,height=640dp")',
+        '@Preview(name = "LongText", showBackground = true, device = "spec:width=411dp,height=891dp", locale = LONG_TEXT)',
+        '@Preview(name = "Rtl", showBackground = true, device = "spec:width=411dp,height=891dp", locale = RIGHT_TO_LEFT)',
+        '@Preview(name = "Small", showBackground = true, device = "spec:width=360dp,height=640dp", locale = ENGLISH)',
     ],
 }
 
@@ -137,9 +147,9 @@ def render(pkg, previews):
             out += [
                 f"/** {doc} */",
                 "@PreviewTest",
-                f'@Preview(name = "Light-{scale}x", showBackground = true, fontScale = {scale}f)',
+                f'@Preview(name = "Light-{scale}x", showBackground = true, fontScale = {scale}f, locale = ENGLISH)',
                 (
-                    f'@Preview(name = "Dark-{scale}x", showBackground = true, fontScale = {scale}f, '
+                    f'@Preview(name = "Dark-{scale}x", showBackground = true, fontScale = {scale}f, locale = ENGLISH, '
                     "uiMode = Configuration.UI_MODE_NIGHT_YES)"
                 ),
                 "@Composable",

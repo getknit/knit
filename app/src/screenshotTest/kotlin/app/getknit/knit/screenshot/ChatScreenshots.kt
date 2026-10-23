@@ -120,8 +120,10 @@ fun MessageInputStagedLocked() = MessageInputStagedLockedPreview()
 fun EmptyState() = EmptyStatePreview()
 
 @PreviewTest
-@Preview(name = "Light", showBackground = true, heightDp = 420)
-@Preview(name = "Dark", showBackground = true, heightDp = 420, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Preview(name = "Light", showBackground = true, heightDp = 420, locale = ENGLISH)
+@Preview(name = "Dark", showBackground = true, heightDp = 420, locale = ENGLISH, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Preview(name = "LongText", showBackground = true, heightDp = 420, locale = LONG_TEXT)
+@Preview(name = "Rtl", showBackground = true, heightDp = 420, locale = RIGHT_TO_LEFT)
 @Composable
 fun ChatSkeleton() = ChatSkeletonPreview()
 

@@ -454,6 +454,11 @@ android {
             signingConfig = signingConfigs.findByName("release")
         }
         debug {
+            // The two pseudolocales, en-XA (accented, about 40 % longer) and ar-XB (mirrored, right to left), so a screen is
+            // checked against long and right-to-left text before any translation exists: the screenshot tests render
+            // every preview under both (`ScreenshotPreviews.kt`), and Settings › Apps › Knit › Language offers them on a
+            // debug build. Debug-only, so the release APK, and F-Droid's rebuild of it, do not change.
+            isPseudoLocalesEnabled = true
             // See the debugAbis comment above the android block for why this is debug-only and why
             // x86_64 is not optional. Empty (`-Pknit.debugAbis=`) leaves the default four-ABI packaging.
             if (debugAbis.isNotEmpty()) {
@@ -788,9 +793,10 @@ tasks.named("preBuild") { dependsOn(checkModerationModels) }
 //
 // The fork's heap is raised past Gradle's 512 MiB default because the renderer leaks: every preview leaves its
 // layoutlib resource maps and Compose tooling `ViewInfo`s reachable, ~1.2 MiB each, so the live set climbs linearly
-// to ~580 MiB over 423 previews (alpha16, the latest) and the run dies with an OutOfMemoryError near the end. 1 GiB
-// matches the unit-test fork and leaves room for a few hundred more previews. `forkEvery` is not the cure: the plugin
-// runs as one JUnit engine that writes one result file, so each fresh fork overwrites the last one's report.
+// to ~580 MiB over 423 previews (alpha16, the latest) and the run dies with an OutOfMemoryError near the end. The
+// pseudolocale renders (`ScreenshotPreviews.kt`) doubled the count to 929, and 1 GiB ran out at the last 16, so the
+// fork has 2 GiB. `forkEvery` is not the cure: the plugin runs as one JUnit engine that writes one result file, so
+// each fresh fork overwrites the last one's report.
 //
 // Their reference PNGs are the repo's one Git LFS rule (see .gitattributes). A clone without git-lfs holds
 // ~130-byte pointer files there, and every comparison would fail as an unreadable image — or an `update` would
@@ -800,7 +806,7 @@ val screenshotReferences =
     fileTree(layout.projectDirectory.dir("src")) { include("screenshotTest*/reference/**/*.png") }
 tasks.withType<Test>().configureEach {
     if (name.endsWith("ScreenshotTest")) {
-        maxHeapSize = "1g"
+        maxHeapSize = "2g"
         systemProperty("user.timezone", "UTC")
         systemProperty("user.language", "en")
         systemProperty("user.country", "US")

@@ -49,6 +49,24 @@ plan. Its one component, `app`, reads `app/src/main/res/values/strings.xml` as t
   through `joined_with_dot` (`%1$s · %2$s`), so a language can reorder them.
 - Never change case in code (`lowercase()`, `replaceFirstChar`) on a translated string.
 
+## A layout for every language
+
+A translation runs longer than the English, often by a third and by two or three times in a label of a word or two,
+and Arabic, Persian and Hebrew lay the screen out right to left. Rewording a translation to fit works once; the
+layout has to take the longer text.
+
+- **Check it under the pseudolocales.** Every screenshot subject also renders as `LongText` (en-XA: each string
+  accented and padded to about 40 % longer) and `Rtl` (ar-XB: mirrored, right to left), from the debug build
+  (`context/testing.md`, "Compose preview screenshot tests"). Read both images of a new or changed subject before
+  committing them, because the reference records whatever it shows, clipped or not. On a device, a debug build
+  offers both under Settings › Apps › Knit › Language.
+- **What to look for:** a label cut off or ellipsized on an action, text that wraps under a fixed height (a
+  segmented button, a two-button row, a chip), a row whose trailing text pushes its title off, an icon that should
+  mirror and doesn't (a back arrow, a chevron) or one that mirrors and shouldn't (a play button, a logo).
+- **Fix the layout, not the string.** Give text no fixed width; let a button or a chip take a second line rather
+  than clip it; let a row of two actions stack when either label is too long; save ellipsis for text shown in full
+  elsewhere (a chat preview), never an action. Use `start`/`end`, never `left`/`right`.
+
 ## Deliberately English
 
 These are not oversights; leave them unless the plan changes.

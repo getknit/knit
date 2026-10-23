@@ -35,8 +35,8 @@ fun PermissionsPage() = PermissionsPagePreview()
 
 /** The permissions page at 1.5x, the scale main's own preview checks. */
 @PreviewTest
-@Preview(name = "Light-1.5x", showBackground = true, fontScale = 1.5f)
-@Preview(name = "Dark-1.5x", showBackground = true, fontScale = 1.5f, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Preview(name = "Light-1.5x", showBackground = true, fontScale = 1.5f, locale = ENGLISH)
+@Preview(name = "Dark-1.5x", showBackground = true, fontScale = 1.5f, locale = ENGLISH, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 fun PermissionsPageLargeText() = PermissionsPagePreview()
 

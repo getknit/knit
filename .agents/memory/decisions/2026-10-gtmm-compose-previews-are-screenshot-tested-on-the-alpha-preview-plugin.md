@@ -89,3 +89,34 @@ Covering every preview took five changes outside the test source set:
   `@PreviewTest` mandatory.
 - **Guards:** `validateDebugScreenshotTest` and `gen-screenshot-tests.py --check` keep this true. The
   "Compose preview screenshot tests" section of `context/testing.md` carries the working rules.
+
+## Amendment 2026-10-23 — every subject also renders long and right to left
+
+**What was observed.** The first translation (Brazilian Portuguese, a machine pass checked on an emulator) clipped
+two labels: the "Over 1 MB" segment of a three-way button and the "Mesh call" half of a two-button row. Both were
+fixed by rewording, which works once. German will break the same layouts, and so will a large font scale in
+English. Rewording can't settle it; each screen has to be checked against long text when it is written, before any
+translation exists, and against a right-to-left layout before Arabic does the same.
+
+**What changed.**
+
+- **The debug build generates the two Android pseudolocales** (`isPseudoLocalesEnabled`): en-XA, every string
+  accented and padded to about 40 % longer, and ar-XB, the English mirrored and laid out right to left. Release
+  does not, so the F-Droid rebuild is untouched.
+- **`@ComponentShots` and `@ScreenShots` add a `LongText` (en-XA) and an `Rtl` (ar-XB) render, light only,** and the
+  script's custom previews carry the same pair. 233 subjects now make 929 images (about 55 MB in LFS, up from
+  26 MB), and a warm `validate` takes about two minutes.
+- **Every preview names its locale.** Layoutlib resolves a preview with no locale to whichever locale's resources it
+  finds, not to `values/`: with the pseudolocales generated, an unnamed Light rendered as en-XA, and a committed
+  `values-pt-rBR/` would have done the same. Light and Dark now name `en-rUS`, which re-keyed all 466 existing
+  images. 464 came back pixel-identical, under the same LFS objects. The metrics section's sub-kilobyte size,
+  the renderer quirk above, now reads `(123) (B)` instead of its raw template.
+- **The render fork's heap is 2 GiB.** 1 GiB, sized for 423 previews, ran out at the last 16 of 929.
+
+**Not taken.** Rendering only the screens, not the components, under the pseudolocales would halve the new images.
+But a component is where a label clips (a button, a chip, a segmented row), and a screen preview shows each
+component in one state only.
+
+**What it does not do.** A reference records whatever its locale looks like, so a clipped label passes once its
+image is committed. The check is a person reading a new subject's `LongText` and `Rtl` images before committing
+them, and, once a real translation lands, the same per-language pass on a device.
