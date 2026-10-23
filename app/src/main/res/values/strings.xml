@@ -417,9 +417,9 @@
     <string name="call_bar_incoming">Incoming call · tap to answer</string>
     <string name="call_bar_return">%1$s · tap to return to the call</string>
     <!-- The call's notifications and their channels (CallController, CallService). -->
-    <string name="call_notif_channel_ring">Calls (experimental)</string>
-    <string name="call_notif_channel_status">Call status (experimental)</string>
-    <string name="call_notif_channel_download">Speech model download (experimental)</string>
+    <string name="call_notif_channel_ring">Calls</string>
+    <string name="call_notif_channel_status">Call status</string>
+    <string name="call_notif_channel_download">Speech model download</string>
     <string name="call_notif_ring_walkie">Knit walkie-talkie</string>
     <string name="call_notif_ring_voice">Knit voice call</string>
     <string name="call_notif_full_screen_title">Allow full-screen calls</string>

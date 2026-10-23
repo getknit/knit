@@ -43,3 +43,19 @@ name change the sound on every one of those channels at once, with no channel bu
 of their own (the same rhythm at another pitch, say) would need new resources and new channel ids.
 `NotificationChannelsTest` pins the group's sound, the name-form URI resolving to the Ogg, and the App group's
 default.
+
+## Amendment (2026-10-22): calls ring with Stitches
+
+The maintainer picked a ring from four auditioned loops (Over and over, CQ, Double ring, Stitches): Stitches,
+`app/src/main/res/raw/knit_ring.ogg`. It is a music-box line on the message sound's felt with a little more
+octave in it, built on the K: the motif and a turn around it, then the same shape a step up, resolving home on
+A5. The file is one 4.6 s loop with its pause inside, because the ring notification is `FLAG_INSISTENT` and
+the system plays it until the call is answered. The generator folds whatever rings past the loop point back
+onto its start, so the seam is silent. It is mixed to -13 LUFS over three loops, 3 dB above the message sound,
+since a call has to reach the next room. The same script renders both sounds.
+
+The ring channel moved from `knit_calls` to `knit_calls_v2`, and `CallNotifications.ensureChannels` deletes
+the old one: a channel's sound is fixed once it exists, and calls are still debug-only, so no shipped phone
+loses a setting. Both sounds reach their channels through `NotificationChannels.rawSound`, under the same
+never-rename rule. `CallNotificationsTest` pins the ring's URI resolving to its Ogg and the old channel's
+deletion.

@@ -7,7 +7,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
-import android.media.RingtoneManager
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -20,6 +19,7 @@ import app.getknit.knit.call.CallState
 import app.getknit.knit.call.MissedCall
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.di.STT_WIRED
+import app.getknit.knit.notifications.NotificationChannels
 import app.getknit.knit.ui.fullScreenCallSettingsIntent
 import app.getknit.knit.ui.fullScreenCalls
 import kotlinx.coroutines.CoroutineScope
@@ -163,7 +163,10 @@ internal suspend fun callerName(
 
 /** The calls' notification channels and the one guarded post (`CALLS_WIRED`). */
 internal object CallNotifications {
-    const val CHANNEL_RING = "knit_calls"
+    // Bumped to _v2 when the ring became Knit's own (ADR 2026-10.xukf): a channel's sound is immutable once
+    // created, so the `knit_calls` channel that rang the phone's default ringtone is deleted in [ensureChannels].
+    const val CHANNEL_RING = "knit_calls_v2"
+    private const val LEGACY_RING = "knit_calls"
     const val CHANNEL_STATUS = "knit_call_status"
 
     // The speech model's download (`SttDownloadService`, where `STT_WIRED`): progress only, never a sound.
@@ -181,7 +184,8 @@ internal object CallNotifications {
                 .Builder(CHANNEL_RING, NotificationManagerCompat.IMPORTANCE_HIGH)
                 .setName(context.getString(R.string.call_notif_channel_ring))
                 .setSound(
-                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+                    // One loop with its pause inside; the ring's FLAG_INSISTENT plays it until the call is answered.
+                    NotificationChannels.rawSound(context, R.raw.knit_ring),
                     AudioAttributes
                         .Builder()
                         .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
@@ -204,6 +208,7 @@ internal object CallNotifications {
                     .build(),
             )
         }
+        manager.deleteNotificationChannel(LEGACY_RING)
     }
 
     fun post(

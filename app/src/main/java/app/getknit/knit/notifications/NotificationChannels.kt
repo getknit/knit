@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.media.AudioAttributes
 import android.net.Uri
+import androidx.annotation.RawRes
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationChannelGroupCompat
 import androidx.core.app.NotificationManagerCompat
@@ -75,20 +76,26 @@ object NotificationChannels {
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build()
 
+    /** Knit's own sound, which every channel in the Messages group plays (ADR 2026-10.xukf). */
+    fun messageSound(context: Context): Uri = rawSound(context, R.raw.knit)
+
     /**
-     * Knit's own sound, which every channel in the Messages group plays (ADR 2026-10.xukf). The URI names the
-     * resource (`android.resource://<package>/raw/knit`), never its id: a channel keeps the URI it was created
-     * with for good, and an id can move between builds. So `res/raw/knit.ogg` must never be renamed or removed;
+     * A channel sound for one of Knit's own `res/raw` sounds (ADR 2026-10.xukf). The URI names the resource
+     * (`android.resource://<package>/raw/<name>`), never its id: a channel keeps the URI it was created with for
+     * good, and an id can move between builds. So a sound file a channel names must never be renamed or removed;
      * new bytes under the same name change the sound on every channel already made, without a channel bump.
-     * A channel's sound is fixed once it exists, so a phone whose channels predate it keeps the system default.
+     * A channel's sound is fixed once it exists, so a phone whose channel predates it keeps the system default.
      */
-    fun messageSound(context: Context): Uri =
+    fun rawSound(
+        context: Context,
+        @RawRes sound: Int,
+    ): Uri =
         Uri
             .Builder()
             .scheme(ContentResolver.SCHEME_ANDROID_RESOURCE)
             .authority(context.packageName)
-            .appendPath(context.resources.getResourceTypeName(R.raw.knit))
-            .appendPath(context.resources.getResourceEntryName(R.raw.knit))
+            .appendPath(context.resources.getResourceTypeName(sound))
+            .appendPath(context.resources.getResourceEntryName(sound))
             .build()
 
     /** The message channel for a conversation [kind]. (Mentions route to [MENTIONS] separately.) */
