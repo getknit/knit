@@ -37,6 +37,21 @@ object WhatsNew {
     val entries: List<WhatsNewEntry> =
         listOf(
             WhatsNewEntry(
+                id = "2026-10-calls",
+                version = "2.10",
+                release = "2.10.0",
+                headline = R.string.whats_new_2_10_headline,
+                summary = R.string.whats_new_2_10_summary,
+                items =
+                    listOf(
+                        WhatsNewItem(R.string.whats_new_2_10_calls_title, R.string.whats_new_2_10_calls_body),
+                        WhatsNewItem(R.string.whats_new_2_10_mesh_call_title, R.string.whats_new_2_10_mesh_call_body),
+                        WhatsNewItem(R.string.whats_new_2_10_video_title, R.string.whats_new_2_10_video_body),
+                        WhatsNewItem(R.string.whats_new_2_10_anywhere_title, R.string.whats_new_2_10_anywhere_body),
+                        WhatsNewItem(R.string.whats_new_2_10_low_power_title, R.string.whats_new_2_10_low_power_body),
+                    ),
+            ),
+            WhatsNewEntry(
                 id = "2026-10-bluetooth-range",
                 version = "2.9",
                 release = "2.9.0",
