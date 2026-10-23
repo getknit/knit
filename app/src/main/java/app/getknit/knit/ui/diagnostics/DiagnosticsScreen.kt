@@ -37,9 +37,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
@@ -87,6 +84,7 @@ import app.getknit.knit.mesh.spool.SpoolUrl
 import app.getknit.knit.transfer.HostVerdict
 import app.getknit.knit.ui.DeviceSupervision
 import app.getknit.knit.ui.Reach
+import app.getknit.knit.ui.components.ChoiceButtons
 import app.getknit.knit.ui.components.SectionHeader
 import app.getknit.knit.ui.deviceSupervision
 import app.getknit.knit.ui.preview.KnitPreview
@@ -1319,19 +1317,13 @@ private fun BlePhyModeRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
         )
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            BLE_PHY_MODES.forEachIndexed { index, (value, label) ->
-                SegmentedButton(
-                    selected = value == mode,
-                    onClick = { onSet(value) },
-                    shape = SegmentedButtonDefaults.itemShape(index = index, count = BLE_PHY_MODES.size),
-                    modifier = Modifier.height(48.dp).testTag("ble_phy_${value.wire}"),
-                    icon = {},
-                ) {
-                    Text(stringResource(label))
-                }
-            }
-        }
+        ChoiceButtons(
+            choices = BLE_PHY_MODES.map { (value, label) -> value to stringResource(label) },
+            selected = mode,
+            onSelect = onSet,
+            check = false,
+            tagOf = { "ble_phy_${it.wire}" },
+        )
     }
 }
 

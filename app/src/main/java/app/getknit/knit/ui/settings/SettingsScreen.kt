@@ -36,9 +36,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -72,6 +69,7 @@ import app.getknit.knit.ui.UnusedAppPause
 import app.getknit.knit.ui.backgroundBattery
 import app.getknit.knit.ui.camera.openAppSettings
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.ChoiceButtons
 import app.getknit.knit.ui.deviceSupervision
 import app.getknit.knit.ui.openUnusedAppPauseSettings
 import app.getknit.knit.ui.preview.KnitPreview
@@ -467,14 +465,13 @@ private fun ThemeModeRow(
 )
 
 /**
- * A title, a line of explanation, and one segmented control carrying every answer at once — the theme and the
+ * A title, a line of explanation, and one control carrying every answer at once — the theme and the
  * large-download limit share it.
  *
- * Segmented buttons rather than the dialog the neighbouring `NavigatingRow`s would suggest, because picking a
+ * Every answer in view rather than the dialog the neighbouring `NavigatingRow`s would suggest, because picking a
  * theme applies a configuration change and recreates the Activity — a dialog would be torn down as you chose
- * from it. The explicit 48dp height is the accessibility touch target; Material's segmented container is
- * 40dp, which the ATF suite flags. The labels are centred and hold still as the check appears; see the two
- * comments in the button below for how.
+ * from it. [ChoiceButtons] draws them as segmented buttons, or as a list of radio buttons when a label is too long
+ * for its segment.
  */
 @Composable
 private fun <T> ChoiceRow(
@@ -496,41 +493,13 @@ private fun <T> ChoiceRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(8.dp))
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            choices.forEachIndexed { index, (choice, label) ->
-                SegmentedButton(
-                    selected = choice == selected,
-                    onClick = { onSelect(choice) },
-                    shape = SegmentedButtonDefaults.itemShape(index = index, count = choices.size),
-                    modifier = Modifier.height(48.dp),
-                    icon = {
-                        SegmentedButtonDefaults.Icon(
-                            active = choice == selected,
-                            // An empty box of the same size when inactive, rather than the default null.
-                            // Null makes the unselected icon measure zero wide, and the row's measure policy
-                            // then slides the label half an icon-width left to re-centre it — so the word
-                            // slides under your finger as the check appears. A constant-width slot holds the
-                            // word still and crossfades the check in beside it.
-                            inactiveContent = { Spacer(Modifier.size(SegmentedButtonDefaults.IconSize)) },
-                        )
-                    },
-                    // Material centres the check and the word *together*, which leaves the word itself right
-                    // of centre — most visible on the two buttons showing no check. Matching the check's slot
-                    // on the far side of the word puts the word's midpoint back on the pair's midpoint, so it
-                    // is centred in the button whichever mode is selected. Padding rather than an offset:
-                    // the space is really there, so nothing can be pushed outside the button and clipped.
-                    label = { Text(stringResource(label), modifier = Modifier.padding(end = CHECK_SLOT)) },
-                )
-            }
-        }
+        ChoiceButtons(
+            choices = choices.map { (choice, label) -> choice to stringResource(label) },
+            selected = selected,
+            onSelect = onSelect,
+        )
     }
 }
-
-/**
- * The width a segmented button keeps for its check: Material's [SegmentedButtonDefaults.IconSize] plus the
- * 8dp `IconSpacing` its `SegmentedButton.kt` holds privately, with no public constant to read it from.
- */
-private val CHECK_SLOT = SegmentedButtonDefaults.IconSize + 8.dp
 
 /** The three limits in the order they read, each with the string that names it. */
 private val BT_DOWNLOAD_LIMITS =

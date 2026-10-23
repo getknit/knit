@@ -93,23 +93,22 @@ fun TapToDownloadCard(
                 verticalArrangement = Arrangement.Center,
                 modifier = Modifier.padding(start = 10.dp),
             ) {
+                // A file's name may still ellipsize on its second line; the size and the action, and the hint under
+                // them, wrap instead. The action sits at the end of its line, and in a longer language cutting that
+                // line is what dropped it.
                 Text(
                     text = label,
                     style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     text = detail,
                     style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     text = hint,
                     style = MaterialTheme.typography.labelSmall,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }

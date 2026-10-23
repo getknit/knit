@@ -65,7 +65,9 @@ layout has to take the longer text.
   mirror and doesn't (a back arrow, a chevron) or one that mirrors and shouldn't (a play button, a logo).
 - **Fix the layout, not the string.** Give text no fixed width; let a button or a chip take a second line rather
   than clip it; let a row of two actions stack when either label is too long; save ellipsis for text shown in full
-  elsewhere (a chat preview), never an action. Use `start`/`end`, never `left`/`right`.
+  elsewhere (a chat preview), never an action. Use `start`/`end`, never `left`/`right`. A few answers shown at once
+  go through `ui/components/ChoiceButtons`, a segmented row that turns into a list of radio buttons when a label
+  doesn't fit its segment.
 
 ## Deliberately English
 
