@@ -6,8 +6,8 @@ plugins {
 
 // The translation spike's native library (ADR 2026-10.t2h6): slimt and CLD2 behind a small JNI, built from the
 // sources scripts/translate-native.sh fetches. This module is in the build only under `-Ptranslate=true`
-// (settings.gradle.kts), and :app takes it only into debug, so an ordinary build, a release and F-Droid's
-// byte-compared rebuild never configure it, never need the NDK and never package it.
+// (settings.gradle.kts), so an ordinary build, the release workflow's and F-Droid's byte-compared rebuild never
+// configure it, never need the NDK and never package it. A testers' alpha built with the flag takes it in release too.
 android {
     namespace = "app.getknit.knit.translatenative"
     // Lockstep with :app (see the compileSdk / buildToolsVersion comments there).

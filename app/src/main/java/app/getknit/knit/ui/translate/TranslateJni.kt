@@ -2,7 +2,7 @@ package app.getknit.knit.ui.translate
 
 /**
  * The translation spike's native library (ADR 2026-10.t2h6): slimt and CLD2 behind `translate-native`'s JNI, packaged
- * only in a debug build made with `-Ptranslate=true`. Declared here, in main, so main compiles without the module; a
+ * only in a build made with `-Ptranslate=true`. Declared here, in main, so main compiles without the module; a
  * build without it never reaches this class (`TRANSLATE_WIRED`), and [available] says false if one somehow did.
  *
  * Text crosses as UTF-8 bytes both ways: JNI's own string conversion is modified UTF-8, which writes an emoji as two

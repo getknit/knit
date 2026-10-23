@@ -196,10 +196,10 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   is written out only on the person's tap, kept on the row, never during a call, and never on the wire (ADR 2026-10.am8d).
 - **When touching `translate/`, `ui/translate/`, `translate-native/`, `di/TranslateWiring`, `BuildConfig.TRANSLATE`,
   `MessageDao.recentOwnBodies` or `scripts/translate-*`:** READ ADR 2026-10.t2h6 (Proposed; the offline translation
-  spike, English ↔ Spanish). It is a debug build made with `-Ptranslate=true` only: that flag is the one thing that
-  includes `:translate-native` (settings.gradle.kts) and its NDK build of slimt and CLD2, from sources
-  `scripts/translate-native.sh` fetches at pinned commits — never committed, never a submodule, never on the release
-  path. A translation is the reader's, on tap, held in memory, never on the wire and never logged; it is screened by
+  spike, English ↔ Spanish). It is a build made with `-Ptranslate=true` only (a debug, or a testers' alpha built here): that
+  flag is the one thing that includes `:translate-native` (settings.gradle.kts) and its NDK build of slimt and CLD2,
+  from sources `scripts/translate-native.sh` fetches at pinned commits — never committed, never a submodule, never in
+  the release workflow's or F-Droid's build. A translation is the reader's, on tap, held in memory, never on the wire and never logged; it is screened by
   `ScopedTextModerator` in the message's scope; the app's language is never its target. The composer may also
   translate the sender's own draft (`ComposePolicy`, `translateNow`, the ADR's amendment): one tap replaces the draft,
   which the person reads and may edit before sending, never automatically. Each loaded model lives on a
