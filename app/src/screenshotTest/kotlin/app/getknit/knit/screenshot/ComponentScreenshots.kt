@@ -6,6 +6,7 @@ import app.getknit.knit.ui.components.AvatarBadgeSizesPreview
 import app.getknit.knit.ui.components.AvatarInitialPreview
 import app.getknit.knit.ui.components.AvatarLargeEmojiPreview
 import app.getknit.knit.ui.components.AvatarPalettePreview
+import app.getknit.knit.ui.components.ButtonRowPreview
 import app.getknit.knit.ui.components.CharCounterPreview
 import app.getknit.knit.ui.components.ChoiceButtonsPreview
 import app.getknit.knit.ui.components.ConnectionStatusRowBothPlanesPreview
@@ -57,6 +58,11 @@ fun AvatarPalette() = AvatarPalettePreview()
 @ComponentShots
 @Composable
 fun AvatarBadgeSizes() = AvatarBadgeSizesPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun ButtonRow() = ButtonRowPreview()
 
 @PreviewTest
 @ComponentShots

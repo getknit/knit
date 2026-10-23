@@ -881,14 +881,16 @@ private fun WalkieControls(
         Text(talkLine(talk, name), style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
         Spacer(Modifier.height(24.dp))
         // The talk button takes the centre a call screen gives its red hang-up; the hang-up steps aside to the start.
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-            Box(Modifier.weight(1f), contentAlignment = Alignment.BottomCenter) {
+        // Each label's first line on one baseline, so a label that wraps (a translation of "Hold to talk") grows
+        // downwards and the buttons above stay level at their bottoms.
+        Row(Modifier.fillMaxWidth()) {
+            Box(Modifier.weight(1f).alignByBaseline(), contentAlignment = Alignment.BottomCenter) {
                 CallAction(stringResource(R.string.call_action_end), Icons.Filled.CallEnd, HangUpRed, onHangUp)
             }
-            Box(Modifier.weight(1f), contentAlignment = Alignment.BottomCenter) {
+            Box(Modifier.weight(1f).alignByBaseline(), contentAlignment = Alignment.BottomCenter) {
                 TalkButton(recording = talk is Talk.Recording, onTalk, onTalkSend, onTalkCancel)
             }
-            Box(Modifier.weight(1f), contentAlignment = Alignment.BottomCenter) {
+            Box(Modifier.weight(1f).alignByBaseline(), contentAlignment = Alignment.BottomCenter) {
                 AudioRouteButton(routing, onRoute)
             }
         }
@@ -1082,6 +1084,7 @@ internal fun ButtonLabel(label: String) {
     Text(
         label,
         style = MaterialTheme.typography.labelLarge,
+        textAlign = TextAlign.Center,
         modifier = Modifier.padding(top = 8.dp).clearAndSetSemantics {},
     )
 }

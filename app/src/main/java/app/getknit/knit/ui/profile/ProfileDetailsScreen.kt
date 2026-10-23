@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -88,6 +87,7 @@ import app.getknit.knit.ui.Reach
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.BadgeMark
 import app.getknit.knit.ui.components.BadgeVisuals
+import app.getknit.knit.ui.components.ButtonRow
 import app.getknit.knit.ui.components.DetailCard
 import app.getknit.knit.ui.components.DetailRow
 import app.getknit.knit.ui.components.FullscreenImageViewer
@@ -313,10 +313,10 @@ internal fun ProfileDetailsScreenContent(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ButtonRow {
                     Button(
                         onClick = { onMessage(state.nodeId) },
-                        modifier = Modifier.weight(1f).testTag("profile_details_message"),
+                        modifier = Modifier.testTag("profile_details_message"),
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Message, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
@@ -325,9 +325,7 @@ internal fun ProfileDetailsScreenContent(
                     if (!bothCalls) CallButtons(state, onCall, onMeshCall, snackbarHostState)
                 }
                 if (bothCalls) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        CallButtons(state, onCall, onMeshCall, snackbarHostState)
-                    }
+                    ButtonRow { CallButtons(state, onCall, onMeshCall, snackbarHostState) }
                 }
             }
 
@@ -384,7 +382,7 @@ internal fun ProfileDetailsScreenContent(
  * neither.
  */
 @Composable
-private fun RowScope.CallButtons(
+private fun CallButtons(
     state: ProfileDetailsUiState,
     onCall: () -> Unit,
     onMeshCall: () -> Unit,
@@ -406,13 +404,13 @@ private fun RowScope.CallButtons(
 }
 
 @Composable
-private fun RowScope.CallButton(
+private fun CallButton(
     icon: ImageVector,
     @StringRes label: Int,
     tag: String,
     onClick: () -> Unit,
 ) {
-    FilledTonalButton(onClick = onClick, modifier = Modifier.weight(1f).testTag(tag)) {
+    FilledTonalButton(onClick = onClick, modifier = Modifier.testTag(tag)) {
         Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(8.dp))
         Text(stringResource(label))
