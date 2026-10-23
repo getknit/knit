@@ -228,6 +228,7 @@ import app.getknit.knit.data.relay.marksNearbyOnly
 import app.getknit.knit.data.video.VideoAttachment
 import app.getknit.knit.demo.DemoComposeCommand
 import app.getknit.knit.demo.DemoComposer
+import app.getknit.knit.di.TRANSLATE_WIRED
 import app.getknit.knit.identity.PeerLabel
 import app.getknit.knit.location.GeoUri
 import app.getknit.knit.mesh.ArrivingFile
@@ -340,9 +341,10 @@ fun ChatScreen(
     val voiceSpeech by viewModel.voiceSpeech.collectAsStateWithLifecycle()
     // The note a Transcribe tap was for while the speech model was not on the phone: the download offer is up.
     var speechOffer by remember { mutableStateOf<Pair<String, String?>?>(null) }
-    // The offline translation spike (ADR 2026-10.t2h6): null where it is not wired.
-    val translateView by viewModel.translateView.collectAsStateWithLifecycle()
-    val translateAsk by viewModel.translateAsk.collectAsStateWithLifecycle()
+    // The offline translation spike (ADR 2026-10.t2h6): null where it is not wired, by the constant, so R8 drops the
+    // screen's translate paths in a build without it (a flow's null is a value R8 cannot see).
+    val translateView = if (TRANSLATE_WIRED) viewModel.translateView.collectAsStateWithLifecycle().value else null
+    val translateAsk = if (TRANSLATE_WIRED) viewModel.translateAsk.collectAsStateWithLifecycle().value else null
     // A Translate whose model would download over a metered route: the reader is asked first.
     var translateMetered by remember { mutableStateOf<Pair<ChatRow, TranslateDirection>?>(null) }
     val arrivals by viewModel.arrivals.collectAsStateWithLifecycle()
@@ -359,8 +361,8 @@ fun ChatScreen(
     val pendingMentions = remember { mutableStateListOf<Mention>() }
     // Translating the draft before it is sent (ADR 2026-10.t2h6's amendment). The field holds the translation once it
     // is done; [draftOriginal] is what Undo puts back, and [draftTranslatedFrom] what the line above the field names.
-    val draftHint by viewModel.draftHint.collectAsStateWithLifecycle()
-    val draftTranslation by viewModel.draftTranslation.collectAsStateWithLifecycle()
+    val draftHint = if (TRANSLATE_WIRED) viewModel.draftHint.collectAsStateWithLifecycle().value else null
+    val draftTranslation = if (TRANSLATE_WIRED) viewModel.draftTranslation.collectAsStateWithLifecycle().value else null
     var draftTranslatedFrom by remember { mutableStateOf<TranslateLang?>(null) }
     var draftTranslatedGuessed by remember { mutableStateOf(false) }
     var draftOriginal by remember { mutableStateOf<String?>(null) }
@@ -757,7 +759,7 @@ fun ChatScreen(
             onDismiss = viewModel::dismissTranslateAsk,
         )
     }
-    translateMetered?.let { (row, direction) ->
+    translateMetered?.takeIf { TRANSLATE_WIRED }?.let { (row, direction) ->
         TranslateMeteredDialog(
             direction = direction,
             onDownload = {
@@ -1726,15 +1728,20 @@ internal fun ChatScreenContent(
                                         onVoiceSeek = onVoiceSeek,
                                         voiceSpeech = voiceSpeech,
                                         onTranscribeVoice = onTranscribeVoice,
+                                        // Gated on the constant here, not in the bubble, whose previews show a translation.
                                         translation =
-                                            translateView?.let {
-                                                translationShown(
-                                                    it.translations[row.id],
-                                                    it.models,
-                                                    it.filterOn,
-                                                )
+                                            if (TRANSLATE_WIRED) {
+                                                translateView?.let {
+                                                    translationShown(
+                                                        it.translations[row.id],
+                                                        it.models,
+                                                        it.filterOn,
+                                                    )
+                                                }
+                                            } else {
+                                                null
                                             },
-                                        onTranslate = if (translateView != null) onTranslate else null,
+                                        onTranslate = if (TRANSLATE_WIRED && translateView != null) onTranslate else null,
                                         onDownloadTranslateModel = onDownloadTranslateModel,
                                         onDismissTranslation = onDismissTranslation,
                                         onTranslateFrom = onTranslateFrom,
@@ -2425,6 +2432,11 @@ private fun ColumnScope.NearbyOnlyMarker(
     }
 }
 
+// The bubble draws a translation it is handed in a translating build and in every debug one, whose previews and
+// screenshot tests hand it one. A release without translation folds this to false, so R8 drops the bubble's
+// translate UI (a parameter's null is a value R8 cannot see through Compose).
+private val BUBBLE_TRANSLATES = TRANSLATE_WIRED || BuildConfig.DEBUG
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubble(
@@ -2857,7 +2869,7 @@ private fun MessageBubble(
                                     }
                                 // A translation in hand takes the original's place (ADR 2026-10.t2h6); the toggle under it
                                 // brings the original back.
-                                val translated = translation as? TranslationShown.Text
+                                val translated = translation?.takeIf { BUBBLE_TRANSLATES } as? TranslationShown.Text
                                 if (translated != null && !showingOriginal) {
                                     if (translated.hidden && !translationRevealed) {
                                         Text(
@@ -2909,7 +2921,7 @@ private fun MessageBubble(
                                         )
                                     }
 
-                                    translation != null -> {
+                                    BUBBLE_TRANSLATES && translation != null -> {
                                         TranslationBlock(
                                             shown = translation,
                                             onDownload = { direction -> onDownloadTranslateModel(row, direction) },
@@ -3054,7 +3066,7 @@ private fun MessageBubble(
                             },
                         // Text the reader can see: a body the filter hides is translated only once revealed.
                         onTranslate =
-                            if (onTranslate != null && readableBody) {
+                            if (BUBBLE_TRANSLATES && onTranslate != null && readableBody) {
                                 {
                                     onTranslate(row)
                                     showPicker = false
@@ -4541,7 +4553,7 @@ private fun MessageInput(
                     Spacer(Modifier.height(4.dp))
                 }
             }
-            if (draftTranslate != null && voiceRecording == null) {
+            if (TRANSLATE_WIRED && draftTranslate != null && voiceRecording == null) {
                 DraftTranslateLine(
                     ui = draftTranslate,
                     canSend = state.text.isNotBlank(),
@@ -4563,7 +4575,8 @@ private fun MessageInput(
             // Translate takes their place once there are words: a draft that already holds a translation goes back
             // with Undo, not a second translation the other way.
             val showTranslate =
-                draftTranslate != null && voiceRecording == null && state.text.isNotBlank() && draftTranslate.translatedFrom == null
+                TRANSLATE_WIRED && draftTranslate != null && voiceRecording == null && state.text.isNotBlank() &&
+                    draftTranslate.translatedFrom == null
             Row(verticalAlignment = Alignment.Bottom) {
                 // The field container holds the text field *and* the mic, the way Signal does: sharing the
                 // field's background makes the mic read as part of it rather than as a third button

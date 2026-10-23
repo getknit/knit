@@ -65,6 +65,7 @@ import app.getknit.knit.data.relay.photoFitBytes
 import app.getknit.knit.data.relay.planeFor
 import app.getknit.knit.data.relay.reachFor
 import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.di.TRANSLATE_WIRED
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.Identity
 import app.getknit.knit.identity.PeerLabel
@@ -606,9 +607,13 @@ class ChatViewModel(
     preferMeshCalls: Flow<Boolean> = flowOf(false),
     // A voice note's text on tap (ADR 2026-10.am8d): null where speech is not wired, which draws no control.
     private val noteSpeech: VoiceNoteSpeech? = null,
-    // The offline translation spike (ADR 2026-10.t2h6): null where it is not wired, which offers no Translate.
-    private val translation: ChatTranslation? = null,
+    // The offline translation spike (ADR 2026-10.t2h6): null where it is not wired, which offers no Translate. A plain
+    // parameter: the property below gates it on the constant.
+    translation: ChatTranslation? = null,
 ) : ViewModel() {
+    // Null by a constant in a build without translation (TRANSLATE_WIRED), so R8 drops every path that reads it.
+    private val translation: ChatTranslation? = if (TRANSLATE_WIRED) translation else null
+
     /** This thread is the broadcast room (vs a 1:1 DM keyed by the peer's node id). */
     private val isRoom = conversationId == Conversations.NEARBY
 
