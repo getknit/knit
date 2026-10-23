@@ -17,6 +17,7 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -108,6 +109,9 @@ class MessageNotifierTest {
     private fun Notification.text(): String? = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
 
     private fun Notification.actionTitles(): List<String> = actions.orEmpty().map { it.title.toString() }
+
+    private fun Notification.replyAllowsSuggestions(): Boolean =
+        actions.orEmpty().single { it.title.toString() == app.getString(R.string.notif_action_reply) }.allowGeneratedReplies
 
     @Test
     fun aDirectMessagePostsItsThreadUnderItsIdBesideTheGroupSummary() {
@@ -206,6 +210,20 @@ class MessageNotifierTest {
         assertEquals(listOf(reply, markRead), conversations().getValue("alice").actionTitles())
         // A reply from the shade would skip the room's first-use disclosure and byte budget, and go nowhere.
         assertEquals(listOf(markRead), conversations().getValue(Conversations.MESHTASTIC).actionTitles())
+    }
+
+    @Test
+    fun suggestedRepliesAnswerAMessageButNotAReactionToOurOwn() {
+        val alice = dm("alice")
+        receive(alice, body = "lunch?")
+        assertTrue(conversations().getValue("alice").replyAllowsSuggestions())
+
+        // The reaction's line quotes our own words; a suggestion would answer them.
+        react(alice, "❤️")
+        assertFalse(conversations().getValue("alice").replyAllowsSuggestions())
+
+        receive(alice, body = "see you there")
+        assertTrue(conversations().getValue("alice").replyAllowsSuggestions())
     }
 
     @Test

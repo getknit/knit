@@ -468,7 +468,13 @@ class MessageNotifier internal constructor(
                     // No inline reply for the Meshtastic room: a post there needs the first-use disclosure
                     // and the byte budget, both of which live in the composer. A reply typed from the shade
                     // would be echoed as sent and go nowhere.
-                    if (r.kind != ConversationKind.MESHTASTIC) addAction(replyAction(r.tag, r.conversationId))
+                    if (r.kind != ConversationKind.MESHTASTIC) {
+                        // The system's suggested replies answer the newest line, and a reaction's line quotes our
+                        // own message: it would offer "You're welcome" to our own thanks. Only a keyed line is a
+                        // reaction, so suggestions wait for a real message.
+                        val suggest = r.messages.lastOrNull()?.key == null
+                        addAction(replyAction(r.tag, r.conversationId, suggest))
+                    }
                 }.addAction(markReadAction(r.tag, r.conversationId))
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(true)
@@ -639,6 +645,7 @@ class MessageNotifier internal constructor(
     private fun replyAction(
         tag: String,
         conversationId: String,
+        allowGeneratedReplies: Boolean,
     ): NotificationCompat.Action {
         val remoteInput =
             RemoteInput
@@ -658,7 +665,7 @@ class MessageNotifier internal constructor(
         return NotificationCompat.Action
             .Builder(R.drawable.ic_stat_mesh, context.getString(R.string.notif_action_reply), pending)
             .addRemoteInput(remoteInput)
-            .setAllowGeneratedReplies(true)
+            .setAllowGeneratedReplies(allowGeneratedReplies)
             .setShowsUserInterface(false)
             .build()
     }
