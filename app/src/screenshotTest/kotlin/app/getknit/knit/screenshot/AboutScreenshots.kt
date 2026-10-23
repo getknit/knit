@@ -1,6 +1,7 @@
 package app.getknit.knit.screenshot
 
 import androidx.compose.runtime.Composable
+import app.getknit.knit.ui.about.AboutCapabilitiesPreview
 import app.getknit.knit.ui.about.AboutScreenDebugPreview
 import app.getknit.knit.ui.about.AboutScreenPreview
 import app.getknit.knit.ui.about.LicenseTextScreenPreview
@@ -18,6 +19,11 @@ fun AboutScreen() = AboutScreenPreview()
 @ScreenShots
 @Composable
 fun AboutScreenDebug() = AboutScreenDebugPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun AboutCapabilities() = AboutCapabilitiesPreview()
 
 @PreviewTest
 @ScreenShots

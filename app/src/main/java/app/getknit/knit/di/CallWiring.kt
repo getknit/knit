@@ -126,6 +126,13 @@ const val WALKIE_WIRED: Boolean = BuildConfig.MESH_CALLS
 const val CALLS_WIRED: Boolean = LIVE_CALLS_WIRED || WALKIE_WIRED
 
 /**
+ * The capability bits this build's call kinds add to `Protocol.LOCAL_CAPABILITIES`: each kind's bit where that kind is
+ * wired (ADR 2026-10.swvp), `CAP_CALL` meaning "takes a live call". `MeshManager` OR-s it into its profile; About shows it.
+ */
+val CALL_CAPABILITIES: Long =
+    (if (LIVE_CALLS_WIRED) Protocol.CAP_CALL else 0L) or (if (WALKIE_WIRED) Protocol.CAP_WALKIE else 0L)
+
+/**
  * Speech (docs/VOICE_CALLS.md C-3.11-9, C-3.7-5, ADR 2026-10.nz3g): the walkie's transcripts and a live call's
  * captions, from a model the user downloads. The one read of `BuildConfig.STT`, and only where a call kind is wired — a
  * transcript needs [WALKIE_WIRED], a caption [LIVE_CALLS_WIRED]. Off, no model store, speech runtime or feed is built,

@@ -79,7 +79,6 @@ import app.getknit.knit.mesh.power.LowPowerSource
 import app.getknit.knit.mesh.power.PowerMonitor
 import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.mesh.power.awareSwitchedOff
-import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.spool.AccountIssuer
 import app.getknit.knit.mesh.spool.FreeIssuers
 import app.getknit.knit.mesh.spool.OkHttpSpoolDialer
@@ -445,8 +444,7 @@ val meshModule =
                             .onFailure { Log.w("KnitCall", "walkie chunk dropped: ${it.javaClass.simpleName}") }
                     }
                 },
-                // Each kind's bit where that kind is wired (ADR 2026-10.swvp): CAP_CALL now means "takes a live call".
-                extraCapabilities = (if (LIVE_CALLS_WIRED) Protocol.CAP_CALL else 0L) or (if (WALKIE_WIRED) Protocol.CAP_WALKIE else 0L),
+                extraCapabilities = CALL_CAPABILITIES,
                 // Getting tickets is Knit Anywhere's (ANYWHERE_WIRED): without it this phone holds no key and asks no issuer.
                 ticketKeys = if (ANYWHERE_WIRED) get<TicketKeyStore>() else null,
                 ticketIssuer = if (ANYWHERE_WIRED) get<TicketIssuer>() else null,

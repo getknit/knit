@@ -3,6 +3,7 @@ package app.getknit.knit.ui.about
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.crash.CrashIssueUrl
 import app.getknit.knit.legal.InstallSource
+import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.ui.ISSUES_URL
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -87,6 +88,41 @@ class AboutBuildInfoTest {
         assertEquals(fields.keys, BUILD_FLAGS.map { it.first }.toSet())
         val on = enabledBuildFlags()
         fields.forEach { (name, value) -> assertEquals(name, value, name in on) }
+    }
+
+    @Test
+    fun theCapabilityLineFollowsTheFlagsWithTheMaskAndItsNames() {
+        val info =
+            AboutBuildInfo(
+                environment = previewEnvironment(),
+                installSource = InstallSource.PLAY,
+                flags = listOf("LORA_PLANE"),
+                capabilities = Protocol.CAP_E2E or Protocol.CAP_CALL,
+            )
+        assertEquals(
+            listOf("installed from: play", "flags: LORA_PLANE", "capabilities: 0x4001 (CAP_E2E, CAP_CALL)"),
+            info.asText().lines().subList(1, 4),
+        )
+    }
+
+    @Test
+    fun aBitWithNoNameIsNamedByItsValue() {
+        assertEquals(
+            listOf("CAP_GROUPS" to 0x2L, "0x10000" to 0x10000L),
+            capabilityBits(Protocol.CAP_GROUPS or 0x10000L),
+        )
+    }
+
+    @Test
+    fun theTableNamesEveryCapabilityBitByItsOwnConstant() {
+        // Read off Protocol itself, so a bit added there and not to the table fails here.
+        val fields =
+            Protocol::class.java.declaredFields
+                .filter { it.name.startsWith("CAP_") && it.type == java.lang.Long.TYPE && Modifier.isStatic(it.modifiers) }
+                .associate { it.name to it.getLong(null) }
+        assertEquals(fields, CAPABILITY_BITS.toMap())
+        assertEquals(fields.size, CAPABILITY_BITS.size)
+        assertEquals(CAPABILITY_BITS.sortedBy { it.second }, CAPABILITY_BITS)
     }
 
     @Test

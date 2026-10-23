@@ -1418,6 +1418,9 @@
     <string name="about_build_android">Android</string>
     <string name="about_build_android_value">%1$s (SDK %2$d)</string>
     <string name="about_build_device">Device</string>
+    <string name="about_section_capabilities">Capabilities</string>
+    <!-- Row label: the capability bits this build advertises, OR-ed into one hex number. -->
+    <string name="about_capabilities_mask">All</string>
     <string name="about_copy_build_info">Copy build info</string>
     <string name="licenses_title">Open-source licenses</string>
     <string name="licenses_intro">Knit is built from these open-source components. Tap one to read its license.</string>

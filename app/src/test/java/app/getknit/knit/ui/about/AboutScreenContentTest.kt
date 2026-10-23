@@ -11,6 +11,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.legal.InstallSource
 import app.getknit.knit.legal.License
+import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.ui.REPO_URL
 import app.getknit.knit.ui.WEBSITE_URL
 import app.getknit.knit.ui.theme.KnitTheme
@@ -39,11 +40,12 @@ class AboutScreenContentTest {
         installSource: InstallSource = InstallSource.FDROID,
         commit: String? = null,
         flags: List<String> = emptyList(),
+        capabilities: Long = 0L,
     ) {
         compose.setContent {
             KnitTheme {
                 AboutScreenContent(
-                    info = AboutBuildInfo(previewEnvironment(buildType, obfuscated), installSource, commit, flags),
+                    info = AboutBuildInfo(previewEnvironment(buildType, obfuscated), installSource, commit, flags, capabilities),
                     snackbarHostState = SnackbarHostState(),
                     onBack = {},
                     onOpenUrl = { opened += it },
@@ -112,6 +114,26 @@ class AboutScreenContentTest {
         render()
         compose.onNodeWithTag("about_build_version").performScrollTo()
         compose.onNodeWithTag("about_build_flags").assertDoesNotExist()
+    }
+
+    @Test
+    fun theCapabilitiesSectionNamesEachBitAndTheMask() {
+        render(capabilities = Protocol.CAP_E2E or Protocol.CAP_WALKIE)
+        compose.onNodeWithTag("about_capabilities").assertExists()
+        compose.onNodeWithText("Capabilities").assertExists()
+        compose.onNodeWithTag("about_capabilities_mask").performScrollTo().assertTextContains("0x8001")
+        compose.onNodeWithTag("about_capability_CAP_E2E").performScrollTo().assertTextContains("0x1")
+        compose.onNodeWithTag("about_capability_CAP_WALKIE").performScrollTo().assertTextContains("0x8000")
+        compose.onNodeWithTag("about_capability_CAP_CALL").assertDoesNotExist()
+    }
+
+    @Test
+    fun noCapabilitiesMeansNoSection() {
+        render()
+        compose.onNodeWithText("Copy build info").performScrollTo()
+        compose.onNodeWithTag("about_capabilities").assertDoesNotExist()
+        compose.onNodeWithText("Capabilities").assertDoesNotExist()
+        compose.onNodeWithTag("about_capabilities_mask").assertDoesNotExist()
     }
 
     @Test

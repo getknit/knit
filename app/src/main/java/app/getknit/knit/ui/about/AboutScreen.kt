@@ -53,6 +53,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -154,6 +155,7 @@ internal fun AboutScreenContent(
                 onOpenLicenses = onOpenLicenses,
             )
             BuildSection(info = info, onCopy = onCopyBuildInfo)
+            CapabilitiesSection(info)
             Spacer(Modifier.height(8.dp))
         }
     }
@@ -377,6 +379,56 @@ private fun BuildSection(
     }
 }
 
+/**
+ * The capability bits this build advertises to its peers, one row per bit: its `Protocol` name and its value, so a
+ * maintainer can match a HELLO or a profile's mask against what this build claims. Unlocalized, like the flags.
+ */
+@Composable
+private fun CapabilitiesSection(info: AboutBuildInfo) {
+    if (info.capabilities == 0L) return
+    SectionHeader(stringResource(R.string.about_section_capabilities))
+    DetailCard(modifier = Modifier.testTag("about_capabilities")) {
+        CapabilityRow(
+            name = stringResource(R.string.about_capabilities_mask),
+            value = hexBits(info.capabilities),
+            modifier = Modifier.testTag("about_capabilities_mask"),
+        )
+        info.capabilityBits.forEach { (name, bit) ->
+            CapabilityRow(name = name, value = hexBits(bit), modifier = Modifier.testTag("about_capability_$name"))
+        }
+    }
+}
+
+/**
+ * A bit's name and its value. Not a [DetailRow]: that row gives its label a fixed share of the width, which breaks a
+ * long name such as `CAP_FRAME_TRANSCODE` onto a second line beside a short value. Here the value takes only what
+ * it needs, at the end, and the name has the rest.
+ */
+@Composable
+private fun CapabilityRow(
+    name: String,
+    value: String,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .semantics(mergeDescendants = true) {}
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = name,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(text = value, style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
+    }
+}
+
 private fun InstallSource.labelRes(): Int =
     when (this) {
         InstallSource.PLAY -> R.string.about_install_source_play
@@ -404,6 +456,9 @@ internal fun previewEnvironment(
     fingerprint = "google/shiba/shiba:16/BP2A/0:user/release-keys",
 )
 
+/** A fixed mask for the previews (a release build's today), so a new bit in `Protocol` leaves the references alone. */
+private const val PREVIEW_CAPABILITIES = 0xefffL
+
 @Preview(showBackground = true)
 @Composable
 fun AboutScreenPreview() =
@@ -414,6 +469,7 @@ fun AboutScreenPreview() =
                     environment = previewEnvironment(),
                     installSource = InstallSource.FDROID,
                     flags = listOf("INTERNET_PLANE", "LORA_PLANE", "LIVE_CALLS", "MESH_CALLS", "KNIT_ANYWHERE"),
+                    capabilities = PREVIEW_CAPABILITIES,
                 ),
             snackbarHostState = SnackbarHostState(),
             onBack = {},
@@ -435,6 +491,7 @@ fun AboutScreenDebugPreview() =
                     installSource = InstallSource.SIDELOADED,
                     commit = "06dd410d",
                     flags = listOf("INTERNET_PLANE", "LORA_PLANE", "COMMONS", "LIVE_CALLS", "MESH_CALLS", "STT"),
+                    capabilities = PREVIEW_CAPABILITIES,
                 ),
             snackbarHostState = SnackbarHostState(),
             onBack = {},
@@ -443,4 +500,20 @@ fun AboutScreenDebugPreview() =
             onOpenLicenses = {},
             onCopyBuildInfo = {},
         )
+    }
+
+/** The Capabilities section alone, which the whole-screen previews cut off: a release build's bits, every name on one line. */
+@Preview(showBackground = true)
+@Composable
+fun AboutCapabilitiesPreview() =
+    KnitPreview {
+        Column(modifier = Modifier.padding(vertical = 8.dp)) {
+            CapabilitiesSection(
+                AboutBuildInfo(
+                    environment = previewEnvironment(),
+                    installSource = InstallSource.FDROID,
+                    capabilities = PREVIEW_CAPABILITIES,
+                ),
+            )
+        }
     }
