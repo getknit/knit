@@ -102,3 +102,12 @@ at 8,051,605 bytes. That growth is the library's own classes, renamed and shrunk
 named-package share stays well under its 15% alarm. So the ceiling is now 9,000,000, about 12% above
 the measured size, as the last raise was. Media3 cannot be trimmed much further:
 `Transformer.Builder.build()` refers to the default extractors and codecs directly, so R8 has to keep them.
+
+## Amendment 2026-10-22 — the byte ceiling is 10.2 MB (ADR 2026-10.swvp)
+
+Live calls, mesh calls and Knit Anywhere went on in release builds with 2.10.0-beta.0 (ADR 2026-10.swvp's
+2026-10-22 amendment), and main's release build measured 9,110,099 bytes of defined dex code (job 9873), up from
+8,379,001. The step is the call graph, core-telecom and the Anywhere wiring, renamed and shrunk, plus WebRTC's and
+JNI Zero's Java classes, which `src/liveCalls/keepRules` pins because libwebrtc's native half calls them by name:
+`org` grew from 27 KB to 255 KB, and the named-package share went from 4.4% to 6.6%, still well under the 15%
+alarm. So the ceiling is now 10,200,000, about 12% above the measured size, as the last two raises were.

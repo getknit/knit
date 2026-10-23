@@ -23,8 +23,9 @@ set -euo pipefail
 
 APK="${1:?usage: r8-dex-gate.sh <apk> [max-named-pct] [max-dex-bytes]}"
 MAX_NAMED_PCT="${2:-15}"          # ADR 050 landed at 4.6%; 15 is a step-change alarm, not a target.
-MAX_DEX_BYTES="${3:-9000000}"     # ADR 050 landed at 5.34 MB of defined code (was 8.27 MB); raised from 7 MB at 7.02 MB,
-                                  # then to 9 MB at 8.05 MB when Media3 Transformer came in (ADR 050 amendment).
+MAX_DEX_BYTES="${3:-10200000}"    # ADR 050 landed at 5.34 MB of defined code (was 8.27 MB); raised from 7 MB at 7.02 MB,
+                                  # to 9 MB at 8.05 MB when Media3 Transformer came in, then to 10.2 MB at 9.11 MB when
+                                  # calls and Knit Anywhere shipped in release (ADR 050 amendments).
 
 APKANALYZER="${APKANALYZER:-$(command -v apkanalyzer || echo "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}/cmdline-tools/latest/bin/apkanalyzer")}"
 [ -x "$APKANALYZER" ] || { echo "r8-dex-gate: apkanalyzer not found (set APKANALYZER)" >&2; exit 2; }
