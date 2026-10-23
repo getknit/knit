@@ -20,11 +20,21 @@ enum class License(
     APACHE_2_0("Apache-2.0", "Apache License 2.0", "legal/Apache-2.0.txt"),
     MIT("MIT", "MIT License", "legal/MIT.txt"),
     BSD_3_CLAUSE("BSD-3-Clause", "BSD 3-Clause License (Zetetic)", "legal/BSD-3-Clause-SQLCipher.txt"),
+
+    // WebRTC's own text, then those of the BSD-3-Clause code libwebrtc links in, each under its holder's copyright line.
     BSD_3_CLAUSE_WEBRTC(
         "BSD-3-Clause",
-        "BSD 3-Clause License (WebRTC)",
+        "BSD 3-Clause Licenses (WebRTC and its bundled code)",
         "legal/BSD-3-Clause-WebRTC.txt",
         routeId = "bsd-3-clause-webrtc",
+    ),
+    BSD_2_CLAUSE_WEBRTC("BSD-2-Clause", "BSD 2-Clause Licenses (WebRTC's bundled code)", "legal/BSD-2-Clause-WebRTC.txt"),
+
+    // No SPDX id fits: FFTPACK's terms, two permissive notices and three public-domain dedications, as WebRTC carries them.
+    WEBRTC_AUDIO(
+        "LicenseRef-WebRTC-Audio",
+        "Permissive and public-domain notices (WebRTC's bundled audio code)",
+        "legal/WebRTC-audio-notices.txt",
     ),
     UNICODE_3_0("Unicode-3.0", "Unicode License v3", "legal/Unicode-3.0.txt"),
     ;

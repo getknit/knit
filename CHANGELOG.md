@@ -55,6 +55,8 @@ document:
 - A photo in a private chat no longer goes up to your internet relay once it has reached the other phone over
   Bluetooth or Wi-Fi Aware, even after you part, which saves mobile data. Photos in group chats still upload
   as before.
+- Open-source licenses in Settings now lists WebRTC, which live calls run on, and the libraries built into it,
+  such as Opus and BoringSSL. Each row opens its full license text.
 - Report a problem in About now opens GitHub's bug form with your Knit version, phone model and Android
   version filled in. You only have to describe what went wrong and how to make it happen again.
 

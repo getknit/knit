@@ -2,8 +2,9 @@
 
 Knit is licensed under the **GNU General Public License v3.0 or later** (see [`COPYING`](COPYING)).
 It redistributes, and depends on, the third-party open-source components listed below. Every component
-shipped in the Knit APK is under a **GPL-compatible** license (Apache-2.0, BSD, MIT, or the Unicode
-License); the project deliberately carries **no Google Play services / GMS** dependency.
+shipped in the Knit APK is under a **GPL-compatible** license (Apache-2.0, BSD, MIT, the Unicode License,
+or a permissive or public-domain notice); the project deliberately carries **no Google Play services /
+GMS** dependency.
 
 This file is provided for attribution and to satisfy the notice-retention terms of the Apache License
 2.0 (§4), the BSD license, and the MIT license. Where a component ships its own `NOTICE` file, that
@@ -44,6 +45,25 @@ classpath. Rows read: the component, then the project it comes from, then its SP
 | ARSCLib — on-device split-APK merge | [REAndroid/ARSCLib](https://github.com/REAndroid/ARSCLib) | Apache-2.0 |
 | apksig — on-device APK re-signing | [Android Open Source Project](https://android.googlesource.com/platform/tools/apksig/) | Apache-2.0 |
 | WebRTC (`io.github.webrtc-sdk:android` — libwebrtc, the media engine of live calls) | [The WebRTC project authors](https://webrtc.googlesource.com/src/) | BSD-3-Clause (WebRTC) |
+| &nbsp;&nbsp;↳ Abseil (`abseil-cpp`) | [Google](https://github.com/abseil/abseil-cpp) | Apache-2.0 |
+| &nbsp;&nbsp;↳ BoringSSL (with fiat-crypto) — TLS and DTLS for call media | [Google](https://boringssl.googlesource.com/boringssl/) | Apache-2.0 |
+| &nbsp;&nbsp;↳ libsrtp — SRTP for call media | [Cisco Systems](https://github.com/cisco/libsrtp) | BSD-3-Clause (WebRTC) |
+| &nbsp;&nbsp;↳ Opus — the call audio codec | [Xiph.Org Foundation](https://opus-codec.org/) | BSD-3-Clause (WebRTC) |
+| &nbsp;&nbsp;↳ RNNoise (noise suppression) | [Xiph.Org Foundation](https://github.com/xiph/rnnoise) | BSD-3-Clause (WebRTC) |
+| &nbsp;&nbsp;↳ libvpx (VP8/VP9) | [The WebM Project](https://chromium.googlesource.com/webm/libvpx) | BSD-3-Clause (WebRTC) |
+| &nbsp;&nbsp;↳ libyuv | [The LibYuv Project](https://chromium.googlesource.com/libyuv/libyuv) | BSD-3-Clause (WebRTC) |
+| &nbsp;&nbsp;↳ CRC32C | [Google](https://github.com/google/crc32c) | BSD-3-Clause (WebRTC) |
+| &nbsp;&nbsp;↳ JNI Zero (`org.jni_zero`, the Java–native glue) | [The Chromium Authors](https://chromium.googlesource.com/chromium/src/third_party/jni_zero/) | BSD-3-Clause (WebRTC) |
+| &nbsp;&nbsp;↳ libaom (AV1) | [Alliance for Open Media](https://aomedia.googlesource.com/aom/) | BSD-2-Clause (WebRTC) |
+| &nbsp;&nbsp;↳ dav1d (AV1 decoding) | [VideoLAN](https://code.videolan.org/videolan/dav1d) | BSD-2-Clause (WebRTC) |
+| &nbsp;&nbsp;↳ SFrame | [Cisco Systems](https://github.com/cisco/sframe) | BSD-2-Clause (WebRTC) |
+| &nbsp;&nbsp;↳ WebRTC's bundled audio routines (PFFFT, Ooura FFT, Mark Olesen's FFT, Wilco Dijkstra's square root, SpanDSP G.711 and G.722) | [The WebRTC project authors](https://webrtc.googlesource.com/src/) | LicenseRef-WebRTC-Audio |
+
+The rows under WebRTC are the third-party code libwebrtc statically links into its native library, taken from
+WebRTC's own license list (`tools_webrtc/libs/generate_licenses.py`) at the AAR's branch, `branch-heads/7871`, and
+kept to what the shipped binary shows. Their texts are bundled as `BSD-3-Clause-WebRTC.txt`,
+`BSD-2-Clause-WebRTC.txt` and `WebRTC-audio-notices.txt`. The LLVM runtime it also links (libc++, libc++abi,
+libunwind) is under Apache-2.0 WITH LLVM-exception, which asks no notice of compiled code.
 
 QR *scanning* uses CameraX (an AndroidX library, above) plus ZXing core; the former ZXing Android Embedded
 dependency was dropped when the scanner moved to CameraX.

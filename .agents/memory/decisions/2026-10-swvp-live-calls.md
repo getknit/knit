@@ -101,9 +101,14 @@ type. Speech is unchanged, on in debug and off in a shipped artifact, so a relea
 - **The lock state records the shipped runtime.** WebRTC and core-telecom are on `releaseRuntimeClasspath` and
   `stagingRuntimeClasspath` in `app/gradle.lockfile`. A release-shaped build is unlocked only when its runtime differs
   from that: `-PliveCalls=false`, `-PmeshCalls=false` or `-Pstt=true`.
-- **WebRTC is a notice.** `ThirdPartyNotices` has a `webrtc` row claiming `io.github.webrtc-sdk:`, with its BSD-3-Clause
-  text as `License.BSD_3_CLAUSE_WEBRTC` (`legal/BSD-3-Clause-WebRTC.txt`, route `bsd-3-clause-webrtc`, since Zetetic's
-  text already holds the SPDX id's route). Core-telecom is claimed by the AndroidX row.
+- **WebRTC is a notice, and so is what it links.** `ThirdPartyNotices` has a `webrtc` row claiming
+  `io.github.webrtc-sdk:`, then one coordinate-less row per library libwebrtc links into its `.so`. The list is WebRTC's
+  own `tools_webrtc/libs/generate_licenses.py` at the AAR's branch (`branch-heads/7871`), kept to what the binary shows:
+  no protobuf, zlib, libjpeg or cpu_features left a trace in it. The LLVM runtime gets no row, since its exception asks
+  no notice of compiled code. The texts were fetched from each library's pinned revision in that branch's `DEPS`, and
+  are grouped as `License.BSD_3_CLAUSE_WEBRTC`, `BSD_2_CLAUSE_WEBRTC` and `WEBRTC_AUDIO` (a `LicenseRef-`, since no SPDX
+  id fits public-domain and FFTPACK notices). `License.routeId` became a parameter because two texts share
+  `BSD-3-Clause`. Core-telecom is claimed by the AndroidX row. A WebRTC bump re-runs this against its new branch.
 - **The `-P` flags stay.** Each kind can still be turned off for a maintainer's build, so the libraries stay
   `compileOnly` and the per-kind packaging stays as above.
 
