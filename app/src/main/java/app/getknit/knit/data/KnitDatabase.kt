@@ -49,6 +49,9 @@ import app.getknit.knit.data.reaction.ReactionDao
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.receipt.MessageReceiptDao
 import app.getknit.knit.data.receipt.MessageReceiptEntity
+import app.getknit.knit.data.scopeconfig.ScopeConfigDao
+import app.getknit.knit.data.scopeconfig.ScopeConfigEntity
+import app.getknit.knit.data.scopeconfig.SpoolDeclaredEntity
 import net.zetetic.database.sqlcipher.SQLiteGlobal
 import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
 
@@ -56,7 +59,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 23
+internal const val KNIT_DB_SCHEMA_VERSION = 24
 
 @Database(
     entities = [
@@ -70,7 +73,7 @@ internal const val KNIT_DB_SCHEMA_VERSION = 23
         MessageFtsEntity::class, CommonsEntity::class, CommonsOutboxEntity::class,
         CommonsMemberEntity::class, MetPeerEntity::class, SavedFileEntity::class,
         PeerProfileEntity::class, GroupMemberClockEntity::class, PeerBadgeEntity::class,
-        AttachmentHolderEntity::class,
+        AttachmentHolderEntity::class, ScopeConfigEntity::class, SpoolDeclaredEntity::class,
     ],
     // v1: frozen launch baseline. The pre-1.0 alpha schema churn (the old destructive v2…v22 bumps that
     //     rode the wire/crypto breaks) is collapsed; docs/WIRE_COMPAT.md keeps the historical break record.
@@ -227,6 +230,12 @@ internal const val KNIT_DB_SCHEMA_VERSION = 23
     // v23: `messages.voiceTranscript` — a voice note's words, written out on this phone on the person's tap by the
     //     speech model (ADR 2026-10.am8d). Local only, no wire change; null on existing rows. Migrated by
     //     KnitMigrations.MIGRATION_22_23.
+    // v24: two tables for the scope-config ctl (`CTL_SCOPE_CONFIG`, docs/SPOOL_PROTOCOL.md §5, ADR 2026-10.8kfx):
+    //     `scope_configs`, each issuer's configs per conversation (keyed by conversation, issuer and version, so the
+    //     winner is read across issuers, a version ahead of this phone's clock waits beside the one it will replace, and
+    //     a group member's leave drops their rows alone), and `spool_declared`, the nodes that
+    //     have sent one. Both empty on arrival and carried in a backup (no ack, so a restored phone could never ask
+    //     again). Migrated by KnitMigrations.MIGRATION_23_24.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
@@ -266,6 +275,8 @@ abstract class KnitDatabase : RoomDatabase() {
     abstract fun savedFileDao(): SavedFileDao
 
     abstract fun attachmentHolderDao(): AttachmentHolderDao
+
+    abstract fun scopeConfigDao(): ScopeConfigDao
 
     companion object {
         /** The schema version the annotation above declares, for code that must compare against it. */

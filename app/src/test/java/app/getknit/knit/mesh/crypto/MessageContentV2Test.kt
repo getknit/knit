@@ -9,6 +9,7 @@ import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.ScopeConfigPayload
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.VideoInfo
 import org.junit.Assert.assertArrayEquals
@@ -129,6 +130,15 @@ class MessageContentV2Test {
         val call = MessageContent(body = "", ctl = MessageContent.CTL_CALL, cl = CallPayload(id = "c1", ph = CallPayload.PHASE_END))
         assertNull("a call ctl", MessageContentV2.encodeOrNull(call))
         assertEquals(EncEnvelope.VERSION_RATCHET, call.sealBytes(v3 = true).scheme)
+        // The compact layout has no label for `sc`: encoded there, a scope config would ship as `ctl = 7` with no payload.
+        val config =
+            MessageContent(
+                body = "",
+                ctl = MessageContent.CTL_SCOPE_CONFIG,
+                sc = ScopeConfigPayload(spools = listOf("wss://a.example/spool/v1"), maxFrames = 400, ttlMs = 1L, maxBlob = 1, version = 1),
+            )
+        assertNull("a scope-config ctl", MessageContentV2.encodeOrNull(config))
+        assertEquals(EncEnvelope.VERSION_RATCHET, config.sealBytes(v3 = true).scheme)
         assertNull("a foreign content version", MessageContentV2.encodeOrNull(MessageContent(v = 2, body = "")))
         // The board key goes through the same canonical check (#175): an unpadded one would be rewritten padded, and
         // one that does not decode at all used to throw IllegalArgumentException out of the seal.

@@ -150,6 +150,20 @@ LoRa plane (2026-09.ggq4).
   and re-sent verbatim on a backoff — re-sealing per retry burns chain keys and starves the receiver's skipped-key
   budget. The sealed profile carries presentation fields only, ordered by the profile version, never `pubKey` or
   `prekey`, and never inserts a peer row.
+- **When touching `CTL_SCOPE_CONFIG`, `MessageContent.sc` / `ScopeConfigPayload`, `InboundPipeline.applyScopeConfig`
+  / `commitGroupCtl`, `ScopeConfigPolicy`, `ScopeConfigRepository`, `MeshManager.sendScopeConfig`, `RatchetSessions.sealDm`'s
+  `confirmedOnly`, or the scope-config row `GroupRepository.recordDeparture` drops:** READ ADR 2026-10.m4fk (draft),
+  ADR 2026-10.8kfx and `docs/SPOOL_PROTOCOL.md` §5. A config is an ordinary custodied sealed ctl, DM or group form,
+  applied inside the commit that opened it; the store keeps one row per (conversation, issuer) and reads the winner
+  across them, so a group member's leave drops their row alone and two arrival orders of a config and a leave end on
+  the same winner. The issuer is the authenticated sender; a group config needs `sc.groupId` equal to the frame's
+  group and a sender in the roster who sealed it after their last leave. The version is a clock (minutes since
+  2026-01-01) and is never a reason to refuse — a refusal is final for that frame, and both the held rows and the
+  clock differ between phones: every version is held, and read once this phone's clock reaches it (`eligible`). A
+  refusal is the chain-advancing no-op,
+  counted as `SCOPE_CONFIG_REFUSED`, never reset evidence. The sender seals only under a confirmed session — never an
+  X3DH, never our own unanswered reset (#90) — and never v1 or cleartext; the compact v3 layout refuses `sc`.
+  Regression: `ScopeConfigPolicyTest`, `InboundPipelineTest`'s scope-config cases, `ScopeConfigLabTest`.
 - **When touching `RatchetSessions.exportedRoots` / `rootChanges`, `RatchetCrypto`'s export functions, or what the
   spool's `ScopeRegistry` reads from the ratchet:** READ ADR 019 (FSR §8, GFS §8), ADR 032 and ADR 2026-09.dcah. Only
   `pairwiseRoot` exports leave the facade, under the ratchet mutex, confirmed sessions only — a raw root never does —

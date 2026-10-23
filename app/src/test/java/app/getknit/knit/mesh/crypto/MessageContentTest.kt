@@ -14,10 +14,13 @@ import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.ScopeConfigPayload
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.VideoInfo
 import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.elementNames
+import kotlinx.serialization.encodeToByteArray
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
@@ -329,15 +332,62 @@ class MessageContentTest {
         assertTrue(update.isSupported()) // additive field, same schema version
         assertNull(MessageContent.decode(MessageContent(body = "hi").encode())!!.pr)
 
-        // Avatar cleared, and the ctl value is 8 — 7 stays reserved for CTL_SCOPE_CONFIG, and ctl
-        // numbers are append-only.
+        // Avatar cleared, and the ctl value is 8 — 7 is CTL_SCOPE_CONFIG, and ctl numbers are append-only.
         val cleared =
             MessageContent.decode(
                 MessageContent(body = "", ctl = MessageContent.CTL_PROFILE, pr = ProfilePayload("Ann", "", version = 2L)).encode(),
             )!!
         assertNull(cleared.pr?.avatarHash)
         assertEquals(8, MessageContent.CTL_PROFILE)
+        assertEquals(7, MessageContent.CTL_SCOPE_CONFIG)
     }
+
+    @Test
+    @OptIn(ExperimentalSerializationApi::class)
+    fun theScopeConfigCtlRoundTripsInBothFormsAndIsAbsentElsewhere() {
+        // docs/SPOOL_PROTOCOL.md §5: a DM config names no group, a group's names its own.
+        val dm =
+            ScopeConfigPayload(
+                spools = listOf("wss://a.example/spool/v1"),
+                maxFrames = 400,
+                ttlMs = 172_800_000L,
+                maxBlob = 65_536,
+                version = 3,
+            )
+        val group = dm.copy(groupId = "g-1", spools = listOf("wss://a.example/spool/v1", "wss://b.example/spool/v1?k=t"))
+        for (payload in listOf(dm, group)) {
+            val decoded = MessageContent.decode(MessageContent(body = "", ctl = MessageContent.CTL_SCOPE_CONFIG, sc = payload).encode())!!
+            assertEquals(MessageContent.CTL_SCOPE_CONFIG, decoded.ctl)
+            assertEquals(payload, decoded.sc)
+            assertTrue(decoded.isSupported()) // additive field, same schema version
+        }
+        assertNull(MessageContent.decode(MessageContent(body = "hi").encode())!!.sc)
+        // Every field but groupId is required (WIRE_COMPAT rule 6): a config missing its version is no content at all,
+        // never a config a port fills in with defaults.
+        val versionless =
+            ContentWithoutAScopeConfigVersion(
+                body = "",
+                ctl = 7,
+                sc = ScopeConfigWithoutVersion(listOf("wss://a.example/spool/v1"), 1, 1L, 1),
+            )
+        assertNull(MessageContent.decode(cryptoCbor.encodeToByteArray(versionless)))
+    }
+
+    /** The named layout of a scope-config ctl with the required `version` left out (rule 6's other half). */
+    @Serializable
+    private class ContentWithoutAScopeConfigVersion(
+        val body: String,
+        val ctl: Int,
+        val sc: ScopeConfigWithoutVersion,
+    )
+
+    @Serializable
+    private class ScopeConfigWithoutVersion(
+        val spools: List<String>,
+        val maxFrames: Int,
+        val ttlMs: Long,
+        val maxBlob: Int,
+    )
 
     @Test
     fun aPlainMessageEncodingIsByteIdenticalWithTheNewFieldsDefaulted() {
@@ -439,7 +489,7 @@ class MessageContentTest {
          * [MessageContent.VERSION]) and the ctl machinery. A new conversational field must be mapped in
          * [sealedContent]; only a new machinery field belongs here.
          */
-        val MACHINERY = setOf("v", "ctl", "gk", "ack", "rp", "pr", "acks", "xf", "cl")
+        val MACHINERY = setOf("v", "ctl", "gk", "ack", "rp", "pr", "acks", "xf", "cl", "sc")
 
         /** Omits what equals its default, as the CBOR codec does, so the keys left are the fields the row filled. */
         val JSON = Json { encodeDefaults = false }

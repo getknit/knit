@@ -37,6 +37,7 @@ import app.getknit.knit.data.message.withVideo
 import app.getknit.knit.data.message.writtenBy
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.reaction.ReactionEntity
+import app.getknit.knit.data.scopeconfig.ScopeConfigRepository
 import app.getknit.knit.data.settings.InboundSettings
 import app.getknit.knit.data.video.VideoAttachment
 import app.getknit.knit.data.video.VideoFrames
@@ -88,6 +89,7 @@ import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.ScopeConfigPayload
 import app.getknit.knit.mesh.protocol.TalkSeal
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.TypingContent
@@ -96,7 +98,9 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.protocol.isStorable
 import app.getknit.knit.mesh.protocol.mention
+import app.getknit.knit.mesh.spool.ScopeConfigPolicy
 import app.getknit.knit.mesh.spool.ScopeSync
+import app.getknit.knit.mesh.spool.SpoolUrl
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.normalizeSingleLine
 import app.getknit.knit.notifications.ConversationFaces
@@ -251,6 +255,9 @@ class InboundPipeline(
     // Presentation only: it sees the frame after the gate and decides nothing about it.
     private val noteVerified: suspend (WireEnvelope, RelayEnvelope, fromNodeId: String, TransportKind) -> Unit =
         { _, _, _, _ -> },
+    // The scope configs a sealed CTL_SCOPE_CONFIG writes (docs/SPOOL_PROTOCOL.md §5), inside the ratchet commit that
+    // carried it. Over [db] by default, which is what MeshManager and every rig want.
+    private val scopeConfigs: ScopeConfigRepository = ScopeConfigRepository(db),
 ) {
     // The title and avatar a notification wears, resolved from the conversation alone — the resolver the
     // conversation shortcuts share, so a refreshed shortcut and the next notification agree (ADR 2026-10.jbsa).
@@ -1406,9 +1413,70 @@ class InboundPipeline(
                 return CtlOutcome(avatarToPull = applySealedProfile(env, plain.pr))
             }
 
+            MessageContent.CTL_SCOPE_CONFIG -> {
+                // A DM config is the pair's: keyed by the peer, carrying no group (C-5-3).
+                applyScopeConfig(env, plain.sc, conversationId = env.senderId, groupId = null, now = now)
+            }
+
             else -> {}
         }
         return CtlOutcome()
+    }
+
+    /**
+     * Applies a sealed `CTL_SCOPE_CONFIG` (docs/SPOOL_PROTOCOL.md §5) inside the ratchet commit that opened it — DM form
+     * from [applyCtlInTxn], group form from [decryptAndDeliverGroup]'s commit — so the row lands atomically with the
+     * chain advance, through Room alone (no DataStore read, no lock of its own: the transaction is already outer and
+     * the ratchet mutex inner). The issuer is the frame's authenticated sender, never a payload field (C-5-2).
+     *
+     * The sender is recorded as declared whatever becomes of its config: a frame that opened proves its build speaks
+     * the ctl. The config itself goes through [ScopeConfigPolicy] — [groupId] is the group the frame was sealed to and
+     * must be the payload's own, a group issuer must be a current member who sealed it after their last leave, and the
+     * store holds every version, reading it once this phone's clock reaches it (C-5-4) — a version is never a reason to
+     * refuse, since a refusal is final and clocks differ between phones. A refusal counts
+     * [DropReason.SCOPE_CONFIG_REFUSED] and changes nothing else: the chain still advances, so a re-served copy is the
+     * ordinary `DUPLICATE` and never reaches here again.
+     */
+    private suspend fun applyScopeConfig(
+        env: RelayEnvelope,
+        sc: ScopeConfigPayload?,
+        conversationId: String,
+        groupId: String?,
+        now: Long,
+    ) {
+        sc ?: return
+        scopeConfigs.noteDeclared(env.senderId, now)
+        val config =
+            when (val result = ScopeConfigPolicy.validate(sc, conversationId, groupId, env.senderId)) {
+                is ScopeConfigPolicy.Result.Refused -> return refuseScopeConfig(env, result.why)
+                is ScopeConfigPolicy.Result.Valid -> result.config
+            }
+        if (groupId != null && !groupIssuerAdmitted(groupId, env)) return refuseScopeConfig(env, ScopeConfigPolicy.Refusal.NOT_A_MEMBER)
+        if (scopeConfigs.offer(config, now) == ScopeConfigPolicy.Decision.STORE) {
+            Log.i(TAG, "scope config v${config.version} for $conversationId from ${env.senderId}: ${config.spools.map(SpoolUrl::redact)}")
+        }
+    }
+
+    /** Whether [env]'s sender may configure [groupId]'s scope: [ScopeConfigPolicy.groupIssuerAdmitted] on the held row. */
+    private suspend fun groupIssuerAdmitted(
+        groupId: String,
+        env: RelayEnvelope,
+    ): Boolean {
+        val group = groups.find(groupId)?.takeIf { !it.left } ?: return false
+        return ScopeConfigPolicy.groupIssuerAdmitted(
+            issuer = env.senderId,
+            members = GroupMembersStore.decode(group.members),
+            sentAt = clampFuture(env.sentAt),
+            leftAt = groups.leftAt(groupId, env.senderId),
+        )
+    }
+
+    private fun refuseScopeConfig(
+        env: RelayEnvelope,
+        why: ScopeConfigPolicy.Refusal,
+    ) {
+        metrics.onDropped(DropReason.SCOPE_CONFIG_REFUSED)
+        Log.w(TAG, "scope config ${env.id} from ${env.senderId} refused: $why")
     }
 
     /**
@@ -1821,18 +1889,7 @@ class InboundPipeline(
             }
         }
         if (plain.ctl != null) {
-            // A ctl marker keeps its contract regardless of the envelope it arrived in: advance the
-            // chain, persist nothing as a message, ack nothing. CTL_REACTION is the one ctl that
-            // legitimately rides the group form (a sealed group reaction, applied atomically with the
-            // chain delta), and the one that may notify — a reaction to a message we wrote, only once the
-            // commit has landed (ADR 2026-10.59fu); everything else here — group-key machinery on
-            // pairwise DMs, an unknown future value — commits the advance and does nothing.
-            var reaction: ReactionEntity? = null
-            val committed =
-                commit {
-                    if (plain.ctl == MessageContent.CTL_REACTION) reaction = applySealedReaction(env, plain.rp)
-                }
-            if (committed) reaction?.let { noticeReaction(env, it) }
+            commitGroupCtl(env, plain, groupId, now, commit)
             return
         }
         deliverChat(
@@ -1845,6 +1902,37 @@ class InboundPipeline(
             via = via,
             persist = { row -> commit { messages.save(row) } },
         )
+    }
+
+    /**
+     * A group-form ctl keeps its contract regardless of the envelope it arrived in: advance the chain, persist nothing
+     * as a message, ack nothing. Two ctls legitimately ride the group form, each applied atomically with the chain
+     * delta inside [commit]: `CTL_REACTION` (a sealed group reaction, and the one that may notify — a reaction to a
+     * message we wrote, only once the commit has landed, ADR 2026-10.59fu) and `CTL_SCOPE_CONFIG` (the group's relays,
+     * docs/SPOOL_PROTOCOL.md §5, through [applyScopeConfig]). Everything else here — group-key machinery on pairwise
+     * DMs, an unknown future value — commits the advance and does nothing.
+     */
+    private suspend fun commitGroupCtl(
+        env: RelayEnvelope,
+        plain: MessageContent,
+        groupId: String,
+        now: Long,
+        commit: suspend (suspend () -> Unit) -> Boolean,
+    ) {
+        var reaction: ReactionEntity? = null
+        val committed =
+            commit {
+                when (plain.ctl) {
+                    MessageContent.CTL_REACTION -> {
+                        reaction = applySealedReaction(env, plain.rp)
+                    }
+
+                    MessageContent.CTL_SCOPE_CONFIG -> {
+                        applyScopeConfig(env, plain.sc, conversationId = groupId, groupId = groupId, now = now)
+                    }
+                }
+            }
+        if (committed) reaction?.let { noticeReaction(env, it) }
     }
 
     /**

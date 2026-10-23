@@ -92,6 +92,11 @@ val loraPlane = (project.findProperty("loraPlane") as? String)?.toBoolean()
 // when the feature is introduced, the way ADR 064 and ADR 2026-09.6gtm did for the two planes.
 val commons = (project.findProperty("commons") as? String)?.toBoolean()
 
+// The public relay directory (`hosted.getknit.app/api/v1/public-spools`, ADR 2026-10.8kfx): whether a phone with the
+// Internet plane on reads it once a day. OFF in every build until the coordinator says the endpoint is live; until then
+// a phone picks its home from the copy it ships (`PublicSpools.BAKED`). `-PspoolDirectory=true` turns it on.
+val spoolDirectory = (project.findProperty("spoolDirectory") as? String)?.toBoolean()
+
 // The BLE side channel (small floodable frames on non-connectable extended-advertising pages, knit/knit-next#13)
 // — the same kind of visibility switch: ON in debug and in a shipped artifact,
 // overridable with `-PbleSidePlane=true|false`. It gates the one seam, the `BleSideChannel` the DI hands
@@ -315,6 +320,7 @@ android {
         buildConfigField("boolean", "LORA_PLANE", (loraPlane ?: true).toString())
         // The commons is ON here so the unit suite and the lab run the real thing; see `commons` above.
         buildConfigField("boolean", "COMMONS", (commons ?: true).toString())
+        buildConfigField("boolean", "SPOOL_DIRECTORY", (spoolDirectory ?: false).toString())
         // The BLE side channel is ON in debug so a lab build airs and hears pages; see `bleSidePlane` above.
         buildConfigField("boolean", "BLE_SIDE_PLANE", (bleSidePlane ?: true).toString())
         // The GATT payload reader is ON in debug so a lab build finds and dials iPhones; see `bleGattPeers` above.
@@ -428,6 +434,7 @@ android {
             // The commons is not introduced yet: a shipped artifact hides it (`-Pcommons=true` lights it
             // for a maintainer build). Staging and nonMinifiedRelease inherit this through initWith.
             buildConfigField("boolean", "COMMONS", (commons ?: false).toString())
+            buildConfigField("boolean", "SPOOL_DIRECTORY", (spoolDirectory ?: false).toString())
             // The BLE side channel is introduced: on in a shipped artifact.
             buildConfigField("boolean", "BLE_SIDE_PLANE", (bleSidePlane ?: true).toString())
             // Finding iPhones through their GATT payload is introduced: on in a shipped artifact.

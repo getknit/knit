@@ -27,6 +27,7 @@ import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.group.toFoundingInfo
+import app.getknit.knit.data.group.toGroupInfo
 import app.getknit.knit.data.message.ConversationKind
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
@@ -37,6 +38,7 @@ import app.getknit.knit.data.message.withVideo
 import app.getknit.knit.data.peer.MetPeerRepository
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.reaction.ReactionEntity
+import app.getknit.knit.data.scopeconfig.ScopeConfigRepository
 import app.getknit.knit.data.settings.LoraBoard
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.fieldlog.FieldLog
@@ -82,6 +84,7 @@ import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.ScopeConfigPayload
 import app.getknit.knit.mesh.protocol.TalkSeal
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.TypingContent
@@ -96,9 +99,13 @@ import app.getknit.knit.mesh.spool.GroupRootPolicy
 import app.getknit.knit.mesh.spool.GroupRootStore
 import app.getknit.knit.mesh.spool.GroupScopeRoots
 import app.getknit.knit.mesh.spool.HolderAskBatch
+import app.getknit.knit.mesh.spool.HomeJournal
+import app.getknit.knit.mesh.spool.HomeRefresher
 import app.getknit.knit.mesh.spool.MoveResult
 import app.getknit.knit.mesh.spool.PairScopeRoots
+import app.getknit.knit.mesh.spool.PublicSpoolSource
 import app.getknit.knit.mesh.spool.ScopeBlobs
+import app.getknit.knit.mesh.spool.ScopeConfigPolicy
 import app.getknit.knit.mesh.spool.ScopeRegistry
 import app.getknit.knit.mesh.spool.ScopeRoots
 import app.getknit.knit.mesh.spool.ScopeSync
@@ -307,6 +314,11 @@ class MeshManager(
     private val badgeJournal: BadgeJournal? = null,
     private val badgeIssuer: BadgeIssuer? = null,
     badgePins: List<PinnedBadgeKey> = emptyList(),
+    // This phone's home relay and the public directory it is picked from (ADR 2026-10.8kfx). Null in a test that keeps
+    // none; [directory] is null where the build reads no directory (`BuildConfig.SPOOL_DIRECTORY`), and the home then
+    // comes from the copy the build ships.
+    homes: HomeJournal? = null,
+    directory: PublicSpoolSource? = null,
 ) : MeshController,
     TransferSignals,
     CallSignals,
@@ -564,6 +576,13 @@ class MeshManager(
         if (isHeardEvidence(wire, env) && env.senderId != identity.nodeId()) peers.noteSeen(env.senderId, heardAt(env, clock()))
     }
 
+    /**
+     * Every conversation's scope config (`CTL_SCOPE_CONFIG`, docs/SPOOL_PROTOCOL.md §5) and the peers that declared
+     * one: written by the pipeline's two inbound arms and by [sendScopeConfig], read by the scope table. Declared
+     * ahead of [pipeline], which takes it.
+     */
+    internal val scopeConfigs: ScopeConfigRepository = ScopeConfigRepository(db, clock)
+
     // The inbound half of the mesh: verify → custody → dispatch → deliver/ack, plus the store-and-forward
     // carry gate and the avatar/group-photo/attachment screening. MeshManager still OWNS the DTN services
     // above and the outbound origination choke; the pipeline receives the services by reference and reaches
@@ -630,6 +649,7 @@ class MeshManager(
             },
             commonsTitle = { commons?.find(it)?.name },
             noteVerified = ::noteVerified,
+            scopeConfigs = scopeConfigs,
         )
 
     // Reconstructed per session so its inbound collector + relay jobs live on the session scope and are
@@ -705,6 +725,27 @@ class MeshManager(
                 free = freeKeys,
                 accounts = accountIssuer,
                 devices = deviceKeys,
+            )
+        } else {
+            null
+        }
+
+    /**
+     * Keeps this phone's home relay (ADR 2026-10.8kfx): settles it at each start, reads the public directory at most
+     * daily while a relay is active, and re-derives the scope table when the home moves. Built only with the plane.
+     */
+    private val homeRefresher: HomeRefresher? =
+        if (spoolDialer != null && homes != null) {
+            HomeRefresher(
+                journal = homes,
+                source = directory,
+                selfId = { identity.nodeId() },
+                planeOn = settings.activeSpoolUrls.map { it.isNotEmpty() },
+                online = online,
+                routeChanges = routeChanges,
+                onHomeChanged = { _, _ -> scopeSync?.onScopeTableChanged() },
+                clock = clock,
+                log = { Log.i(SPOOL_TAG, it) },
             )
         } else {
             null
@@ -944,6 +985,7 @@ class MeshManager(
         scopeSync?.start(session)
         ticketRefresher?.start(session)
         badgeRefresher?.start(session)
+        homeRefresher?.start(session)
         watchRoute(session)
         watchScopeInputs(session)
     }
@@ -1001,6 +1043,7 @@ class MeshManager(
         scopeSync?.stop()
         ticketRefresher?.stop()
         badgeRefresher?.stop()
+        homeRefresher?.stop()
         transport.stop()
         // Clear this session's pending relays on the app scope (the session is about to die); capture
         // the instance so a fast restart reassigning `router` can't retarget the wrong one. Then tear
@@ -3485,6 +3528,106 @@ class MeshManager(
         peerId: String,
         payload: CallPayload,
     ): Boolean = sendCtlDm(peerId, MessageContent(body = "", ctl = MessageContent.CTL_CALL, cl = payload), null, identity.nodeId())
+
+    /**
+     * Issues [payload] as this phone's scope config for [conversationId] (`CTL_SCOPE_CONFIG`, docs/SPOOL_PROTOCOL.md
+     * §5) — a peer's node id with [ScopeConfigPayload.groupId] null, or a group's id with the same id in the payload —
+     * and records it as our own row, so this phone reads the winner its peers will. True when it was sealed and
+     * flooded. Nothing calls it yet but tests: the next phase issues a config only where a phone's home is not the
+     * shared default relay (ADR 2026-10.8kfx).
+     *
+     * An ordinary custodied sealed ctl, flooded and refilled like any other, and only ever sealed:
+     *  - **No v1 and no cleartext form.** A null seal sends nothing. A v1 wrap would land on a pre-ratchet build as an
+     *    empty bubble (ADR 018), and a config has no cleartext twin.
+     *  - **Never a session opened for it.** A DM seals only under a confirmed session ([RatchetSessions.sealDm]'s
+     *    `confirmedOnly`, judged under the ratchet lock): no first-contact init, and not on our own unanswered reset,
+     *    whose init an unflagged copy would carry into the peer's hour-long incidental floor (#90, ADR 2026-10.j67x).
+     *    The config waits for the answer, as the sealed profile does ([broadcastSealedProfile]).
+     *  - **A group rides its sender-key chain** ([sealGroupRatchet]), only while every other member's pairwise
+     *    session is already confirmed — so a seed this send mints goes out over sessions that exist, never an X3DH
+     *    opened for the config — and never the v1 group form it would otherwise fall back to.
+     *  - **Only what a peer would take.** The payload must pass [ScopeConfigPolicy.validate] and be news against our own
+     *    held rows; a config every peer would refuse or keep past is not worth a chain key. Pick its version with
+     *    [ScopeConfigPolicy.nextVersion] over [ScopeConfigRepository.winning], the eligible winner. The version is
+     *    never checked against our clock: a phone whose clock runs slow still sends, at a low version. Our row is
+     *    written before the seal ([ScopeConfigRepository.reserve]) and given back if the seal sends nothing.
+     */
+    suspend fun sendScopeConfig(
+        conversationId: String,
+        payload: ScopeConfigPayload,
+    ): Boolean {
+        val me = identity.nodeId()
+        val group = Conversations.kindFor(conversationId) == ConversationKind.GROUP
+        if (!group && Conversations.kindFor(conversationId) != ConversationKind.DM) return false
+        if (conversationId == me) return false
+        val now = clock()
+        val config =
+            when (val result = ScopeConfigPolicy.validate(payload, conversationId, conversationId.takeIf { group }, me)) {
+                is ScopeConfigPolicy.Result.Refused -> return false
+                is ScopeConfigPolicy.Result.Valid -> result.config
+            }
+        // Our own row first, in one transaction with the read that says it is news; given back if nothing is sent.
+        val reservation = scopeConfigs.reserve(config, now) ?: return false
+        val content = MessageContent(body = "", ctl = MessageContent.CTL_SCOPE_CONFIG, sc = payload)
+        val sent = if (group) sealScopeConfigGroup(conversationId, content, me) else sealScopeConfigDm(conversationId, content, me)
+        if (!sent) scopeConfigs.release(reservation)
+        return sent
+    }
+
+    /** [sendScopeConfig]'s DM half: a v2 ctl DM under a confirmed session, or nothing. */
+    private suspend fun sealScopeConfigDm(
+        peerId: String,
+        content: MessageContent,
+        me: String,
+    ): Boolean {
+        val peer = peers.find(peerId) ?: return false
+        if ((peer.capabilities ?: 0L) and Protocol.CAP_RATCHET == 0L) return false
+        val bundle = peer.pubKey?.let { PublicKeyBundle.decode(it) } ?: return false
+        val id = FrameId.new()
+        val now = clock()
+        val aad = MessageCrypto.header(id, me, now, peerId)
+        // The named v2 layout: the compact one has no label for `sc` (MessageContentV2 refuses it).
+        val sealed =
+            ratchet.sealDm(peerId, bundle.dhPublicKey(), ratchetPrekeyOf(peer), content.encode(), aad, now, confirmedOnly = true)
+                ?: return false
+        originateSigned(
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = me,
+                sentAt = now,
+                recipientId = peerId,
+                payload = WireCodec.encodePayload(ChatContent(enc = sealed)),
+            ),
+        )
+        return true
+    }
+
+    /** [sendScopeConfig]'s group half: the sender-key form, with every member's session confirmed, or nothing. */
+    private suspend fun sealScopeConfigGroup(
+        groupId: String,
+        content: MessageContent,
+        me: String,
+    ): Boolean {
+        val group = groups.find(groupId)?.takeIf { !it.left }?.toGroupInfo() ?: return false
+        if (me !in group.members) return false
+        val confirmed = ratchet.exportedRoots().filter { it.confirmed }.mapTo(HashSet()) { it.peerId }
+        if (!confirmed.containsAll(group.members.filter { it != me })) return false
+        val id = FrameId.new()
+        val now = clock()
+        val sealed = sealGroupRatchet(group, me, content, MessageCrypto.header(id, me, now, group.id)) ?: return false
+        originateSigned(
+            RelayEnvelope(
+                type = FrameType.CHAT,
+                id = id,
+                senderId = me,
+                sentAt = now,
+                group = group,
+                payload = WireCodec.encodePayload(ChatContent(enc = sealed)),
+            ),
+        )
+        return true
+    }
 
     /**
      * One walkie chunk to [peerId] (docs/VOICE_CALLS.md §3.11): [chunk] sealed on the DM ratchet into a [FrameType.TALK]

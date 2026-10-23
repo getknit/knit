@@ -37,6 +37,7 @@ import app.getknit.knit.data.ratchet.GroupRatchetRepository
 import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.data.reaction.ReactionEntity
 import app.getknit.knit.data.receipt.MessageReceiptEntity
+import app.getknit.knit.data.scopeconfig.ScopeConfigRepository
 import app.getknit.knit.data.settings.InboundSettings
 import app.getknit.knit.identity.Alias
 import app.getknit.knit.identity.IdentitySource
@@ -85,6 +86,7 @@ import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.ScopeConfigPayload
 import app.getknit.knit.mesh.protocol.TranscriptJson
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.TypingContent
@@ -5445,6 +5447,7 @@ class InboundPipelineTest {
             acks: List<String>? = null,
             xf: TransferPayload? = null,
             cl: CallPayload? = null,
+            sc: ScopeConfigPayload? = null,
             sentAt: Long = 5L,
             /** Seal crypto scheme v3 (derived nonce, compact plaintext, header-bound AAD) instead of v2. */
             v3: Boolean = false,
@@ -5465,6 +5468,7 @@ class InboundPipelineTest {
                     acks = acks,
                     xf = xf,
                     cl = cl,
+                    sc = sc,
                 ).sealBytes(v3)
             check(!v3 || scheme == EncEnvelope.VERSION_DM_V3) { "fixture asked for v3 but the content has no compact form" }
             val sealed = checkNotNull(engine.seal(session, plain, aad, rig.selfSpk.pub, now = 5L, v3 = v3))
@@ -7516,9 +7520,10 @@ class InboundPipelineTest {
             sentAt: Long = 5L,
             ctl: Int? = null,
             rp: ReactionPayload? = null,
+            sc: ScopeConfigPayload? = null,
         ): RelayEnvelope {
             val aad = MessageCrypto.header(id, party.nodeId, sentAt, groupId)
-            val sealed = checkNotNull(engine.seal(chain, MessageContent(body = body, ctl = ctl, rp = rp).encode(), aad))
+            val sealed = checkNotNull(engine.seal(chain, MessageContent(body = body, ctl = ctl, rp = rp, sc = sc).encode(), aad))
             chain = sealed.chain
             return RelayEnvelope(
                 type = FrameType.CHAT,
@@ -8698,6 +8703,125 @@ class InboundPipelineTest {
             assertFalse(rig.msgMap.containsKey("ctl-u1"))
             assertFalse(rig.msgMap.containsKey("ctl-u2"))
             coVerify(exactly = 0) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    private fun scopeConfig(
+        version: Int,
+        groupId: String? = null,
+        spools: List<String> = listOf("wss://public-2.spool.getknit.app/spool/v1"),
+    ) = ScopeConfigPayload(groupId = groupId, spools = spools, maxFrames = 400, ttlMs = 172_800_000L, maxBlob = 65_536, version = version)
+
+    /**
+     * The DM arm of `CTL_SCOPE_CONFIG` (docs/SPOOL_PROTOCOL.md §5): a config lands under the peer, issued by the
+     * frame's authenticated sender, inside the commit that advanced the chain; one naming a group is refused and still
+     * advances it; one far ahead of any clock is held and never read, never refused; and the sender counts as declared
+     * either way. Nothing is a message.
+     */
+    @Test
+    fun aDmScopeConfigLandsUnderThePeerAndARefusedOneStillAdvancesTheChain() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            // Accepted, so the thread notifies: the one notification below is the chat's, and a ctl that notified would show.
+            rig.settings.accepted.value = setOf(alice.nodeId)
+            val v2 = V2Author(alice, rig)
+            val configs = ScopeConfigRepository(rig.db)
+
+            rig.deliver(alice, v2.dm("sc-1", "", ctl = MessageContent.CTL_SCOPE_CONFIG, sc = scopeConfig(version = 2)))
+            val held = configs.winning(alice.nodeId)
+            assertEquals(alice.nodeId, held?.issuer)
+            assertEquals(2, held?.version)
+            assertEquals(listOf("wss://public-2.spool.getknit.app/spool/v1"), held?.spools)
+            assertEquals(setOf(alice.nodeId), configs.declared())
+
+            val wrongConversation =
+                v2.dm(
+                    "sc-group",
+                    "",
+                    ctl = MessageContent.CTL_SCOPE_CONFIG,
+                    sc = scopeConfig(version = 3, groupId = "g-x"),
+                )
+            rig.deliver(alice, wrongConversation)
+            // The refusal committed the chain step: the same frame again is a consumed index, and is never judged twice.
+            rig.deliver(alice, wrongConversation)
+            assertEquals(1L, rig.drops(DropReason.RATCHET_DUPLICATE))
+            // A version far ahead of any clock is held, never refused (a refusal is final and clocks differ), and never read.
+            rig.deliver(
+                alice,
+                v2.dm("sc-far", "", ctl = MessageContent.CTL_SCOPE_CONFIG, sc = scopeConfig(version = Int.MAX_VALUE)),
+            )
+            assertEquals(1L, rig.drops(DropReason.SCOPE_CONFIG_REFUSED))
+            assertEquals(2, configs.winning(alice.nodeId)?.version)
+            // An older config, re-issued or re-ordered, is kept past rather than refused.
+            rig.deliver(alice, v2.dm("sc-old", "", ctl = MessageContent.CTL_SCOPE_CONFIG, sc = scopeConfig(version = 1)))
+            assertEquals(1L, rig.drops(DropReason.SCOPE_CONFIG_REFUSED))
+            assertEquals(2, configs.winning(alice.nodeId)?.version)
+
+            rig.deliver(alice, v2.dm("dm-after", "still alive"))
+            assertEquals("still alive", rig.msgMap["dm-after"]?.body)
+            listOf("sc-1", "sc-group", "sc-far", "sc-old").forEach { assertFalse(rig.msgMap.containsKey(it)) }
+            assertEquals(1L, rig.drops(DropReason.RATCHET_DUPLICATE))
+            coVerify(exactly = 1) { rig.notifier.notify(any(), any(), any(), any(), any()) }
+        }
+
+    /**
+     * The group arm: a config from a member lands under the group, inside the chain commit; one naming another group, or
+     * sealed before its sender's last recorded leave (a rejoined member's pre-leave config, re-served), is refused and
+     * the chain still advances.
+     */
+    @Test
+    fun aGroupScopeConfigFromAMemberLandsAndOneForAnotherGroupOrFromBeforeTheirLeaveIsRefused() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val group = rig.seedRatchetGroup(alice)
+            val author = GroupRatchetAuthor(alice, group.id)
+            val v2 = V2Author(alice, rig)
+            rig.deliver(
+                alice,
+                v2.dm("seed-sc", "", ctl = MessageContent.CTL_GROUP_KEY, gk = GroupKeyPayload(group.id, keys = listOf(author.seed()))),
+            )
+            val configs = ScopeConfigRepository(rig.db)
+
+            rig.deliver(
+                alice,
+                author.groupFrame(group, id = "gsc-1", body = "", ctl = MessageContent.CTL_SCOPE_CONFIG, sc = scopeConfig(1, group.id)),
+            )
+            assertEquals(alice.nodeId, configs.winning(group.id)?.issuer)
+            assertEquals(group.id, configs.winning(group.id)?.groupId)
+            assertNull("a group config is never filed under its sender's DM", configs.winning(alice.nodeId))
+
+            val otherGroup =
+                author.groupFrame(group, id = "gsc-other", body = "", ctl = MessageContent.CTL_SCOPE_CONFIG, sc = scopeConfig(2, "g-other"))
+            rig.deliver(alice, otherGroup)
+            // The refusal committed the chain step: the same frame again is a consumed index, never judged twice.
+            rig.deliver(alice, otherGroup)
+            assertEquals(1L, rig.drops(DropReason.GROUP_RATCHET_DUPLICATE))
+            assertEquals(1L, rig.drops(DropReason.SCOPE_CONFIG_REFUSED))
+            rig.deliver(
+                alice,
+                author.groupFrame(group, id = "gsc-dm", body = "", ctl = MessageContent.CTL_SCOPE_CONFIG, sc = scopeConfig(2)),
+            )
+            rig.leftAtMap[group.id to alice.nodeId] = 100L
+            rig.deliver(
+                alice,
+                author.groupFrame(
+                    group,
+                    id = "gsc-stale",
+                    body = "",
+                    sentAt = 50L,
+                    ctl = MessageContent.CTL_SCOPE_CONFIG,
+                    sc = scopeConfig(2, group.id),
+                ),
+            )
+            assertEquals(3L, rig.drops(DropReason.SCOPE_CONFIG_REFUSED))
+            assertEquals(1, configs.winning(group.id)?.version)
+
+            rig.deliver(alice, author.groupFrame(group, id = "gm-after", body = "still alive", sentAt = 150L))
+            assertEquals("still alive", rig.msgMap["gm-after"]?.body)
+            listOf("gsc-1", "gsc-other", "gsc-dm", "gsc-stale").forEach { assertFalse(rig.msgMap.containsKey(it)) }
         }
 
     @Test

@@ -754,6 +754,28 @@ data class ReactionPayload(
 )
 
 /**
+ * The `sc` payload for a `CTL_SCOPE_CONFIG` ctl frame (`docs/SPOOL_PROTOCOL.md` §5, additive): the relays a
+ * conversation's scope lives on and the retention bounds its members assume, sealed inside the conversation like any
+ * message — the DM form for a pair, the group sender-key form for a group. [groupId] is null for the DM pair of the
+ * frame's two endpoints and the group's id otherwise; the receiver refuses one that disagrees with the conversation
+ * the frame arrived in. The issuer is the frame's authenticated sender (C-5-2), never a field here, and two configs
+ * order on `(version, issuer)` (C-5-4).
+ *
+ * Every field but [groupId] is required (`docs/WIRE_COMPAT.md` rule 6): a config that encodes as `{}` would read as
+ * null here and as a config of defaults on a port that fills them in, and a port must never invent a spool list or a
+ * bound. [spools] are `wss://` URLs, and one may carry a `?k=` bearer token (§7.1), so a log line redacts each.
+ */
+@Serializable
+data class ScopeConfigPayload(
+    val groupId: String? = null,
+    val spools: List<String>,
+    val maxFrames: Int,
+    val ttlMs: Long,
+    val maxBlob: Int,
+    val version: Int,
+)
+
+/**
  * A sealed profile update, carried as [app.getknit.knit.mesh.crypto.MessageContent.pr] under
  * `CTL_PROFILE` — the encrypted replacement for re-flooding a cleartext [ProfileContent] frame at an
  * *established* contact.

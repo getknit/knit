@@ -255,6 +255,13 @@ class RatchetSessions(
      * signed as its prekey, or one in its identity bundle (#172). Tink throws there, and a throw used to crash
      * the chat screen and end the mesh's neighbour watcher. Callers treat null as "fall back": a chat to v1,
      * which the peer can always read, a ctl to its cleartext form, a seed to the v1 group message.
+     *
+     * [confirmedOnly] seals only under a session that is already confirmed, and returns null otherwise — no session,
+     * our own first-contact init, or our own reset still unanswered — so the frame never carries an init. Read under
+     * the same lock as the seal, so a session forgotten or re-rooted between a caller's check and the seal cannot turn
+     * it into an initiation. For a frame that must never open a session or ride one the peer may not hold yet (a scope
+     * config, docs/SPOOL_PROTOCOL.md §5): an unflagged copy of a reset's init meets the peer's hour-long incidental
+     * floor (#90, ADR 2026-10.j67x).
      */
     suspend fun sealDm(
         peerId: String,
@@ -264,10 +271,12 @@ class RatchetSessions(
         aad: ByteArray,
         now: Long,
         scheme: Int = EncEnvelope.VERSION_RATCHET,
+        confirmedOnly: Boolean = false,
     ): EncEnvelope? =
         locked {
             require(EncEnvelope.isDmRatchetVersion(scheme)) { "not a DM ratchet scheme: $scheme" }
             val existing = store.session(peerId)
+            if (confirmedOnly && existing?.confirmed != true) return@locked null
             val initiation =
                 if (existing == null) {
                     peerSpk ?: return@locked null

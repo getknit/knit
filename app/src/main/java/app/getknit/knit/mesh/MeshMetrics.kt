@@ -118,6 +118,15 @@ enum class DropReason {
      * encoder on another port shows here instead of vanishing (the interop audit's AND-12).
      */
     PAYLOAD_DECODE_FAILED,
+
+    /**
+     * A sealed scope config (`CTL_SCOPE_CONFIG`, docs/SPOOL_PROTOCOL.md §5) that opened and was refused: malformed (no
+     * dialable URL, too many, a non-positive bound), sealed into a conversation other than the one it names, from a
+     * group sender outside the roster or sealed before their leave, or a version too far past the held winner. Nothing
+     * is applied and the chain still advances. Never reset-triggering: the frame decrypted, so it says nothing about the
+     * session.
+     */
+    SCOPE_CONFIG_REFUSED,
 }
 
 /**

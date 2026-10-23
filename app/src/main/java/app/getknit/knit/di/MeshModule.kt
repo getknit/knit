@@ -20,6 +20,7 @@ import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.DirectHostStore
+import app.getknit.knit.data.settings.HomeStore
 import app.getknit.knit.data.settings.LoraPlaneStateStore
 import app.getknit.knit.data.settings.LowPowerSwitch
 import app.getknit.knit.data.settings.NanJournalStore
@@ -89,6 +90,7 @@ import app.getknit.knit.mesh.wear.WearStatusSource
 import app.getknit.knit.mesh.wifiaware.WifiAwareTransport
 import app.getknit.knit.moderation.modelGuardStamp
 import app.getknit.knit.net.AndroidInternetGate
+import app.getknit.knit.net.AndroidPublicSpoolDirectory
 import app.getknit.knit.net.InternetGate
 import app.getknit.knit.transfer.AndroidDirectWifi
 import app.getknit.knit.transfer.AndroidTransferFiles
@@ -462,6 +464,9 @@ val meshModule =
                 // Ask the best holder of a blob rather than the likeliest (ADR 2026-10.6e5t).
                 blobHolderQuery = BlobExchange.HolderQuery(enabled = BuildConfig.BLOB_QUERY),
                 fieldLog = get(),
+                // The home relay (ADR 2026-10.8kfx); the directory is read only where the build says it is live.
+                homes = get<HomeStore>(),
+                directory = if (BuildConfig.SPOOL_DIRECTORY) AndroidPublicSpoolDirectory(get()) else null,
             )
         }
         // UI ViewModels, MeshService, and the notification/debug entry points bind this narrow facade (not

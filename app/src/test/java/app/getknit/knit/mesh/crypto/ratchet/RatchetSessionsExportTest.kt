@@ -61,6 +61,11 @@ class RatchetSessionsExportTest {
             now: Long,
         ): EncEnvelope = checkNotNull(sessions.sealDm(peer.nodeId, peer.ik.pub, prekey(), text.toByteArray(), AAD, now))
 
+        suspend fun sealConfirmedOnly(
+            text: String,
+            now: Long,
+        ): EncEnvelope? = sessions.sealDm(peer.nodeId, peer.ik.pub, prekey(), text.toByteArray(), AAD, now, confirmedOnly = true)
+
         suspend fun reset(now: Long): ResetSeal = sessions.sealResetDm(peer.nodeId, peer.ik.pub, prekey(), "reset".toByteArray(), AAD, now)
 
         suspend fun open(
@@ -110,6 +115,32 @@ class RatchetSessionsExportTest {
         assertTrue("expected Sealed, got $seal", seal is ResetSeal.Sealed)
         return seal as ResetSeal.Sealed
     }
+
+    /**
+     * The scope config's seal (`MeshManager.sendScopeConfig`, docs/SPOOL_PROTOCOL.md §5): only under a session already
+     * confirmed, so it never opens one and never carries an init — not our first contact's, and not our own unanswered
+     * reset's, whose unflagged copy the peer would meet under its hour-long floor (#90). Exactly the sessions that
+     * export as `confirmed`.
+     */
+    @Test
+    fun aConfirmedOnlySealNeverOpensASessionAndNeverCarriesAnInit() =
+        runTest {
+            val (a, b) = pair()
+            assertNull("no session: nothing is sealed", a.sealConfirmedOnly("config", T))
+            assertNull("and none was started", a.sessions.sessionFor(b.nodeId))
+            b.open(a.seal("hello", T), T)
+            assertNull("our own first-contact init, unanswered", a.sealConfirmedOnly("config", T + 1))
+            // The responder is confirmed the moment it opens; its seal carries no init.
+            assertNull(checkNotNull(b.sealConfirmedOnly("config", T + 2)).r?.init)
+            a.open(b.seal("hello back", T + 3), T + 3)
+            val confirmed = checkNotNull(a.sealConfirmedOnly("config", T + 4))
+            assertNull(confirmed.r?.init)
+            b.open(confirmed, T + 4)
+
+            sealed(a.reset(T + 5))
+            assertFalse(checkNotNull(a.export()).confirmed)
+            assertNull("our own reset, unanswered", a.sealConfirmedOnly("config", T + 6))
+        }
 
     @Test
     fun ourResetOverAConfirmedSessionExportsTheNewRootAndTheOneItReplacedCarryingTheReset() =

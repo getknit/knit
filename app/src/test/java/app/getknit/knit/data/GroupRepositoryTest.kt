@@ -4,7 +4,10 @@ import app.getknit.knit.data.group.GroupEntity
 import app.getknit.knit.data.group.GroupMembersStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.ratchet.GroupRatchetRepository
+import app.getknit.knit.data.scopeconfig.ScopeConfigRepository
 import app.getknit.knit.mesh.crypto.ratchet.GroupRatchetEngine
+import app.getknit.knit.mesh.spool.ScopeConfig
+import app.getknit.knit.mesh.spool.ScopeConfigPolicy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -213,6 +216,34 @@ class GroupRepositoryTest : RoomDbTest() {
             mintedAt = 1L,
             export = ByteArray(32),
         )
+
+    @Test
+    fun `recordDeparture drops the leaver's scope config and keeps every other member's`() =
+        runTest {
+            seedGroup("g", listOf("a", "b", "c"))
+            val configs = ScopeConfigRepository(db)
+            for ((issuer, version) in listOf("b" to 3, "c" to 2)) {
+                val config =
+                    ScopeConfig(
+                        "g",
+                        "g",
+                        issuer,
+                        listOf("wss://$issuer.example/spool/v1"),
+                        maxFrames = 400,
+                        ttlMs = 1L,
+                        maxBlob = 1,
+                        version,
+                    )
+                assertEquals(ScopeConfigPolicy.Decision.STORE, configs.offer(config, receivedAt = 1L))
+            }
+            assertEquals("b", configs.winning("g")?.issuer)
+
+            assertTrue(repo().recordDeparture("g", "b", leftAt = 100L))
+
+            // A phone that heard b's leave before b's config refuses the config; this one, which heard them the other
+            // way round, reads the same winner once the leave lands.
+            assertEquals("c", configs.winning("g")?.issuer)
+        }
 
     @Test
     fun `recordDeparture is a no-op for a non-member`() =

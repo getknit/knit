@@ -11,6 +11,7 @@ import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.ScopeConfigPayload
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.VideoInfo
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -65,11 +66,11 @@ data class MessageContent(
     // null; do not enable encodeDefaults or every DM frame inflates with an empty reply.
     val replyTo: ReplyRef? = null,
     // Control marker for ratchet session management and sealed metadata (additive;
-    // [CTL_SESSION_RESET], [CTL_GROUP_KEY], [CTL_GROUP_KEY_REQ], [CTL_GROUP_KEY_ACK],
-    // [CTL_RECEIPT], [CTL_REACTION], [CTL_PROFILE], [CTL_TRANSFER], [CTL_CALL]). A non-null value means this frame is machinery, not
-    // conversation: it is never persisted as a message, never acked-as-a-message, and notifies only
-    // as a reaction to a message we wrote, post-commit (ADR 2026-10.59fu) — see
-    // docs/FORWARD_SECRECY_RATCHET.md §7. Inside the ciphertext deliberately: a relay cannot
+    // [CTL_SESSION_RESET], [CTL_GROUP_KEY], [CTL_GROUP_KEY_REQ], [CTL_GROUP_KEY_ACK], [CTL_RECEIPT],
+    // [CTL_REACTION], [CTL_SCOPE_CONFIG], [CTL_PROFILE], [CTL_TRANSFER], [CTL_CALL]). A non-null value
+    // means this frame is machinery, not conversation: it is never persisted as a message, never
+    // acked-as-a-message, and notifies only as a reaction to a message we wrote, post-commit (ADR
+    // 2026-10.59fu) — see docs/FORWARD_SECRECY_RATCHET.md §7. Inside the ciphertext deliberately: a relay cannot
     // distinguish machinery from an ordinary DM. An unknown value is consumed as a silent no-op,
     // which is what lets new ctl values ship additively.
     val ctl: Int? = null,
@@ -90,6 +91,9 @@ data class MessageContent(
     // Voice-call signaling for [CTL_CALL] (additive; experimental, docs/VOICE_CALLS.md §3): the offer, answer,
     // late candidates and hang-up of a 1:1 call whose media never rides the mesh.
     val cl: CallPayload? = null,
+    // A scope's relays and bounds for [CTL_SCOPE_CONFIG] (additive; docs/SPOOL_PROTOCOL.md §5). Named layout only:
+    // the compact v3 codec refuses it, as it does `gk`, `xf` and `cl`.
+    val sc: ScopeConfigPayload? = null,
 ) {
     @OptIn(ExperimentalSerializationApi::class)
     fun encode(): ByteArray = cryptoCbor.encodeToByteArray(this)
@@ -138,8 +142,13 @@ data class MessageContent(
         /** [ctl]: [rp] is a sealed reaction (or retraction) — DM form or group form. */
         const val CTL_REACTION = 6
 
-        // `7` is RESERVED for CTL_SCOPE_CONFIG (docs/SPOOL_PROTOCOL.md §5) — specified but not yet
-        // shipped. Named here so the value is never recycled; ctl numbers are append-only.
+        /**
+         * [ctl]: [sc] names the relays a conversation's scope lives on and the bounds its members assume
+         * (docs/SPOOL_PROTOCOL.md §5) — DM form for the pair, group sender-key form for a group. Applied last-writer-wins
+         * on `(version, issuer)`, the issuer being the frame's authenticated sender; a config the receiver refuses is
+         * the usual chain-advancing silent no-op, as is the whole ctl on a build that predates it.
+         */
+        const val CTL_SCOPE_CONFIG = 7
 
         /**
          * [ctl]: [pr] is a sealed profile update (name/status/avatar) for an already-established

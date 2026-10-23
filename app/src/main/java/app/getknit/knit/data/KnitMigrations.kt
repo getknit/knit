@@ -610,16 +610,41 @@ object KnitMigrations {
         }
 
     /**
+     * v24 — two empty tables for the scope-config ctl (`CTL_SCOPE_CONFIG`, docs/SPOOL_PROTOCOL.md §5, ADR
+     * 2026-10.8kfx): `scope_configs`, each issuer's configs per conversation by version (its newest readable one and
+     * those still waiting for this phone's clock), and `spool_declared`, the nodes that
+     * have sent one. Nothing before this build received a config, so there is nothing to fill. The SQL must stay
+     * byte-equivalent to what Room generates for `app/schemas/**/24.json`.
+     */
+    val MIGRATION_23_24 =
+        object : Migration(23, 24) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `scope_configs` (`conversationId` TEXT NOT NULL, `issuer` TEXT NOT NULL, " +
+                        "`groupId` TEXT, `spools` TEXT NOT NULL, `maxFrames` INTEGER NOT NULL, `ttlMs` INTEGER NOT NULL, " +
+                        "`maxBlob` INTEGER NOT NULL, `version` INTEGER NOT NULL, `receivedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`conversationId`, `issuer`, `version`))",
+                )
+                connection.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `spool_declared` (`nodeId` TEXT NOT NULL, `at` INTEGER NOT NULL, PRIMARY KEY(`nodeId`))",
+                )
+            }
+        }
+
+    /**
      * Lab only, and temporary: walks a development database stamped v27 back down to v22. Before the fold above, the
      * post-2.9.0 schema was numbered v22…v27 and the lab phones installed it at v27; Room throws at every open on a
      * `user_version` above the app's, but takes a registered descending path — and only one that never passes below
-     * its target, so it lands on v23 directly. v27 *is* the folded v22 (Room hashes schema content, not the version),
-     * so the body is v23's one step, [MIGRATION_22_23]. Delete it once every lab phone has opened its database on a
-     * build that carries it. Not in [ALL], which is the upgrade chain.
+     * its target, so it lands on the current version directly. v27 *is* the folded v22 (Room hashes schema content, not
+     * the version), so the body is every step since v22 ([MIGRATION_22_23], [MIGRATION_23_24]). Delete it once every lab
+     * phone has opened its database on a build that carries it. Not in [ALL], which is the upgrade chain.
      */
-    val LAB_DOWNGRADE_27_23 =
-        object : Migration(27, 23) {
-            override suspend fun migrate(connection: SQLiteConnection) = MIGRATION_22_23.migrate(connection)
+    val LAB_DOWNGRADE_27_24 =
+        object : Migration(27, 24) {
+            override suspend fun migrate(connection: SQLiteConnection) {
+                MIGRATION_22_23.migrate(connection)
+                MIGRATION_23_24.migrate(connection)
+            }
         }
 
     /** All migrations, applied by Room in order. */
@@ -647,8 +672,9 @@ object KnitMigrations {
             MIGRATION_20_21,
             MIGRATION_21_22,
             MIGRATION_22_23,
+            MIGRATION_23_24,
         )
 
     /** What [KnitDatabase.build] registers: the upgrade chain plus the temporary lab downgrade. */
-    val REGISTERED: Array<Migration> = ALL + LAB_DOWNGRADE_27_23
+    val REGISTERED: Array<Migration> = ALL + LAB_DOWNGRADE_27_24
 }

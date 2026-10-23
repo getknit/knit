@@ -35,6 +35,8 @@ object BackupTables {
             "reactions",
             "message_receipts",
             "drafts",
+            "scope_configs",
+            "spool_declared",
         )
 
     /** Left empty in the backup; the mesh rebuilds each from nothing. */

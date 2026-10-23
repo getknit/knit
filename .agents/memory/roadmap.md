@@ -475,10 +475,12 @@ doc). **Don't start a deferred item without explicit direction.**
   §9.4 bridge into `handleInbound`, metrics + Diagnostics rows + the `…debug.SPOOL` bridge action;
   ADR 019's M3 amendment records the four shape decisions). **What the client plane still
   owes**, roughly in order:
-  - **the scope-config ctl** — `CTL_SCOPE_CONFIG = 7` / `MessageContent.sc` / `ScopeConfigPayload`
-    with LWW on `(version, issuer)`. The one *wire* change the plane needs, so it lands additively
-    per `docs/WIRE_COMPAT.md` with golden vectors and a precedent entry. Until it ships, the spool
-    list is a device setting and bounds are §12 constants in `ScopeRegistry`.
+  - **the scope-config ctl** — ~~on the wire~~ (**done 2026-10-23**, ADR 2026-10.8kfx's first phase:
+    `CTL_SCOPE_CONFIG = 7` / `MessageContent.sc` / `ScopeConfigPayload`, decoded in both forms and
+    stored per issuer by `ScopeConfigRepository` under `ScopeConfigPolicy`'s LWW on `(version, issuer)`,
+    DB v24, golden vectors and a `docs/WIRE_COMPAT.md` precedent). **Still owed:** issuing one
+    (`MeshManager.sendScopeConfig` exists, nothing calls it) and the scope table reading it; until
+    then the spool list is a device setting and bounds are §12 constants in `ScopeRegistry`.
   - ~~a spool-list editor~~ (**done 2026-08-16** — `ui/relay/InternetRelayScreen`, route `relays`,
     reached from a Profile summary row. **The switch is un-gated**: `BuildConfig.DEBUG` is gone from
     `ProfileScreen`, because the hard prerequisite is now met — a release user can edit or remove the

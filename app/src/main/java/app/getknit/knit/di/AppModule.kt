@@ -52,6 +52,7 @@ import app.getknit.knit.data.ratchet.RatchetRepository
 import app.getknit.knit.data.relay.RelayInviteApplier
 import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.CallPreferenceStore
+import app.getknit.knit.data.settings.HomeStore
 import app.getknit.knit.data.settings.IncomingCallStore
 import app.getknit.knit.data.settings.OwnIceStore
 import app.getknit.knit.data.settings.ReviewPromptStore
@@ -225,6 +226,8 @@ val appModule =
         single { RelayInviteInbox() }
         // The customer keys an invite hands this phone (ADR 2026-10.3sk7), beside the relay list in the settings DataStore.
         // The free issuers this build ships (C-7.6-33) seed its free half; a debug build's bridge may add its own.
+        // This phone's home relay and the directory it is picked from (ADR 2026-10.8kfx), beside the relay list.
+        single { HomeStore(get()) }
         // With Knit Anywhere, each customer key's device key (C-7.6-39, ADR 2026-10.wk3m) in the Keystore beside it.
         single {
             TicketKeyStore(

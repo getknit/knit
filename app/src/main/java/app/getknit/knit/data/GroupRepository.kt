@@ -137,6 +137,11 @@ class GroupRepository(
             // splitting the obligation from the act is what makes rotation survive a crash between them,
             // and it is what lets the mint grace cover a deterministic re-minter who never comes back.
             groupRoots?.markRemintDue(groupId, leftAt)
+            // The leaver's scope config goes with their membership, in the same transaction (docs/SPOOL_PROTOCOL.md
+            // §5, `ScopeConfigPolicy`): a phone that heard the leave first refuses that config when it lands, so one
+            // that heard the config first must drop it here, or the two read different winners for good — nothing
+            // re-sends a config. Rows are per issuer, so every other member's stands.
+            db.scopeConfigDao().deleteIssuer(groupId, leaverId)
             dao.putClocks(clocks.copy(leftAt = leftAt))
             messages.save(StatusNotices.memberLeft(groupId, leaverId, leftAt))
             true

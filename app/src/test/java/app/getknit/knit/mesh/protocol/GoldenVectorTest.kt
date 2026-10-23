@@ -389,6 +389,36 @@ class GoldenVectorTest {
                 call(CallPayload(id = frameId(8), ph = CallPayload.PHASE_OFFER, m = CallPayload.MEDIA_WALKIE, ct = true)),
             "messageContentCallEnd" to
                 call(CallPayload(id = frameId(8), ph = CallPayload.PHASE_END, rsn = CallPayload.REASON_NO_ROUTE)),
+            // The sealed scope-config ctl plaintext (docs/SPOOL_PROTOCOL.md §5, ctl 7): the additive `sc` beside the ctl
+            // marker, on the named form only (MessageContentV2 refuses it). The DM form carries no group id; the group
+            // form names its group and a second relay with a bearer token. Every field but `groupId` is required.
+            "messageContentScopeConfigDm" to
+                MessageContent(
+                    body = "",
+                    ctl = MessageContent.CTL_SCOPE_CONFIG,
+                    sc =
+                        ScopeConfigPayload(
+                            spools = listOf("wss://public-2.spool.getknit.app/spool/v1"),
+                            maxFrames = 400,
+                            ttlMs = 172_800_000L,
+                            maxBlob = 65_536,
+                            version = 2,
+                        ),
+                ).encode(),
+            "messageContentScopeConfigGroup" to
+                MessageContent(
+                    body = "",
+                    ctl = MessageContent.CTL_SCOPE_CONFIG,
+                    sc =
+                        ScopeConfigPayload(
+                            groupId = "g-1",
+                            spools = listOf("wss://public-1.spool.getknit.app/spool/v1", "wss://relay.example/spool/v1?k=tok"),
+                            maxFrames = 400,
+                            ttlMs = 172_800_000L,
+                            maxBlob = 65_536,
+                            version = 5,
+                        ),
+                ).encode(),
             // Crypto scheme v3 (ADR 059) — every fixture above stays byte-identical. The envelope is v2's DM
             // form with `v = 3` and an EMPTY nonce (`40`); the unsigned wire envelope carries `sig` as the
             // empty byte string; the compact plaintext is the labeled `MessageContentV2` layout with raw ids.

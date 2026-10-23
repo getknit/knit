@@ -47,7 +47,7 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v23) creates and opens from the exported JSON`() =
+    fun `the current schema (v24) creates and opens from the exported JSON`() =
         runTest {
             helper.createDatabase(CURRENT_VERSION).close()
         }
@@ -908,10 +908,41 @@ class KnitDatabaseMigrationTest {
         }
 
     @Test
+    fun `migrate 23 to 24 keeps every row and adds the two empty scope-config tables`() =
+        runTest {
+            helper.createDatabase(23).use { c ->
+                c.execSQL(
+                    "INSERT INTO peers (nodeId, name, status, verified, updatedAt, openToChat, lastSeenAt) VALUES ('p1','Pat','',0,1,0,1)",
+                )
+            }
+            helper.runMigrationsAndValidate(24, listOf(KnitMigrations.MIGRATION_23_24)).use { c ->
+                c
+                    .prepare(
+                        "SELECT (SELECT COUNT(*) FROM peers), (SELECT COUNT(*) FROM scope_configs), (SELECT COUNT(*) FROM spool_declared)",
+                    ).use { s ->
+                        assertTrue(s.step())
+                        assertEquals(1L, s.getLong(0))
+                        // docs/SPOOL_PROTOCOL.md §5: nothing before this build received a config, and nobody has declared one.
+                        assertEquals(0L, s.getLong(1))
+                        assertEquals(0L, s.getLong(2))
+                    }
+                // Keyed by (conversation, issuer): two issuers of one conversation are two rows.
+                c.execSQL(
+                    "INSERT INTO scope_configs (conversationId, issuer, groupId, spools, maxFrames, ttlMs, maxBlob, version, receivedAt) " +
+                        "VALUES ('g1','a','g1','[]',1,1,1,1,1), ('g1','b','g1','[]',1,1,1,2,1)",
+                )
+                c.prepare("SELECT COUNT(*) FROM scope_configs WHERE conversationId = 'g1'").use { s ->
+                    assertTrue(s.step())
+                    assertEquals(2L, s.getLong(0))
+                }
+            }
+        }
+
+    @Test
     fun `a lab database stamped 27 walks back down to the current schema and keeps every row`() =
         runTest {
             // The fold's pre-merge numbering put v22's schema at v27; only the stamp differs, so the way down is
-            // v23's one step.
+            // every step since v22.
             helper.createDatabase(22).use { c ->
                 c.execSQL("INSERT INTO attachment_holders (hash, holderId, plane, provedAt) VALUES ('h1', 'p1', 1, 5)")
                 c.execSQL("PRAGMA user_version = 27")
@@ -934,7 +965,7 @@ class KnitDatabaseMigrationTest {
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 23
+        const val CURRENT_VERSION = 24
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

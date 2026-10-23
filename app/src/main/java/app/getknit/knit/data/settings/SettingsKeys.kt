@@ -27,6 +27,17 @@ object SettingsKeys {
     const val SPOOL_URLS = "spool_urls"
     const val SPOOL_URLS_DISABLED = "spool_urls_disabled"
 
+    // Set once the shipped default relay was seeded (`SettingsStore.seedDefaultSpools`); `HomeStore` reads it to tell an
+    // install that predates homes, which keeps `public-1`, from a fresh one (ADR 2026-10.8kfx).
+    const val SPOOL_DEFAULTS_SEEDED = "spool_defaults_seeded"
+
+    // This phone's home relay host (`HomeStore`, ADR 2026-10.8kfx). Rides a backup: a restored phone keeps its home,
+    // and the hash would pick the same one anyway. The directory it was picked from is phone state under
+    // "spool_directory", in [TRANSIENT_PREFIXES].
+    const val SPOOL_HOME = "spool_home"
+    const val SPOOL_DIRECTORY = "spool_directory"
+    const val SPOOL_DIRECTORY_AT = "spool_directory_at"
+
     // A held entitlement ticket and its verdict, per spool host name (ADR 2026-10.xkp4). Both start with
     // "spool_ticket", the backup-transient prefix in [TRANSIENT_PREFIXES]; neither prefix is a prefix of the other.
     // Here rather than in the store because `TicketKeyStore` forgets a host's ticket in the same edit as its key.
@@ -129,6 +140,7 @@ object SettingsKeys {
             "spool_key_state",
             "spool_device",
             "spool_free_",
+            SPOOL_DIRECTORY,
             CALL_TOMBS,
             DIRECT_HOST_PREFIX,
             CALL_CAPTURE_PREFIX,

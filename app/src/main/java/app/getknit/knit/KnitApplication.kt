@@ -11,6 +11,7 @@ import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.backup.RestoreApplier
 import app.getknit.knit.data.blob.BlobDao
 import app.getknit.knit.data.commons.CommonsRepository
+import app.getknit.knit.data.settings.HomeStore
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.appModule
 import app.getknit.knit.di.callModule
@@ -107,6 +108,9 @@ class KnitApplication :
         koinApp.koin.get<CoroutineScope>().launch {
             val settings = koinApp.koin.get<SettingsStore>()
             settings.renameRelays()
+            // An install that seeded the default relay before homes existed keeps it as its home (ADR 2026-10.8kfx):
+            // before the seed, so a fresh install's first seed never reads as an old one.
+            koinApp.koin.get<HomeStore>().keepLegacyHome()
             settings.seedDefaultSpools(resources.getStringArray(R.array.default_spools).toList())
             if (BuildConfig.COMMONS) runCatching { koinApp.koin.get<CommonsRepository>().renameRelays() }
         }

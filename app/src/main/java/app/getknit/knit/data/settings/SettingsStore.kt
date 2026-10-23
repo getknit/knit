@@ -1045,7 +1045,7 @@ class SettingsStore(
         val KEY_SPOOL_ENABLED = booleanPreferencesKey("spool_enabled")
         val KEY_SPOOL_URLS = stringSetPreferencesKey(SettingsKeys.SPOOL_URLS)
         val KEY_SPOOL_DISABLED = stringSetPreferencesKey(SettingsKeys.SPOOL_URLS_DISABLED)
-        val KEY_SPOOL_SEEDED = booleanPreferencesKey("spool_defaults_seeded")
+        val KEY_SPOOL_SEEDED = booleanPreferencesKey(SettingsKeys.SPOOL_DEFAULTS_SEEDED)
         val KEY_SPOOL_CONSENTED = booleanPreferencesKey("spool_consented")
         val KEY_MESHTASTIC_POST_CONSENTED = booleanPreferencesKey("meshtastic_post_consented")
         val KEY_LOCATION_SHARE_CONSENTED = booleanPreferencesKey("location_share_consented")

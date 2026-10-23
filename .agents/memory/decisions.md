@@ -221,6 +221,7 @@ carries; never renumber an old one.
 | [2026-10.79yb](decisions/2026-10-79yb-a-call-with-no-live-path-is-a-walkie-talkie-over-the-mesh.md) | A call with no live path is a walkie-talkie over the mesh | calls, voice |
 | [2026-10.8hmx](decisions/2026-10-8hmx-an-animated-picture-keeps-its-frames.md) | An animated picture keeps its frames | attachments, privacy |
 | [2026-10.8jwn](decisions/2026-10-8jwn-a-bluetooth-file-feed-splits-one-pace-budget-across-the-links-it-feeds.md) | A Bluetooth file feed splits one pace budget across the links it feeds | ble, mesh |
+| [2026-10.8kfx](decisions/2026-10-8kfx-a-phone-lives-on-one-home-relay-and-a-conversation-names-its-relays.md) | A phone lives on one home relay and a conversation names its relays | spool, wire, settings |
 | [2026-10.8t2y](decisions/2026-10-8t2y-a-files-ticket-unlocks-this-phone-s-uploads.md) | A files ticket unlocks this phone's uploads, and each gate is read from its own bit | calls, spool, tickets, attachments |
 | [2026-10.9qr4](decisions/2026-10-9qr4-an-inbound-frame-s-id-has-the-shape-its-type-is-minted-with.md) | An inbound frame's id has the shape its type is minted with | wire, custody, spool, security |
 | [2026-10.9rh6](decisions/2026-10-9rh6-block-on-send-only-in-the-public-rooms.md) | Block on send only in the public rooms | moderation, privacy |
@@ -249,6 +250,7 @@ carries; never renumber an old one.
 | [2026-10.k8ge](decisions/2026-10-k8ge-a-name-clash-fades-a-week-after-the-look-alike-was-last-heard.md) | A name clash fades a week after the look-alike was last heard | identity, ui, contacts |
 | [2026-10.kw29](decisions/2026-10-kw29-a-call-whose-microphone-captures-only-zeros-falls-back-to-the-recognition-source.md) | A call whose microphone captures only zeros falls back to the recognition source | calls, audio, reliability |
 | [2026-10.kxnw](decisions/2026-10-kxnw-a-call-between-neighbours-carries-its-media-over-a-wi-fi-direct-group.md) | A call between neighbours carries its media over a Wi-Fi Direct group | calls, wifi-direct, transfer |
+| [2026-10.m4fk](decisions/2026-10-m4fk-a-scope-config-is-kept-per-issuer-and-sealed-only-under-a-confirmed-session.md) | A scope config is kept per issuer and sealed only under a confirmed session | crypto, spool, wire |
 | [2026-10.mptm](decisions/2026-10-mptm-an-attachment-keeps-the-identity-it-arrived-under.md) | An attachment keeps the identity it arrived under | attachments, crypto, privacy, custody |
 | [2026-10.mr88](decisions/2026-10-mr88-own-stun-and-turn-servers-replace-the-spool-s-per-kind.md) | Own STUN and TURN servers replace the spool's per kind | calls, spool, settings |
 | [2026-10.nsr7](decisions/2026-10-nsr7-a-file-s-receiver-reports-its-progress.md) | A file's receiver reports its progress, and the holder times parked asks by it | ble, mesh, blobs |

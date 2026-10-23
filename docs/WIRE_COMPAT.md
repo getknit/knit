@@ -796,6 +796,22 @@ moved. *Metadata cost:* in the room, the poster and length are as public as the 
 but not the fact that a poster rides along: the seal does not pad, so a video DM is about 6.5 KB longer than another
 attachment DM, and its length shows a carrier it is a video.
 
+**Precedent — the reserved ctl spent (`CTL_SCOPE_CONFIG = 7`, `MessageContent.sc`, docs/SPOOL_PROTOCOL.md §5,
+ADR 2026-10.8kfx).** The value the `CTL_PROFILE` precedent above held back is now on the wire: `sc:
+ScopeConfigPayload?` beside `ctl = 7`, naming a conversation's relays and bounds, sealed in the DM form or the group
+sender-key form and applied last-writer-wins on `(version, issuer)`. Rule 1: nullable, absent from every frame that
+does not set it, so no existing golden vector moved. Rule 6 shaped the payload: every field but `groupId` is required,
+so a config never encodes as `{}` and no port fills in a spool list or a bound it was not sent. The compact v3 layout
+has no label for it, so `MessageContentV2.hasNamedOnlyPayload` sends it in the named form, as it does `gk`, `xf` and
+`cl`; without that, the compact encoder would drop `sc` and ship `ctl = 7` with nothing beside it. No `EncEnvelope.v`
+bump, no `MessageContent.MAX_SUPPORTED` bump and no capability bit (C-5-6): an older build, and the iOS port, which
+has no spool plane, consume the unknown ctl as the chain-advancing silent no-op. The receiver's refusals (a URL it
+cannot dial, a config naming another conversation, a departed member's) are delivery gates,
+never carry gates (rule 5). `vectors/wire-v1.json` gained `messageContentScopeConfigDm` and
+`messageContentScopeConfigGroup`, and nothing moved. *Metadata cost:* none on the wire — a sealed ctl is
+indistinguishable from any other sealed chat frame — beyond its length, and the relays it names are visible only to
+the conversation's members.
+
 **Precedent — the nested-type rule (rule 6) came from the interop audit, not a split.** The 2026-10 audit
 decoded `{"inner": {}}` both ways: kotlinx-cbor gave a null `inner`, iOS an `inner` of defaults. No nested
 wire type was all-defaults then, so no frame read differently on the two platforms. The rule keeps it that

@@ -673,7 +673,7 @@ ScopeConfigPayload {
     maxFrames: Int        // retention bounds the members assume and declare at SUB (§6.2)
     ttlMs:   Long
     maxBlob: Int
-    version: Int          // monotonic per conversation
+    version: Int          // minutes since 2026-01-01T00:00Z at the latest; monotonic per conversation
 }
 ```
 
@@ -682,16 +682,16 @@ ScopeConfigPayload {
 | **C-5-1** | Carriage is a `MessageContent.ctl` value, not a new wire frame type.                                                 |
 | **C-5-2** | The issuer is the ctl frame's authenticated sender, never a payload field.                                           |
 | **C-5-3** | Any member MAY issue; in a DM, either party.                                                                         |
-| **C-5-4** | Conflict resolution is last-writer-wins: highest `version`, ties broken by highest issuer node id lexicographically. |
+| **C-5-4** | Conflict resolution is last-writer-wins: highest `version`, ties broken by highest issuer node id lexicographically. `version` is a clock: an issuer writes the later of one past the eligible winner it holds and the whole minutes since 2026-01-01T00:00Z at issue. A receiver never refuses a config for its version: it holds every version and reads a held config only once its version is at most 10 past the receiver's own current minute, keeping each issuer's newest readable config beside any it cannot read yet. |
 | **C-5-5** | Convergence-relevant bounds MUST come from the config, not from app constants.                                       |
 | **C-5-6** | v1 defines no config acknowledgment and no capability bit.                                                           |
 
-> **Status.** `ctl = 7` is **reserved and specified, not yet on the wire** (Appendix A). Until it
-> ships,
-> the reference client syncs every scope against a **device-local** spool list and declares §12's
-> default
-> bounds at SUB. A stock spool clamps those defaults to themselves, so the interim behaves as the
-> configured case with one publisher per device.
+> **Status.** `ctl = 7` is **on the wire** (Appendix A): the reference client decodes it in both forms,
+> stores each issuer's configs per conversation and reads the conversation's config as the highest
+> `(version, issuer)` among those its clock has reached, keeping only `wss://` URLs (at most 8), clamping the bounds
+> to §12's defaults, holding a version ahead of its own clock until the clock reaches it (C-5-4), and taking a group's only
+> from a current member, sealed after that member's last leave. It does not issue one yet, and still
+> syncs every scope against its **device-local** spool list with §12's default bounds at SUB.
 >
 > **Why a ctl and not a frame type.** ADR 016/018's lesson: `isCustodial` is a fixed list on
 > deployed
@@ -711,6 +711,52 @@ ScopeConfigPayload {
 > **Why no ack.** The plane is purely additive continuity. The mesh path works regardless, and the
 > LWW
 > rule makes redundant delivery harmless, so delivery cadence stays client policy.
+
+### 5.1 Homes and the public directory (client policy, non-normative)
+
+The reference client spreads its users over Knit's public relays by giving each phone one **home** (ADR 2026-10.8kfx,
+knit-spool-coordinator ADR 2026-10.txjf). Nothing on a spool depends on it; a client that ignores it still syncs.
+
+**The directory.** `GET https://hosted.getknit.app/api/v1/public-spools` answers
+`{"v":1,"spools":[{"host":"public-1.spool.getknit.app","state":"open","weight":1}]}`. A host is lowercase and must
+match `^public-[1-9][0-9]*\.spool\.getknit\.app$`, else its entry is dropped; the relay is always
+`wss://<host>/spool/v1`. `weight` is an integer from 1 to 64, and an entry outside that range is skipped as if it were
+not open, never clamped. `state` is `open` or `draining`, and only `open` is picked. An unknown `v` keeps the copy the
+client holds. The client reads it at most once a day while its Internet plane is on, and ships a copy (`public-1`,
+open, weight 1) for a phone that has never read one.
+
+**The pick.** For each open host and each `i` in `0 .. weight-1`:
+
+```text
+d = SHA-256( utf8("knit/home/v1" ‖ nodeId ‖ "|" ‖ host ‖ "|" ‖ decimal(i)) )
+```
+
+The host owning the largest `d`, compared as 32 unsigned bytes, is the home; on equal digests the smaller host wins,
+which no real input reaches. `nodeId` is the canonical id string a contact card's `id` carries. Each slot is equally
+likely to be the largest, so a host is picked with probability `weight / Σweight`, and integers alone decide it.
+
+**Keeping it.** The home is picked once and stored, and a backup carries it. An install that predates homes keeps
+`public-1`. A phone picks again only when its home is absent from the directory or exactly `draining`; an unknown state
+keeps it, and with no open host a phone keeps its home (a fresh one takes `public-1`).
+
+**Vectors.**
+
+| nodeId | host | i | `d` |
+|---|---|---|---|
+| `aaaaaaaaaaaaaaaaaaaaaaaaaa` | `public-1.spool.getknit.app` | 0 | `3112683c9f974d5f07e42d628dd25d69c67f71016b14f8319e4a344ca730259e` |
+| `abcdefghijklmnopqrstuvwxyz` | `public-2.spool.getknit.app` | 2 | `579c0df9b68b4cb0c7b39ecf35c72db998e9a66eeb06cd2512fa1d60c2d96c51` |
+
+With directory A = `public-1` open w1, `public-2` open w3, `public-3` draining w5, and B = the same with `public-3`
+open:
+
+| nodeId | home under A | home under B |
+|---|---|---|
+| `aaaaaaaaaaaaaaaaaaaaaaaaaa` | `public-2` | `public-3` |
+| `bbbbbbbbbbbbbhhhhhhhhhhhhh` | `public-2` | `public-2` |
+| `mmmmmmmmmmmmmuuuuuuuuuuuuu` | `public-1` | `public-1` |
+| `uuuuuuuuuuuuummmmmmmmmmmmm` | `public-1` | `public-3` |
+
+Every node picks `public-1` against the shipped copy. `PublicSpoolsTest` pins these; change both together.
 
 ## 6. The spool [Spool]
 
@@ -2070,7 +2116,7 @@ wire.
 | §7.5 send-side moderation                       | Spool side shipped (`SPOOL_REQUIRE_MODERATION`); client half not yet implemented — a current client tolerates the field and ignores it (B-2-2) | `knit-spool`                                                     |
 | §4.1–§4.4 sealing and frame rules               | Shipped                                                                                                                                    | `ScopeCrypto`, `ScopeFrames`                                     |
 | §4.5 attachments                                | Shipped                                                                                                                                    | `ScopeCrypto.sealChunk`, `ScopeAttachments`                      |
-| §5 scope config ctl                             | **Reserved, not shipped.** `ctl = 7` is named and never recycled; the spool list is a device setting and bounds are §12 defaults meanwhile | `MessageContent`, `ScopeRegistry`, `SettingsStore.spoolUrls`     |
+| §5 scope config ctl                             | **On the wire, applied, not issued.** `ctl = 7` is decoded and stored last-writer-wins per issuer; nothing sends one yet, so the spool list is still a device setting and bounds are §12 defaults | `MessageContent`, `ScopeConfigPolicy`, `ScopeConfigRepository`, `SettingsStore.spoolUrls` |
 | §6 spool behaviour                              | Shipped                                                                                                                                    | `knit-spool` + conformance suite                                 |
 | §7 record layer, §7.3 attachment records        | Shipped both sides                                                                                                                         | `SpoolRecords`, `SpoolConnection`, `knit-spool`                  |
 | §8 proof of work                                | Shipped both sides                                                                                                                         | `SpoolPow`                                                       |
@@ -2123,3 +2169,4 @@ the plane itself was unaffected either time, since a spool never decodes a frame
 | 2026-10-18 | **A frame's id has the shape its type is minted with (§4.4 C-4.4-14; knit-next ADR 2026-10.9qr4, #178).** After the decode and before the signature, a member refuses a blob whose envelope `id` is not `profile-<senderId>-<sentAt>` on a `profile`, 11 base64url characters on a `talk`, or a canonical 16-byte base64url id on any other type, and quarantines it like any other failure (C-4.4-2). An id is bound as UTF-16 on Android, where SQLite drops a leading U+FEFF, so a twin under a marked id took the real frame's rows there and, held in custody, was never accounted and was pulled again on every connection. Every build and both clients already mint only these shapes                                                                                                                                                                              | None for spools. Clients: a frame no client mints is quarantined; no record, derivation or vector moved                    |
 | 2026-10-22 | **The commons takes reactions and attachments (§7.4 C-7.4-6 amended, C-7.4-13, C-7.4-14; §4.5, §9.5; knit-next ADR 2026-10.xhfr).** A `commons` post carries exactly one of a `chat` and a `reaction`. A chat's attachment names its type and its own key beside the hash, so the blob is ciphertext as §4.5 always required and a phone holding the same picture cannot compute its address; a reaction is applied latest-`sentAt`-wins and only to a post of the same room. A commons attachment is fetched only through the scope, from the member's own record of the post, and a fetch the spool cannot answer is retried while the post is fresh, then slowly. A non-normative note describes how the reference client tells a rotated invite from a quiet room | **Spools:** none — S-7.4-5 already gated the records. **Clients:** an older client quarantines a reaction (it has no `chat`) and an attachment post; no record or derivation moved; `vectors/wire-v1.json` gains `commonsPostAttachment` and `commonsReaction` |
 | 2026-10-22 | **A spool may answer to two names while it is renamed (§7.6: S-7.6-14 amended, S-7.6-47; knit-spool ADR 2026-10.zprp).** A ticket's `aud` must be one of the spool's own names: the host its members reach it by, or, while it is being renamed and both names reach it, its old name and its new. A ticket for either is accepted, HELLO names neither, and dropping a name refuses a later `ent` for it with `audience` while a held ticket stays held. A note says why a rename needs this and what it costs: an issuer that derives `ps` from `aud` gives one account a pseudonym per name, so every bound kept per pseudonym counts that holder twice until the old name is dropped | **Spools:** optional; a spool with one name changes nothing, and the reference daemon takes the second name as `SPOOL_TICKET_AUDIENCE_ALIAS` from `0.5.0-dev.2`. **Clients:** none; a client already holds only tickets for the host it dialled. No record, derivation or vector moved |
+| 2026-10-23 | **`CTL_SCOPE_CONFIG` goes on the wire (§5; ADR 2026-10.8kfx).** The reference client decodes ctl 7 in the DM and group forms and applies it last-writer-wins on `(version, issuer)`, keeping each issuer's newest config per conversation; C-5-4 now says `version` is a clock (minutes since 2026-01-01T00:00Z) and that a receiver holds a version ahead of its own clock and reads it once its clock reaches it, never refusing one so a group member's leave drops theirs alone. It does not issue one yet. Status note and Appendix A updated | **Spools:** none; the config is a sealed ctl inside an ordinary frame. **Clients:** an older build consumes ctl 7 as the chain-advancing no-op. The mesh's `vectors/wire-v1.json` gained `messageContentScopeConfigDm` and `messageContentScopeConfigGroup`; no record, derivation or §13 vector moved |

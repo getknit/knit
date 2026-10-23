@@ -97,12 +97,14 @@ import app.getknit.knit.mesh.protocol.ProfileContent
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.ScopeConfigPayload
 import app.getknit.knit.mesh.protocol.VideoInfo
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.sha256Hex
 import app.getknit.knit.mesh.spool.FakeSpool
 import app.getknit.knit.mesh.spool.RelayInvite
+import app.getknit.knit.mesh.spool.ScopeConfig
 import app.getknit.knit.mesh.spool.ScopeStatus
 import app.getknit.knit.mesh.spool.ScopeSync
 import app.getknit.knit.mesh.spool.spoolPresentPeers
@@ -2261,6 +2263,42 @@ class LabNode internal constructor(
 
     /** The group row as this node holds it, or null. */
     suspend fun group(groupId: String): GroupEntity? = groups.find(groupId)
+
+    /**
+     * Issues [payload] as this node's scope config for [conversationId] — a peer's node id or a group's id
+     * (`MeshManager.sendScopeConfig`, docs/SPOOL_PROTOCOL.md §5). True when it was sealed and flooded.
+     */
+    suspend fun sendScopeConfig(
+        conversationId: String,
+        payload: ScopeConfigPayload,
+    ): Boolean = manager.sendScopeConfig(conversationId, payload)
+
+    /**
+     * The scope config [conversationId] runs on here, with the conversation id blanked: a DM's is the *peer's* id on
+     * each side, so two nodes holding the same config compare equal only without it.
+     */
+    suspend fun scopeConfig(conversationId: String): ScopeConfig? = manager.scopeConfigs.winning(conversationId)?.copy(conversationId = "")
+
+    /**
+     * The versions of every scope-config row this node holds for [conversationId], eligible or deferred, [issuer]'s alone
+     * when given: what a node whose clock runs behind has stored but cannot read yet, or the proof that a peer's row
+     * landed beside our own.
+     */
+    suspend fun heldScopeConfigs(
+        conversationId: String,
+        issuer: LabNode? = null,
+    ): Set<Int> =
+        db
+            .scopeConfigDao()
+            .configsOf(conversationId)
+            .filter { issuer == null || it.issuer == issuer.nodeId }
+            .mapTo(HashSet()) { it.version }
+
+    /** Drops every scope-config row this node holds for [conversationId]: a restore from before them, or rows lost. */
+    suspend fun forgetScopeConfigs(conversationId: String) {
+        val dao = db.scopeConfigDao()
+        dao.configsOf(conversationId).forEach { dao.deleteIssuer(conversationId, it.issuer) }
+    }
 
     /**
      * Whether this node holds a committed receive chain for [sender]'s messages in [groupId] — a seed adopted

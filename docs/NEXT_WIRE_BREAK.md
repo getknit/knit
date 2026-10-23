@@ -416,11 +416,11 @@ after the trial.
 ## Deliberately *not* on this list
 
 - **Reclaiming capability bits or ctl values.** `CAP_E2E` / `CAP_GROUPS` / `CAP_REACTIONS` /
-  `CAP_STORE_FORWARD` are universal and now diagnostic-only, and ctl `7` is reserved-but-unshipped. A break
+  `CAP_STORE_FORWARD` are universal and now diagnostic-only. A break
   makes recycling them *technically* safe, and it is still the wrong move: the registries are append-only so
   that no one ever has to reason about which build's meaning applies, and a spare bit costs nothing. Keep
   spending new numbers.
-- **Anything reachable additively.** The `CTL_SCOPE_CONFIG = 7` ctl the spool plane still owes, new frame
+- **Anything reachable additively.** The `CTL_SCOPE_CONFIG = 7` ctl (shipped additively, 2026-10-23), new frame
   types, new nullable fields, a `DICT_V2` under a fresh `dictId` — all of these ship without a break, and
   putting them here would be a category error. If an item on this list turns out to be one of these, that is
   a win: move it out.
