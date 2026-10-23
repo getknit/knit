@@ -28,6 +28,9 @@ document:
 - Knit now works with Knit Anywhere, a paid internet relay account that carries your photos, files and calls
   when no phone nearby can. On a relay that only takes files from accounts, Knit gets a free ticket for small
   photos, which you can turn off.
+- In the US, Australia and New Zealand, you can now set a LoRa board up on a frequency only Knit boards use.
+  Knit then uses the full airtime your region allows, but other people's Meshtastic radios no longer pass
+  your messages on.
 - In a group chat, typing @ now offers @everyone first. Picking it mentions every other member at once, and each
   gets the same mention alert as if you had picked them one by one.
 - You can now send short videos in any chat, Nearby included. Knit shrinks each one to about 3 MB and keeps

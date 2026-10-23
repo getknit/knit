@@ -73,3 +73,24 @@ recorded prior) and nothing else, the record is handed back untouched so a later
 *user's* slot back, and a board already there is a reported no-op. Debug-only like the setup it reverses; the
 screen's dedicated button gives way to it while the board is pinned (`lora_setup_shared`), and the bridge takes
 `--es mode shared`.
+
+*Amendment (2026-10-22).* The setup ships, so the title's "debug-only" is superseded. The LoRa screen offers
+the dedicated setup and its way back in every build, and `LoraMeshTransport` constructs `LoraAirtime` with
+`dedicatedUnlocksDuty = true`, because the option without the unlock would move the radio and give nothing back.
+The flag stays on the constructor, defaulting to false, so `LoraAirtimeTest` still covers both states.
+
+Shipping it ends point 1's shield for a board pinned by hand. A `channel_num` set in the Meshtastic app may be a
+community's slot, and Knit's way back cannot move it (the recorded prior *is* that slot). So
+`LoraRadioConfig.dedicatedSlot` is now true only on the slot `LoraSlot.forRegion` derives, never on any non-zero
+value: a board pinned anywhere else keeps the politeness ceiling, the Meshtastic room and the DM auto-reply, as
+it always did in release. Knit's slot does not collide with any preset's stock slot in US or ANZ.
+
+A new residual comes with it: every dedicated fleet in a region lands on the same slot, now at up to 50 % duty,
+so two such households in range share it with no ceiling between them, and one relaying neighbour's air is
+still not booked. The cost is a degraded channel, not silence. Nobody has yet run 450 s windows in the field.
+And since the slot depends on the preset's bandwidth, a pinned board whose preset is changed afterwards in the
+Meshtastic app reads as shared on a slot nobody shares: the ceiling comes back (the safe side), the room shows
+empty, and the screen hides "Go back to the shared frequency", so only Restore returns it to 0.
+
+Everything else above stands: shared is still the default and the only thing the first setup offers, the slot
+is still derived, and a band Knit does not know is still refused.

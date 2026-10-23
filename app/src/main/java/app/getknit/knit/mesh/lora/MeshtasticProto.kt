@@ -872,7 +872,7 @@ internal enum class BoardConfig(
 
     /**
      * The radio config. Deliberately **not** in [QUIET], so the ordinary setup never reads or writes a
-     * legally-scoped sub-config (ADR 045); only the debug-only dedicated-slot setup and the restore that
+     * legally-scoped sub-config (ADR 045); only the dedicated-slot setup and the restore that
      * undoes it touch it, and then only to splice [MeshtasticProto.LORA_CHANNEL_NUM] (ADR 067). Note it
      * collides with [TELEMETRY] on both numbers and is told apart by [module] alone.
      */
@@ -1085,10 +1085,11 @@ internal sealed interface FromRadio {
  * it has taken the regulatory call, so we stop applying the regional cap and fall back to the polite
  * ceiling.
  *
- * [channelNum] is the one field Knit *can* write, and only in a debug build (ADR 067): 0 means the firmware
- * derives the RF slot from the primary channel's name — the shared public frequency ADR 045 deliberately
- * sits on — and non-zero means the board has been pinned to a slot of its own. [LoraAirtime] reads it to
- * decide whether the politeness ceiling still applies, so the budget follows the radio's actual state.
+ * [channelNum] is the one field Knit *can* write, and only through the dedicated setup (ADR 067): 0 means
+ * the firmware derives the RF slot from the primary channel's name — the shared public frequency ADR 045
+ * deliberately sits on — and non-zero means the board is pinned. Only the slot [LoraSlot] derives counts as
+ * Knit's own ([dedicatedSlot]): a slot pinned by hand may be a community's, so [LoraAirtime] keeps the
+ * politeness ceiling and the room stays up there, as they did before the setup shipped.
  */
 internal data class LoraRadioConfig(
     val usePreset: Boolean,
@@ -1099,8 +1100,11 @@ internal data class LoraRadioConfig(
     /** `Config.LoRaConfig.channel_num`: 0 = the slot hashed from the primary's name, non-zero = a pinned slot. */
     val channelNum: Int = 0,
 ) {
-    /** Whether the board is pinned to an RF slot of its own rather than sharing the stock public one. */
-    val dedicatedSlot: Boolean get() = channelNum != 0
+    /**
+     * Whether the board sits on the slot Knit's dedicated setup pins ([LoraSlot.forRegion]) — never just any
+     * non-zero [channelNum], which a community may share. Always false outside the regions [LoraSlot] knows.
+     */
+    val dedicatedSlot: Boolean get() = channelNum != 0 && channelNum == LoraSlot.forRegion(region, modemPreset)
 }
 
 /**
@@ -1169,7 +1173,7 @@ internal enum class ModemPreset(
  * board has not been given a region and will not transmit at all — treated as the conservative case.
  *
  * [bandStartKhz]/[bandEndKhz] are populated for exactly the regions whose band Knit is prepared to place a
- * **dedicated RF slot** in (ADR 067, debug-only): picking a slot means computing a transmit frequency
+ * **dedicated RF slot** in (ADR 067): picking a slot means computing a transmit frequency
  * ourselves, and a slot past the end of the band is out-of-band transmission, not a bug. So the band is
  * stated only where it is known exactly, [OTHER] carries none — it is a bucket of regions with different
  * bands, and the narrowest of them (RU, ~0.5 MHz) has no room to move — and [LoraSlot] refuses everything it

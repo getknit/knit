@@ -383,11 +383,11 @@ class LoraAirtimeTest {
 
     // --- ADR 067: a dedicated RF slot lifts the politeness ceiling, never the law ---
 
+    private val knitUsSlot = LoraSlot.forRegion(LoraRegion.US, ModemPreset.LONG_FAST)!!
+
     @Test
-    fun aDedicatedSlotIsInertUnlessTheBuildUnlocksIt() {
-        // The default — every release build. A board somebody pinned by hand in the Meshtastic app must
-        // budget exactly as a shared-frequency one does.
-        val locked = LoraAirtime().apply { onRadioConfig(radio(region = LoraRegion.US, channelNum = 37)) }
+    fun aDedicatedSlotIsInertUnlessTheGovernorUnlocksIt() {
+        val locked = LoraAirtime().apply { onRadioConfig(radio(region = LoraRegion.US, channelNum = knitUsSlot)) }
         val shared = LoraAirtime().apply { onRadioConfig(radio(region = LoraRegion.US)) }
         assertEquals(shared.allowanceMs(), locked.allowanceMs())
         assertFalse(locked.dedicated())
@@ -396,7 +396,7 @@ class LoraAirtimeTest {
     @Test
     fun aDedicatedSlotInAHundredPercentRegionSpendsTheWholeDutyCycle() {
         val unlocked = LoraAirtime(dedicatedUnlocksDuty = true)
-        unlocked.onRadioConfig(radio(region = LoraRegion.US, channelNum = 37))
+        unlocked.onRadioConfig(radio(region = LoraRegion.US, channelNum = knitUsSlot))
         assertTrue(unlocked.dedicated())
         // 100 % duty x the 0.5 safety factor = half the window, against a tenth of that when sharing.
         assertEquals(LoraAirtime.WINDOW_MS / 2, unlocked.allowanceMs())
@@ -405,18 +405,32 @@ class LoraAirtimeTest {
     }
 
     @Test
-    fun aDedicatedSlotNeverLiftsARegionsLegalDutyCycle() {
-        // EU_868's 10 % is law, not manners: a dedicated slot there must budget exactly as a shared one.
-        val dedicated = LoraAirtime(dedicatedUnlocksDuty = true)
-        dedicated.onRadioConfig(radio(region = LoraRegion.EU_868, channelNum = 3))
+    fun aSlotPinnedByHandOffKnitsKeepsThePolitenessCeiling() {
+        // ADR 067's 2026-10-22 amendment: a slot the user pinned in the Meshtastic app may be a community's,
+        // so only the slot Knit's own setup derives lifts the ceiling.
+        val pinned = LoraAirtime(dedicatedUnlocksDuty = true)
+        val other = if (knitUsSlot == 20) 21 else 20
+        pinned.onRadioConfig(radio(region = LoraRegion.US, channelNum = other))
+        val shared = LoraAirtime(dedicatedUnlocksDuty = true).apply { onRadioConfig(radio(region = LoraRegion.US)) }
+        assertFalse(pinned.dedicated())
+        assertEquals(shared.allowanceMs(), pinned.allowanceMs())
+    }
+
+    @Test
+    fun aPinnedSlotInADutyLimitedRegionIsNeverDedicated() {
+        // EU_868's 10 % is law, not manners. It holds because LoraSlot places no slot in a region it has no
+        // band for (LoraSlotTest pins that), so a pinned board there is never dedicated and budgets as shared.
+        val pinned = LoraAirtime(dedicatedUnlocksDuty = true)
+        pinned.onRadioConfig(radio(region = LoraRegion.EU_868, channelNum = 3))
         val shared = LoraAirtime(dedicatedUnlocksDuty = true).apply { onRadioConfig(radio(region = LoraRegion.EU_868)) }
-        assertEquals(shared.allowanceMs(), dedicated.allowanceMs())
+        assertFalse(pinned.dedicated())
+        assertEquals(shared.allowanceMs(), pinned.allowanceMs())
     }
 
     @Test
     fun theSnapshotReportsWhetherTheBudgetIsRunningDedicated() {
         val air = LoraAirtime(dedicatedUnlocksDuty = true)
-        air.onRadioConfig(radio(region = LoraRegion.US, channelNum = 12))
+        air.onRadioConfig(radio(region = LoraRegion.US, channelNum = knitUsSlot))
         assertTrue(air.snapshot(0L).dedicated)
         assertFalse(LoraAirtime().apply { onRadioConfig(radio(region = LoraRegion.US)) }.snapshot(0L).dedicated)
     }

@@ -1,7 +1,7 @@
 package app.getknit.knit.mesh.lora
 
 /**
- * Where a **dedicated** Knit fleet parks its radio (ADR 067) — a debug-only alternative to ADR 045's default,
+ * Where a **dedicated** Knit fleet parks its radio (ADR 067) — an opt-in alternative to ADR 045's default,
  * which deliberately leaves the board on the stock public frequency so strangers' nodes relay Knit for free.
  *
  * That bargain is the right one wherever there is a Meshtastic community to borrow, and worthless where there

@@ -2,7 +2,6 @@ package app.getknit.knit.ui.lora
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.settings.KnitBoardSetup
 import app.getknit.knit.data.settings.SettingsStore
@@ -67,7 +66,7 @@ enum class LoraProvisionOutcome {
     AlreadyPresent,
     Restored,
 
-    /** A pinned board is back on the shared public frequency, still set up for Knit (ADR 067, debug builds). */
+    /** A pinned board is back on the shared public frequency, still set up for Knit (ADR 067). */
     Shared,
     NoFreeSlot,
 
@@ -147,11 +146,6 @@ data class LoraRadioUiState(
     val anyBonded: Boolean = false,
     val provisioning: Boolean = false,
     val provisionOutcome: LoraProvisionOutcome? = null,
-    /**
-     * Whether the debug-only dedicated-frequency setup is offered at all (ADR 067). False in every release
-     * build — the shared public frequency is the shipping bargain and the only one a release user is given.
-     */
-    val dedicatedOffered: Boolean = false,
     /**
      * The RF slot the dedicated setup would pin this board to, or null when Knit will not place one in its
      * region — which is also what greys the action out rather than letting it fail at the board.
@@ -277,7 +271,6 @@ internal class LoraRadioViewModel(
                 anyBonded = picker.bonded.isNotEmpty(),
                 provisioning = provision.running,
                 provisionOutcome = provision.outcome,
-                dedicatedOffered = BuildConfig.DEBUG,
                 dedicatedSlot = ready?.radio?.let { LoraSlot.forRegion(it.region, it.modemPreset) },
                 dedicated = status.airtime?.dedicated == true,
                 confirmDedicated = provision.dedicated,
@@ -374,12 +367,8 @@ internal class LoraRadioViewModel(
         provisionState.update { it.copy(confirm = true, dedicated = false, outcome = null) }
     }
 
-    /**
-     * Opens the confirmation for the debug-only dedicated-frequency setup (ADR 067). Inert in a release
-     * build, checked here rather than only in the UI so the action cannot be reached by any route.
-     */
+    /** Opens the confirmation for the dedicated-frequency setup (ADR 067), which spells out the trade. */
     fun askSetupDedicated() {
-        if (!BuildConfig.DEBUG) return
         provisionState.update { it.copy(confirm = true, dedicated = true, outcome = null) }
     }
 
@@ -394,7 +383,7 @@ internal class LoraRadioViewModel(
      * here; they are the only way a restore can put back what was actually there.
      */
     fun setUpBoard() {
-        val dedicated = provisionState.value.dedicated && BuildConfig.DEBUG
+        val dedicated = provisionState.value.dedicated
         provision(if (dedicated) ProvisionMode.SetupDedicated else ProvisionMode.Setup)
     }
 
@@ -402,11 +391,8 @@ internal class LoraRadioViewModel(
      * Moves a board off its dedicated RF slot and back onto the shared public frequency in one step, leaving
      * the setup itself alone (ADR 067). Unconfirmed, like [restoreBoard], which moves the radio the same way
      * and more: nothing here is lost, and the shared frequency is the bargain the board was offered first.
-     * Inert in a release build, checked here rather than only in the UI so the action cannot be reached by
-     * any route.
      */
     fun switchToShared() {
-        if (!BuildConfig.DEBUG) return
         provision(ProvisionMode.SetupShared)
     }
 
@@ -510,7 +496,7 @@ internal class LoraRadioViewModel(
         val running: Boolean = false,
         val outcome: LoraProvisionOutcome? = null,
         val confirm: Boolean = false,
-        /** The pending confirmation is for the debug-only dedicated setup rather than the shared one. */
+        /** The pending confirmation is for the dedicated setup rather than the shared one. */
         val dedicated: Boolean = false,
     )
 

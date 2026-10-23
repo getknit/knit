@@ -94,7 +94,7 @@ internal data class ProvisionSpec(
  * setting: a board is either set up for Knit or it is a stock Meshtastic node, so any two Knit boards are
  * configured identically and meet without coordination.
  *
- * [SetupDedicated] is the debug-only third (ADR 067), and it is a different bargain rather than a lighter
+ * [SetupDedicated] is the opt-in third (ADR 067), and it is a different bargain rather than a lighter
  * one — see its doc. Both setups produce the same channel table; they differ only in whether the radio is
  * pinned off the shared public slot, [SetupShared] moves a pinned board back without undoing the setup, and
  * [Restore] undoes either.
@@ -110,7 +110,7 @@ internal enum class ProvisionMode {
     /**
      * [Setup], plus `lora.channel_num` pinned to the slot [LoraSlot] derives for the board's region and
      * preset — so the fleet has the frequency to itself and `LoraAirtime` drops the politeness ceiling
-     * (ADR 067). **Debug builds only**, and never the default: it trades away the free relaying a stock
+     * (ADR 067). Never the default: it trades away the free relaying a stock
      * Meshtastic neighbourhood does for us, which is worth having wherever there is a neighbourhood. Where
      * there is not — an isolated farm, a mountain house — there is nothing to trade away and a household
      * fleet gets its region's whole duty cycle instead of a tenth of it.
@@ -123,8 +123,7 @@ internal enum class ProvisionMode {
      * [Setup], with `lora.channel_num` put back to the slot the board had before [SetupDedicated] pinned it
      * — the recorded prior, which is the shared public slot on every board the user never pinned by hand.
      * The Knit channel, the name and the quieting stay exactly as they are, so this is the one-step way off a
-     * dedicated slot that does not go through [Restore] and a second setup. **Debug builds only**, like the
-     * setup it reverses; a no-op on a board that is already where it would be put.
+     * dedicated slot that does not go through [Restore] and a second setup; a no-op on a board that is already where it would be put.
      */
     SetupShared,
 

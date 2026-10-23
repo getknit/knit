@@ -529,9 +529,10 @@ class LoraMeshTransportTest {
         primaryPsk: ByteArray = ByteArray(0),
         firmware: String = "2.5.0",
         room: Boolean = true,
-        // The board pinned to a dedicated RF slot (ADR 067), under a governor built the way a debug build
-        // builds it — the release governor reads every board as shared, pinned or not.
+        // The board pinned to Knit's own dedicated RF slot (ADR 067).
         dedicated: Boolean = false,
+        // A slot pinned by hand instead, which may be a community's; overrides [dedicated].
+        pinnedSlot: Int? = null,
         state: LoraPlaneState = LoraPlaneState.None,
     ): Rig {
         val r =
@@ -542,7 +543,7 @@ class LoraMeshTransportTest {
                 backgroundScope,
                 config = MutableStateFlow(LoraConfig("AA:1", 1, room = room)),
                 firmware = firmware,
-                pace = LoraPacePolicy(minGapMs = 0, airtime = LoraAirtime(dedicatedUnlocksDuty = dedicated)),
+                pace = LoraPacePolicy(minGapMs = 0, airtime = LoraAirtime(dedicatedUnlocksDuty = true)),
                 onPublicPost = { posts += it },
                 state = state,
             ) { testScheduler.currentTime }
@@ -557,7 +558,7 @@ class LoraMeshTransportTest {
                 region = LoraRegion.US,
                 hopLimit = 3,
                 overrideDutyCycle = false,
-                channelNum = if (dedicated) 5 else 0,
+                channelNum = pinnedSlot ?: if (dedicated) LoraSlot.forRegion(LoraRegion.US, ModemPreset.LONG_FAST)!! else 0,
             )
         r.link.readyProvisioned(knitIndex = 1, primaryName = primaryName, primaryPsk = primaryPsk, radio = radio)
         runCurrent()
@@ -843,6 +844,27 @@ class LoraMeshTransportTest {
 
             assertTrue("nothing went on the air", r.link.sent.isEmpty())
             assertEquals(0L, r.metrics.meshtastic().publicPostSent)
+            r.transport.stop()
+        }
+
+    @Test
+    fun aBoardPinnedByHandOffKnitsSlotKeepsItsRoom() =
+        runTest {
+            // ADR 067's 2026-10-22 amendment: a slot pinned in the Meshtastic app may be a community's, and no
+            // action of Knit's moves it back, so only Knit's own slot closes the room.
+            val air = FakeMeshtasticAir()
+            val posts = mutableListOf<MeshPost>()
+            val r = bridgeRig(air, posts, pinnedSlot = 20)
+            assertFalse(
+                "the governor kept the board shared",
+                r.transport.status.value.airtime
+                    ?.dedicated == true,
+            )
+
+            r.link.deliverPublicText(from = 0xdeadbeefu, body = "anyone around?", id = 77u)
+            runCurrent()
+            assertEquals("anyone around?", posts.single().body)
+            assertNull(r.transport.postToPublicChannel("meet at the trailhead"))
             r.transport.stop()
         }
 

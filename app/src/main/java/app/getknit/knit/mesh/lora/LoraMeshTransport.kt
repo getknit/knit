@@ -1,6 +1,5 @@
 package app.getknit.knit.mesh.lora
 
-import app.getknit.knit.BuildConfig
 import app.getknit.knit.mesh.FanoutHint
 import app.getknit.knit.mesh.FastPathDrop
 import app.getknit.knit.mesh.InboundFrame
@@ -121,9 +120,8 @@ internal class LoraMeshTransport(
     private val clock: () -> Long,
     private val wallClock: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = {},
-    // The dedicated-slot duty unlock is debug-only, like the setup that pins the slot (ADR 067); a release
-    // build budgets exactly as it always has, even against a board somebody pinned by hand.
-    private val pace: LoraPacePolicy = LoraPacePolicy(airtime = LoraAirtime(dedicatedUnlocksDuty = BuildConfig.DEBUG)),
+    // A board on a dedicated slot lifts the politeness ceiling, the setup's whole point (ADR 067's amendment).
+    private val pace: LoraPacePolicy = LoraPacePolicy(airtime = LoraAirtime(dedicatedUnlocksDuty = true)),
     private val gateway: LoraGatewayPolicy = LoraGatewayPolicy(),
     private val gossip: LoraGossipPolicy = LoraGossipPolicy(),
     /**

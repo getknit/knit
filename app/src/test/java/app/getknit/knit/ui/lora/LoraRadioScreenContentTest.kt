@@ -246,7 +246,7 @@ class LoraRadioScreenContentTest {
 
     @Test
     fun aBoardNotYetOnItsOwnFrequencyIsOfferedThatSetup() {
-        render(connected().copy(dedicatedOffered = true, dedicatedSlot = 5))
+        render(connected().copy(dedicatedSlot = 5))
         compose.onNodeWithTag("lora_setup_dedicated").performScrollTo().assertIsEnabled()
         compose.onNodeWithText("Pins the radio to slot 5", substring = true).performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("lora_room_switch").performScrollTo().assertIsEnabled()
@@ -260,7 +260,7 @@ class LoraRadioScreenContentTest {
         var restored = 0
         var shared = 0
         render(
-            connected().copy(dedicatedOffered = true, dedicatedSlot = 5, dedicated = true),
+            connected().copy(dedicatedSlot = 5, dedicated = true),
             onRestore = { restored++ },
             onSwitchToShared = { shared++ },
         )
@@ -280,7 +280,7 @@ class LoraRadioScreenContentTest {
 
     @Test
     fun aBoardOnTheSharedFrequencyIsNotOfferedTheWayBack() {
-        render(connected().copy(dedicatedOffered = true, dedicatedSlot = 5))
+        render(connected().copy(dedicatedSlot = 5))
         compose.onNodeWithTag("lora_setup_shared").assertDoesNotExist()
     }
 

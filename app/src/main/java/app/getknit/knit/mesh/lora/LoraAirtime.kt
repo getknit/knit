@@ -187,8 +187,7 @@ internal data class AirtimeSnapshot(
  * [timeOnAirMs] adds the signature itself, gated on the board's firmware ([signsPackets]) — and [padTo]
  * turns the same cliff back into a saving, since a packet grown one byte past it sheds all 66 (ADR 2026-09.mhs5).
  *
- * Those two ceilings are **independent**, which is what [dedicatedUnlocksDuty] turns on (ADR 067, debug
- * builds only). The regional duty cycle is law and only the firmware's own `override_duty_cycle` escape
+ * Those two ceilings are **independent**, which is what [dedicatedUnlocksDuty] turns on (ADR 067). The regional duty cycle is law and only the firmware's own `override_duty_cycle` escape
  * hatch lifts it; the politeness ceiling is Knit's own manners toward everyone else sharing the stock
  * frequency, and on a board pinned to a dedicated RF slot ([LoraRadioConfig.dedicatedSlot], [LoraSlot])
  * there is no-one there to be polite to. So a dedicated US board runs to the 100 % its region allows and an
@@ -203,9 +202,8 @@ internal class LoraAirtime(
     private val bootstrapShare: Double = BOOTSTRAP_SHARE,
     private val publicShare: Double = PUBLIC_SHARE,
     /**
-     * Whether a dedicated RF slot lifts the politeness ceiling. False everywhere but a debug build — the
-     * setup that pins the slot is itself debug-only, and a release build must budget exactly as it does
-     * today even against a board somebody pinned by hand in the Meshtastic app.
+     * Whether a dedicated RF slot lifts the politeness ceiling. On in the transport; false by default so the
+     * class can be tested in both states.
      */
     private val dedicatedUnlocksDuty: Boolean = false,
 ) : PacketCost {

@@ -48,7 +48,7 @@ enum class PublicPostRefusal {
     ROOM_OFF,
 
     /**
-     * The board is pinned to a dedicated RF slot (ADR 067, debug builds), where no public radio can hear it
+     * The board is pinned to a dedicated RF slot (ADR 067), where no public radio can hear it
      * and the room is hidden. Like [ROOM_OFF], the net under a route that outlived the row.
      */
     DEDICATED,

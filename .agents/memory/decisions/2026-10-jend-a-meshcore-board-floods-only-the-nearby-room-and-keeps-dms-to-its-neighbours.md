@@ -66,7 +66,8 @@ message does. The cost that matters is Knit's **automated** traffic, not people'
    this plane instead of spending air for a day on ticks nobody hears.
 7. **Every transmission carries a byte that varies per send** (a fresh fragment id is enough). Otherwise re-offers,
    backfill and retries are eaten by dedup network-wide.
-8. **Floods off the shared frequency stay a debug-only bargain**, as ADR 067 keeps the dedicated Meshtastic slot.
+8. **Floods off the shared frequency stay a debug-only bargain**, as ADR 067 kept the dedicated Meshtastic slot
+   until its 2026-10-22 amendment shipped it; this one has not moved.
 
 **What it costs.**
 

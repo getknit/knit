@@ -493,10 +493,9 @@ private fun SetupSection(
 }
 
 /**
- * The debug-only alternative setup (ADR 067): the same board setup, but with the radio pinned to a slot of
- * its own instead of the shared public frequency. Absent from every release build ([LoraRadioUiState.dedicatedOffered]),
- * and shown disabled — with the reason — where Knit will not place a slot in the board's region, because a
- * greyed action that says why is more use than one that fails at the board.
+ * The alternative setup (ADR 067): the same board setup, but with the radio pinned to a slot of its own
+ * instead of the shared public frequency. Shown disabled — with the reason — where Knit will not place a slot
+ * in the board's region, because a greyed action that says why is more use than one that fails at the board.
  *
  * Offered whether or not the board is already set up on the shared frequency: the session applies the slot
  * write to a board that already carries the Knit channel, so making the user Restore first would be a
@@ -512,7 +511,6 @@ private fun DedicatedSetupAction(
     onAskSetupDedicated: () -> Unit,
     onSwitchToShared: () -> Unit,
 ) {
-    if (!state.dedicatedOffered) return
     if (state.dedicated) {
         OutlinedButton(
             onClick = onSwitchToShared,
@@ -547,7 +545,7 @@ private fun DedicatedSetupAction(
  * Setting a board up changes settings on hardware the user may also use for other things — what it stops
  * broadcasting, and that it stops relaying other people's traffic — so it is confirmed first. What the
  * ordinary setup does *not* touch is the board's own primary channel, and therefore its frequency; the
- * debug-only [dedicated] one does move the radio, and trades the free relaying away, so it says so instead.
+ * [dedicated] one does move the radio, and trades the free relaying away, so it says so instead.
  */
 @Composable
 private fun SetupConfirmDialog(

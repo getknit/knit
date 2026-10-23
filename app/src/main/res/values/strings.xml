@@ -1604,13 +1604,13 @@
     <string name="lora_provisioned">Board set up for Knit. It may reboot to apply this — it will reconnect on its own.</string>
     <string name="lora_provision_already">This board is already set up for Knit.</string>
     <string name="lora_provision_no_slot">No free channel slot on the board. Free one in the Meshtastic app, then try again.</string>
-    <!-- Debug builds only (ADR 067): the dedicated-frequency setup. Not shown in any release build. -->
+    <!-- The dedicated-frequency setup (ADR 067). -->
     <string name="lora_setup_dedicated_button">Set up on a dedicated frequency</string>
     <!-- PluralsCandidate is a false positive: %1$d is a slot number, not a count. -->
-    <string name="lora_setup_dedicated_body" tools:ignore="PluralsCandidate">Debug only. Pins the radio to slot %1$d instead of the public Meshtastic frequency.</string>
+    <string name="lora_setup_dedicated_body" tools:ignore="PluralsCandidate">Pins the radio to slot %1$d instead of the public Meshtastic frequency.</string>
     <string name="lora_setup_shared_button">Go back to the shared frequency</string>
-    <string name="lora_setup_dedicated_active">Debug only. This board is on a dedicated frequency, so Knit is using the full airtime allowance your region permits. The Meshtastic room is hidden while it stays there, because no public radio can hear it. Going back moves only the radio; the board stays set up for Knit.</string>
-    <string name="lora_setup_dedicated_unavailable">Debug only. Knit has no dedicated slot for this board\'s region, so this setup is unavailable here.</string>
+    <string name="lora_setup_dedicated_active">This board is on a dedicated frequency, so Knit is using the full airtime allowance your region permits. The Meshtastic room is hidden while it stays there, because no public radio can hear it. Going back moves only the radio; the board stays set up for Knit.</string>
+    <string name="lora_setup_dedicated_unavailable">Knit has no dedicated slot for this board\'s region, so this setup is unavailable here.</string>
     <string name="lora_setup_dedicated_confirm_title">Set this board up on its own frequency?</string>
     <string name="lora_setup_dedicated_confirm_body">Everything the normal setup does, plus the radio moves to a frequency only Knit boards use.\n\nThis is for places with no Meshtastic community nearby. You gain the whole airtime allowance your region permits instead of the tenth Knit normally limits itself to \u2014 but no stranger\'s radio will relay your messages any more, so only your own boards carry them.\n\nEvery board in your fleet must be set up this way to talk to the others. You can undo this at any time.</string>
     <string name="lora_provision_shared">Board back on the shared Meshtastic frequency. It may reboot to apply this — it will reconnect on its own.</string>
@@ -1644,7 +1644,7 @@
     <!-- The Meshtastic room: mirroring the board's own primary channel into a room on this phone (ADR 2026-09.26q3). -->
     <string name="lora_room_title">Meshtastic room</string>
     <string name="lora_room_subtitle">Show your radio\'s own channel as a room in Knit, so you can read and join whatever else is on it. Off, the room is hidden and silent and Knit ignores that channel — your board still carries Knit\'s own messages.</string>
-    <!-- Debug builds only (ADR 067): the room row's subtitle while the board is on a dedicated frequency. -->
+    <!-- ADR 067: the room row's subtitle while the board is on a dedicated frequency. -->
     <string name="lora_room_subtitle_dedicated">Hidden while this board is on a dedicated frequency: no public radio can hear it, so there is no channel to read. Restore the board to get the room back.</string>
     <string name="lora_role_passive">Another Knit board nearby is bridging — this one is listening</string>
     <string name="lora_airtime">Airtime %1$d%% of the current budget</string>

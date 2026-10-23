@@ -18,7 +18,7 @@ internal data class BoardSettings(
     val owner: BoardOwner? = null,
     /**
      * `Config.LoRaConfig.channel_num` as the board had it — 0 on every board that was left deriving its RF
-     * slot from the primary's name, which is all of them until the debug-only dedicated setup (ADR 067)
+     * slot from the primary's name, which is all of them until the dedicated setup (ADR 067)
      * pins one. Recorded so a restore puts back *the user's* value rather than assuming 0, in case they had
      * pinned a slot themselves before Knit ever saw the board.
      */
@@ -86,7 +86,7 @@ internal object BoardQuiet {
     /**
      * The field to splice into [BoardConfig.LORA] to pin the radio to [slot] — or, with [SHARED_SLOT], to
      * hand it back to the firmware's `hash(primary channel name)` and the shared public frequency. The one
-     * radio field Knit ever writes, and only in a debug build (ADR 067); everything else about the radio is
+     * radio field Knit ever writes, and only through the dedicated setup (ADR 067); everything else about the radio is
      * the user's per-board, legally-scoped call (ADR 038 §10).
      */
     fun loraSlot(slot: Int): Map<Int, Long> = mapOf(MeshtasticProto.LORA_CHANNEL_NUM to slot.toLong())

@@ -53,7 +53,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   `onQueueStatus`, `onNak`), `OutboundFrame.supersedes`, or `MeshTransport.FanoutHint`:** READ ADR 044 (with its
   2026-10-04 amendment), ADR 054, ADR 056, ADR 2026-09.t8t8, ADR 2026-09.7c8n, ADR 2026-09.xdm2 and ADR 067, then
   "Bridging pockets" and "Pacing" in `lora-bridge.md`. One allowance = `min(region duty, 10 % politeness) × 0.5` of a
-  15-minute window (45 s at LongFast); the duty cycle is law and only a dedicated slot, on a debug build, lifts the
+  15-minute window (45 s at LongFast); the duty cycle is law and only Knit's own dedicated slot lifts the
   politeness half. `LIVE` may spend it all, `BRIDGE` 30 %, `BOOTSTRAP` 25 % and judged outside the total, `GOSSIP`
   only against the total, `PUBLIC` 15 %; `TICK` never spends the last 25 %. Every air spend is booked — no class is
   exempt and unmetered. Dequeue is by class then FIFO, a refused frame is skipped, except that a live frame the total
@@ -100,7 +100,7 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   board up" in `lora-bridge.md`. Setup is one read-modify-write admin transaction that never moves the radio or
   touches the primary (stock nodes repeat Knit only on the same params), quiets the board, sets `LOCAL_ONLY`, renames
   it `Knit abcd` (never the user's name) and marks it unmessagable; Restore puts back exactly what it recorded. The
-  dedicated slot is debug-only and never the default. `KnitChannel`'s PSK is derived and pinned by `KnitChannelTest`.
+  dedicated slot is opt-in and never the default. `KnitChannel`'s PSK is derived and pinned by `KnitChannelTest`.
 - **When touching `MeshtasticSession` (handshake, heartbeat, drain, admin passkey), `MeshtasticLink`, `PacketIdSource`,
   `BoardBattery`, or `MeshtasticGatt` (`negotiateMtu`, `SETTLE_MS`):** READ ADR 038 §2, ADR 041 and "The layers" /
   "Board facts" in `lora-bridge.md`. The protobuf is hand-rolled and total (malformed → null, never a throw), its field
