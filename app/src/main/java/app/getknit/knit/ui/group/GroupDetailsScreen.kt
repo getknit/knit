@@ -60,6 +60,7 @@ import app.getknit.knit.R
 import app.getknit.knit.TextLimits
 import app.getknit.knit.clampToUtf16
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.FullscreenImageViewer
 import app.getknit.knit.ui.components.GroupAvatar
 import app.getknit.knit.ui.components.PeerNameText
@@ -149,7 +150,7 @@ internal fun GroupDetailsScreenContent(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.group_details_title)) },
+                title = { BarTitle(stringResource(R.string.group_details_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(

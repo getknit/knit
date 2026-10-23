@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.data.relay.RelayInviteApplier
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.noAutofillMenu
 import app.getknit.knit.ui.preview.KnitPreview
 import org.koin.androidx.compose.koinViewModel
@@ -133,7 +134,7 @@ internal fun InternetRelayScreenContent(
                         )
                     }
                 },
-                title = { Text(stringResource(R.string.relays_title)) },
+                title = { BarTitle(stringResource(R.string.relays_title)) },
             )
         },
     ) { padding ->

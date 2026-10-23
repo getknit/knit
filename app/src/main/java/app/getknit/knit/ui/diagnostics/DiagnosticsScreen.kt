@@ -37,9 +37,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
@@ -87,6 +84,9 @@ import app.getknit.knit.mesh.spool.SpoolUrl
 import app.getknit.knit.transfer.HostVerdict
 import app.getknit.knit.ui.DeviceSupervision
 import app.getknit.knit.ui.Reach
+import app.getknit.knit.ui.components.AdaptiveRow
+import app.getknit.knit.ui.components.BarTitle
+import app.getknit.knit.ui.components.ChoiceButtons
 import app.getknit.knit.ui.components.SectionHeader
 import app.getknit.knit.ui.deviceSupervision
 import app.getknit.knit.ui.preview.KnitPreview
@@ -273,7 +273,7 @@ internal fun DiagnosticsScreenContent(
                         )
                     }
                 },
-                title = { Text(stringResource(R.string.diagnostics_title)) },
+                title = { BarTitle(stringResource(R.string.diagnostics_title)) },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -696,17 +696,20 @@ private fun MetricRow(
     label: String,
     value: String,
 ) {
-    Row(
+    // A long value (a relay's refusal, its software) moves under its label rather than squeezing it.
+    AdaptiveRow(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        stackedGap = 0.dp,
+        trailing = {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
     ) {
-        Text(text = label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Text(text = label, style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -736,10 +739,19 @@ private fun LiveTransportRow(
     switchedOff: Boolean = false,
 ) {
     val status = row.status
-    Row(
+    // The tags and the count move under the plane's name, past its dot, when they would squeeze it.
+    AdaptiveRow(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        stackedIndent = DOT_INDENT,
+        trailing = { LiveTransportStatus(row, switchedOff) },
     ) {
+        LiveTransportName(status)
+    }
+}
+
+@Composable
+private fun LiveTransportName(status: TransportStatus) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         // Health dot: the semantic positive when Healthy, error when Degraded (seized), muted outline when Unavailable
         // (radio off) or ForegroundOnly (the OS refuses the search off screen) — neither is a fault, so neither
         // should read as alarmingly as a seized radio.
@@ -755,8 +767,17 @@ private fun LiveTransportRow(
             text = transportName(status.kind),
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
-            modifier = Modifier.weight(1f),
         )
+    }
+}
+
+@Composable
+private fun LiveTransportStatus(
+    row: TransportRow.Live,
+    switchedOff: Boolean,
+) {
+    val status = row.status
+    Row(verticalAlignment = Alignment.CenterVertically) {
         // Debug flag: the Wi-Fi Aware switch under this section has stopped the plane (its dot reads Unavailable).
         // Otherwise a plane Knit has off is low-power mode's doing (ADR 2026-10.d44b), not a radio the user turned off.
         if (switchedOff) {
@@ -804,32 +825,38 @@ private fun LiveTransportRow(
  */
 @Composable
 private fun AbsentTransportRow(row: TransportRow.Absent) {
-    Row(
+    AdaptiveRow(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        stackedIndent = DOT_INDENT,
+        trailing = { AbsentTransportReason(row) },
     ) {
-        Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(MaterialTheme.colorScheme.outline))
-        Spacer(Modifier.width(12.dp))
-        Text(
-            text = transportName(row.kind),
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            text =
-                stringResource(
-                    if (row.why == PlaneSupport.NeedsAndroid12) {
-                        R.string.diagnostics_transport_needs_android_12
-                    } else {
-                        R.string.diagnostics_transport_unsupported
-                    },
-                ),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(MaterialTheme.colorScheme.outline))
+            Spacer(Modifier.width(12.dp))
+            Text(
+                text = transportName(row.kind),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
+}
+
+@Composable
+private fun AbsentTransportReason(row: TransportRow.Absent) {
+    Text(
+        text =
+            stringResource(
+                if (row.why == PlaneSupport.NeedsAndroid12) {
+                    R.string.diagnostics_transport_needs_android_12
+                } else {
+                    R.string.diagnostics_transport_unsupported
+                },
+            ),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable
@@ -932,10 +959,19 @@ private fun NodeRow(
     // The PHY of this peer's Bluetooth link, when the experiment holds a handle on it; null draws no chip.
     phy: LinkPhy? = null,
 ) {
-    Row(
+    // The tags and the profile's age move under the name, past its dot, rather than ellipsizing the name.
+    AdaptiveRow(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        stackedIndent = DOT_INDENT,
+        trailing = { NodeTags(node, now, phy) },
     ) {
+        NodeName(node)
+    }
+}
+
+@Composable
+private fun NodeName(node: NodeInfo) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         // Four strengths of evidence, four dots: filled = a radio saw this peer itself; lighter = another phone
         // carried its traffic over the radio mesh; faded = a long-range plane did; muted = we only hold its profile.
         val dotColor =
@@ -947,7 +983,7 @@ private fun NodeRow(
             }
         Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(dotColor))
         Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
+        Column {
             Text(
                 text = node.displayName,
                 style = MaterialTheme.typography.titleMedium,
@@ -960,6 +996,16 @@ private fun NodeRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+@Composable
+private fun NodeTags(
+    node: NodeInfo,
+    now: Long,
+    phy: LinkPhy?,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         val tag = transportTag(node.transports, node.viaSpool, node.via)
         val age = node.profileUpdatedAt?.let { compactTimeAgo(it, now, labels = relativeTimeLabels()) }
         tag?.let { TransportTag(it) }
@@ -977,6 +1023,15 @@ private fun NodeRow(
         }
     }
 }
+
+/** How far a row's text sits in from its leading 10 dp dot and 12 dp gap: where a stacked status lines up. */
+private val DOT_INDENT = 22.dp
+
+/**
+ * The link-cap stepper's share of its row: two 48 dp buttons and a number take about half on a phone already, so it
+ * moves under the explanation only once its value grows past that.
+ */
+private const val STEPPER_SHARE = 0.55f
 
 /** How much of a scope label (a node id or group id) fits a Diagnostics row without wrapping. */
 private const val SCOPE_LABEL_CHARS = 12
@@ -1207,11 +1262,15 @@ private fun BleLinkCapRow(
 ) {
     val max = PromotionConfig.DEFAULT_MAX_LINKS
     val value = cap ?: max
-    Row(
+    // The stepper moves under the explanation, at the end, when its value ("Default (6)") would squeeze it.
+    AdaptiveRow(
         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp).testTag("ble_link_cap"),
-        verticalAlignment = Alignment.CenterVertically,
+        gap = 0.dp,
+        stackedAtEnd = true,
+        maxTrailingShare = STEPPER_SHARE,
+        trailing = { BleLinkCapStepper(cap, value, max, onSet) },
     ) {
-        Column(modifier = Modifier.weight(1f)) {
+        Column {
             Text(
                 text = stringResource(R.string.diagnostics_ble_link_cap_label),
                 style = MaterialTheme.typography.bodyMedium,
@@ -1224,6 +1283,17 @@ private fun BleLinkCapRow(
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
+    }
+}
+
+@Composable
+private fun BleLinkCapStepper(
+    cap: Int?,
+    value: Int,
+    max: Int,
+    onSet: (Int) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(
             onClick = { onSet(value - 1) },
             enabled = value > 0,
@@ -1319,19 +1389,13 @@ private fun BlePhyModeRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
         )
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            BLE_PHY_MODES.forEachIndexed { index, (value, label) ->
-                SegmentedButton(
-                    selected = value == mode,
-                    onClick = { onSet(value) },
-                    shape = SegmentedButtonDefaults.itemShape(index = index, count = BLE_PHY_MODES.size),
-                    modifier = Modifier.height(48.dp).testTag("ble_phy_${value.wire}"),
-                    icon = {},
-                ) {
-                    Text(stringResource(label))
-                }
-            }
-        }
+        ChoiceButtons(
+            choices = BLE_PHY_MODES.map { (value, label) -> value to stringResource(label) },
+            selected = mode,
+            onSelect = onSet,
+            check = false,
+            tagOf = { "ble_phy_${it.wire}" },
+        )
     }
 }
 

@@ -103,6 +103,9 @@ object GeoUri {
     /** Whether [body] carries a position at all — the cheap test the row fold asks first. */
     fun contains(body: String): Boolean = find(body) != null
 
+    /** Where each position in [body] sits, for text that must come through a rewrite untouched (a translation). */
+    fun ranges(body: String): List<IntRange> = scan(body).map { it.range }
+
     /**
      * [body] with every position removed, for the bubble, which draws the card in its place: a line that
      * held only the token goes with it, blank runs it left behind collapse, and the ends are trimmed.

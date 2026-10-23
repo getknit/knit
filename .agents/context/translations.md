@@ -49,6 +49,44 @@ plan. Its one component, `app`, reads `app/src/main/res/values/strings.xml` as t
   through `joined_with_dot` (`%1$s · %2$s`), so a language can reorder them.
 - Never change case in code (`lowercase()`, `replaceFirstChar`) on a translated string.
 
+## A layout for every language
+
+A translation runs longer than the English, often by a third and by two or three times in a label of a word or two,
+and Arabic, Persian and Hebrew lay the screen out right to left. Rewording a translation to fit works once; the
+layout has to take the longer text.
+
+- **Check it under the pseudolocales.** Every screenshot subject also renders as `LongText` (en-XA: each string
+  accented and padded to about 40 % longer) and `Rtl` (ar-XB: mirrored, right to left), from the debug build
+  (`context/testing.md`, "Compose preview screenshot tests"). Read both images of a new or changed subject before
+  committing them, because the reference records whatever it shows, clipped or not. On a device, a debug build
+  offers both under Settings › Apps › Knit › Language. A string that renders empty in both but not in English is
+  aapt2's pseudolocalizer failing on it, not the layout: it blanked one that ended in an escaped apostrophe and a full
+  stop (`relays\'.`). Reword the source string.
+- **What to look for:** a label cut off or ellipsized on an action, text that wraps under a fixed height (a
+  segmented button, a two-button row, a chip), a row whose trailing text pushes its title off, an icon that should
+  mirror and doesn't (a back arrow, a chevron) or one that mirrors and shouldn't (a play button, a logo).
+- **Fix the layout, not the string.** Give text no fixed width; let a button or a chip take a second line rather
+  than clip it; let a row of two actions stack when either label is too long; save ellipsis for text shown in full
+  elsewhere (a chat preview), never an action. Use `start`/`end`, never `left`/`right`. A few answers shown at once
+  go through `ui/components/ChoiceButtons`, a segmented row that turns into a list of radio buttons when a label
+  doesn't fit its segment. A title with something at its end (a status, tags, a button) goes through
+  `ui/components/AdaptiveRow`, which moves the end part under the title once the two can't share the width,
+  rather than a `weight(1f)` title the end part squeezes. Buttons that share a row go through
+  `ui/components/ButtonRow`, which stacks them at the full width once a label would wrap in its share. A row of
+  labelled round buttons (the call screen's) aligns its labels by their first baseline and centres them, so a label
+  that wraps grows downwards. Text in a fixed height (a top bar's title, its status line)
+  keeps one line and steps its size down before it ellipsizes: a top bar's plain title is `ui/components/BarTitle`.
+  A card's actions sit outside its scrolling list, so a long explanation scrolls and the buttons stay in view.
+- **Direction comes from the text, alignment from the layout.** The theme's type scale (`ui/theme/Type.kt`,
+  `knitTypography`) gives every style `TextDirection.Content`, so an English message keeps its full stop in an Arabic
+  interface and an Arabic one reads right to left in English, and aligns unaligned text to the layout's start, so a
+  Latin name or value still lines up with its column there. Text read as written in every language (a safety number,
+  a recovery key, a stack trace, a log line, a measured value, a "12 / 40" count) takes `leftToRight()` from
+  `ui/components/LeftToRight.kt`. A `Canvas` or a hand-placed `Layout` does not mirror on its own: draw from the
+  layout's start and hit-test the same way (the voice waveform, the emoji grid), and place with `placeRelative`.
+  A translated string that opens with a placeholder takes the placeholder's direction, so an RTL translation wraps
+  a leading name in an isolate.
+
 ## Deliberately English
 
 These are not oversights; leave them unless the plan changes.

@@ -225,17 +225,45 @@ internal fun AvatarInitial(
  * slice off a lone surrogate that the font then draws as a missing-glyph "?". The iterator advances
  * by extended grapheme cluster (ICU-backed on Android), so the whole cluster is taken as one unit.
  *
+ * Leading graphemes that are no letter of a name are passed over: punctuation, spaces and the invisible direction
+ * marks. A label like "(You)", or a translation that opens with a quote or a bracket, would otherwise draw its
+ * punctuation, and an Arabic one opening with a direction mark nothing at all. A name with nothing else is "?".
+ *
  * The one initial rule: `MessageNotifier` draws its letter avatars from it too, so the shade's face is the
  * list's.
  */
 internal fun avatarInitial(name: String): String {
-    val trimmed = name.trimStart()
-    if (trimmed.isEmpty()) return "?"
-    val boundary = BreakIterator.getCharacterInstance().apply { setText(trimmed) }
-    val end = boundary.next()
-    val grapheme = if (end == BreakIterator.DONE) trimmed else trimmed.substring(0, end)
-    return grapheme.uppercase()
+    val boundary = BreakIterator.getCharacterInstance().apply { setText(name) }
+    var start = boundary.first()
+    var end = boundary.next()
+    while (end != BreakIterator.DONE) {
+        val grapheme = name.substring(start, end)
+        if (!isPassedOver(grapheme.codePointAt(0))) return grapheme.uppercase()
+        start = end
+        end = boundary.next()
+    }
+    return "?"
 }
+
+/** Punctuation, a space or a control or format character (a direction mark): nothing to draw as an initial. */
+private fun isPassedOver(codePoint: Int): Boolean =
+    when (Character.getType(codePoint).toByte()) {
+        Character.CONNECTOR_PUNCTUATION,
+        Character.DASH_PUNCTUATION,
+        Character.START_PUNCTUATION,
+        Character.END_PUNCTUATION,
+        Character.INITIAL_QUOTE_PUNCTUATION,
+        Character.FINAL_QUOTE_PUNCTUATION,
+        Character.OTHER_PUNCTUATION,
+        Character.SPACE_SEPARATOR,
+        Character.LINE_SEPARATOR,
+        Character.PARAGRAPH_SEPARATOR,
+        Character.CONTROL,
+        Character.FORMAT,
+        -> true
+
+        else -> false
+    }
 
 /** The initial's height as a fraction of the disc — or, in a cluster cell, of the cell's short side. */
 private const val INITIAL_FRACTION = 0.5f

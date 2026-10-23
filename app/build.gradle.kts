@@ -180,6 +180,10 @@ val callsInDebug = liveCallsInDebug || meshCallsInDebug
 val callsInRelease = liveCallsInRelease || meshCallsInRelease
 val sttInDebug = (stt ?: true) && callsInDebug
 val sttInRelease = (stt ?: false) && callsInRelease
+// `-Ptranslate=true`: the offline message-translation spike (ADR 2026-10.t2h6), debug only and off by default, since
+// it needs the `:translate-native` module (settings.gradle.kts), which needs the NDK and scripts/translate-native.sh's
+// sources. No release-shaped build ever takes it, whatever the flag says.
+val translate = (project.findProperty("translate") as? String)?.toBoolean() ?: false
 
 // ABIs packaged into the **debug** APK. Debug is unminified and carries both tflite models, so it is
 // ~150 MB before native libs; the four-ABI default adds ~28 MB more, of which the two 32-bit slices are
@@ -339,6 +343,8 @@ android {
         buildConfigField("boolean", "LIVE_CALLS", liveCallsInDebug.toString())
         buildConfigField("boolean", "MESH_CALLS", meshCallsInDebug.toString())
         buildConfigField("boolean", "STT", sttInDebug.toString())
+        // The translation spike is OFF unless `-Ptranslate=true`; see `translate` above.
+        buildConfigField("boolean", "TRANSLATE", translate.toString())
         buildConfigField("boolean", "KNIT_ANYWHERE", (knitAnywhere ?: true).toString())
         // Fault injection for the model poison-pill's acceptance test (ADR 037):
         // `-PmodelFaultOnLoad=segv` raises SIGSEGV, `=kill` sends SIGKILL, inside ModelLoadGuard right
@@ -454,6 +460,8 @@ android {
             buildConfigField("boolean", "LIVE_CALLS", liveCallsInRelease.toString())
             buildConfigField("boolean", "MESH_CALLS", meshCallsInRelease.toString())
             buildConfigField("boolean", "STT", sttInRelease.toString())
+            // The translation spike never ships.
+            buildConfigField("boolean", "TRANSLATE", "false")
             buildConfigField("boolean", "KNIT_ANYWHERE", (knitAnywhere ?: true).toString())
             // Never ship a fault injector, whatever `-PmodelFaultOnLoad` said.
             buildConfigField("String", "MODEL_FAULT_ON_LOAD", "\"\"")
@@ -461,6 +469,11 @@ android {
             signingConfig = signingConfigs.findByName("release")
         }
         debug {
+            // The two pseudolocales, en-XA (accented, about 40 % longer) and ar-XB (mirrored, right to left), so a screen is
+            // checked against long and right-to-left text before any translation exists: the screenshot tests render
+            // every preview under both (`ScreenshotPreviews.kt`), and Settings › Apps › Knit › Language offers them on a
+            // debug build. Debug-only, so the release APK, and F-Droid's rebuild of it, do not change.
+            isPseudoLocalesEnabled = true
             // See the debugAbis comment above the android block for why this is debug-only and why
             // x86_64 is not optional. Empty (`-Pknit.debugAbis=`) leaves the default four-ABI packaging.
             if (debugAbis.isNotEmpty()) {
@@ -734,6 +747,7 @@ androidComponents {
             variant.sources.manifests.addStaticManifestFile("src/stt/AndroidManifest.xml")
             variant.sources.keepRules?.addStaticSourceDirectory("src/stt/keepRules")
         }
+        if (debug && translate) variant.sources.keepRules?.addStaticSourceDirectory("src/translate/keepRules")
     }
 }
 
@@ -795,9 +809,10 @@ tasks.named("preBuild") { dependsOn(checkModerationModels) }
 //
 // The fork's heap is raised past Gradle's 512 MiB default because the renderer leaks: every preview leaves its
 // layoutlib resource maps and Compose tooling `ViewInfo`s reachable, ~1.2 MiB each, so the live set climbs linearly
-// to ~580 MiB over 423 previews (alpha16, the latest) and the run dies with an OutOfMemoryError near the end. 1 GiB
-// matches the unit-test fork and leaves room for a few hundred more previews. `forkEvery` is not the cure: the plugin
-// runs as one JUnit engine that writes one result file, so each fresh fork overwrites the last one's report.
+// to ~580 MiB over 423 previews (alpha16, the latest) and the run dies with an OutOfMemoryError near the end. The
+// pseudolocale renders (`ScreenshotPreviews.kt`) doubled the count to 929, and 1 GiB ran out at the last 16, so the
+// fork has 2 GiB. `forkEvery` is not the cure: the plugin runs as one JUnit engine that writes one result file, so
+// each fresh fork overwrites the last one's report.
 //
 // Their reference PNGs are the repo's one Git LFS rule (see .gitattributes). A clone without git-lfs holds
 // ~130-byte pointer files there, and every comparison would fail as an unreadable image — or an `update` would
@@ -807,7 +822,7 @@ val screenshotReferences =
     fileTree(layout.projectDirectory.dir("src")) { include("screenshotTest*/reference/**/*.png") }
 tasks.withType<Test>().configureEach {
     if (name.endsWith("ScreenshotTest")) {
-        maxHeapSize = "1g"
+        maxHeapSize = "2g"
         systemProperty("user.timezone", "UTC")
         systemProperty("user.language", "en")
         systemProperty("user.country", "US")
@@ -1164,6 +1179,9 @@ dependencies {
     // transitive: its appcompat/material/okhttp/WorkManager serve wrappers we never call (libs.versions.toml).
     compileOnly(libs.moonshine.voice) { isTransitive = false }
     debugImplementation(libs.moonshine.voice) { isTransitive = false }
+    // The translation spike's native library (ADR 2026-10.t2h6): a project dependency, in debug only and only under
+    // `-Ptranslate=true`, so no lockfile records it and no other build resolves it.
+    if (translate) debugImplementation(project(":translate-native"))
     android.buildTypes.names.filter { it != "debug" }.forEach { buildType ->
         if (liveCallsInRelease) add("${buildType}RuntimeOnly", libs.webrtc.android)
         if (callsInRelease) add("${buildType}RuntimeOnly", libs.androidx.core.telecom)

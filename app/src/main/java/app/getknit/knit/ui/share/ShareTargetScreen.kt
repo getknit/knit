@@ -27,6 +27,7 @@ import app.getknit.knit.R
 import app.getknit.knit.ui.chatlist.ChatListViewModel
 import app.getknit.knit.ui.chatlist.ConversationListItem
 import app.getknit.knit.ui.chatlist.ConversationRow
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
@@ -80,7 +81,7 @@ internal fun ShareTargetScreenContent(
                         )
                     }
                 },
-                title = { Text(stringResource(R.string.share_target_title)) },
+                title = { BarTitle(stringResource(R.string.share_target_title)) },
             )
         },
     ) { padding ->

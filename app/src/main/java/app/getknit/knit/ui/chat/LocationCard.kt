@@ -44,7 +44,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
@@ -52,6 +51,7 @@ import app.getknit.knit.location.GeoPoint
 import app.getknit.knit.location.GeoUri
 import app.getknit.knit.location.LocationFix
 import app.getknit.knit.location.LocationPrecision
+import app.getknit.knit.ui.components.leftToRight
 import app.getknit.knit.ui.preview.KnitPreview
 import java.util.Date
 
@@ -307,7 +307,7 @@ fun StagedLocationTile(
 private fun CoordinatesLine(coordinates: String) {
     Text(
         text = coordinates,
-        style = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.Ltr),
+        style = MaterialTheme.typography.bodyMedium.leftToRight(),
         color = MaterialTheme.colorScheme.onSurface,
     )
 }

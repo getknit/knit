@@ -56,3 +56,8 @@ scripts/__pycache__/
 # qodana.sarif.json at the repo root, is deliberately NOT ignored — it is committed so a run reports
 # only what is new.
 .qodana/
+
+# The translation spike's native sources, fetched by scripts/translate-native.sh (ADR 2026-10.t2h6).
+/translate-native/third_party/
+/translate-native/build/
+/translate-native/.cxx/

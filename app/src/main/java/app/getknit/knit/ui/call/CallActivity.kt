@@ -881,14 +881,16 @@ private fun WalkieControls(
         Text(talkLine(talk, name), style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
         Spacer(Modifier.height(24.dp))
         // The talk button takes the centre a call screen gives its red hang-up; the hang-up steps aside to the start.
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-            Box(Modifier.weight(1f), contentAlignment = Alignment.BottomCenter) {
+        // Each label's first line on one baseline, so a label that wraps (a translation of "Hold to talk") grows
+        // downwards and the buttons above stay level at their bottoms.
+        Row(Modifier.fillMaxWidth()) {
+            Box(Modifier.weight(1f).alignByBaseline(), contentAlignment = Alignment.BottomCenter) {
                 CallAction(stringResource(R.string.call_action_end), Icons.Filled.CallEnd, HangUpRed, onHangUp)
             }
-            Box(Modifier.weight(1f), contentAlignment = Alignment.BottomCenter) {
+            Box(Modifier.weight(1f).alignByBaseline(), contentAlignment = Alignment.BottomCenter) {
                 TalkButton(recording = talk is Talk.Recording, onTalk, onTalkSend, onTalkCancel)
             }
-            Box(Modifier.weight(1f), contentAlignment = Alignment.BottomCenter) {
+            Box(Modifier.weight(1f).alignByBaseline(), contentAlignment = Alignment.BottomCenter) {
                 AudioRouteButton(routing, onRoute)
             }
         }
@@ -1082,6 +1084,7 @@ internal fun ButtonLabel(label: String) {
     Text(
         label,
         style = MaterialTheme.typography.labelLarge,
+        textAlign = TextAlign.Center,
         modifier = Modifier.padding(top = 8.dp).clearAndSetSemantics {},
     )
 }
@@ -1445,11 +1448,20 @@ fun CallScreenIncomingPreview() = PreviewCall(CallPhase.Alerting, outgoing = fal
 @Composable
 fun CallScreenLongNamePreview() = PreviewCall(CallPhase.Alerting, outgoing = false, name = "IMABETHENEXTTRILLIONARE🔥🔥🔥🔥")
 
+// The relationship lines come from the screen's own builder, so the previews show its strings in each locale.
+@Composable
+private fun previewCaller(): CallerContext {
+    val context = LocalContext.current
+    val standing = Relationship(contact = true, verified = true, blocked = false, groupsTogether = 2, anyMessages = true)
+    return PREVIEW_CALLER.copy(
+        relationship = relationshipText(context, standing),
+        namedRelationship = relationshipText(context, standing, listOf("Climbing", "Lab")),
+    )
+}
+
 private val PREVIEW_CALLER =
     CallerContext(
         status = "At the crag till 6",
-        relationship = "Verified contact · 2 groups together",
-        namedRelationship = "Verified contact · in Climbing, Lab",
         lastMessage =
             LastMessage(
                 fromMe = false,
@@ -1469,16 +1481,27 @@ private val PREVIEW_CALLER =
 @Preview(name = "Incoming, caller context, dark", widthDp = 411, heightDp = 891, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Preview(name = "Incoming, caller context, small", widthDp = 360, heightDp = 640)
 @Composable
-fun CallScreenCallerContextPreview() = PreviewCall(CallPhase.Alerting, outgoing = false, caller = PREVIEW_CALLER)
+fun CallScreenCallerContextPreview() = PreviewCall(CallPhase.Alerting, outgoing = false, caller = previewCaller())
 
 @Preview(name = "Incoming, caller context, locked", widthDp = 411, heightDp = 891)
 @Composable
-fun CallScreenCallerLockedPreview() = PreviewCall(CallPhase.Alerting, outgoing = false, caller = PREVIEW_CALLER, locked = true)
+fun CallScreenCallerLockedPreview() = PreviewCall(CallPhase.Alerting, outgoing = false, caller = previewCaller(), locked = true)
 
 @Preview(name = "Incoming, stranger", widthDp = 411, heightDp = 891)
 @Composable
 fun CallScreenStrangerPreview() =
-    PreviewCall(CallPhase.Alerting, outgoing = false, caller = CallerContext(relationship = "Not a contact · no messages yet"))
+    PreviewCall(
+        CallPhase.Alerting,
+        outgoing = false,
+        caller =
+            CallerContext(
+                relationship =
+                    relationshipText(
+                        LocalContext.current,
+                        Relationship(contact = false, verified = false, blocked = false, groupsTogether = 0, anyMessages = false),
+                    ),
+            ),
+    )
 
 @Preview(name = "Ringing", widthDp = 411, heightDp = 891)
 @Composable
@@ -1487,12 +1510,12 @@ fun CallScreenRingingPreview() = PreviewCall(CallPhase.Ringing)
 @Preview(name = "Connected", widthDp = 411, heightDp = 891)
 @Preview(name = "Connected, dark", widthDp = 411, heightDp = 891, uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
-fun CallScreenConnectedPreview() = PreviewCall(CallPhase.Connected, route = "relay/srflx", muted = true, caller = PREVIEW_CALLER)
+fun CallScreenConnectedPreview() = PreviewCall(CallPhase.Connected, route = "relay/srflx", muted = true, caller = previewCaller())
 
 @Preview(name = "Connected, on a headset", widthDp = 411, heightDp = 891)
 @Composable
 fun CallScreenHeadsetPreview() =
-    PreviewCall(CallPhase.Connected, route = "host/host/wifi-direct", routing = PREVIEW_ON_BUDS, caller = PREVIEW_CALLER)
+    PreviewCall(CallPhase.Connected, route = "host/host/wifi-direct", routing = PREVIEW_ON_BUDS, caller = previewCaller())
 
 @Preview(name = "Connected, breaking up", widthDp = 411, heightDp = 891)
 @Preview(name = "Connected, breaking up, dark", widthDp = 411, heightDp = 891, uiMode = Configuration.UI_MODE_NIGHT_YES)
@@ -1503,7 +1526,7 @@ fun CallScreenPoorPreview() =
         route = "srflx/srflx",
         stats = CallStats(localType = "srflx", remoteType = "srflx", networkType = "cellular"),
         quality = Quality(QualityLevel.POOR, QualityIssue.HEARING_BREAKS),
-        caller = PREVIEW_CALLER,
+        caller = previewCaller(),
         statsShown = false,
     )
 
@@ -1591,7 +1614,7 @@ fun CallScreenEndedPreview() = PreviewCall(CallPhase.Ended, reason = CallPayload
 
 @Preview(name = "Reconnecting", widthDp = 411, heightDp = 891)
 @Composable
-fun CallScreenReconnectingPreview() = PreviewCall(CallPhase.Reconnecting, route = "relay/srflx", caller = PREVIEW_CALLER)
+fun CallScreenReconnectingPreview() = PreviewCall(CallPhase.Reconnecting, route = "relay/srflx", caller = previewCaller())
 
 @Preview(name = "Dropped", widthDp = 411, heightDp = 891)
 @Composable
@@ -1738,7 +1761,7 @@ fun CallScreenCaptionsOffPreview() =
     PreviewCall(
         CallPhase.Connected,
         route = "relay/srflx",
-        caller = PREVIEW_CALLER,
+        caller = previewCaller(),
         captions = CaptionsUi(Captions(), SttModelState.Ready, PREVIEW_MODEL_BYTES, metered = false),
         captionsOn = false,
     )

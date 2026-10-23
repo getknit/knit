@@ -1,11 +1,14 @@
 package app.getknit.knit.screenshot
 
 import androidx.compose.runtime.Composable
+import app.getknit.knit.ui.components.AdaptiveRowPreview
 import app.getknit.knit.ui.components.AvatarBadgeSizesPreview
 import app.getknit.knit.ui.components.AvatarInitialPreview
 import app.getknit.knit.ui.components.AvatarLargeEmojiPreview
 import app.getknit.knit.ui.components.AvatarPalettePreview
+import app.getknit.knit.ui.components.ButtonRowPreview
 import app.getknit.knit.ui.components.CharCounterPreview
+import app.getknit.knit.ui.components.ChoiceButtonsPreview
 import app.getknit.knit.ui.components.ConnectionStatusRowBothPlanesPreview
 import app.getknit.knit.ui.components.ConnectionStatusRowConnectedPreview
 import app.getknit.knit.ui.components.ConnectionStatusRowDegradedPreview
@@ -34,6 +37,11 @@ import com.android.tools.screenshot.PreviewTest
 @PreviewTest
 @ComponentShots
 @Composable
+fun AdaptiveRow() = AdaptiveRowPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
 fun AvatarInitial() = AvatarInitialPreview()
 
 @PreviewTest
@@ -50,6 +58,16 @@ fun AvatarPalette() = AvatarPalettePreview()
 @ComponentShots
 @Composable
 fun AvatarBadgeSizes() = AvatarBadgeSizesPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun ButtonRow() = ButtonRowPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun ChoiceButtons() = ChoiceButtonsPreview()
 
 @PreviewTest
 @ComponentShots

@@ -61,6 +61,7 @@ import app.getknit.knit.call.SttModelState
 import app.getknit.knit.data.settings.CallIntake
 import app.getknit.knit.di.CALLS_WIRED
 import app.getknit.knit.ui.call.mb
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.noAutofillMenu
 import app.getknit.knit.ui.fullScreenCalls
 import app.getknit.knit.ui.openFullScreenCallSettings
@@ -179,7 +180,7 @@ internal fun CallSettingsScreenContent(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
                     }
                 },
-                title = { Text(stringResource(R.string.settings_calls_title)) },
+                title = { BarTitle(stringResource(R.string.settings_calls_title)) },
                 actions = {
                     if (ownServers) {
                         TextButton(onClick = onSave, enabled = state.canSave, modifier = Modifier.testTag("call_settings_save")) {

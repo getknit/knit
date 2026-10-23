@@ -143,19 +143,17 @@ fun FileAttachmentBubble(
                     overflow = TextOverflow.Ellipsis,
                 )
                 if (detail.isNotEmpty()) {
+                    // The size, the progress and the kind wrap rather than ellipsize: a translation runs longer than the
+                    // English, and cutting the line drops its end, which is the total and the type.
                     Text(
                         text = detail,
                         style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
                 if (waiting != null) {
                     Text(
                         text = waiting,
                         style = MaterialTheme.typography.labelSmall,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.testTag("chat_attachment_wait"),
                     )
                 }
@@ -164,8 +162,6 @@ fun FileAttachmentBubble(
                         text = warning,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
                     )
                 }
             }

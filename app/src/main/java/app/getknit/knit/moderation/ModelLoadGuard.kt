@@ -148,8 +148,14 @@ class ModelLoadGuard(
          */
         const val STT = "stt"
 
-        /** Every model under the poison-pill. A release build never loads [STT], so it never latches there. */
-        val ALL = listOf(TOXICITY, NSFW, STT)
+        /**
+         * The translation spike's models (ADR 2026-10.t2h6): a debug build made with `-Ptranslate=true` only, downloaded
+         * on a tap, loaded on the first translation after. slimt aborts the process on a file it cannot read.
+         */
+        const val TRANSLATE = "translate"
+
+        /** Every model under the poison-pill. A release build never loads [STT] or [TRANSLATE], so it never latches there. */
+        val ALL = listOf(TOXICITY, NSFW, STT, TRANSLATE)
 
         const val FAULT_SEGV = "segv"
         const val FAULT_KILL = "kill"

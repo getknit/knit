@@ -62,7 +62,9 @@ import app.getknit.knit.R
 import app.getknit.knit.data.backup.BackupFormat
 import app.getknit.knit.data.backup.BackupKeys
 import app.getknit.knit.data.backup.BackupProblem
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.DetailCard
+import app.getknit.knit.ui.components.leftToRight
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 import java.text.SimpleDateFormat
@@ -140,7 +142,7 @@ internal fun BackupScreenContent(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(if (restoreOnly) R.string.backup_restore_title else R.string.backup_title)) },
+                title = { BarTitle(stringResource(if (restoreOnly) R.string.backup_restore_title else R.string.backup_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
@@ -299,7 +301,7 @@ private fun KeyCard(
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = BackupKeys.display(key),
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleMedium.leftToRight(),
             fontFamily = FontFamily.Monospace,
             modifier = Modifier.weight(1f).testTag("backup_key"),
         )

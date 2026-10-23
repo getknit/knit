@@ -424,6 +424,29 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
     <model> loaded in <ms> ms`, and per burst `walkie: transcribed heard|spoken burst <b>: <ms> ms of audio, <n>
     look(s), <ms> ms in the model, final <ms> ms after its end, <n> chars`. A model that won't load latches `stt` under
     `…debug.MODEL` like the moderation models. The runtime's own `MoonshineJNI` debug lines carry no text.
+- `…debug.TRANSLATE` — the **offline translation spike** (ADR 2026-10.t2h6; a debug build made with
+  `-Ptranslate=true` only, else `error`). `--es op status` (the default) replies with each direction's model (`en->es`,
+  `es->en`: `absent`, `downloading` with `done`/`total`, `ready`, `failed` with its `reason`), `resident` (which hold a
+  model in memory), `bench` (the last bench) and `asked` (what the `translate` op asked for, text included: the bridge
+  is the one place a translation leaves the screen; logcat `Translate` carries lengths and times only).
+  - `sideload --es dir <dir>` installs both directions from `<dir>/<model id>/` (`scripts/translate-model.py --out`
+    stages them; push under /data/local/tmp and `chmod -R a+rX`), each checked against the pins; `download --es
+    direction en-es|es-en` fetches one from getknit.app as the bubble's Download does; `unload` lets both go.
+  - `detect --es text <text>` returns CLD2's answer for the text without its links, positions and mentions, and the
+    pick (`en`, `es` or `unsure`). `translate --es text <text> [--es from en|es]` runs the chat's own path (the spans,
+    the loop check, the content screen) as `bridge-<n>`; poll `status`'s `asked`.
+  - `bench --es file <corpus> --es from en|es [--ei runs N]` runs in the background (poll `status`'s `bench`): a cold
+    load timed (`loadMs`), the native heap and PSS that one loaded direction adds, then every line through the model
+    whole, with `ms` p50/p95/max by length (`short` ≤ 40 chars, `medium` ≤ 160, `long`) and the counts the chat's
+    checks would refuse (`unsure`, `spansLost`, `unusable`). One JSON line per message, translation included, goes to
+    the app's external files (`translate-bench/<from>-<to>.jsonl`, `out`). `scripts/translate-bench.py` drives it
+    across phones and lays the results beside the desktop bench's.
+  - `reader` reports the product rule's pick of this reader's language (`target`), from this phone's last 50 own
+    messages (`written`, `unsure`) and the system's languages, beside the app's resolved locale, which the rule ignores.
+  - `audit [--ei limit 300]` reads the language of this phone's newest messages from other people twice — by the
+    words alone, then with the author's and the chat's language behind them (the ADR's short-line amendment) — and
+    replies with counts only: `wordsAloneUnsure`, `resolvedBy` (`text`, `author`, `chat`, `unsure`), `changedByHint`
+    (a confident read the hint flipped) and the same for lines of up to 20 characters (`short`).
 - `…debug.RATCHET` — dumps the **DM ratchet's per-peer state** and, with `--es reset <peerNodeId>`, forces a
   session reset past the heuristic that guards it. Exists because every gate in the recovery path returns
   *silently*: a peer we hold no prekey for (`peerPrekeyPinned:false` — a reset from this side is impossible

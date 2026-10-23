@@ -467,6 +467,10 @@ class DebugBridgeReceiver :
                             handleStt(intent)
                         }
 
+                        ACTION_TRANSLATE -> {
+                            TranslateBridge.handle(context, intent)
+                        }
+
                         ACTION_DEMOCALL -> {
                             handleDemoCall(context, intent)
                         }
@@ -3930,6 +3934,7 @@ class DebugBridgeReceiver :
         const val ACTION_XFER = "app.getknit.knit.debug.XFER"
         const val ACTION_CALL = "app.getknit.knit.debug.CALL"
         const val ACTION_STT = "app.getknit.knit.debug.STT"
+        const val ACTION_TRANSLATE = "app.getknit.knit.debug.TRANSLATE"
         const val ACTION_DEMOCALL = "app.getknit.knit.debug.DEMOCALL"
         const val ACTION_DEMOGO = "app.getknit.knit.debug.DEMOGO"
         const val ACTION_BACKUP = "app.getknit.knit.debug.BACKUP"

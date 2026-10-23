@@ -64,6 +64,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -84,6 +85,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.data.emoji.EmojiCatalog
@@ -291,7 +293,11 @@ private fun EmojiList(
     LazyColumn(
         state = listState,
         contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = 16.dp),
-        modifier = Modifier.fillMaxSize().pickOnTap(listState, items, columns, onPick).testTag("emoji_grid"),
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .pickOnTap(listState, items, columns, LocalLayoutDirection.current == LayoutDirection.Rtl, onPick)
+                .testTag("emoji_grid"),
     ) {
         items.forEach { item ->
             when (item) {
@@ -306,22 +312,34 @@ private fun EmojiList(
  * One tap detector for the whole list instead of a `clickable` per cell: the tapped row is looked up in the
  * list's layout info and the column from the x position. Every modifier node on a cell would be paid ~120
  * times per screen and ~9 times per new row while flinging; this keeps a cell at one semantics node, which
- * still carries the TalkBack click.
+ * still carries the TalkBack click. A row's first emoji sits at the layout's start, on the right when [rtl].
  */
 private fun Modifier.pickOnTap(
     listState: LazyListState,
     items: List<PickerItem>,
     columns: Int,
+    rtl: Boolean,
     onPick: (String) -> Unit,
 ): Modifier =
-    pointerInput(listState, items, columns, onPick) {
+    pointerInput(listState, items, columns, rtl, onPick) {
         detectTapGestures { pos ->
             val hit = listState.layoutInfo.visibleItemsInfo.firstOrNull { pos.y >= it.offset && pos.y < it.offset + it.size }
             val row = hit?.let { items.getOrNull(it.index) } as? PickerItem.EmojiRow ?: return@detectTapGestures
-            val col = (pos.x / (size.width.toFloat() / columns)).toInt()
+            val col = columnAt(pos.x, size.width.toFloat(), columns, rtl)
             row.entries.getOrNull(col)?.let { onPick(it.emoji) }
         }
     }
+
+/** The column a tap [x] pixels from the grid's left edge lands in, counted from the layout's start. */
+internal fun columnAt(
+    x: Float,
+    width: Float,
+    columns: Int,
+    rtl: Boolean,
+): Int {
+    val fromLeft = (x / (width / columns)).toInt().coerceIn(0, columns - 1)
+    return if (rtl) columns - 1 - fromLeft else fromLeft
+}
 
 /**
  * A row of emoji as **one** lazy item: one draw pass painting every glyph from the shared [EmojiGlyphs]
@@ -363,7 +381,9 @@ private fun EmojiRow(
                     val cellWidth = size.width / columns
                     entries.forEachIndexed { i, entry ->
                         val layout = glyphs.layout(entry.emoji)
-                        val x = i * cellWidth + (cellWidth - layout.size.width) / 2
+                        // The cell placeRelative puts below: the start's first, on the right in a right-to-left layout.
+                        val cell = if (layoutDirection == LayoutDirection.Rtl) columns - 1 - i else i
+                        val x = cell * cellWidth + (cellWidth - layout.size.width) / 2
                         val y = (size.height - layout.size.height) / 2
                         drawText(layout, topLeft = Offset(x, y))
                     }
@@ -373,7 +393,7 @@ private fun EmojiRow(
         val cellHeight = CELL_SIZE.roundToPx()
         val placeables = measurables.map { it.measure(Constraints.fixed(cellWidth, cellHeight)) }
         layout(constraints.maxWidth, cellHeight) {
-            placeables.forEachIndexed { i, placeable -> placeable.place(i * cellWidth, 0) }
+            placeables.forEachIndexed { i, placeable -> placeable.placeRelative(i * cellWidth, 0) }
         }
     }
 }

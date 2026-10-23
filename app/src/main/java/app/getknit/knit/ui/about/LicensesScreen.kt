@@ -36,6 +36,7 @@ import app.getknit.knit.legal.License
 import app.getknit.knit.legal.NoticeKind
 import app.getknit.knit.legal.ThirdPartyNotice
 import app.getknit.knit.legal.ThirdPartyNotices
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.SectionHeader
 import app.getknit.knit.ui.preview.KnitPreview
 
@@ -67,7 +68,7 @@ internal fun LicensesScreenContent(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
                     }
                 },
-                title = { Text(stringResource(R.string.licenses_title)) },
+                title = { BarTitle(stringResource(R.string.licenses_title)) },
             )
         },
     ) { padding ->

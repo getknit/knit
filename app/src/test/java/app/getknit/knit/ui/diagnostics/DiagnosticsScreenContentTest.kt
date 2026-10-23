@@ -323,9 +323,10 @@ class DiagnosticsScreenContentTest {
         }
 
         compose.onNodeWithText(context.getString(R.string.diagnostics_transport_held)).assertExists()
-        compose.onNodeWithText(context.getString(R.string.diagnostics_nan_hold_label)).assertExists()
-        // Below Transports, past Robolectric's viewport: scroll the list to it before the tap.
+        // Below Transports, past Robolectric's viewport, so a lazy item the list may not have composed yet: scroll the
+        // list to it before reading its label or tapping its button.
         compose.onNode(hasScrollAction()).performScrollToNode(hasTestTag("nan_hold_release"))
+        compose.onNodeWithText(context.getString(R.string.diagnostics_nan_hold_label)).assertExists()
         compose.onNodeWithTag("nan_hold_release").performClick()
         assertEquals(1, releases)
     }

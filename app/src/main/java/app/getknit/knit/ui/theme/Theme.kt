@@ -14,6 +14,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 
 // `internal` rather than private so ColorSchemeTest can assert over the roles directly.
 internal val LightColorScheme =
@@ -177,6 +178,8 @@ fun KnitTheme(
     // sweep was about. primary is the role the platform's own themes pointed colorEdgeEffect at.
     // Deliberately NOT gated on LocalReduceMotion, unlike everything in KnitMotion: overscroll tracks the
     // finger 1:1, and the platform's own RecyclerView keeps stretching at animator scale 0.
+    // Read here, at the theme's root, so the type scale's default alignment is the layout's start (knitTypography).
+    val direction = LocalLayoutDirection.current
     CompositionLocalProvider(
         LocalReduceMotion provides rememberReduceMotion(),
         LocalKnitColors provides knitColors,
@@ -184,7 +187,7 @@ fun KnitTheme(
     ) {
         MaterialTheme(
             colorScheme = colorScheme,
-            typography = Typography,
+            typography = remember(direction) { knitTypography(direction) },
             content = content,
         )
     }

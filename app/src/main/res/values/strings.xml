@@ -962,7 +962,7 @@
 
     <!-- Calls settings (docs/VOICE_CALLS.md §3.14) -->
     <string name="call_settings_stun_title">Use your own STUN server</string>
-    <string name="call_settings_stun_subtitle">Find your public address through your own server instead of your relays\'.</string>
+    <string name="call_settings_stun_subtitle">Find your public address through your own server instead of through your relays.</string>
     <string name="call_settings_stun_label">STUN servers</string>
     <string name="call_settings_stun_hint">One per line, like stun:stun.example.org:3478. Up to 4.</string>
     <string name="call_settings_stun_invalid">%1$s isn\'t a STUN address Knit can use</string>
@@ -1961,4 +1961,32 @@
     <string name="profile_badge_toggle">Show my supporter badge</string>
     <string name="profile_badge_toggle_summary">Adds a small mark to your photo for the people your profile reaches.</string>
     <string name="profile_badge_lapsed">Your badge has lapsed, so it isn\'t showing. It returns once it\'s renewed.</string>
+    <!-- The offline translation spike (ADR 2026-10.t2h6): debug builds made with -Ptranslate=true only. -->
+    <string name="chat_action_translate">Translate</string>
+    <string name="translate_lang_en">English</string>
+    <string name="translate_lang_es">Spanish</string>
+    <string name="translate_label">Translated from %1$s</string>
+    <string name="translate_running">Translating…</string>
+    <string name="translate_hidden">Translation hidden. Tap to show it.</string>
+    <string name="translate_show_original">Show original</string>
+    <string name="translate_show_translation">Show translation</string>
+    <string name="translate_failed">Couldn\'t translate this message.</string>
+    <string name="translate_unusable">The translation came out garbled, so it isn\'t shown.</string>
+    <string name="translate_needs_model">Translating from %1$s takes a one-time %2$s download. After that it works offline.</string>
+    <string name="translate_downloading">Downloading the translation model… %1$d%%</string>
+    <string name="translate_download">Download</string>
+    <string name="translate_not_now">Not now</string>
+    <string name="translate_from_title">Which language is this?</string>
+    <string name="translate_from_body">It\'s too short to tell. Translate it from:</string>
+    <string name="translate_metered">The model is %1$s, and this download uses mobile data.</string>
+    <string name="translate_no_internet">No Internet connection</string>
+    <string name="translate_download_failed">The download failed</string>
+    <string name="translate_draft_button">Translate before sending</string>
+    <string name="translate_draft_hint">This chat is in %1$s. Translate your message?</string>
+    <string name="translate_draft_hint_action">Translate</string>
+    <string name="translate_draft_undo">Undo translation</string>
+    <string name="translate_not_language">Not %1$s?</string>
+    <string name="translate_model_title">Download the translation model?</string>
+    <string name="translate_metered_note">This download uses mobile data.</string>
+    <string name="translate_preview_draft" translatable="false">¿Vienes al parque más tarde?</string>
 </resources>

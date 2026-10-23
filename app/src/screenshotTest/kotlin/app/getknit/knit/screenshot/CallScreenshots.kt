@@ -48,14 +48,17 @@ fun CallScreenIncoming() = CallScreenIncomingPreview()
 fun CallScreenLongName() = CallScreenLongNamePreview()
 
 @PreviewTest
-@Preview(name = "Light", showBackground = true, device = "spec:width=411dp,height=891dp")
+@Preview(name = "Light", showBackground = true, device = "spec:width=411dp,height=891dp", locale = ENGLISH)
 @Preview(
     name = "Dark",
     showBackground = true,
     device = "spec:width=411dp,height=891dp",
+    locale = ENGLISH,
     uiMode = Configuration.UI_MODE_NIGHT_YES,
 )
-@Preview(name = "Small", showBackground = true, device = "spec:width=360dp,height=640dp")
+@Preview(name = "LongText", showBackground = true, device = "spec:width=411dp,height=891dp", locale = LONG_TEXT)
+@Preview(name = "Rtl", showBackground = true, device = "spec:width=411dp,height=891dp", locale = RIGHT_TO_LEFT)
+@Preview(name = "Small", showBackground = true, device = "spec:width=360dp,height=640dp", locale = ENGLISH)
 @Composable
 fun CallScreenCallerContext() = CallScreenCallerContextPreview()
 

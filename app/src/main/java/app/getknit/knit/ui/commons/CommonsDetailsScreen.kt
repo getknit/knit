@@ -38,6 +38,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.RoomAvatar
 import app.getknit.knit.ui.group.GroupMemberRow
 import app.getknit.knit.ui.group.MemberRow
@@ -84,7 +85,7 @@ internal fun CommonsDetailsScreenContent(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.commons_details_title)) },
+                title = { BarTitle(stringResource(R.string.commons_details_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))

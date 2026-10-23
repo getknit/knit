@@ -739,9 +739,18 @@ and compares it, pixel for pixel, with a PNG committed under `app/src/screenshot
   both screenshot tasks. Layoutlib bundles its own fonts and Noto Color Emoji, so the images are
   host-independent: references rendered under `Asia/Kolkata` validated under `America/Los_Angeles`,
   `Pacific/Kiritimati`, `de_DE` and `ja_JP`.
+- **Every subject also renders in two pseudolocales, light only:** `LongText` (en-XA, each string accented and
+  padded to about 40 % longer) and `Rtl` (ar-XB, mirrored and laid out right to left), from the debug build's
+  `isPseudoLocalesEnabled`. They are how a layout is checked against translated text before any translation
+  exists; `context/translations.md` says what to look for. Only string resources change, not a preview's sample
+  data. Every `@Preview` in `ScreenshotPreviews.kt` and the script's tables names its locale (`ENGLISH`,
+  `LONG_TEXT`, `RIGHT_TO_LEFT`): layoutlib resolves an unnamed one to whichever locale's resources it finds, so an
+  unnamed Light rendered as en-XA. A new multipreview must name one too. The references only record what each
+  locale looks like: a clipped label passes once its image is committed, so the review of a new subject's
+  `LongText` and `Rtl` images is the check.
 - **Layoutlib's framework is not the device's.** `Formatter.formatShortFileSize` below a kilobyte renders its
-  raw `${NUMBER} ${UNIT}` template (`MetricsSectionEmpty`'s "Bytes sent") — a renderer quirk the reference
-  captures, not an app bug; 2.5 MB renders normally.
+  template: `(123) (B)` under en-US, the raw `${NUMBER} ${UNIT}` with no locale named (`MetricsSectionEmpty`'s
+  "Bytes sent"). It is a renderer quirk the reference captures, not an app bug; 2.5 MB renders normally.
 - **Failures read two ways:** `Size Mismatch` (a layout change moved a content-sized image's bounds — no diff
   image) or `Image does not match … Difference: x%` with a diff PNG that marks the changed pixels. Any
   difference fails; there is no tolerance configured (`testOptions.screenshotTests.imageDifferenceThreshold`
@@ -751,12 +760,12 @@ and compares it, pixel for pixel, with a PNG committed under `app/src/screenshot
   screenshot tasks refuse up front with "is a Git LFS pointer" rather than failing every comparison: install
   it, then `git lfs install && git lfs pull`. With `core.hooksPath=.githooks` the LFS hooks come from that
   directory; `pre-push` is the one that uploads the objects.
-- **Scale and cost:** 166 subjects, 332 images (about 15 MB in LFS). A warm `validate` takes about 45 s, an
-  `update` about 40 s.
-- **The render fork runs on a 1 GiB heap** (`app/build.gradle.kts`): the renderer keeps ~1.2 MiB of every
-  preview reachable, so Gradle's 512 MiB default dies with an OutOfMemoryError near the end of the run. Raise
-  the heap if the preview count outgrows it; don't reach for `forkEvery`, which leaves only the last fork's
-  results in the report.
+- **Scale and cost:** 233 subjects, 929 images (about 55 MB in LFS). A warm `validate` takes about two minutes.
+  Renaming a preview re-keys its images without new LFS storage, since an unchanged PNG keeps its object id.
+- **The render fork runs on a 2 GiB heap** (`app/build.gradle.kts`): the renderer keeps ~1.2 MiB of every
+  preview reachable, so a heap too small for the run dies with an OutOfMemoryError (as a few failed renders) near
+  its end. 1 GiB held 467 images and ran out at 929. Raise the heap if the preview count outgrows it; don't reach
+  for `forkEvery`, which leaves only the last fork's results in the report.
 - **CI runs it on both mirrors, advisory for now:** GitHub's `screenshot-tests` job and GitLab's
   `test:screenshots` (on skuld). Each is the only job that fetches the LFS objects — GitHub through an
   `actions/cache` keyed on their ids, then `git lfs pull`; GitLab by setting `GIT_LFS_SKIP_SMUDGE` back to

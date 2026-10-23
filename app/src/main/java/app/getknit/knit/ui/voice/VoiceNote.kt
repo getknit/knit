@@ -45,6 +45,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -55,6 +56,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.call.NoteStt
@@ -89,6 +91,10 @@ private val FLAT_WAVEFORM = FloatArray(VoiceAudio.PEAK_COUNT) { 0.12f }
  *
  * A minimum bar height is enforced: a silent passage would otherwise draw nothing at all and the waveform
  * would appear to have holes in it rather than quiet parts.
+ *
+ * Time runs from the layout's start: in a right-to-left layout the first bar is on the right, beside the mirrored
+ * play button, and the fill and a tap's seek run leftwards. A canvas draws in absolute coordinates, so the mirroring
+ * is done here.
  */
 @Composable
 fun VoiceWaveform(
@@ -101,6 +107,7 @@ fun VoiceWaveform(
     onLongPress: (() -> Unit)? = null,
 ) {
     val bars = peaks ?: FLAT_WAVEFORM
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     // Playback position arrives on a poll, so the fill used to advance a whole bar at a time. Easing it
     // makes the same positions read as a note playing rather than as a progress bar being written to. A
     // seek animates too, which is the right answer: the jump is deliberate, and seeing it travel is how the
@@ -118,10 +125,10 @@ fun VoiceWaveform(
                     if (onSeek == null) {
                         Modifier
                     } else {
-                        Modifier.pointerInput(bars, onLongPress) {
+                        Modifier.pointerInput(bars, onLongPress, rtl) {
                             detectTapGestures(
                                 onLongPress = onLongPress?.let { longPress -> { _: Offset -> longPress() } },
-                                onTap = { offset -> onSeek((offset.x / size.width.toFloat()).coerceIn(0f, 1f)) },
+                                onTap = { offset -> onSeek(seekFraction(offset.x, size.width.toFloat(), rtl)) },
                             )
                         }
                     },
@@ -133,7 +140,8 @@ fun VoiceWaveform(
         val playedBars = filled * count
         for (i in 0 until count) {
             val height = (bars[i].coerceIn(0f, 1f) * size.height).coerceAtLeast(size.height * MIN_BAR_FRACTION)
-            val left = i * slot + (slot - barWidth) / 2f
+            val fromStart = i * slot + (slot - barWidth) / 2f
+            val left = if (rtl) size.width - fromStart - barWidth else fromStart
             drawRoundRect(
                 color = if (i < playedBars) playedColor else remainingColor,
                 topLeft = Offset(left, (size.height - height) / 2f),
@@ -142,6 +150,20 @@ fun VoiceWaveform(
             )
         }
     }
+}
+
+/**
+ * How far into the note a tap [x] pixels from the waveform's left edge lands, counting from the layout's start: the
+ * note's start, whichever way it runs, when there is no width to measure against.
+ */
+internal fun seekFraction(
+    x: Float,
+    width: Float,
+    rtl: Boolean,
+): Float {
+    if (width <= 0f) return 0f
+    val fromLeft = (x / width).coerceIn(0f, 1f)
+    return if (rtl) 1f - fromLeft else fromLeft
 }
 
 /**

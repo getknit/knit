@@ -28,6 +28,8 @@ import app.getknit.knit.ui.chat.MessageBubbleNearbyOnlyLockedPreview
 import app.getknit.knit.ui.chat.MessageBubblePhotoArrivingPreview
 import app.getknit.knit.ui.chat.MessageBubbleTheirsPreview
 import app.getknit.knit.ui.chat.MessageBubbleTheirsViaInternetPreview
+import app.getknit.knit.ui.chat.MessageBubbleTranslatedPreview
+import app.getknit.knit.ui.chat.MessageBubbleTranslationHiddenPreview
 import app.getknit.knit.ui.chat.MessageBubbleVoiceTapToDownloadPreview
 import app.getknit.knit.ui.chat.MessageBubbleWithMentionPreview
 import app.getknit.knit.ui.chat.MessageDetailsScreenEmptyPreview
@@ -58,6 +60,16 @@ fun CallNotice() = CallNoticePreview()
 @ComponentShots
 @Composable
 fun MessageBubbleTheirs() = MessageBubbleTheirsPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun MessageBubbleTranslated() = MessageBubbleTranslatedPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun MessageBubbleTranslationHidden() = MessageBubbleTranslationHiddenPreview()
 
 @PreviewTest
 @ComponentShots
@@ -120,8 +132,10 @@ fun MessageInputStagedLocked() = MessageInputStagedLockedPreview()
 fun EmptyState() = EmptyStatePreview()
 
 @PreviewTest
-@Preview(name = "Light", showBackground = true, heightDp = 420)
-@Preview(name = "Dark", showBackground = true, heightDp = 420, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Preview(name = "Light", showBackground = true, heightDp = 420, locale = ENGLISH)
+@Preview(name = "Dark", showBackground = true, heightDp = 420, locale = ENGLISH, uiMode = Configuration.UI_MODE_NIGHT_YES)
+@Preview(name = "LongText", showBackground = true, heightDp = 420, locale = LONG_TEXT)
+@Preview(name = "Rtl", showBackground = true, heightDp = 420, locale = RIGHT_TO_LEFT)
 @Composable
 fun ChatSkeleton() = ChatSkeletonPreview()
 

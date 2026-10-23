@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.mesh.TransportHealth
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.theme.knitColors
@@ -80,7 +81,7 @@ internal fun YourMeshScreenContent(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
                     }
                 },
-                title = { Text(stringResource(R.string.your_mesh_title)) },
+                title = { BarTitle(stringResource(R.string.your_mesh_title)) },
             )
         },
     ) { padding ->

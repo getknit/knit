@@ -58,6 +58,9 @@ import app.getknit.knit.contacts.ContactImporter
 import app.getknit.knit.data.relay.RelayInviteApplier
 import app.getknit.knit.mesh.spool.SpoolUrl
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.BarTitle
+import app.getknit.knit.ui.components.ButtonRow
+import app.getknit.knit.ui.components.leftToRight
 import app.getknit.knit.ui.components.noAutofillMenu
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.relay.RelayInviteSheet
@@ -242,7 +245,7 @@ internal fun AddContactScreenContent(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.add_contact_title)) },
+                title = { BarTitle(stringResource(R.string.add_contact_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
@@ -290,8 +293,8 @@ internal fun AddContactScreenContent(
                 maxLines = 4,
                 modifier = Modifier.fillMaxWidth().testTag("add_contact_input").noAutofillMenu(),
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = onPaste, modifier = Modifier.weight(1f).testTag("add_contact_paste")) {
+            ButtonRow {
+                OutlinedButton(onClick = onPaste, modifier = Modifier.testTag("add_contact_paste")) {
                     Icon(Icons.Filled.ContentPaste, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.add_contact_paste))
@@ -299,7 +302,7 @@ internal fun AddContactScreenContent(
                 Button(
                     onClick = onLookup,
                     enabled = input.isNotBlank() && state !is AddContactUiState.Importing,
-                    modifier = Modifier.weight(1f).testTag("add_contact_lookup"),
+                    modifier = Modifier.testTag("add_contact_lookup"),
                 ) {
                     Text(stringResource(R.string.add_contact_lookup))
                 }
@@ -349,7 +352,7 @@ private fun PreviewCard(
         Card {
             Text(
                 text = ready.safetyNumber,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyLarge.leftToRight(),
                 fontFamily = FontFamily.Monospace,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(12.dp),

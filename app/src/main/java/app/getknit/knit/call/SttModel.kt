@@ -89,18 +89,25 @@ sealed interface SttModelState {
 }
 
 /**
- * Puts [model] into [dir], one file at a time, each streamed to `<name>.part` through a running SHA-256 and renamed into
- * place only when its size and hash are the pinned ones. A file past its pinned size is cut off there, not read to the
- * end. The model counts as installed ([installed]) once a marker naming it is written, after every file is in: a phone
- * that died half way holds no marker, and the next install re-checks what is there and fetches the rest.
+ * Puts a model — [id] and its [files] — into [dir], one file at a time, each streamed to `<name>.part` through a
+ * running SHA-256 and renamed into place only when its size and hash are the pinned ones. A file past its pinned size
+ * is cut off there, not read to the end. The model counts as installed ([installed]) once a marker naming it is
+ * written, after every file is in: a phone that died half way holds no marker, and the next install re-checks what is
+ * there and fetches the rest.
  *
  * [open] is the source: an https fetch on the phone, a directory for a side-load, bytes in a test. Pure JVM
  * (`SttModelInstallerTest`); one install at a time.
  */
 class SttModelInstaller(
-    private val model: SttModel,
+    private val id: String,
+    private val files: List<SttFile>,
     private val dir: File,
 ) {
+    constructor(model: SttModel, dir: File) : this(model.id, model.files, dir)
+
+    // Every file's bytes together: what an install reports progress against.
+    private val bytes: Long = files.sumOf { it.bytes }
+
     /** Why an install did not finish, in words the call screen shows. */
     class Refused(
         message: String,
@@ -110,7 +117,7 @@ class SttModelInstaller(
 
     /** Whether the model is on the phone: its marker, and every file at its pinned size (hashed at install, not here). */
     fun installed(): Boolean =
-        runCatching { marker.isFile && marker.readText() == model.id && model.files.all { File(dir, it.name).length() == it.bytes } }
+        runCatching { marker.isFile && marker.readText() == id && files.all { File(dir, it.name).length() == it.bytes } }
             .getOrDefault(false)
 
     /** The path of [file] in [dir]. */
@@ -129,16 +136,16 @@ class SttModelInstaller(
         if (!dir.isDirectory && !dir.mkdirs()) throw Refused("Couldn't make the model's folder")
         marker.delete()
         var done = 0L
-        progress(done, model.bytes)
-        for (file in model.files) {
+        progress(done, bytes)
+        for (file in files) {
             val target = pathOf(file)
             if (!(target.length() == file.bytes && sha256(target) == file.sha256)) {
-                fetch(file, open, target) { n -> progress(done + n, model.bytes) }
+                fetch(file, open, target) { n -> progress(done + n, bytes) }
             }
             done += file.bytes
-            progress(done, model.bytes)
+            progress(done, bytes)
         }
-        marker.writeText(model.id)
+        marker.writeText(id)
     }
 
     /** Removes the model: the marker first, so a delete cut short leaves a model that is not installed. */

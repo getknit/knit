@@ -41,6 +41,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
+import app.getknit.knit.ui.components.ButtonRow
+import app.getknit.knit.ui.components.leftToRight
 import app.getknit.knit.ui.image.QrCode
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.theme.KnitMotion
@@ -131,7 +133,7 @@ fun EncryptionSection(
                 Card {
                     Text(
                         text = number,
-                        style = MaterialTheme.typography.bodyLarge,
+                        style = MaterialTheme.typography.bodyLarge.leftToRight(),
                         fontFamily = FontFamily.Monospace,
                         textAlign = TextAlign.Center,
                         modifier =
@@ -206,13 +208,13 @@ fun EncryptionSection(
         // The contact link: the QR's job at a distance, offered only where there is no bound peer (a
         // peer's profile shows OUR code for them to scan; a link would be the wrong thing to hand out there).
         if (peer == null && onShareLink != null && onCopyLink != null) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onShareLink, modifier = Modifier.weight(1f).testTag("verify_share_link")) {
+            ButtonRow {
+                Button(onClick = onShareLink, modifier = Modifier.testTag("verify_share_link")) {
                     Icon(Icons.Filled.Share, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.contact_link_share))
                 }
-                OutlinedButton(onClick = onCopyLink, modifier = Modifier.weight(1f).testTag("verify_copy_link")) {
+                OutlinedButton(onClick = onCopyLink, modifier = Modifier.testTag("verify_copy_link")) {
                     Icon(Icons.Filled.ContentCopy, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.contact_link_copy))

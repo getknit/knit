@@ -7,6 +7,7 @@ import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -36,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -45,16 +47,22 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.call.CaptionStatus
 import app.getknit.knit.call.Captions
 import app.getknit.knit.call.SttModelState
 import app.getknit.knit.call.TranscriptLine
+import app.getknit.knit.ui.components.AdaptiveRow
 import app.getknit.knit.ui.theme.LocalReduceMotion
 import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -100,6 +108,7 @@ internal fun WalkieTranscript(
     // The configuration's locale, read so a change of language redraws the times.
     val locale = LocalConfiguration.current.locales[0]
     val times = remember(locale, zone) { DateTimeFormatter.ofLocalizedTime(FormatStyle.MEDIUM).withLocale(locale).withZone(zone) }
+    val timeWidth = widestTime(times, zone)
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -120,8 +129,11 @@ internal fun WalkieTranscript(
                 contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                transcriptItems(ui, name, ready, times, onDownload, onCancel, onDismiss)
+                transcriptItems(ui, name, ready, times, timeWidth, onCancel)
             }
+            // The offer's buttons under the list rather than in it: a longer language's explanation scrolls, and the
+            // way to act on it stays in view.
+            if (!ready) ModelActions(ui, onDownload, onDismiss, modifier = Modifier.padding(ACTIONS_PADDING))
         }
     }
 }
@@ -131,14 +143,13 @@ private fun LazyListScope.transcriptItems(
     name: String,
     ready: Boolean,
     times: DateTimeFormatter,
-    onDownload: () -> Unit,
+    timeWidth: Dp,
     onCancel: () -> Unit,
-    onDismiss: () -> Unit,
 ) {
     if (!ready) {
         item(key = "model") {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                ModelPanel(ui, onDownload, onCancel, onDismiss)
+                ModelPanel(ui, onCancel)
                 if (ui.lines.isNotEmpty()) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
@@ -160,7 +171,7 @@ private fun LazyListScope.transcriptItems(
             } else {
                 name.ifBlank { stringResource(R.string.call_transcript_them) }
             }
-        Line(line, who, times.format(Instant.ofEpochMilli(line.heardAt)))
+        Line(line, who, times.format(Instant.ofEpochMilli(line.heardAt)), timeWidth)
     }
 }
 
@@ -169,13 +180,16 @@ private fun Line(
     line: TranscriptLine,
     who: String,
     time: String,
+    timeWidth: Dp,
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
             time,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(TimeWidth).padding(top = 3.dp),
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier.width(timeWidth).padding(top = 3.dp),
         )
         Column(Modifier.weight(1f)) {
             // Who spoke; a line of this phone's own is the microphone's audio, before Opus.
@@ -278,18 +292,15 @@ private fun noteOf(
     }
 
 /**
- * Where the speech model stands, with the one action that moves it on and, beside a Download, Dismiss: only the offer
- * closes, since once the model is in the Calls screen's switch is the way out.
+ * Where the speech model stands: what it would do and costs, or why it failed — the offer's buttons are under the card's
+ * list ([ModelActions]) — or the download's progress, with its Cancel beside it, since there is nothing to scroll then.
  */
 @Composable
 private fun ModelPanel(
     ui: TranscriptUi,
-    onDownload: () -> Unit,
     onCancel: () -> Unit,
-    onDismiss: () -> Unit,
-    // What the model would do here, before its cost, and what the button beside Download says.
+    // What the model would do here, before its cost.
     offer: String = stringResource(R.string.call_transcript_offer),
-    dismiss: String = stringResource(R.string.call_transcript_dismiss),
 ) {
     val context = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -303,7 +314,6 @@ private fun ModelPanel(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 if (ui.metered) MeteredNote()
-                OfferButtons(stringResource(R.string.call_transcript_download), onDownload, onDismiss, dismiss)
             }
 
             is SttModelState.Downloading -> {
@@ -311,14 +321,15 @@ private fun ModelPanel(
                     progress = { if (model.total > 0) (model.done.toFloat() / model.total).coerceIn(0f, 1f) else 0f },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                AdaptiveRow(
+                    stackedAtEnd = true,
+                    trailing = { TextButton(onClick = onCancel) { Text(stringResource(R.string.call_settings_speech_model_cancel)) } },
+                ) {
                     Text(
                         stringResource(R.string.call_transcript_downloading, mb(context, model.done), mb(context, model.total)),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = onCancel) { Text(stringResource(R.string.call_settings_speech_model_cancel)) }
                 }
             }
 
@@ -329,8 +340,34 @@ private fun ModelPanel(
                     color = MaterialTheme.colorScheme.error,
                 )
                 if (ui.metered) MeteredNote()
-                OfferButtons(stringResource(R.string.call_settings_speech_model_retry), onDownload, onDismiss, dismiss)
             }
+        }
+    }
+}
+
+/**
+ * The offer's Download or Try again and, beside it, Dismiss: only the offer closes, since once the model is in, the
+ * Calls screen's switch is the way out. Drawn under the card's list, never in it, so a long explanation scrolls and the
+ * buttons stay in view.
+ */
+@Composable
+private fun ModelActions(
+    ui: TranscriptUi,
+    onDownload: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    // What the button beside Download says.
+    dismiss: String = stringResource(R.string.call_transcript_dismiss),
+) {
+    when (ui.model) {
+        SttModelState.Ready, is SttModelState.Downloading -> {}
+
+        SttModelState.Absent -> {
+            OfferButtons(stringResource(R.string.call_transcript_download), onDownload, onDismiss, dismiss, modifier)
+        }
+
+        is SttModelState.Failed -> {
+            OfferButtons(stringResource(R.string.call_settings_speech_model_retry), onDownload, onDismiss, dismiss, modifier)
         }
     }
 }
@@ -350,8 +387,14 @@ private fun OfferButtons(
     onDownload: () -> Unit,
     onDismiss: () -> Unit,
     dismiss: String,
+    modifier: Modifier = Modifier,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Dismiss takes the next line when the two labels don't fit side by side.
+    FlowRow(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
+    ) {
         FilledTonalButton(onClick = onDownload, contentPadding = ButtonDefaults.ButtonWithIconContentPadding) {
             Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
             Text(label, Modifier.padding(start = ButtonDefaults.IconSpacing))
@@ -359,6 +402,9 @@ private fun OfferButtons(
         TextButton(onClick = onDismiss, modifier = Modifier.testTag("walkie_transcript_dismiss")) { Text(dismiss) }
     }
 }
+
+/** Where the offer's buttons sit: under the card's list, inside its padding. */
+private val ACTIONS_PADDING = PaddingValues(start = 16.dp, end = 16.dp, bottom = 12.dp)
 
 /** What a live call's captions draw: the call's lines and where they stand, and where the speech model stands. */
 internal data class CaptionsUi(
@@ -424,15 +470,12 @@ internal fun LiveCaptions(
                     item(key = "model") {
                         ModelPanel(
                             transcript,
-                            onDownload,
                             onCancel,
-                            onOff,
                             offer =
                                 stringResource(
                                     R.string.call_captions_offer,
                                     name.ifBlank { stringResource(R.string.call_transcript_other_phone) },
                                 ),
-                            dismiss = stringResource(R.string.call_captions_not_now),
                         )
                     }
                 } else if (lines.isEmpty() && ui.captions.status == CaptionStatus.ON) {
@@ -448,6 +491,15 @@ internal fun LiveCaptions(
                     }
                 }
                 items(lines, key = { "c${it.burst}" }) { line -> Caption(line) }
+            }
+            if (!ready) {
+                ModelActions(
+                    transcript,
+                    onDownload,
+                    onDismiss = onOff,
+                    dismiss = stringResource(R.string.call_captions_not_now),
+                    modifier = Modifier.padding(ACTIONS_PADDING),
+                )
             }
         }
     }
@@ -499,4 +551,32 @@ internal fun mb(
 ): String = context.getString(R.string.call_megabytes, (bytes + BYTES_PER_MB / 2) / BYTES_PER_MB)
 
 private const val BYTES_PER_MB = 1_000_000L
-private val TimeWidth = 64.dp
+
+/**
+ * The time column's width: the wider of a morning's and an evening's time in [times], so every line's words start
+ * at one edge and no time wraps. A fixed width did not hold "10:12:16 PM" even in English, and another locale's
+ * format (its own word for the afternoon, or a 24-hour clock) is wider or narrower than any guess.
+ */
+@Composable
+private fun widestTime(
+    times: DateTimeFormatter,
+    zone: ZoneId,
+): Dp {
+    val style = MaterialTheme.typography.labelSmall
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    return remember(times, zone, style, density) {
+        val px =
+            listOf(WIDE_MORNING_HOUR, WIDE_EVENING_HOUR).maxOf { hour ->
+                val sample = ZonedDateTime.of(SAMPLE_DATE, LocalTime.of(hour, WIDE_MINUTE, WIDE_MINUTE), zone)
+                measurer.measure(times.format(sample), style, softWrap = false, density = density).size.width
+            }
+        with(density) { px.toDp() }
+    }
+}
+
+// Two-digit hours and minutes of wide digits, before noon and after: the widest a time of day reads.
+private const val WIDE_MORNING_HOUR = 10
+private const val WIDE_EVENING_HOUR = 22
+private const val WIDE_MINUTE = 58
+private val SAMPLE_DATE = LocalDate.of(2026, 1, 1)
