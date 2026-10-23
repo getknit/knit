@@ -1,0 +1,1 @@
+Chat mesh criptografado por Wi-Fi Aware e Bluetooth, sem internet ou servidor.

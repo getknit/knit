@@ -1,6 +1,7 @@
 # Translations
 
-How Knit's text reaches other languages. The app ships English only today; this is the groundwork and the plan.
+How Knit's text reaches other languages. English is the source; Brazilian Portuguese (`values-pt-rBR/`, machine pass
+2026-10-22, awaiting native review) is the first translation. Progress per language is GitHub issue #43.
 
 ## The plan: one language at a time, complete or not at all
 
@@ -11,6 +12,12 @@ How Knit's text reaches other languages. The app ships English only today; this 
   `context/toolchain.md`), so a locale is added only with every translatable string in it. A new English string
   then fails lint until each shipped locale has it: that failure is the reminder, not noise. Never relax the check,
   `tools:ignore` it or mark a user-facing string `translatable="false"` to get past it; translate it.
+- **Adding a language.** The machine pass translates the whole of `values/strings.xml` into `values-<locale>/strings.xml`
+  against the glossary in Weblate's translator instructions, skipping `translatable="false"`, then checks every
+  placeholder, plural and escape against the English before `lintDebug`. Each `<plurals>` carries every quantity lint
+  names for the language (`MissingQuantity`): Portuguese, Spanish, French and Italian need a `many` beside `one` and
+  `other`, the same words as `other` (it only covers numbers like a million). The store listing goes in
+  `fastlane/metadata/android/<locale>/` (Play's caps: 80 characters short, 4000 full).
 - **The language picker** is Android 13+'s per-app setting (Settings › Apps › Knit › Language). AGP generates the
   locale config from the `res/values-<locale>/` directories (`androidResources.generateLocaleConfig` in
   `app/build.gradle.kts`, the default's language in `app/src/main/res/resources.properties`). It is derived from the
@@ -29,6 +36,10 @@ plan. Its one component, `app`, reads `app/src/main/res/values/strings.xml` as t
 - **New languages are requested, not created** (`new_lang: contact`). A language starts in the repo as a complete
   machine pass; Weblate finds the new `values-<locale>/` on its next pull and from then on carries corrections.
   Adding one in Weblate instead would open a pull request with a partial locale, which lint fails.
+- **A machine pass imports as Translated**, since Android's format has no draft state; only the project's review step
+  (approved vs. translated) tells a person's check from the machine's. Never bulk-mark imported strings "needs
+  editing": with no draft state to write, Weblate can drop such a string from the file it commits, and a partial
+  locale fails lint.
 - **Source strings are edited in the repo only** (`edit_template: false`). Weblate picks them up from `main`.
 - **Placeholders are enforced** (`java-printf-format`, enforced): a translation that drops or renumbers a `%1$s`
   cannot be saved.
