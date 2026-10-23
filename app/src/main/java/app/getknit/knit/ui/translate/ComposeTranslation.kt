@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -62,9 +64,11 @@ fun DraftTranslateLine(
         when {
             from != null -> {
                 {
-                    // "Not English?" sits with the label it questions and Undo stands apart, so Undo never reads as
-                    // undoing the question. Both are links, as in the bubble, so the three fit one line on a phone; a
-                    // larger font wraps the question under the label.
+                    // "Not English?" sits with the label it questions and Undo stands apart at the line's end, so Undo
+                    // never reads as undoing the question. Both are links, as in the bubble, so the three fit one line on
+                    // a phone. A larger font or a longer translation breaks the line by whole items, and Undo, weighted
+                    // into what its row leaves, stays at the end of whichever row it lands on: beside the question when
+                    // the label takes a row alone, so the two touch targets share one.
                     FlowRow(
                         modifier = Modifier.weight(1f),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -74,13 +78,19 @@ fun DraftTranslateLine(
                             stringResource(R.string.translate_label, languageName(from)),
                             style = MaterialTheme.typography.labelMedium,
                             color = muted,
-                            softWrap = false,
                         )
                         if (ui.translatedGuessed) {
                             LineAction(stringResource(R.string.translate_not_language, languageName(from)), onNotThisLanguage)
                         }
+                        // Its intrinsic width is its unwrapped one, so the row breaks before Undo rather than wrap it.
+                        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                            LineAction(
+                                stringResource(R.string.translate_draft_undo),
+                                onUndo,
+                                Modifier.width(IntrinsicSize.Max),
+                            )
+                        }
                     }
-                    LineAction(stringResource(R.string.translate_draft_undo), onUndo)
                 }
             }
 
@@ -147,14 +157,14 @@ fun DraftTranslateLine(
 private fun LineAction(
     text: String,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Text(
         text,
         style = MaterialTheme.typography.labelMedium,
         color = MaterialTheme.colorScheme.primary,
-        softWrap = false,
         modifier =
-            Modifier
+            modifier
                 .minimumInteractiveComponentSize()
                 .clickable(onClick = onClick, role = Role.Button)
                 .wrapContentSize(),

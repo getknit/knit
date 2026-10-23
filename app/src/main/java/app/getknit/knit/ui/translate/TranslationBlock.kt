@@ -55,7 +55,8 @@ fun TranslationToggle(
     onNotThisLanguage: (() -> Unit)? = null,
 ) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    // A narrow bubble wraps the row by whole items, never "Show" on one line and "original" on the next.
+    // A narrow bubble wraps the row by whole items, never "Show" on one line and "original" on the next: a flow row
+    // measures each item against the whole line, so an item breaks inside only when it is longer than a line alone.
     FlowRow(
         modifier = modifier.padding(top = 4.dp).testTag("chat_translation"),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -67,14 +68,12 @@ fun TranslationToggle(
                 stringResource(R.string.translate_label, languageName(from)),
                 style = MaterialTheme.typography.labelSmall,
                 color = muted,
-                softWrap = false,
             )
             if (onNotThisLanguage != null) {
                 Text(
                     stringResource(R.string.translate_not_language, languageName(from)),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
-                    softWrap = false,
                     modifier = Modifier.clickable(onClick = onNotThisLanguage).padding(vertical = 4.dp),
                 )
             }
@@ -83,7 +82,6 @@ fun TranslationToggle(
             stringResource(if (showingOriginal) R.string.translate_show_translation else R.string.translate_show_original),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary,
-            softWrap = false,
             modifier = Modifier.clickable(onClick = onToggle).padding(vertical = 4.dp),
         )
     }
@@ -151,7 +149,8 @@ private fun NeedsModel(
             if (model is SttModelState.Failed) {
                 Text(model.reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
-            Row {
+            // A narrow bubble puts Not now under Download rather than cutting it off.
+            FlowRow {
                 TextButton(onClick = { onDownload(shown.direction) }) { Text(stringResource(R.string.translate_download)) }
                 TextButton(onClick = onDismiss) { Text(stringResource(R.string.translate_not_now)) }
             }
@@ -170,7 +169,8 @@ fun TranslateFromDialog(
         title = { Text(stringResource(R.string.translate_from_title)) },
         text = { Text(stringResource(R.string.translate_from_body)) },
         confirmButton = {
-            Row {
+            // A language name runs long in some languages: the two wrap as whole buttons, never off the dialog's edge.
+            FlowRow(horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = { onPick(TranslateLang.ES) }) { Text(stringResource(R.string.translate_lang_es)) }
                 TextButton(onClick = { onPick(TranslateLang.EN) }) { Text(stringResource(R.string.translate_lang_en)) }
             }
