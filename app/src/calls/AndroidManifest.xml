@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- What a build with voice calls adds to the manifest (experimental, docs/VOICE_CALLS.md). Not a source set: the build
-     adds this file to a variant only where `BuildConfig.LIVE_CALLS` or `BuildConfig.MESH_CALLS` is on (`-PliveCalls=`,
-     `-PmeshCalls=`; on in debug, off in a shipped artifact), so a build without calls declares neither the components
+<!-- What a build with voice calls adds to the manifest (docs/VOICE_CALLS.md). Not a source set: the build adds this
+     file to a variant only where `BuildConfig.LIVE_CALLS` or `BuildConfig.MESH_CALLS` is on (`-PliveCalls=`,
+     `-PmeshCalls=`; on in every build since 2.10.0-beta.0), so a build without calls declares neither the components
      nor the permissions below. RECORD_AUDIO is already main's, for voice notes. The microphone foreground service
      keeps a call's audio while Knit is off screen; the full-screen intent rings it over the lock screen. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
