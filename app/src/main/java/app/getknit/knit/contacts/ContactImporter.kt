@@ -7,6 +7,8 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.crypto.ContactCard
 import app.getknit.knit.mesh.crypto.SafetyNumber
+import app.getknit.knit.mesh.spool.PublicSpools
+import app.getknit.knit.mesh.spool.ScopeSpools
 import app.getknit.knit.mesh.spool.SpoolUrl
 import kotlinx.coroutines.flow.first
 
@@ -86,13 +88,17 @@ class ContactImporter(
             relaysOff = !relaysOn,
             // Listed whether or not the plane is on — the sheet an "Add" raises owns the consent — but never
             // in a build where the plane is dark, where there is no screen to add one to.
-            // Folded to the stored form first, so a card naming a renamed relay's former host asks for nothing held.
+            // Folded to the stored form first, so a card naming a renamed relay's former host asks for nothing held. A
+            // public relay is not one to add while this phone keeps one in its list: a home on a card is reached
+            // through the directory (ADR 2026-10.8kfx).
             unknownRelays =
                 if (internetPlane) {
+                    val held = settings.spoolUrls.first()
+                    val public = ScopeSpools.publicOn(held)
                     card.spools
-                        .map(
-                            SpoolUrl::canonical,
-                        ).distinct() - settings.spoolUrls.first()
+                        .map(SpoolUrl::canonical)
+                        .filterNot { public && PublicSpools.isDirectoryUrl(it) }
+                        .distinct() - held
                 } else {
                     emptyList()
                 },

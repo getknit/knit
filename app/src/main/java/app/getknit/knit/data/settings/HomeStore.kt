@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import app.getknit.knit.mesh.spool.HomeJournal
 import app.getknit.knit.mesh.spool.PublicSpool
 import app.getknit.knit.mesh.spool.PublicSpools
@@ -23,6 +24,8 @@ import kotlinx.coroutines.flow.map
  *   ([settle]). It changes only when the directory drops it or marks it `draining`. It rides a backup.
  * - The directory is the last copy read ([putDirectory]), else the one this build ships ([PublicSpools.BAKED]). Phone
  *   state, out of a backup.
+ * - The conversations a scope config is still owed to ([owed]), riding a backup, so a move a restore interrupts is
+ *   finished on the other phone.
  */
 class HomeStore(
     private val dataStore: DataStore<Preferences>,
@@ -31,7 +34,7 @@ class HomeStore(
     override val home: Flow<String?> = dataStore.data.map { it[KEY_HOME] }.distinctUntilChanged()
 
     /** The directory this phone holds: the last one read, else [PublicSpools.BAKED]. */
-    val directory: Flow<List<PublicSpool>> =
+    override val directory: Flow<List<PublicSpool>> =
         dataStore.data
             .map { prefs -> prefs[KEY_DIRECTORY]?.let(PublicSpools::parse) ?: PublicSpools.BAKED }
             .distinctUntilChanged()
@@ -87,7 +90,21 @@ class HomeStore(
         dataStore.edit { it[KEY_DIRECTORY_AT] = at }
     }
 
+    override suspend fun owed(): Set<String> = dataStore.data.first()[KEY_OWED].orEmpty()
+
+    override suspend fun owe(conversationId: String) {
+        dataStore.edit { it[KEY_OWED] = it[KEY_OWED].orEmpty() + conversationId }
+    }
+
+    override suspend fun paid(conversationId: String) {
+        dataStore.edit { prefs ->
+            val left = prefs[KEY_OWED].orEmpty() - conversationId
+            if (left.isEmpty()) prefs.remove(KEY_OWED) else prefs[KEY_OWED] = left
+        }
+    }
+
     private companion object {
+        val KEY_OWED = stringSetPreferencesKey(SettingsKeys.SPOOL_CONFIG_OWED)
         val KEY_HOME = stringPreferencesKey(SettingsKeys.SPOOL_HOME)
         val KEY_DIRECTORY = stringPreferencesKey(SettingsKeys.SPOOL_DIRECTORY)
         val KEY_DIRECTORY_AT = longPreferencesKey(SettingsKeys.SPOOL_DIRECTORY_AT)

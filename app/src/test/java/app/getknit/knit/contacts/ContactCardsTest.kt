@@ -69,4 +69,30 @@ class ContactCardsTest {
             val card = ContactCard.parse(cards().mint().compact) as ContactCard.Parsed.Card
             assertEquals(listOf("wss://c.example/spool/v1"), card.spools)
         }
+
+    @Test
+    fun theHomeLeadsTheRelaysWhileThePublicRelaysAreInUse() =
+        runTest {
+            // ADR 2026-10.8kfx: a new contact's pair scope may meet at the home first.
+            val home = MutableStateFlow<String?>("public-2.spool.getknit.app")
+            val homed = { ContactCards(identity, settings, { signer.sign(it) }, clock = { 42L }, home = home) }
+            activeSpoolUrls.value = setOf("wss://public-1.spool.getknit.app/spool/v1", "wss://c.example/spool/v1")
+            val card = ContactCard.parse(homed().mint().compact) as ContactCard.Parsed.Card
+            assertEquals(
+                listOf(
+                    "wss://public-2.spool.getknit.app/spool/v1",
+                    "wss://c.example/spool/v1",
+                    "wss://public-1.spool.getknit.app/spool/v1",
+                ),
+                card.spools,
+            )
+            // Homed on public-1, the card reads as it did before homes, the home once.
+            home.value = "public-1.spool.getknit.app"
+            val legacy = ContactCard.parse(homed().mint().compact) as ContactCard.Parsed.Card
+            assertEquals(listOf("wss://public-1.spool.getknit.app/spool/v1", "wss://c.example/spool/v1"), legacy.spools)
+            // A phone off the public relays names no home.
+            activeSpoolUrls.value = setOf("wss://c.example/spool/v1")
+            val offPublic = ContactCard.parse(homed().mint().compact) as ContactCard.Parsed.Card
+            assertEquals(listOf("wss://c.example/spool/v1"), offPublic.spools)
+        }
 }

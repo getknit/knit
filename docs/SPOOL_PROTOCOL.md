@@ -690,8 +690,9 @@ ScopeConfigPayload {
 > stores each issuer's configs per conversation and reads the conversation's config as the highest
 > `(version, issuer)` among those its clock has reached, keeping only `wss://` URLs (at most 8), clamping the bounds
 > to §12's defaults, holding a version ahead of its own clock until the clock reaches it (C-5-4), and taking a group's only
-> from a current member, sealed after that member's last leave. It does not issue one yet, and still
-> syncs every scope against its **device-local** spool list with §12's default bounds at SUB.
+> from a current member, sealed after that member's last leave. It issues configs to say where its conversations live
+> and places each DM, pair and group scope by them (§5.1); it reads only the relays from a config, and still declares
+> §12's default bounds at SUB.
 >
 > **Why a ctl and not a frame type.** ADR 016/018's lesson: `isCustodial` is a fixed list on
 > deployed
@@ -757,6 +758,30 @@ open:
 | `uuuuuuuuuuuuummmmmmmmmmmmm` | `public-1` | `public-3` |
 
 Every node picks `public-1` against the shipped copy. `PublicSpoolsTest` pins these; change both together.
+
+**Where a conversation lives.** A scope is synced at its own relays, not at every relay the phone holds:
+
+- **A DM or pair scope:** the relays its config names that the phone may dial, `public-1` while the conversation has
+  no config or the peer has never sent the phone one, the phone's home, and the relays the person added.
+- **A group scope:** the same, without the home (a group's relay belongs to the group), and with `public-1` kept while
+  any other member has never sent a config.
+- **What a config can make a phone dial:** a public relay the directory still lists, or a relay the person already
+  added. Never one of the peer's choosing. A relay the person parked is never dialled.
+- **A phone whose person parked or removed `public-1`** uses no public relay and dials only its own.
+
+A phone connects to its own relays, its home, and every relay one of its scopes names.
+
+**What it issues.** A DM config names two relays, the issuer's home first, then the peer's home: the first relay of
+the newest config the peer issued, else `public-1`. A phone issues one when its home is not named in the conversation's
+config, and when the config still names a relay that is gone or `draining` and is neither home. A phone homed on
+`public-1` issues nothing for a DM that has no config.
+
+A group config names one relay. The creator issues it at creation when its home is not `public-1`. When that relay
+drains or leaves the directory, any member issues its own home after a random wait of up to three minutes, unless a
+newer config lands first. The issuer of the standing config issues it again when a member rejoins.
+
+A phone also issues again, at the next version, a config of its own after its DM session root changes, and one it
+wrote but may never have sent.
 
 ## 6. The spool [Spool]
 
@@ -2116,7 +2141,7 @@ wire.
 | §7.5 send-side moderation                       | Spool side shipped (`SPOOL_REQUIRE_MODERATION`); client half not yet implemented — a current client tolerates the field and ignores it (B-2-2) | `knit-spool`                                                     |
 | §4.1–§4.4 sealing and frame rules               | Shipped                                                                                                                                    | `ScopeCrypto`, `ScopeFrames`                                     |
 | §4.5 attachments                                | Shipped                                                                                                                                    | `ScopeCrypto.sealChunk`, `ScopeAttachments`                      |
-| §5 scope config ctl                             | **On the wire, applied, not issued.** `ctl = 7` is decoded and stored last-writer-wins per issuer; nothing sends one yet, so the spool list is still a device setting and bounds are §12 defaults | `MessageContent`, `ScopeConfigPolicy`, `ScopeConfigRepository`, `SettingsStore.spoolUrls` |
+| §5 scope config ctl, §5.1 homes                 | **On the wire, applied and issued; nothing moves yet.** `ctl = 7` is stored last-writer-wins per issuer, issued by the home rules of §5.1, and places each scope at its relays; every home is `public-1` and the directory read is off, so no config is sent today. Bounds stay §12 defaults | `ScopeConfigPolicy`, `ScopeConfigRepository`, `ScopeSpools`, `ScopeConfigIssuer`, `HomeStore`, `PublicSpools` |
 | §6 spool behaviour                              | Shipped                                                                                                                                    | `knit-spool` + conformance suite                                 |
 | §7 record layer, §7.3 attachment records        | Shipped both sides                                                                                                                         | `SpoolRecords`, `SpoolConnection`, `knit-spool`                  |
 | §8 proof of work                                | Shipped both sides                                                                                                                         | `SpoolPow`                                                       |
@@ -2170,3 +2195,4 @@ the plane itself was unaffected either time, since a spool never decodes a frame
 | 2026-10-22 | **The commons takes reactions and attachments (§7.4 C-7.4-6 amended, C-7.4-13, C-7.4-14; §4.5, §9.5; knit-next ADR 2026-10.xhfr).** A `commons` post carries exactly one of a `chat` and a `reaction`. A chat's attachment names its type and its own key beside the hash, so the blob is ciphertext as §4.5 always required and a phone holding the same picture cannot compute its address; a reaction is applied latest-`sentAt`-wins and only to a post of the same room. A commons attachment is fetched only through the scope, from the member's own record of the post, and a fetch the spool cannot answer is retried while the post is fresh, then slowly. A non-normative note describes how the reference client tells a rotated invite from a quiet room | **Spools:** none — S-7.4-5 already gated the records. **Clients:** an older client quarantines a reaction (it has no `chat`) and an attachment post; no record or derivation moved; `vectors/wire-v1.json` gains `commonsPostAttachment` and `commonsReaction` |
 | 2026-10-22 | **A spool may answer to two names while it is renamed (§7.6: S-7.6-14 amended, S-7.6-47; knit-spool ADR 2026-10.zprp).** A ticket's `aud` must be one of the spool's own names: the host its members reach it by, or, while it is being renamed and both names reach it, its old name and its new. A ticket for either is accepted, HELLO names neither, and dropping a name refuses a later `ent` for it with `audience` while a held ticket stays held. A note says why a rename needs this and what it costs: an issuer that derives `ps` from `aud` gives one account a pseudonym per name, so every bound kept per pseudonym counts that holder twice until the old name is dropped | **Spools:** optional; a spool with one name changes nothing, and the reference daemon takes the second name as `SPOOL_TICKET_AUDIENCE_ALIAS` from `0.5.0-dev.2`. **Clients:** none; a client already holds only tickets for the host it dialled. No record, derivation or vector moved |
 | 2026-10-23 | **`CTL_SCOPE_CONFIG` goes on the wire (§5; ADR 2026-10.8kfx).** The reference client decodes ctl 7 in the DM and group forms and applies it last-writer-wins on `(version, issuer)`, keeping each issuer's newest config per conversation; C-5-4 now says `version` is a clock (minutes since 2026-01-01T00:00Z) and that a receiver holds a version ahead of its own clock and reads it once its clock reaches it, never refusing one so a group member's leave drops theirs alone. It does not issue one yet. Status note and Appendix A updated | **Spools:** none; the config is a sealed ctl inside an ordinary frame. **Clients:** an older build consumes ctl 7 as the chain-advancing no-op. The mesh's `vectors/wire-v1.json` gained `messageContentScopeConfigDm` and `messageContentScopeConfigGroup`; no record, derivation or §13 vector moved |
+| 2026-10-23 | **Homes place each scope, and the client issues configs (§5 status, §5.1; ADR 2026-10.8kfx).** A DM, pair or group scope is synced at its own relays: what its config names and the phone may dial, `public-1` while a peer has never sent a config, the home for a DM, and the person's own relays. A DM config names the two homes; a group config names the group's one relay, moved by any member after a jitter when it drains. Non-normative client policy | **Spools:** none. **Clients:** a build without homes keeps syncing every scope at every relay it holds, and meets a homed peer at `public-1` while that peer has its config unread |

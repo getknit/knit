@@ -258,7 +258,8 @@ class ScopeSync(
     private val dialer: SpoolDialer,
     private val store: ForwardStore,
     private val selfId: suspend () -> String,
-    // Configured spool URLs; empty (the plane switched off, or nothing configured) parks every worker.
+    // The relays dialled whatever the scopes name (`ScopeSpools.base`: the person's own relays and the home); empty (the
+    // plane switched off, or nothing configured) parks every worker. Each scope's own relays ([Scope.spools]) join them.
     private val urls: suspend () -> List<String>,
     // The mesh's own carry gate — pinned sender key, signature valid. Reused rather than
     // re-implemented so a spool-delivered frame is authenticated by exactly the rule the radios use.
@@ -334,6 +335,8 @@ class ScopeSync(
     // The field log (ADR 2026-10.a239): each spool's hello, session end, failed dial and new `err` code, under the
     // relay's pseudonym. Its 5-minute sample reads [status] from the session's side.
     private val field: FieldRecorder = FieldRecorder.NONE,
+    // The relays a worker runs for, whenever the set changes ([reconcile]): the ticket refresher's "relays in use".
+    private val onRelaysChanged: (Set<String>) -> Unit = {},
 ) {
     private val workers = ConcurrentHashMap<String, Worker>()
     private val sealCache = SealCache(SEAL_CACHE_MAX)
@@ -347,6 +350,9 @@ class ScopeSync(
 
     @Volatile
     private var lastPresent: Set<String> = emptySet()
+
+    @Volatile
+    private var lastRelays: Set<String> = emptySet()
 
     @Volatile
     private var session: CoroutineScope? = null
@@ -388,6 +394,7 @@ class ScopeSync(
         scopes = emptyList()
         session = null
         republishPresence()
+        publishRelays(emptySet())
     }
 
     /**
@@ -523,6 +530,14 @@ class ScopeSync(
             else -> "no answer"
         }
 
+    /** Fires [onRelaysChanged] when the worker set differs from what was last published. */
+    @Synchronized
+    private fun publishRelays(current: Set<String>) {
+        if (current == lastRelays) return
+        lastRelays = current
+        onRelaysChanged(current)
+    }
+
     /** Fires [onPresenceChanged] when the present set differs from what was last published. */
     @Synchronized
     private fun republishPresence() {
@@ -579,19 +594,25 @@ class ScopeSync(
         }
     }
 
-    /** Starts a worker per configured URL, stops the ones that fell out of the config, refreshes scopes. */
+    /**
+     * Derives the scope table, then runs a worker per relay it needs — the [urls] base and every scope's own relays
+     * ([Scope.spools]) — and stops the ones no longer needed.
+     */
     private suspend fun reconcile() {
         val host = session ?: return
-        val wanted = urls().toSet()
+        val base = urls().toSet()
+        val table = if (base.isEmpty()) emptyList() else registry.scopes(clock())
+        val wanted = base + table.flatMap { it.spools.orEmpty() }
         workers.keys.filterNot { it in wanted }.forEach { workers.remove(it)?.stop() }
         // A removed worker's stop() cancels its session before the teardown's republish, and with the relays
         // switched off no round is left to run one: withdraw the cover the removed spools gave here (#196).
         republishPresence()
+        publishRelays(wanted)
         if (wanted.isEmpty()) {
             scopes = emptyList()
             return
         }
-        scopes = registry.scopes(clock())
+        scopes = table
         metrics.onSpoolTableDerived()
         wanted.forEach { url ->
             val worker = workers.computeIfAbsent(url) { Worker(it) }
@@ -920,10 +941,12 @@ class ScopeSync(
         }
 
         /**
-         * Takes the reconciled scope table: [forgetScopesNotIn] for what left, and whether the table differs
-         * from the one this worker last adopted — the only reason a reconcile wakes the heal loop.
+         * Takes the reconciled scope table: [forgetScopesNotIn] for what left this relay, and whether the scopes that
+         * belong here differ from the ones this worker last adopted — the only reason a reconcile wakes the heal loop.
+         * A scope whose relays moved onto this one (ADR 2026-10.8kfx) is a change here as much as a new one.
          */
-        fun adoptScopes(table: List<Scope>): Boolean {
+        fun adoptScopes(all: List<Scope>): Boolean {
+            val table = all.filter { it.belongsAt(url) }
             val live = table.mapTo(HashSet()) { it.idHex }
             forgetScopesNotIn(live)
             dirty.retainAll(live)
@@ -1492,7 +1515,7 @@ class ScopeSync(
         }
 
         /**
-         * The scopes this worker carries: every scope, minus a commons bound to another relay, minus a
+         * The scopes this worker carries: every scope that belongs at this relay ([Scope.belongsAt]), minus a
          * commons at a spool that advertised none — a SUB for it there would read as an unknown scope and
          * meet the §6.4 creation gates (PoW, the new-scope bucket) for a room that does not exist — and minus a
          * commons this spool has shown it no longer runs ([staleCommons]), but for the one look a new connection

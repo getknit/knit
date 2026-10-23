@@ -96,6 +96,12 @@ class ScopeConfigRepository(
     suspend fun winning(conversationId: String): ScopeConfig? =
         ScopeConfigPolicy.winner(dao.configsOf(conversationId).map { it.toConfig() }, clock())
 
+    /** The newest eligible config [issuer] issued for [conversationId], or null: where that issuer says it lives. */
+    suspend fun newestOf(
+        conversationId: String,
+        issuer: String,
+    ): ScopeConfig? = ScopeConfigPolicy.winner(dao.configsOf(conversationId).map { it.toConfig() }.filter { it.issuer == issuer }, clock())
+
     /** [winning] as it changes, by a write or by a deferred row's minute coming. */
     fun observeWinning(conversationId: String): Flow<ScopeConfig?> =
         dao
@@ -103,17 +109,24 @@ class ScopeConfigRepository(
             .map { rows -> rows.map { it.toConfig() } }
             .overTime { rows, now -> ScopeConfigPolicy.winner(rows, now) }
 
-    /** Every conversation's winning config, by conversation id, as it changes — by a write or by the clock. */
+    /** Every conversation's winning config now, by conversation id: what the scope table is placed against. */
+    suspend fun winners(): Map<String, ScopeConfig> = winnersOf(dao.all().map { it.toConfig() }, clock())
+
+    /** [winners] as it changes — by a write or by the clock. */
     fun observeWinners(): Flow<Map<String, ScopeConfig>> =
         dao
             .observeAll()
             .map { rows -> rows.map { it.toConfig() } }
-            .overTime { rows, now ->
-                rows
-                    .groupBy { it.conversationId }
-                    .mapNotNull { (id, issued) -> ScopeConfigPolicy.winner(issued, now)?.let { id to it } }
-                    .toMap()
-            }
+            .overTime(::winnersOf)
+
+    private fun winnersOf(
+        rows: List<ScopeConfig>,
+        now: Long,
+    ): Map<String, ScopeConfig> =
+        rows
+            .groupBy { it.conversationId }
+            .mapNotNull { (id, issued) -> ScopeConfigPolicy.winner(issued, now)?.let { id to it } }
+            .toMap()
 
     /**
      * [read] of each emission of rows, and again whenever a held row's minute comes ([ScopeConfigPolicy.eligibleAt]),

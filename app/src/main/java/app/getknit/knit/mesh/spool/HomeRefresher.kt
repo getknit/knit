@@ -19,6 +19,16 @@ import kotlinx.coroutines.withTimeoutOrNull
 interface HomeJournal {
     val home: Flow<String?>
 
+    /** The directory this phone holds: the last one read, else [PublicSpools.BAKED]. */
+    val directory: Flow<List<PublicSpool>>
+
+    /** The conversations this phone owes a scope config ([ScopeConfigIssuer]): written before a send, cleared after. */
+    suspend fun owed(): Set<String>
+
+    suspend fun owe(conversationId: String)
+
+    suspend fun paid(conversationId: String)
+
     /** When the directory was last read (epoch millis), or 0 for never. */
     suspend fun directoryReadAt(): Long
 

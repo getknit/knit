@@ -16,6 +16,10 @@ interface ScopeConfigDao {
     @Query("SELECT * FROM scope_configs WHERE conversationId = :conversationId")
     fun observeConfigsOf(conversationId: String): Flow<List<ScopeConfigEntity>>
 
+    /** Every row of every conversation. */
+    @Query("SELECT * FROM scope_configs")
+    suspend fun all(): List<ScopeConfigEntity>
+
     /** Every row of every conversation, as it changes. */
     @Query("SELECT * FROM scope_configs")
     fun observeAll(): Flow<List<ScopeConfigEntity>>

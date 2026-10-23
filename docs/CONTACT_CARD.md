@@ -34,8 +34,9 @@ sig    = Ed25519(IK_sign, "knit/card/v1" ‖ body)
 - `id` — the 26-char base32 node id; `pk` — the raw `sigPub ‖ hpkePub` (the `PublicKeyBundle` proto's two
   keys, in that order). Self-certifying: `NodeId.fromPublicKeyBundle(bundle(pk)) == id`.
 - `name` — the owner's display name, single-line, ≤ 32 chars; a stored profile name always outranks it
-  on import. `sp` — up to 3 relay URLs the owner uses, never with a `?k=` bearer token. `iat` — issue
-  time, epoch millis.
+  on import. `sp` — up to 3 relay URLs the owner uses, never with a `?k=` bearer token; the reference client puts its
+  home relay first (ADR 2026-10.8kfx), and an importer that keeps a public relay leaves public ones out of the relays it
+  offers to add. `iat` — issue time, epoch millis.
 - The `body` bytes are opaque end to end: a parser verifies `sig` over exactly the bytes it received and
   never re-encodes them (the `WireEnvelope.signed`/`sig` discipline), so a field added to `Body` is
   additive under `ignoreUnknownKeys`. `v` exists for the change that rule cannot absorb.

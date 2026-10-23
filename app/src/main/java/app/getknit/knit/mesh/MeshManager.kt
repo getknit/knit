@@ -101,13 +101,17 @@ import app.getknit.knit.mesh.spool.GroupScopeRoots
 import app.getknit.knit.mesh.spool.HolderAskBatch
 import app.getknit.knit.mesh.spool.HomeJournal
 import app.getknit.knit.mesh.spool.HomeRefresher
+import app.getknit.knit.mesh.spool.IssuerGroup
 import app.getknit.knit.mesh.spool.MoveResult
 import app.getknit.knit.mesh.spool.PairScopeRoots
 import app.getknit.knit.mesh.spool.PublicSpoolSource
 import app.getknit.knit.mesh.spool.ScopeBlobs
+import app.getknit.knit.mesh.spool.ScopeConfigIssuer
 import app.getknit.knit.mesh.spool.ScopeConfigPolicy
+import app.getknit.knit.mesh.spool.ScopePlacement
 import app.getknit.knit.mesh.spool.ScopeRegistry
 import app.getknit.knit.mesh.spool.ScopeRoots
+import app.getknit.knit.mesh.spool.ScopeSpools
 import app.getknit.knit.mesh.spool.ScopeSync
 import app.getknit.knit.mesh.spool.SpoolDialer
 import app.getknit.knit.mesh.spool.SpoolStatus
@@ -132,10 +136,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
@@ -143,6 +149,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -317,7 +324,7 @@ class MeshManager(
     // This phone's home relay and the public directory it is picked from (ADR 2026-10.8kfx). Null in a test that keeps
     // none; [directory] is null where the build reads no directory (`BuildConfig.SPOOL_DIRECTORY`), and the home then
     // comes from the copy the build ships.
-    homes: HomeJournal? = null,
+    private val homes: HomeJournal? = null,
     directory: PublicSpoolSource? = null,
 ) : MeshController,
     TransferSignals,
@@ -705,6 +712,14 @@ class MeshManager(
 
     private val spoolTickets = SpoolTickets(settings, clock)
 
+    // The relays a `ScopeSync` worker runs for, published at each reconcile: a peer's home a config names joins the
+    // person's own list here (ADR 2026-10.8kfx).
+    private val workerRelays = MutableStateFlow<Set<String>>(emptySet())
+
+    // The relays in use: the active list and every relay a worker runs for, empty while the plane is off.
+    private val relaysInUse: Flow<Set<String>> =
+        combine(settings.activeSpoolUrls, workerRelays) { active, workers -> if (active.isEmpty()) emptySet() else active + workers }
+
     /**
      * Fetches each active relay's ticket from the issuer its invite named, before the held one runs low (C-7.6-27,
      * ADR 2026-10.3sk7). Built only with the plane, a key store and an issuer; runs only while the session does, and
@@ -716,7 +731,7 @@ class MeshManager(
                 keys = ticketKeys,
                 tickets = spoolTickets,
                 issuer = ticketIssuer,
-                urls = settings.activeSpoolUrls,
+                urls = relaysInUse,
                 online = online,
                 routeChanges = routeChanges,
                 allowCleartext = allowCleartext,
@@ -743,7 +758,10 @@ class MeshManager(
                 planeOn = settings.activeSpoolUrls.map { it.isNotEmpty() },
                 online = online,
                 routeChanges = routeChanges,
-                onHomeChanged = { _, _ -> scopeSync?.onScopeTableChanged() },
+                onHomeChanged = { _, _ ->
+                    scopeSync?.onScopeTableChanged()
+                    scopeIssuer?.poke()
+                },
                 clock = clock,
                 log = { Log.i(SPOOL_TAG, it) },
             )
@@ -796,11 +814,12 @@ class MeshManager(
                         groupRoots = ::groupScopeRoots,
                         pairs = ::pairScopeRoots,
                         commons = { commons?.roots().orEmpty() },
+                        placement = ::scopePlacement,
                     ),
                 dialer = dialer,
                 store = forwardStore,
                 selfId = { identity.nodeId() },
-                urls = { settings.activeSpoolUrls.first().toList() },
+                urls = ::baseRelays,
                 online = online,
                 canCarry = pipeline::canCarry,
                 commons = commons,
@@ -831,7 +850,34 @@ class MeshManager(
                 onUploadWanted = { url -> ticketRefresher?.uploadWanted(url) },
                 log = { Log.i(SPOOL_TAG, it) },
                 field = fieldLog ?: FieldRecorder.NONE,
+                onRelaysChanged = { workerRelays.value = it },
             ).also { sync -> fieldLog?.sampler(SPOOL_FIELD_SAMPLER) { sync.status().map { it.fieldSample() } } }
+        }
+
+    /**
+     * Issues the scope configs that tell this phone's peers where its conversations live (ADR 2026-10.8kfx). Built only
+     * with the plane and a home; issues nothing while the home is `public-1`.
+     */
+    private val scopeIssuer: ScopeConfigIssuer? =
+        if (scopeSync != null && homes != null) {
+            ScopeConfigIssuer(
+                journal = homes,
+                selfId = { identity.nodeId() },
+                active = settings.activeSpoolUrls,
+                winners = scopeConfigs.observeWinners(),
+                peerOwn = scopeConfigs::newestOf,
+                groups =
+                    groups.observeGroups().map { rows ->
+                        rows.filter { !it.left }.map { IssuerGroup(it.groupId, GroupMembersStore.decode(it.members).toSet(), it.createdBy) }
+                    },
+                rootChanges = ratchet.rootChanges,
+                dmPeers = { ratchet.exportedRoots().filter { it.confirmed }.mapTo(HashSet()) { it.peerId } },
+                send = ::sendScopeConfig,
+                clock = clock,
+                log = { Log.i(SPOOL_TAG, it) },
+            )
+        } else {
+            null
         }
 
     @Volatile
@@ -986,6 +1032,7 @@ class MeshManager(
         ticketRefresher?.start(session)
         badgeRefresher?.start(session)
         homeRefresher?.start(session)
+        scopeIssuer?.start(session)
         watchRoute(session)
         watchScopeInputs(session)
     }
@@ -1017,6 +1064,34 @@ class MeshManager(
     private fun watchScopeInputs(session: CoroutineScope) {
         val sync = scopeSync ?: return
         session.launch { ratchet.rootChanges.collect { sync.onScopeTableChanged() } }
+        // Where a scope lives (ADR 2026-10.8kfx): a config won or deferred into eligibility, a node declaring, the
+        // directory moving. The home reports through [homeRefresher]'s own hook.
+        val homes = homes ?: return
+        session.launch {
+            merge(scopeConfigs.observeWinners().map { }, scopeConfigs.observeDeclared().map { }, homes.directory.map { })
+                .drop(1)
+                .collect { sync.onScopeTableChanged() }
+        }
+    }
+
+    /** The relays every scope's own join ([ScopeSpools.base]): the person's own relays and the home. */
+    private suspend fun baseRelays(): List<String> {
+        val active = settings.activeSpoolUrls.first()
+        val homes = homes ?: return active.toList()
+        return ScopeSpools.base(active, homes.home.first()).toList()
+    }
+
+    /** One derivation's placement inputs (ADR 2026-10.8kfx), or null without a home store: every scope at every relay. */
+    private suspend fun scopePlacement(): ScopePlacement? {
+        val homes = homes ?: return null
+        return ScopePlacement(
+            configs = scopeConfigs.winners(),
+            declared = scopeConfigs.declared(),
+            home = homes.home.first(),
+            active = settings.activeSpoolUrls.first(),
+            parked = settings.disabledSpoolUrls.first(),
+            directory = homes.directory.first(),
+        )
     }
 
     /**
@@ -1044,6 +1119,7 @@ class MeshManager(
         ticketRefresher?.stop()
         badgeRefresher?.stop()
         homeRefresher?.stop()
+        scopeIssuer?.stop()
         transport.stop()
         // Clear this session's pending relays on the app scope (the session is about to die); capture
         // the instance so a fast restart reassigning `router` can't retarget the wrong one. Then tear
@@ -1986,6 +2062,7 @@ class MeshManager(
             GroupScopeRoots(
                 groupId = group.groupId,
                 roster = foundingRoster(group),
+                members = GroupMembersStore.decode(group.members).toSet(),
                 root = checkNotNull(state.root),
                 rootVersion = state.version,
                 prevRoot = state.prevRoot,

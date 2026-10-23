@@ -42,7 +42,7 @@ class Scope(
     val groupId: String? = null,
     val roster: Set<String> = emptySet(),
     // The third form (spec §7.4): a commons, named by the conversation its posts land in, and bound to the
-    // one spool that runs it — the only scope that is not subscribed at every relay.
+    // one spool that runs it.
     val commonsId: String? = null,
     val spoolUrl: String? = null,
     // A pair scope (spec §3.5): DM-form, the same [peerId] as the DM scope that supersedes it, keyed by the
@@ -50,6 +50,9 @@ class Scope(
     // tell the two scopes of one peer apart — nothing downstream treats them differently.
     val pair: Boolean = false,
     val resetInit: ByteArray? = null,
+    // The relays a DM, pair or group scope is synced at (ADR 2026-10.8kfx, `ScopeSpools`), or null for every relay
+    // this phone dials: a registry built without placement, as every test that predates homes is.
+    val spools: Set<String>? = null,
 ) {
     /** The spec's display form — lowercase hex — and this scope's identity in maps/logs/diagnostics. */
     val idHex: String = hex(id)
@@ -57,8 +60,8 @@ class Scope(
     /** What this scope is *of*, for diagnostics: the DM peer's node id, the group id, or the commons' thread id. */
     val label: String = peerId ?: groupId ?: commonsId.orEmpty()
 
-    /** Whether [url] is a relay this scope belongs at: every relay, unless it is a commons bound to one. */
-    fun belongsAt(url: String): Boolean = spoolUrl == null || spoolUrl == url
+    /** Whether [url] is a relay this scope belongs at: a commons' one relay, else its [spools], else every relay. */
+    fun belongsAt(url: String): Boolean = spoolUrl?.let { it == url } ?: spools?.contains(url) ?: true
 
     override fun equals(other: Any?): Boolean = other is Scope && other.idHex == idHex
 

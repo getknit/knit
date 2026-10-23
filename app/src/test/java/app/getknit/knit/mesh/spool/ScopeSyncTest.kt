@@ -126,6 +126,9 @@ class ScopeSyncTest {
         // The refresher's wake for an upload locked for want of a ticket (C-7.6-27 amended).
         onUploadWanted: (String) -> Unit = {},
         field: FieldRecorder = FieldRecorder.NONE,
+        // Where each scope lives (ADR 2026-10.8kfx); null, as before homes, puts every scope at every relay.
+        placement: () -> ScopePlacement? = { null },
+        onRelaysChanged: (Set<String>) -> Unit = {},
     ): Member {
         val metrics = MeshMetrics()
         val delivered = mutableListOf<RelayEnvelope>()
@@ -139,6 +142,7 @@ class ScopeSyncTest {
                         roots = { roots() },
                         groupRoots = { groups },
                         pairs = { pairs() },
+                        placement = { placement() },
                     ),
                 dialer = dialer,
                 store = custody,
@@ -166,6 +170,7 @@ class ScopeSyncTest {
                 onUploadWanted = onUploadWanted,
                 log = log,
                 field = field,
+                onRelaysChanged = onRelaysChanged,
             )
         return Member(custody, sync, metrics, delivered, blobs, obtained, wires)
     }
@@ -3829,5 +3834,62 @@ class ScopeSyncTest {
             assertEquals(listOf("free"), payer.delivered.map { it.id })
             payer.sync.stop()
             friend.sync.stop()
+        }
+
+    @Test
+    fun `a scope is subscribed at its own relays alone, and a worker follows it when they move`() =
+        runTest {
+            // ADR 2026-10.8kfx: the base is public-1, and Bob's DM lives at public-2 (both homes there), which this phone
+            // dials for it alone; when the DM moves to public-1 the public-2 worker goes.
+            val p1 = PublicSpools.LEGACY_URL
+            val p2 = PublicSpools.urlOf("public-2.spool.getknit.app")
+            val one = FakeSpool()
+            val two = FakeSpool()
+            val directory = listOf("public-1", "public-2").map { PublicSpool("$it.spool.getknit.app", PublicSpool.OPEN, 1) }
+            var home = "public-2.spool.getknit.app"
+            var configured = listOf(p2)
+            val relays = mutableListOf<Set<String>>()
+            val member =
+                member(
+                    one,
+                    alice,
+                    bob,
+                    dialer = Relays(mapOf(p1 to one, p2 to two)),
+                    urls = listOf(p1),
+                    placement = {
+                        ScopePlacement(
+                            configs = mapOf(bob to ScopeConfig(bob, null, bob, configured, 400, 1_000L, 64, 1)),
+                            declared = setOf(bob),
+                            home = home,
+                            active = setOf(p1),
+                            parked = emptySet(),
+                            directory = directory,
+                        )
+                    },
+                    onRelaysChanged = { relays += it },
+                )
+            member.sync.start(backgroundScope)
+            pump()
+            val scope = scopeHex(alice, bob)
+            assertEquals(setOf(p1, p2), relays.last())
+            assertTrue(scope in two.subscribedScopes)
+            // The public-1 worker has had its hello, so its not subscribing is a decision, not a round still to come.
+            assertTrue(
+                member.sync
+                    .status()
+                    .single { it.url == p1 }
+                    .connected,
+            )
+            assertFalse(scope in one.subscribedScopes)
+
+            home = PublicSpools.LEGACY_HOST
+            configured = listOf(p1)
+            member.sync.onScopeTableChanged()
+            pump()
+            assertEquals(setOf(p1), relays.last())
+            assertTrue(scope in one.subscribedScopes)
+            assertEquals(listOf(p1), member.sync.status().map { it.url })
+            member.sync.stop()
+            assertEquals(emptySet<String>(), relays.last())
         }
 }

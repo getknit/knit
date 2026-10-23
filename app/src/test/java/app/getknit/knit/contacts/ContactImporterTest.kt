@@ -170,6 +170,20 @@ class ContactImporterTest {
         }
 
     @Test
+    fun aPublicRelayOnACardIsNeverOneToAddWhileThePublicRelaysAreKept() =
+        runTest {
+            // ADR 2026-10.8kfx: a card leads with its owner's home, which this phone reaches through the directory.
+            val card = bob.card(spools = listOf("wss://public-2.spool.getknit.app/spool/v1", "wss://theirs.example/spool/v1"))
+            spoolUrls.value = setOf("wss://public-1.spool.getknit.app/spool/v1")
+            val kept = importer().preview(card) as ContactImporter.Preview.Ready
+            assertEquals(listOf("wss://theirs.example/spool/v1"), kept.unknownRelays)
+            // A phone that removed the public relays is offered them back, as any other.
+            spoolUrls.value = setOf("wss://mine.example/spool/v1")
+            val removed = importer().preview(card) as ContactImporter.Preview.Ready
+            assertEquals(listOf("wss://public-2.spool.getknit.app/spool/v1", "wss://theirs.example/spool/v1"), removed.unknownRelays)
+        }
+
+    @Test
     fun aBlockedPeerIsFlaggedAndUnblockedOnlyWhenAsked() =
         runTest {
             blocked.value = setOf(bob.nodeId)

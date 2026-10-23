@@ -21,9 +21,9 @@ import org.robolectric.RobolectricTestRunner
 
 /**
  * The scope-config ctl between real stacks (`CTL_SCOPE_CONFIG`, docs/SPOOL_PROTOCOL.md §5): an ordinary sealed ctl,
- * custodied and flooded, that every member applies last-writer-wins on `(version, issuer)`. Nothing in the app issues
- * one yet (ADR 2026-10.8kfx's next phase does), so each scenario issues them by hand and compares the config stores
- * node by node; `assertConverged` covers the custody and the threads around them.
+ * custodied and flooded, that every member applies last-writer-wins on `(version, issuer)`. These nodes hold no home,
+ * so their issuer never runs (`HomeSpoolsLabTest` is the one that does): each scenario issues configs by hand and
+ * compares the config stores node by node; `assertConverged` covers the custody and the threads around them.
  */
 @RunWith(RobolectricTestRunner::class)
 class ScopeConfigLabTest {

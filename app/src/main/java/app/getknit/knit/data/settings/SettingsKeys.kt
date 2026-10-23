@@ -35,6 +35,10 @@ object SettingsKeys {
     // and the hash would pick the same one anyway. The directory it was picked from is phone state under
     // "spool_directory", in [TRANSIENT_PREFIXES].
     const val SPOOL_HOME = "spool_home"
+
+    // The conversations this phone still owes a scope config (`HomeStore`, ADR 2026-10.8kfx). Rides a backup: a phone
+    // restored in the middle of a move finishes it.
+    const val SPOOL_CONFIG_OWED = "spool_config_owed"
     const val SPOOL_DIRECTORY = "spool_directory"
     const val SPOOL_DIRECTORY_AT = "spool_directory_at"
 

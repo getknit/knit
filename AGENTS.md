@@ -607,8 +607,13 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `docs/SPOOL_PROTOCOL.md` (the normative public spec; its §13 vectors are pinned by
   `ScopeVectorTest`/`SpoolRecordsTest` — change them only together), then the `ScopeSync` invariants in
   `.agents/rules/mesh.md`. The client plane carries DM **and group** scopes, off by default, with the
-  relay/spool-list editor shipped (`ui/relay/`); the scope-config ctl is received and stored but not yet issued
-  (`ScopeConfigPolicy`, `ScopeConfigRepository`; its crypto half is `.agents/context/crypto.md`'s scope-config entry),
+  relay/spool-list editor shipped (`ui/relay/`); the scope-config ctl is stored per issuer (`ScopeConfigPolicy`,
+  `ScopeConfigRepository`; its crypto half is `.agents/context/crypto.md`'s scope-config entry) and issued by
+  `ScopeConfigIssuer`. **Before touching `ScopeSpools` / `ScopePlacement`, `Scope.spools` / `belongsAt`, `ScopeConfigIssuer`,
+  `HomeStore` / `HomeRefresher`, `PublicSpools`, `ScopeSync`'s `urls` or `onRelaysChanged`, or a card's `sp` order:**
+  READ ADR 2026-10.8kfx and spec §5.1 — each phone lives on one home relay, a scope is synced at its own relays by the
+  union rule, a config never makes a phone dial a relay of the peer's choosing, and nothing is issued while the home is
+  `public-1`;
   and Tor is still deferred — CHECK `.agents/memory/roadmap.md` before building either, and the spec's Appendix A for
   what runs today. The plane also carries **attachments**
   (`mesh/spool/ScopeAttachments`, spec §4.5/§6.5/§7.3/§9.5) as a separate object class kept out of the

@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.room3.Room
 import androidx.room3.executeSQL
 import androidx.room3.useReaderConnection
@@ -56,6 +57,7 @@ import app.getknit.knit.data.relay.RelayInviteApplier
 import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.CallTombStore
 import app.getknit.knit.data.settings.ContributionTotals
+import app.getknit.knit.data.settings.HomeStore
 import app.getknit.knit.data.settings.SettingsKeys
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.settings.TicketKeyStore
@@ -103,6 +105,8 @@ import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.sha256Hex
 import app.getknit.knit.mesh.spool.FakeSpool
+import app.getknit.knit.mesh.spool.PublicSpool
+import app.getknit.knit.mesh.spool.PublicSpools
 import app.getknit.knit.mesh.spool.RelayInvite
 import app.getknit.knit.mesh.spool.ScopeConfig
 import app.getknit.knit.mesh.spool.ScopeStatus
@@ -207,6 +211,10 @@ class MeshLab {
         // A free issuer for the node's relay (docs/VOICE_CALLS.md §2.6): the node holds ticket keys, the person has
         // allowed free tickets, and the refresher makes a free account when an upload waits. Null wires no tickets.
         freeIssuer: LabFreeIssuer? = null,
+        // The house relays and this node's [home] among them (ADR 2026-10.8kfx): the node holds the seeded public-1,
+        // the real home store and the issuer, in place of [spool]. Null keeps every scope at every relay, as before.
+        publicRelays: LabPublicRelays? = null,
+        home: String? = null,
     ): LabNode {
         val started = System.nanoTime()
         val node =
@@ -224,6 +232,8 @@ class MeshLab {
                 seedIdentity = sameIdentityAs?.identityBytes(),
                 chaos = chaos,
                 freeIssuer = freeIssuer,
+                publicRelays = publicRelays,
+                home = home,
             )
         nodes += node
         node.boot()
@@ -1021,6 +1031,9 @@ class LabNode internal constructor(
     private val chaos: LabChaos? = null,
     // A free issuer for this node's relay ([MeshLab.node]); null wires no tickets.
     private val freeIssuer: LabFreeIssuer? = null,
+    // The house relays and this node's home among them ([MeshLab.node]); null leaves the node on [spool] alone.
+    private val publicRelays: LabPublicRelays? = null,
+    private val home: String? = null,
 ) {
     /** [delegate], or its chaos-lagged form when the lab runs under [chaos]. */
     private fun dispatcher(delegate: CoroutineDispatcher): CoroutineDispatcher = chaos?.dispatcher(delegate) ?: delegate
@@ -1099,7 +1112,18 @@ class LabNode internal constructor(
     internal var relayLeft = false
 
     /** Whether a boot opts this node into its relay, as the relay editor would. */
-    private fun optsIntoRelay(): Boolean = spool != null && spoolOptIn && !relayLeft
+    private fun optsIntoRelay(): Boolean = (spool != null || publicRelays != null) && spoolOptIn && !relayLeft
+
+    // The home store over this node's settings, with the house relays (ADR 2026-10.8kfx); null without them.
+    private val homes: HomeStore? = publicRelays?.let { HomeStore(dataStore) }
+
+    /** This node's home relay host, or null without the house relays. */
+    suspend fun home(): String? = homes?.home?.first()
+
+    /** Replaces the directory this node holds, as a read would; the next start settles the home against it. */
+    suspend fun putDirectory(entries: List<PublicSpool>) {
+        checkNotNull(homes) { "$name has no house relays" }.putDirectory(entries, now())
+    }
 
     /** Everything the LoRa plane logged this boot — `lora tx <label> parts=N` lines are the air oracle. */
     val loraLog = CopyOnWriteArrayList<String>()
@@ -1183,10 +1207,7 @@ class LabNode internal constructor(
         metrics = MeshMetrics()
         // The Internet plane is opted into through the same two settings the relay editor writes; the
         // settings file persists, so a restart() dials the same spool again.
-        if (optsIntoRelay()) {
-            settings.setSpoolEnabled(true)
-            settings.addSpoolUrl(MeshLab.SPOOL_URL)
-        }
+        optIntoRelays()
         // The real DataStore-backed settings are the journal, so a restart() proves the totals persist.
         ledger = ContributionLedger(journal = settings, selfId = { nodeId }, clock = now)
         val keys = keyStore.keys()
@@ -1343,8 +1364,9 @@ class LabNode internal constructor(
                 blobPullBudgets = limits.pullBudgets,
                 sessionDispatcher = session,
                 ingressBudget = IngressBudget(burst = limits.ingressBurst, perMinute = limits.ingressPerMinute, clock = now),
-                spoolDialer = spool,
+                spoolDialer = spool ?: publicRelays?.dialer,
                 commons = commons,
+                homes = homes,
                 ticketKeys = freeKeys,
                 ticketIssuer = freeIssuer,
                 freeKeys = freeKeys,
@@ -1384,6 +1406,22 @@ class LabNode internal constructor(
                 while (custodyIds().none { it.startsWith("profile-$nodeId-") }) delay(1)
             }
         }
+    }
+
+    /**
+     * The relay opt-in [boot] makes, as the relay editor would, and on a first boot with the house relays the lab's
+     * directory and the scenario's home, before the refresher settles one.
+     */
+    private suspend fun optIntoRelays() {
+        if (optsIntoRelay()) {
+            settings.setSpoolEnabled(true)
+            settings.addSpoolUrl(if (publicRelays != null) PublicSpools.LEGACY_URL else MeshLab.SPOOL_URL)
+        }
+        val relays = publicRelays ?: return
+        val store = homes ?: return
+        if (store.directoryReadAt() != 0L) return
+        store.putDirectory(relays.directory, now())
+        home?.let { host -> dataStore.edit { it[stringPreferencesKey(SettingsKeys.SPOOL_HOME)] = host } }
     }
 
     /** [boot], counted toward the sweep's per-run boot time ([LabChaos.noteBoot]). */

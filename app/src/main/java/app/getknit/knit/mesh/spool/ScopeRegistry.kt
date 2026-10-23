@@ -64,6 +64,8 @@ class GroupScopeRoots(
     val prevRoot: ByteArray? = null,
     val prevRootVersion: Int = 0,
     val prevRootExpiresAt: Long = 0L,
+    // The effective members, departed ones out: whose declarations decide whether the group still needs `public-1`.
+    val members: Set<String> = roster,
 )
 
 /**
@@ -95,10 +97,12 @@ class GroupScopeRoots(
  * session confirms. The [pairs] seam is what bounds their lifetime: `IntroSync` names a peer only while its
  * intro is pending or inside the post-confirmation grace, and the scope vanishes with the name.
  *
- * Bounds are constants here rather than per-conversation state because the signed scope-config ctl
- * (`CTL_SCOPE_CONFIG`, spec §5) is not on the wire yet; when it lands, [bounds] becomes a per-scope
- * lookup and these defaults become the fallback. They are the spec's §12 defaults so a stock spool
- * clamps them to themselves.
+ * **Where each scope lives** is [placement] (ADR 2026-10.8kfx): read once per derivation, it gives every DM, pair
+ * and group scope its relays ([Scope.spools]) by the union rule in [ScopeSpools]. Without it — every test that
+ * predates homes — a scope belongs at every relay, as before. A commons stays bound to its one relay either way.
+ *
+ * Bounds stay the spec's §12 defaults, a stock spool clamping them to themselves: a scope config carries bounds too
+ * (spec §5), but only the relays are read from it so far, and every config this build issues names the defaults.
  */
 class ScopeRegistry(
     private val selfId: suspend () -> String,
@@ -106,12 +110,15 @@ class ScopeRegistry(
     private val groupRoots: suspend () -> List<GroupScopeRoots> = { emptyList() },
     private val pairs: suspend () -> List<PairScopeRoots> = { emptyList() },
     private val commons: suspend () -> List<CommonsRoots> = { emptyList() },
+    private val placement: suspend () -> ScopePlacement? = { null },
     private val bounds: ScopeBounds = DEFAULT_BOUNDS,
 ) {
     /** Every scope this device participates in at [now], newest-secret first, de-duplicated by id. */
     suspend fun scopes(now: Long): List<Scope> {
         val me = selfId()
-        return (dmScopes(me, now) + groupScopes(now) + pairScopes(me) + commonsScopes()).distinctBy { it.idHex }
+        val placed = placement()
+        return (dmScopes(me, now, placed) + groupScopes(me, now, placed) + pairScopes(me, placed) + commonsScopes())
+            .distinctBy { it.idHex }
     }
 
     /**
@@ -132,7 +139,10 @@ class ScopeRegistry(
         }
 
     /** The pair scope for every pending-intro peer: a DM-form scope whose secret is the identity pair secret. */
-    private suspend fun pairScopes(me: String): List<Scope> =
+    private suspend fun pairScopes(
+        me: String,
+        placed: ScopePlacement?,
+    ): List<Scope> =
         pairs().map { entry ->
             Scope(
                 id = ScopeCrypto.pairScopeId(entry.pairSecret, me, entry.peerId),
@@ -141,32 +151,40 @@ class ScopeRegistry(
                 retiring = false,
                 peerId = entry.peerId,
                 pair = true,
+                spools = placed?.forDm(entry.peerId),
             )
         }
 
     private suspend fun dmScopes(
         me: String,
         now: Long,
+        placed: ScopePlacement?,
     ): List<Scope> =
         roots()
             .flatMap { entry ->
+                val spools = placed?.forDm(entry.peerId)
                 val prev = entry.prevPairwiseRoot?.takeIf { entry.prevRootExpiresAt > now }
                 // Our unanswered reset exports only beside the root it replaced (C-3.1-4): once that drain closes
                 // it is any other unconfirmed initiation, and its peer stays off the table until the answer.
                 if (entry.pendingResetInit != null && prev == null) return@flatMap emptyList()
                 buildList {
-                    add(dmScope(me, entry.peerId, entry.pairwiseRoot, retiring = false, resetInit = entry.pendingResetInit))
-                    if (prev != null) add(dmScope(me, entry.peerId, prev, retiring = true, resetInit = entry.pendingResetInit))
+                    add(dmScope(me, entry.peerId, entry.pairwiseRoot, retiring = false, entry.pendingResetInit, spools))
+                    if (prev != null) add(dmScope(me, entry.peerId, prev, retiring = true, entry.pendingResetInit, spools))
                 }
             }
 
-    private suspend fun groupScopes(now: Long): List<Scope> =
+    private suspend fun groupScopes(
+        me: String,
+        now: Long,
+        placed: ScopePlacement?,
+    ): List<Scope> =
         groupRoots().flatMap { entry ->
+            val spools = placed?.forGroup(entry.groupId, entry.members, me)
             buildList {
-                add(groupScope(entry, entry.root, entry.rootVersion, retiring = false))
+                add(groupScope(entry, entry.root, entry.rootVersion, retiring = false, spools))
                 val prev = entry.prevRoot
                 if (prev != null && entry.prevRootExpiresAt > now) {
-                    add(groupScope(entry, prev, entry.prevRootVersion, retiring = true))
+                    add(groupScope(entry, prev, entry.prevRootVersion, retiring = true, spools))
                 }
             }
         }
@@ -176,7 +194,8 @@ class ScopeRegistry(
         peerId: String,
         pairwiseRoot: ByteArray,
         retiring: Boolean,
-        resetInit: ByteArray? = null,
+        resetInit: ByteArray?,
+        spools: Set<String>?,
     ) = Scope(
         id = ScopeCrypto.dmScopeId(pairwiseRoot, selfId, peerId),
         keys = ScopeCrypto.dmSealKeys(pairwiseRoot, selfId, peerId),
@@ -184,6 +203,7 @@ class ScopeRegistry(
         retiring = retiring,
         peerId = peerId,
         resetInit = resetInit,
+        spools = spools,
     )
 
     private fun groupScope(
@@ -191,6 +211,7 @@ class ScopeRegistry(
         root: ByteArray,
         version: Int,
         retiring: Boolean,
+        spools: Set<String>?,
     ) = Scope(
         id = ScopeCrypto.groupScopeId(root, entry.groupId, version),
         keys = ScopeCrypto.groupSealKeys(root, entry.groupId, version),
@@ -198,6 +219,7 @@ class ScopeRegistry(
         retiring = retiring,
         groupId = entry.groupId,
         roster = entry.roster,
+        spools = spools,
     )
 
     companion object {

@@ -217,7 +217,7 @@ val appModule =
         single { RouteInbox() }
         // Contact cards (docs/CONTACT_CARD.md): the minter, the importer, and the link handoff inbox.
         single { ContactCardInbox() }
-        single { ContactCards(get(), get(), get<MessageCrypto>()::signRaw) }
+        single { ContactCards(get(), get(), get<MessageCrypto>()::signRaw, home = get<HomeStore>().home) }
         single { ContactImporter(get(), get(), get(), get(), BuildConfig.INTERNET_PLANE) }
         // Its inverse: clears our own contact signals locally, tells no one (ADR 2026-09.adgd).
         single { ContactRemover(get(), get(), get(), get(), get(), get(), get(), get()) }

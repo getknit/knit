@@ -478,9 +478,11 @@ doc). **Don't start a deferred item without explicit direction.**
   - **the scope-config ctl** — ~~on the wire~~ (**done 2026-10-23**, ADR 2026-10.8kfx's first phase:
     `CTL_SCOPE_CONFIG = 7` / `MessageContent.sc` / `ScopeConfigPayload`, decoded in both forms and
     stored per issuer by `ScopeConfigRepository` under `ScopeConfigPolicy`'s LWW on `(version, issuer)`,
-    DB v24, golden vectors and a `docs/WIRE_COMPAT.md` precedent). **Still owed:** issuing one
-    (`MeshManager.sendScopeConfig` exists, nothing calls it) and the scope table reading it; until
-    then the spool list is a device setting and bounds are §12 constants in `ScopeRegistry`.
+    DB v24, golden vectors and a `docs/WIRE_COMPAT.md` precedent); ~~issuing it and placing scopes by it~~
+    (**done 2026-10-23**, ADR 2026-10.8kfx: homes, the directory behind `BuildConfig.SPOOL_DIRECTORY`, the union rule
+    in `ScopeSpools`, `ScopeConfigIssuer`). **Still owed:** mailbox connections and casts on the callee's home, the
+    relay-list rework that retires the seeded `public-1`, a pair scope reading a card's `sp[0]`, and bounds read from
+    the config; all wait until a `public-2` is in sight.
   - ~~a spool-list editor~~ (**done 2026-08-16** — `ui/relay/InternetRelayScreen`, route `relays`,
     reached from a Profile summary row. **The switch is un-gated**: `BuildConfig.DEBUG` is gone from
     `ProfileScreen`, because the hard prerequisite is now met — a release user can edit or remove the
