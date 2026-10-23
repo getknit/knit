@@ -50,6 +50,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.SectionHeader
 import app.getknit.knit.ui.preview.KnitPreview
 import kotlinx.coroutines.launch
@@ -116,7 +117,7 @@ internal fun FieldLogScreenContent(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
                     }
                 },
-                title = { Text(stringResource(R.string.field_log_title)) },
+                title = { BarTitle(stringResource(R.string.field_log_title)) },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },

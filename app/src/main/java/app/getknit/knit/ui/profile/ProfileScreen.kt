@@ -70,6 +70,7 @@ import app.getknit.knit.R
 import app.getknit.knit.TextLimits
 import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.CharCounter
 import app.getknit.knit.ui.components.DetailCard
 import app.getknit.knit.ui.components.DetailRow
@@ -210,7 +211,7 @@ internal fun ProfileScreenContent(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.profile_title)) },
+                title = { BarTitle(stringResource(R.string.profile_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))

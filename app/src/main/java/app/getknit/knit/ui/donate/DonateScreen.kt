@@ -44,6 +44,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.ui.PLAY_LISTING_URL
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.openUrl
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.shareText
@@ -77,7 +78,7 @@ fun DonateScreen(
                         )
                     }
                 },
-                title = { Text(stringResource(R.string.donate_title)) },
+                title = { BarTitle(stringResource(R.string.donate_title)) },
             )
         },
     ) { padding ->

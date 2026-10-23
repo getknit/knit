@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.crash.CrashReportRef
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.SectionHeader
 import app.getknit.knit.ui.openUrl
 import app.getknit.knit.ui.preview.KnitPreview
@@ -162,7 +163,7 @@ internal fun CrashLogScreenContent(
                         )
                     }
                 },
-                title = { Text(stringResource(R.string.crash_title)) },
+                title = { BarTitle(stringResource(R.string.crash_title)) },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },

@@ -62,6 +62,7 @@ import app.getknit.knit.legal.InstallSource
 import app.getknit.knit.legal.License
 import app.getknit.knit.ui.REPO_URL
 import app.getknit.knit.ui.WEBSITE_URL
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.DetailCard
 import app.getknit.knit.ui.components.DetailRow
 import app.getknit.knit.ui.components.SectionHeader
@@ -131,7 +132,7 @@ internal fun AboutScreenContent(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
                     }
                 },
-                title = { Text(stringResource(R.string.about_title)) },
+                title = { BarTitle(stringResource(R.string.about_title)) },
             )
         },
     ) { padding ->

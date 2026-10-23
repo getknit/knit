@@ -70,6 +70,7 @@ import app.getknit.knit.ui.backgroundBattery
 import app.getknit.knit.ui.camera.openAppSettings
 import app.getknit.knit.ui.components.AdaptiveRow
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.ChoiceButtons
 import app.getknit.knit.ui.deviceSupervision
 import app.getknit.knit.ui.openUnusedAppPauseSettings
@@ -239,7 +240,7 @@ internal fun SettingsScreenContent(
         modifier = Modifier.testTag("screen_settings"),
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.settings_title)) },
+                title = { BarTitle(stringResource(R.string.settings_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))

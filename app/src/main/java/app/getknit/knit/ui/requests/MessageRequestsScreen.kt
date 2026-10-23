@@ -49,6 +49,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.GroupAvatar
 import app.getknit.knit.ui.components.PeerNameText
 import app.getknit.knit.ui.preview.KnitPreview
@@ -111,7 +112,7 @@ internal fun MessageRequestsScreenContent(
                         )
                     }
                 },
-                title = { Text(stringResource(R.string.message_requests_title)) },
+                title = { BarTitle(stringResource(R.string.message_requests_title)) },
             )
         },
     ) { padding ->

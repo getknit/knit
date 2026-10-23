@@ -85,6 +85,7 @@ import app.getknit.knit.transfer.HostVerdict
 import app.getknit.knit.ui.DeviceSupervision
 import app.getknit.knit.ui.Reach
 import app.getknit.knit.ui.components.AdaptiveRow
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.ChoiceButtons
 import app.getknit.knit.ui.components.SectionHeader
 import app.getknit.knit.ui.deviceSupervision
@@ -272,7 +273,7 @@ internal fun DiagnosticsScreenContent(
                         )
                     }
                 },
-                title = { Text(stringResource(R.string.diagnostics_title)) },
+                title = { BarTitle(stringResource(R.string.diagnostics_title)) },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },

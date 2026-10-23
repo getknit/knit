@@ -7,6 +7,7 @@ import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -52,6 +53,7 @@ import app.getknit.knit.call.CaptionStatus
 import app.getknit.knit.call.Captions
 import app.getknit.knit.call.SttModelState
 import app.getknit.knit.call.TranscriptLine
+import app.getknit.knit.ui.components.AdaptiveRow
 import app.getknit.knit.ui.theme.LocalReduceMotion
 import java.time.Instant
 import java.time.ZoneId
@@ -120,8 +122,11 @@ internal fun WalkieTranscript(
                 contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                transcriptItems(ui, name, ready, times, onDownload, onCancel, onDismiss)
+                transcriptItems(ui, name, ready, times, onCancel)
             }
+            // The offer's buttons under the list rather than in it: a longer language's explanation scrolls, and the
+            // way to act on it stays in view.
+            if (!ready) ModelActions(ui, onDownload, onDismiss, modifier = Modifier.padding(ACTIONS_PADDING))
         }
     }
 }
@@ -131,14 +136,12 @@ private fun LazyListScope.transcriptItems(
     name: String,
     ready: Boolean,
     times: DateTimeFormatter,
-    onDownload: () -> Unit,
     onCancel: () -> Unit,
-    onDismiss: () -> Unit,
 ) {
     if (!ready) {
         item(key = "model") {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                ModelPanel(ui, onDownload, onCancel, onDismiss)
+                ModelPanel(ui, onCancel)
                 if (ui.lines.isNotEmpty()) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
@@ -278,18 +281,15 @@ private fun noteOf(
     }
 
 /**
- * Where the speech model stands, with the one action that moves it on and, beside a Download, Dismiss: only the offer
- * closes, since once the model is in the Calls screen's switch is the way out.
+ * Where the speech model stands: what it would do and costs, or why it failed — the offer's buttons are under the card's
+ * list ([ModelActions]) — or the download's progress, with its Cancel beside it, since there is nothing to scroll then.
  */
 @Composable
 private fun ModelPanel(
     ui: TranscriptUi,
-    onDownload: () -> Unit,
     onCancel: () -> Unit,
-    onDismiss: () -> Unit,
-    // What the model would do here, before its cost, and what the button beside Download says.
+    // What the model would do here, before its cost.
     offer: String = stringResource(R.string.call_transcript_offer),
-    dismiss: String = stringResource(R.string.call_transcript_dismiss),
 ) {
     val context = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -303,7 +303,6 @@ private fun ModelPanel(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 if (ui.metered) MeteredNote()
-                OfferButtons(stringResource(R.string.call_transcript_download), onDownload, onDismiss, dismiss)
             }
 
             is SttModelState.Downloading -> {
@@ -311,14 +310,15 @@ private fun ModelPanel(
                     progress = { if (model.total > 0) (model.done.toFloat() / model.total).coerceIn(0f, 1f) else 0f },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                AdaptiveRow(
+                    stackedAtEnd = true,
+                    trailing = { TextButton(onClick = onCancel) { Text(stringResource(R.string.call_settings_speech_model_cancel)) } },
+                ) {
                     Text(
                         stringResource(R.string.call_transcript_downloading, mb(context, model.done), mb(context, model.total)),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f),
                     )
-                    TextButton(onClick = onCancel) { Text(stringResource(R.string.call_settings_speech_model_cancel)) }
                 }
             }
 
@@ -329,8 +329,34 @@ private fun ModelPanel(
                     color = MaterialTheme.colorScheme.error,
                 )
                 if (ui.metered) MeteredNote()
-                OfferButtons(stringResource(R.string.call_settings_speech_model_retry), onDownload, onDismiss, dismiss)
             }
+        }
+    }
+}
+
+/**
+ * The offer's Download or Try again and, beside it, Dismiss: only the offer closes, since once the model is in, the
+ * Calls screen's switch is the way out. Drawn under the card's list, never in it, so a long explanation scrolls and the
+ * buttons stay in view.
+ */
+@Composable
+private fun ModelActions(
+    ui: TranscriptUi,
+    onDownload: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    // What the button beside Download says.
+    dismiss: String = stringResource(R.string.call_transcript_dismiss),
+) {
+    when (ui.model) {
+        SttModelState.Ready, is SttModelState.Downloading -> {}
+
+        SttModelState.Absent -> {
+            OfferButtons(stringResource(R.string.call_transcript_download), onDownload, onDismiss, dismiss, modifier)
+        }
+
+        is SttModelState.Failed -> {
+            OfferButtons(stringResource(R.string.call_settings_speech_model_retry), onDownload, onDismiss, dismiss, modifier)
         }
     }
 }
@@ -350,8 +376,14 @@ private fun OfferButtons(
     onDownload: () -> Unit,
     onDismiss: () -> Unit,
     dismiss: String,
+    modifier: Modifier = Modifier,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Dismiss takes the next line when the two labels don't fit side by side.
+    FlowRow(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
+    ) {
         FilledTonalButton(onClick = onDownload, contentPadding = ButtonDefaults.ButtonWithIconContentPadding) {
             Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
             Text(label, Modifier.padding(start = ButtonDefaults.IconSpacing))
@@ -359,6 +391,9 @@ private fun OfferButtons(
         TextButton(onClick = onDismiss, modifier = Modifier.testTag("walkie_transcript_dismiss")) { Text(dismiss) }
     }
 }
+
+/** Where the offer's buttons sit: under the card's list, inside its padding. */
+private val ACTIONS_PADDING = PaddingValues(start = 16.dp, end = 16.dp, bottom = 12.dp)
 
 /** What a live call's captions draw: the call's lines and where they stand, and where the speech model stands. */
 internal data class CaptionsUi(
@@ -424,15 +459,12 @@ internal fun LiveCaptions(
                     item(key = "model") {
                         ModelPanel(
                             transcript,
-                            onDownload,
                             onCancel,
-                            onOff,
                             offer =
                                 stringResource(
                                     R.string.call_captions_offer,
                                     name.ifBlank { stringResource(R.string.call_transcript_other_phone) },
                                 ),
-                            dismiss = stringResource(R.string.call_captions_not_now),
                         )
                     }
                 } else if (lines.isEmpty() && ui.captions.status == CaptionStatus.ON) {
@@ -448,6 +480,15 @@ internal fun LiveCaptions(
                     }
                 }
                 items(lines, key = { "c${it.burst}" }) { line -> Caption(line) }
+            }
+            if (!ready) {
+                ModelActions(
+                    transcript,
+                    onDownload,
+                    onDismiss = onOff,
+                    dismiss = stringResource(R.string.call_captions_not_now),
+                    modifier = Modifier.padding(ACTIONS_PADDING),
+                )
             }
         }
     }

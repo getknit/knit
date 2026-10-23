@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.PeerNameText
 import app.getknit.knit.ui.components.peerBadge
 import app.getknit.knit.ui.components.skeletonBlockColor
@@ -133,7 +134,7 @@ internal fun ContactsScreenContent(
                         )
                     }
                 },
-                title = { Text(stringResource(R.string.contacts_title)) },
+                title = { BarTitle(stringResource(R.string.contacts_title)) },
                 actions = {
                     IconButton(onClick = onAddContact, modifier = Modifier.size(48.dp).testTag("contacts_add")) {
                         Icon(Icons.Filled.PersonAdd, contentDescription = stringResource(R.string.add_contact_title))

@@ -69,7 +69,9 @@ layout has to take the longer text.
   go through `ui/components/ChoiceButtons`, a segmented row that turns into a list of radio buttons when a label
   doesn't fit its segment. A title with something at its end (a status, tags, a button) goes through
   `ui/components/AdaptiveRow`, which moves the end part under the title once the two can't share the width,
-  rather than a `weight(1f)` title the end part squeezes.
+  rather than a `weight(1f)` title the end part squeezes. Text in a fixed height (a top bar's title, its status line)
+  keeps one line and steps its size down before it ellipsizes: a top bar's plain title is `ui/components/BarTitle`.
+  A card's actions sit outside its scrolling list, so a long explanation scrolls and the buttons stay in view.
 
 ## Deliberately English
 

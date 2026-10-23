@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.R
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.preview.KnitPreview
 import org.koin.androidx.compose.koinViewModel
 
@@ -61,7 +62,7 @@ fun BlockedUsersScreen(
                         )
                     }
                 },
-                title = { Text(stringResource(R.string.blocked_users_title)) },
+                title = { BarTitle(stringResource(R.string.blocked_users_title)) },
             )
         },
     ) { padding ->

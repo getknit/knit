@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.CloudOff
@@ -33,8 +34,10 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.getknit.knit.R
 import app.getknit.knit.data.relay.RelayPlane
 import app.getknit.knit.mesh.TransportHealth
@@ -134,15 +137,23 @@ fun ConnectionStatusRow(
         // a semantics node or changes a syllable of what TalkBack says.
         val labelEnter = KnitMotion.enterFade()
         val labelExit = KnitMotion.exitFade()
+        // One line, always: the row is a top bar's subtitle, whose height is fixed, so a second line pushed the title
+        // into the bar's top edge. A longer language steps the size down a little first, and only past that is the
+        // end cut; TalkBack reads the whole label either way (the description above). The weight leaves the glyphs
+        // their room after it.
         AnimatedContent(
             targetState = label,
             transitionSpec = { labelEnter togetherWith labelExit },
             label = "connectionLabel",
+            modifier = Modifier.weight(1f, fill = false),
         ) { current ->
             Text(
                 text = current,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                autoSize = TextAutoSize.StepBased(minFontSize = LABEL_MIN_SIZE, maxFontSize = MaterialTheme.typography.labelSmall.fontSize),
             )
         }
         // A glyph appearing at all is a settings change (the plane being armed or a board bound), which
@@ -169,6 +180,9 @@ fun ConnectionStatusRow(
         }
     }
 }
+
+/** How far the status label may shrink to keep one line: two points under labelSmall's 11. */
+private val LABEL_MIN_SIZE = 9.sp
 
 /**
  * One armed plane's 14dp glyph. Decorative — [ConnectionStatusRow] speaks for the whole row — with its

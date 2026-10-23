@@ -52,6 +52,7 @@ import app.getknit.knit.R
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.location.GeoUri
 import app.getknit.knit.ui.components.Avatar
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.PeerNameText
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
@@ -113,7 +114,7 @@ internal fun MessageDetailsScreenContent(
         modifier = Modifier.testTag("screen_message_details"),
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.message_details_title)) },
+                title = { BarTitle(stringResource(R.string.message_details_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(

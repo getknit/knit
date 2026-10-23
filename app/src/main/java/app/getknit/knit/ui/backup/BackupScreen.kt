@@ -62,6 +62,7 @@ import app.getknit.knit.R
 import app.getknit.knit.data.backup.BackupFormat
 import app.getknit.knit.data.backup.BackupKeys
 import app.getknit.knit.data.backup.BackupProblem
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.DetailCard
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
@@ -140,7 +141,7 @@ internal fun BackupScreenContent(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(if (restoreOnly) R.string.backup_restore_title else R.string.backup_title)) },
+                title = { BarTitle(stringResource(if (restoreOnly) R.string.backup_restore_title else R.string.backup_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))

@@ -32,6 +32,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
+import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.releaseNotesUrl
 
@@ -50,7 +51,7 @@ fun WhatsNewScreen(
         modifier = Modifier.testTag("screen_whats_new"),
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.whats_new_title)) },
+                title = { BarTitle(stringResource(R.string.whats_new_title)) },
                 navigationIcon = {
                     IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
