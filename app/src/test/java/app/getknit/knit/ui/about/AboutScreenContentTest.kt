@@ -38,11 +38,12 @@ class AboutScreenContentTest {
         obfuscated: Boolean = true,
         installSource: InstallSource = InstallSource.FDROID,
         commit: String? = null,
+        flags: List<String> = emptyList(),
     ) {
         compose.setContent {
             KnitTheme {
                 AboutScreenContent(
-                    info = AboutBuildInfo(previewEnvironment(buildType, obfuscated), installSource, commit),
+                    info = AboutBuildInfo(previewEnvironment(buildType, obfuscated), installSource, commit, flags),
                     snackbarHostState = SnackbarHostState(),
                     onBack = {},
                     onOpenUrl = { opened += it },
@@ -98,6 +99,19 @@ class AboutScreenContentTest {
     fun aDebugBuildShowsItsCommit() {
         render(buildType = "debug", obfuscated = false, commit = "06dd410d")
         compose.onNodeWithTag("about_build_commit").performScrollTo().assertTextContains("06dd410d")
+    }
+
+    @Test
+    fun theFlagsRowNamesTheFlagsThatAreOn() {
+        render(flags = listOf("LORA_PLANE", "LIVE_CALLS"))
+        compose.onNodeWithTag("about_build_flags").performScrollTo().assertTextContains("LORA_PLANE, LIVE_CALLS")
+    }
+
+    @Test
+    fun noFlagsMeansNoFlagsRow() {
+        render()
+        compose.onNodeWithTag("about_build_version").performScrollTo()
+        compose.onNodeWithTag("about_build_flags").assertDoesNotExist()
     }
 
     @Test

@@ -348,6 +348,14 @@ private fun BuildSection(
             value = stringResource(info.installSource.labelRes()),
             modifier = Modifier.testTag("about_build_installed_from"),
         )
+        if (info.flags.isNotEmpty()) {
+            DetailRow(
+                label = stringResource(R.string.about_build_flags),
+                // The flags' own BuildConfig names, unlocalized: they are for the maintainer, like the copied block.
+                value = info.flags.joinToString(", "),
+                modifier = Modifier.testTag("about_build_flags"),
+            )
+        }
         DetailRow(
             label = stringResource(R.string.about_build_android),
             value = stringResource(R.string.about_build_android_value, environment.release, environment.sdkInt),
@@ -401,7 +409,12 @@ internal fun previewEnvironment(
 fun AboutScreenPreview() =
     KnitPreview {
         AboutScreenContent(
-            info = AboutBuildInfo(environment = previewEnvironment(), installSource = InstallSource.FDROID),
+            info =
+                AboutBuildInfo(
+                    environment = previewEnvironment(),
+                    installSource = InstallSource.FDROID,
+                    flags = listOf("INTERNET_PLANE", "LORA_PLANE", "LIVE_CALLS", "MESH_CALLS", "KNIT_ANYWHERE"),
+                ),
             snackbarHostState = SnackbarHostState(),
             onBack = {},
             onOpenUrl = {},
@@ -421,6 +434,7 @@ fun AboutScreenDebugPreview() =
                     environment = previewEnvironment(buildType = "debug", obfuscated = false),
                     installSource = InstallSource.SIDELOADED,
                     commit = "06dd410d",
+                    flags = listOf("INTERNET_PLANE", "LORA_PLANE", "COMMONS", "LIVE_CALLS", "MESH_CALLS", "STT"),
                 ),
             snackbarHostState = SnackbarHostState(),
             onBack = {},

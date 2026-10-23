@@ -1,11 +1,13 @@
 package app.getknit.knit.ui.about
 
+import app.getknit.knit.BuildConfig
 import app.getknit.knit.crash.CrashIssueUrl
 import app.getknit.knit.legal.InstallSource
 import app.getknit.knit.ui.ISSUES_URL
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.lang.reflect.Modifier
 import java.net.URLDecoder
 
 /**
@@ -51,6 +53,40 @@ class AboutBuildInfoTest {
             """.trimIndent(),
             info.asText(),
         )
+    }
+
+    @Test
+    fun theFlagsThatAreOnFollowTheInstallSource() {
+        val info =
+            AboutBuildInfo(
+                environment = previewEnvironment(),
+                installSource = InstallSource.PLAY,
+                flags = listOf("LORA_PLANE", "LIVE_CALLS"),
+            )
+        assertEquals(
+            listOf("app: 2.5.1 (21) release", "installed from: play", "flags: LORA_PLANE, LIVE_CALLS"),
+            info.asText().lines().take(3),
+        )
+    }
+
+    @Test
+    fun onlyTheFlagsThatAreOnAreNamedInTheirOrder() {
+        assertEquals(
+            listOf("COMMONS", "STT"),
+            enabledBuildFlags(listOf("LORA_PLANE" to false, "COMMONS" to true, "TRANSLATE" to false, "STT" to true)),
+        )
+    }
+
+    @Test
+    fun theListNamesEveryBooleanFlagByItsOwnConstant() {
+        // Read off BuildConfig itself, so a flag added to app/build.gradle.kts and not to the list fails here.
+        val fields =
+            BuildConfig::class.java.declaredFields
+                .filter { it.type == java.lang.Boolean.TYPE && Modifier.isStatic(it.modifiers) && it.name != "DEBUG" }
+                .associate { it.name to it.getBoolean(null) }
+        assertEquals(fields.keys, BUILD_FLAGS.map { it.first }.toSet())
+        val on = enabledBuildFlags()
+        fields.forEach { (name, value) -> assertEquals(name, value, name in on) }
     }
 
     @Test

@@ -1410,6 +1410,8 @@
     <string name="about_build_type">Build</string>
     <string name="about_build_type_minified">%1$s · minified</string>
     <string name="about_build_installed_from">Installed from</string>
+    <!-- Label for the row listing the feature flags this build was made with (their code names, untranslated). -->
+    <string name="about_build_flags">Flags</string>
     <string name="about_install_source_play">Google Play</string>
     <string name="about_install_source_fdroid">F-Droid</string>
     <string name="about_install_source_sideloaded">Sideloaded (GitHub, a shared APK or another store)</string>
