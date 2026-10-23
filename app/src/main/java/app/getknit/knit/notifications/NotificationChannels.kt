@@ -1,6 +1,9 @@
 package app.getknit.knit.notifications
 
+import android.content.ContentResolver
 import android.content.Context
+import android.media.AudioAttributes
+import android.net.Uri
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationChannelGroupCompat
 import androidx.core.app.NotificationManagerCompat
@@ -64,6 +67,29 @@ object NotificationChannels {
 
     // The pre-bump LOW-importance Requests channel; replaced by [REQUESTS] (_v2) at HIGH importance.
     private const val LEGACY_REQUESTS = "knit_msg_requests"
+
+    private val soundAttributes: AudioAttributes =
+        AudioAttributes
+            .Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+
+    /**
+     * Knit's own sound, which every channel in the Messages group plays (ADR 2026-10.xukf). The URI names the
+     * resource (`android.resource://<package>/raw/knit`), never its id: a channel keeps the URI it was created
+     * with for good, and an id can move between builds. So `res/raw/knit.ogg` must never be renamed or removed;
+     * new bytes under the same name change the sound on every channel already made, without a channel bump.
+     * A channel's sound is fixed once it exists, so a phone whose channels predate it keeps the system default.
+     */
+    fun messageSound(context: Context): Uri =
+        Uri
+            .Builder()
+            .scheme(ContentResolver.SCHEME_ANDROID_RESOURCE)
+            .authority(context.packageName)
+            .appendPath(context.resources.getResourceTypeName(R.raw.knit))
+            .appendPath(context.resources.getResourceEntryName(R.raw.knit))
+            .build()
 
     /** The message channel for a conversation [kind]. (Mentions route to [MENTIONS] separately.) */
     fun channelFor(kind: ConversationKind): String =
@@ -222,5 +248,6 @@ object NotificationChannels {
         .setName(context.getString(nameRes))
         .setDescription(context.getString(descRes))
         .setGroup(group)
+        .apply { if (group == GROUP_MESSAGES) setSound(messageSound(context), soundAttributes) }
         .build()
 }

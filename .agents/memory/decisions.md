@@ -272,6 +272,7 @@ carries; never renumber an old one.
 | [2026-10.xgwj](decisions/2026-10-xgwj-a-forced-group-rekey-retires-the-send-chain.md) | A forced group rekey retires the send chain, never reuses its epoch | crypto, groups |
 | [2026-10.xhfr](decisions/2026-10-xhfr-the-commons-takes-reactions-and-keyed-attachments-and-notices-a-rotated-invite.md) | The commons takes reactions and keyed attachments and notices a rotated invite | spool, commons |
 | [2026-10.xkp4](decisions/2026-10-xkp4-a-ticket-goes-once-per-connection.md) | a ticket goes once per connection, only to its own host, and STUN rides hello | calls, spool, turn, tickets |
+| [2026-10.xukf](decisions/2026-10-xukf-message-notifications-play-knit-s-own-sound.md) | Message notifications play Knit's own sound, a Morse K in felt | notifications, ui |
 | [2026-10.y9qh](decisions/2026-10-y9qh-a-receiver-shows-how-far-an-incoming-attachment-has-got.md) | A receiver shows how far an incoming attachment has got | mesh, attachments, wire, ui |
 | [2026-10.yvn6](decisions/2026-10-yvn6-ble-links-step-down-to-the-coded-phy-at-range.md) | BLE links step down to the Coded PHY at range | ble, mesh, power |
 | [2026-10.zeja](decisions/2026-10-zeja-what-s-new.md) | What's New: a chat-list card, bundled announcements | ui, onboarding |

@@ -62,6 +62,8 @@ document:
   such as Opus and BoringSSL. Each row opens its full license text.
 - Report a problem in About now opens GitHub's bug form with your Knit version, phone model and Android
   version filled in. You only have to describe what went wrong and how to make it happen again.
+- Message notifications now play Knit's own sound, a soft long-short-long chime that is K in Morse code. Only
+  new installs get it, so if Knit is already on your phone, its notifications keep the sound they have now.
 
 ### Fixed
 
