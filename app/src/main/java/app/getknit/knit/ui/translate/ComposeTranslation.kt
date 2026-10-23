@@ -50,6 +50,7 @@ fun DraftTranslateLine(
     onTranslate: (from: TranslateLang?) -> Unit,
     onUndo: () -> Unit,
     modifier: Modifier = Modifier,
+    onNotThisLanguage: () -> Unit = {},
 ) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     val hint = ui.hint
@@ -64,6 +65,11 @@ fun DraftTranslateLine(
                         color = muted,
                     )
                     Spacer(Modifier.weight(1f))
+                    if (ui.translatedGuessed) {
+                        TextButton(
+                            onClick = onNotThisLanguage,
+                        ) { Text(stringResource(R.string.translate_not_language, languageName(from))) }
+                    }
                     TextButton(onClick = onUndo) { Text(stringResource(R.string.translate_draft_undo)) }
                 }
             }
@@ -225,6 +231,18 @@ fun DraftTranslateHintPreview() =
                 onUndo = {},
             )
         }
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun DraftTranslatedGuessedPreview() =
+    KnitPreview {
+        DraftTranslateLine(
+            ui = DraftTranslateUi(translatedFrom = TranslateLang.EN, translatedGuessed = true),
+            canSend = true,
+            onTranslate = {},
+            onUndo = {},
+        )
     }
 
 @Preview(showBackground = true)

@@ -9,11 +9,12 @@ import app.getknit.knit.translate.TranslateLang
 sealed interface TranslationShown {
     data object Running : TranslationShown
 
-    /** [hidden] when Content filtering hides it, until the reader taps. */
+    /** [hidden] when Content filtering hides it, until the reader taps; [guessed] when [from] was a prior's guess. */
     data class Text(
         val text: String,
         val from: TranslateLang,
         val hidden: Boolean,
+        val guessed: Boolean = false,
     ) : TranslationShown
 
     /** [direction]'s model is not on the phone; [model] is where its download stands. */
@@ -36,7 +37,7 @@ fun translationShown(
     when (state) {
         null -> null
         MessageTranslation.Running -> TranslationShown.Running
-        is MessageTranslation.Done -> TranslationShown.Text(state.text, state.from, state.flagged && filterOn)
+        is MessageTranslation.Done -> TranslationShown.Text(state.text, state.from, state.flagged && filterOn, state.guessed)
         is MessageTranslation.NeedsModel -> TranslationShown.NeedsModel(state.direction, models[state.direction] ?: SttModelState.Absent)
         is MessageTranslation.Failed -> TranslationShown.Failed(state.reason == MessageTranslation.Failed.Reason.UNUSABLE)
     }

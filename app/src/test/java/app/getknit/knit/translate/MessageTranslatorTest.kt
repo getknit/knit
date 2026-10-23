@@ -330,4 +330,15 @@ class MessageTranslatorTest {
             assertEquals(Resolution(LanguagePick.Unsure, null), t.resolve("https://getknit.app/", emptyList(), "g1", "lucia", null))
             assertTrue(engine.detected.isEmpty())
         }
+
+    @Test
+    fun aTranslationFromAGuessedLanguageSaysSoAndOneFromTheWordsDoesNot() =
+        runTest {
+            val t = translator(FakeEngine { _, _ -> "I'm coming" })
+            t.translate("guessed", "ya voy", TranslateLang.EN, isRoom = false, guessed = true)
+            t.translate("read", "ya voy", TranslateLang.ES, isRoom = false)
+            advanceUntilIdle()
+            assertTrue((t.state.value["guessed"] as MessageTranslation.Done).guessed)
+            assertFalse((t.state.value["read"] as MessageTranslation.Done).guessed)
+        }
 }

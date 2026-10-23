@@ -35,13 +35,17 @@ interface TranslateEngine {
 sealed interface MessageTranslation {
     data object Running : MessageTranslation
 
-    /** [flagged] when Content filtering would hide [text] in the message's scope. */
+    /**
+     * [flagged] when Content filtering would hide [text] in the message's scope; [guessed] when [from] came from the
+     * author's or the chat's usual language, not the words, so the reader is offered the other one.
+     */
     data class Done(
         val text: String,
         val from: TranslateLang,
         val to: TranslateLang,
         val flagged: Boolean,
         val ms: Long,
+        val guessed: Boolean = false,
     ) : MessageTranslation
 
     /** [direction]'s model is not on the phone: nothing ran. */
@@ -143,7 +147,8 @@ class MessageTranslator(
 
     /**
      * Queues [body] of message [messageId], read as [from], for translation into the pair's other language. False when
-     * it is already running, or its model is not on the phone ([MessageTranslation.NeedsModel]).
+     * it is already running, or its model is not on the phone ([MessageTranslation.NeedsModel]). [guessed] when [from]
+     * is a prior's, not the words' (ADR 2026-10.t2h6's short-line amendment): the result says so.
      */
     fun translate(
         messageId: String,
@@ -151,6 +156,7 @@ class MessageTranslator(
         from: TranslateLang,
         isRoom: Boolean,
         mentions: List<IntRange> = emptyList(),
+        guessed: Boolean = false,
     ): Boolean {
         val direction = TranslateDirection.of(from, from.other) ?: return false
         synchronized(lock) {
@@ -164,7 +170,7 @@ class MessageTranslator(
         workScope.launch(dispatcher) {
             serial.withLock {
                 val outcome =
-                    runCatching { run(direction, body, isRoom, mentions) }
+                    runCatching { run(direction, body, isRoom, mentions, guessed) }
                         .onFailure { log("translate $direction: ${it.javaClass.simpleName}") }
                         .getOrDefault(MessageTranslation.Failed(MessageTranslation.Failed.Reason.ENGINE))
                 _state.update { it + (messageId to outcome) }
@@ -209,12 +215,13 @@ class MessageTranslator(
         body: String,
         isRoom: Boolean,
         mentions: List<IntRange>,
+        guessed: Boolean,
     ): MessageTranslation {
         val started = clock()
         return when (val outcome = core(direction, body, mentions, "message")) {
             is TranslateOutcome.Text -> {
                 val hidden = flagged(outcome.text, isRoom)
-                MessageTranslation.Done(outcome.text, outcome.from, outcome.to, hidden, clock() - started)
+                MessageTranslation.Done(outcome.text, outcome.from, outcome.to, hidden, clock() - started, guessed)
             }
 
             is TranslateOutcome.Failed -> {

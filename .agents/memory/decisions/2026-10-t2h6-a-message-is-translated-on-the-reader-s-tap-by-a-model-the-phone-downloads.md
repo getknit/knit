@@ -223,5 +223,8 @@ still are. The hint changed no confident read on either phone.
 
 **What it costs.** A prior is a guess about the person, not the line: someone who writes English to a chat and sends
 one short Spanish line ("ya voy") has it read as English. The audit counts coverage, not accuracy; the lab's traffic is
-almost all English. The reader still sees which language a translation came from, and a translation settled by a prior
-could offer the other language from there; that is not built.
+almost all English. So a translation whose language a prior settled, not the words, says so: "Translated from English
+· Not English?" under the message, and beside Undo over a draft. One tap translates it again from the other language,
+which the reader has now named, so it offers no second guess (`MessageTranslation.Done.guessed`). With more languages
+that tap would open the short picker instead. Device-verified on the Pixel 7: Walter's "ya voy", read as English by
+his history in that chat, came back as "I'm coming" after the tap.

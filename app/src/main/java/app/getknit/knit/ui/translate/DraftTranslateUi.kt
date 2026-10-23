@@ -14,5 +14,7 @@ data class DraftTranslateUi(
     // Null for no failure, true when the model looped (refused), false when it would not run.
     val failedUnusable: Boolean? = null,
     val translatedFrom: TranslateLang? = null,
+    // The draft's language was what this person usually writes here, not what its words read: "Not English?" is offered.
+    val translatedGuessed: Boolean = false,
     val downloadingPercent: Int? = null,
 )

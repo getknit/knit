@@ -104,6 +104,7 @@ import app.getknit.knit.transfer.TransferState
 import app.getknit.knit.translate.ChatTranslation
 import app.getknit.knit.translate.ComposePolicy
 import app.getknit.knit.translate.LanguagePick
+import app.getknit.knit.translate.LanguageSource
 import app.getknit.knit.translate.MessageTranslation
 import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateLang
@@ -770,6 +771,9 @@ class ChatViewModel(
     // Translations a download was started for, by direction: run once that model is in, if this chat is still open.
     private val awaitingTranslation = mutableMapOf<TranslateDirection, MutableList<ChatRow>>()
 
+    // Which rows' language a prior guessed rather than the words read, kept across a model's download.
+    private val guessedRows = mutableMapOf<String, Boolean>()
+
     init {
         translation?.let { t ->
             viewModelScope.launch {
@@ -777,7 +781,12 @@ class ChatViewModel(
                     models
                         .filterValues { it is SttModelState.Ready }
                         .keys
-                        .forEach { direction -> awaitingTranslation.remove(direction)?.forEach { translateRow(t, it, direction.from) } }
+                        .forEach { direction ->
+                            awaitingTranslation
+                                .remove(
+                                    direction,
+                                )?.forEach { translateRow(t, it, direction.from, guessedRows[it.id] == true) }
+                        }
                 }
             }
         }
@@ -795,22 +804,17 @@ class ChatViewModel(
         if (row.body.isBlank()) return
         _translateAsk.value = null
         viewModelScope.launch {
+            if (from != null) {
+                // The reader said which language it is: no guess to offer a way out of.
+                translateRow(t, row, from, guessed = false)
+                return@launch
+            }
             // The words first, then what this author writes here, then the chat's language; only then the reader.
-            val lang =
-                from ?: when (
-                    val pick =
-                        t.resolve(row.body, mentionRanges(row), conversationId, row.senderNodeId, threadLanguage.value).pick
-                ) {
-                    is LanguagePick.Picked -> {
-                        pick.lang
-                    }
-
-                    LanguagePick.Unsure -> {
-                        _translateAsk.value = row
-                        return@launch
-                    }
-                }
-            translateRow(t, row, lang)
+            val resolution = t.resolve(row.body, mentionRanges(row), conversationId, row.senderNodeId, threadLanguage.value)
+            when (val pick = resolution.pick) {
+                is LanguagePick.Picked -> translateRow(t, row, pick.lang, guessed = resolution.source != LanguageSource.TEXT)
+                LanguagePick.Unsure -> _translateAsk.value = row
+            }
         }
     }
 
@@ -841,8 +845,10 @@ class ChatViewModel(
         t: ChatTranslation,
         row: ChatRow,
         from: TranslateLang,
+        guessed: Boolean,
     ) {
-        t.translate(row.id, row.body, from, Conversations.isPublicRoom(conversationId), mentionRanges(row))
+        guessedRows[row.id] = guessed
+        t.translate(row.id, row.body, from, Conversations.isPublicRoom(conversationId), mentionRanges(row), guessed)
     }
 
     // Where the row's mentions sit in its body, for the translation to hand back untouched.
@@ -1656,11 +1662,15 @@ class ChatViewModel(
     sealed interface DraftTranslation {
         data object Running : DraftTranslation
 
-        /** For the screen to put in the field, then [onDraftTranslationApplied]; [original] is what Undo restores. */
+        /**
+         * For the screen to put in the field, then [onDraftTranslationApplied]; [original] is what Undo restores, and
+         * [guessed] says [from] was what this person usually writes here, not what the words read.
+         */
         data class Done(
             val original: String,
             val text: String,
             val from: TranslateLang,
+            val guessed: Boolean = false,
         ) : DraftTranslation
 
         /** The identifier could not tell which language the draft is in: the person is asked. */
@@ -1730,20 +1740,22 @@ class ChatViewModel(
         _draftTranslation.value = DraftTranslation.Running
         viewModelScope.launch {
             // A draft is the person's own: when its words cannot tell, what they write in this chat does.
+            val resolution = if (from == null) t.resolve(draft, mentions, conversationId, myNodeId.value, chat = null) else null
             val lang =
-                from ?: when (val pick = t.resolve(draft, mentions, conversationId, myNodeId.value, chat = null).pick) {
+                from ?: when (val pick = resolution?.pick) {
                     is LanguagePick.Picked -> {
                         pick.lang
                     }
 
-                    LanguagePick.Unsure -> {
+                    else -> {
                         _draftTranslation.value = DraftTranslation.AskFrom(draft, mentions)
                         return@launch
                     }
                 }
+            val guessed = resolution != null && resolution.source != LanguageSource.TEXT
             _draftTranslation.value =
                 when (val outcome = t.translateDraft(draft, lang, mentions)) {
-                    is TranslateOutcome.Text -> DraftTranslation.Done(draft, outcome.text, outcome.from)
+                    is TranslateOutcome.Text -> DraftTranslation.Done(draft, outcome.text, outcome.from, guessed)
                     is TranslateOutcome.NeedsModel -> DraftTranslation.NeedsModel(outcome.direction)
                     is TranslateOutcome.Failed -> DraftTranslation.Failed(outcome.reason == MessageTranslation.Failed.Reason.UNUSABLE)
                 }

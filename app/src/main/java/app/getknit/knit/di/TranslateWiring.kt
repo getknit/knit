@@ -108,7 +108,8 @@ private fun translateGraph(): Module =
                     from: TranslateLang,
                     isRoom: Boolean,
                     mentions: List<IntRange>,
-                ) = translator.translate(messageId, body, from, isRoom, mentions)
+                    guessed: Boolean,
+                ) = translator.translate(messageId, body, from, isRoom, mentions, guessed)
 
                 override fun dismiss(messageId: String) = translator.dismiss(messageId)
 

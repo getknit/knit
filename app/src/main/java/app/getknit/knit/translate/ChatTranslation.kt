@@ -37,6 +37,7 @@ interface ChatTranslation {
         from: TranslateLang,
         isRoom: Boolean,
         mentions: List<IntRange>,
+        guessed: Boolean,
     ): Boolean
 
     fun dismiss(messageId: String)

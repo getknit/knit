@@ -4,6 +4,7 @@ import android.text.format.Formatter
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -41,7 +42,9 @@ internal fun languageName(lang: TranslateLang): String =
 
 /**
  * Under a translated message, whose bubble shows the translation in the original's place: what it was translated
- * from, and the tap to the original and back.
+ * from, and the tap to the original and back. [onNotThisLanguage], given when [from] was a guess from the author's or
+ * the chat's usual language rather than the words (ADR 2026-10.t2h6's short-line amendment), offers "Not English?":
+ * the reader knows better than any prior.
  */
 @Composable
 fun TranslationToggle(
@@ -49,21 +52,38 @@ fun TranslationToggle(
     showingOriginal: Boolean,
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
+    onNotThisLanguage: (() -> Unit)? = null,
 ) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    Row(
+    // A narrow bubble wraps the row by whole items, never "Show" on one line and "original" on the next.
+    FlowRow(
         modifier = modifier.padding(top = 4.dp).testTag("chat_translation"),
-        verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(Icons.Filled.Translate, contentDescription = null, modifier = Modifier.size(14.dp), tint = muted)
         if (!showingOriginal) {
-            Text(stringResource(R.string.translate_label, languageName(from)), style = MaterialTheme.typography.labelSmall, color = muted)
+            Text(
+                stringResource(R.string.translate_label, languageName(from)),
+                style = MaterialTheme.typography.labelSmall,
+                color = muted,
+                softWrap = false,
+            )
+            if (onNotThisLanguage != null) {
+                Text(
+                    stringResource(R.string.translate_not_language, languageName(from)),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    softWrap = false,
+                    modifier = Modifier.clickable(onClick = onNotThisLanguage).padding(vertical = 4.dp),
+                )
+            }
         }
         Text(
             stringResource(if (showingOriginal) R.string.translate_show_translation else R.string.translate_show_original),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary,
+            softWrap = false,
             modifier = Modifier.clickable(onClick = onToggle).padding(vertical = 4.dp),
         )
     }
@@ -190,6 +210,13 @@ private const val PERCENT = 100
 fun TranslationToggleTranslatedPreview() =
     KnitPreview {
         TranslationToggle(from = TranslateLang.ES, showingOriginal = false, onToggle = {})
+    }
+
+@Preview(showBackground = true)
+@Composable
+fun TranslationToggleGuessedPreview() =
+    KnitPreview {
+        TranslationToggle(from = TranslateLang.EN, showingOriginal = false, onToggle = {}, onNotThisLanguage = {})
     }
 
 @Preview(showBackground = true)
