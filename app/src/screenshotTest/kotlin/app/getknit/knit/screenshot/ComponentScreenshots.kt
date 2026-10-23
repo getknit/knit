@@ -1,6 +1,7 @@
 package app.getknit.knit.screenshot
 
 import androidx.compose.runtime.Composable
+import app.getknit.knit.ui.components.AdaptiveRowPreview
 import app.getknit.knit.ui.components.AvatarBadgeSizesPreview
 import app.getknit.knit.ui.components.AvatarInitialPreview
 import app.getknit.knit.ui.components.AvatarLargeEmojiPreview
@@ -31,6 +32,11 @@ import app.getknit.knit.ui.components.RoomAvatarPreview
 import com.android.tools.screenshot.PreviewTest
 
 // Screenshot tests over the previews in `ui.components`.
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun AdaptiveRow() = AdaptiveRowPreview()
 
 @PreviewTest
 @ComponentShots

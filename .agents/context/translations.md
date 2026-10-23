@@ -67,7 +67,9 @@ layout has to take the longer text.
   than clip it; let a row of two actions stack when either label is too long; save ellipsis for text shown in full
   elsewhere (a chat preview), never an action. Use `start`/`end`, never `left`/`right`. A few answers shown at once
   go through `ui/components/ChoiceButtons`, a segmented row that turns into a list of radio buttons when a label
-  doesn't fit its segment.
+  doesn't fit its segment. A title with something at its end (a status, tags, a button) goes through
+  `ui/components/AdaptiveRow`, which moves the end part under the title once the two can't share the width,
+  rather than a `weight(1f)` title the end part squeezes.
 
 ## Deliberately English
 

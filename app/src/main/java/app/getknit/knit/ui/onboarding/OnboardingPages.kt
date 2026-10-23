@@ -59,6 +59,7 @@ import app.getknit.knit.identity.displayNameFor
 import app.getknit.knit.ui.DeviceSupervision
 import app.getknit.knit.ui.MeshPermissionTier
 import app.getknit.knit.ui.UnusedAppPause
+import app.getknit.knit.ui.components.AdaptiveRow
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.DisplayNameField
 import app.getknit.knit.ui.preview.KnitPreview
@@ -413,10 +414,27 @@ private fun PermissionRow(
     // a row whose settings state is the platform's own default says it in the rationale's colour instead.
     quietHint: Boolean = false,
 ) {
-    Row(
+    // The button moves under the text, at the end, when a longer language's label would squeeze the rationale
+    // into a narrow column.
+    AdaptiveRow(
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).semantics(mergeDescendants = true) {},
-        verticalAlignment = Alignment.CenterVertically,
+        stackedAtEnd = true,
+        trailing = { PermissionAction(title, state, onAllow, onOpenSettings, actionTag) },
     ) {
+        PermissionText(icon, title, rationale, state, settingsHint, quietHint)
+    }
+}
+
+@Composable
+private fun PermissionText(
+    icon: ImageVector,
+    title: String,
+    rationale: String,
+    state: RowState,
+    settingsHint: String,
+    quietHint: Boolean,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
             imageVector = icon,
             contentDescription = null,
@@ -424,7 +442,7 @@ private fun PermissionRow(
             modifier = Modifier.size(24.dp),
         )
         Spacer(Modifier.width(16.dp))
-        Column(modifier = Modifier.weight(1f)) {
+        Column {
             Text(text = title, style = MaterialTheme.typography.titleMedium)
             Text(
                 text = rationale,
@@ -440,37 +458,46 @@ private fun PermissionRow(
                 )
             }
         }
-        Spacer(Modifier.width(12.dp))
-        // The buttons say "Allow" three times over on the page, so each one names its row to a screen
-        // reader ("Allow, Nearby devices") — ATF flags identical speakable text on sibling controls.
-        val allowLabel = stringResource(R.string.onboarding_allow_desc, title)
-        val settingsLabel = stringResource(R.string.onboarding_open_settings_desc, title)
-        when (state) {
-            RowState.Granted -> {
-                Icon(
-                    imageVector = Icons.Filled.CheckCircle,
-                    contentDescription = stringResource(R.string.onboarding_allowed),
-                    tint = MaterialTheme.knitColors.positive,
-                    modifier = Modifier.size(24.dp).testTag("${actionTag}_granted"),
-                )
-            }
+    }
+}
 
-            RowState.Ask -> {
-                FilledTonalButton(
-                    onClick = onAllow,
-                    modifier = Modifier.testTag(actionTag).semantics { contentDescription = allowLabel },
-                ) {
-                    Text(stringResource(R.string.onboarding_allow))
-                }
-            }
+@Composable
+private fun PermissionAction(
+    title: String,
+    state: RowState,
+    onAllow: () -> Unit,
+    onOpenSettings: () -> Unit,
+    actionTag: String,
+) {
+    // The buttons say "Allow" three times over on the page, so each one names its row to a screen
+    // reader ("Allow, Nearby devices") — ATF flags identical speakable text on sibling controls.
+    val allowLabel = stringResource(R.string.onboarding_allow_desc, title)
+    val settingsLabel = stringResource(R.string.onboarding_open_settings_desc, title)
+    when (state) {
+        RowState.Granted -> {
+            Icon(
+                imageVector = Icons.Filled.CheckCircle,
+                contentDescription = stringResource(R.string.onboarding_allowed),
+                tint = MaterialTheme.knitColors.positive,
+                modifier = Modifier.size(24.dp).testTag("${actionTag}_granted"),
+            )
+        }
 
-            RowState.OpenSettings -> {
-                FilledTonalButton(
-                    onClick = onOpenSettings,
-                    modifier = Modifier.testTag("${actionTag}_settings").semantics { contentDescription = settingsLabel },
-                ) {
-                    Text(stringResource(R.string.action_open_settings))
-                }
+        RowState.Ask -> {
+            FilledTonalButton(
+                onClick = onAllow,
+                modifier = Modifier.testTag(actionTag).semantics { contentDescription = allowLabel },
+            ) {
+                Text(stringResource(R.string.onboarding_allow))
+            }
+        }
+
+        RowState.OpenSettings -> {
+            FilledTonalButton(
+                onClick = onOpenSettings,
+                modifier = Modifier.testTag("${actionTag}_settings").semantics { contentDescription = settingsLabel },
+            ) {
+                Text(stringResource(R.string.action_open_settings))
             }
         }
     }

@@ -68,6 +68,7 @@ import app.getknit.knit.ui.DeviceSupervision
 import app.getknit.knit.ui.UnusedAppPause
 import app.getknit.knit.ui.backgroundBattery
 import app.getknit.knit.ui.camera.openAppSettings
+import app.getknit.knit.ui.components.AdaptiveRow
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ChoiceButtons
 import app.getknit.knit.ui.deviceSupervision
@@ -668,30 +669,34 @@ private fun CloneNoticeRow(
         tonalElevation = 3.dp,
         modifier = modifier.fillMaxWidth().testTag("settings_clone_row"),
     ) {
-        Row(
+        // The action's label moves under the message, at the end, when a longer language would squeeze the message.
+        AdaptiveRow(
             modifier =
                 Modifier
                     .clickable(onClick = onClick, role = Role.Button)
                     .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            stackedAtEnd = true,
+            trailing = {
+                Text(
+                    text = stringResource(R.string.chatlist_clone_banner_action),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            },
         ) {
-            Icon(Icons.Filled.PhonelinkErase, contentDescription = null, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = stringResource(R.string.settings_clone_title),
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Text(
-                    text = stringResource(R.string.settings_clone_subtitle),
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.PhonelinkErase, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        text = stringResource(R.string.settings_clone_title),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        text = stringResource(R.string.settings_clone_subtitle),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
-            Spacer(Modifier.width(12.dp))
-            Text(
-                text = stringResource(R.string.chatlist_clone_banner_action),
-                style = MaterialTheme.typography.labelLarge,
-            )
         }
     }
 }
