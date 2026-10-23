@@ -47,6 +47,9 @@ document:
 
 ### Changed
 
+- Knit's public relay has a new name, public-1.spool.getknit.app, and Knit moves your settings over to it the
+  next time it starts. Your conversations, Knit Anywhere and free photo tickets keep working, and you don't
+  need to set anything up again.
 - Photos, voice messages and files over 1 MB that only Bluetooth can bring now wait for you to tap them, since
   that download can take minutes. Over Wi-Fi Aware they still download by themselves, and Settings can raise
   the limit to 5 MB or turn it off.

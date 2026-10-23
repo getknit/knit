@@ -7,6 +7,7 @@ import app.getknit.knit.identity.Identity
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.crypto.ContactCard
 import app.getknit.knit.mesh.crypto.SafetyNumber
+import app.getknit.knit.mesh.spool.SpoolUrl
 import kotlinx.coroutines.flow.first
 
 /**
@@ -85,7 +86,16 @@ class ContactImporter(
             relaysOff = !relaysOn,
             // Listed whether or not the plane is on — the sheet an "Add" raises owns the consent — but never
             // in a build where the plane is dark, where there is no screen to add one to.
-            unknownRelays = if (internetPlane) card.spools - settings.spoolUrls.first() else emptyList(),
+            // Folded to the stored form first, so a card naming a renamed relay's former host asks for nothing held.
+            unknownRelays =
+                if (internetPlane) {
+                    card.spools
+                        .map(
+                            SpoolUrl::canonical,
+                        ).distinct() - settings.spoolUrls.first()
+                } else {
+                    emptyList()
+                },
             card = card,
         )
     }

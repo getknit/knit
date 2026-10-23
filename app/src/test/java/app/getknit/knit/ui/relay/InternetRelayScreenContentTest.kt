@@ -117,7 +117,7 @@ class InternetRelayScreenContentTest {
     ) = RelayInviteApplier.Room(secret = ByteArray(32), name = name, alreadyJoined = alreadyJoined, replacesRoom = replacesRoom)
 
     private fun relay(
-        host: String = "lax.spool.getknit.app",
+        host: String = "public-1.spool.getknit.app",
         enabled: Boolean = true,
         connected: Boolean = true,
         scopeCount: Int? = 3,
@@ -170,7 +170,7 @@ class InternetRelayScreenContentTest {
     @Test
     fun aConnectedRelayShowsItsHostAndScopeCount() {
         render(InternetRelayUiState(enabled = true, relays = listOf(relay())))
-        compose.onNodeWithText("lax.spool.getknit.app").assertIsDisplayed()
+        compose.onNodeWithText("public-1.spool.getknit.app").assertIsDisplayed()
         compose.onNodeWithText("Connected · 3 conversations").assertIsDisplayed()
     }
 
@@ -306,7 +306,7 @@ class InternetRelayScreenContentTest {
             ),
         )
         compose.onNodeWithText("Turned off").assertIsDisplayed()
-        compose.onNodeWithTag("relay_switch_lax.spool.getknit.app").assertIsOff()
+        compose.onNodeWithTag("relay_switch_public-1.spool.getknit.app").assertIsOff()
     }
 
     @Test
@@ -342,7 +342,7 @@ class InternetRelayScreenContentTest {
             InternetRelayUiState(enabled = false, relays = listOf(relay())),
             onSetRelayEnabled = { url, _ -> flipped += url },
         )
-        compose.onNodeWithTag("relay_switch_lax.spool.getknit.app").assertIsNotEnabled().performClick()
+        compose.onNodeWithTag("relay_switch_public-1.spool.getknit.app").assertIsNotEnabled().performClick()
         assertEquals(emptyList<String>(), flipped)
         // And it says why: the whole plane is off, which is a different statement from this one relay being.
         compose.onNodeWithText("Not in use").assertIsDisplayed()
@@ -366,7 +366,7 @@ class InternetRelayScreenContentTest {
     @Test
     fun aRowsSwitchIsLabelledWithItsRelay() {
         render(InternetRelayUiState(enabled = true, relays = listOf(relay())))
-        compose.onNodeWithContentDescription("Use lax.spool.getknit.app").assertIsOn()
+        compose.onNodeWithContentDescription("Use public-1.spool.getknit.app").assertIsOn()
     }
 
     @Test
@@ -384,11 +384,11 @@ class InternetRelayScreenContentTest {
                     ),
             ),
         )
-        compose.onAllNodesWithTag("relay_calls_lax.spool.getknit.app").assertCountEquals(0)
+        compose.onAllNodesWithTag("relay_calls_public-1.spool.getknit.app").assertCountEquals(0)
         compose.onAllNodesWithText("TURN", substring = true).assertCountEquals(0)
         compose.onAllNodesWithText("issuer.example.org", substring = true).assertCountEquals(0)
         compose.onAllNodesWithText("Join").assertCountEquals(0)
-        compose.onAllNodesWithTag("relay_invite_lax.spool.getknit.app").assertCountEquals(0)
+        compose.onAllNodesWithTag("relay_invite_public-1.spool.getknit.app").assertCountEquals(0)
     }
 
     @Test

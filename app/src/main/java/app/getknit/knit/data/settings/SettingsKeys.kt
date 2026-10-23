@@ -22,6 +22,11 @@ object SettingsKeys {
     // Low-power mode's switch (ADR 2026-10.d44b, `LowPowerSwitch`), backup-transient under "low_power_".
     const val LOW_POWER_MODE = "low_power_mode"
 
+    // The relay list and its parked subset (`SettingsStore.spoolUrls`), here because `RelayRename` rewrites both in the
+    // same edit as the per-host keys below (ADR 2026-10.qpja).
+    const val SPOOL_URLS = "spool_urls"
+    const val SPOOL_URLS_DISABLED = "spool_urls_disabled"
+
     // A held entitlement ticket and its verdict, per spool host name (ADR 2026-10.xkp4). Both start with
     // "spool_ticket", the backup-transient prefix in [TRANSIENT_PREFIXES]; neither prefix is a prefix of the other.
     // Here rather than in the store because `TicketKeyStore` forgets a host's ticket in the same edit as its key.

@@ -54,6 +54,7 @@ class TicketRefresherTest {
         val signers = mutableListOf<DeviceSigner?>()
         var next: () -> IssuerAnswer = { IssuerAnswer.NoVerdict("unscripted") }
         val moves = mutableListOf<Pair<String, String>>()
+        val audiences = mutableListOf<String>()
         val moveSigners = mutableListOf<DeviceSigner?>()
         var moveNext: () -> IssuerAnswer = { IssuerAnswer.NoVerdict("unscripted") }
 
@@ -67,11 +68,23 @@ class TicketRefresherTest {
             return next()
         }
 
+        override suspend fun swap(
+            origin: String,
+            key: String,
+            aud: String,
+            device: DeviceSigner?,
+        ): IssuerAnswer {
+            audiences += aud
+            return swap(origin, key, device)
+        }
+
         override suspend fun move(
             origin: String,
             key: String,
+            aud: String,
             device: DeviceSigner?,
         ): IssuerAnswer {
+            audiences += aud
             moves += origin to key
             moveSigners += device
             return moveNext()
@@ -491,6 +504,20 @@ class TicketRefresherTest {
             assertEquals(now + 2 * TicketRefreshPolicy.FIRST_BACKOFF_MS, r.runOnce())
             assertNull(state().answer)
             assertEquals(2, state().failures)
+        }
+
+    @Test
+    fun theSwapAndTheMoveNameTheDialledHostAsTheAudience() =
+        runTest {
+            // ADR 2026-10.qpja: an account made under a relay's former name gets tickets for the name this phone dials.
+            urls.value = setOf("wss://LAB.example.org:8443/spool/v1?k=fixture-token")
+            keys.putKey(HOST, HeldKey(ISSUER, KEY))
+            issuer.next = { issued() }
+            val r = refresher()
+            r.runOnce()
+            issuer.moveNext = { issued() }
+            r.move(HOST)
+            assertEquals(listOf(HOST, HOST), issuer.audiences)
         }
 
     @Test

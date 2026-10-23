@@ -256,6 +256,7 @@ carries; never renumber an old one.
 | [2026-10.nz3g](decisions/2026-10-nz3g-walkie-bursts-are-transcribed-on-the-receiver-by-a-model-it-downloads.md) | Walkie bursts are transcribed on the receiver by a model it downloads | calls, voice, ml |
 | [2026-10.pj9w](decisions/2026-10-pj9w-ble-discovery-waits-run-on-the-elapsed-clock.md) | BLE discovery waits run on the elapsed clock, and a dial wakes when its dwell ripens | ble, transport, power |
 | [2026-10.qjap](decisions/2026-10-qjap-android-refuses-a-signed-envelope-whose-text-isn-t-utf-8.md) | Android refuses a signed envelope whose text isn't UTF-8, as iOS does | wire, crypto, interop |
+| [2026-10.qpja](decisions/2026-10-qpja-a-renamed-house-relay-is-folded-to-its-new-name-on-every-start.md) | A renamed house relay is folded to its new name on every start | spool, anywhere, settings |
 | [2026-10.r99s](decisions/2026-10-r99s-supporter-badges-ride-the-sealed-profile-only.md) | Supporter badges ride the sealed profile only, verified on display | profile, wire, anywhere, ui |
 | [2026-10.rn9j](decisions/2026-10-rn9j-mine-spool-pow-stamps-only-when-a-spool-demands-one.md) | Mine spool PoW stamps only when a spool demands one | spool, pow |
 | [2026-10.ryak](decisions/2026-10-ryak-the-ble-presence-advert-runs-at-full-power.md) | The BLE presence advert runs at full power | ble, mesh, power |

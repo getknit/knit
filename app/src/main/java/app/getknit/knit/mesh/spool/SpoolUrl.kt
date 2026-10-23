@@ -46,18 +46,44 @@ object SpoolUrl {
         }
 
     /**
-     * The one *stored* form of [url]: the scheme lowercased, and nothing else touched. Every door that
-     * writes a relay into settings puts it through this, because relays are matched downstream by exact
-     * string (`RelayInviteApplier` compares [redact]ed URLs, `SettingsStore` holds a `Set<String>`) — so
-     * without it a hand-typed `WSS://relay/spool/v1` and an invite's `wss://relay/spool/v1?k=…` would be
-     * two rows for one host, and the untokened one would be refused `4001` forever.
+     * A house relay's former host name → its current one (knit-spool-coordinator ADR 2026-10.ftp9): the same spool,
+     * answering both names until the former is retired. Matched exactly, never as a suffix — `lab.lax.spool.getknit.app`
+     * is the lab relay, a different spool.
+     */
+    private val RENAMED_HOSTS = mapOf("lax.spool.getknit.app" to "public-1.spool.getknit.app")
+
+    /** The current name of a renamed house relay, or [host] itself. Exact and case-insensitive. */
+    fun currentHost(host: String): String = RENAMED_HOSTS[host.lowercase()] ?: host
+
+    /** The former name of a renamed house relay, or [host] itself. Exact and case-insensitive. */
+    fun formerHost(host: String): String = RENAMED_HOSTS.entries.firstOrNull { it.value == host.lowercase() }?.key ?: host
+
+    /**
+     * The one *stored* form of [url]: the scheme lowercased, a renamed house relay's former host name
+     * replaced by its current one, and nothing else touched. Every door that writes a relay into settings
+     * puts it through this, because relays are matched downstream by exact string (`RelayInviteApplier`
+     * compares [redact]ed URLs, `SettingsStore` holds a `Set<String>`) — so without it a hand-typed
+     * `WSS://relay/spool/v1` and an invite's `wss://relay/spool/v1?k=…` would be two rows for one host, and
+     * the untokened one would be refused `4001` forever. The rename keeps an old card or invite from bringing
+     * the former name back once `SettingsStore.renameRelays` has moved a phone off it.
      *
-     * Only the scheme. The authority is case-insensitive too, but lowercasing it would rewrite what the
-     * user typed for no gain here, and a path and a bearer token are both case-*sensitive*.
+     * Only the scheme and a renamed host. The authority is case-insensitive too, but lowercasing it would
+     * rewrite what the user typed for no gain here, and a path and a bearer token are both case-*sensitive*.
+     * A port, user info, path and token survive the rename as they were.
      */
     fun canonical(url: String): String {
         val scheme = schemeOf(url) ?: return url
-        return scheme + url.substring(scheme.length)
+        val rest = url.substring(scheme.length)
+        val end = rest.indexOfFirst { it == '/' || it == '?' || it == '#' }.let { if (it < 0) rest.length else it }
+        val authority = rest.substring(0, end)
+        val userInfo = authority.substringBeforeLast('@', missingDelimiterValue = "")
+        val hostPort = authority.substringAfterLast('@')
+        // An IPv6 literal is never a renamed relay.
+        if (hostPort.startsWith('[')) return scheme + rest
+        val host = hostPort.substringBefore(':')
+        val renamed = RENAMED_HOSTS[host.lowercase()] ?: return scheme + rest
+        val prefix = if (authority.contains('@')) "$userInfo@" else ""
+        return scheme + prefix + renamed + hostPort.substring(host.length) + rest.substring(end)
     }
 
     /**

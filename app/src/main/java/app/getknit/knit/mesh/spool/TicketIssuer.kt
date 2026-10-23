@@ -23,13 +23,27 @@ interface TicketIssuer {
     ): IssuerAnswer
 
     /**
+     * [swap] for the relay host name [aud] (`?aud=`, knit-spool-coordinator ADR 2026-10.ftp9, ADR 2026-10.qpja): the
+     * dialled relay's lowercase host, so a ticket names the name this phone dials even when the account was made under
+     * the relay's other name. The query sits outside the device proof, which signs the path alone. An issuer that serves
+     * one host ignores it.
+     */
+    suspend fun swap(
+        origin: String,
+        key: String,
+        aud: String,
+        device: DeviceSigner?,
+    ): IssuerAnswer = swap(origin, key, device)
+
+    /**
      * Moves the account to this phone (docs/VOICE_CALLS.md C-7.6-44): only ever because the person asked, never on a
-     * schedule. A `POST` to [IssuerOrigin.MOVE_PATH] with [key] and a proof signed by [device] for that path; its 200 is
-     * the swap's. Never throws.
+     * schedule. A `POST` to [IssuerOrigin.MOVE_PATH] with [key], `?aud=` as [swap] sends it, and a proof signed by
+     * [device] for that path; its 200 is the swap's. Never throws.
      */
     suspend fun move(
         origin: String,
         key: String,
+        aud: String,
         device: DeviceSigner?,
     ): IssuerAnswer = IssuerAnswer.NoVerdict("unsupported")
 }
@@ -120,12 +134,23 @@ sealed interface IssuerAnswer {
         ): IssuerAnswer? =
             when (status to parsed.error) {
                 HTTP_UNAUTHORIZED to UNKNOWN_KEY -> UnknownKey
+
                 HTTP_FORBIDDEN to ENDED -> Ended(parsed.endsAt?.let(::instant))
+
                 HTTP_UNAVAILABLE to UNAVAILABLE -> Unavailable(retryAfterS?.takeIf { it >= 0 }?.times(MS_PER_S))
+
                 HTTP_CONFLICT to BOUND_ELSEWHERE -> BoundElsewhere(parsed.movableAt?.let(::instant))
+
                 HTTP_CONFLICT to MOVE_TOO_SOON -> MoveTooSoon(parsed.movableAt?.let(::instant))
+
                 HTTP_UPGRADE_REQUIRED to UPGRADE_REQUIRED -> UpgradeRequired
+
                 HTTP_BAD_REQUEST to BAD_PROOF -> BadProof
+
+                // An `?aud=` the issuer does not serve for this account (ADR 2026-10.qpja): nothing this phone can fix,
+                // and it cannot happen while `aud` is the dialled host; named, and backed off as no verdict.
+                HTTP_BAD_REQUEST to BAD_AUDIENCE -> NoVerdict(BAD_AUDIENCE)
+
                 else -> null
             }
 
@@ -161,6 +186,7 @@ sealed interface IssuerAnswer {
         const val MOVE_TOO_SOON = "move-too-soon"
         const val UPGRADE_REQUIRED = "upgrade-required"
         const val BAD_PROOF = "bad-proof"
+        const val BAD_AUDIENCE = "bad-audience"
         private const val UNKNOWN_KEY = "unknown-key"
         private const val ENDED = "ended"
         private const val UNAVAILABLE = "unavailable"

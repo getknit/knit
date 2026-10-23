@@ -68,6 +68,18 @@ class CommonsRepositoryTest : RoomDbTest() {
         }
 
     @Test
+    fun aRoomOnTheRenamedRelayIsReboundAndTheLabUnderItsOldNameIsNot() =
+        runTest {
+            // ADR 2026-10.qpja: lax is public-1; lab.lax is another relay.
+            val repo = repo()
+            val house = repo.join("wss://lax.spool.getknit.app/spool/v1?k=t", secret, null, now = 1L)
+            val lab = repo.join("wss://lab.lax.spool.getknit.app/spool/v1", ByteArray(32) { (it + 9).toByte() }, null, now = 1L)
+            repeat(2) { repo.renameRelays() }
+            assertEquals("wss://public-1.spool.getknit.app/spool/v1?k=t", repo.find(house)?.spoolUrl)
+            assertEquals("wss://lab.lax.spool.getknit.app/spool/v1", repo.find(lab)?.spoolUrl)
+        }
+
+    @Test
     fun leaveBoundToTakesEveryRoomOnThatRelayAndNoOther() =
         runTest {
             val repo = repo()

@@ -382,8 +382,8 @@ fun InternetRelayScreenOnPreview() =
                     relays =
                         listOf(
                             RelayRow(
-                                url = "wss://lax.spool.getknit.app/spool/v1",
-                                host = "lax.spool.getknit.app",
+                                url = "wss://public-1.spool.getknit.app/spool/v1",
+                                host = "public-1.spool.getknit.app",
                                 enabled = true,
                                 connected = true,
                                 scopeCount = 3,

@@ -160,6 +160,16 @@ class ContactImporterTest {
         }
 
     @Test
+    fun aCardNamingTheRenamedRelaysFormerHostAsksForNothingHeld() =
+        runTest {
+            // ADR 2026-10.qpja: an old card still names lax, which this phone holds as public-1.
+            spoolUrls.value = setOf("wss://public-1.spool.getknit.app/spool/v1")
+            val card = bob.card(spools = listOf("wss://lax.spool.getknit.app/spool/v1"))
+            val ready = importer().preview(card) as ContactImporter.Preview.Ready
+            assertEquals(emptyList<String>(), ready.unknownRelays)
+        }
+
+    @Test
     fun aBlockedPeerIsFlaggedAndUnblockedOnlyWhenAsked() =
         runTest {
             blocked.value = setOf(bob.nodeId)

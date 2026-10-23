@@ -295,7 +295,7 @@ class SettingsStoreTest {
     fun `default spools seed once and never come back after the user removes one`() =
         runTest {
             val store = newStore()
-            val default = "wss://lax.spool.getknit.app/spool/v1"
+            val default = "wss://public-1.spool.getknit.app/spool/v1"
 
             store.seedDefaultSpools(listOf(default))
             assertEquals(setOf(default), store.spoolUrls.first())
@@ -355,7 +355,7 @@ class SettingsStoreTest {
     fun `seeded defaults arrive in use`() =
         runTest {
             val store = newStore()
-            val default = "wss://lax.spool.getknit.app/spool/v1"
+            val default = "wss://public-1.spool.getknit.app/spool/v1"
             store.seedDefaultSpools(listOf(default))
             store.setSpoolEnabled(true)
             assertEquals(setOf(default), store.activeSpoolUrls.first())
@@ -367,9 +367,9 @@ class SettingsStoreTest {
             val store = newStore()
             store.addSpoolUrl("wss://mine.example/spool/v1")
 
-            store.seedDefaultSpools(listOf("wss://lax.spool.getknit.app/spool/v1"))
+            store.seedDefaultSpools(listOf("wss://public-1.spool.getknit.app/spool/v1"))
             assertEquals(
-                setOf("wss://mine.example/spool/v1", "wss://lax.spool.getknit.app/spool/v1"),
+                setOf("wss://mine.example/spool/v1", "wss://public-1.spool.getknit.app/spool/v1"),
                 store.spoolUrls.first(),
             )
 

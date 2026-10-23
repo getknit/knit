@@ -142,7 +142,7 @@ object DemoPlanes {
      */
     val RELAYS =
         listOf(
-            "wss://lax.spool.getknit.app/spool/v1",
+            "wss://public-1.spool.getknit.app/spool/v1",
             "wss://fra.spool.getknit.app/spool/v1",
             "wss://syd.spool.getknit.app/spool/v1",
         )

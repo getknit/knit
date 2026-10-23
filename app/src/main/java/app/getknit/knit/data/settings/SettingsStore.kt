@@ -888,6 +888,16 @@ class SettingsStore(
             if (defaults.isNotEmpty()) prefs[KEY_SPOOL_URLS] = (prefs[KEY_SPOOL_URLS] ?: emptySet()) + defaults
         }
 
+    /**
+     * Moves a renamed house relay's settings to its current host name ([RelayRename], ADR 2026-10.qpja). Idempotent and
+     * run on every start, so a restore that brings the former name back is moved on the next; a phone with nothing under
+     * a former name reads once and writes nothing.
+     */
+    suspend fun renameRelays() {
+        if (!RelayRename.needed(dataStore.data.first())) return
+        dataStore.edit { RelayRename.apply(it) }
+    }
+
     /** Adds a spool URL to sync against (idempotent — the setting is a set, not a list). */
     suspend fun addSpoolUrl(url: String) = dataStore.edit { it[KEY_SPOOL_URLS] = (it[KEY_SPOOL_URLS] ?: emptySet()) + url }
 
@@ -1033,8 +1043,8 @@ class SettingsStore(
         val KEY_CONTRIB_HANDED_DIRECT = longPreferencesKey("contrib_handed_direct")
         val KEY_CONTRIB_SINCE = longPreferencesKey("contrib_since")
         val KEY_SPOOL_ENABLED = booleanPreferencesKey("spool_enabled")
-        val KEY_SPOOL_URLS = stringSetPreferencesKey("spool_urls")
-        val KEY_SPOOL_DISABLED = stringSetPreferencesKey("spool_urls_disabled")
+        val KEY_SPOOL_URLS = stringSetPreferencesKey(SettingsKeys.SPOOL_URLS)
+        val KEY_SPOOL_DISABLED = stringSetPreferencesKey(SettingsKeys.SPOOL_URLS_DISABLED)
         val KEY_SPOOL_SEEDED = booleanPreferencesKey("spool_defaults_seeded")
         val KEY_SPOOL_CONSENTED = booleanPreferencesKey("spool_consented")
         val KEY_MESHTASTIC_POST_CONSENTED = booleanPreferencesKey("meshtastic_post_consented")

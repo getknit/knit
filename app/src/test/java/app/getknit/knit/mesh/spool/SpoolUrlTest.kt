@@ -57,6 +57,33 @@ class SpoolUrlTest {
     }
 
     @Test
+    fun `the renamed house relay folds to its current name keeping the port, path and token`() {
+        // knit-spool-coordinator ADR 2026-10.ftp9: lax is public-1, so an old card or invite cannot bring lax back.
+        assertEquals("wss://public-1.spool.getknit.app/spool/v1", SpoolUrl.canonical("wss://lax.spool.getknit.app/spool/v1"))
+        assertEquals(
+            "wss://public-1.spool.getknit.app:8443/spool/v1?k=SeCrEt",
+            SpoolUrl.canonical("WSS://LAX.spool.getknit.app:8443/spool/v1?k=SeCrEt"),
+        )
+        assertEquals("wss://public-1.spool.getknit.app?k=t", SpoolUrl.canonical("wss://lax.spool.getknit.app?k=t"))
+        assertEquals("wss://u@public-1.spool.getknit.app/spool/v1", SpoolUrl.canonical("wss://u@lax.spool.getknit.app/spool/v1"))
+        // Already current: untouched, so the fold is idempotent.
+        assertEquals("wss://public-1.spool.getknit.app/spool/v1", SpoolUrl.canonical("wss://public-1.spool.getknit.app/spool/v1"))
+    }
+
+    @Test
+    fun `only the exact former host is renamed, never the lab under it`() {
+        // The lab relay and its TURN sit under lax's name and are different machines.
+        assertEquals("wss://lab.lax.spool.getknit.app/spool/v1", SpoolUrl.canonical("wss://lab.lax.spool.getknit.app/spool/v1"))
+        assertEquals("wss://stun.lab.lax.spool.getknit.app/x", SpoolUrl.canonical("wss://stun.lab.lax.spool.getknit.app/x"))
+        assertEquals("wss://lax.spool.getknit.app.evil/spool/v1", SpoolUrl.canonical("wss://lax.spool.getknit.app.evil/spool/v1"))
+        assertEquals("wss://relay.example.org/lax.spool.getknit.app", SpoolUrl.canonical("wss://relay.example.org/lax.spool.getknit.app"))
+        assertEquals("lab.lax.spool.getknit.app", SpoolUrl.currentHost("lab.lax.spool.getknit.app"))
+        assertEquals("public-1.spool.getknit.app", SpoolUrl.currentHost("lax.spool.getknit.app"))
+        assertEquals("lax.spool.getknit.app", SpoolUrl.formerHost("public-1.spool.getknit.app"))
+        assertEquals("relay.example.org", SpoolUrl.formerHost("relay.example.org"))
+    }
+
+    @Test
     fun `the host row and the redaction do not care about case`() {
         // Both split on "://" rather than on a scheme constant, so they were never case-sensitive — pinned
         // because the token must not reach a screenshot whatever the scheme looks like (spec §7.1).

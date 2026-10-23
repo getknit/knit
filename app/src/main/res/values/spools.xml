@@ -14,14 +14,17 @@
 -->
 <resources>
     <string-array name="default_spools" translatable="false">
-        <item>wss://lax.spool.getknit.app/spool/v1</item>
+        <item>wss://public-1.spool.getknit.app/spool/v1</item>
     </string-array>
     <!--
       Free issuers (docs/VOICE_CALLS.md C-7.6-33): `<relay host> <issuer origin>`, the one place a free account may be
-      made for that relay's uploads, after the person allows it (C-7.6-34). Only the seeded relay has one; a debug
-      build sets its own for any host through `…debug.SPOOL` (.agents/context/debug-bridge.md).
+      made for that relay's uploads, after the person allows it (C-7.6-34). Only the seeded relay has one, under both
+      of its names while both answer (ADR 2026-10.qpja): a phone that has not yet moved its settings off `lax` still
+      looks the issuer up by it. Drop the `lax` line when `lax` is retired. A debug build sets its own for any host
+      through `…debug.SPOOL` (.agents/context/debug-bridge.md).
     -->
     <string-array name="free_issuers" translatable="false">
+        <item>public-1.spool.getknit.app https://anywhere.getknit.app</item>
         <item>lax.spool.getknit.app https://anywhere.getknit.app</item>
     </string-array>
     <!--

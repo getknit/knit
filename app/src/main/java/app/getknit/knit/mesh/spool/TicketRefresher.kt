@@ -194,8 +194,9 @@ object TicketRefreshPolicy {
  * key, a ticket change, a relay change or a new route. Asks wait for [online]; a phone with no route asks nobody.
  *
  * C-7.6-29: a key goes only to the issuer origin stored with it, re-checked by [IssuerOrigin] before every ask with
- * this build's cleartext rule, and only through [TicketIssuer.swap]'s header. [log] gets hosts, verdict words and
- * times, never a key, a ticket or a body.
+ * this build's cleartext rule, and only through [TicketIssuer.swap]'s header. Every swap and move names the
+ * dialled relay's host as `?aud=` (ADR 2026-10.qpja), so a ticket names the host [SpoolTickets.import] holds it under.
+ * [log] gets hosts, verdict words and times, never a key, a ticket or a body.
  *
  * **A waiting upload asks** (C-7.6-27 amended): `ScopeSync` calls [uploadWanted] when an upload of ours is locked
  * `missing` or `expired` behind a relay's files gate, which wakes the loop and marks the host waiting for
@@ -363,7 +364,7 @@ class TicketRefresher(
         // A Keystore that refused sends nothing: an unsigned move could not bind this phone (ADR 2026-10.wk3m).
         if (device is DeviceKey.Refused) return MoveResult.Failed("keystore")
         val ready = device as? DeviceKey.Ready
-        val answer = issuer.move(key.issuer, key.key, ready?.signer)
+        val answer = issuer.move(key.issuer, key.key, host, ready?.signer)
         log("$host: move: ${describe(answer)}")
         return settleMove(host, url, key, prior, ready, answer)
     }
@@ -573,7 +574,7 @@ class TicketRefresher(
     ): KeyState {
         val ready = device as? DeviceKey.Ready
         val answer =
-            if (device is DeviceKey.Refused) IssuerAnswer.NoVerdict("keystore") else issuer.swap(key.issuer, key.key, ready?.signer)
+            if (device is DeviceKey.Refused) IssuerAnswer.NoVerdict("keystore") else issuer.swap(key.issuer, key.key, host, ready?.signer)
         val held = (answer as? IssuerAnswer.Issued)?.let { hold(host, url, key, it) } ?: false
         // A 200 to a proof says the issuer bound that pair: it signs from now on, and the key's other pairs go.
         if (answer is IssuerAnswer.Issued && ready != null) devices?.accepted(host, key.key, ready.id)

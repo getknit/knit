@@ -145,9 +145,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `<host>: ticket ask: unknown-key|ended (endsAt …)|bound-elsewhere (movableAt …)|upgrade-required|bad-proof|no
   verdict (<reason>)|unavailable (retry after …)`.
   **Free tickets** (`docs/VOICE_CALLS.md` C-7.6-32 to C-7.6-38): `--es url <spoolUrl> --es freeIssuer
-  <https://host[:port]|clear>` sets the **free issuer** for that relay's host (only the seeded `lax.spool.getknit.app`
-  ships with one; the lab's `lab.lax.spool.getknit.app` takes `https://anywhere.getknit.app`), `clear` going back to
-  the seeded one; `--es url <spoolUrl> --es freeConsent <allow|decline|clear>` answers the one-time notice for that
+  <https://host[:port]|clear>` sets the **free issuer** for that relay's host (only the seeded
+  `public-1.spool.getknit.app` ships with one, under its former name `lax.spool.getknit.app` too; the lab's
+  `lab.lax.spool.getknit.app` takes `https://anywhere.getknit.app`), `clear` going back to the seeded one; `--es url <spoolUrl> --es freeConsent <allow|decline|clear>` answers the one-time notice for that
   host without the UI (`decline` forgets a free key held there, as the relay row's switch does; `clear` makes the
   notice ask again); `--ei mine <bits>` times one account stamp on this phone, off the network (the reply's `mine`:
   `bits`, `n`, `ms`). With `freeIssuer` or `freeConsent` the `url` only names the relay. Each spool then also carries

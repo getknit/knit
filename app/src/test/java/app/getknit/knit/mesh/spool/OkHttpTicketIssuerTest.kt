@@ -89,6 +89,23 @@ class OkHttpTicketIssuerTest {
     }
 
     @Test
+    fun aSwapForAHostNamesItAsTheAudienceOutsideTheProof() {
+        // ADR 2026-10.qpja: the issuer names the ticket's `aud` from the query; the proof signs the path alone.
+        server.enqueue(json(200, okBody(SpoolTicketsTest.TEXT)))
+        assertTrue(runBlocking { clocked.swap(origin, KEY, AUD, signer) } is IssuerAnswer.Issued)
+        val request = server.takeRequest()
+        assertEquals("${IssuerOrigin.TICKET_PATH}?aud=$AUD", request.target)
+        assertProof(request, IssuerOrigin.TICKET_PATH)
+        assertEquals(0L, request.bodySize)
+    }
+
+    @Test
+    fun aBadAudienceIsNamedAndIsNoVerdict() {
+        server.enqueue(json(400, """{"error":"bad-audience"}"""))
+        assertEquals(IssuerAnswer.NoVerdict("bad-audience"), runBlocking { issuer.swap(origin, KEY, AUD, null) })
+    }
+
+    @Test
     fun a200IsTheTicketTextAndTheAccountsEnd() {
         server.enqueue(json(200, okBody(SpoolTicketsTest.TEXT)))
         val answer = swap() as IssuerAnswer.Issued
@@ -370,11 +387,11 @@ class OkHttpTicketIssuerTest {
     @Test
     fun theMoveIsAnEmptyPostWithTheKeyAndAProofForItsOwnPath() {
         server.enqueue(json(200, okBody(SpoolTicketsTest.TEXT)))
-        val answer = runBlocking { clocked.move(origin, KEY, signer) }
+        val answer = runBlocking { clocked.move(origin, KEY, AUD, signer) }
         assertTrue(answer is IssuerAnswer.Issued)
         val request = server.takeRequest()
         assertEquals("POST", request.method)
-        assertEquals(IssuerOrigin.MOVE_PATH, request.target)
+        assertEquals("${IssuerOrigin.MOVE_PATH}?aud=$AUD", request.target)
         assertEquals("Bearer $KEY", request.headers["Authorization"])
         assertEquals(0L, request.bodySize)
         assertProof(request, IssuerOrigin.MOVE_PATH)
@@ -392,7 +409,7 @@ class OkHttpTicketIssuerTest {
                 .addHeader("Location", "$origin/elsewhere")
                 .build(),
         )
-        val move = { runBlocking { clocked.move(origin, KEY, signer) } }
+        val move = { runBlocking { clocked.move(origin, KEY, AUD, signer) } }
         assertEquals(IssuerAnswer.MoveTooSoon(Instant.parse("2026-10-28T12:00:00.000Z").toEpochMilli()), move())
         assertEquals(IssuerAnswer.UnknownKey, move())
         assertEquals(IssuerAnswer.Ended(Instant.parse("2026-10-09T12:00:00.000Z").toEpochMilli()), move())
@@ -427,6 +444,7 @@ class OkHttpTicketIssuerTest {
 
     private companion object {
         const val KEY = "kak1_FBsiKTA3PkVMU1phaG92fYSLkpmgp661vMPK0djf5u0"
+        const val AUD = "public-1.spool.getknit.app"
 
         // route.ts's `{ error: "unknown-key" }` and route.db.test.ts's expected 200 values (now 2026-10-10T12:00Z,
         // exp now + 25 h, flags TURN | cast, ends 30 days on), with the vector ticket standing in for the signed one.

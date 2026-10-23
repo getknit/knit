@@ -24,7 +24,8 @@ import kotlin.math.abs
 
 /**
  * The one place the key swap speaks OkHttp (`rules/mesh.md`, ADR 2026-10.3sk7): a single `POST <origin>/api/v1/ticket`
- * with `Authorization: Bearer <key>` and an empty body, read into [IssuerAnswer.read]. The badge issue
+ * with `Authorization: Bearer <key>` and an empty body, read into [IssuerAnswer.read], carrying `?aud=<relay host>`
+ * when the caller names one (ADR 2026-10.qpja). The badge issue
  * ([issueBadge], ADR 2026-10.r99s) is the same `POST` to `/api/v1/badge` with a `{"sub": …}` body, and the move
  * ([move], docs/VOICE_CALLS.md C-7.6-44) the swap's request at `/api/v1/ticket/move`, under every rule below; each of
  * the three carries the customer key's device proof when it is handed a signer (C-7.6-40, ADR 2026-10.wk3m). So is
@@ -61,10 +62,25 @@ class OkHttpTicketIssuer(
         origin: String,
         key: String,
         device: DeviceSigner?,
+    ): IssuerAnswer = swapAt(origin, IssuerOrigin.ticketUrl(origin), key, device)
+
+    /** [swap] with `?aud=<aud>` (ADR 2026-10.qpja); the proof still signs the path alone. */
+    override suspend fun swap(
+        origin: String,
+        key: String,
+        aud: String,
+        device: DeviceSigner?,
+    ): IssuerAnswer = swapAt(origin, withAudience(IssuerOrigin.ticketUrl(origin), aud) ?: return refusedOrigin(), key, device)
+
+    private suspend fun swapAt(
+        origin: String,
+        url: String,
+        key: String,
+        device: DeviceSigner?,
     ): IssuerAnswer =
         call(
             origin,
-            IssuerOrigin.ticketUrl(origin),
+            url,
             key,
             ByteArray(0).toRequestBody(null),
             IssuerAnswer::NoVerdict,
@@ -80,11 +96,12 @@ class OkHttpTicketIssuer(
     override suspend fun move(
         origin: String,
         key: String,
+        aud: String,
         device: DeviceSigner?,
     ): IssuerAnswer =
         call(
             origin,
-            IssuerOrigin.moveUrl(origin),
+            withAudience(IssuerOrigin.moveUrl(origin), aud) ?: return refusedOrigin(),
             key,
             ByteArray(0).toRequestBody(null),
             IssuerAnswer::NoVerdict,
@@ -121,14 +138,7 @@ class OkHttpTicketIssuer(
         origin: String,
         aud: String,
     ): AccountAnswer {
-        val url =
-            IssuerOrigin
-                .accountUrl(origin)
-                .toHttpUrlOrNull()
-                ?.newBuilder()
-                ?.addQueryParameter("aud", aud)
-                ?.build()
-                ?.toString() ?: return AccountAnswer.NoAnswer("refused origin")
+        val url = withAudience(IssuerOrigin.accountUrl(origin), aud) ?: return AccountAnswer.NoAnswer(REFUSED_ORIGIN)
         return call(origin, url, key = null, body = null, AccountAnswer::NoAnswer) { code, bytes, retryAfter ->
             AccountAnswer.read(code, bytes, retryAfter)
         }
@@ -158,6 +168,20 @@ class OkHttpTicketIssuer(
         }
     }
 
+    /** [url] with `?aud=<aud>`, or null for a URL OkHttp cannot read. */
+    private fun withAudience(
+        url: String,
+        aud: String,
+    ): String? =
+        url
+            .toHttpUrlOrNull()
+            ?.newBuilder()
+            ?.addQueryParameter(AUD, aud)
+            ?.build()
+            ?.toString()
+
+    private fun refusedOrigin(): IssuerAnswer = IssuerAnswer.NoVerdict(REFUSED_ORIGIN)
+
     /**
      * One request: a `POST` of [body], or a `GET` without one, with [key] in `Authorization` when there is one and, with
      * a [proof], the three device headers (C-7.6-40) signed afresh for each send. [read] gets the status, the capped body
@@ -178,7 +202,7 @@ class OkHttpTicketIssuer(
         proof: Proof? = null,
         read: (Int, ByteArray, Long?) -> A,
     ): A {
-        if (!IssuerOrigin.isAcceptable(origin, allowCleartext)) return noVerdict("refused origin")
+        if (!IssuerOrigin.isAcceptable(origin, allowCleartext)) return noVerdict(REFUSED_ORIGIN)
         val client = clientFor() ?: return noVerdict("offline")
         var resigned = false
         while (true) {
@@ -337,6 +361,8 @@ class OkHttpTicketIssuer(
         private const val RETRY_AFTER = "Retry-After"
         private const val DATE = "Date"
         private const val KEYSTORE = "keystore"
+        private const val REFUSED_ORIGIN = "refused origin"
+        private const val AUD = "aud"
         private const val MS_PER_S = 1_000L
         private const val ACCEPT = "Accept"
         private const val JSON = "application/json"

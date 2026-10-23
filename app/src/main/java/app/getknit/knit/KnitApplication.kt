@@ -10,6 +10,7 @@ import app.getknit.knit.crash.importAnrs
 import app.getknit.knit.data.LinkCardStore
 import app.getknit.knit.data.backup.RestoreApplier
 import app.getknit.knit.data.blob.BlobDao
+import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.appModule
 import app.getknit.knit.di.callModule
@@ -98,8 +99,16 @@ class KnitApplication :
         // fresh install sat with an unconfigured spool list for tens of seconds (observed on a Pixel 8),
         // and any throw from the warm-up would have skipped the seed entirely. The two share a scope, not
         // a sequence.
+        //
+        // A renamed house relay is moved to its current name first (ADR 2026-10.qpja): on every start, since a restore
+        // brings the former name back, and it reads once and writes nothing on a phone with nothing to move. A commons
+        // room is bound to its relay's URL, so it moves too — where the build has rooms, and never fatally: the database
+        // may not open while the Keystore refuses (ADR 2026-10.47rw), and the next start tries again.
         koinApp.koin.get<CoroutineScope>().launch {
-            koinApp.koin.get<SettingsStore>().seedDefaultSpools(resources.getStringArray(R.array.default_spools).toList())
+            val settings = koinApp.koin.get<SettingsStore>()
+            settings.renameRelays()
+            settings.seedDefaultSpools(resources.getStringArray(R.array.default_spools).toList())
+            if (BuildConfig.COMMONS) runCatching { koinApp.koin.get<CommonsRepository>().renameRelays() }
         }
 
         // Settle what the previous process left about hosting a Wi-Fi Direct group (ADR 2026-10.w3dw): a group of ours

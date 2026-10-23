@@ -13,6 +13,7 @@ import app.getknit.knit.mesh.spool.CommonsRoom
 import app.getknit.knit.mesh.spool.CommonsRoots
 import app.getknit.knit.mesh.spool.CommonsStore
 import app.getknit.knit.mesh.spool.ScopeAttachments
+import app.getknit.knit.mesh.spool.SpoolUrl
 import app.getknit.knit.mesh.spool.commonsReactionTarget
 import app.getknit.knit.mesh.spool.hex
 import kotlinx.coroutines.flow.Flow
@@ -66,6 +67,22 @@ class CommonsRepository(
     /** Leaves every room bound to [spoolUrl] — the relay row was removed, and a room without its relay is nothing. */
     suspend fun leaveBoundTo(spoolUrl: String) {
         db.withWriteTransaction { dao.idsBoundTo(spoolUrl).forEach { purge(it) } }
+    }
+
+    /**
+     * Re-binds every room whose relay was renamed to the relay's current name ([SpoolUrl.canonical], ADR 2026-10.qpja),
+     * as `SettingsStore.renameRelays` renames its row: a room is bound by exact URL, so one left on the former name
+     * would lose its relay when that name is retired. Idempotent; run on every start.
+     */
+    suspend fun renameRelays() {
+        val renamed =
+            dao
+                .all()
+                .map { it.spoolUrl }
+                .distinct()
+                .filter { SpoolUrl.canonical(it) != it }
+        if (renamed.isEmpty()) return
+        db.withWriteTransaction { renamed.forEach { dao.rebind(it, SpoolUrl.canonical(it)) } }
     }
 
     override suspend fun post(

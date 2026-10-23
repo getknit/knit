@@ -29,6 +29,12 @@ interface CommonsDao {
     @Query("SELECT conversationId FROM commons WHERE spoolUrl = :spoolUrl")
     suspend fun idsBoundTo(spoolUrl: String): List<String>
 
+    @Query("UPDATE commons SET spoolUrl = :to WHERE spoolUrl = :from")
+    suspend fun rebind(
+        from: String,
+        to: String,
+    )
+
     // REPLACE rather than Room's upsert on all three writes: the upsert tries the insert first and logs the
     // unique-key exception it then recovers from, and a member row is re-written on every frame pulled.
     @Insert(onConflict = OnConflictStrategy.REPLACE)
