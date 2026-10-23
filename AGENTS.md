@@ -107,14 +107,15 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `ui/call/`, `app/src/calls/`, `app/src/liveCalls/`, `app/src/stt/`, `di/AnywhereWiring` or the `liveCalls` /
   `meshCalls` / `stt` / `knitAnywhere` flags in `app/build.gradle.kts`:** READ `docs/VOICE_CALLS.md`, ADR 2026-10.3tee
   (its 2026-10-07 amendment is this branch's minimal build; its 2026-10-14 one is the first flag) and ADR 2026-10.swvp
-  (the four flags). Experimental, behind four flags, each on in debug, off in release and overridden by its own `-P`
-  (`-Pcalls=` sets both call kinds), each read once in `di/`: `LIVE_CALLS_WIRED` (`BuildConfig.LIVE_CALLS`),
+  (the four flags; its 2026-10-22 amendment ships three). Behind four flags, each overridden by its own `-P` (`-Pcalls=`
+  sets both call kinds): live calls, mesh calls and Knit Anywhere are on in every build since 2.10.0-beta.0, speech is
+  on in debug and off in release. Each is read once in `di/`: `LIVE_CALLS_WIRED` (`BuildConfig.LIVE_CALLS`),
   `WALKIE_WIRED` (`BuildConfig.MESH_CALLS`), `STT_WIRED` (`BuildConfig.STT`, only with a call kind) and
   `ANYWHERE_WIRED` (`BuildConfig.KNIT_ANYWHERE`); `CALLS_WIRED` is either call kind. WebRTC, core-telecom and Moonshine
   are `compileOnly`; a build packages WebRTC and `app/src/liveCalls/keepRules` only with live calls, core-telecom and
   `app/src/calls/AndroidManifest.xml` with either kind, and Moonshine with `app/src/stt/` only with speech — so release
-  ships no call code, no `libjingle`, no call permission and advertises no `CAP_CALL`. Never make any of the three
-  `implementation`. A kind's or speech's own definitions sit behind its constant in `di/CallWiring` (and every lookup of
+  ships WebRTC (a `THIRD-PARTY-NOTICES.md` row) and core-telecom but no speech runtime. Never make any of the three
+  `implementation`: a `-P` that turns a kind off must still drop its library. A kind's or speech's own definitions sit behind its constant in `di/CallWiring` (and every lookup of
   one elsewhere), so R8 drops what a build does not wire; a build without live calls hands `CallManager`
   `CallMedia.None`, which places every call as a walkie and declines a live offer, and `CAP_CALL` means "takes a live
   call".

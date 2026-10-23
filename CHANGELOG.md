@@ -22,6 +22,12 @@ document:
 
 ### Added
 
+- You can now call your contacts. Someone nearby is called over a Wi-Fi Direct link without the Internet,
+  someone farther away over the Internet, and when neither works the call becomes a walkie-talkie over the
+  mesh.
+- Knit now works with Knit Anywhere, a paid internet relay account that carries your photos, files and calls
+  when no phone nearby can. On a relay that only takes files from accounts, Knit gets a free ticket for small
+  photos, which you can turn off.
 - In a group chat, typing @ now offers @everyone first. Picking it mentions every other member at once, and each
   gets the same mention alert as if you had picked them one by one.
 - You can now send short videos in any chat, Nearby included. Knit shrinks each one to about 3 MB and keeps

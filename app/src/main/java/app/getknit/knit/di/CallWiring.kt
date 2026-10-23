@@ -102,8 +102,8 @@ import org.koin.core.scope.Scope
 import org.koin.dsl.module
 
 /**
- * Live calls (experimental, docs/VOICE_CALLS.md §3.5–3.10, ADR 2026-10.3tee): the one read of `BuildConfig.LIVE_CALLS`
- * — on in debug, off in a shipped artifact, `-PliveCalls=` overrides (ADR 2026-10.swvp). Off, [CallManager] gets
+ * Live calls (docs/VOICE_CALLS.md §3.5–3.10, ADR 2026-10.3tee): the one read of `BuildConfig.LIVE_CALLS` — on in every
+ * build since 2.10.0-beta.0, `-PliveCalls=` overrides (ADR 2026-10.swvp). Off, [CallManager] gets
  * [CallMedia.None] and declines every live offer, no WebRTC media, Wi-Fi Direct leg, TURN source or capture watch is
  * built and the profile carries no `CAP_CALL`; the build packages no WebRTC either, so every class only the live graph
  * reaches is unreachable and R8 drops it.
@@ -112,7 +112,7 @@ const val LIVE_CALLS_WIRED: Boolean = BuildConfig.LIVE_CALLS
 
 /**
  * The walkie-talkie, a "mesh call" on screen (docs/VOICE_CALLS.md §3.11, ADR 2026-10.79yb): a call that streams
- * hold-to-talk bursts over the mesh. The one read of `BuildConfig.MESH_CALLS` — on in debug, off in a shipped artifact,
+ * hold-to-talk bursts over the mesh. The one read of `BuildConfig.MESH_CALLS` — on in every build since 2.10.0-beta.0,
  * `-PmeshCalls=` overrides (ADR 2026-10.swvp). Off, [CallManager] gets [CallWalkie.None], no [WalkieTalk] is built and
  * the profile carries no `CAP_WALKIE`, so every call is a live one. It needs no live calls: its Opus is the platform's.
  */

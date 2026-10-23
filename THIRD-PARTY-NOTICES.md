@@ -21,7 +21,7 @@ classpath. Rows read: the component, then the project it comes from, then its SP
 
 | Component | Project | License |
 |---|---|---|
-| Android Jetpack / AndroidX (`androidx.*` — core-ktx, activity, navigation, lifecycle, room3, datastore, exifinterface, camera (CameraX), media3, emoji2, appcompat and their transitive AndroidX libraries) | [Android Open Source Project](https://developer.android.com/jetpack) | Apache-2.0 |
+| Android Jetpack / AndroidX (`androidx.*` — core-ktx, activity, navigation, lifecycle, room3, datastore, exifinterface, camera (CameraX), media3, core-telecom, emoji2, appcompat and their transitive AndroidX libraries) | [Android Open Source Project](https://developer.android.com/jetpack) | Apache-2.0 |
 | Jetpack Compose (Material 3, UI, tooling — via the Compose BOM) | [Android Open Source Project](https://developer.android.com/jetpack/compose) | Apache-2.0 |
 | Compose Multiplatform runtime (`org.jetbrains.compose.*`, `org.jetbrains.androidx.*` — pulled in by Koin's Compose artifacts; on Android they resolve onto Jetpack Compose) | [JetBrains](https://github.com/JetBrains/compose-multiplatform) | Apache-2.0 |
 | Kotlin standard library | [JetBrains — Kotlin](https://github.com/JetBrains/kotlin) | Apache-2.0 |
@@ -43,6 +43,7 @@ classpath. Rows read: the component, then the project it comes from, then its SP
 | ZXing core — QR generation | [ZXing](https://github.com/zxing/zxing) | Apache-2.0 |
 | ARSCLib — on-device split-APK merge | [REAndroid/ARSCLib](https://github.com/REAndroid/ARSCLib) | Apache-2.0 |
 | apksig — on-device APK re-signing | [Android Open Source Project](https://android.googlesource.com/platform/tools/apksig/) | Apache-2.0 |
+| WebRTC (`io.github.webrtc-sdk:android` — libwebrtc, the media engine of live calls) | [The WebRTC project authors](https://webrtc.googlesource.com/src/) | BSD-3-Clause (WebRTC) |
 
 QR *scanning* uses CameraX (an AndroidX library, above) plus ZXing core; the former ZXing Android Embedded
 dependency was dropped when the scanner moved to CameraX.

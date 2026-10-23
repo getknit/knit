@@ -89,3 +89,26 @@ Guards:
 - `CallSettingsScreenContentTest.aBuildWithoutLiveCallsShowsTheTranscriptsAlone`;
 - `CallSettingsViewModelTest.withoutLiveCallsThereAreNoLiveRowsAndNoTest`;
 - `KoinGraphVerifyTest` under each flag.
+
+## Amendment 2026-10-22: live calls, mesh calls and Knit Anywhere ship
+
+2.10.0-alpha.2 shipped the three through `gradle.properties`, taken off main after the tag. The maintainer asked for
+them on in release builds for good from 2.10.0-beta.0, so the defaults moved into `app/build.gradle.kts`, where
+F-Droid's -P-free rebuild reads them: `liveCalls`, `meshCalls` and `knitAnywhere` now default to true in every build
+type. Speech is unchanged, on in debug and off in a shipped artifact, so a release packages no Moonshine and no
+`src/stt/`.
+
+- **The lock state records the shipped runtime.** WebRTC and core-telecom are on `releaseRuntimeClasspath` and
+  `stagingRuntimeClasspath` in `app/gradle.lockfile`. A release-shaped build is unlocked only when its runtime differs
+  from that: `-PliveCalls=false`, `-PmeshCalls=false` or `-Pstt=true`.
+- **WebRTC is a notice.** `ThirdPartyNotices` has a `webrtc` row claiming `io.github.webrtc-sdk:`, with its BSD-3-Clause
+  text as `License.BSD_3_CLAUSE_WEBRTC` (`legal/BSD-3-Clause-WebRTC.txt`, route `bsd-3-clause-webrtc`, since Zetetic's
+  text already holds the SPDX id's route). Core-telecom is claimed by the AndroidX row.
+- **The `-P` flags stay.** Each kind can still be turned off for a maintainer's build, so the libraries stay
+  `compileOnly` and the per-kind packaging stays as above.
+
+Checked on 2026-10-22: the default `assembleRelease` packages `libjingle_peerconnection_so.so` in all four ABIs, keeps
+`CallManager`, `WebRtcCallMedia`, `org.webrtc`, `androidx.core.telecom` and `OkHttpTicketIssuer` in its R8 mapping and
+no `ai.moonshine` or `MoonshineSpeech`, and its manifest has `CallActivity`, `CallService`, `MANAGE_OWN_CALLS`,
+`FOREGROUND_SERVICE_PHONE_CALL` and `USE_FULL_SCREEN_INTENT` but no speech service. The unsigned universal APK is
+123 MB. `KoinGraphVerifyTest` passes under `-Pstt=false`, the shipped wiring.

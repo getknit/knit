@@ -211,6 +211,15 @@ object ThirdPartyNotices {
                 artifacts = setOf("com.android.tools.build:"),
             ),
             ThirdPartyNotice(
+                key = "webrtc",
+                name = "WebRTC",
+                project = "The WebRTC project authors",
+                url = "https://webrtc.googlesource.com/src/",
+                license = License.BSD_3_CLAUSE_WEBRTC,
+                // The community build of Google's retired libwebrtc AAR (libs.versions.toml).
+                artifacts = setOf("io.github.webrtc-sdk:"),
+            ),
+            ThirdPartyNotice(
                 key = "nsfw-model",
                 name = "NSFW image classifier",
                 project = "GantMan/nsfw_model",

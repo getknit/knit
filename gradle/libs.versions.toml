@@ -90,17 +90,17 @@ litert = "1.4.2"
 # `*Config2026` configurations beside it (RegistryConfiguration stays the registry-based behaviour) and deprecates
 # generateNew(KeyTemplate), unannounced in its notes; IdentityKeyStore inlines it as Tink's @InlineMe says.
 tink = "1.24.0"
-# WebRTC (libwebrtc's Android SDK: Opus over DTLS-SRTP, ICE/TURN) for the experimental voice calls
-# (docs/VOICE_CALLS.md, ADR 2026-10.3tee). `compileOnly` everywhere and packaged only where `BuildConfig.CALLS` is on
-# (debug by default; `-Pcalls`, app/build.gradle.kts), so the release APK carries none of its ~10 MB per ABI and
-# F-Droid's rebuild is untouched. The community build of Google's retired AAR (BSD-3, no transitive deps, no
+# WebRTC (libwebrtc's Android SDK: Opus over DTLS-SRTP, ICE/TURN) for live calls (docs/VOICE_CALLS.md, ADR
+# 2026-10.3tee). `compileOnly` everywhere and packaged only where `BuildConfig.LIVE_CALLS` is on (every build since
+# 2.10.0-beta.0; `-PliveCalls`, app/build.gradle.kts), so the release APK carries its ~10 MB per ABI and F-Droid's
+# rebuild fetches it. The community build of Google's retired AAR (BSD-3, no transitive deps, no
 # aar-metadata, 16 KB-aligned .so, and no consumer keep rules: `app/src/calls/keepRules` pins it).
 webrtc = "150.7871.01"
-# Jetpack core-telecom: each experimental call (live or walkie) is a self-managed Telecom call, which owns its audio
+# Jetpack core-telecom: each call (live or walkie) is a self-managed Telecom call, which owns its audio
 # route — earpiece, speaker, wired, Bluetooth HFP/LE Audio — and lets a headset, watch or car answer and hang up
 # (docs/VOICE_CALLS.md §3.13). Packaged only where calls are, like webrtc (its manifest brings an exported
-# ConnectionService), every androidx.core.telecom import in ui/call/TelecomCalls.kt, so releaseRuntimeClasspath and
-# F-Droid's rebuild are untouched. An RC by a recorded exception (context/toolchain.md): 1.0.1, the newest stable,
+# ConnectionService), every androidx.core.telecom import in ui/call/TelecomCalls.kt; on in release since 2.10.0-beta.0,
+# so releaseRuntimeClasspath carries it. An RC by a recorded exception (context/toolchain.md): 1.0.1, the newest stable,
 # reverts a call switched to speaker during setup (a walkie starts there) and can start an audio call on speaker on
 # Android 14-16; 1.1.0-alpha05/06 fixed both. Move to 1.1.0
 # when it goes stable. minCompileSdk 36.1.

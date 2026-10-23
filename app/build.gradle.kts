@@ -144,8 +144,9 @@ val bleFeedWindow = (project.findProperty("bleFeedWindow") as? String)?.toBoolea
 // `if (WEAR_STATUS)` branch), and the defaults live in source so F-Droid's -P-free rebuild stays identical.
 val wearStatus = (project.findProperty("wearStatus") as? String)?.toBoolean()
 
-// Voice calls (docs/VOICE_CALLS.md) and Knit Anywhere — four experiments, each ON in debug and OFF in a shipped
-// artifact, and each overridable on its own (ADR 2026-10.swvp):
+// Voice calls (docs/VOICE_CALLS.md), speech and Knit Anywhere — four flags, each overridable on its own (ADR
+// 2026-10.swvp). Live calls, mesh calls and Knit Anywhere are introduced: ON in every build since 2.10.0-beta.0 (the
+// ADR's 2026-10-22 amendment). Speech is still an experiment: ON in debug, OFF in a shipped artifact.
 //  - `-PliveCalls=true|false`: live calls over WebRTC (ADR 2026-10.3tee). The only one that packages libwebrtc, ~48 MB
 //    of native code across the four ABIs, with `src/liveCalls/keepRules`.
 //  - `-PmeshCalls=true|false`: the walkie-talkie over the mesh (§3.11, ADR 2026-10.79yb). Its Opus is the platform's
@@ -158,18 +159,18 @@ val wearStatus = (project.findProperty("wearStatus") as? String)?.toBoolean()
 // (every call is a self-managed Telecom call, ADR 2026-10.wbua) and `src/calls/AndroidManifest.xml` (the call screen,
 // its service, receiver and permissions). Main compiles in every variant against `compileOnly` WebRTC, core-telecom and
 // Moonshine; off, `di/CallWiring` builds none of a feature's graph and R8 drops the classes only that graph reached. The
-// debug build packages all three libraries whatever the flags say (it is locked); a release-shaped build with any of
-// them is a maintainer's, so its runtime classpaths go unlocked (`dependencyLocking` below). The defaults live in source
-// so F-Droid's -P-free rebuild stays identical.
+// debug build packages all three libraries whatever the flags say (it is locked); a release-shaped build with
+// libraries other than the default's (WebRTC and core-telecom) is a maintainer's, so its runtime classpaths go unlocked
+// (`dependencyLocking` below). The defaults live in source so F-Droid's -P-free rebuild stays identical.
 val calls = (project.findProperty("calls") as? String)?.toBoolean()
 val liveCalls = (project.findProperty("liveCalls") as? String)?.toBoolean() ?: calls
 val meshCalls = (project.findProperty("meshCalls") as? String)?.toBoolean() ?: calls
 val stt = (project.findProperty("stt") as? String)?.toBoolean()
 val knitAnywhere = (project.findProperty("knitAnywhere") as? String)?.toBoolean()
 val liveCallsInDebug = liveCalls ?: true
-val liveCallsInRelease = liveCalls ?: false
+val liveCallsInRelease = liveCalls ?: true
 val meshCallsInDebug = meshCalls ?: true
-val meshCallsInRelease = meshCalls ?: false
+val meshCallsInRelease = meshCalls ?: true
 val callsInDebug = liveCallsInDebug || meshCallsInDebug
 val callsInRelease = liveCallsInRelease || meshCallsInRelease
 val sttInDebug = (stt ?: true) && callsInDebug
@@ -441,12 +442,12 @@ android {
             buildConfigField("boolean", "BLE_FEED_WINDOW", (bleFeedWindow ?: true).toString())
             // The Wear OS status service is a prototype: dark in a shipped artifact.
             buildConfigField("boolean", "WEAR_STATUS", (wearStatus ?: false).toString())
-            // Live calls, mesh calls, speech and Knit Anywhere are experiments: dark in a shipped artifact, and none of
-            // their libraries is packaged there (see `calls` above).
+            // Live calls, mesh calls and Knit Anywhere are introduced: on in a shipped artifact, which packages WebRTC and
+            // core-telecom. Speech is an experiment: dark there, and Moonshine is not packaged (see `calls` above).
             buildConfigField("boolean", "LIVE_CALLS", liveCallsInRelease.toString())
             buildConfigField("boolean", "MESH_CALLS", meshCallsInRelease.toString())
             buildConfigField("boolean", "STT", sttInRelease.toString())
-            buildConfigField("boolean", "KNIT_ANYWHERE", (knitAnywhere ?: false).toString())
+            buildConfigField("boolean", "KNIT_ANYWHERE", (knitAnywhere ?: true).toString())
             // Never ship a fault injector, whatever `-PmodelFaultOnLoad` said.
             buildConfigField("String", "MODEL_FAULT_ON_LOAD", "\"\"")
             // Unsigned when no keystore.properties / KNIT_UPLOAD_* creds are present (see signingConfigs).
@@ -1018,10 +1019,11 @@ dependencyLocking {
     lockAllConfigurations()
 }
 
-// A release-shaped build with voice calls (`-PliveCalls=true`, `-PmeshCalls=true`) is a maintainer's: it adds WebRTC,
-// core-telecom or Moonshine to the runtime classpaths a shipped artifact's lock state omits, so those go unlocked rather
-// than lock a second runtime. The versions still come from the catalog; a -P-free build is never affected.
-if (callsInRelease) {
+// A release-shaped build whose runtime differs from the default's (`-PliveCalls=false`, `-PmeshCalls=false`,
+// `-Pstt=true`) is a maintainer's: it drops WebRTC or core-telecom from, or adds Moonshine to, the runtime classpaths the
+// lock state records, so those go unlocked rather than lock a second runtime. The versions still come from the catalog;
+// a -P-free build is never affected.
+if (!liveCallsInRelease || !meshCallsInRelease || sttInRelease) {
     configurations.configureEach {
         if (name.endsWith("RuntimeClasspath") && !name.startsWith("debug")) resolutionStrategy.deactivateDependencyLocking()
     }

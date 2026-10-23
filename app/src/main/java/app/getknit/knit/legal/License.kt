@@ -4,7 +4,8 @@ package app.getknit.knit.legal
  * The licenses Knit ships text for, each backed by a file under `assets/legal/` so a phone that got Knit
  * over Bluetooth with no Internet can still read them. Knit's own is [GPL_3_0_OR_LATER]; the rest cover
  * every row in [ThirdPartyNotices]. [spdx] is the SPDX identifier the notices table and the in-app list
- * both print; [routeId] is its lower-cased form, safe in a navigation route.
+ * both print; [routeId] is its lower-cased form, safe in a navigation route, or its own where two texts share
+ * an id (each BSD-3-Clause carries its holder's copyright line).
  *
  * `assets/legal/COPYING` is a byte copy of the repository's `COPYING`, pinned by `LicenseAssetsTest` —
  * committed rather than copied at build time, so the release APK stays a function of the tree alone.
@@ -13,15 +14,20 @@ enum class License(
     val spdx: String,
     val displayName: String,
     val asset: String,
+    val routeId: String = spdx.lowercase(),
 ) {
     GPL_3_0_OR_LATER("GPL-3.0-or-later", "GNU General Public License v3.0 or later", "legal/COPYING"),
     APACHE_2_0("Apache-2.0", "Apache License 2.0", "legal/Apache-2.0.txt"),
     MIT("MIT", "MIT License", "legal/MIT.txt"),
     BSD_3_CLAUSE("BSD-3-Clause", "BSD 3-Clause License (Zetetic)", "legal/BSD-3-Clause-SQLCipher.txt"),
+    BSD_3_CLAUSE_WEBRTC(
+        "BSD-3-Clause",
+        "BSD 3-Clause License (WebRTC)",
+        "legal/BSD-3-Clause-WebRTC.txt",
+        routeId = "bsd-3-clause-webrtc",
+    ),
     UNICODE_3_0("Unicode-3.0", "Unicode License v3", "legal/Unicode-3.0.txt"),
     ;
-
-    val routeId: String get() = spdx.lowercase()
 
     companion object {
         fun fromRouteId(id: String): License? = entries.firstOrNull { it.routeId == id }

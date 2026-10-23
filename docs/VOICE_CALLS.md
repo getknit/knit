@@ -759,7 +759,7 @@ When no live path exists, the call screen becomes a walkie-talkie over the mesh.
 the burst streams to the peer in small chunks while it is spoken. The peer's phone plays them as they land. Nothing is
 stored: a chunk that is lost is skipped, and no burst appears in the thread. It is not a live call: playback trails
 the speaker by a chunk and the mesh's latency, about a second between neighbours. ADR 2026-10.79yb records why. It is
-an experiment behind `BuildConfig.MESH_CALLS` (`-PmeshCalls=`, on in debug and off in release), read once as
+behind `BuildConfig.MESH_CALLS` (`-PmeshCalls=`, on in every build since 2.10.0-beta.0), read once as
 `di/CallWiring.WALKIE_WIRED`. It needs no live calls (ADR 2026-10.swvp): a build may run the walkie alone, packaging no
 WebRTC, and then advertises `CAP_WALKIE` without `CAP_CALL`, places every call as a walkie and declines a live offer for
 its media (`REASON_MEDIA`).

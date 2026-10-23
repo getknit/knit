@@ -156,7 +156,7 @@ private object Routes {
 
     fun commonsDetails(conversationId: String) = "commonsDetails/$conversationId"
 
-    // A License's routeId is its lower-cased SPDX id (`gpl-3.0-or-later`), so it needs no escaping.
+    // A License's routeId is its lower-cased SPDX id (`gpl-3.0-or-later`) or a slug like it, so it needs no escaping.
     const val LICENSE = "license/{licenseId}"
 
     fun license(license: License) = "license/${license.routeId}"

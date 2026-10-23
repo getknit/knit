@@ -82,8 +82,9 @@ notes, the two linter/CI pins and the READMEs are the places to re-grep after an
   catalog), which has never shipped a stable release: it is test-only (the `screenshotTest*` configurations —
   `releaseRuntimeClasspath` and the debug runtime are untouched) and the release APK is byte-identical with it
   applied (ADR 2026-10.gtmm). Take its newest alpha. The third is `core-telecom` 1.1.0-rc01 (`coreTelecom`), which
-  owns the experimental calls' audio route (`docs/VOICE_CALLS.md` §3.13): like `webrtc` it is `compileOnly` and packaged
-  only where a call kind is on (`BuildConfig.LIVE_CALLS` / `MESH_CALLS`, `-PliveCalls` / `-PmeshCalls`, off in release), so `releaseRuntimeClasspath` is untouched, and 1.0.1, the newest stable, reverts a call switched to speaker during setup
+  owns the calls' audio route (`docs/VOICE_CALLS.md` §3.13): like `webrtc` it is `compileOnly` and packaged only where a
+  call kind is on (`BuildConfig.LIVE_CALLS` / `MESH_CALLS`, `-PliveCalls` / `-PmeshCalls`, on in release since
+  2.10.0-beta.0), so `releaseRuntimeClasspath` carries it and a shipped artifact rides the RC, and 1.0.1, the newest stable, reverts a call switched to speaker during setup
   (where a walkie starts) and can start an audio call on speaker on Android 14-16. Move it to 1.1.0 when that goes
   stable. So `cameraX` stays on 1.6.2 (1.7.0 is
   alpha), `lifecycle` on 2.11.0 (2.12.0 is alpha), `activity-compose` on 1.13.0
