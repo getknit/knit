@@ -113,7 +113,7 @@ object VoiceAudio {
     /** [speechPcm]'s cap past the stated length: the decoder's priming and tail. */
     private const val SPEECH_CAP_SLACK_MS = 1_000L
 
-    /** [speechPcm]'s cap for audio whose headers state no length (not ADTS): a little past the recorder's five minutes. */
+    /** [speechPcm]'s cap for audio that states no length at all: a little past the recorder's five minutes. */
     private const val SPEECH_FALLBACK_CAP_MS = 6 * 60_000L
 
     private const val TAG = "VoiceAudio"
@@ -149,12 +149,12 @@ object VoiceAudio {
      * the mean of a speech envelope is nearly flat, while its peak tracks syllables. The result is scaled so
      * the loudest bar is full height — a quiet recording still draws a readable waveform rather than a line.
      *
-     * The time base comes from [durationMs] rather than the container: an ADTS stream carries no duration,
-     * so `MediaFormat.KEY_DURATION` is absent and a decoder timestamp has nothing to be a fraction *of*.
+     * The time base comes from [playingMs]: [durationMs] for an ADTS stream, which carries no duration of its own,
+     * else the container's — a picked file (Ogg, MP3, M4A) has no ADTS headers to count.
      */
     suspend fun peaks(bytes: ByteArray): ByteArray? =
         withContext(Dispatchers.IO) {
-            val totalUs = durationMs(bytes)?.toLong()?.times(1000L)?.takeIf { it > 0 } ?: return@withContext null
+            val totalUs = playingMs(bytes)?.toLong()?.times(1000L)?.takeIf { it > 0 } ?: return@withContext null
             val buckets = LongArray(PEAK_COUNT)
             var any = false
             val ok =
@@ -189,7 +189,7 @@ object VoiceAudio {
      */
     suspend fun describe(bytes: ByteArray): Description =
         Description(
-            durationMs = durationMs(bytes),
+            durationMs = playingMs(bytes),
             peaks = peaks(bytes)?.let { encodePeaks(it) },
         )
 
@@ -236,6 +236,37 @@ object VoiceAudio {
         return (if (percentile >= SILENCE_FLOOR) percentile else loudest).coerceAtLeast(1L)
     }
 
+    /**
+     * Playing time of the audio in [bytes]: [durationMs] for a recorded note's ADTS stream, else what the container
+     * states (`MediaFormat.KEY_DURATION`), which is how a picked Ogg, MP3 or M4A file gets a length and a waveform.
+     * Null when neither says. Opens an extractor, so not for the main thread.
+     */
+    internal fun playingMs(bytes: ByteArray): Int? = durationMs(bytes) ?: containerDurationMs(bytes)
+
+    /** The duration the container in [bytes] states for its first audio track, or null when it states none. */
+    private fun containerDurationMs(bytes: ByteArray): Int? {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(ByteArrayMediaSource(bytes))
+            (0 until extractor.trackCount)
+                .map { extractor.getTrackFormat(it) }
+                .firstOrNull { it.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true }
+                ?.takeIf { it.containsKey(MediaFormat.KEY_DURATION) }
+                ?.getLong(MediaFormat.KEY_DURATION)
+                ?.div(1000L)
+                ?.takeIf { it in 1..Int.MAX_VALUE.toLong() }
+                ?.toInt()
+        } catch (
+            @Suppress("TooGenericExceptionCaught") e: Exception,
+        ) {
+            // As in [decodeChunks]: the extractor's failures vary by device, and all mean "not audio we can read".
+            Log.w(TAG, "voice duration read failed: ${e.javaClass.simpleName}")
+            null
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
     /** What [countFrames] recovers from an ADTS stream: how many frames it holds, and at what rate. */
     private class FrameCount(
         val frames: Long,
@@ -279,12 +310,12 @@ object VoiceAudio {
      * −1..1, or null when it can't be decoded or holds no audio. Mixed down and resampled by the walkie's own
      * [BurstPcm] as the decoder hands each buffer over, so no 16-bit copy of the whole note is held; the result is
      * about 19 MB for the recorder's five-minute cap, and is the caller's to drop once the model has had it. Capped
-     * at the length the frame headers state ([durationMs]), so a stream that decodes past its own claim cannot grow
+     * at the length the audio states ([playingMs]), so a stream that decodes past its own claim cannot grow
      * the buffer without bound.
      */
     suspend fun speechPcm(bytes: ByteArray): FloatArray? =
         withContext(Dispatchers.IO) {
-            val claimed = durationMs(bytes)?.toLong() ?: SPEECH_FALLBACK_CAP_MS
+            val claimed = playingMs(bytes)?.toLong() ?: SPEECH_FALLBACK_CAP_MS
             val audio = BurstPcm(capMs = claimed + SPEECH_CAP_SLACK_MS)
             val ok = decodeChunks(bytes) { pcm, _, rate, channels -> audio.add(pcm, rate, channels) }
             if (!ok) return@withContext null

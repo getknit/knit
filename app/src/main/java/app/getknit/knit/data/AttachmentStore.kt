@@ -229,6 +229,7 @@ class AttachmentStore(
             Ingested(
                 hash = held.plainHash,
                 mime = held.mime,
+                voice = if (VoiceAudio.isVoice(held.mime)) VoiceAudio.describe(plain) else null,
                 name = name.takeUnless { image },
                 sizeBytes = plain.size,
                 animated = held.animated,
@@ -408,8 +409,10 @@ class AttachmentStore(
             val mime = declared?.takeIf { it.isNotBlank() } ?: DEFAULT_MIME
             val hash = sha256(bytes)
             blobs.insert(hash, mime, bytes)
+            // A picked audio file draws as a voice note (VoiceAudio.isVoice), so it gets a note's length and waveform.
+            val voice = if (VoiceAudio.isVoice(mime)) VoiceAudio.describe(bytes) else null
             IngestResult.Success(
-                Ingested(hash, mime, name = name, sizeBytes = bytes.size),
+                Ingested(hash, mime, voice = voice, name = name, sizeBytes = bytes.size),
                 flagged = false,
             )
         }

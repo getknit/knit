@@ -84,7 +84,8 @@ private val FLAT_WAVEFORM = FloatArray(VoiceAudio.PEAK_COUNT) { 0.12f }
 /**
  * The waveform: one bar per peak, filled up to [progress] and dimmed beyond it, with a tap anywhere seeking
  * to that fraction. Bars are drawn from the *stored* peaks, so the same note looks identical on every device
- * that holds it.
+ * that holds it. The tap detector consumes the press, so a long-press is handed to [onLongPress] — in a chat
+ * bubble, the bubble's own menu, which would otherwise never see it.
  *
  * A minimum bar height is enforced: a silent passage would otherwise draw nothing at all and the waveform
  * would appear to have holes in it rather than quiet parts.
@@ -97,6 +98,7 @@ fun VoiceWaveform(
     remainingColor: Color,
     modifier: Modifier = Modifier,
     onSeek: ((Float) -> Unit)? = null,
+    onLongPress: (() -> Unit)? = null,
 ) {
     val bars = peaks ?: FLAT_WAVEFORM
     // Playback position arrives on a poll, so the fill used to advance a whole bar at a time. Easing it
@@ -116,10 +118,11 @@ fun VoiceWaveform(
                     if (onSeek == null) {
                         Modifier
                     } else {
-                        Modifier.pointerInput(bars) {
-                            detectTapGestures { offset ->
-                                onSeek((offset.x / size.width.toFloat()).coerceIn(0f, 1f))
-                            }
+                        Modifier.pointerInput(bars, onLongPress) {
+                            detectTapGestures(
+                                onLongPress = onLongPress?.let { longPress -> { _: Offset -> longPress() } },
+                                onTap = { offset -> onSeek((offset.x / size.width.toFloat()).coerceIn(0f, 1f)) },
+                            )
                         }
                     },
                 ),
@@ -151,8 +154,8 @@ fun VoiceWaveform(
  * There is no hidden/flagged state, unlike an image: no on-device model can screen speech, so a voice note
  * carries no verdict to act on (see `docs/CONTENT_MODERATION.md`).
  *
- * [onLongClick] is wired here as well as on the bubble because this row consumes taps itself, and a
- * long-press that landed on it would otherwise never reach the bubble's reaction picker.
+ * [onLongClick] is wired here as well as on the bubble because this row's play button and waveform consume
+ * taps themselves, and a long-press that landed on either would otherwise never reach the bubble's menu.
  */
 @Composable
 fun VoiceNoteBubble(
@@ -245,6 +248,7 @@ private fun VoiceNoteRow(
             playedColor = accent,
             remainingColor = accent.copy(alpha = INACTIVE_ALPHA),
             onSeek = { fraction -> onSeek(fraction) },
+            onLongPress = onLongClick,
             modifier = Modifier.weight(1f),
         )
         Text(
