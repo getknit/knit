@@ -175,6 +175,10 @@ val callsInDebug = liveCallsInDebug || meshCallsInDebug
 val callsInRelease = liveCallsInRelease || meshCallsInRelease
 val sttInDebug = (stt ?: true) && callsInDebug
 val sttInRelease = (stt ?: false) && callsInRelease
+// `-Ptranslate=true`: the offline message-translation spike (ADR 2026-10.t2h6), debug only and off by default, since
+// it needs the `:translate-native` module (settings.gradle.kts), which needs the NDK and scripts/translate-native.sh's
+// sources. No release-shaped build ever takes it, whatever the flag says.
+val translate = (project.findProperty("translate") as? String)?.toBoolean() ?: false
 
 // ABIs packaged into the **debug** APK. Debug is unminified and carries both tflite models, so it is
 // ~150 MB before native libs; the four-ABI default adds ~28 MB more, of which the two 32-bit slices are
@@ -333,6 +337,8 @@ android {
         buildConfigField("boolean", "LIVE_CALLS", liveCallsInDebug.toString())
         buildConfigField("boolean", "MESH_CALLS", meshCallsInDebug.toString())
         buildConfigField("boolean", "STT", sttInDebug.toString())
+        // The translation spike is OFF unless `-Ptranslate=true`; see `translate` above.
+        buildConfigField("boolean", "TRANSLATE", translate.toString())
         buildConfigField("boolean", "KNIT_ANYWHERE", (knitAnywhere ?: true).toString())
         // Fault injection for the model poison-pill's acceptance test (ADR 037):
         // `-PmodelFaultOnLoad=segv` raises SIGSEGV, `=kill` sends SIGKILL, inside ModelLoadGuard right
@@ -447,6 +453,8 @@ android {
             buildConfigField("boolean", "LIVE_CALLS", liveCallsInRelease.toString())
             buildConfigField("boolean", "MESH_CALLS", meshCallsInRelease.toString())
             buildConfigField("boolean", "STT", sttInRelease.toString())
+            // The translation spike never ships.
+            buildConfigField("boolean", "TRANSLATE", "false")
             buildConfigField("boolean", "KNIT_ANYWHERE", (knitAnywhere ?: true).toString())
             // Never ship a fault injector, whatever `-PmodelFaultOnLoad` said.
             buildConfigField("String", "MODEL_FAULT_ON_LOAD", "\"\"")
@@ -732,6 +740,7 @@ androidComponents {
             variant.sources.manifests.addStaticManifestFile("src/stt/AndroidManifest.xml")
             variant.sources.keepRules?.addStaticSourceDirectory("src/stt/keepRules")
         }
+        if (debug && translate) variant.sources.keepRules?.addStaticSourceDirectory("src/translate/keepRules")
     }
 }
 
@@ -1163,6 +1172,9 @@ dependencies {
     // transitive: its appcompat/material/okhttp/WorkManager serve wrappers we never call (libs.versions.toml).
     compileOnly(libs.moonshine.voice) { isTransitive = false }
     debugImplementation(libs.moonshine.voice) { isTransitive = false }
+    // The translation spike's native library (ADR 2026-10.t2h6): a project dependency, in debug only and only under
+    // `-Ptranslate=true`, so no lockfile records it and no other build resolves it.
+    if (translate) debugImplementation(project(":translate-native"))
     android.buildTypes.names.filter { it != "debug" }.forEach { buildType ->
         if (liveCallsInRelease) add("${buildType}RuntimeOnly", libs.webrtc.android)
         if (callsInRelease) add("${buildType}RuntimeOnly", libs.androidx.core.telecom)

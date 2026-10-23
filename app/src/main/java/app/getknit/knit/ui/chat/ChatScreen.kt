@@ -97,6 +97,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.WifiCalling3
@@ -205,6 +206,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.R
 import app.getknit.knit.TextLimits
+import app.getknit.knit.call.SttModelState
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.FileTypes
 import app.getknit.knit.data.VoiceAudio
@@ -234,6 +236,8 @@ import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.translate.TranslateDirection
+import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.ui.camera.PhotoCapture
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.ConnectionStatusRow
@@ -258,6 +262,16 @@ import app.getknit.knit.ui.theme.KnitMotion
 import app.getknit.knit.ui.theme.knitColors
 import app.getknit.knit.ui.theme.readableOn
 import app.getknit.knit.ui.theme.rememberPressScale
+import app.getknit.knit.ui.translate.DraftTranslateLine
+import app.getknit.knit.ui.translate.DraftTranslateUi
+import app.getknit.knit.ui.translate.TranslateDraftButton
+import app.getknit.knit.ui.translate.TranslateFromDialog
+import app.getknit.knit.ui.translate.TranslateMeteredDialog
+import app.getknit.knit.ui.translate.TranslateModelOfferDialog
+import app.getknit.knit.ui.translate.TranslationBlock
+import app.getknit.knit.ui.translate.TranslationShown
+import app.getknit.knit.ui.translate.TranslationToggle
+import app.getknit.knit.ui.translate.translationShown
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import app.getknit.knit.ui.voice.MicGate
 import app.getknit.knit.ui.voice.SpeechModelOfferDialog
@@ -326,6 +340,11 @@ fun ChatScreen(
     val voiceSpeech by viewModel.voiceSpeech.collectAsStateWithLifecycle()
     // The note a Transcribe tap was for while the speech model was not on the phone: the download offer is up.
     var speechOffer by remember { mutableStateOf<Pair<String, String?>?>(null) }
+    // The offline translation spike (ADR 2026-10.t2h6): null where it is not wired.
+    val translateView by viewModel.translateView.collectAsStateWithLifecycle()
+    val translateAsk by viewModel.translateAsk.collectAsStateWithLifecycle()
+    // A Translate whose model would download over a metered route: the reader is asked first.
+    var translateMetered by remember { mutableStateOf<Pair<ChatRow, TranslateDirection>?>(null) }
     val arrivals by viewModel.arrivals.collectAsStateWithLifecycle()
     val recentReactions by viewModel.recentReactions.collectAsStateWithLifecycle()
     val inputState = rememberTextFieldState()
@@ -338,6 +357,28 @@ fun ChatScreen(
     // gotcha, draft state stays in the screen, not the ViewModel/DataStore). Filtered against the final
     // text on send so a mention whose "@name" was deleted doesn't ship.
     val pendingMentions = remember { mutableStateListOf<Mention>() }
+    // Translating the draft before it is sent (ADR 2026-10.t2h6's amendment). The field holds the translation once it
+    // is done; [draftOriginal] is what Undo puts back, and [draftTranslatedFrom] what the line above the field names.
+    val draftHint by viewModel.draftHint.collectAsStateWithLifecycle()
+    val draftTranslation by viewModel.draftTranslation.collectAsStateWithLifecycle()
+    var draftTranslatedFrom by remember { mutableStateOf<TranslateLang?>(null) }
+    var draftOriginal by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(draftTranslation) {
+        val done = draftTranslation as? ChatViewModel.DraftTranslation.Done ?: return@LaunchedEffect
+        inputState.setTextAndPlaceCursorAtEnd(done.text)
+        draftOriginal = done.original
+        draftTranslatedFrom = done.from
+        viewModel.onDraftTranslationApplied()
+    }
+    // A sent or emptied draft holds no translation.
+    LaunchedEffect(inputState) {
+        snapshotFlow { inputState.text.isEmpty() }.collect { empty ->
+            if (empty) {
+                draftTranslatedFrom = null
+                draftOriginal = null
+            }
+        }
+    }
     // The message being replied to (draft-local like inputState/pendingMentions, per the AGENTS.md
     // gotcha), rendered as a quote above the input until the reply is sent or cancelled. Null otherwise.
     // Lives here (not in the content) because the clearInput collector below must reset it atomically
@@ -603,6 +644,31 @@ fun ChatScreen(
         onReceiveImage = viewModel::attach,
         onTyping = viewModel::onUserTyping,
         onDraftChanged = viewModel::onDraftChanged,
+        draftTranslate =
+            translateView?.let { view ->
+                DraftTranslateUi(
+                    hint = draftHint,
+                    running = draftTranslation == ChatViewModel.DraftTranslation.Running,
+                    failedUnusable = (draftTranslation as? ChatViewModel.DraftTranslation.Failed)?.unusable,
+                    translatedFrom = draftTranslatedFrom,
+                    downloadingPercent =
+                        view.models.values.firstNotNullOfOrNull { model ->
+                            (model as? SttModelState.Downloading)?.let { if (it.total > 0) (it.done * 100 / it.total).toInt() else 0 }
+                        },
+                )
+            },
+        onTranslateDraft = { from ->
+            viewModel.translateDraft(
+                inputState.text.toString(),
+                mentionSpans(inputState.text, pendingMentions).map { it.start until it.end },
+                from,
+            )
+        },
+        onUndoDraftTranslation = {
+            draftOriginal?.let(inputState::setTextAndPlaceCursorAtEnd)
+            draftOriginal = null
+            draftTranslatedFrom = null
+        },
         linkPreviewLoading = linkPreviewLoading,
         videoEncoding = videoEncoding,
         onCancelVideo = viewModel::cancelVideoEncoding,
@@ -646,6 +712,19 @@ fun ChatScreen(
         onVoiceSeek = viewModel::seekVoice,
         voiceSpeech = voiceSpeech,
         onTranscribeVoice = { hash, key -> if (!viewModel.transcribeVoice(hash, key)) speechOffer = hash to key },
+        translateView = translateView,
+        onTranslate = { row -> viewModel.translateMessage(row) },
+        onDownloadTranslateModel = { row, direction ->
+            if (viewModel.translateDownloadMetered()) {
+                translateMetered = row to direction
+            } else {
+                viewModel.downloadTranslateModel(
+                    row,
+                    direction,
+                )
+            }
+        },
+        onDismissTranslation = viewModel::dismissTranslation,
     )
 
     speechOffer?.let { (hash, key) ->
@@ -658,6 +737,42 @@ fun ChatScreen(
             },
             onDismiss = { speechOffer = null },
         )
+    }
+
+    translateAsk?.let { row ->
+        TranslateFromDialog(
+            onPick = { lang -> viewModel.translateMessage(row, lang) },
+            onDismiss = viewModel::dismissTranslateAsk,
+        )
+    }
+    translateMetered?.let { (row, direction) ->
+        TranslateMeteredDialog(
+            direction = direction,
+            onDownload = {
+                translateMetered = null
+                viewModel.downloadTranslateModel(row, direction)
+            },
+            onDismiss = { translateMetered = null },
+        )
+    }
+    when (val step = draftTranslation) {
+        is ChatViewModel.DraftTranslation.AskFrom -> {
+            TranslateFromDialog(
+                onPick = { lang -> viewModel.translateDraft(step.draft, step.mentions, lang) },
+                onDismiss = viewModel::dismissDraftTranslation,
+            )
+        }
+
+        is ChatViewModel.DraftTranslation.NeedsModel -> {
+            TranslateModelOfferDialog(
+                direction = step.direction,
+                metered = remember(step) { viewModel.translateDownloadMetered() },
+                onDownload = { viewModel.downloadDraftModel(step.direction) },
+                onDismiss = viewModel::dismissDraftTranslation,
+            )
+        }
+
+        else -> {}
     }
 
     // Nothing on the device can classify an archive or an executable, so a save of one says so first. This
@@ -800,6 +915,10 @@ internal fun ChatScreenContent(
     onTyping: (String) -> Unit,
     // Every edit of the draft, so a link in it can grow a preview card; defaulted for the @Preview and test call sites.
     onDraftChanged: (String) -> Unit = {},
+    // Translating the draft before it is sent (ADR 2026-10.t2h6's amendment): null where translation is not wired.
+    draftTranslate: DraftTranslateUi? = null,
+    onTranslateDraft: (from: TranslateLang?) -> Unit = {},
+    onUndoDraftTranslation: () -> Unit = {},
     // True while that card is being fetched; the input bar shows a transient "Loading preview…" line.
     linkPreviewLoading: Boolean = false,
     // While a picked video is re-encoded, how far along (0..1), drawn as a tile with a Cancel (ADR 2026-10.hmfe).
@@ -843,6 +962,11 @@ internal fun ChatScreenContent(
     // A voice note's text (ADR 2026-10.am8d): null where speech is off, which draws no control.
     voiceSpeech: VoiceSpeechView? = null,
     onTranscribeVoice: (hash: String, key: String?) -> Unit = { _, _ -> },
+    // The offline translation spike (ADR 2026-10.t2h6): null where it is not wired, which offers no Translate.
+    translateView: TranslateView? = null,
+    onTranslate: (ChatRow) -> Unit = {},
+    onDownloadTranslateModel: (ChatRow, TranslateDirection) -> Unit = { _, _ -> },
+    onDismissTranslation: (messageId: String) -> Unit = {},
     // History paging. `onLoadOlder` asks for the next page as the reader approaches the oldest loaded
     // message; `onRevealMessage` pulls a specific older message in, for a quote whose original the window
     // has not reached. Defaulted so previews and the content-level tests need not name them.
@@ -1362,6 +1486,9 @@ internal fun ChatScreenContent(
                         onSend = onSend,
                         onTyping = onTyping,
                         onDraftChanged = onDraftChanged,
+                        draftTranslate = draftTranslate,
+                        onTranslateDraft = onTranslateDraft,
+                        onUndoDraftTranslation = onUndoDraftTranslation,
                         linkPreviewLoading = linkPreviewLoading,
                         videoEncoding = videoEncoding,
                         onCancelVideo = onCancelVideo,
@@ -1583,6 +1710,17 @@ internal fun ChatScreenContent(
                                         onVoiceSeek = onVoiceSeek,
                                         voiceSpeech = voiceSpeech,
                                         onTranscribeVoice = onTranscribeVoice,
+                                        translation =
+                                            translateView?.let {
+                                                translationShown(
+                                                    it.translations[row.id],
+                                                    it.models,
+                                                    it.filterOn,
+                                                )
+                                            },
+                                        onTranslate = if (translateView != null) onTranslate else null,
+                                        onDownloadTranslateModel = onDownloadTranslateModel,
+                                        onDismissTranslation = onDismissTranslation,
                                         arrival = row.attachmentHash?.let(arrivals::get),
                                     )
                                 }
@@ -2323,6 +2461,11 @@ private fun MessageBubble(
     // The voice note's text slot and its Transcribe (ADR 2026-10.am8d); null where speech is off.
     voiceSpeech: VoiceSpeechView? = null,
     onTranscribeVoice: (hash: String, key: String?) -> Unit = { _, _ -> },
+    // This message's translation and the long-press Translate (ADR 2026-10.t2h6): null where translation is not wired.
+    translation: TranslationShown? = null,
+    onTranslate: ((ChatRow) -> Unit)? = null,
+    onDownloadTranslateModel: (ChatRow, TranslateDirection) -> Unit = { _, _ -> },
+    onDismissTranslation: (messageId: String) -> Unit = {},
     // How far this row's attachment has got while its bytes stream in over a nearby link (#115). Defaulted for
     // the @Preview call sites and for every row whose attachment is held or not on its way.
     arrival: ArrivingFile? = null,
@@ -2342,6 +2485,12 @@ private fun MessageBubble(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     // A message flagged by the on-device text moderator is collapsed until the user taps to reveal it.
     var revealed by remember(row.id) { mutableStateOf(false) }
+    // The same for a translation the filter hides, on its own: the original's reveal is not the translation's.
+    var translationRevealed by remember(row.id) { mutableStateOf(false) }
+    // A translated message shows its translation; this is the reader's tap back to the original.
+    var showingOriginal by remember(row.id) { mutableStateOf(false) }
+    // Whether the reader can see words in this bubble to translate: a body, not collapsed by the filter.
+    val readableBody = row.body.isNotBlank() && (!row.moderationFlagged || revealed)
     val context = LocalContext.current
     // The body without its position token, which the card below draws in its place. The raw body stays what
     // "Copy" copies: a pasted `geo:` line is the one form every maps app reads.
@@ -2688,17 +2837,62 @@ private fun MessageBubble(
                                         in 2..3 -> MaterialTheme.typography.bodyLarge.copy(fontSize = 34.sp, lineHeight = 42.sp)
                                         else -> MaterialTheme.typography.bodyLarge.copy(fontSize = 26.sp, lineHeight = 34.sp)
                                     }
-                                Text(
-                                    text =
-                                        annotateMessageBody(
-                                            shownBody,
-                                            row.mentions,
-                                            mentionStyle,
-                                            linkStyle,
-                                            onLinkClick = { url -> openUrl(context, url) },
-                                        ),
-                                    style = bodyStyle,
-                                )
+                                // A translation in hand takes the original's place (ADR 2026-10.t2h6); the toggle under it
+                                // brings the original back.
+                                val translated = translation as? TranslationShown.Text
+                                if (translated != null && !showingOriginal) {
+                                    if (translated.hidden && !translationRevealed) {
+                                        Text(
+                                            text = stringResource(R.string.translate_hidden),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.clickable { translationRevealed = true },
+                                        )
+                                    } else {
+                                        // The card above draws the position, as it does for the original: not the token too.
+                                        val words = if (row.location != null) GeoUri.strip(translated.text) else translated.text
+                                        Text(
+                                            text =
+                                                annotateMessageBody(
+                                                    words,
+                                                    row.mentions,
+                                                    mentionStyle,
+                                                    linkStyle,
+                                                    onLinkClick = { url -> openUrl(context, url) },
+                                                ),
+                                            style = MaterialTheme.typography.bodyLarge,
+                                        )
+                                    }
+                                } else {
+                                    Text(
+                                        text =
+                                            annotateMessageBody(
+                                                shownBody,
+                                                row.mentions,
+                                                mentionStyle,
+                                                linkStyle,
+                                                onLinkClick = { url -> openUrl(context, url) },
+                                            ),
+                                        style = bodyStyle,
+                                    )
+                                }
+                                when {
+                                    translated != null -> {
+                                        TranslationToggle(
+                                            from = translated.from,
+                                            showingOriginal = showingOriginal,
+                                            onToggle = { showingOriginal = !showingOriginal },
+                                        )
+                                    }
+
+                                    translation != null -> {
+                                        TranslationBlock(
+                                            shown = translation,
+                                            onDownload = { direction -> onDownloadTranslateModel(row, direction) },
+                                            onDismiss = { onDismissTranslation(row.id) },
+                                        )
+                                    }
+                                }
                             }
                         }
                         // Reach, not delivery — kept on its own line above the tick so the two facts stay
@@ -2833,6 +3027,16 @@ private fun MessageBubble(
                                     onCopy(text)
                                     showPicker = false
                                 }
+                            },
+                        // Text the reader can see: a body the filter hides is translated only once revealed.
+                        onTranslate =
+                            if (onTranslate != null && readableBody) {
+                                {
+                                    onTranslate(row)
+                                    showPicker = false
+                                }
+                            } else {
+                                null
                             },
                         onDetails = {
                             showPicker = false
@@ -3009,6 +3213,8 @@ private fun ReactionPicker(
     onDismiss: () -> Unit,
     // False drops the emoji row (and its divider), leaving the actions: a thread that carries no reaction.
     canReact: Boolean = true,
+    // Translate this message (ADR 2026-10.t2h6): null where translation is not wired or there is no text to read.
+    onTranslate: (() -> Unit)? = null,
 ) {
     val spacingPx = with(LocalDensity.current) { 8.dp.roundToPx() }
     // 48 dp cells with 4 dp gaps inside 8 dp side padding, plus the "+" cell: six recents need 376 dp, past
@@ -3092,6 +3298,13 @@ private fun ReactionPicker(
                         icon = Icons.Filled.ContentCopy,
                         label = stringResource(R.string.chat_action_copy),
                         onClick = onCopy,
+                    )
+                }
+                if (onTranslate != null) {
+                    PickerAction(
+                        icon = Icons.Filled.Translate,
+                        label = stringResource(R.string.chat_action_translate),
+                        onClick = onTranslate,
                     )
                 }
                 PickerAction(
@@ -3993,6 +4206,10 @@ private fun MessageInput(
     onSend: () -> Unit,
     onTyping: (String) -> Unit = {},
     onDraftChanged: (String) -> Unit = {},
+    // Translating the draft before it is sent (ADR 2026-10.t2h6's amendment): null where translation is not wired.
+    draftTranslate: DraftTranslateUi? = null,
+    onTranslateDraft: (from: TranslateLang?) -> Unit = {},
+    onUndoDraftTranslation: () -> Unit = {},
     linkPreviewLoading: Boolean = false,
     videoEncoding: Float? = null,
     onCancelVideo: () -> Unit = {},
@@ -4299,6 +4516,14 @@ private fun MessageInput(
                     Spacer(Modifier.height(4.dp))
                 }
             }
+            if (draftTranslate != null && voiceRecording == null) {
+                DraftTranslateLine(
+                    ui = draftTranslate,
+                    canSend = state.text.isNotBlank(),
+                    onTranslate = onTranslateDraft,
+                    onUndo = onUndoDraftTranslation,
+                )
+            }
             // The mic is offered when the composer is otherwise idle, and *kept* for as long as a recording
             // it started is running — until it locks, at which point the stop button takes over the trailing
             // slot and an inline mic beside a running bar would be a second, inert control.
@@ -4309,6 +4534,10 @@ private fun MessageInput(
             // something to send. That matches how attaching already works here — the trailing button is
             // Attach only until you type — so a file is picked first and captioned after, like a photo.
             val showFile = fileEnabled && voiceRecording == null && !canSend && !showSending
+            // Translate takes their place once there are words: a draft that already holds a translation goes back
+            // with Undo, not a second translation the other way.
+            val showTranslate =
+                draftTranslate != null && voiceRecording == null && state.text.isNotBlank() && draftTranslate.translatedFrom == null
             Row(verticalAlignment = Alignment.Bottom) {
                 // The field container holds the text field *and* the mic, the way Signal does: sharing the
                 // field's background makes the mic read as part of it rather than as a third button
@@ -4354,7 +4583,7 @@ private fun MessageInput(
                                         start = 16.dp,
                                         // The inline buttons carry 12dp of their own inset around the icon,
                                         // so the text only has to clear them rather than keep the full margin.
-                                        end = if (showMic || showFile) 4.dp else 16.dp,
+                                        end = if (showMic || showFile || showTranslate) 4.dp else 16.dp,
                                         top = 12.dp,
                                         bottom = 12.dp,
                                     ),
@@ -4434,6 +4663,13 @@ private fun MessageInput(
                     // memory for a press-and-hold is positional.
                     if (showFile) {
                         AttachFileButton(onClick = onFileClick)
+                    }
+                    if (showTranslate) {
+                        TranslateDraftButton(
+                            lit = draftTranslate.hint != null,
+                            running = draftTranslate.running,
+                            onClick = { onTranslateDraft(draftTranslate.hint?.from) },
+                        )
                     }
                 }
                 Spacer(Modifier.width(8.dp))
@@ -5088,6 +5324,69 @@ fun MessageBubbleTheirsPreview() =
             onDelete = {},
             onBlock = {},
             onCopy = {},
+        )
+    }
+
+// A translated message (ADR 2026-10.t2h6): the translation in the original's place, and the toggle back.
+@Preview(showBackground = true)
+@Composable
+fun MessageBubbleTranslatedPreview() =
+    KnitPreview {
+        MessageBubble(
+            row =
+                ChatRow(
+                    id = "m-es",
+                    body = "¿Vienes al parque más tarde? Estamos junto al árbol grande.",
+                    mine = false,
+                    senderName = "Lucía",
+                    senderNodeId = "node-lucia",
+                    avatarHash = null,
+                    sentAt = PREVIEW_NOW - 3 * 60_000L,
+                    received = false,
+                ),
+            now = PREVIEW_NOW,
+            showSenderName = true,
+            onImageClick = {},
+            onOpenProfile = {},
+            onReact = { _, _ -> },
+            onDelete = {},
+            onBlock = {},
+            onCopy = {},
+            translation =
+                TranslationShown.Text(
+                    "Are you coming to the park later? We're by the big tree.",
+                    TranslateLang.ES,
+                    hidden = false,
+                ),
+        )
+    }
+
+// A translation Content filtering hides: collapsed in the original's place until the reader taps it.
+@Preview(showBackground = true)
+@Composable
+fun MessageBubbleTranslationHiddenPreview() =
+    KnitPreview {
+        MessageBubble(
+            row =
+                ChatRow(
+                    id = "m-es-hidden",
+                    body = "Mensaje de ejemplo",
+                    mine = false,
+                    senderName = "Lucía",
+                    senderNodeId = "node-lucia",
+                    avatarHash = null,
+                    sentAt = PREVIEW_NOW - 3 * 60_000L,
+                    received = false,
+                ),
+            now = PREVIEW_NOW,
+            showSenderName = true,
+            onImageClick = {},
+            onOpenProfile = {},
+            onReact = { _, _ -> },
+            onDelete = {},
+            onBlock = {},
+            onCopy = {},
+            translation = TranslationShown.Text("hidden", TranslateLang.ES, hidden = true),
         )
     }
 

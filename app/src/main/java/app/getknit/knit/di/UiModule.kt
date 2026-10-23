@@ -28,6 +28,7 @@ import app.getknit.knit.mesh.RadioSupport
 import app.getknit.knit.mesh.lora.LoraStatusRepository
 import app.getknit.knit.mesh.power.LowPowerSource
 import app.getknit.knit.transfer.TransferManager
+import app.getknit.knit.translate.ChatTranslation
 import app.getknit.knit.ui.StorageGate
 import app.getknit.knit.ui.addcontact.AddContactViewModel
 import app.getknit.knit.ui.backup.BackupViewModel
@@ -91,6 +92,7 @@ val uiModule =
                 freeUploads = if (ANYWHERE_WIRED) get<FreeUploads>() else null,
                 preferMeshCalls = if (LIVE_CALLS_WIRED && WALKIE_WIRED) get<CallPreferenceStore>().preferMesh else flowOf(false),
                 noteSpeech = if (STT_WIRED) get<VoiceNoteSpeech>() else null,
+                translation = if (TRANSLATE_WIRED) get<ChatTranslation>() else null,
             )
         }
         viewModel {

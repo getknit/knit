@@ -44,6 +44,13 @@ if (providers.gradleProperty("knit.baselineProfile").orNull.toBoolean()) {
     include(":baselineprofile")
 }
 
+// The translation spike's native library (ADR 2026-10.t2h6), built from sources scripts/translate-native.sh fetches
+// with the NDK. Included only under -Ptranslate=true, for the same reason as above: an ordinary build and F-Droid's
+// rebuild never configure it, and :app takes it into debug only.
+if (providers.gradleProperty("translate").orNull.toBoolean()) {
+    include(":translate-native")
+}
+
 // The Wear OS watch app for the mesh-status prototype (the phone side is `WearStatusServer`, behind
 // `BuildConfig.WEAR_STATUS`). Opt-in for the same reason as :baselineprofile: F-Droid's rebuild and CI never
 // configure it or resolve the Wear libraries, so it cannot move a byte of :app's release.

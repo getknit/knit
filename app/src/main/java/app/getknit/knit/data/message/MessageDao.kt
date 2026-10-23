@@ -449,6 +449,19 @@ interface MessageDao {
     ): Boolean
 
     /**
+     * The bodies this phone wrote most recently, newest first: the translation spike reads which language its reader
+     * writes in from them (ADR 2026-10.t2h6), on the debug bridge's ask only. Never logged.
+     */
+    @Query(
+        "SELECT body FROM messages WHERE kind = 0 AND senderId = :me AND originNode IS NULL AND body <> '' " +
+            "ORDER BY sentAt DESC LIMIT :limit",
+    )
+    suspend fun recentOwnBodies(
+        me: String,
+        limit: Int,
+    ): List<String>
+
+    /**
      * Whether [me] authored any message naming the ciphertext [hash] at all — acked or not. The subject
      * of `AttachmentDeferPolicy`'s grace, and nothing else: for a short while after a send, a missing ack
      * says only that the receipt has not come back yet, and this is what separates that from everything
@@ -456,6 +469,7 @@ interface MessageDao {
      * frame (no message row here at all) and an **avatar** (a `PeerEntity` and no message row). The
      * peer's send may still defer, but on [attachmentCarriedByRadio]'s evidence rather than on a grace.
      */
+
     @Query("SELECT EXISTS(SELECT 1 FROM messages WHERE attachmentHash = :hash AND senderId = :me)")
     suspend fun attachmentAuthoredHere(
         hash: String,

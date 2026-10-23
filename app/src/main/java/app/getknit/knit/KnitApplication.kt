@@ -18,6 +18,7 @@ import app.getknit.knit.di.moderationModule
 import app.getknit.knit.di.seedDemoIfEnabled
 import app.getknit.knit.di.startCallsIfWired
 import app.getknit.knit.di.startDemoDirectorIfEnabled
+import app.getknit.knit.di.translateModule
 import app.getknit.knit.di.uiModule
 import app.getknit.knit.mesh.power.AppVisibility
 import app.getknit.knit.notifications.ConversationShortcutSync
@@ -73,8 +74,9 @@ class KnitApplication :
             startKoin {
                 androidLogger()
                 androidContext(this@KnitApplication)
-                // The voice calls' graph exists only in a build that wires them (di/CallWiring, debug today).
-                modules(listOf(appModule, meshModule, moderationModule, uiModule) + listOfNotNull(callModule()))
+                // The voice calls' graph exists only in a build that wires them (di/CallWiring, debug today); the translation
+                // spike's only in a debug build made with -Ptranslate=true (di/TranslateWiring).
+                modules(listOf(appModule, meshModule, moderationModule, uiModule) + listOfNotNull(callModule(), translateModule()))
             }
         // Register the message notification channel up front so it appears in system settings.
         koinApp.koin.get<Notifier>().createChannel()

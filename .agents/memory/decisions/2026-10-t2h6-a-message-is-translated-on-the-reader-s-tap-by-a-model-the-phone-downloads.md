@@ -8,8 +8,9 @@ topics: [ml, ui, moderation, privacy]
 
 # ADR 2026-10.t2h6 — A message is translated on the reader's tap by a model the phone downloads
 
-Status: Proposed (2026-10-22). Nothing is built. A spike decides the runtime and the language identifier (the
-last section), and the ADR is accepted or rewritten on what it measures. No wire byte moves.
+Status: Proposed (2026-10-22). The English ↔ Spanish spike ran on 2026-10-22 on the Pixel 7 and Pixel 9, a debug
+build made with `-Ptranslate=true` (results at the end). It answered the six questions below; what is left before
+acceptance is listed with them. No wire byte moves.
 
 **What was asked.** Can a text message be translated with no network? The rooms are where people who share no
 language meet: the Nearby room is read by strangers, and the Meshtastic room's authors are strangers by definition.
@@ -39,10 +40,16 @@ kept, never carried.
   not.
 - **Offered by language identification.** A small identifier, shipped in the APK or fetched with the first
   direction, decides whether to offer Translate and which source model applies. The action is offered on a message
-  this phone did not write whose text is not in the target language. A short line is where identifiers guess, so a
-  low-confidence answer asks the reader which language it is rather than guessing.
-- **Into the app's language.** The target is the language the app is shown in. Where no model exists for that
-  language, nothing is offered.
+  this phone did not write whose text is in none of the languages the reader reads. A short line is where
+  identifiers guess, so a low-confidence answer asks the reader which language it is rather than guessing.
+- **Into the reader's language, not the app's.** The language the app is shown in says little about what its
+  reader reads. Everyone who installs the APK directly, F-Droid's users included, sees English, because the
+  repository carries English strings only. Google Play translates the app's strings into other languages by itself,
+  so a Play install can show any of those. Someone may run the app in English and write in Spanish, or the other
+  way round. The reader's languages are the ones they write in, read from their own sent messages by the same
+  identifier, together with the phone's preferred languages: the system's list, not the app's resolved locale. The
+  target is the language they write in most, else the first preferred language that has a model, and a setting
+  overrides both. Where no model exists for the target, nothing is offered.
 - **Kept on the row.** The translated text, its source and target languages and its moderation verdict are kept on
   the message's row in the encrypted database (a schema bump past `KNIT_DB_SCHEMA_VERSION`). It is keyed by the
   message, not shared across rows as a voice note's transcript is by attachment hash. A row whose stored target is
@@ -83,8 +90,9 @@ no NDK on the APK path). Two routes:
   `gradle/libs.versions.toml` pins, slow on a 32-bit phone, and an LLM paraphrases where a translation model
   translates.
 - **Full OPUS-MT models.** About 75 MB per direction even at int8, and no shortlist.
-- **Translating on the sender.** It would put machine text under the author's signature, and the sender cannot
-  know who will read the message, or in what language.
+- **Translating on the sender, silently.** It would put machine text the author never read under their signature,
+  and the sender cannot always know who will read the message, or in what language. The amendment below keeps the
+  sender's translation and drops both objections: the author reads, and may edit, the text before it is sent.
 - **Translating on arrival.** See "On tap, never on arrival" above.
 
 **What the spike must show** before this is accepted. The pair is English and Spanish, both ways, behind the debug
@@ -100,6 +108,8 @@ flag.
 4. **Quality on chat.** Slang, emoji, a line of three words, a `geo:` line and a link. The last two must come back
    untouched.
 5. **Calls.** Whether a translation during a live call costs the call any audio.
+6. **The reader's language.** Whether the language read from a reader's own sent messages names the language they
+   want a translation in, including for someone who runs the app in English and writes in Spanish.
 
 **What it costs.**
 
@@ -112,3 +122,75 @@ flag.
 - **Notices.** When the feature ships in release, the runtime needs a row in the notices table and the in-app
   licence list (ADR 2026-09.6eb6).
 - **Egress.** A fresh install sends no byte over IP: nothing is fetched until the reader taps.
+
+## Spike results (2026-10-22)
+
+The spike translates into the pair's other language whatever the app shows, so both directions run on one phone. The
+corpus is `scripts/translate-corpus/` (91 Spanish and 88 English chat lines); `scripts/translate-bench.py` drives the
+debug bridge's `TRANSLATE bench` and compares each phone with the same native core built for the desktop.
+
+- **Runtime: slimt, not bergamot-translator or ONNX Runtime.** Mozilla archived bergamot-translator in 2023, and the
+  F-Droid Offline Translator moved from it to slimt. `onnxruntime-android` ships a `libonnxruntime.so` that collides
+  with the one moonshine-voice packages in every debug build. The spike builds David Ventura's slimt fork (GPL-2.0-or-
+  later, pinned) and CLD2 from source in a `:translate-native` module that only `-Ptranslate=true` includes. The
+  stripped library is 4.4 MB on arm64-v8a and 3.4 MB on armeabi-v7a, 16 KB-aligned. A release still needs it as an AAR
+  from a reproducible build on Maven Central; that is not built.
+- **Models.** Mozilla's current en-es and es-en are "base-memory": 31.6 MB of weights plus a 4.2–4.6 MB shortlist and
+  a 0.8 MB vocabulary per direction, MPL-2.0. slimt must be told 4 decoder layers. The older "tiny" models can no
+  longer be fetched (their Git LFS objects answer 404).
+- **Speed.** A cold load takes 0.2–0.45 s. Per message, p50/p95:
+
+  | Phone, process state | short (≤ 40 chars) | medium (≤ 160) | long (~500) |
+  |---|---|---|---|
+  | Pixel 7, chat open | 13–14 / 23–25 ms | 16–19 / 26–33 ms | 81–82 / 92–105 ms |
+  | Pixel 9, foreground service | 25–32 / 37–60 ms | 36–38 / 45–50 ms | 157–158 / 175–185 ms |
+  | Pixel 7, cached in the background | 156–159 / 248–312 ms | 224–259 / 378–441 ms | 2.3–2.4 s |
+
+  A background process runs on the little cores; a tap comes with the chat open, which is the first row.
+- **Memory.** One loaded direction adds 75–90 MB of native heap over its mapped weights: slimt concatenates some
+  weight matrices at load and keeps ruy's packed copies. The lease lets it go after two idle minutes.
+- **A slimt trap.** slimt keeps ruy's packed weights in a per-thread cache keyed by address and never clears it for a
+  model's weights, so a model freed and loaded again at the same address on the same thread translates with the old
+  model's packs: the emulator wrote "sssssssSSSS" for "¿Vienes al parque más tarde?". Each loaded model now lives on a
+  thread of its own that ends with it (`SlimtEngine`). That also halved the emulator's times.
+- **Quality.** Ordinary chat text reads well both ways; slang does not ("qué pedo wey" came back as "what fart I'm").
+  Links, positions, mentions and emoji came back unchanged on all 179 lines on both phones. One English line looped
+  ("congrats!! so happy for you" as twenty-three "¡"), and `TranslationCheck` refuses it. The phones' output matched
+  the desktop's except for small wording differences on four lines.
+- **The identifier.** CLD2 (Apache-2.0, what Firefox uses) named a language for 80% of the corpus and was never
+  confidently wrong after one rule: an English answer over Spanish marks (¿ ¡ ñ, an accented vowel) is unsure. The
+  other 20%, mostly lines of one to three words and Spanish read as Galician, Catalan or Portuguese, ask the reader.
+- **Calls.** During a live Wi-Fi Direct call from the Pixel 7 to the Pixel 9, the Pixel 7 translated 3,640 messages
+  back to back for 48 s. Neither phone's `call_media` samples moved: no loss, jitter 2–4 ms, 1,518–1,523 packets per
+  30 s, before, during and after. The samples do not count concealment, and the rooms were quiet.
+- **The reader's language.** On both lab phones the rule picks English (the Pixel 9's last 50 own messages: 39
+  English, 1 Spanish, 10 unsure). It has not met a reader who writes in Spanish.
+
+Before acceptance: the release packaging (the AAR), the models hosted on getknit.app, keeping a translation on the row,
+a reader who writes in Spanish, and the lab's 32-bit phone.
+
+## Amendment 2026-10-22: the sender translates the draft
+
+**What was asked.** Someone who writes in Spanish to a group that reads English should not leave every reader to
+translate each message. They know their readers' language; the receiving side cannot.
+
+**What changed.** The composer translates the person's own draft before it is sent, in the same debug build.
+
+- **One tap, then read it.** A translate button sits in the field, where the mic and paperclip sit on an empty draft.
+  A tap replaces the draft with its translation and shows "Translated from Spanish · Undo" above the field. The person
+  reads it, may edit it, and sends it as any message; Undo puts the original back. What is sent is what the field
+  holds, so the send-side screen, the LoRa byte budget, quotes, mentions and the kept draft work unchanged. Nothing
+  goes on the wire and receivers cannot tell: the author has read it and it is their message.
+- **A hint, never automatic.** When the draft is confidently in one language of the pair and the chat in the other,
+  the button is lit and the line above the field says so ("This chat is in English. Translate your message?"). The
+  chat's language comes from other people's 20 newest messages, never this phone's own, and needs three confident
+  reads and a majority (`ComposePolicy`). A draft is read only after it rests for 600 ms and holds at least 12
+  letters outside its links and mentions. Picking a language the identifier could not tell, or downloading a missing
+  model, uses the reading side's dialogs.
+- **Shared path.** `MessageTranslator.translateNow` is the message path without the screen, queued on the same mutex:
+  whole first, by pieces around links, positions and mentions when the whole lost one, and refused when it loops.
+
+**What it costs.** The sender's phone needs the model too. A pair without English still needs two models. The draft
+is translated as typed: missing accents and "¿" can lose a question ("Vienes al parque mas tarde?" became "Come to
+the park later?"), which is why the person reads it first. Device-verified on the Pixel 7 on 2026-10-22: the hint in
+an English thread, Translate, Undo.
