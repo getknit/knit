@@ -962,7 +962,7 @@
 
     <!-- Calls settings (docs/VOICE_CALLS.md §3.14) -->
     <string name="call_settings_stun_title">Use your own STUN server</string>
-    <string name="call_settings_stun_subtitle">Find your public address through your own server instead of your relays\'.</string>
+    <string name="call_settings_stun_subtitle">Find your public address through your own server instead of through your relays.</string>
     <string name="call_settings_stun_label">STUN servers</string>
     <string name="call_settings_stun_hint">One per line, like stun:stun.example.org:3478. Up to 4.</string>
     <string name="call_settings_stun_invalid">%1$s isn\'t a STUN address Knit can use</string>

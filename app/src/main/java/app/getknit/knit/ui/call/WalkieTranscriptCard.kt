@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -46,7 +47,9 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.call.CaptionStatus
@@ -56,7 +59,10 @@ import app.getknit.knit.call.TranscriptLine
 import app.getknit.knit.ui.components.AdaptiveRow
 import app.getknit.knit.ui.theme.LocalReduceMotion
 import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 
@@ -102,6 +108,7 @@ internal fun WalkieTranscript(
     // The configuration's locale, read so a change of language redraws the times.
     val locale = LocalConfiguration.current.locales[0]
     val times = remember(locale, zone) { DateTimeFormatter.ofLocalizedTime(FormatStyle.MEDIUM).withLocale(locale).withZone(zone) }
+    val timeWidth = widestTime(times, zone)
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -122,7 +129,7 @@ internal fun WalkieTranscript(
                 contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                transcriptItems(ui, name, ready, times, onCancel)
+                transcriptItems(ui, name, ready, times, timeWidth, onCancel)
             }
             // The offer's buttons under the list rather than in it: a longer language's explanation scrolls, and the
             // way to act on it stays in view.
@@ -136,6 +143,7 @@ private fun LazyListScope.transcriptItems(
     name: String,
     ready: Boolean,
     times: DateTimeFormatter,
+    timeWidth: Dp,
     onCancel: () -> Unit,
 ) {
     if (!ready) {
@@ -163,7 +171,7 @@ private fun LazyListScope.transcriptItems(
             } else {
                 name.ifBlank { stringResource(R.string.call_transcript_them) }
             }
-        Line(line, who, times.format(Instant.ofEpochMilli(line.heardAt)))
+        Line(line, who, times.format(Instant.ofEpochMilli(line.heardAt)), timeWidth)
     }
 }
 
@@ -172,13 +180,16 @@ private fun Line(
     line: TranscriptLine,
     who: String,
     time: String,
+    timeWidth: Dp,
 ) {
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
             time,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(TimeWidth).padding(top = 3.dp),
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier.width(timeWidth).padding(top = 3.dp),
         )
         Column(Modifier.weight(1f)) {
             // Who spoke; a line of this phone's own is the microphone's audio, before Opus.
@@ -540,4 +551,32 @@ internal fun mb(
 ): String = context.getString(R.string.call_megabytes, (bytes + BYTES_PER_MB / 2) / BYTES_PER_MB)
 
 private const val BYTES_PER_MB = 1_000_000L
-private val TimeWidth = 64.dp
+
+/**
+ * The time column's width: the wider of a morning's and an evening's time in [times], so every line's words start
+ * at one edge and no time wraps. A fixed width did not hold "10:12:16 PM" even in English, and another locale's
+ * format (its own word for the afternoon, or a 24-hour clock) is wider or narrower than any guess.
+ */
+@Composable
+private fun widestTime(
+    times: DateTimeFormatter,
+    zone: ZoneId,
+): Dp {
+    val style = MaterialTheme.typography.labelSmall
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    return remember(times, zone, style, density) {
+        val px =
+            listOf(WIDE_MORNING_HOUR, WIDE_EVENING_HOUR).maxOf { hour ->
+                val sample = ZonedDateTime.of(SAMPLE_DATE, LocalTime.of(hour, WIDE_MINUTE, WIDE_MINUTE), zone)
+                measurer.measure(times.format(sample), style, softWrap = false, density = density).size.width
+            }
+        with(density) { px.toDp() }
+    }
+}
+
+// Two-digit hours and minutes of wide digits, before noon and after: the widest a time of day reads.
+private const val WIDE_MORNING_HOUR = 10
+private const val WIDE_EVENING_HOUR = 22
+private const val WIDE_MINUTE = 58
+private val SAMPLE_DATE = LocalDate.of(2026, 1, 1)

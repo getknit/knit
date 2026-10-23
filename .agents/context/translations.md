@@ -59,7 +59,9 @@ layout has to take the longer text.
   accented and padded to about 40 % longer) and `Rtl` (ar-XB: mirrored, right to left), from the debug build
   (`context/testing.md`, "Compose preview screenshot tests"). Read both images of a new or changed subject before
   committing them, because the reference records whatever it shows, clipped or not. On a device, a debug build
-  offers both under Settings › Apps › Knit › Language.
+  offers both under Settings › Apps › Knit › Language. A string that renders empty in both but not in English is
+  aapt2's pseudolocalizer failing on it, not the layout: it blanked one that ended in an escaped apostrophe and a full
+  stop (`relays\'.`). Reword the source string.
 - **What to look for:** a label cut off or ellipsized on an action, text that wraps under a fixed height (a
   segmented button, a two-button row, a chip), a row whose trailing text pushes its title off, an icon that should
   mirror and doesn't (a back arrow, a chevron) or one that mirrors and shouldn't (a play button, a logo).
