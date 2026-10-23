@@ -25,9 +25,9 @@ document:
 - You can now call your contacts. Someone nearby is called over a Wi-Fi Direct link without the Internet,
   someone farther away over the Internet, and when neither works the call becomes a walkie-talkie over the
   mesh.
-- Knit now works with Knit Anywhere, a paid internet relay account that carries your photos, files and calls
-  when no phone nearby can. On a relay that only takes files from accounts, Knit gets a free ticket for small
-  photos, which you can turn off.
+- Supporting Knit on Ko-fi or GitHub Sponsors now comes with Knit Anywhere, which carries your photos, files
+  and calls over the Internet when no phone nearby can. On a relay that takes files only from supporters, Knit
+  gets a free ticket for small photos, which you can turn off.
 - In the US, Australia and New Zealand, you can now set a LoRa board up on a frequency only Knit boards use.
   Knit then uses the full airtime your region allows, but other people's Meshtastic radios no longer pass
   your messages on.
@@ -37,7 +37,7 @@ document:
   the first 61 seconds, and like a large photo, a video only Bluetooth can bring waits for your tap.
 - If you support Knit, you can show a small supporter badge on your photo. It's off until you switch it on in your
   profile, and other phones check each badge before they show it.
-- A paid Knit Anywhere account now works on one phone at a time. If it's in use on another phone, the relay's
+- Knit Anywhere now works on one phone at a time. If it's in use on another phone, the relay's
   page says so and offers to move it here, which is also how a phone restored from a backup takes it back.
 - Settings has a new Low-power mode that turns Wi-Fi Aware off to save battery, and it switches on by itself
   while Battery Saver is on. Bluetooth keeps the phone on the mesh, so messages still arrive, but photos and

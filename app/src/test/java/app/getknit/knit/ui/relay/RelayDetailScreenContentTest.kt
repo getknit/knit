@@ -202,7 +202,7 @@ class RelayDetailScreenContentTest {
         compose.onNodeWithText("2").assertIsDisplayed()
         compose.onNodeWithText("Good until", substring = true).performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("TURN, walkie").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("issuer.example.org · account ends", substring = true).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("issuer.example.org · ends", substring = true).performScrollTo().assertIsDisplayed()
     }
 
     @Test

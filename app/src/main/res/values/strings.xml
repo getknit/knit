@@ -825,7 +825,7 @@
     <string name="whats_new_2_10_video_title">Short videos</string>
     <string name="whats_new_2_10_video_body">Send a video in any chat, Nearby included. Knit shrinks it to about 3 MB and keeps up to 61 seconds. A video only Bluetooth can bring waits for your tap.</string>
     <string name="whats_new_2_10_anywhere_title">Knit Anywhere</string>
-    <string name="whats_new_2_10_anywhere_body">A Knit Anywhere account lets your internet relay carry your calls, photos and files to people no phone nearby can reach. Open the invite link it comes with to add it.</string>
+    <string name="whats_new_2_10_anywhere_body">Supporting Knit on Ko-fi or GitHub Sponsors comes with Knit Anywhere, which lets your internet relay carry your calls, photos and files to people no phone nearby can reach. Open the invite link you\'re sent to add it.</string>
     <string name="whats_new_2_10_low_power_title">Low-power mode</string>
     <string name="whats_new_2_10_low_power_body">Turn on Low-power mode in Settings to switch Wi-Fi Aware off and save battery. It also comes on by itself with Battery Saver. Messages still arrive over Bluetooth, but photos and files take longer.</string>
     <string name="whats_new_2_9_headline">Farther Bluetooth, and progress on incoming photos</string>
@@ -1677,20 +1677,20 @@
     <!-- The ticket's upload allowance at this relay is used up for its day; a daily sending allowance, not storage. -->
     <string name="relays_calls_key_waiting">%1$s · asking for a ticket</string>
     <string name="relays_calls_key_unanswered">%1$s · not answering</string>
-    <string name="relays_calls_key_ok">%1$s · account ends %2$s</string>
+    <string name="relays_calls_key_ok">%1$s · ends %2$s</string>
     <string name="relays_calls_key_ok_open">%1$s</string>
     <string name="relays_calls_key_unknown">%1$s doesn\'t recognise this key</string>
-    <string name="relays_calls_key_ended">%1$s · account ended %2$s</string>
-    <string name="relays_calls_key_ended_undated">%1$s · account has ended</string>
+    <string name="relays_calls_key_ended">%1$s · ended %2$s</string>
+    <string name="relays_calls_key_ended_undated">%1$s · has ended</string>
     <string name="relays_calls_key_bound_elsewhere">%1$s · in use on another phone</string>
     <string name="relays_move_here">Move it here</string>
     <string name="relays_move_from">You can move it here from %1$s</string>
     <string name="relays_move_title">Move Knit Anywhere to this phone?</string>
-    <string name="relays_move_body">This account from %1$s works on one phone at a time. Moving it here stops it on the other phone, and it can\'t be moved again for a while.</string>
+    <string name="relays_move_body">Knit Anywhere from %1$s works on one phone at a time. Moving it here stops it on the other phone, and it can\'t be moved again for a while.</string>
     <string name="relays_move_done">Knit Anywhere now works on this phone</string>
     <string name="relays_move_failed">Couldn\'t move it. Try again later.</string>
     <string name="relays_move_unknown_key">The issuer doesn\'t recognise this key</string>
-    <string name="relays_move_ended">This account has ended</string>
+    <string name="relays_move_ended">Your Knit Anywhere has ended</string>
     <!-- A ticket's own limits (S-7.6-22, S-7.6-31) after its grants: %1$s is a size such as "256 kB". -->
     <string name="relays_calls_files_each">Up to %1$s each</string>
     <string name="relays_calls_files_day">%1$s a day</string>

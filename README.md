@@ -647,13 +647,16 @@ needs costs nothing:
   shows.
 
 If you'd also like to chip in money, Knit is funded entirely by tips. You can leave a one-off tip on
-Ko-fi or set up a recurring one on Liberapay or GitHub Sponsors:
+Ko-fi or set up a recurring one on Liberapay or GitHub Sponsors. Supporting Knit on Ko-fi or GitHub Sponsors
+comes with **[Knit Anywhere](https://anywhere.getknit.app)**, which lets your internet relay carry your calls,
+photos and files to people no phone nearby can reach, and a supporter badge you can show on your profile
+photo. Knit works phone to phone without it.
 
 [![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-leave%20a%20tip-FF5E5B?logo=kofi&logoColor=white)](https://ko-fi.com/knit)
 [![Support on Liberapay](https://img.shields.io/badge/Liberapay-give%20recurring-F6C915?logo=liberapay&logoColor=black)](https://liberapay.com/zaventh/)
 [![Sponsor on GitHub](https://img.shields.io/badge/GitHub%20Sponsors-sponsor-EA4AAA?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/getknit)
 
-Tips are optional and buy no special treatment. Knit is GPLv3 and stays that way.
+Beyond Knit Anywhere, tips buy no special treatment. Knit is GPLv3 and stays that way.
 
 ## 📄 License
 
