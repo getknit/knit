@@ -34,7 +34,10 @@ internal object TranslateJni {
     @JvmStatic
     external fun nativeFree(handle: Long)
 
-    /** CLD2's answer for [text] (UTF-8), as `Detection.parse` reads it. */
+    /** CLD2's answer for [text] (UTF-8), as `Detection.parse` reads it, boosting [hint] (a language code, or empty). */
     @JvmStatic
-    external fun nativeDetect(text: ByteArray): String
+    external fun nativeDetect(
+        text: ByteArray,
+        hint: String,
+    ): String
 }

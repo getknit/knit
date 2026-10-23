@@ -55,8 +55,8 @@ JNIEXPORT void JNICALL Java_app_getknit_knit_ui_translate_TranslateJni_nativeFre
 }
 
 JNIEXPORT jstring JNICALL Java_app_getknit_knit_ui_translate_TranslateJni_nativeDetect(JNIEnv *env, jclass,
-                                                                                    jbyteArray text) {
-  return env->NewStringUTF(knit_translate::detect(bytes(env, text)).c_str());
+                                                                                    jbyteArray text, jstring hint) {
+  return env->NewStringUTF(knit_translate::detect(bytes(env, text), chars(env, hint)).c_str());
 }
 
 }  // extern "C"

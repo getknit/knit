@@ -17,11 +17,7 @@ object ComposePolicy {
     const val MIN_DRAFT_LETTERS = 12
 
     /** The language most of [picks] are in, or null when too few are confident or none holds a majority. */
-    fun threadLanguage(picks: List<LanguagePick>): TranslateLang? {
-        val counts = picks.filterIsInstance<LanguagePick.Picked>().groupingBy { it.lang }.eachCount()
-        val (lang, n) = counts.maxByOrNull { it.value } ?: return null
-        return lang.takeIf { n >= MIN_THREAD_PICKS && n * 2 > counts.values.sum() }
-    }
+    fun threadLanguage(picks: List<LanguagePick>): TranslateLang? = LanguagePolicy.majority(picks, MIN_THREAD_PICKS)
 
     /** Whether [draft] holds enough words for the identifier to read. */
     fun readable(

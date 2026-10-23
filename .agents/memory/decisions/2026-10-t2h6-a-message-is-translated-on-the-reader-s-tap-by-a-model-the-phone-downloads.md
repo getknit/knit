@@ -194,3 +194,34 @@ translate each message. They know their readers' language; the receiving side ca
 is translated as typed: missing accents and "¿" can lose a question ("Vienes al parque mas tarde?" became "Come to
 the park later?"), which is why the person reads it first. Device-verified on the Pixel 7 on 2026-10-22: the hint in
 an English thread, Translate, Undo.
+
+## Amendment 2026-10-22: settling short lines
+
+**What was asked.** With many languages, a short line is where the identifier guesses: every language added gives it
+more neighbours to confuse, and "Which language is this?" with two buttons would become a long list.
+
+**What changed.** A message's language is resolved in order, stopping at the first that answers, with no schema change
+(`LanguageResolver`, `MessageTranslator.resolve`):
+
+1. **The words**, read by CLD2, and only a language a model translates from counts (`TranslateDirection.sources`).
+   A sure read of anything else (Spanish read as Galician) is no read at all.
+2. **The author's language in this chat** (`AuthorLanguages`): a majority of at least three of their 30 newest
+   messages there that the words alone could read. Per chat, because a person may write one language in one group
+   and another elsewhere, and because the `(conversationId, kind, senderId)` index serves it. Held in memory for ten
+   minutes; derived from rows the phone has, never stored, never sent. A draft's author is this phone.
+3. **The chat's language**, from other people's 20 newest messages (the composer hint's `ComposePolicy`).
+4. Only then is the reader asked.
+
+The likeliest prior also goes to CLD2 as a hint, which tips a close call between neighbours without overruling plain
+text: on the Spanish corpus an `es` hint turned every Galician, Portuguese and English misread into Spanish, and on
+the English corpus a wrong `es` hint flipped no line (two went unsure instead).
+
+**What it measured.** Over each lab phone's real messages from other people (`TRANSLATE audit`): the Pixel 7's 169
+went from 69 unsure by the words alone to 5 (60 settled by their author, 3 by the chat), and the Pixel 9's 264 went
+from 82 to 2. Of the lines of up to 20 characters, 62 of 84 and 75 of 100 were unsure by the words alone; 4 and 2
+still are. The hint changed no confident read on either phone.
+
+**What it costs.** A prior is a guess about the person, not the line: someone who writes English to a chat and sends
+one short Spanish line ("ya voy") has it read as English. The audit counts coverage, not accuracy; the lab's traffic is
+almost all English. The reader still sees which language a translation came from, and a translation settled by a prior
+could offer the other language from there; that is not built.

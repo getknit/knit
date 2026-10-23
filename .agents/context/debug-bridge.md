@@ -443,6 +443,10 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
     across phones and lays the results beside the desktop bench's.
   - `reader` reports the product rule's pick of this reader's language (`target`), from this phone's last 50 own
     messages (`written`, `unsure`) and the system's languages, beside the app's resolved locale, which the rule ignores.
+  - `audit [--ei limit 300]` reads the language of this phone's newest messages from other people twice — by the
+    words alone, then with the author's and the chat's language behind them (the ADR's short-line amendment) — and
+    replies with counts only: `wordsAloneUnsure`, `resolvedBy` (`text`, `author`, `chat`, `unsure`), `changedByHint`
+    (a confident read the hint flipped) and the same for lines of up to 20 characters (`short`).
 - `…debug.RATCHET` — dumps the **DM ratchet's per-peer state** and, with `--es reset <peerNodeId>`, forces a
   session reset past the heuristic that guards it. Exists because every gate in the recovery path returns
   *silently*: a peer we hold no prekey for (`peerPrekeyPinned:false` — a reset from this side is impossible

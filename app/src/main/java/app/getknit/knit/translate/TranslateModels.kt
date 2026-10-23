@@ -105,6 +105,9 @@ class TranslateDirection(
 
         val ALL: List<TranslateDirection> = listOf(EN_ES, ES_EN)
 
+        /** Every language a model translates from: the only answers a message's language read may give. */
+        val sources: Set<TranslateLang> = ALL.map { it.from }.toSet()
+
         fun of(
             from: TranslateLang,
             to: TranslateLang,

@@ -3,8 +3,8 @@
 //
 //   knit-translate-bench translate <model> <vocab> <shortlist> <decoder-layers> <corpus>
 //       prints "<line>\t<ms>\t<translation>" per line, and the load time on stderr
-//   knit-translate-bench detect <corpus>
-//       prints "<line>\t<CLD2 answer>" per line
+//   knit-translate-bench detect <corpus> [hint]
+//       prints "<line>\t<CLD2 answer>" per line, with CLD2 boosting [hint] (a language code) when given
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -22,7 +22,7 @@ double since(std::chrono::steady_clock::time_point start) {
 int usage() {
   std::fprintf(stderr,
                "usage: knit-translate-bench translate <model> <vocab> <shortlist> <decoder-layers> <corpus>\n"
-               "       knit-translate-bench detect <corpus>\n");
+               "       knit-translate-bench detect <corpus> [hint]\n");
   return 2;
 }
 
@@ -31,11 +31,12 @@ int usage() {
 int main(int argc, char **argv) {
   if (argc < 3) return usage();
   std::string mode = argv[1];
-  if (mode == "detect" && argc == 3) {
+  if (mode == "detect" && (argc == 3 || argc == 4)) {
     std::ifstream corpus(argv[2]);
+    std::string hint = argc == 4 ? argv[3] : "";
     std::string line;
     for (int n = 1; std::getline(corpus, line); ++n) {
-      std::printf("%d\t%s\n", n, knit_translate::detect(line).c_str());
+      std::printf("%d\t%s\n", n, knit_translate::detect(line, hint).c_str());
     }
     return 0;
   }

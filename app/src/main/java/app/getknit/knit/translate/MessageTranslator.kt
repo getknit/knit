@@ -18,8 +18,11 @@ interface TranslateEngine {
     /** Whether [direction]'s files are on the phone. */
     fun installed(direction: TranslateDirection): Boolean
 
-    /** CLD2's answer for [text], or null when the library is not there. */
-    suspend fun detect(text: String): Detection?
+    /** CLD2's answer for [text], boosting [hint] if given, or null when the library is not there. */
+    suspend fun detect(
+        text: String,
+        hint: TranslateLang? = null,
+    ): Detection?
 
     /** [text] through [direction]'s model, or null when the model would not load or run. */
     suspend fun translate(
@@ -96,6 +99,8 @@ class MessageTranslator(
     private val dispatcher: CoroutineDispatcher,
     private val clock: () -> Long,
     private val log: (String) -> Unit = {},
+    // Each author's usual language per chat, for the lines the words cannot settle; null reads the words alone.
+    private val authors: AuthorLanguages? = null,
 ) {
     private val _state = MutableStateFlow<Map<String, MessageTranslation>>(emptyMap())
 
@@ -114,6 +119,26 @@ class MessageTranslator(
         val words = VerbatimSpans.wordsOnly(body, mentions)
         if (words.isBlank()) return LanguagePick.Unsure
         return LanguagePolicy.pick(engine.detect(words), words)
+    }
+
+    /**
+     * Which language [body] is in, by its words and, when they cannot tell, by what its author ([authorId]) writes in
+     * [conversationId], then by the chat's own language ([chat]) (ADR 2026-10.t2h6's short-line amendment). The likeliest
+     * prior is also handed to CLD2 as a hint, which tips a close call between neighbours without overruling plain text.
+     */
+    suspend fun resolve(
+        body: String,
+        mentions: List<IntRange>,
+        conversationId: String?,
+        authorId: String?,
+        chat: TranslateLang?,
+    ): Resolution {
+        val words = VerbatimSpans.wordsOnly(body, mentions)
+        // Nothing but links, positions and mentions: nothing to translate, whatever its author writes.
+        if (words.isBlank()) return Resolution(LanguagePick.Unsure, null)
+        val author = if (conversationId != null && authorId != null) authors?.of(conversationId, authorId) else null
+        val detection = engine.detect(words, author ?: chat)
+        return LanguageResolver.resolve(detection, words, TranslateDirection.sources, author, chat)
     }
 
     /**

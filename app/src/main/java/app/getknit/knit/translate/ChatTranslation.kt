@@ -22,6 +22,15 @@ interface ChatTranslation {
         mentions: List<IntRange>,
     ): LanguagePick
 
+    /** [body]'s language by its words, then its author's usual language in the chat, then the chat's ([chat]). */
+    suspend fun resolve(
+        body: String,
+        mentions: List<IntRange>,
+        conversationId: String,
+        authorId: String?,
+        chat: TranslateLang?,
+    ): Resolution
+
     fun translate(
         messageId: String,
         body: String,

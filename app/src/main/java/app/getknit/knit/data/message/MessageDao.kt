@@ -462,6 +462,25 @@ interface MessageDao {
     ): List<String>
 
     /**
+     * What [author] wrote most recently in [conversationId], newest first: the translation spike reads the language
+     * they write in there from it (ADR 2026-10.t2h6), on a Translate tap. Led by the `(conversationId, kind, senderId)`
+     * index. Never logged.
+     */
+    @Query(
+        "SELECT body FROM messages WHERE conversationId = :conversationId AND kind = 0 AND senderId = :author " +
+            "AND body <> '' ORDER BY sentAt DESC LIMIT :limit",
+    )
+    suspend fun recentBodiesIn(
+        conversationId: String,
+        author: String,
+        limit: Int,
+    ): List<String>
+
+    /** The newest messages with text across every chat: the debug bridge's audit of the language read. */
+    @Query("SELECT * FROM messages WHERE kind = 0 AND body <> '' ORDER BY sentAt DESC LIMIT :limit")
+    suspend fun recentWithText(limit: Int): List<MessageEntity>
+
+    /**
      * Whether [me] authored any message naming the ciphertext [hash] at all — acked or not. The subject
      * of `AttachmentDeferPolicy`'s grace, and nothing else: for a short while after a send, a missing ack
      * says only that the receipt has not come back yet, and this is what separates that from everything

@@ -8,6 +8,7 @@ import android.os.SystemClock
 import app.getknit.knit.call.SttModelState
 import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.translate.ComposePolicy
 import app.getknit.knit.translate.LanguagePick
 import app.getknit.knit.translate.LanguagePolicy
 import app.getknit.knit.translate.MessageTranslation
@@ -45,6 +46,9 @@ import kotlin.math.ceil
  *   corpus through the model whole, `runs` times (each later run numbered, past slimt's cache); writes one JSON line
  *   per message to the app's external files (`translate-bench/<from>-<to>.jsonl`, the translation included) and puts
  *   the timings and memory in `status`.
+ * - `audit [--ei limit 300]`: the language read over this phone's newest messages from other people, by the words
+ *   alone and then with the author's and the chat's language behind them (ADR 2026-10.t2h6's short-line amendment):
+ *   how many each settles, how many are still unsure, and how many the priors changed. Counts only, no text.
  * - `reader`: what the product rule would pick as this reader's language, from this phone's own recent messages and the
  *   system's language list, beside the app's resolved locale.
  * - `unload`: lets both models go.
@@ -130,6 +134,10 @@ internal object TranslateBridge : KoinComponent {
 
             "reader" -> {
                 return reader(context, translator)
+            }
+
+            "audit" -> {
+                return audit(translator, intent.getIntExtra("limit", AUDIT_LIMIT))
             }
 
             "unload" -> {
@@ -326,4 +334,58 @@ internal object TranslateBridge : KoinComponent {
     }
 
     private const val KB = 1024
+    private const val AUDIT_LIMIT = 300
+    private const val AUDIT_SHORT = 20
+
+    // The words alone against the full resolution, over real messages: what the author's and the chat's language add.
+    @Suppress("LongMethod") // one tally, read top to bottom
+    private suspend fun audit(
+        translator: MessageTranslator,
+        limit: Int,
+    ): JSONObject {
+        val me = get<Identity>().nodeId()
+        val rows =
+            get<MessageDao>()
+                .recentWithText(limit.coerceIn(1, AUDIT_LIMIT * 10))
+                .filter { it.senderId != me && VerbatimSpans.wordsOnly(it.body).isNotBlank() }
+        val chats =
+            rows.groupBy { it.conversationId }.mapValues { (_, newestFirst) ->
+                ComposePolicy.threadLanguage(newestFirst.take(ComposePolicy.THREAD_SAMPLE).map { translator.pick(it.body) })
+            }
+        var wordsUnsure = 0
+        var shortTotal = 0
+        var shortWordsUnsure = 0
+        var shortStillUnsure = 0
+        var changed = 0
+        val bySource = mutableMapOf<String, Int>()
+        for (m in rows) {
+            val words = translator.pick(m.body)
+            val resolved = translator.resolve(m.body, emptyList(), m.conversationId, m.senderId, chats[m.conversationId])
+            val short = VerbatimSpans.wordsOnly(m.body).length <= AUDIT_SHORT
+            if (words == LanguagePick.Unsure) wordsUnsure++
+            if (short) {
+                shortTotal++
+                if (words == LanguagePick.Unsure) shortWordsUnsure++
+                if (resolved.pick == LanguagePick.Unsure) shortStillUnsure++
+            }
+            if (words is LanguagePick.Picked && resolved.pick is LanguagePick.Picked && words != resolved.pick) changed++
+            val key = resolved.source?.name?.lowercase() ?: "unsure"
+            bySource[key] = (bySource[key] ?: 0) + 1
+        }
+        return reply("ok", "language audit")
+            .put("messages", rows.size)
+            .put("chats", chats.size)
+            .put("chatsWithALanguage", chats.values.count { it != null })
+            .put("wordsAloneUnsure", wordsUnsure)
+            .put("resolvedBy", JSONObject(bySource.toMap()))
+            .put("changedByHint", changed)
+            .put(
+                "short",
+                JSONObject()
+                    .put("chars", AUDIT_SHORT)
+                    .put("messages", shortTotal)
+                    .put("wordsAloneUnsure", shortWordsUnsure)
+                    .put("stillUnsure", shortStillUnsure),
+            )
+    }
 }

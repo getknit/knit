@@ -7,6 +7,7 @@
 
 #include "internal/lang_script.h"
 #include "public/compact_lang_det.h"
+#include "public/encodings.h"
 #include "slimt/slimt.hh"
 
 namespace knit_translate {
@@ -44,13 +45,14 @@ std::string translate(Engine &engine, const std::string &text) {
 
 void release(Engine *engine) { delete engine; }
 
-std::string detect(const std::string &text) {
+std::string detect(const std::string &text, const std::string &hint) {
   CLD2::Language language3[3];
   int percent3[3];
   int bytes = 0;
   bool reliable = false;
-  CLD2::ExtDetectLanguageSummary(text.data(), static_cast<int>(text.size()), true, language3, percent3, &bytes,
-                                 &reliable);
+  CLD2::Language boost = hint.empty() ? CLD2::UNKNOWN_LANGUAGE : CLD2::GetLanguageFromName(hint.c_str());
+  CLD2::ExtDetectLanguageSummary(text.data(), static_cast<int>(text.size()), true, nullptr, CLD2::UNKNOWN_ENCODING,
+                                 boost, language3, percent3, &bytes, &reliable);
   std::string out;
   for (int i = 0; i < 3; ++i) {
     if (i > 0) out += ' ';

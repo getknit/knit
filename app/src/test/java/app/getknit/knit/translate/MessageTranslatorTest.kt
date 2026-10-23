@@ -38,8 +38,14 @@ class MessageTranslatorTest {
 
         override fun installed(direction: TranslateDirection) = direction in installed
 
-        override suspend fun detect(text: String): Detection? {
+        val hints = mutableListOf<TranslateLang?>()
+
+        override suspend fun detect(
+            text: String,
+            hint: TranslateLang?,
+        ): Detection? {
             detected += text
+            hints += hint
             return detection
         }
 
@@ -60,6 +66,7 @@ class MessageTranslatorTest {
     private fun TestScope.translator(
         engine: TranslateEngine,
         flagged: Boolean = false,
+        authors: AuthorLanguages? = null,
     ): MessageTranslator {
         val dispatcher = StandardTestDispatcher(testScheduler)
         return MessageTranslator(
@@ -72,6 +79,7 @@ class MessageTranslatorTest {
             dispatcher = dispatcher,
             clock = { now },
             log = { logs += it },
+            authors = authors,
         )
     }
 
@@ -279,5 +287,47 @@ class MessageTranslatorTest {
             advanceUntilIdle()
             assertEquals(TranslateOutcome.Text("DOS", TranslateLang.ES, TranslateLang.EN), draft.await())
             assertEquals(1, engine.mostRunning)
+        }
+
+    private val unread = Detection(listOf("un" to 0, "un" to 0, "un" to 0), false, 6)
+
+    private fun authorWrites(lang: TranslateLang?) =
+        AuthorLanguages(
+            bodies = { _, _, _ -> if (lang == null) emptyList() else List(3) { "x" } },
+            read = { if (lang == null) LanguagePick.Unsure else LanguagePick.Picked(lang) },
+            clock = { 0L },
+        )
+
+    @Test
+    fun aShortLineTakesItsAuthorsLanguageAndHintsTheIdentifierWithIt() =
+        runTest {
+            val engine = FakeEngine(detection = unread) { _, _ -> "x" }
+            val t = translator(engine, authors = authorWrites(TranslateLang.ES))
+            assertEquals(
+                Resolution(LanguagePick.Picked(TranslateLang.ES), LanguageSource.AUTHOR),
+                t.resolve("ya voy", emptyList(), "g1", "lucia", chat = TranslateLang.EN),
+            )
+            assertEquals(listOf<TranslateLang?>(TranslateLang.ES), engine.hints)
+        }
+
+    @Test
+    fun anAuthorWithNoUsualLanguageFallsToTheChats() =
+        runTest {
+            val engine = FakeEngine(detection = unread) { _, _ -> "x" }
+            val t = translator(engine, authors = authorWrites(null))
+            assertEquals(
+                Resolution(LanguagePick.Picked(TranslateLang.EN), LanguageSource.CHAT),
+                t.resolve("omg yes", emptyList(), "g1", "sam", chat = TranslateLang.EN),
+            )
+            assertEquals(listOf<TranslateLang?>(TranslateLang.EN), engine.hints)
+        }
+
+    @Test
+    fun aMessageOfLinksAloneHasNothingToTranslateWhateverItsAuthorWrites() =
+        runTest {
+            val engine = FakeEngine(detection = unread) { _, _ -> "x" }
+            val t = translator(engine, authors = authorWrites(TranslateLang.ES))
+            assertEquals(Resolution(LanguagePick.Unsure, null), t.resolve("https://getknit.app/", emptyList(), "g1", "lucia", null))
+            assertTrue(engine.detected.isEmpty())
         }
 }

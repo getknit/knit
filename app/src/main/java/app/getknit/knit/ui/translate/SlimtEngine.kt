@@ -6,6 +6,7 @@ import app.getknit.knit.moderation.ModelLoadGuard
 import app.getknit.knit.translate.Detection
 import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateEngine
+import app.getknit.knit.translate.TranslateLang
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -54,10 +55,13 @@ class SlimtEngine(
 
     override fun installed(direction: TranslateDirection): Boolean = store.paths(direction) != null
 
-    override suspend fun detect(text: String): Detection? =
+    override suspend fun detect(
+        text: String,
+        hint: TranslateLang?,
+    ): Detection? =
         withContext(detector) {
             if (!TranslateJni.available()) return@withContext null
-            Detection.parse(TranslateJni.nativeDetect(text.toByteArray(Charsets.UTF_8)))
+            Detection.parse(TranslateJni.nativeDetect(text.toByteArray(Charsets.UTF_8), hint?.code.orEmpty()))
         }
 
     override suspend fun translate(

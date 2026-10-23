@@ -21,7 +21,9 @@ std::string translate(Engine &engine, const std::string &text);
 void release(Engine *engine);
 
 // CLD2's answer for [text]: the top three as "code:percent" separated by spaces, then "|1" or "|0" for its
-// reliable bit and "|" the bytes it scored, e.g. "es:97 un:0 un:0|1|38".
-std::string detect(const std::string &text);
+// reliable bit and "|" the bytes it scored, e.g. "es:97 un:0 un:0|1|38". [hint], a language code or empty, is the
+// language the author or the chat usually writes in: CLD2 boosts it, which tips a close call without overruling text
+// that is plainly something else.
+std::string detect(const std::string &text, const std::string &hint);
 
 }  // namespace knit_translate

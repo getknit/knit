@@ -795,8 +795,12 @@ class ChatViewModel(
         if (row.body.isBlank()) return
         _translateAsk.value = null
         viewModelScope.launch {
+            // The words first, then what this author writes here, then the chat's language; only then the reader.
             val lang =
-                from ?: when (val pick = t.pick(row.body, mentionRanges(row))) {
+                from ?: when (
+                    val pick =
+                        t.resolve(row.body, mentionRanges(row), conversationId, row.senderNodeId, threadLanguage.value).pick
+                ) {
                     is LanguagePick.Picked -> {
                         pick.lang
                     }
@@ -1680,6 +1684,21 @@ class ChatViewModel(
     val draftTranslation: StateFlow<DraftTranslation?> = _draftTranslation.asStateFlow()
 
     /**
+     * The chat's own language (ADR 2026-10.t2h6), read by the words alone from other people's newest messages: the
+     * composer's hint compares the draft with it, and a short message the words and its author cannot settle takes it.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val threadLanguage: StateFlow<TranslateLang?> =
+        translation
+            ?.let { t ->
+                state
+                    .map { s -> s.rows.filter { !it.mine && it.body.isNotBlank() }.takeLast(ComposePolicy.THREAD_SAMPLE) }
+                    .distinctUntilChangedBy { rows -> rows.map { it.id } }
+                    .mapLatest { rows -> ComposePolicy.threadLanguage(rows.map { t.pick(it.body, mentionRanges(it)) }) }
+                    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+            } ?: MutableStateFlow(null)
+
+    /**
      * The composer's suggestion (ADR 2026-10.t2h6's amendment): the direction from the draft's language into the chat's,
      * when other people's recent messages are in one language of the pair and the draft is confidently in the other.
      * Null where translation is not wired, the draft is too short to read, or the two agree.
@@ -1688,14 +1707,6 @@ class ChatViewModel(
     val draftHint: StateFlow<TranslateDirection?> =
         translation
             ?.let { t ->
-                val threadLanguage =
-                    state
-                        .map { s ->
-                            s.rows
-                                .filter { !it.mine && it.body.isNotBlank() }
-                                .takeLast(ComposePolicy.THREAD_SAMPLE)
-                        }.distinctUntilChangedBy { rows -> rows.map { it.id } }
-                        .mapLatest { rows -> ComposePolicy.threadLanguage(rows.map { t.pick(it.body, mentionRanges(it)) }) }
                 val draftLanguage =
                     draft
                         .debounce(DRAFT_READ_MS)
@@ -1718,8 +1729,9 @@ class ChatViewModel(
         if (draft.isBlank() || _draftTranslation.value == DraftTranslation.Running) return
         _draftTranslation.value = DraftTranslation.Running
         viewModelScope.launch {
+            // A draft is the person's own: when its words cannot tell, what they write in this chat does.
             val lang =
-                from ?: when (val pick = t.pick(draft, mentions)) {
+                from ?: when (val pick = t.resolve(draft, mentions, conversationId, myNodeId.value, chat = null).pick) {
                     is LanguagePick.Picked -> {
                         pick.lang
                     }

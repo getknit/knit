@@ -3,14 +3,19 @@ package app.getknit.knit.di
 import android.os.SystemClock
 import android.util.Log
 import app.getknit.knit.BuildConfig
+import app.getknit.knit.data.message.MessageDao
 import app.getknit.knit.location.GeoUri
 import app.getknit.knit.moderation.ModelLoadGuard
 import app.getknit.knit.moderation.ScopedTextModerator
 import app.getknit.knit.net.AndroidInternetGate
+import app.getknit.knit.translate.AuthorLanguages
 import app.getknit.knit.translate.ChatTranslation
+import app.getknit.knit.translate.LanguagePick
+import app.getknit.knit.translate.LanguagePolicy
 import app.getknit.knit.translate.MessageTranslator
 import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateLang
+import app.getknit.knit.translate.VerbatimSpans
 import app.getknit.knit.ui.translate.SlimtEngine
 import app.getknit.knit.ui.translate.TranslateModelStore
 import kotlinx.coroutines.CoroutineScope
@@ -40,6 +45,18 @@ private fun translateGraph(): Module =
         single { TranslateModelStore(androidContext(), get<AndroidInternetGate>(), get<CoroutineScope>(), log = { Log.i(TAG, it) }) }
         single { SlimtEngine(get(), get<ModelLoadGuard>(), get<CoroutineScope>(), log = { Log.i(TAG, it) }) }
         single {
+            val engine = get<SlimtEngine>()
+            val messages = get<MessageDao>()
+            AuthorLanguages(
+                bodies = messages::recentBodiesIn,
+                read = { body ->
+                    val words = VerbatimSpans.wordsOnly(body)
+                    if (words.isBlank()) LanguagePick.Unsure else LanguagePolicy.pick(engine.detect(words), words)
+                },
+                clock = SystemClock::elapsedRealtime,
+            )
+        }
+        single {
             val moderator = get<ScopedTextModerator>()
             MessageTranslator(
                 engine = get<SlimtEngine>(),
@@ -52,6 +69,7 @@ private fun translateGraph(): Module =
                 dispatcher = Dispatchers.Default.limitedParallelism(1),
                 clock = SystemClock::elapsedRealtime,
                 log = { Log.i(TAG, it) },
+                authors = get(),
             )
         }
         single<ChatTranslation> {
@@ -75,6 +93,14 @@ private fun translateGraph(): Module =
                     body: String,
                     mentions: List<IntRange>,
                 ) = translator.pick(body, mentions)
+
+                override suspend fun resolve(
+                    body: String,
+                    mentions: List<IntRange>,
+                    conversationId: String,
+                    authorId: String?,
+                    chat: TranslateLang?,
+                ) = translator.resolve(body, mentions, conversationId, authorId, chat)
 
                 override fun translate(
                     messageId: String,

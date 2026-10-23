@@ -64,4 +64,14 @@ object LanguagePolicy {
         if (lang == TranslateLang.EN && SPANISH_MARKS.containsMatchIn(text)) return LanguagePick.Unsure
         return LanguagePick.Picked(lang)
     }
+
+    /** The language most of [picks] are in, or null when fewer than [minPicks] are confident or none holds a majority. */
+    fun majority(
+        picks: List<LanguagePick>,
+        minPicks: Int,
+    ): TranslateLang? {
+        val counts = picks.filterIsInstance<LanguagePick.Picked>().groupingBy { it.lang }.eachCount()
+        val (lang, n) = counts.maxByOrNull { it.value } ?: return null
+        return lang.takeIf { n >= minPicks && n * 2 > counts.values.sum() }
+    }
 }
