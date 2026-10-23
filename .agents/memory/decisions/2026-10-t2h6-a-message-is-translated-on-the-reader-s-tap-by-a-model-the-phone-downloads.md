@@ -177,10 +177,10 @@ translate each message. They know their readers' language; the receiving side ca
 **What changed.** The composer translates the person's own draft before it is sent, in the same debug build.
 
 - **One tap, then read it.** A translate button sits in the field, where the mic and paperclip sit on an empty draft.
-  A tap replaces the draft with its translation and shows "Translated from Spanish · Undo" above the field. The person
-  reads it, may edit it, and sends it as any message; Undo puts the original back. What is sent is what the field
-  holds, so the send-side screen, the LoRa byte budget, quotes, mentions and the kept draft work unchanged. Nothing
-  goes on the wire and receivers cannot tell: the author has read it and it is their message.
+  A tap replaces the draft with its translation and shows "Translated from Spanish · Undo translation" above the
+  field. The person reads it, may edit it, and sends it as any message; Undo translation puts the original back. What
+  is sent is what the field holds, so the send-side screen, the LoRa byte budget, quotes, mentions and the kept draft
+  work unchanged. Nothing goes on the wire and receivers cannot tell: the author has read it and it is their message.
 - **A hint, never automatic.** When the draft is confidently in one language of the pair and the chat in the other,
   the button is lit and the line above the field says so ("This chat is in English. Translate your message?"). The
   chat's language comes from other people's 20 newest messages, never this phone's own, and needs three confident
@@ -224,7 +224,8 @@ still are. The hint changed no confident read on either phone.
 **What it costs.** A prior is a guess about the person, not the line: someone who writes English to a chat and sends
 one short Spanish line ("ya voy") has it read as English. The audit counts coverage, not accuracy; the lab's traffic is
 almost all English. So a translation whose language a prior settled, not the words, says so: "Translated from English
-· Not English?" under the message, and beside Undo over a draft. One tap translates it again from the other language,
-which the reader has now named, so it offers no second guess (`MessageTranslation.Done.guessed`). With more languages
-that tap would open the short picker instead. Device-verified on the Pixel 7: Walter's "ya voy", read as English by
-his history in that chat, came back as "I'm coming" after the tap.
+· Not English?" under the message, and the same over a draft, with Undo translation set apart at the end of the line
+so it never reads as undoing the question. One tap translates it again from the other language, which the reader has
+now named, so it offers no second guess (`MessageTranslation.Done.guessed`). With more languages that tap would open
+the short picker instead. Device-verified on the Pixel 7: Walter's "ya voy", read as English by their history in that
+chat, came back as "I'm coming" after the tap.

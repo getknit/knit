@@ -1984,7 +1984,7 @@
     <string name="translate_draft_button">Translate before sending</string>
     <string name="translate_draft_hint">This chat is in %1$s. Translate your message?</string>
     <string name="translate_draft_hint_action">Translate</string>
-    <string name="translate_draft_undo">Undo</string>
+    <string name="translate_draft_undo">Undo translation</string>
     <string name="translate_not_language">Not %1$s?</string>
     <string name="translate_model_title">Download the translation model?</string>
     <string name="translate_metered_note">This download uses mobile data.</string>

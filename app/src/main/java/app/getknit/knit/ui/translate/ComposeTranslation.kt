@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -23,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,18 +62,25 @@ fun DraftTranslateLine(
         when {
             from != null -> {
                 {
-                    Text(
-                        stringResource(R.string.translate_label, languageName(from)),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = muted,
-                    )
-                    Spacer(Modifier.weight(1f))
-                    if (ui.translatedGuessed) {
-                        TextButton(
-                            onClick = onNotThisLanguage,
-                        ) { Text(stringResource(R.string.translate_not_language, languageName(from))) }
+                    // "Not English?" sits with the label it questions and Undo stands apart, so Undo never reads as
+                    // undoing the question. Both are links, as in the bubble, so the three fit one line on a phone; a
+                    // larger font wraps the question under the label.
+                    FlowRow(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        itemVerticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            stringResource(R.string.translate_label, languageName(from)),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = muted,
+                            softWrap = false,
+                        )
+                        if (ui.translatedGuessed) {
+                            LineAction(stringResource(R.string.translate_not_language, languageName(from)), onNotThisLanguage)
+                        }
                     }
-                    TextButton(onClick = onUndo) { Text(stringResource(R.string.translate_draft_undo)) }
+                    LineAction(stringResource(R.string.translate_draft_undo), onUndo)
                 }
             }
 
@@ -130,6 +140,25 @@ fun DraftTranslateLine(
         Icon(Icons.Filled.Translate, contentDescription = null, modifier = Modifier.size(16.dp), tint = muted)
         line()
     }
+}
+
+// A tappable word on the line, drawn like the bubble's "Show original" but with a full-size touch target.
+@Composable
+private fun LineAction(
+    text: String,
+    onClick: () -> Unit,
+) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.primary,
+        softWrap = false,
+        modifier =
+            Modifier
+                .minimumInteractiveComponentSize()
+                .clickable(onClick = onClick, role = Role.Button)
+                .wrapContentSize(),
+    )
 }
 
 /**
