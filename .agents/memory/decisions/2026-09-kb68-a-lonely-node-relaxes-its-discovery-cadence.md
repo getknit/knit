@@ -91,3 +91,14 @@ then removed; grep the transport tag for `state ver=`, `re-arm subscribe`, `lone
    `cooldown=15000` re-arm within 15 s; B screen-off with BLE off ≤ 150 s; BLE on ≤ 135 s.
 3. Walking with A — one `heal=true` re-arm per motion trigger, never two within 15 s.
 4. Screen on — a re-arm within 15 s and `lonely: aggressive again`.
+
+## Amendment 2026-10-24 — a lonely re-arm no longer lights ICM (ADR 2026-10.486r)
+
+With no cue target, the configs this cadence files carry no Instant Communication Mode (`NanIcmPolicy`'s LONELY rule),
+so the ICM duty figures above (~100 % to 25 % / 10 %) and "the re-arm is the sole ICM source" no longer describe what a
+lonely phone pays: its re-arms cost only the subscribe close and reopen. The cadence, its constants and the screen-on
+exception are unchanged. The one window a lonely phone still lights is the 30 s after a demand-driven Tier-1 cure (the
+post-cure window in 486r). Trial 1's "ICM lit in ≤ 35 % of samples" now reads 0 % outside that window, and the
+walk-up bounds in trial 2 are re-run as 486r's trial D, since a newcomer is now found through the discovery windows
+and Bluetooth instead of an ICM dwell. Whether a screen-on lonely phone should relax its re-arm, now that the re-arm
+lights nothing, is open again.

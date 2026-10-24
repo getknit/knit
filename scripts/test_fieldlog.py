@@ -135,6 +135,17 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(["battery: unexpected field 'oem'"], fieldlog.validate({**line, "oem": "MIUI"}))
 
 
+    def test_the_wifi_aware_icm_lines_are_known_kinds(self):
+        for line in (
+            {"t": 1, "e": "nan_icm", "on": True, "band": "B24", "why": "STA_CHANNEL", "sta": 2437},
+            {"t": 2, "e": "nan_icm", "on": False, "why": "AUDIO"},
+            {"t": 3, "e": "nan_icm_lit", "lit": 95000, "up": 300000, "configs": 7},
+        ):
+            self.assertEqual([], fieldlog.validate(line), line)
+        self.assertEqual(["nan_icm: unexpected field 'ssid'"],
+                         fieldlog.validate({"t": 1, "e": "nan_icm", "on": False, "why": "LONELY", "ssid": 3}))
+
+
 class PairTest(unittest.TestCase):
     def setUp(self) -> None:
         self.folder = Path(tempfile.mkdtemp())

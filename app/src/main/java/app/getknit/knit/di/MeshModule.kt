@@ -46,6 +46,7 @@ import app.getknit.knit.mesh.MeshMetrics
 import app.getknit.knit.mesh.MeshPostSink
 import app.getknit.knit.mesh.MeshStartGate
 import app.getknit.knit.mesh.MeshTransport
+import app.getknit.knit.mesh.NOT_CONTENDED
 import app.getknit.knit.mesh.PartialBlobs
 import app.getknit.knit.mesh.ProfileFrameSource
 import app.getknit.knit.mesh.PublicChannelSink
@@ -194,6 +195,8 @@ val meshModule =
                 val ctx = androidContext()
                 val children =
                     buildList {
+                        // Held for Wi-Fi Aware's ICM rule (GitHub #44): its audio monitor is the one A2DP signal we have.
+                        var bluetooth: BluetoothMeshTransport? = null
                         // Descending send-preference: Bluetooth (persistent links) first, then Wi-Fi Aware (ephemeral).
                         if (BluetoothMeshTransport.isSupported(ctx)) {
                             // The side channel is the one seam its flag gates: null keeps every page dark.
@@ -208,7 +211,7 @@ val meshModule =
                             // The Coded PHY experiment's mode reads null while BLE_CODED_PHY keeps it dark: OFF here, the one seam.
                             val phyMode = get<SettingsStore>().debugBlePhyMode.map { it ?: CodedPhyMode.OFF }
                             // BLE_GATT_PEERS gates the iPhone reader, its scan filter and the advert flag together (A3).
-                            add(
+                            val bt =
                                 BluetoothMeshTransport(
                                     ctx,
                                     get(),
@@ -227,8 +230,9 @@ val meshModule =
                                     lowPower = get<LowPowerSource>().let { source -> { source.current.active } },
                                     partials = get(),
                                     field = get<FieldLog>(),
-                                ),
-                            )
+                                )
+                            bluetooth = bt
+                            add(bt)
                         }
                         // WifiAwareTransport is @RequiresApi(31) (its NDP accept-any responder is API 31). The
                         // explicit SDK_INT guard — redundant with isSupported()'s own — is what lint reads to
@@ -263,6 +267,11 @@ val meshModule =
                                         call != null && call.phase != CallPhase.Ended
                                     },
                                     field = get<FieldLog>(),
+                                    // No ICM while Bluetooth audio streams (A2DP, or a Bluetooth / LE Audio output with
+                                    // music active); a phone without the Bluetooth plane has no such signal.
+                                    audioStreaming = bluetooth?.radioContended ?: NOT_CONTENDED,
+                                    // The 5 GHz ICM picks stay debug-only until a cross-band delivery trial passes.
+                                    fiveGhzRules = BuildConfig.DEBUG,
                                 )
                             // Low-power mode switches the plane off live in every build (ADR 2026-10.d44b), and a debug
                             // build's own switch (Diagnostics / the bridge's NANOFF) does too; debugNanOff reads false in

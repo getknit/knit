@@ -9,7 +9,9 @@
 Phase 0 of ADR 2026-10.d44b (low-power mode). Each arm is a posture the debug build can already take with no new
 code: Wi-Fi Aware off through `…debug.NANOFF`, a link cap through `…debug.BLECAP`, and Instant Communication Mode
 off through `…debug.NANICM` (`icmoff`, refused below API 33: the plane never asks for ICM there, so the arm would run
-as shipped). The `lowpower` arm is Phase 1's posture as built, through `…debug.LOWPOWER`. Arms run in turn, `--cycles` times over (A B C A B C), so a drift in the room or the battery lands on
+as shipped). Since ADR 2026-10.486r a lone phone asks for no ICM at all, so on a lone phone `icmoff` and `shipped`
+measure the same thing; the split needs a phone with a peer. Every `NANICM` send also carries `--es band auto`, so a
+band pinned by an earlier trial cannot leak into an arm (an older build ignores the extra). The `lowpower` arm is Phase 1's posture as built, through `…debug.LOWPOWER`. Arms run in turn, `--cycles` times over (A B C A B C), so a drift in the room or the battery lands on
 every arm alike.
 
 One block is: connect, apply the arm, disconnect; wait `--settle` minutes (the links shed, the plane goes); connect,
@@ -320,7 +322,9 @@ class Trial:
         # Instant Communication Mode, only while Aware runs: NANICM cycles the live session, and on asks for the
         # hardware's own answer, so an arm without the key leaves it as the build ships it.
         if not a["nanOff"] and not a.get("lowPower"):
-            applied["icm"] = self.p.bridge("NANICM", "--ez", "on", "false" if a.get("icm") is False else "true")
+            applied["icm"] = self.p.bridge(
+                "NANICM", "--ez", "on", "false" if a.get("icm") is False else "true", "--es", "band", "auto",
+            )
         return applied
 
     def sleep(self, minutes: float, what: str) -> None:
@@ -443,7 +447,7 @@ class Trial:
             self.p.bridge("NANOFF", "--ez", "off", "false")
             self.p.bridge("BLECAP", "--ez", "clear", "true")
             if any(ARMS[a].get("icm") is False for a in self.arms):
-                self.p.bridge("NANICM", "--ez", "on", "true")
+                self.p.bridge("NANICM", "--ez", "on", "true", "--es", "band", "auto")
             if any(ARMS[a].get("lowPower") for a in self.arms):
                 self.p.bridge("LOWPOWER", "--ez", "on", "false")
             if self.dozed_off:

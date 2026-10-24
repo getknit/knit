@@ -47,6 +47,35 @@ internal data class NanInitiatorHooks(
 )
 
 /**
+ * What `…debug.NANICM` reads back: whether the hardware's ICM is in force ([instantMode]), the [NanIcmPolicy] verdict
+ * the next config would carry ([allowed], [bandAsked] — asked, not granted; `dumpsys wifiaware`'s `instantModeChannel`
+ * is the grant — and [reason]), its inputs that are not obvious from outside ([override], [staFrequencyMhz],
+ * [band5PrimaryUsable], [postCure]), and whether a config of ours holds ICM lit now ([litNow]).
+ */
+internal data class NanIcmSnapshot(
+    val instantMode: Boolean,
+    val allowed: Boolean,
+    val bandAsked: NanIcmPolicy.Band?,
+    val reason: NanIcmPolicy.Reason,
+    val override: NanIcmPolicy.Band?,
+    val staFrequencyMhz: Int?,
+    val band5PrimaryUsable: Boolean?,
+    val postCure: Boolean,
+    val litNow: Boolean,
+)
+
+/**
+ * `…debug.NANICM`'s hooks: [setInstantMode] flips the hardware's ICM and cycles the session (what `--ez on` always
+ * did), [setBand] pins the band [NanIcmPolicy] asks for, or with null hands it back to the policy (`--es band auto`),
+ * without cycling anything; [status] is the verdict as it stands.
+ */
+internal data class NanIcmHooks(
+    val setInstantMode: (Boolean) -> Boolean,
+    val setBand: (NanIcmPolicy.Band?) -> Unit,
+    val status: () -> NanIcmSnapshot,
+)
+
+/**
  * Debug-only fault injection for [WifiAwareTransport]'s attach path, so getknit/Knit#9 can be reproduced on
  * hardware that does not have the bug — and, since work item #77, for its responder's `onUnavailable`, so the
  * re-file pacing of [NanResponderPolicy] can be driven on a device whose framework fulfils the request just fine.
@@ -88,9 +117,10 @@ internal object NanFaultInjector {
 
     @Volatile private var responderSnapshot: (() -> NanResponderSnapshot)? = null
 
-    // `…debug.NANICM`: flips Instant Communication Mode on the live transport and cycles the session so the
-    // new publish/subscribe configs take. Returns what the mode now is (false when the hardware lacks it).
-    @Volatile private var instantMode: ((Boolean) -> Boolean)? = null
+    // `…debug.NANICM`: flips Instant Communication Mode on the live transport and cycles the session so the new
+    // publish/subscribe configs take, pins the band the configs ask for, and reads the verdict back. One bundle, so
+    // `bind` stays under detekt's arity.
+    @Volatile private var icm: NanIcmHooks? = null
 
     // `…debug.NANDIAL`: initiate an NDP to a discovered peer regardless of the id tie-break. Returns a verdict.
     @Volatile private var dial: ((String) -> String)? = null
@@ -113,7 +143,7 @@ internal object NanFaultInjector {
         status: (() -> NanAttachSnapshot)?,
         onRefuseResponder: (() -> Boolean)? = null,
         responderStatus: (() -> NanResponderSnapshot)? = null,
-        onInstantMode: ((Boolean) -> Boolean)? = null,
+        icmHooks: NanIcmHooks? = null,
         onDial: ((String) -> String)? = null,
         initiatorHooks: NanInitiatorHooks? = null,
     ) {
@@ -122,7 +152,7 @@ internal object NanFaultInjector {
         snapshot = status
         refuseResponder = onRefuseResponder
         responderSnapshot = responderStatus
-        instantMode = onInstantMode
+        icm = icmHooks
         dial = onDial
         initiator = initiatorHooks
         if (onAvailability == null) {
@@ -188,7 +218,21 @@ internal object NanFaultInjector {
      * fleet against a non-ICM peer is one hypothesis for the Pixel 3's unicast blindness). `null` when no
      * transport is bound; otherwise the mode now in force, which is `false` on hardware without ICM.
      */
-    fun setInstantMode(on: Boolean): Boolean? = if (BuildConfig.DEBUG) instantMode?.invoke(on) else null
+    fun setInstantMode(on: Boolean): Boolean? = if (BuildConfig.DEBUG) icm?.setInstantMode?.invoke(on) else null
+
+    /**
+     * Pins the band the running transport's configs ask Instant Communication Mode for ([NanIcmPolicy]'s override,
+     * which bypasses its audio and lonely rules so a trial can light ICM on a chosen band); null hands the choice back
+     * to the policy. Cycles nothing: the band rides the next config, or one in-place publish update while ICM is lit by
+     * demand. It survives `--ez on` and a session cycle, and goes with the transport's stop. False when unbound.
+     */
+    fun setIcmBand(band: NanIcmPolicy.Band?): Boolean {
+        val hooks = if (BuildConfig.DEBUG) icm else null
+        hooks?.setBand?.invoke(band)
+        return hooks != null
+    }
+
+    fun icmStatus(): NanIcmSnapshot? = if (BuildConfig.DEBUG) icm?.status?.invoke() else null
 
     /**
      * Initiates an NDP to [peerNodeId] from the running transport **ignoring the id tie-break** (a lab knob:

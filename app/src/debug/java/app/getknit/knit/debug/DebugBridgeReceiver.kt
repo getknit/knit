@@ -135,6 +135,7 @@ import app.getknit.knit.mesh.spool.SpoolTickets
 import app.getknit.knit.mesh.spool.SpoolUrl
 import app.getknit.knit.mesh.spool.TicketRefreshPolicy
 import app.getknit.knit.mesh.wifiaware.NanFaultInjector
+import app.getknit.knit.mesh.wifiaware.NanIcmPolicy
 import app.getknit.knit.mesh.wifiaware.NanMsgFault
 import app.getknit.knit.moderation.MlTextModerator
 import app.getknit.knit.moderation.ModelLease
@@ -281,7 +282,12 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   give-up. See ADR 2026-09.bgk3 and `NanFaultInjector`.
  * - [ACTION_NANICM] — `--ez on <bool>` turns Wi-Fi Aware Instant Communication Mode on or off for the running
  *   transport and cycles the session so the new publish/subscribe configs take (a lab knob for interop
- *   trials against a peer without ICM; the hardware's own answer bounds `on`).
+ *   trials against a peer without ICM; the hardware's own answer bounds `on`). `--es band 2.4|5` pins the band the
+ *   configs ask for, bypassing `NanIcmPolicy`'s audio and lonely rules, and `--es band auto` hands it back; a band
+ *   never cycles the session (it rides the next config, or one in-place publish update while ICM is lit by demand),
+ *   and with both extras `on` goes first. No extras reads. The reply's `icmAllowed` / `icmBandAsked` / `icmReason`
+ *   are the verdict the next config carries — the band *asked*; `dumpsys wifiaware`'s `instantModeChannel` is the
+ *   one granted — beside `icmBandOverride`, `staFrequencyMhz`, `band5PrimaryUsable`, `postCure` and `icmLitNow`.
  * - [ACTION_NANDIAL] — `--es to <peerNodeId>` initiates a Wi-Fi Aware data path to a discovered peer regardless
  *   of the id tie-break, so the smaller node can knock on the larger node's responder. The far side's HELLO
  *   check still closes the socket; the NDP forming (`onDataPathRequest` there, a 15 s timeout here) is the trial.
@@ -620,19 +626,7 @@ class DebugBridgeReceiver :
                         }
 
                         ACTION_NANICM -> {
-                            val on = intent.getBooleanExtra("on", true)
-                            when (val now = NanFaultInjector.setInstantMode(on)) {
-                                null -> {
-                                    reply("error", "Wi-Fi Aware transport is not running")
-                                }
-
-                                else -> {
-                                    reply(
-                                        "ok",
-                                        "instant communication mode ${if (now) "on" else "off"} (session cycled)",
-                                    ).put("instantMode", now)
-                                }
-                            }
+                            handleNanIcm(intent)
                         }
 
                         ACTION_HEAL -> {
@@ -3838,6 +3832,44 @@ class DebugBridgeReceiver :
                     },
                 ),
             )
+    }
+
+    /**
+     * `…debug.NANICM`: `--ez on` (the session cycle it always ran), `--es band 2.4|5|auto` (no cycle), both (`on`
+     * first), or neither (a read). The band is parsed before anything is applied, so a bad one changes nothing.
+     */
+    private fun handleNanIcm(intent: Intent): JSONObject {
+        if (!NanFaultInjector.bound) return reply("error", "Wi-Fi Aware transport is not running")
+        val bandText = intent.getStringExtra("band")?.trim()?.lowercase()
+        val band: NanIcmPolicy.Band? =
+            when (bandText) {
+                null, "auto" -> null
+                "2.4" -> NanIcmPolicy.Band.B24
+                "5" -> NanIcmPolicy.Band.B5
+                else -> return reply("error", "unknown --es band '$bandText' (2.4 | 5 | auto)")
+            }
+        val did = mutableListOf<String>()
+        if (intent.hasExtra("on")) {
+            val now =
+                NanFaultInjector.setInstantMode(intent.getBooleanExtra("on", true))
+                    ?: return reply("error", "Wi-Fi Aware transport is not running")
+            did += "instant communication mode ${if (now) "on" else "off"} (session cycled)"
+        }
+        if (bandText != null) {
+            NanFaultInjector.setIcmBand(band)
+            did += if (band == null) "band handed back to the policy" else "band pinned to $bandText GHz (no cycle)"
+        }
+        val s = NanFaultInjector.icmStatus() ?: return reply("error", "Wi-Fi Aware transport is not running")
+        return reply("ok", did.joinToString("; ").ifEmpty { "instant communication mode state" })
+            .put("instantMode", s.instantMode)
+            .put("icmAllowed", s.allowed)
+            .put("icmBandAsked", s.bandAsked?.name ?: "none")
+            .put("icmReason", s.reason.name)
+            .put("icmBandOverride", s.override?.name ?: "auto")
+            .put("staFrequencyMhz", s.staFrequencyMhz ?: -1)
+            .put("band5PrimaryUsable", s.band5PrimaryUsable?.toString() ?: "unknown")
+            .put("postCure", s.postCure)
+            .put("icmLitNow", s.litNow)
     }
 
     private fun handleNanMsg(intent: Intent): JSONObject {

@@ -10,6 +10,9 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.ScanResult
+import android.net.wifi.WifiAvailableChannel
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
 import android.net.wifi.aware.AttachCallback
 import android.net.wifi.aware.DiscoverySession
 import android.net.wifi.aware.DiscoverySessionCallback
@@ -150,8 +153,14 @@ class WifiAwareTransport(
     // Whether a call is running (CallManager, wired in di/ behind CALLS_WIRED): a Tier-2 kill would end it, whichever
     // plane carries it, so it holds the kill as the screen does.
     private val callLive: () -> Boolean = { false },
-    // The field log (ADR 2026-10.a239): each data path's up and down, and each session cycle.
+    // The field log (ADR 2026-10.a239): each data path's up and down, each session cycle, each change of what the
+    // configs ask of Instant Communication Mode, and a sample of how long our configs held it lit.
     private val field: FieldRecorder = FieldRecorder.NONE,
+    // Bluetooth audio streaming (the Bluetooth plane's radioContended, wired in di/): no ICM while it does, since ICM
+    // parks NAN on 2.4 GHz channel 6 beside the A2DP link for 30 s per config (GitHub #44, [NanIcmPolicy]).
+    private val audioStreaming: StateFlow<Boolean> = MutableStateFlow(false),
+    // [NanIcmPolicy]'s 5 GHz picks: BuildConfig.DEBUG in di/, the one seam the cross-band delivery trial flips.
+    private val fiveGhzRules: Boolean = false,
 ) : MeshTransport {
     private val appContext = context.applicationContext
     private val awareManager = appContext.getSystemService(Context.WIFI_AWARE_SERVICE) as WifiAwareManager?
@@ -329,9 +338,26 @@ class WifiAwareTransport(
     @Volatile private var wifiWatchRegistered = false
     private val wifiWatch =
         object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = onStaAvailable(network)
+            override fun onAvailable(network: Network) {
+                staFrequencies.putIfAbsent(network, 0) // its frequency comes with the capabilities that follow
+                onStaAvailable(network)
+            }
 
-            override fun onLost(network: Network) = onStaLost(network)
+            override fun onLost(network: Network) {
+                staFrequencies.remove(network)
+                onStaLost(network)
+                refreshIcm(push = true)
+            }
+
+            // Fires on every RSSI bucket change too: a map write and a pure verdict, no binder call. The frequency
+            // survives the location redaction of an un-flagged callback's WifiInfo, so no permission is added.
+            override fun onCapabilitiesChanged(
+                network: Network,
+                caps: NetworkCapabilities,
+            ) {
+                staFrequencies[network] = (caps.transportInfo as? WifiInfo)?.frequency?.takeIf { it > 0 } ?: 0
+                refreshIcm(push = true)
+            }
         }
 
     // The single live data-path link, keyed by peer nodeId (at most one entry — one NDI). [NanLink] wraps the
@@ -538,6 +564,47 @@ class WifiAwareTransport(
     // falls back to the legacy subscribe re-arm until the next (re)attach resets it.
     @Volatile private var icmKeepaliveBroken = false
 
+    // --- Instant Communication Mode: what the configs ask for ([NanIcmPolicy], GitHub #44) ---
+
+    // `…debug.NANICM --es band`: the band pinned for a trial, bypassing the audio and lonely rules. Set only through
+    // [NanFaultInjector]'s debug-gated hook (null in release); survives `--ez on` and a session cycle, cleared by [stop].
+    @Volatile private var icmBandOverride: NanIcmPolicy.Band? = null
+
+    // The phone's own Wi-Fi networks and each one's frequency (0 = not known yet), kept by [wifiWatch]'s own callbacks
+    // — never by [onStaLost] / [onStaAvailable], so `…debug.NANINIT`'s blip stays on the initiator accounting alone.
+    // Read for the STA rule; cleared with the watch. [wifiWatchRegisteredAt] lets an empty map settle into "no STA".
+    private val staFrequencies = ConcurrentHashMap<Network, Int>()
+
+    @Volatile private var wifiWatchRegisteredAt = 0L
+
+    // Whether 5745 MHz (channel 149) is usable for Aware on this chip, read once per attach while the 5 GHz picks are
+    // live (`getUsableChannels`, API 33 with NEARBY_WIFI_DEVICES); null when unknown, unread, or the read threw.
+    @Volatile private var band5PrimaryUsable: Boolean? = null
+
+    // The post-cure window (wifi-aware-reviewer's design pass on #44): a Tier-1 cure — the wedge watchdog's responder
+    // refresh, the message-plane cycle, the responder give-up cycle — that cycled the session while a sync was owed
+    // stamps [postCureCycledAt]; the next attach (within [POST_CURE_ATTACH_WITHIN_MS]) turns it into [postCureSince],
+    // and for one ICM window from there the configs read "lonely" as "not lonely", so a dozing pair re-finds each other
+    // with ICM lit as it did before the lonely rule. Cleared when that window ends or [cueTarget] fills. Never set by
+    // onSessionDead's re-attach, the NAN-down edge or the `NANICM --ez on` cycle. Handler thread.
+    @Volatile private var postCureCycledAt = 0L
+
+    @Volatile private var postCureSince = 0L
+
+    // The last verdict logged and recorded ([noteIcmVerdict]): on, band, reason — null on a phone without ICM, where
+    // nothing is logged. Handler thread.
+    private var notedIcm: NanIcmPolicy.Verdict? = null
+
+    // When a config of ours last asked for ICM *by demand* (an attach's publish and subscribe, a re-arm's subscribe,
+    // the relight's or a digest move's updatePublish — never a band push), and the demand window a band push was last
+    // spent on: one band push per lit window at most ([maybePushIcmBand]). Handler thread.
+    @Volatile private var lastIcmDemandAt = 0L
+
+    private var icmBandPushedFor = 0L
+
+    // Our estimate of how long our configs held ICM lit, for the field log's sampler.
+    private val icmLit = NanIcmPolicy.LitMeter(ICM_WINDOW_MS)
+
     // Watchdog state for the leaked-request wedge (see [checkWedge]). [lastLinkOrAcceptAt] = elapsedRealtime of
     // the last successful data-path link/accept (either role) — the "progress" signal. [syncOwedSince] = start
     // of the current episode where a sync is owed AND no link has formed since (0 = no episode). The wedge is
@@ -561,6 +628,7 @@ class WifiAwareTransport(
     private val tier2Notes = NanWatchdogPolicy.Tier2Notes()
 
     private var powerJob: Job? = null
+    private var audioJob: Job? = null
 
     @Volatile private var loopJob: Job? = null
     private var cueJob: Job? = null
@@ -637,6 +705,7 @@ class WifiAwareTransport(
                 _initiatorHeld.value = true
                 Log.w(TAG, "initiator role held under this build/ROM (Wi-Fi dropped on our initiates); probing daily")
             }
+            icmLit.reset(SystemClock.elapsedRealtime())
             registerAvailability()
             registerWifiWatch()
             NanFaultInjector.bindMsgPlane(::msgPlaneSnapshot)
@@ -665,12 +734,22 @@ class WifiAwareTransport(
                         armed = 0,
                     )
                 },
-                onInstantMode = { on ->
-                    // `…debug.NANICM`: the hardware's answer bounds it; a session cycle re-files publish/subscribe.
-                    instantSupported = on && instantModeAvailable()
-                    sessionCycleWithSettle()
-                    instantSupported
-                },
+                icmHooks =
+                    NanIcmHooks(
+                        setInstantMode = { on ->
+                            // `…debug.NANICM --ez on`: the hardware's answer bounds it; a session cycle re-files
+                            // publish/subscribe. Never a cure, so it opens no post-cure window.
+                            instantSupported = on && instantModeAvailable()
+                            sessionCycleWithSettle()
+                            instantSupported
+                        },
+                        setBand = { band ->
+                            // `…debug.NANICM --es band`: rides the next config, or one band push while lit by demand.
+                            icmBandOverride = band
+                            refreshIcm(push = true)
+                        },
+                        status = ::icmSnapshot,
+                    ),
                 onDial = ::debugDial,
                 initiatorHooks =
                     NanInitiatorHooks(
@@ -690,9 +769,12 @@ class WifiAwareTransport(
                         status = initiatorPolicy::snapshot,
                     ),
             )
+            // How long our configs held ICM lit, every 5 min: a read of the meter, nothing asked of the radio.
+            field.sampler(FIELD_SAMPLER) { icmLitSample() }
             attach()
             loopJob = scope.launch { discoveryLoop() }
             powerJob = scope.launch { powerState.state.drop(1).collect { healSignal.trySend(Unit) } }
+            audioJob = scope.launch { followAudio() }
             // Re-cue neighbors and wake the loop the moment our carried set changes, so a peer that now wants
             // our new data can pull it.
             cueJob =
@@ -737,6 +819,22 @@ class WifiAwareTransport(
         }
     }
 
+    /**
+     * Bluetooth audio starting or stopping changes what the next config asks of ICM ([NanIcmPolicy]). Turning ICM off
+     * needs no push — what was sent lapses within 30 s — and the first value only sets the verdict. Audio stopping
+     * wakes the loop once: a relight it held back may be due, and the loop may be asleep on the long idle tick the
+     * relight's absence chose ([rediscoverDelayMs]). No heal token rides that wake, so it adds no re-arm.
+     */
+    private suspend fun followAudio() {
+        var first = true
+        audioStreaming.collect { streaming ->
+            val push = !first
+            first = false
+            refreshIcm(push)
+            if (push && !streaming) healSignal.trySend(Unit)
+        }
+    }
+
     /** Temporary diagnostic: dump the connection-engine decision state so an idle-but-unsynced mesh is visible. */
     private fun logState() {
         val v = storeDigest.current()
@@ -758,7 +856,8 @@ class WifiAwareTransport(
                 "refused=$responderRefusals/$responderCycles disc=$disc cue=$cues wanted=$wanted initiable=$initiable " +
                 "reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}] " +
                 "bulk[${bulkWanted.debug()}] lonely=${lonelyForMs(now)}ms offscreen=$offScreenBlocked " +
-                "init=${initiatorPolicy.snapshot()} msg=${msgInFlight.size}/$msgFailsSinceAck/${now - lastMsgAckAt}ms",
+                "init=${initiatorPolicy.snapshot()} msg=${msgInFlight.size}/$msgFailsSinceAck/${now - lastMsgAckAt}ms " +
+                "icm=${icmVerdict(now).let { "${it.reason}/${it.band.takeIf { _ -> instantSupported && it.allowed } ?: "off"}" }}",
         )
     }
 
@@ -932,7 +1031,7 @@ class WifiAwareTransport(
                     "sync owed ${now - syncOwedSince}ms with no link — refreshing responder via session cycle " +
                         "($responderRefreshes/$MAX_RESPONDER_REFRESHES this episode)",
                 )
-                sessionCycleWithSettle()
+                sessionCycleWithSettle(postCure = true) // its episode is a sync owed to a reachable peer
             }
 
             // Tier 2: last-resort process kill (MeshService is START_STICKY, so the service is recreated).
@@ -1018,7 +1117,7 @@ class WifiAwareTransport(
                 "fails=$msgFailsSinceAck sinceAck=${now - lastMsgAckAt}ms cues=$cues) — cycling the session " +
                 "($msgPlaneCycles/${NanMessagePlanePolicy.Tuning.PRODUCTION.maxCycles} this episode)",
         )
-        sessionCycleWithSettle()
+        sessionCycleWithSettle(postCure = anyReachableSyncOwed())
     }
 
     /**
@@ -1034,6 +1133,7 @@ class WifiAwareTransport(
         started = false // before anything: no attach may begin from here on (see [started])
         loopJob?.cancel()
         powerJob?.cancel()
+        audioJob?.cancel()
         cueJob?.cancel()
         cueHeartbeatJob?.cancel()
         diagJob?.cancel()
@@ -1043,6 +1143,8 @@ class WifiAwareTransport(
         initiatorPolicy.noteWatchStopped() // a blip cannot span the watch; the strikes and the hold stay (ADR 055)
         NanFaultInjector.bind(onAvailability = null, status = null)
         NanFaultInjector.bindMsgPlane(null)
+        field.sampler(FIELD_SAMPLER, null)
+        forgetIcmSession()
         peers.keys.toList().forEach { teardownPeer(it) }
         landing.clear()
         stopResponder()
@@ -1123,6 +1225,8 @@ class WifiAwareTransport(
             }
             hopTable.clear()
             msgInFlight.clear()
+            notedIcm = null // the next session logs and records its first verdict afresh
+            icmBandPushedFor = 0L
         }
 
     override fun heal() {
@@ -1176,6 +1280,8 @@ class WifiAwareTransport(
             ++attachGen // callbacks still in flight from the closed session are stale now
             synchronized(lock) { accepting = 0 }
             offScreenBlocked = false
+            postCureCycledAt = 0L // the attach after a hand-over is not a cure's
+            postCureSince = 0L
             _health.value = TransportHealth.Degraded
         }
     }
@@ -1417,6 +1523,13 @@ class WifiAwareTransport(
                         // A fresh session is a fresh chance whatever teardown path led here (reattach, a session
                         // cycle); a refusal re-latches on the throw, so this costs at most one call.
                         offScreenBlocked = false
+                        // ICM's per-attach inputs, before the two configs below read the verdict: the chip's 5 GHz
+                        // answer, and the window a Tier-1 cure owed this session (consumed here, used or expired).
+                        val attachedAt = SystemClock.elapsedRealtime()
+                        band5PrimaryUsable = readBand5PrimaryUsable()
+                        val cured = postCureCycledAt != 0L && attachedAt - postCureCycledAt <= POST_CURE_ATTACH_WITHIN_MS
+                        postCureSince = if (cured) attachedAt else 0L
+                        postCureCycledAt = 0L
                         startPublish(gen)
                         startSubscribe()
                     }
@@ -1570,7 +1683,10 @@ class WifiAwareTransport(
                     onCoordMsgFailed(messageId)
                 }
             }
-        runCatching { s.publish(buildPublishConfig(), cb, handler) }.onFailure { onSessionFault("publish", it) }
+        val icm = noteIcmVerdict(push = false)
+        runCatching { s.publish(buildPublishConfig(icm), cb, handler) }
+            .onSuccess { onIcmConfigSent(icm, demand = true) }
+            .onFailure { onSessionFault("publish", it) }
     }
 
     /**
@@ -1581,15 +1697,17 @@ class WifiAwareTransport(
      * with zero unicast messages. [Protocol.parse] reads only the first three segments, so the advert stays
      * backward-parseable; the unicast cue plane stays as the redundant active channel.
      */
-    private fun buildPublishConfig(): PublishConfig {
+    private fun buildPublishConfig(icm: NanIcmPolicy.Band?): PublishConfig {
         val ssi = Protocol.advertise(localNodeId) + NanCueCodec.encodeSsiDigest(storeDigest.current())
         val builder =
             PublishConfig
                 .Builder()
                 .setServiceName(SERVICE_NAME)
                 .setServiceSpecificInfo(ssi.encodeToByteArray())
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && instantSupported) {
-            builder.setInstantCommunicationModeEnabled(true, INSTANT_BAND)
+        // [icm] is [noteIcmVerdict]'s answer, so publish and subscribe ask the same of the same inputs; null is a
+        // config with ICM off, which the framework's merge leaves out of the window altogether.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && icm != null) {
+            builder.setInstantCommunicationModeEnabled(true, icm.scanBand())
         }
         return builder.build()
     }
@@ -1628,8 +1746,12 @@ class WifiAwareTransport(
     private fun icmKeepalive() =
         onHandler {
             val pub = publishSession ?: return@onHandler
-            Log.i(TAG, "icm keepalive — updatePublish (ssi digest ${storeDigest.current()})")
-            runCatching { pub.updatePublish(buildPublishConfig()) }
+            val icm = noteIcmVerdict(push = false)
+            // The ` icm=` suffix says what this update asked of ICM: a digest move's republish still runs while the
+            // verdict is off (audio, lonely), and is then a bare SSI update.
+            Log.i(TAG, "icm keepalive — updatePublish (ssi digest ${storeDigest.current()}) icm=${icm ?: "off"}")
+            runCatching { pub.updatePublish(buildPublishConfig(icm)) }
+                .onSuccess { onIcmConfigSent(icm, demand = true) }
                 .onFailure { Log.w(TAG, "updatePublish threw", it) }
         }
 
@@ -1641,17 +1763,20 @@ class WifiAwareTransport(
         // subscribe sessions outstanding and leak the one onSubscribeStarted doesn't keep.
         if (!subscribing.compareAndSet(false, true)) return
         val builder = SubscribeConfig.Builder().setServiceName(SERVICE_NAME)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && instantSupported) {
-            builder.setInstantCommunicationModeEnabled(true, INSTANT_BAND)
+        val icm = noteIcmVerdict(push = false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && icm != null) {
+            builder.setInstantCommunicationModeEnabled(true, icm.scanBand())
         }
         // subscribe() is a binder call into the Aware service; if our client died framework-side (NAN
         // cycled) before onAwareSessionTerminated reached us, it throws (SecurityException: "invalid
         // uid+clientId mapping") — that must never escape into the caller's coroutine (a field crash:
         // rearmSubscribe on a dead session killed the process). Treat it as the terminate we missed.
-        runCatching { s.subscribe(builder.build(), subscribeCallback, handler) }.onFailure {
-            subscribing.set(false)
-            onSessionFault("subscribe", it)
-        }
+        runCatching { s.subscribe(builder.build(), subscribeCallback, handler) }
+            .onSuccess { onIcmConfigSent(icm, demand = true) }
+            .onFailure {
+                subscribing.set(false)
+                onSessionFault("subscribe", it)
+            }
     }
 
     /**
@@ -1795,6 +1920,9 @@ class WifiAwareTransport(
         while (scope.isActive) {
             withTimeoutOrNull(rediscoverDelayMs()) { healSignal.receive() }
             recomputeReachable() // age out the nearby set even on an idle tick
+            // The lonely rule's edges and the post-cure window's end reach the ICM log here, within one tick: the five
+            // sites that remove a cue target need not know ([NanIcmPolicy], as [NanLonelyPolicy.lonelySince]).
+            refreshIcm(push = true)
             val now = SystemClock.elapsedRealtime()
             val healDemand = healRearmOwed
             healRearmOwed = false
@@ -1883,14 +2011,17 @@ class WifiAwareTransport(
      * delivery lags by many seconds on a screen-off device (field-measured), far behind the actual disable.
      * Never runs with live links ([anyLinkActivity]); single-flight via [reattaching].
      */
-    private fun sessionCycleWithSettle() =
+    private fun sessionCycleWithSettle(postCure: Boolean = false) =
         onHandler {
             if (anyLinkActivity()) return@onHandler // never drop live links; the loop re-evaluates
             if (!reattaching.compareAndSet(false, true)) return@onHandler
-            // Two callers: the discovery-loop pinned-responder branch (initiator NDI freed) and checkWedge's
-            // Tier-1 responder self-heal (a wedged responder refreshed) — each logs its own reason first.
+            // Callers: the discovery-loop pinned-responder branch (initiator NDI freed), checkWedge's Tier-1 responder
+            // self-heal, the message-plane watchdog, the responder give-up and `…debug.NANICM --ez on` — each logs its
+            // own reason first. [postCure]: a Tier-1 cure with a sync owed; its next attach keeps ICM for one window
+            // even with nobody left to cue (see [postCureCycledAt]). Set only once the cycle is really going ahead.
             Log.w(TAG, "session cycle: tearing down for a fresh session, settling")
             field.record(FieldEvent.NanCycle)
+            if (postCure) postCureCycledAt = SystemClock.elapsedRealtime()
             stopResponder()
             // A PeerHandle is only valid on the discovery session it was learned on, so closing subscribe
             // invalidates every entry in [discovered] — drop them with it, exactly as [rearmSubscribe] and
@@ -1923,10 +2054,15 @@ class WifiAwareTransport(
      * re-discovery), the legacy re-arm fallback ([icmKeepaliveBroken]) on the re-arm clock.
      */
     private fun icmRelightDue(now: Long): Boolean =
-        if (!icmKeepaliveBroken) {
-            needsIcmRelight() && now - lastIcmKeepaliveAt > ICM_REARM_COOLDOWN_MS
-        } else {
-            needsIcmRelight() && now - lastRearmAt > ICM_REARM_COOLDOWN_MS
+        when {
+            // The relight obeys [NanIcmPolicy]: while its configs may not ask for ICM (Bluetooth audio), it neither
+            // fires nor stamps a clock, and never falls back to the subscribe re-arm — so the first tick after audio
+            // stops can relight at once.
+            !icmVerdict(now).allowed -> false
+
+            !icmKeepaliveBroken -> needsIcmRelight() && now - lastIcmKeepaliveAt > ICM_REARM_COOLDOWN_MS
+
+            else -> needsIcmRelight() && now - lastRearmAt > ICM_REARM_COOLDOWN_MS
         }
 
     /** Fire the ICM relight: the in-place [icmKeepalive] (P4 default); the subscribe re-arm when latched broken. */
@@ -1938,6 +2074,184 @@ class WifiAwareTransport(
             lastRearmAt = now
             rearmSubscribe()
         }
+    }
+
+    // --- Instant Communication Mode: the verdict ([NanIcmPolicy], GitHub #44) ---
+
+    /**
+     * [stop]'s ICM half: a band pinned for a trial goes with the plane (NANOFF, low-power mode, a mesh stop), so the
+     * next start asks what the policy says; the post-cure window and the demand window were the stopped session's.
+     */
+    private fun forgetIcmSession() {
+        icmBandOverride = null
+        postCureCycledAt = 0L
+        postCureSince = 0L
+        lastIcmDemandAt = 0L
+    }
+
+    /**
+     * What a config built at [now] may ask of ICM, from the live inputs — a pure read, safe from any thread. The
+     * hardware gate ([instantSupported]) sits above it: callers that build a config go through [noteIcmVerdict].
+     */
+    private fun icmVerdict(now: Long): NanIcmPolicy.Verdict =
+        NanIcmPolicy.decide(
+            NanIcmPolicy.Inputs(
+                override = icmBandOverride,
+                audioStreaming = audioStreaming.value,
+                lonely = cueTarget.isEmpty(),
+                postCureWindow = postCureOpen(now),
+                sta = staNow(now),
+                band5PrimaryUsable = band5PrimaryUsable,
+                fiveGhzRules = fiveGhzRules,
+            ),
+        )
+
+    private fun postCureOpen(now: Long): Boolean = postCureSince != 0L && now - postCureSince < ICM_WINDOW_MS
+
+    private fun staNow(now: Long): NanIcmPolicy.Sta =
+        NanIcmPolicy.staOf(
+            registered = wifiWatchRegistered,
+            settled = wifiWatchRegisteredAt != 0L && now - wifiWatchRegisteredAt >= STA_SETTLE_MS,
+            frequencies = staFrequencies.values,
+        )
+
+    /**
+     * The verdict a config is about to carry, noted: the band to ask for, or null for a config with ICM off. On a
+     * change of on, band or reason it logs one line and writes one `nan_icm` field-log line; with [push], a band that
+     * changed under a verdict that stays on may cost one in-place publish update ([maybePushIcmBand]). Turning ICM off
+     * pushes nothing: configs already sent lapse within the framework's 30 s. Nothing is noted on a phone without ICM.
+     * Handler thread only.
+     */
+    private fun noteIcmVerdict(push: Boolean): NanIcmPolicy.Band? {
+        val now = SystemClock.elapsedRealtime()
+        // The post-cure window ends with its 30 s or once someone is there to cue; either way it cannot stick.
+        if (postCureSince != 0L && (cueTarget.isNotEmpty() || !postCureOpen(now))) postCureSince = 0L
+        if (!instantSupported) {
+            notedIcm = null
+            return null
+        }
+        val verdict = icmVerdict(now)
+        val was = notedIcm
+        if (verdict != was) onIcmVerdictChanged(was, verdict, push, now)
+        return verdict.band.takeIf { verdict.allowed }
+    }
+
+    /** [noteIcmVerdict]'s edge: one log line, one `nan_icm` line, and a band push when the band moved under an on. */
+    private fun onIcmVerdictChanged(
+        was: NanIcmPolicy.Verdict?,
+        verdict: NanIcmPolicy.Verdict,
+        push: Boolean,
+        now: Long,
+    ) {
+        notedIcm = verdict
+        val sta = staNow(now)
+        val staMhz = (sta as? NanIcmPolicy.Sta.On)?.freqMhz
+        Log.i(
+            TAG,
+            "icm verdict: on=${verdict.allowed} band=${verdict.band ?: "-"} why=${verdict.reason} sta=${staMhz ?: sta} " +
+                "audio=${audioStreaming.value} cues=${cueTarget.size} postCure=${postCureOpen(now)} " +
+                "override=${icmBandOverride ?: "-"}",
+        )
+        field.record(FieldEvent.NanIcm(verdict.allowed, verdict.band, verdict.reason, staMhz))
+        val band = verdict.band.takeIf { verdict.allowed } ?: return
+        val wasBand = was?.band.takeIf { was?.allowed == true } ?: return
+        if (push && band != wasBand) maybePushIcmBand(band, now)
+    }
+
+    /** [noteIcmVerdict] for an input that changed (audio, the STA, the debug band, a loop tick), on the handler. */
+    private fun refreshIcm(push: Boolean) = onHandler { noteIcmVerdict(push) }
+
+    /**
+     * A config of ours went out asking ICM for [icm] (null: it asked nothing, so it lights nothing). Feeds the lit
+     * estimate; a [demand] config — every one but a band push — also opens the window a band push may be spent in.
+     */
+    private fun onIcmConfigSent(
+        icm: NanIcmPolicy.Band?,
+        demand: Boolean,
+    ) {
+        if (icm == null) return
+        val now = SystemClock.elapsedRealtime()
+        icmLit.onConfig(now)
+        if (demand) lastIcmDemandAt = now
+    }
+
+    /**
+     * The verdict's band changed while it stays on. Push it at most once per lit window, and only while that window is
+     * lit by a config sent on demand — never counting a band push's own config, never while in-place updates are
+     * broken, never with a live serve or initiate (an `updatePublish` beside an NDP is untried here). Otherwise the
+     * new band rides the next config. In release the band never changes (no override, no 5 GHz picks), so this runs
+     * in debug builds only in practice. Publish only: a subscribe config asked for the old band lapses within 30 s,
+     * and an in-place subscribe update has never run on this fleet.
+     */
+    private fun maybePushIcmBand(
+        band: NanIcmPolicy.Band,
+        now: Long,
+    ) {
+        val pub = publishSession
+        val skip =
+            when {
+                pub == null -> "no publish session"
+                icmKeepaliveBroken -> "publish updates broken"
+                lastIcmDemandAt == 0L || now - lastIcmDemandAt >= ICM_WINDOW_MS -> "not lit by demand"
+                icmBandPushedFor == lastIcmDemandAt -> "pushed once this window"
+                anyLinkActivity() -> "a link is live"
+                else -> null
+            }
+        if (skip != null || pub == null) {
+            Log.i(TAG, "icm band now $band — rides the next config ($skip)")
+            return
+        }
+        icmBandPushedFor = lastIcmDemandAt
+        Log.i(TAG, "icm band push — updatePublish asks $band (lit by demand ${now - lastIcmDemandAt}ms ago)")
+        runCatching { pub.updatePublish(buildPublishConfig(band)) }
+            .onSuccess { onIcmConfigSent(band, demand = false) }
+            .onFailure {
+                // Only the dead-client throw (`invalid uid+clientId mapping`) is a session fault. A validation
+                // IllegalArgumentException from PublishConfig.assertValid is not, and must not spend a teardown and an
+                // attach from the leak budget: logged, as [icmKeepalive]'s identical call does.
+                if (it is SecurityException) onSessionFault("updatePublish", it) else Log.w(TAG, "updatePublish threw", it)
+            }
+    }
+
+    /**
+     * Whether channel 149 (5745 MHz) is usable for Aware here, for the 5 GHz rule's 5220 case. Read only while the
+     * 5 GHz picks are live, on API 33+ (the call wants NEARBY_WIFI_DEVICES), best-effort: it can throw
+     * `UnsupportedOperationException` or `SecurityException`, and it cannot pass the framework's hidden instant-mode
+     * filter, so it approximates what `getAwareInstantCommunicationChannel` will pick.
+     */
+    private fun readBand5PrimaryUsable(): Boolean? {
+        if (!fiveGhzRules || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null
+        val wifi = appContext.getSystemService(WifiManager::class.java) ?: return null
+        return runCatching {
+            wifi
+                .getUsableChannels(USABLE_BAND_5_WITH_DFS, WifiAvailableChannel.OP_MODE_WIFI_AWARE)
+                .any { it.frequencyMhz == NanIcmPolicy.CH149_MHZ }
+        }.getOrNull()
+    }
+
+    /** `…debug.NANICM`'s read-back. */
+    private fun icmSnapshot(): NanIcmSnapshot {
+        val now = SystemClock.elapsedRealtime()
+        val verdict = icmVerdict(now)
+        val allowed = instantSupported && verdict.allowed
+        return NanIcmSnapshot(
+            instantMode = instantSupported,
+            allowed = allowed,
+            bandAsked = verdict.band.takeIf { allowed },
+            reason = verdict.reason,
+            override = icmBandOverride,
+            staFrequencyMhz = (staNow(now) as? NanIcmPolicy.Sta.On)?.freqMhz,
+            band5PrimaryUsable = band5PrimaryUsable,
+            postCure = postCureOpen(now),
+            litNow = icmLit.litAt(now),
+        )
+    }
+
+    /** The field log's sample: our lit estimate, only where the plane can ask for ICM at all. A read, nothing more. */
+    private fun icmLitSample(): List<FieldEvent> {
+        if (!instantSupported) return emptyList()
+        val now = SystemClock.elapsedRealtime()
+        return listOf(FieldEvent.NanIcmLit(icmLit.litMs(now), icmLit.upMs(now), icmLit.configs()))
     }
 
     /**
@@ -2095,7 +2409,8 @@ class WifiAwareTransport(
 
                 // A sync owed to a peer we only respond to → tick around the ICM keepalive cadence so the loop can
                 // relight ICM (needsIcmRelight) before the ~30s auto-disable, instead of sleeping REDISCOVER_IDLE_MS.
-                instantSupported && needsIcmRelight() -> ICM_REARM_COOLDOWN_MS
+                // Not while the verdict forbids ICM: there is nothing to relight then ([icmRelightDue]).
+                instantSupported && icmVerdict(SystemClock.elapsedRealtime()).allowed && needsIcmRelight() -> ICM_REARM_COOLDOWN_MS
 
                 else -> REDISCOVER_IDLE_MS
             }
@@ -2792,7 +3107,7 @@ class WifiAwareTransport(
                 "responder request declared unfulfillable $streak times in a row with no link up — cycling the " +
                     "session ($responderCycles/${NanResponderPolicy.MAX_CYCLES} this episode)",
             )
-            sessionCycleWithSettle()
+            sessionCycleWithSettle(postCure = anyReachableSyncOwed())
             return
         }
         val delay = if (contended) NanResponderPolicy.contendedRefileMs() else NanResponderPolicy.refileDelayMs(streak)
@@ -3376,12 +3691,16 @@ class WifiAwareTransport(
             runCatching { connectivity.registerNetworkCallback(request, wifiWatch, handler) }
                 .onFailure { Log.w(TAG, "Wi-Fi watch registration failed; initiator failsafe inert", it) }
                 .isSuccess
+        // Unregistered, the ICM rules read the STA as unknown — never as "no STA" ([NanIcmPolicy.staOf]).
+        if (wifiWatchRegistered) wifiWatchRegisteredAt = SystemClock.elapsedRealtime()
     }
 
     private fun unregisterWifiWatch() {
         if (!wifiWatchRegistered) return
         runCatching { connectivity.unregisterNetworkCallback(wifiWatch) }
         wifiWatchRegistered = false
+        wifiWatchRegisteredAt = 0L
+        staFrequencies.clear()
     }
 
     /** Our Wi-Fi network went away. Handler thread. [network] is null only from the debug injector. */
@@ -3498,11 +3817,41 @@ class WifiAwareTransport(
         // above the transport; this only keeps the data path off open air.
         val PMK: ByteArray = MessageDigest.getInstance("SHA-256").digest("knit-mesh-nan-pmk-v1".toByteArray())
 
-        // 2.4 GHz for instant mode: better range than 5 GHz (range is priority #2), at some throughput cost.
-        // WIFI_BAND_24_GHZ is API 30 but a compile-time-inlined int, so it's safe on minSdk 29 — and it is only
-        // ever read inside the API-33-guarded setInstantCommunicationModeEnabled calls above.
+        /**
+         * The one place [NanIcmPolicy]'s band becomes the framework's. Which band ICM asks for is the policy's, and
+         * 5 GHz has a cost on the coordination plane: it carries a shorter range than 2.4 GHz (the reason this was a
+         * fixed 2.4 GHz constant), and a phone parked on 5 GHz shares no ICM channel with a peer on 2.4 GHz, so their
+         * follow-ups ride the 2.4 GHz discovery windows alone — every 8th one on a screen-off phone, none on 5 GHz.
+         * That is why release asks for 5 GHz nowhere until a cross-band delivery trial passes.
+         * `WIFI_BAND_*` are API 30 but compile-time-inlined ints, read only inside the API-33-guarded
+         * `setInstantCommunicationModeEnabled` calls; the framework throws for any other value.
+         */
         @SuppressLint("InlinedApi")
-        const val INSTANT_BAND = ScanResult.WIFI_BAND_24_GHZ
+        fun NanIcmPolicy.Band.scanBand(): Int =
+            when (this) {
+                NanIcmPolicy.Band.B24 -> ScanResult.WIFI_BAND_24_GHZ
+                NanIcmPolicy.Band.B5 -> ScanResult.WIFI_BAND_5_GHZ
+            }
+
+        // How long one config holds Instant Communication Mode lit: the framework's
+        // config_wifiAwareInstantCommunicationModeDurationMillis. The post-cure window, the band push's lit window and
+        // the field log's lit estimate all run on it.
+        const val ICM_WINDOW_MS = 30_000L
+
+        // How soon after a Tier-1 cure's cycle its attach must land to inherit the post-cure window: the 2 s settle plus
+        // a few attach-floor steps. A cure whose attach never came opens nothing later.
+        const val POST_CURE_ATTACH_WITHIN_MS = 60_000L
+
+        // How long a registered STA watch with no network heard counts as "unknown" rather than "no STA": the
+        // registration's own echo for a network already up arrives within a beat.
+        const val STA_SETTLE_MS = 2_000L
+
+        // `WifiManager.getUsableChannels` takes a `WifiScanner.WIFI_BAND_*` value and refuses 5 GHz without its DFS
+        // channels (IllegalArgumentException): WIFI_BAND_5_GHZ_WITH_DFS, which no public constant names.
+        const val USABLE_BAND_5_WITH_DFS = 6
+
+        // The field log's sampler name for this plane ([FieldRecorder.sampler]).
+        const val FIELD_SAMPLER = "nan"
 
         // Coordination-plane message multiplexing. A cue is a plain "nodeId|version" text string whose
         // first byte is a printable base64 nodeId char, so the non-printable tag space 0x00..0x1F cleanly
@@ -3592,8 +3941,9 @@ class WifiAwareTransport(
 
         // Idle discovery-loop cadence: aggressive when we know of nobody (re-fire one-shot discovery) — for the
         // first minutes; NanLonelyPolicy then relaxes a screen-off node on battery to the duty cycle, since each
-        // re-arm relights Instant Communication Mode and a lonely phone used to keep it lit around the clock —
-        // and long once we've discovered/heard peers (a cue with a new epoch wakes us via healSignal). ×2 screen-off.
+        // re-arm is a subscribe close/reopen (and, before NanIcmPolicy's lonely rule, relit Instant Communication
+        // Mode, which a lonely phone used to keep lit around the clock) — and long once we've discovered/heard peers
+        // (a cue with a new epoch wakes us via healSignal). ×2 screen-off.
         const val REDISCOVER_LONELY_MS = 8_000L
         const val REDISCOVER_IDLE_MS = 120_000L
 

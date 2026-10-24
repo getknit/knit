@@ -61,6 +61,8 @@ KINDS: dict[str, set[str] | None] = {
     "nan_up": {"peer", "initiator", "links"},
     "nan_down": {"peer", "initiator", "life", "clean"},
     "nan_cycle": set(),
+    "nan_icm": {"on", "band", "why", "sta"},
+    "nan_icm_lit": {"lit", "up", "configs"},
     "low_power": {"on", "why"},
     "lora": {
         "role", "snr10", "rssi", "queued", "heard", "boards", "airUsed", "airBudget", "gateways", "pocket", "sighted",
@@ -192,6 +194,8 @@ def summarise(logs: list[Log]) -> dict:
         dev = log.device
         # Calls that began and have no end line yet: a process death in the call, or one still up at export.
         open_calls = 0
+        # The last nan_icm_lit line per device, for the lit duty between two samples.
+        icm_lit: dict = {}
         for e in log.events:
             kind = e["e"]
             if kind == "bt_up":
@@ -214,6 +218,17 @@ def summarise(logs: list[Log]) -> dict:
                 out["nan life s"][f"{dev} {'clean' if e['clean'] else 'reset'}"].append(e["life"] / 1000)
             elif kind == "nan_cycle":
                 out["nan cycles"][dev].append(1)
+            elif kind == "nan_icm":
+                asked = e.get("band", "?") if e["on"] else "off"
+                out["nan icm verdicts"][f"{dev} {asked} {e['why']}"].append(1)
+            elif kind == "nan_icm_lit":
+                # Cumulative per plane start: the duty is the difference between two lines of one run.
+                before = icm_lit.get(dev)
+                icm_lit[dev] = e
+                if before and e["up"] > before["up"] and e["lit"] >= before["lit"]:
+                    out["nan icm lit % (our estimate)"][dev].append(
+                        round(100 * (e["lit"] - before["lit"]) / (e["up"] - before["up"]), 1)
+                    )
             elif kind == "lora_up":
                 if "dial" in e:
                     out["lora dial s"][dev].append(e["dial"] / 1000)

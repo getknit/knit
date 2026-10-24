@@ -77,6 +77,19 @@ is in `docs/NAN_CONCURRENCY_REAUDIT.md` and `docs/DIGEST_PULL_REATTACH.md`.
   `updatePublish(sameConfig)`, which refreshes the framework's 30 s instant-mode clock without the wedge-prone
   subscribe re-arm, demand-gated so a converged mesh does none. Sealed DM-form chat rides `fastSend`, **targeted**,
   never fanned. Framing is per peer by its advert's capability bits; the legacy `0x01` path stays for older builds.
+- **When touching `NanIcmPolicy`, `noteIcmVerdict` / `icmVerdict` / `refreshIcm`, `maybePushIcmBand`, `followAudio`
+  (`audioStreaming`), `fiveGhzRules`, the post-cure window (`postCureCycledAt` / `postCureSince`,
+  `sessionCycleWithSettle`'s `postCure`, `POST_CURE_ATTACH_WITHIN_MS`), the Wi-Fi watch's frequency map
+  (`onCapabilitiesChanged` on `wifiWatch`, `STA_SETTLE_MS`), `FieldEvent.NanIcm` / `NanIcmLit`, or `…debug.NANICM
+  --es band`:** READ ADR 2026-10.486r (and kb68's 2026-10-24 amendment). One verdict gives every ICM-enabled config
+  its allowed, band and reason, and both builders and every `updatePublish` read it: off while Bluetooth audio streams
+  and while lonely (except the 30 s after a demand-driven Tier-1 cure), 2.4 GHz on a STA on 2437, 5 GHz on a STA on
+  5745 (or 5220 with 5745 unusable) or with no Wi-Fi network — those two **debug builds only** (`fiveGhzRules`) until
+  the cross-band delivery trial passes, since a 5 GHz phone shares only the 2.4 GHz windows with every 2.4 GHz peer —
+  else 2.4 GHz. The verdict never decides *when* ICM is lit, except that the relight obeys an off verdict. Off pushes
+  nothing; a band change pushes one `updatePublish` per demand-lit window, never under `icmKeepaliveBroken` or a live
+  link. The frequency map lives in the callback object's own callbacks, never in `onStaLost` / `onStaAvailable`, and
+  an unregistered or unsettled watch is unknown, never "no Wi-Fi". Tests: `NanIcmPolicyTest`.
 - **When touching `attach()`, `NanAttachPolicy`, `NanAttachJournal`, `attachFailStreak` / `attachFailTotal` /
   `attachAbandoned` / `attachStartedAt`, the availability receiver or `handleAvailabilityChanged`, or
   `…debug.NANFAIL` / `NANSTORM`:** READ ADR 052 and ADR 055. Each failed attach strands two binder objects in

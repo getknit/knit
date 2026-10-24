@@ -105,6 +105,9 @@ changes: branch order, the watchdog's clocks, the sync and ICM-relight paths all
 wedge the file guards against needs an owed peer to be observed, which a lonely node has none of. Oracles:
 `re-arm subscribe (lonely=…ms cooldown=…ms heal=…)` and `lonely: relaxed …` / `lonely: aggressive again` on
 the transport tag, `lonely=` on the state line. The device trial is listed in the ADR and still owed.
+Since ADR 2026-10.486r a lonely phone's configs carry no ICM at all (`NanIcmPolicy`'s LONELY rule), so the ICM duty
+figures above are history: a lonely re-arm costs only the subscribe close and reopen, and the one window a lonely phone
+still lights is the 30 s after a demand-driven Tier-1 cure.
 
 ## `requestNetwork` with no timeout leaks the one interface forever — always time-box it
 

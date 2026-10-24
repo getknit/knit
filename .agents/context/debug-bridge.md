@@ -551,6 +551,19 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `nan-sta-drop-kills-aware-client` memory and ADR 2026-09.bgk3's addendum). `NANICM --ez on <bool>` turns Wi-Fi
   Aware Instant Communication Mode on or off for the running transport and cycles the session so the new
   publish/subscribe configs take; the hardware's answer bounds `on`, and a process restart reverts to it.
+  `NANICM --es band 2.4|5|auto` pins the band the configs ask for (GitHub #44, `NanIcmPolicy`'s override, which
+  bypasses its audio and lonely rules so a band trial can light ICM on a lonely or audio-playing phone); `auto` hands
+  the choice back to the policy, anything else is an error that changes nothing. A band never cycles the session: it
+  rides the next config, or one in-place publish update while ICM is lit by demand (`icm band push — updatePublish
+  asks …`, else `icm band now … — rides the next config (…)`). With both extras `on` goes first. No extras reads. The
+  reply carries `instantMode`, `icmAllowed`, `icmBandAsked` (the band **asked**; the one **granted** is the
+  `instantModeChannel` of the system log's `WifiAwareNativeApi: enableAndConfigure` line, which `dumpsys wifiaware` does
+  not show), `icmReason`
+  (OVERRIDE/AUDIO/LONELY/STA_CHANNEL/NO_STA/DEFAULT), `icmBandOverride`, `staFrequencyMhz` (-1 unknown),
+  `band5PrimaryUsable`, `postCure` and `icmLitNow`; each verdict change logs `icm verdict: on=… band=… why=…`. The
+  pinned band **survives `--ez on` and the session cycle** and goes only with the transport's stop (`NANOFF`,
+  low-power mode, a mesh stop) or a process restart, so a trial or battery arm that follows a band trial starts
+  with `--es band auto`.
   `NANDIAL --es to <peerNodeId>` initiates an NDP to a peer currently in `discovered` **regardless of the id
   tie-break**, so the smaller node can knock on the larger node's responder — the far side's HELLO check still
   closes the socket; the NDP forming (`onDataPathRequest` there) is the trial. It answers `peer not in

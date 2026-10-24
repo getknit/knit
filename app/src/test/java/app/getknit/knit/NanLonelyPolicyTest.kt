@@ -32,8 +32,9 @@ class NanLonelyPolicyTest {
     fun interactiveOrChargingNeverRelaxes() {
         val hour = 60 * 60_000L
         // The shared rule relaxes a screen-on node past the window since ADR 2026-09.w3xk (the BLE scan opens its
-        // gap to 60 s); this loop keeps it aggressive on purpose — a 30 s tick would still keep ICM lit — so the
-        // clause is pinned on this side, and dropping it is a decision (kb68's trial again), not a cleanup.
+        // gap to 60 s); this loop keeps it aggressive on purpose — chosen when a 30 s tick kept ICM lit, and since
+        // #44 a lonely config asks for no ICM — so the clause is pinned on this side, and dropping it is a decision
+        // (kb68's trial again), not a cleanup.
         assertTrue(PowerPolicy.lonelyRelaxed(PowerState(interactive = true), hour))
         assertEquals(NanLonelyPolicy.Cadence(8_000L, 15_000L, relaxed = false), cadence(PowerState(interactive = true), hour))
         assertEquals(
@@ -44,7 +45,7 @@ class NanLonelyPolicyTest {
 
     @Test
     fun onBatteryPastTheWindowRelaxesToTheDutyCycle() {
-        // ICM is lit for the 30 s after each re-arm: a quarter of the time at 120 s, a tenth at 300 s.
+        // One subscribe cycle per tick: a quarter of the old 30 s-per-re-arm duty at 120 s, a tenth at 300 s.
         assertEquals(NanLonelyPolicy.Cadence(120_000L, 105_000L, relaxed = true), cadence(onBattery, window))
         assertEquals(NanLonelyPolicy.Cadence(300_000L, 285_000L, relaxed = true), cadence(lowBattery, window + 1))
     }
@@ -61,7 +62,8 @@ class NanLonelyPolicyTest {
             val c = cadence(power, age)
             assertTrue("cooldown under the tick so a timed tick always clears the gate", c.rearmCooldownMs < c.tickMs)
             assertTrue("never a shorter cooldown than the aggressive one", c.rearmCooldownMs >= cooldown)
-            assertTrue("ICM duty at most a quarter", 30_000L * 100 / c.tickMs <= 25)
+            // Since #44 a lonely re-arm lights no ICM; the bound now caps the re-arm duty it used to stand for.
+            assertTrue("a 30 s window per re-arm at most a quarter of the time", 30_000L * 100 / c.tickMs <= 25)
         }
     }
 

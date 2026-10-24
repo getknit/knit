@@ -22,6 +22,7 @@ import app.getknit.knit.mesh.power.LowPowerReason
 import app.getknit.knit.mesh.spool.SpoolTicketWord
 import app.getknit.knit.mesh.spool.SpoolUploadsWord
 import app.getknit.knit.mesh.spool.SpoolVerdict
+import app.getknit.knit.mesh.wifiaware.NanIcmPolicy
 import app.getknit.knit.net.InternetGate
 import app.getknit.knit.ui.BackgroundBattery
 import app.getknit.knit.ui.call.TalkPath
@@ -130,6 +131,19 @@ class FieldEventSchemaTest {
             line(FieldEvent.NanDown(peer, initiator = false, lifetimeMs = 4_200, clean = true)),
         )
         assertEquals("""{"t":42,"e":"nan_cycle"}""", line(FieldEvent.NanCycle))
+        assertEquals(
+            """{"t":42,"e":"nan_icm","on":true,"band":"B5","why":"STA_CHANNEL","sta":5745}""",
+            line(FieldEvent.NanIcm(on = true, band = NanIcmPolicy.Band.B5, why = NanIcmPolicy.Reason.STA_CHANNEL, staMhz = 5745)),
+        )
+        // Off writes no band, even if one is handed in; an unknown STA writes no frequency.
+        assertEquals(
+            """{"t":42,"e":"nan_icm","on":false,"why":"AUDIO"}""",
+            line(FieldEvent.NanIcm(on = false, band = NanIcmPolicy.Band.B24, why = NanIcmPolicy.Reason.AUDIO, staMhz = null)),
+        )
+        assertEquals(
+            """{"t":42,"e":"nan_icm_lit","lit":95000,"up":300000,"configs":7}""",
+            line(FieldEvent.NanIcmLit(litMs = 95_000, upMs = 300_000, configs = 7)),
+        )
         assertEquals(
             """{"t":42,"e":"low_power","on":true,"why":"BATTERY_SAVER"}""",
             line(FieldEvent.LowPower(LowPowerReason.BATTERY_SAVER)),

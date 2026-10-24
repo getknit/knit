@@ -376,6 +376,49 @@ sealed interface FieldEvent {
     }
 
     /**
+     * What Wi-Fi Aware's configs may ask of Instant Communication Mode changed (`NanIcmPolicy`, GitHub #44): [on] whether
+     * an ICM-enabled config may be built, [band] the band it asks for (only when on; asked, not granted — `dumpsys
+     * wifiaware`'s `instantModeChannel` is the grant), [why] the rule that decided (`NanIcmPolicy.Reason`), and [staMhz]
+     * the phone's own Wi-Fi frequency when one is known. Written on a change of on, band or why only: a STA that moves
+     * channel under an unchanged verdict writes nothing. Nothing is written on a phone without ICM.
+     */
+    data class NanIcm(
+        val on: Boolean,
+        val band: Enum<*>?,
+        val why: Enum<*>,
+        val staMhz: Int?,
+    ) : FieldEvent {
+        override val kind get() = "nan_icm"
+
+        override fun write(out: FieldWriter) {
+            out.flag("on", on)
+            band?.takeIf { on }?.let { out.enum("band", it) }
+            out.enum("why", why)
+            staMhz?.let { out.num("sta", it.toLong()) }
+        }
+    }
+
+    /**
+     * Wi-Fi Aware at a sample (`FieldLog.SAMPLE_EVERY_MS`), on a phone with ICM: [litMs] is our estimate of how long
+     * Instant Communication Mode was lit by this phone's own configs since the plane started — the union of the 30 s
+     * each ICM-enabled config opens — over [upMs], the time since the plane started, after [configs] such configs.
+     * Cumulative, so two lines' difference is the duty between them; a plane restart starts both over.
+     */
+    data class NanIcmLit(
+        val litMs: Long,
+        val upMs: Long,
+        val configs: Int,
+    ) : FieldEvent {
+        override val kind get() = "nan_icm_lit"
+
+        override fun write(out: FieldWriter) {
+            out.num("lit", litMs)
+            out.num("up", upMs)
+            out.num("configs", configs.toLong())
+        }
+    }
+
+    /**
      * The paired LoRa board at a sample, while its link is ready: the plane's role, the last packet's signal, the
      * queue, what it has heard, and the live share of airtime used against its budget. Beside them, what the role
      * and a quiet plane are explained by: the gateways heard, the pocket's live links and sightings, the peers a
