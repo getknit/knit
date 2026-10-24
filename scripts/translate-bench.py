@@ -6,9 +6,10 @@ For each device: push the corpus (scripts/translate-corpus/), side-load the mode
 JSON lines, and print one row per device and direction: the cold load, p50/p95 by message length, the memory one
 loaded direction holds, and how many lines the identifier was unsure of, lost a protected span or came out looping.
 
-With --desktop, the same corpus also goes through translate-native's desktop bench (the same native core, built with
-`cmake -S translate-native -B translate-native/build/desktop`), and the quality sheet puts each phone's translation
-beside the desktop's, flagging any line where they differ.
+With --desktop, the same corpus also goes through the knit-translate-native repository's desktop bench (the same
+native core; its README says how to build it), found through --native (default: a knit-translate-native checkout
+beside this one), and the quality sheet puts each phone's translation beside the desktop's, flagging any line where
+they differ. It is how a bump of that library is checked against the version before it.
 
   scripts/translate-bench.py --serial pixel-9-pro-xl.home:5555 --stage /tmp/stage --out /tmp/bench --desktop
 
@@ -25,7 +26,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 BRIDGE = ROOT / "scripts/bridge.sh"
 CORPUS = ROOT / "scripts/translate-corpus"
-DESKTOP = ROOT / "translate-native/build/desktop/knit-translate-bench"
+NATIVE = ROOT.parent / "knit-translate-native"
+BENCH = "translate-native/build/desktop/knit-translate-bench"
 REMOTE = "/data/local/tmp/translate"
 PACKAGE = "app.getknit.knit"
 # model id and file stem per direction: the pins' own (translate-model.py MODELS).
@@ -81,11 +83,11 @@ def bench(serial, source, runs):
     sys.exit(f"{serial}: bench did not finish")
 
 
-def desktop(stage, source):
+def desktop(bench, stage, source):
     model_id, stem = DIRECTIONS[source]
     d = Path(stage) / model_id
     out = subprocess.run(
-        [str(DESKTOP), "translate", str(d / f"model.{stem}.intgemm.alphas.bin"), str(d / f"vocab.{stem}.spm"),
+        [str(bench), "translate", str(d / f"model.{stem}.intgemm.alphas.bin"), str(d / f"vocab.{stem}.spm"),
          str(d / f"lex.50.50.{stem}.s2t.bin"), "4", str(CORPUS / f"{source}.txt")],
         capture_output=True, text=True, check=True,
     ).stdout
@@ -106,16 +108,18 @@ def main():
     parser.add_argument("--stage", help="the models staged by translate-model.py --out, to side-load first")
     parser.add_argument("--runs", type=int, default=1, help="times through the corpus (timings only count them all)")
     parser.add_argument("--out", required=True, help="where the pulled JSON lines and the quality sheet go")
-    parser.add_argument("--desktop", action="store_true", help="compare with translate-native's desktop bench")
+    parser.add_argument("--desktop", action="store_true", help="compare with knit-translate-native's desktop bench")
+    parser.add_argument("--native", default=str(NATIVE), help="the knit-translate-native checkout --desktop uses")
     args = parser.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     reference = {}
     if args.desktop:
-        if not args.stage or not DESKTOP.exists():
-            sys.exit("--desktop needs --stage and a built translate-native/build/desktop/knit-translate-bench")
-        reference = {source: desktop(args.stage, source) for source in DIRECTIONS}
+        bench = Path(args.native) / BENCH
+        if not args.stage or not bench.exists():
+            sys.exit(f"--desktop needs --stage and a built {bench}")
+        reference = {source: desktop(bench, args.stage, source) for source in DIRECTIONS}
 
     table = [
         (

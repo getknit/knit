@@ -3,8 +3,8 @@
 Knit is licensed under the **GNU General Public License v3.0 or later** (see [`COPYING`](COPYING)).
 It redistributes, and depends on, the third-party open-source components listed below. Every component
 shipped in the Knit APK is under a **GPL-compatible** license (Apache-2.0, BSD, MIT, the Unicode License,
-or a permissive or public-domain notice); the project deliberately carries **no Google Play services /
-GMS** dependency.
+or a permissive or public-domain notice; a build with offline translation adds GPL-2.0-or-later and MPL-2.0); the
+project deliberately carries **no Google Play services / GMS** dependency.
 
 This file is provided for attribution and to satisfy the notice-retention terms of the Apache License
 2.0 (§4), the BSD license, and the MIT license. Where a component ships its own `NOTICE` file, that
@@ -67,6 +67,26 @@ libunwind) is under Apache-2.0 WITH LLVM-exception, which asks no notice of comp
 
 QR *scanning* uses CameraX (an AndroidX library, above) plus ZXing core; the former ZXing Android Embedded
 dependency was dropped when the scanner moved to CameraX.
+
+## Offline translation (packaged only in a build made with `-Ptranslate=true`)
+
+| Component | Project | License |
+|---|---|---|
+| slimt (`app.getknit:translate-native` — Marian inference, the offline translation runtime) | [slimt Authors](https://github.com/jerinphilip/slimt) | GPL-2.0-or-later |
+| &nbsp;&nbsp;↳ bergamot-translator and marian-dev (code slimt derives from) | [browsermt](https://github.com/browsermt/bergamot-translator) | MPL-2.0 |
+| &nbsp;&nbsp;↳ ssplit (sentence splitting, modified in slimt) | [browsermt](https://github.com/browsermt/ssplit-cpp) | Apache-2.0 |
+| &nbsp;&nbsp;↳ ruy (matrix multiplication) | [Google](https://github.com/google/ruy) | Apache-2.0 |
+| &nbsp;&nbsp;↳ cpuinfo | [PyTorch](https://github.com/pytorch/cpuinfo) | BSD-2-Clause |
+| &nbsp;&nbsp;↳ SentencePiece (tokenizer) | [Google](https://github.com/google/sentencepiece) | Apache-2.0 |
+| &nbsp;&nbsp;↳ CLD2 (language detection) | [CLD2 Owners](https://github.com/CLD2Owners/cld2) | Apache-2.0 |
+
+`app.getknit:translate-native` is Knit's own artifact (GPL-3.0-or-later), built reproducibly from the
+[knit-translate-native](https://github.com/getknit/knit-translate-native) repository. Its one native library statically
+links slimt and the code under it, at the commits that repository's `sources.lock` pins. slimt's `COPYRIGHT` grants
+version 2 of the GPL "or (at your option) any later version", which is what lets it ship inside a GPL-3.0-or-later app.
+The translation models the app downloads are not bundled. The release workflow and F-Droid's rebuild never pass the
+flag, so their APKs carry none of this; the in-app list shows these rows only in a build that does. The texts are
+bundled as `GPL-2.0.txt`, `MPL-2.0.txt` and `BSD-2-Clause-cpuinfo.txt`.
 
 ## Bundled ML models and data
 

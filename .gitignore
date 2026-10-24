@@ -57,7 +57,3 @@ scripts/__pycache__/
 # only what is new.
 .qodana/
 
-# The translation spike's native sources, fetched by scripts/translate-native.sh (ADR 2026-10.t2h6).
-/translate-native/third_party/
-/translate-native/build/
-/translate-native/.cxx/

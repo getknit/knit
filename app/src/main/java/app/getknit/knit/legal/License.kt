@@ -37,6 +37,16 @@ enum class License(
         "legal/WebRTC-audio-notices.txt",
     ),
     UNICODE_3_0("Unicode-3.0", "Unicode License v3", "legal/Unicode-3.0.txt"),
+
+    // The offline translation runtime's (ThirdPartyNotices' Packaging.TRANSLATE rows).
+    GPL_2_0_OR_LATER("GPL-2.0-or-later", "GNU General Public License v2.0 or later", "legal/GPL-2.0.txt"),
+    MPL_2_0("MPL-2.0", "Mozilla Public License 2.0", "legal/MPL-2.0.txt"),
+    BSD_2_CLAUSE_CPUINFO(
+        "BSD-2-Clause",
+        "BSD 2-Clause License (cpuinfo)",
+        "legal/BSD-2-Clause-cpuinfo.txt",
+        routeId = "bsd-2-clause-cpuinfo",
+    ),
     ;
 
     companion object {

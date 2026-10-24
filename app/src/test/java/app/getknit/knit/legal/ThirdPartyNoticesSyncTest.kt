@@ -21,12 +21,27 @@ class ThirdPartyNoticesSyncTest {
 
     @Test
     fun runtimeTableMatchesTheRuntimeNotices() {
-        assertSectionMatches("Runtime components", NoticeKind.RUNTIME)
+        assertSectionMatches("Runtime components", NoticeKind.RUNTIME, Packaging.ALWAYS)
+    }
+
+    @Test
+    fun translationTableMatchesTheTranslationNotices() {
+        assertSectionMatches("Offline translation", NoticeKind.RUNTIME, Packaging.TRANSLATE)
     }
 
     @Test
     fun bundledDataTableMatchesTheDataNotices() {
-        assertSectionMatches("Bundled ML models and data", NoticeKind.DATA)
+        assertSectionMatches("Bundled ML models and data", NoticeKind.DATA, Packaging.ALWAYS)
+    }
+
+    @Test
+    fun aBuildWithoutTranslationShowsNoTranslationRow() {
+        assertTrue(ThirdPartyNotices.ALL.any { it.packaging == Packaging.TRANSLATE })
+        assertEquals(
+            ThirdPartyNotices.ALL.filter { it.packaging == Packaging.ALWAYS },
+            ThirdPartyNotices.shipped(translate = false),
+        )
+        assertEquals(ThirdPartyNotices.ALL, ThirdPartyNotices.shipped(translate = true))
     }
 
     @Test
@@ -47,12 +62,13 @@ class ThirdPartyNoticesSyncTest {
     private fun assertSectionMatches(
         sectionPrefix: String,
         kind: NoticeKind,
+        packaging: Packaging,
     ) {
         val section = tables.keys.firstOrNull { it.startsWith(sectionPrefix) } ?: error("no '## $sectionPrefix…' table")
         val rows = tables.getValue(section)
-        val notices = ThirdPartyNotices.ALL.filter { it.kind == kind }
+        val notices = ThirdPartyNotices.ALL.filter { it.kind == kind && it.packaging == packaging }
         assertEquals(
-            "'$section' rows vs $kind notices (name → SPDX)",
+            "'$section' rows vs $kind/$packaging notices (name → SPDX)",
             rows.map { it.name to it.spdx },
             notices.map { it.name to it.license.spdx },
         )

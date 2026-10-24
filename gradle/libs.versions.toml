@@ -113,6 +113,12 @@ coreTelecom = "1.1.0-rc01"
 # 16 KB-aligned with RELRO filling the first RW LOAD. 0.1.5 is the first to load the `quantized_26_08_21` weights' split
 # frontend (frontend.model.ort + frontend.weights.ort).
 moonshineVoice = "0.1.5"
+# translate-native (ours, GPL-3.0-or-later): slimt and CLD2 behind a JNI, the offline translation runtime (ADR
+# 2026-10.t2h6), built reproducibly and published to Maven Central by the knit-translate-native repository; its README
+# says how a version is cut. `compileOnly` everywhere and packaged only under `-Ptranslate=true`, like moonshine-voice.
+# arm64-v8a, armeabi-v7a and x86_64, 16 KB-aligned; no dependencies. `-Pknit.translateNative=<checkout>` builds it from
+# source instead (settings.gradle.kts).
+translateNative = "0.1.0"
 # QR identity verification. zxing core is the pure-Java codec — it both *generates* the identity QR
 # (ui/image/QrCode.kt) and *decodes* camera frames (ui/scan/QrDecoder.kt). Being Android-free is what
 # keeps QrDecoder a plain-JVM unit-test target (see QrDecoderTest).
@@ -327,6 +333,7 @@ litert = { group = "com.google.ai.edge.litert", name = "litert", version.ref = "
 tink-android = { group = "com.google.crypto.tink", name = "tink-android", version.ref = "tink" }
 webrtc-android = { group = "io.github.webrtc-sdk", name = "android", version.ref = "webrtc" }
 moonshine-voice = { group = "ai.moonshine", name = "moonshine-voice", version.ref = "moonshineVoice" }
+translate-native = { group = "app.getknit", name = "translate-native", version.ref = "translateNative" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxingCore" }
 
 # CameraX: the QR identity scanner's camera stack (see the cameraX version pin for the constraints).

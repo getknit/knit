@@ -229,3 +229,36 @@ so it never reads as undoing the question. One tap translates it again from the 
 now named, so it offers no second guess (`MessageTranslation.Done.guessed`). With more languages that tap would open
 the short picker instead. Device-verified on the Pixel 7: Walter's "ya voy", read as English by their history in that
 chat, came back as "I'm coming" after the tap.
+
+## Amendment 2026-10-23: the runtime is our own AAR
+
+**Decided.** The runtime leaves this repository. The knit-translate-native repository builds slimt and CLD2 behind a
+JNI into `app.getknit:translate-native` and publishes it to Maven Central. That build pins the NDK
+(28.2.13676358), the SDK's CMake (3.31.6) and every source commit (`sources.lock`). A release has to come out byte for
+byte the same from two checkouts in two directories (`scripts/check-reproducible.sh`), because Knit's release and
+F-Droid's rebuild take the AAR's bytes from Central and compile no native code. The binding class moves into the AAR
+as `app.getknit.translatenative.TranslateJni`, in Java so the artifact has no dependency, with its keep rule as a
+consumer rule: the native symbols and the class that binds them are versioned together. `:app` compiles against it
+everywhere (`compileOnly`) and packages it only under `-Ptranslate=true` (`runtimeOnly`), the shape `moonshine-voice`
+already has. `-Pknit.translateNative=<checkout>` substitutes a local checkout through a composite build.
+
+**Upstream sources.** Nothing upstream is committed there and nothing is a submodule. A pin moves by editing
+`sources.lock`, after the desktop bench's translations of `scripts/translate-corpus/` are compared with the previous
+version's (`scripts/translate-bench.py --desktop --native <checkout>`). Our own changes are `git format-patch` files
+under `patches/<name>/`, never commits on someone's fork. Each is sent upstream first and deleted by the bump that
+brings it in. A scheduled job reports each pin's distance behind the branch it follows. slimt comes from a personal
+fork, so every source is fetched from a mirror before the first release.
+
+**Published (2026-10-24).** 0.1.0 is on Maven Central (tag `v0.1.0`, AAR sha256 `58f60e56…`, the same bytes as
+the local and CI builds), signed by key `857DFEFE992B2D43BE0F6DEB24AF442CC345A16D`. github.com/getknit/knit-translate-native
+is the primary repository, and its GitHub Actions is the only CI that publishes. Every source is fetched from a
+`getknit/mirror-*` repository. The SentencePiece pin `8cbdf137` is a google/sentencepiece master commit (v0.1.99-17),
+not a browsermt one, so it follows Google's repository.
+
+**The lockfile and the notices.** The lockfile is written without `-Ptranslate`, so it records the AAR on the compile
+classpaths only. A build with the flag adds it to every runtime classpath, so the flag unlocks those, as `-Pstt=true`
+already does for release. Its notices are `Packaging.TRANSLATE` rows: slimt (GPL-2.0-or-later, the "or later" coming from
+slimt's `COPYRIGHT`), the bergamot-translator and marian-dev code it derives from (MPL-2.0), ssplit, ruy, SentencePiece
+and CLD2 (Apache-2.0) and cpuinfo (BSD-2-Clause). They sit in their own section of `THIRD-PARTY-NOTICES.md`, and the
+in-app list shows them only where `TRANSLATE_WIRED`. `ReleaseClasspathNoticesTest` finds their coordinate on
+`releaseCompileClasspath`.

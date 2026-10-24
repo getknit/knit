@@ -29,8 +29,8 @@ import org.koin.core.module.Module
 import org.koin.dsl.module
 
 /**
- * The offline message-translation spike (ADR 2026-10.t2h6): a debug build made with `-Ptranslate=true`, which packages
- * `translate-native`. The one read of `BuildConfig.TRANSLATE`. Off, [translateModule] is null, no chat offers Translate
+ * The offline message-translation spike (ADR 2026-10.t2h6): a build made with `-Ptranslate=true`, which packages the
+ * `translate-native` AAR. The one read of `BuildConfig.TRANSLATE`. Off, [translateModule] is null, no chat offers Translate
  * and R8 drops every class only this graph reaches.
  */
 const val TRANSLATE_WIRED: Boolean = BuildConfig.TRANSLATE

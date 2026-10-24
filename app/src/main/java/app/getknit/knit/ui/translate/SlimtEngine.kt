@@ -7,6 +7,7 @@ import app.getknit.knit.translate.Detection
 import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateEngine
 import app.getknit.knit.translate.TranslateLang
+import app.getknit.translatenative.TranslateJni
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -132,12 +133,13 @@ class SlimtEngine(
                 thread
                     .submit(
                         Callable {
+                            // A Java method: no named arguments. Model, vocabulary, shortlist, then the layer counts.
                             TranslateJni.nativeLoad(
-                                model = files.getValue(direction.model).path,
-                                vocabulary = files.getValue(direction.vocabulary).path,
-                                shortlist = files.getValue(direction.shortlist).path,
-                                encoderLayers = TranslateDirection.ENCODER_LAYERS,
-                                decoderLayers = direction.decoderLayers,
+                                files.getValue(direction.model).path,
+                                files.getValue(direction.vocabulary).path,
+                                files.getValue(direction.shortlist).path,
+                                TranslateDirection.ENCODER_LAYERS,
+                                direction.decoderLayers,
                             )
                         },
                     ).get()

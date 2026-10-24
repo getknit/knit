@@ -180,11 +180,9 @@ val callsInDebug = liveCallsInDebug || meshCallsInDebug
 val callsInRelease = liveCallsInRelease || meshCallsInRelease
 val sttInDebug = (stt ?: true) && callsInDebug
 val sttInRelease = (stt ?: false) && callsInRelease
-// `-Ptranslate=true`: the offline message-translation spike (ADR 2026-10.t2h6), off by default, since it needs the
-// `:translate-native` module (settings.gradle.kts), which needs the NDK and scripts/translate-native.sh's sources. It
-// reaches every build type it is given to, release and staging included, for a testers' alpha; such an APK is built on
-// this machine and is never F-Droid's or the release workflow's, which never pass the flag (the NDK build is not
-// reproducible).
+// `-Ptranslate=true`: the offline message-translation spike (ADR 2026-10.t2h6), off by default. It packages the
+// `translate-native` AAR (gradle/libs.versions.toml) in every build type it is given to, release and staging included,
+// for a testers' alpha; the release workflow and F-Droid never pass it while the ADR is Proposed.
 val translate = (project.findProperty("translate") as? String)?.toBoolean() ?: false
 
 // ABIs packaged into the **debug** APK. Debug is unminified and carries both tflite models, so it is
@@ -749,7 +747,6 @@ androidComponents {
             variant.sources.manifests.addStaticManifestFile("src/stt/AndroidManifest.xml")
             variant.sources.keepRules?.addStaticSourceDirectory("src/stt/keepRules")
         }
-        if (translate) variant.sources.keepRules?.addStaticSourceDirectory("src/translate/keepRules")
     }
 }
 
@@ -1045,11 +1042,14 @@ dependencyLocking {
 
 // A release-shaped build whose runtime differs from the default's (`-PliveCalls=false`, `-PmeshCalls=false`,
 // `-Pstt=true`) is a maintainer's: it drops WebRTC or core-telecom from, or adds Moonshine to, the runtime classpaths the
-// lock state records, so those go unlocked rather than lock a second runtime. The versions still come from the catalog;
-// a -P-free build is never affected.
-if (!liveCallsInRelease || !meshCallsInRelease || sttInRelease) {
+// lock state records, so those go unlocked rather than lock a second runtime. `-Ptranslate=true` adds translate-native to
+// every build type's, debug's included, so it unlocks those too. The versions still come from the catalog; a -P-free
+// build is never affected. Regenerate the lockfile with no such flag set, `~/.gradle/gradle.properties` included.
+if (!liveCallsInRelease || !meshCallsInRelease || sttInRelease || translate) {
     configurations.configureEach {
-        if (name.endsWith("RuntimeClasspath") && !name.startsWith("debug")) resolutionStrategy.deactivateDependencyLocking()
+        if (name.endsWith("RuntimeClasspath") && (translate || !name.startsWith("debug"))) {
+            resolutionStrategy.deactivateDependencyLocking()
+        }
     }
 }
 
@@ -1181,9 +1181,10 @@ dependencies {
     // transitive: its appcompat/material/okhttp/WorkManager serve wrappers we never call (libs.versions.toml).
     compileOnly(libs.moonshine.voice) { isTransitive = false }
     debugImplementation(libs.moonshine.voice) { isTransitive = false }
-    // The translation spike's native library (ADR 2026-10.t2h6): a project dependency, only under `-Ptranslate=true` and
-    // then in every build type, so no lockfile records it and no other build resolves it.
-    if (translate) implementation(project(":translate-native"))
+    // The translation runtime (ADR 2026-10.t2h6): compiled against everywhere, packaged only under `-Ptranslate=true`
+    // and then in every build type. Its keep rule travels in the AAR.
+    compileOnly(libs.translate.native)
+    if (translate) runtimeOnly(libs.translate.native)
     android.buildTypes.names.filter { it != "debug" }.forEach { buildType ->
         if (liveCallsInRelease) add("${buildType}RuntimeOnly", libs.webrtc.android)
         if (callsInRelease) add("${buildType}RuntimeOnly", libs.androidx.core.telecom)

@@ -1,4 +1,0 @@
-# The translation spike's JNI (ADR 2026-10.t2h6) in a minified build with `BuildConfig.TRANSLATE` on: the build adds this
-# directory to every variant under `-Ptranslate=true`. libknittranslate.so binds TranslateJni's native methods by name, so a renamed
-# or dropped one fails inside native code, not in a test.
--keepclasseswithmembernames class app.getknit.knit.ui.translate.TranslateJni { native <methods>; }

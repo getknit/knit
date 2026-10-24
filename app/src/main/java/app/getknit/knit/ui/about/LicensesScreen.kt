@@ -32,6 +32,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
+import app.getknit.knit.di.TRANSLATE_WIRED
 import app.getknit.knit.legal.License
 import app.getknit.knit.legal.NoticeKind
 import app.getknit.knit.legal.ThirdPartyNotice
@@ -42,14 +43,14 @@ import app.getknit.knit.ui.preview.KnitPreview
 
 /**
  * Every open-source component Knit ships, Knit itself first, each row opening its license text. The list is
- * [ThirdPartyNotices.ALL] — the same rows as `THIRD-PARTY-NOTICES.md`, which the sync tests keep honest.
+ * [ThirdPartyNotices.shipped] — the rows of `THIRD-PARTY-NOTICES.md` this build packages, which the sync tests keep honest.
  */
 @Composable
 fun LicensesScreen(
     onBack: () -> Unit,
     onOpenLicense: (License) -> Unit,
 ) {
-    LicensesScreenContent(notices = ThirdPartyNotices.ALL, onBack = onBack, onOpenLicense = onOpenLicense)
+    LicensesScreenContent(notices = ThirdPartyNotices.shipped(TRANSLATE_WIRED), onBack = onBack, onOpenLicense = onOpenLicense)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -159,5 +160,5 @@ private fun NoticeRow(
 @Composable
 fun LicensesScreenPreview() =
     KnitPreview {
-        LicensesScreenContent(notices = ThirdPartyNotices.ALL, onBack = {}, onOpenLicense = {})
+        LicensesScreenContent(notices = ThirdPartyNotices.shipped(translate = false), onBack = {}, onOpenLicense = {})
     }

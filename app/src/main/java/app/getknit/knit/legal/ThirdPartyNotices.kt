@@ -4,6 +4,14 @@ package app.getknit.knit.legal
 enum class NoticeKind { RUNTIME, DATA }
 
 /**
+ * Which builds package a notice's component. [TRANSLATE] rows ship only in a build made with `-Ptranslate=true`
+ * (ADR 2026-10.t2h6): the in-app list shows them only there, `THIRD-PARTY-NOTICES.md` keeps them in a section of their
+ * own, and `ReleaseClasspathNoticesTest` finds their coordinate on the release compile classpath, since the lockfile is
+ * written without the flag.
+ */
+enum class Packaging { ALWAYS, TRANSLATE }
+
+/**
  * One row of the in-app Open-source licenses list — and of `THIRD-PARTY-NOTICES.md`, which prints the same
  * [name], [project], [url] and [license] and is kept in step by `ThirdPartyNoticesSyncTest`.
  *
@@ -22,6 +30,7 @@ data class ThirdPartyNotice(
     val license: License,
     val kind: NoticeKind = NoticeKind.RUNTIME,
     val artifacts: Set<String> = emptySet(),
+    val packaging: Packaging = Packaging.ALWAYS,
 )
 
 /**
@@ -312,6 +321,65 @@ object ThirdPartyNotices {
                 url = "https://webrtc.googlesource.com/src/",
                 license = License.WEBRTC_AUDIO,
             ),
+            // The offline translation runtime: our own `translate-native` AAR (built from the knit-translate-native
+            // repository), whose one native library statically links slimt and everything below it.
+            ThirdPartyNotice(
+                key = "slimt",
+                name = "slimt",
+                project = "slimt Authors",
+                url = "https://github.com/jerinphilip/slimt",
+                license = License.GPL_2_0_OR_LATER,
+                artifacts = setOf("app.getknit:translate-native"),
+                packaging = Packaging.TRANSLATE,
+            ),
+            ThirdPartyNotice(
+                key = "slimt-bergamot",
+                name = "bergamot-translator and marian-dev",
+                project = "browsermt",
+                url = "https://github.com/browsermt/bergamot-translator",
+                license = License.MPL_2_0,
+                packaging = Packaging.TRANSLATE,
+            ),
+            ThirdPartyNotice(
+                key = "slimt-ssplit",
+                name = "ssplit",
+                project = "browsermt",
+                url = "https://github.com/browsermt/ssplit-cpp",
+                license = License.APACHE_2_0,
+                packaging = Packaging.TRANSLATE,
+            ),
+            ThirdPartyNotice(
+                key = "ruy",
+                name = "ruy",
+                project = "Google",
+                url = "https://github.com/google/ruy",
+                license = License.APACHE_2_0,
+                packaging = Packaging.TRANSLATE,
+            ),
+            ThirdPartyNotice(
+                key = "cpuinfo",
+                name = "cpuinfo",
+                project = "PyTorch",
+                url = "https://github.com/pytorch/cpuinfo",
+                license = License.BSD_2_CLAUSE_CPUINFO,
+                packaging = Packaging.TRANSLATE,
+            ),
+            ThirdPartyNotice(
+                key = "sentencepiece",
+                name = "SentencePiece",
+                project = "Google",
+                url = "https://github.com/google/sentencepiece",
+                license = License.APACHE_2_0,
+                packaging = Packaging.TRANSLATE,
+            ),
+            ThirdPartyNotice(
+                key = "cld2",
+                name = "CLD2",
+                project = "CLD2 Owners",
+                url = "https://github.com/CLD2Owners/cld2",
+                license = License.APACHE_2_0,
+                packaging = Packaging.TRANSLATE,
+            ),
             ThirdPartyNotice(
                 key = "nsfw-model",
                 name = "NSFW image classifier",
@@ -361,6 +429,9 @@ object ThirdPartyNotices {
             "com.google.auto.value:" to ANNOTATIONS_ONLY,
             "org.jetbrains:annotations" to ANNOTATIONS_ONLY,
         )
+
+    /** The rows a build shows: every [Packaging.ALWAYS] one, and the [Packaging.TRANSLATE] ones where [translate]. */
+    fun shipped(translate: Boolean): List<ThirdPartyNotice> = ALL.filter { it.packaging == Packaging.ALWAYS || translate }
 
     /** The notice whose longest [ThirdPartyNotice.artifacts] prefix matches [coordinate] (`group:artifact`), or null. */
     fun claimant(coordinate: String): ThirdPartyNotice? =

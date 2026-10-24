@@ -10,17 +10,21 @@ import org.junit.Test
  * This is what a license plugin would do at build time, done at test time instead — so a new dependency
  * fails here with its coordinate until it has a row (in the Kotlin list *and* `THIRD-PARTY-NOTICES.md`), and
  * a removed one fails until its stale row goes. Both directions are asserted: a notice that claims artifacts
- * must still match something, and so must every allowlist prefix.
+ * must still match something, and so must every allowlist prefix. A [Packaging.TRANSLATE] notice's coordinate is on
+ * the release runtime classpath only under `-Ptranslate=true`, which the lockfile is never written with, so its claim is
+ * checked against `releaseCompileClasspath` instead (`compileOnly` in every build).
  */
 class ReleaseClasspathNoticesTest {
-    private val coordinates: List<String> by lazy {
+    private val coordinates: List<String> by lazy { coordinatesOn(RELEASE_CONFIG) }
+    private val compileCoordinates: List<String> by lazy { coordinatesOn(RELEASE_COMPILE_CONFIG) }
+
+    private fun coordinatesOn(config: String): List<String> =
         repoFile("app/gradle.lockfile")
             .readLines()
             .mapNotNull { line -> LOCK_LINE.matchEntire(line) }
-            .filter { m -> RELEASE_CONFIG in m.groupValues[4].split(',') }
+            .filter { m -> config in m.groupValues[4].split(',') }
             .map { m -> "${m.groupValues[1]}:${m.groupValues[2]}" }
             .distinct()
-    }
 
     @Test
     fun theLockfileHasAReleaseRuntimeClasspath() {
@@ -44,6 +48,18 @@ class ReleaseClasspathNoticesTest {
     }
 
     @Test
+    fun noTranslateOnlyComponentIsOnTheDefaultRuntime() {
+        val packagedEverywhere =
+            coordinates.mapNotNull { coordinate ->
+                ThirdPartyNotices
+                    .claimant(coordinate)
+                    ?.takeIf { it.packaging == Packaging.TRANSLATE }
+                    ?.let { "$coordinate (${it.key})" }
+            }
+        assertEquals("TRANSLATE notices on releaseRuntimeClasspath — packaged in every build", emptyList<String>(), packagedEverywhere)
+    }
+
+    @Test
     fun noTwoNoticesTieForACoordinate() {
         coordinates.forEach { coordinate ->
             val best =
@@ -59,7 +75,8 @@ class ReleaseClasspathNoticesTest {
     @Test
     fun everyClaimingNoticeStillMatchesSomething() {
         ThirdPartyNotices.ALL.filter { it.artifacts.isNotEmpty() }.forEach { notice ->
-            val claimed = coordinates.filter { ThirdPartyNotices.claimant(it) == notice }
+            val pool = if (notice.packaging == Packaging.ALWAYS) coordinates else compileCoordinates
+            val claimed = pool.filter { ThirdPartyNotices.claimant(it) == notice }
             assertTrue("'${notice.key}' claims nothing on the release classpath — stale row?", claimed.isNotEmpty())
         }
     }
@@ -75,5 +92,6 @@ class ReleaseClasspathNoticesTest {
         // `group:artifact:version=configA,configB,...`; comment and `empty=` lines fall through the match.
         val LOCK_LINE = Regex("""^([^:#=\s]+):([^:=\s]+):([^=\s]+)=(.*)$""")
         const val RELEASE_CONFIG = "releaseRuntimeClasspath"
+        const val RELEASE_COMPILE_CONFIG = "releaseCompileClasspath"
     }
 }

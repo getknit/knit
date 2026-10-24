@@ -194,12 +194,14 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   fetched with `Network.openConnection` on the gate's network, not okhttp; each burst is one stream fed as the audio
   comes, looked at on `PassGate`'s cadence, one model call at a time, and every stream call holds the lease. A chat voice note
   is written out only on the person's tap, kept on the row, never during a call, and never on the wire (ADR 2026-10.am8d).
-- **When touching `translate/`, `ui/translate/`, `translate-native/`, `di/TranslateWiring`, `BuildConfig.TRANSLATE`,
-  `MessageDao.recentOwnBodies` or `scripts/translate-*`:** READ ADR 2026-10.t2h6 (Proposed; the offline translation
-  spike, English ↔ Spanish). It is a build made with `-Ptranslate=true` only (a debug, or a testers' alpha built here): that
-  flag is the one thing that includes `:translate-native` (settings.gradle.kts) and its NDK build of slimt and CLD2,
-  from sources `scripts/translate-native.sh` fetches at pinned commits — never committed, never a submodule, never in
-  the release workflow's or F-Droid's build. A translation is the reader's, on tap, held in memory, never on the wire and never logged; it is screened by
+- **When touching `translate/`, `ui/translate/`, `di/TranslateWiring`, `BuildConfig.TRANSLATE`, the `translate-native`
+  pin, `MessageDao.recentOwnBodies` or `scripts/translate-*`:** READ ADR 2026-10.t2h6 (Proposed; the offline translation
+  spike, English ↔ Spanish) and its 2026-10-23 amendment. It is a build made with `-Ptranslate=true` only (a debug, or a
+  testers' alpha built here). The runtime, slimt and CLD2 behind `TranslateJni`, is the `app.getknit:translate-native`
+  AAR that the separate knit-translate-native repository builds reproducibly and publishes to Maven Central: `:app`
+  compiles against it everywhere and packages it only under the flag, so no build here compiles native code. Upstream
+  pins and our patches to them live in that repository; `-Pknit.translateNative=<checkout>` builds it from source in
+  place of the artifact. A translation is the reader's, on tap, held in memory, never on the wire and never logged; it is screened by
   `ScopedTextModerator` in the message's scope; the app's language is never its target. The composer may also
   translate the sender's own draft (`ComposePolicy`, `translateNow`, the ADR's amendment): one tap replaces the draft,
   which the person reads and may edit before sending, never automatically. Each loaded model lives on a
