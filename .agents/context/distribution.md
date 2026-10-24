@@ -142,7 +142,10 @@ Four inputs were deliberately de-machine-ified to keep it that way:
 - **No Git LFS on the release path.** See below.
 
 `dependencyLocking { lockAllConfigurations() }` + `app/gradle.lockfile` is an asset here: it pins every
-resolved dependency version, so F-Droid's rebuild resolves exactly what we did.
+resolved dependency version, so F-Droid's rebuild resolves exactly what we did. `gradle/verification-metadata.xml`
+pins what those versions' bytes are (ADR 2026-10.rysj), so a re-uploaded or tampered artifact fails F-Droid's rebuild
+at download, before any byte comparison. Its keyring is committed and key servers are off, so the buildserver
+needs nothing beyond the Maven repositories it already reaches.
 
 ## No Git LFS for anything the release build reads
 

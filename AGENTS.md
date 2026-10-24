@@ -18,7 +18,9 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   plugins) are deliberate; don't "fix" them.
 - **Before changing any dependency version** (catalog, wrapper, plugin, lockfile, a CI action or image):
   run the `upgrade-notes` skill (`.agents/skills/upgrade-notes/SKILL.md`). It reads each vendor's breaking,
-  migration and security notes for the exact interval through the `whatsnew` MCP server in `.mcp.json`.
+  migration and security notes for the exact interval through the `whatsnew` MCP server in `.mcp.json`. The same
+  commit regenerates `app/gradle.lockfile` and the dependency verification files (`scripts/verification-metadata.sh`,
+  ADR 2026-10.rysj): Gradle refuses any artifact they don't name.
 - **Before / after running Gradle:** obey `.agents/rules/build-and-test.md` (which task when, JDK 21,
   lockfile regen). Command list: `.agents/context/commands.md`.
 - **Before touching `app/src/main/baseline-prof.txt`, the `:baselineprofile` module, or the

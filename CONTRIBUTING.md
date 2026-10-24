@@ -48,7 +48,8 @@ build config, the mesh layer, or the DI graph. In short:
 - `./gradlew detekt ktlintCheck` — static analysis and style (`ktlintFormat` autocorrects).
 - Real mesh behavior needs **two or more physical devices** — see the README's *Running* section.
 - After any dependency change, regenerate the lockfile with
-  `./gradlew :app:dependencies --write-locks` (see `AGENTS.md`).
+  `./gradlew :app:dependencies --write-locks`, then the dependency verification files with
+  `scripts/verification-metadata.sh` (see `AGENTS.md`).
 
 Please run the unit tests, `detekt`, and `ktlintCheck` before opening a pull request, and match the
 surrounding code style.

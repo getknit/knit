@@ -63,4 +63,5 @@ notes directly. The skill is advisory; never block a bump on it.
 5. **Act on it.** Apply migrations the notes call for in the same change as the bump. Report to the user,
    per dependency: breaking items that touch code or config this repo uses, CVEs fixed, and anything
    unchecked because it was untracked. Don't paste the whole payload. Then follow
-   `.agents/rules/build-and-test.md` (regenerate every lock, then `./gradlew lint`).
+   `.agents/rules/build-and-test.md` (regenerate every lock and the dependency verification files, then
+   `./gradlew lint`).

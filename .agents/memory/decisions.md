@@ -262,6 +262,7 @@ carries; never renumber an old one.
 | [2026-10.r99s](decisions/2026-10-r99s-supporter-badges-ride-the-sealed-profile-only.md) | Supporter badges ride the sealed profile only, verified on display | profile, wire, anywhere, ui |
 | [2026-10.rn9j](decisions/2026-10-rn9j-mine-spool-pow-stamps-only-when-a-spool-demands-one.md) | Mine spool PoW stamps only when a spool demands one | spool, pow |
 | [2026-10.ryak](decisions/2026-10-ryak-the-ble-presence-advert-runs-at-full-power.md) | The BLE presence advert runs at full power | ble, mesh, power |
+| [2026-10.rysj](decisions/2026-10-rysj-gradle-verifies-every-downloaded-artifact-against-committed-checksums-and-keys.md) | Gradle verifies every downloaded artifact against committed checksums and keys | build, release |
 | [2026-10.s3ep](decisions/2026-10-s3ep-a-free-ticket-lets-a-phone-send-small-photos-through-a-files-gated-relay.md) | A free ticket lets a phone send small photos through a files-gated relay | calls, spool, tickets, attachments |
 | [2026-10.swst](decisions/2026-10-swst-art-s-whitespace-is-the-law-for-both-ports.md) | ART's whitespace is the law for both ports | text, interop, testing |
 | [2026-10.swvp](decisions/2026-10-swvp-live-calls.md) | Live calls, mesh calls, speech and Knit Anywhere are four build flags | calls, build, tickets |

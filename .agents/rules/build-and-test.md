@@ -42,3 +42,20 @@ stop-hook runs) builds the androidTest lint model, hits those stale locks, and f
 resolution break but are just a half-updated lockfile. Always regenerate with
 `./gradlew :app:dependencies --write-locks` (resolves every configuration), then `./gradlew lint`. This
 applies after **any** dependency change, including adding a test dep or bumping Kover.
+
+Write the lock with no maintainer flag in effect: CI and F-Droid build without one. `~/.gradle/gradle.properties`
+counts. `translate=true` there puts translate-native on every runtime classpath, so pass `-Ptranslate=false`.
+
+## Regenerate dependency verification in the same commit
+
+Gradle checks every artifact it downloads against `gradle/verification-metadata.xml` and the keys in
+`gradle/verification-keyring.keys` (ADR 2026-10.rysj). It fails with "Dependency verification failed" when an artifact
+has neither a listed SHA-256 nor a signature from a key trusted for its group. After any change that moves a downloaded
+artifact (a catalog bump, a new dependency, a plugin, AGP or Gradle itself), run `scripts/verification-metadata.sh`
+after the lockfile, and read its diff before committing:
+
+- a new `trusted-key` or checksum is a new party the build trusts;
+- a changed checksum under an unchanged version is never noise.
+
+Never hand-edit an entry to make a build pass. A Gradle bump also moves `distributionSha256Sum` in
+`gradle/wrapper/gradle-wrapper.properties`: take it from `https://services.gradle.org/distributions/<zip>.sha256`.
