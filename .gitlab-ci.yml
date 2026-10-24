@@ -381,6 +381,19 @@ verify:doc-lint:
     - python3 -m unittest scripts/test_doc_lint.py
     - python3 scripts/doc-lint.py
 
+# Each translation matches the English (scripts/translation-check.py): a missing or extra string, a placeholder that
+# moved, an unescaped apostrophe or a plural the language doesn't use, plus warnings for text left in English and
+# glossary drift. Advisory (allow_failure) while the first locales settle: lint's MissingTranslation is the gate.
+# Mirrors GitHub's `translation-check` job.
+verify:translation-check:
+  image: python:3.13-alpine
+  stage: verify
+  needs: []
+  allow_failure: true
+  script:
+    - python3 -m unittest scripts/test_translation_check.py
+    - python3 scripts/translation-check.py
+
 # The Bluetooth drain trial's snoop analyser (scripts/btsnoop-drain.py, #120) reads HCI snoops with the standard library;
 # its tests need nothing but Python. Mirrors GitHub's `btsnoop-drain` job.
 verify:btsnoop-drain:

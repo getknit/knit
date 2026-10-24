@@ -1,0 +1,60 @@
+# The glossary scripts/translation-check.py holds each translation to, and the machine pass translates with.
+# One row per term. `en` is matched as a case-insensitive word prefix (so "relay" also finds "relays"); a locale
+# cell lists the renderings that count, separated by |, each matched as a case-insensitive substring (write a
+# stem, like "bloque" for bloquear / bloqueado / desbloquear). keep=yes: every locale writes the term as is, and
+# the same-as-English check ignores it. Mirror a change into the translator instructions on Weblate.
+en	keep	pt-BR	note
+Knit Anywhere	yes			product name
+Knit	yes			product name
+Meshtastic	yes
+Wi-Fi Aware	yes
+Wi-Fi Direct	yes
+Wi-Fi	yes
+Bluetooth	yes
+LoRa	yes
+GitHub	yes
+Ko-fi	yes
+Google Play	yes
+F-Droid	yes
+Android	yes
+SQLCipher	yes
+TURN	yes
+STUN	yes
+NAN	yes
+BLE	yes
+PHY	yes
+Coded	yes			the Bluetooth PHY's name
+walkie-talkie	yes
+backup	yes
+spool	yes			diagnostics only
+mesh	yes			"a rede mesh", short "a mesh"
+Nearby room		Por perto	the public room's name
+relay invite		convite de retransmissor|convites de retransmissor
+relay		retransmissor	an Internet server that carries messages
+commons		sala comum|salas comuns	a private relay's group chat
+message request		solicitaç
+contact		contato
+verif		verific
+block		bloque
+group		grupo
+direct message		mensagem direta|mensagens diretas
+chat list		lista de conversas
+phone		celular	a device, not a call
+board		placa	a Meshtastic / LoRa board
+live call		ao vivo
+mesh call		pela mesh
+voice note		mensagem de voz|mensagens de voz
+transcri		transcri
+attachment		anexo
+end-to-end		de ponta a ponta
+end to end		de ponta a ponta
+Diagnostics		Diagnóstico
+field log		registro de campo|registros de campo
+Low-power mode		baixo consumo
+Content filtering		Filtro de conteúdo
+Open to chat		a conversas
+supporter badge		selo de apoiador
+supporter		apoiador|apoiadora
+ticket		passe	Knit Anywhere access
+recovery key		chave de recuperação
+restore		restaur

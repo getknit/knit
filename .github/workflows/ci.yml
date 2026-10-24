@@ -364,6 +364,21 @@ jobs:
       - name: Check the docs
         run: python3 scripts/doc-lint.py
 
+  translation-check:
+    name: Translations match the English
+    runs-on: ubuntu-latest
+    # No JDK, no Gradle: scripts/translation-check.py pairs each values-<locale>/strings.xml with the English and names
+    # a missing or extra string, a placeholder that moved, an unescaped apostrophe or a plural the language doesn't
+    # use, plus warnings for text left in English and glossary drift. Advisory while the first locales settle: lint's
+    # MissingTranslation in build-test is the gate, and nothing needs this job.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checker unit tests
+        run: python3 -m unittest scripts/test_translation_check.py
+      - name: Check the translations
+        run: python3 scripts/translation-check.py
+
   btsnoop-drain:
     name: Snoop analyser tests
     runs-on: ubuntu-latest

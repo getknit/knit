@@ -1,7 +1,8 @@
 # Translations
 
 How Knit's text reaches other languages. English is the source; Brazilian Portuguese (`values-pt-rBR/`, machine pass
-2026-10-22, awaiting native review) is the first translation. Progress per language is GitHub issue #43.
+2026-10-22 and a second machine review 2026-10-24, awaiting native review) is the first translation. Progress per
+language is GitHub issue #43.
 
 ## The plan: one language at a time, complete or not at all
 
@@ -13,11 +14,19 @@ How Knit's text reaches other languages. English is the source; Brazilian Portug
   then fails lint until each shipped locale has it: that failure is the reminder, not noise. Never relax the check,
   `tools:ignore` it or mark a user-facing string `translatable="false"` to get past it; translate it.
 - **Adding a language.** The machine pass translates the whole of `values/strings.xml` into `values-<locale>/strings.xml`
-  against the glossary in Weblate's translator instructions, skipping `translatable="false"`, then checks every
-  placeholder, plural and escape against the English before `lintDebug`. Each `<plurals>` carries every quantity lint
-  names for the language (`MissingQuantity`): Portuguese, Spanish, French and Italian need a `many` beside `one` and
-  `other`, the same words as `other` (it only covers numbers like a million). The store listing goes in
-  `fastlane/metadata/android/<locale>/` (Play's caps: 80 characters short, 4000 full).
+  against the glossary (`scripts/translation-glossary.tsv`, mirrored into Weblate's translator instructions),
+  skipping `translatable="false"`, in the English file's order so Weblate's first rewrite of it is small. A second
+  pass then reviews every string for meaning, glossary, agreement and fit, changing only what is wrong. Each
+  `<plurals>` carries every quantity lint names for the language (`MissingQuantity`): Portuguese, Spanish, French and
+  Italian need a `many` beside `one` and `other`, the same words as `other` (it only covers numbers like a million).
+  The store listing goes in `fastlane/metadata/android/<locale>/` (Play's caps: 30 characters title, 80 short, 4000
+  full); Play's copy is pasted into the Console by hand, and F-Droid reads the folder at the built commit.
+- **`scripts/translation-check.py`** reads the XML alone, in a second, and names what lint would fail and what a
+  reader notices first: a missing or extra string, a placeholder that moved, an unescaped apostrophe, a plural the
+  language doesn't use (errors), and text left in English, a short label more than twice its English length, a
+  glossary term with none of its renderings (warnings). Run it before `lint`; a new language needs its plural
+  categories in the script's `PLURALS` table. Both CIs run it as an advisory job (`translation-check`,
+  `verify:translation-check`) until the first locales settle; lint stays the gate.
 - **The language picker** is Android 13+'s per-app setting (Settings › Apps › Knit › Language). AGP generates the
   locale config from the `res/values-<locale>/` directories (`androidResources.generateLocaleConfig` in
   `app/build.gradle.kts`, the default's language in `app/src/main/res/resources.properties`). It is derived from the
