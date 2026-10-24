@@ -19,7 +19,9 @@ enum class RadioWarning { BluetoothOff, WifiOff, AllRadiosOff }
  * but momentarily seized) is deliberately not a banner state — it's transient and already shown in the header.
  * A single-radio device whose one radio is off maps to [RadioWarning.AllRadiosOff] (it truly can't connect).
  * A plane Knit switched off itself ([TransportStatus.switchedOff]: low-power mode, ADR 2026-10.d44b) is counted as
- * absent: its radio is on, so a banner asking the user to turn it on would be wrong and could not help.
+ * absent: its radio is on, so a banner asking the user to turn it on would be wrong and could not help. A dormant plane
+ * ([TransportStatus.dormant], Wi-Fi Aware resting while no phone nearby can use it, GitHub #44) reads Healthy while its
+ * radio is on, so it raises nothing; it reads Unavailable only on evidence the radio is off, and then warns as any does.
  */
 fun radioWarningFor(statuses: List<TransportStatus>): RadioWarning? {
     val present = statuses.filterNot { it.switchedOff }

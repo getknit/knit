@@ -152,6 +152,7 @@ class CompositeMeshTransport(
                     ) { linked, nearby, health, contended, held ->
                         TransportStatus(child.kind, health, linked.size, nearby.size, contended, held)
                     }.combine(child.switchedOff) { status, off -> status.copy(switchedOff = off) }
+                        .combine(child.dormant) { status, dormant -> status.copy(dormant = dormant) }
                 },
             ) { it.toList() }.stateIn(scope, SharingStarted.Eagerly, emptyList())
         }
@@ -250,6 +251,27 @@ class CompositeMeshTransport(
                         val foreign = HashSet<String>()
                         for (j in children.indices) if (j != i && children[j].shortRange) sets[j].forEach { foreign.add(it.nodeId) }
                         children[i].onForeignNear(foreign)
+                    }
+                }
+            }
+            // Which phones the other short-range planes say can run Wi-Fi Aware, near (a dormant Aware plane wakes for
+            // a new one) and heard (it stays attached while one is), and whether any of them watches for newcomers at
+            // all (GitHub #44). One combine of each child's three flows; the three are separate StateFlow writes, so a
+            // push can pair a new near with the previous heard for a moment. The Aware side tolerates it: it wakes only on
+            // a rising edge of near and stays while either set is non-empty (NanDormancyPolicy).
+            scope.launch {
+                combine(children.map { child -> awareCandidatesOf(child) }) { it }.collect { reports ->
+                    for (i in children.indices) {
+                        val near = HashSet<String>()
+                        val heard = HashSet<String>()
+                        var sees = false
+                        for (j in children.indices) {
+                            if (j == i || !children[j].shortRange) continue
+                            near += reports[j].near
+                            heard += reports[j].heard
+                            sees = sees || reports[j].seesNewcomers
+                        }
+                        children[i].onForeignAwareCandidates(near, heard, sees)
                     }
                 }
             }
@@ -561,6 +583,16 @@ class CompositeMeshTransport(
     /** First child (preference order) that currently holds a live data-path link to [nodeId], or null. */
     private fun childHoldingLinkTo(nodeId: String): MeshTransport? =
         children.firstOrNull { c -> c.neighbors.value.any { it.nodeId == nodeId } }
+
+    /** One child's word on Aware candidates at one instant ([MeshTransport.onForeignAwareCandidates]). */
+    private data class AwareCandidates(
+        val near: Set<String>,
+        val heard: Set<String>,
+        val seesNewcomers: Boolean,
+    )
+
+    private fun awareCandidatesOf(child: MeshTransport): Flow<AwareCandidates> =
+        combine(child.awareCandidatesNear, child.awareCandidatesHeard, child.seesNewcomers, ::AwareCandidates)
 
     private fun mergePeers(sets: Array<Set<Peer>>): Set<Peer> {
         val best = HashMap<String, Peer>()

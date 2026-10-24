@@ -16,6 +16,15 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.transformLatest
 
+/**
+ * Whether low-power mode is offered at all. False since GitHub #44 (decided 2026-10-24): Settings › Wi-Fi Aware is the
+ * person's switch for the plane, and an idle Wi-Fi Aware plane detaches by itself (`NanDormancyPolicy`), so the mode's
+ * one Aware lever is not offered on its own. While false the Settings row is hidden and [LowPowerSource.posture] is off
+ * whatever the switch's key, Battery Saver or the charger say; the code stays, and a phone that had the mode on moves
+ * to the Wi-Fi Aware switch once (`AwareSwitch`).
+ */
+const val LOW_POWER_OFFERED = false
+
 /** What holds low-power mode on: the user's switch, or Android's Battery Saver (ADR 2026-10.d44b). */
 enum class LowPowerReason { SWITCH, BATTERY_SAVER }
 
@@ -51,8 +60,11 @@ object LowPowerPolicy {
         switchOn: Boolean,
         batterySaver: Boolean,
         charging: Boolean,
+        // [LOW_POWER_OFFERED]: not offered, the mode is off whatever its inputs say.
+        offered: Boolean = LOW_POWER_OFFERED,
     ): LowPowerPosture =
         when {
+            !offered -> LowPowerPosture.OFF
             charging -> LowPowerPosture.OFF
             switchOn -> LowPowerPosture(LowPowerReason.SWITCH)
             batterySaver -> LowPowerPosture(LowPowerReason.BATTERY_SAVER)
@@ -107,6 +119,8 @@ class LowPowerSource(
     scope: CoroutineScope,
     // Injected logger (the class stays Android-free): DI passes android.util.Log; tests default silent.
     private val log: (String) -> Unit = {},
+    // [LOW_POWER_OFFERED]; a parameter so the posture's rules stay testable while the mode is not offered.
+    private val offered: Boolean = LOW_POWER_OFFERED,
 ) {
     private data class Inputs(
         val switchOn: Boolean,
@@ -123,7 +137,7 @@ class LowPowerSource(
         combine(switchOn, batterySaver, power.map { it.charging }) { on, saver, charging -> Inputs(on, saver, charging) }
             .distinctUntilChanged()
             .transformLatest { inputs ->
-                val next = LowPowerPolicy.posture(inputs.switchOn, inputs.batterySaver, inputs.charging)
+                val next = LowPowerPolicy.posture(inputs.switchOn, inputs.batterySaver, inputs.charging, offered)
                 val lifting = emitted?.active == true && !next.active
                 val userLifted = emittedSwitch && !inputs.switchOn
                 val hold =
@@ -145,11 +159,24 @@ class LowPowerSource(
 }
 
 /**
- * The Wi-Fi Aware switch `SwitchableTransport` reads: off while a debug build's switch ([debugOff],
- * `SettingsStore.debugNanOff`, false in release) or the low-power [posture] says so. It speaks only once both have
- * been read, which is what holds the plane's first start until the posture's first read.
+ * The Wi-Fi Aware switch `SwitchableTransport` reads: off while the person's own switch ([userOn], Settings › Wi-Fi
+ * Aware, `AwareSwitch`) is off, a debug build's switch ([debugOff], `SettingsStore.debugNanOff`, false in release) is on,
+ * or the low-power [posture] says so (never, while [LOW_POWER_OFFERED] is false). It speaks only once all three have
+ * been read, which is what holds the plane's first start until the switch's and the posture's first reads.
  */
 fun awareSwitchedOff(
+    userOn: Flow<Boolean>,
     debugOff: Flow<Boolean>,
     posture: Flow<LowPowerPosture>,
-): Flow<Boolean> = combine(debugOff, posture) { debug, low -> debug || low.awareOff }.distinctUntilChanged()
+): Flow<Boolean> = combine(userOn, debugOff, posture) { user, debug, low -> !user || debug || low.awareOff }.distinctUntilChanged()
+
+/**
+ * "This phone will not run Wi-Fi Aware", which the Bluetooth advert carries so a nearby phone knows not to wake its own
+ * Aware for this one (GitHub #44): Knit has the plane switched off ([switchedOff], [awareSwitchedOff]'s answer), or the
+ * plane itself says so ([planeWontRun]: the radio off by evidence, or attaching given up). Never true for a plane that is
+ * merely dormant or lent to a Wi-Fi Direct group. A phone without the plane builds a constant true instead.
+ */
+fun awareWontRun(
+    switchedOff: Flow<Boolean>,
+    planeWontRun: Flow<Boolean>,
+): Flow<Boolean> = combine(switchedOff, planeWontRun) { off, plane -> off || plane }.distinctUntilChanged()

@@ -262,4 +262,38 @@ class BleAdvertiserTest {
         const val FAST = 400 // 250 ms
         const val CODED_PHY = 3 // BluetoothDevice.PHY_LE_CODED
     }
+
+    @Test
+    fun aRefusedDataWriteIsWrittenAgainAtTheNextReassert() {
+        // GitHub #44: a flags change has no next push, so a refused write must not leave the old flags on the air.
+        advertiser.update(byteArrayOf(1))
+        val set = liveSet()
+        val cb = callbacks.last()
+        advertiser.update(byteArrayOf(2))
+        cb.onAdvertisingDataSet(set, ADVERTISE_FAILED_INTERNAL_ERROR)
+        val written = mutableListOf<AdvertiseData>()
+        every { set.setAdvertisingData(capture(written)) } answers {}
+        assertTrue(advertiser.reassert())
+        assertEquals(1, written.size)
+        assertArrayEquals(byteArrayOf(2), written.single().bytes())
+        cb.onAdvertisingDataSet(set, ADVERTISE_FAILED_INTERNAL_ERROR)
+        advertiser.reassert()
+        assertEquals("refused again: written again at the next turn", 2, written.size)
+        cb.onAdvertisingDataSet(set, ADVERTISE_SUCCESS)
+        advertiser.reassert()
+        assertEquals("taken: no more re-writes", 2, written.size)
+    }
+
+    @Test
+    fun aTakenWriteAndAStaleSetsRefusalReWriteNothing() {
+        advertiser.update(byteArrayOf(1))
+        val set = liveSet()
+        val cb = callbacks.last()
+        cb.onAdvertisingDataSet(set, ADVERTISE_SUCCESS)
+        cb.onAdvertisingDataSet(mockk(relaxed = true), ADVERTISE_FAILED_INTERNAL_ERROR) // not ours
+        val written = mutableListOf<AdvertiseData>()
+        every { set.setAdvertisingData(capture(written)) } answers {}
+        advertiser.reassert()
+        assertTrue(written.isEmpty())
+    }
 }

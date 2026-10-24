@@ -419,6 +419,39 @@ sealed interface FieldEvent {
     }
 
     /**
+     * Wi-Fi Aware went dormant ([on]) or woke (`NanDormancyPolicy`, GitHub #44): with nothing to do it closes its
+     * session, and NAN goes down with it, until a phone that can use it is near. [why] is `NanDormancyPolicy.Why`: IDLE
+     * (went dormant), DUTY_EMPTY (dormant again after a duty attach found nobody), SIGHTING / BULK / VISIBLE / DUTY /
+     * BLIND (woke), FORCED (the debug bridge). Written on each transition; a duty attach that wakes nothing writes one
+     * DUTY_EMPTY line at its end.
+     */
+    data class NanDormant(
+        val on: Boolean,
+        val why: Enum<*>,
+    ) : FieldEvent {
+        override val kind get() = "nan_dormant"
+
+        override fun write(out: FieldWriter) {
+            out.flag("on", on)
+            out.enum("why", why)
+        }
+    }
+
+    /**
+     * The person's Settings › Wi-Fi Aware switch (`AwareSwitch`, GitHub #44), at each session's start and on each change:
+     * [on] false means Knit keeps the plane off and Bluetooth carries the mesh, so the Aware lines stop on purpose.
+     */
+    data class AwareSwitch(
+        val on: Boolean,
+    ) : FieldEvent {
+        override val kind get() = "aware_switch"
+
+        override fun write(out: FieldWriter) {
+            out.flag("on", on)
+        }
+    }
+
+    /**
      * The paired LoRa board at a sample, while its link is ready: the plane's role, the last packet's signal, the
      * queue, what it has heard, and the live share of airtime used against its budget. Beside them, what the role
      * and a quiet plane are explained by: the gateways heard, the pocket's live links and sightings, the peers a

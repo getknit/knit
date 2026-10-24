@@ -24,7 +24,18 @@ class SwitchableTransportTest {
     private class RecordingInner : MeshTransport {
         val calls = mutableListOf<String>()
         val healthState = MutableStateFlow(TransportHealth.Healthy)
+        val dormantState = MutableStateFlow(false)
         var armBulk = true
+
+        override val dormant = dormantState.asStateFlow()
+
+        override fun onForeignAwareCandidates(
+            near: Set<String>,
+            heard: Set<String>,
+            seesNewcomers: Boolean,
+        ) {
+            calls += "candidates"
+        }
 
         override val neighbors = MutableStateFlow<Set<Peer>>(emptySet()).asStateFlow()
         override val health = healthState.asStateFlow()
@@ -325,7 +336,21 @@ class SwitchableTransportTest {
             val t = switchable(MutableStateFlow(true))
             t.suppressDataPath(setOf(peer.nodeId))
             t.releaseInitiatorHold()
-            assertEquals(listOf("suppress", "release"), inner.calls)
+            t.onForeignAwareCandidates(setOf(peer.nodeId), setOf(peer.nodeId), seesNewcomers = true)
+            assertEquals(listOf("suppress", "release", "candidates"), inner.calls)
             assertEquals(TransportKind.WifiAware, t.kind)
+        }
+
+    @Test
+    fun dormancyIsTheInnersOwnAndNeverReadsAsSwitchedOff() =
+        runTest(UnconfinedTestDispatcher()) {
+            // GitHub #44: a dormant plane is idle, not off — delegated as it is, with no switch presentation.
+            val t = switchable(MutableStateFlow(false))
+            t.start()
+            assertFalse(t.dormant.value)
+            inner.dormantState.value = true
+            assertTrue(t.dormant.value)
+            assertFalse(t.switchedOff.value)
+            assertEquals(TransportHealth.Healthy, t.health.value)
         }
 }

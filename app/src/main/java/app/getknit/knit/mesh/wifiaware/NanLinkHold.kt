@@ -26,6 +26,13 @@ internal class NanLinkHolds(
     @Synchronized
     fun isHeld(nodeId: String): Boolean = (until[nodeId] ?: return false) > clock()
 
+    /** Whether any link is held now: a call wants its link, so the plane does not go dormant ([NanDormancyPolicy]). */
+    @Synchronized
+    fun anyHeld(): Boolean {
+        val now = clock()
+        return until.values.any { it > now }
+    }
+
     @Synchronized
     fun clearAll() = until.clear()
 

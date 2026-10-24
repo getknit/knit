@@ -63,6 +63,8 @@ KINDS: dict[str, set[str] | None] = {
     "nan_cycle": set(),
     "nan_icm": {"on", "band", "why", "sta"},
     "nan_icm_lit": {"lit", "up", "configs"},
+    "nan_dormant": {"on", "why"},
+    "aware_switch": {"on"},
     "low_power": {"on", "why"},
     "lora": {
         "role", "snr10", "rssi", "queued", "heard", "boards", "airUsed", "airBudget", "gateways", "pocket", "sighted",
@@ -100,7 +102,9 @@ KINDS: dict[str, set[str] | None] = {
 }
 
 # Summary sections shown as a count of lines, and as the values themselves, rather than as percentiles.
-COUNTED = {"nan cycles", "call routes", "call mic", "call deaf readings", "lora roles", "spool errs", "net routes"}
+COUNTED = {
+    "nan cycles", "nan dormancy", "call routes", "call mic", "call deaf readings", "lora roles", "spool errs", "net routes",
+}
 LISTED = {"call drops / restarts"}
 
 PSEUDONYM = re.compile(r"^p[0-9a-f]{8}$")
@@ -218,6 +222,8 @@ def summarise(logs: list[Log]) -> dict:
                 out["nan life s"][f"{dev} {'clean' if e['clean'] else 'reset'}"].append(e["life"] / 1000)
             elif kind == "nan_cycle":
                 out["nan cycles"][dev].append(1)
+            elif kind == "nan_dormant":
+                out["nan dormancy"][f"{dev} {'dormant' if e['on'] else 'awake'} {e['why']}"].append(1)
             elif kind == "nan_icm":
                 asked = e.get("band", "?") if e["on"] else "off"
                 out["nan icm verdicts"][f"{dev} {asked} {e['why']}"].append(1)

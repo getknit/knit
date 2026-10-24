@@ -836,8 +836,8 @@
     <string name="whats_new_2_10_video_body">Send a video in any chat, Nearby included. Knit shrinks it to about 3 MB and keeps up to 61 seconds. A video only Bluetooth can bring waits for your tap.</string>
     <string name="whats_new_2_10_anywhere_title">Knit Anywhere</string>
     <string name="whats_new_2_10_anywhere_body">Supporting Knit on Ko-fi or GitHub Sponsors comes with Knit Anywhere, which lets your internet relay carry your calls, photos and files to people no phone nearby can reach. Open the invite link you\'re sent to add it.</string>
-    <string name="whats_new_2_10_low_power_title">Low-power mode</string>
-    <string name="whats_new_2_10_low_power_body">Turn on Low-power mode in Settings to switch Wi-Fi Aware off and save battery. It also comes on by itself with Battery Saver. Messages still arrive over Bluetooth, but photos and files take longer.</string>
+    <string name="whats_new_2_10_wifi_aware_title">Wi-Fi Aware rests, and you can switch it off</string>
+    <string name="whats_new_2_10_wifi_aware_body">Wi-Fi Aware now rests while no phone nearby can use it, so your Wi-Fi and Bluetooth audio run at full speed. Settings also has a switch to turn it off. Messages still arrive over Bluetooth, but photos and files take longer.</string>
     <string name="whats_new_2_9_headline">Farther Bluetooth, and progress on incoming photos</string>
     <string name="whats_new_2_9_summary">Phones connect from farther apart, and incoming photos show their progress.</string>
     <string name="whats_new_2_9_range_title">Longer Bluetooth range</string>
@@ -1029,6 +1029,10 @@
     <string name="settings_low_power_subtitle">Turns Wi-Fi Aware off to save battery. Bluetooth keeps you on the mesh, so messages still arrive, but photos and files take longer. Also on while Battery Saver is.</string>
     <string name="settings_low_power_subtitle_saver">On now because Battery Saver is on. Wi-Fi Aware is off, and Bluetooth keeps you on the mesh.</string>
     <string name="settings_low_power_subtitle_charging">Paused while charging. Wi-Fi Aware stays on until you unplug.</string>
+    <!-- Settings › Wi-Fi Aware (GitHub #44). The subtitle states the trade for the state the switch is in. -->
+    <string name="settings_wifi_aware_title">Wi-Fi Aware</string>
+    <string name="settings_wifi_aware_subtitle_on">Photos and files travel fast between nearby phones. While a phone that uses it is near, this phone\'s Wi-Fi and Bluetooth audio can slow down.</string>
+    <string name="settings_wifi_aware_subtitle_off">Off. Bluetooth carries the mesh, so messages still arrive, but photos and files take longer.</string>
 
     <!-- Profile details (another peer) -->
     <string name="profile_details_message">Message</string>
@@ -1292,6 +1296,11 @@
     <string name="diagnostics_transport_debug_off">off</string>
     <!-- A plane low-power mode has switched off (ADR 2026-10.d44b), as a tag beside the transport. -->
     <string name="diagnostics_transport_low_power">low power</string>
+    <!-- The Wi-Fi Aware plane the person switched off in Settings (GitHub #44), as a tag beside the transport. -->
+    <string name="diagnostics_transport_switched_off">off in Settings</string>
+    <!-- The Wi-Fi Aware plane is up but resting, detached, because no phone nearby can use it (GitHub #44). In place
+         of the transport's counts. -->
+    <string name="diagnostics_transport_dormant">Idle — no Wi-Fi Aware phone nearby</string>
     <string name="diagnostics_ble_phy_label">Long-range Bluetooth (experiment)</string>
     <string name="diagnostics_ble_phy_body">Off is today\'s Bluetooth. Auto finds phones further away and slows a link down to keep it as they walk off. Coded and 1M hold every link on one speed, for comparing range.</string>
     <string name="diagnostics_ble_phy_off">Off</string>

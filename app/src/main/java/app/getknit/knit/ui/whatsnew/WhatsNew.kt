@@ -48,7 +48,7 @@ object WhatsNew {
                         WhatsNewItem(R.string.whats_new_2_10_mesh_call_title, R.string.whats_new_2_10_mesh_call_body),
                         WhatsNewItem(R.string.whats_new_2_10_video_title, R.string.whats_new_2_10_video_body),
                         WhatsNewItem(R.string.whats_new_2_10_anywhere_title, R.string.whats_new_2_10_anywhere_body),
-                        WhatsNewItem(R.string.whats_new_2_10_low_power_title, R.string.whats_new_2_10_low_power_body),
+                        WhatsNewItem(R.string.whats_new_2_10_wifi_aware_title, R.string.whats_new_2_10_wifi_aware_body),
                     ),
             ),
             WhatsNewEntry(

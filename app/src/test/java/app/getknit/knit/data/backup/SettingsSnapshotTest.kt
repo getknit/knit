@@ -87,6 +87,25 @@ class SettingsSnapshotTest {
             assertTrue(restored[booleanPreferencesKey(SettingsKeys.RESTORE_PENDING)]!!)
         }
 
+    /** GitHub #44: whether this phone's Wi-Fi can spare Wi-Fi Aware's airtime is about this phone, and so is its move. */
+    @Test
+    fun dropsTheWifiAwareSwitchAndItsMove() =
+        runTest {
+            val prefs =
+                preferencesOf(
+                    booleanPreferencesKey("wifi_aware_enabled") to false,
+                    booleanPreferencesKey("wifi_aware_migrated") to true,
+                    booleanPreferencesKey("lora_enabled") to true,
+                )
+            val out = ByteArrayOutputStream()
+            SettingsSnapshot.export(prefs, out)
+            val restored = SettingsSnapshot.forRestore(ByteArrayInputStream(out.toByteArray()))
+            assertTrue(restored[booleanPreferencesKey("lora_enabled")]!!)
+            for (dropped in listOf("wifi_aware_enabled", "wifi_aware_migrated")) {
+                assertFalse(dropped, restored.asMap().keys.any { it.name == dropped })
+            }
+        }
+
     /** The calls this phone saw end are its own (C-3.4-3); "Relay all calls" is the person's choice, and rides. */
     @Test
     fun dropsTheCallsTombstonesAndCarriesRelayAllCalls() =

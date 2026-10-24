@@ -688,8 +688,8 @@
     <string name="whats_new_2_10_video_body">Envie um vídeo em qualquer conversa, inclusive em Por perto. O Knit reduz o vídeo para cerca de 3 MB e mantém até 61 segundos. Um vídeo que só o Bluetooth pode trazer espera você tocar.</string>
     <string name="whats_new_2_10_anywhere_title">Knit Anywhere</string>
     <string name="whats_new_2_10_anywhere_body">Apoiar o Knit no Ko-fi ou no GitHub Sponsors dá acesso ao Knit Anywhere, que permite ao seu retransmissor de internet levar suas chamadas, fotos e arquivos a pessoas que nenhum celular por perto alcança. Abra o link de convite que você receber para adicioná-lo.</string>
-    <string name="whats_new_2_10_low_power_title">Modo de baixo consumo</string>
-    <string name="whats_new_2_10_low_power_body">Ative o Modo de baixo consumo em Configurações para desligar o Wi-Fi Aware e economizar bateria. Ele também liga sozinho com a Economia de bateria. As mensagens continuam chegando pelo Bluetooth, mas fotos e arquivos demoram mais.</string>
+    <string name="whats_new_2_10_wifi_aware_title">O Wi-Fi Aware descansa, e você pode desligá-lo</string>
+    <string name="whats_new_2_10_wifi_aware_body">Agora o Wi-Fi Aware descansa enquanto nenhum celular por perto pode usá-lo, para que seu Wi-Fi e o áudio Bluetooth funcionem em velocidade total. As Configurações também têm uma opção para desligá-lo. As mensagens continuam chegando pelo Bluetooth, mas fotos e arquivos demoram mais.</string>
     <string name="whats_new_2_9_headline">Bluetooth com mais alcance e progresso das fotos recebidas</string>
     <string name="whats_new_2_9_summary">Os celulares se conectam de mais longe, e as fotos recebidas mostram o progresso.</string>
     <string name="whats_new_2_9_range_title">Mais alcance no Bluetooth</string>
@@ -857,6 +857,9 @@
     <string name="settings_low_power_subtitle">Desliga o Wi-Fi Aware para economizar bateria. O Bluetooth mantém você na mesh, então as mensagens continuam chegando, mas fotos e arquivos demoram mais. Também fica ativo junto com a Economia de bateria.</string>
     <string name="settings_low_power_subtitle_saver">Ativo agora porque a Economia de bateria está ativada. O Wi-Fi Aware está desligado, e o Bluetooth mantém você na mesh.</string>
     <string name="settings_low_power_subtitle_charging">Pausado durante o carregamento. O Wi-Fi Aware fica ligado até você tirar da tomada.</string>
+    <string name="settings_wifi_aware_title">Wi-Fi Aware</string>
+    <string name="settings_wifi_aware_subtitle_on">Fotos e arquivos vão rápido entre celulares por perto. Enquanto um celular que o usa estiver por perto, o Wi-Fi e o áudio Bluetooth deste celular podem ficar mais lentos.</string>
+    <string name="settings_wifi_aware_subtitle_off">Desligado. O Bluetooth mantém a mesh, então as mensagens continuam chegando, mas fotos e arquivos demoram mais.</string>
     <string name="profile_details_message">Mensagem</string>
     <string name="profile_details_call">Ligar</string>
     <string name="profile_details_online">Online</string>
@@ -1090,6 +1093,8 @@
     <string name="diagnostics_walkie_clips_body">Salva o áudio e a transcrição de cada fala do walkie, ouvida e falada, nos arquivos deste app em Android/data, sem criptografia, para testar o reconhecimento de fala. Desativar mantém o que já foi salvo.</string>
     <string name="diagnostics_transport_debug_off">desligado</string>
     <string name="diagnostics_transport_low_power">baixo consumo</string>
+    <string name="diagnostics_transport_switched_off">desligado em Configurações</string>
+    <string name="diagnostics_transport_dormant">Em repouso — nenhum celular com Wi-Fi Aware por perto</string>
     <string name="diagnostics_ble_phy_label">Bluetooth de longo alcance (experimento)</string>
     <string name="diagnostics_ble_phy_body">Desligado é o Bluetooth de sempre. Automático encontra celulares mais distantes e deixa o link mais lento para mantê-lo enquanto as pessoas se afastam. Coded e 1M mantêm todos os links em uma só velocidade, para comparar o alcance.</string>
     <string name="diagnostics_ble_phy_off">Desligado</string>

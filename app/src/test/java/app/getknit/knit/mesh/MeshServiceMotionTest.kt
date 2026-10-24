@@ -64,7 +64,14 @@ class MeshServiceMotionTest {
                     single { settings }
                     single<CoroutineScope> { CoroutineScope(SupervisorJob() + Dispatchers.Unconfined) }
                     single {
-                        LowPowerSource(lowPowerSwitch, MutableStateFlow(false), MutableStateFlow(PowerState()), get<CoroutineScope>())
+                        // Offered: the motion gate is pinned for when low-power mode is (LOW_POWER_OFFERED, GitHub #44).
+                        LowPowerSource(
+                            lowPowerSwitch,
+                            MutableStateFlow(false),
+                            MutableStateFlow(PowerState()),
+                            get<CoroutineScope>(),
+                            offered = true,
+                        )
                     }
                     single { mockk<MlTextModerator>(relaxed = true) }
                 },

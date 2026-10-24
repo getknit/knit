@@ -29,6 +29,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
@@ -161,11 +162,18 @@ class WifiAwareTransport(
     private val audioStreaming: StateFlow<Boolean> = MutableStateFlow(false),
     // [NanIcmPolicy]'s 5 GHz picks: BuildConfig.DEBUG in di/, the one seam the cross-band delivery trial flips.
     private val fiveGhzRules: Boolean = false,
+    // Written by this plane, read by di/'s "Wi-Fi Aware won't run here" flow, which the Bluetooth advert carries
+    // (GitHub #44): the radio off by evidence, or attaching given up ([NanDormancyPolicy.wontRun]). Never dormancy.
+    private val wontRunHere: MutableStateFlow<Boolean> = MutableStateFlow(false),
 ) : MeshTransport {
     private val appContext = context.applicationContext
     private val awareManager = appContext.getSystemService(Context.WIFI_AWARE_SERVICE) as WifiAwareManager?
     private val connectivity =
         appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+    // Read only for [NanDormancyPolicy.radioOff]'s evidence: Wi-Fi off, deep Doze. Neither needs a permission Aware lacks.
+    private val wifiManager = appContext.getSystemService(WifiManager::class.java)
+    private val powerManager = appContext.getSystemService(PowerManager::class.java)
 
     // What a give-up is recorded under ([NanAttachJournal], and the initiator hold of [NanInitiatorJournal]):
     // both halves are resets. A new app version may change the attach or data-path sequence, and a ROM update
@@ -605,6 +613,67 @@ class WifiAwareTransport(
     // Our estimate of how long our configs held ICM lit, for the field log's sampler.
     private val icmLit = NanIcmPolicy.LitMeter(ICM_WINDOW_MS)
 
+    // --- Dormancy: detached while there is nothing to do ([NanDormancyPolicy], GitHub #44) ---
+
+    // True from a dormancy close ([goDormant]) to a wake ([wake]) or [stop], a duty window included: the plane is idle,
+    // not off. Written on the handler thread only; read anywhere. Never the `switchedOff` presentation.
+    private val _dormant = MutableStateFlow(false)
+    override val dormant: StateFlow<Boolean> = _dormant.asStateFlow()
+
+    // The idle clock ([NanDormancyPolicy.idleSince]): 0 while a reason holds the plane attached, else the first tick
+    // that found none. Loop-thread writes, plus a reset at every sighting and link edge so a tick that slept through
+    // a short sync cannot carry the clock across it.
+    @Volatile private var dormantIdleSince = 0L
+
+    // When the current dormant spell began, for the log lines and `…debug.NANDORM`; 0 while awake.
+    @Volatile private var dormantSince = 0L
+
+    // The last dormancy close: a wake's attach waits [SESSION_CYCLE_SETTLE_MS] after it (the NAN-down that wipes the
+    // close's responder request lands 29-49 ms after it, 7e457907), and an availability broadcast inside
+    // [NanDormancyPolicy.OWN_CLOSE_BEAT_MS] after it is its echo, which refunds nothing ([NanDormancyPolicy.availabilityEdge]).
+    // Its own stamp, never [sessionCycleSettleStartedAt], so the close is not logged or recorded as a session cycle.
+    @Volatile private var dormantClosedAt = 0L
+
+    // Our own last session close of either kind (a dormancy close, a session cycle): an `isAvailable` false inside the
+    // beat after it is not evidence the radio is off ([NanDormancyPolicy.radioOff]).
+    @Volatile private var lastOwnCloseAt = 0L
+
+    // The duty attach ([NanDormancyPolicy.dutyDue] / [NanDormancyPolicy.duty]): when the next one may run, whether one
+    // is running, when it began and when its session attached (its window runs from there). Handler-thread writes.
+    @Volatile private var dutyDueAt = 0L
+
+    @Volatile private var dutyActive = false
+
+    @Volatile private var dutyStartedAt = 0L
+
+    @Volatile private var dutyAttachedAt = 0L
+
+    // A duty attach or a sighting wake is demand for one ICM window, as a Tier-1 cure is (the post-cure window): the
+    // peer it hunts is lonely too, and screen-off both wake for one 2.4 GHz window in eight. Stamped at the wake,
+    // consumed by the next onAttached within [POST_CURE_ATTACH_WITHIN_MS]. Never by a VISIBLE wake. Handler thread.
+    @Volatile private var wakeIcmDemandAt = 0L
+
+    // What the other short-range planes report about phones that can wake this plane, pushed by the composite
+    // ([onForeignAwareCandidates]): candidates near (the wake set), heard (the stay set, with hysteresis), and whether
+    // any of them demonstrably watches for newcomers now. Kept across [stop]: they are the other planes' facts, and a
+    // restart that forgot them would wait for the next change to hear them again.
+    @Volatile private var candidatesNear: Set<String> = emptySet()
+
+    @Volatile private var candidatesHeard: Set<String> = emptySet()
+
+    @Volatile private var foreignSeesNewcomers = false
+
+    // When `isAvailable` was first read false in the current run (0 while true), for [NanDormancyPolicy.radioOff].
+    @Volatile private var unavailableSince = 0L
+
+    // `…debug.NANDORM`: pinned awake (`--ez hold`), the duty interval for a trial (`--el duty`), the last transition's
+    // why. Set only through [NanFaultInjector]'s debug-gated hook; all three go with [stop].
+    @Volatile private var dormancyHeld = false
+
+    @Volatile private var dutyIntervalOverrideMs: Long? = null
+
+    @Volatile private var lastDormancyWhy: NanDormancyPolicy.Why? = null
+
     // Watchdog state for the leaked-request wedge (see [checkWedge]). [lastLinkOrAcceptAt] = elapsedRealtime of
     // the last successful data-path link/accept (either role) — the "progress" signal. [syncOwedSince] = start
     // of the current episode where a sync is owed AND no link has formed since (0 = no episode). The wedge is
@@ -629,6 +698,7 @@ class WifiAwareTransport(
 
     private var powerJob: Job? = null
     private var audioJob: Job? = null
+    private var appVisibleJob: Job? = null
 
     @Volatile private var loopJob: Job? = null
     private var cueJob: Job? = null
@@ -708,7 +778,17 @@ class WifiAwareTransport(
             icmLit.reset(SystemClock.elapsedRealtime())
             registerAvailability()
             registerWifiWatch()
+            // The give-up journal above is one of "won't run here"'s inputs: publish it before the first attach.
+            refreshAwareEvidence()
             NanFaultInjector.bindMsgPlane(::msgPlaneSnapshot)
+            NanFaultInjector.bindDormancy(
+                NanDormancyHooks(
+                    setHold = ::debugHoldAwake,
+                    forceDormant = ::debugForceDormant,
+                    setDutyInterval = ::debugSetDutyInterval,
+                    status = ::dormancySnapshot,
+                ),
+            )
             NanFaultInjector.bind(
                 onAvailability = ::handleAvailabilityChanged,
                 status = {
@@ -775,6 +855,9 @@ class WifiAwareTransport(
             loopJob = scope.launch { discoveryLoop() }
             powerJob = scope.launch { powerState.state.drop(1).collect { healSignal.trySend(Unit) } }
             audioJob = scope.launch { followAudio() }
+            // The person opening Knit wakes a dormant plane (and is ADR 2026-09.535d's API 31–32 retry, which needs a
+            // visible app): the rising edge only, never the first value, never heal() (the motion heal would undo it).
+            appVisibleJob = scope.launch { appVisible.drop(1).collect { visible -> if (visible) wake(NanDormancyPolicy.Why.VISIBLE) } }
             // Re-cue neighbors and wake the loop the moment our carried set changes, so a peer that now wants
             // our new data can pull it.
             cueJob =
@@ -857,7 +940,8 @@ class WifiAwareTransport(
                 "reach=${_reachable.value.map { it.nodeId }} tracker[${digestTracker.debug()}] " +
                 "bulk[${bulkWanted.debug()}] lonely=${lonelyForMs(now)}ms offscreen=$offScreenBlocked " +
                 "init=${initiatorPolicy.snapshot()} msg=${msgInFlight.size}/$msgFailsSinceAck/${now - lastMsgAckAt}ms " +
-                "icm=${icmVerdict(now).let { "${it.reason}/${it.band.takeIf { _ -> instantSupported && it.allowed } ?: "off"}" }}",
+                "icm=${icmVerdict(now).let { "${it.reason}/${it.band.takeIf { _ -> instantSupported && it.allowed } ?: "off"}" }} " +
+                "dormant=${_dormant.value} idle=${if (dormantIdleSince == 0L) 0L else now - dormantIdleSince}ms",
         )
     }
 
@@ -984,6 +1068,8 @@ class WifiAwareTransport(
      *   2026-10-20 amendment).
      */
     private fun checkWedge() {
+        // Not the wedge's, but its tick: an `isAvailable` false only counts once it has held, and this lets it elapse.
+        refreshAwareEvidence()
         val now = SystemClock.elapsedRealtime()
         val healthy = hasHardware && _health.value == TransportHealth.Healthy && session != null
         val decision =
@@ -1129,6 +1215,7 @@ class WifiAwareTransport(
         msgInFlight.entries.removeAll { it.value.sentAt < ackedAt && now - it.value.sentAt > LOST_CALLBACK_MS }
     }
 
+    @Suppress("LongMethod") // one teardown in order; each half (ICM, dormancy) already has its own helper
     override fun stop() {
         started = false // before anything: no attach may begin from here on (see [started])
         loopJob?.cancel()
@@ -1145,6 +1232,7 @@ class WifiAwareTransport(
         NanFaultInjector.bindMsgPlane(null)
         field.sampler(FIELD_SAMPLER, null)
         forgetIcmSession()
+        forgetDormancy()
         peers.keys.toList().forEach { teardownPeer(it) }
         landing.clear()
         stopResponder()
@@ -1282,7 +1370,11 @@ class WifiAwareTransport(
             offScreenBlocked = false
             postCureCycledAt = 0L // the attach after a hand-over is not a cure's
             postCureSince = 0L
-            _health.value = TransportHealth.Degraded
+            // A duty window's session went with the rest; its due time stays, so a due duty runs after the resume.
+            dutyActive = false
+            dutyAttachedAt = 0L
+            // A dormant plane stays dormant through a hand-over and reads as it did (trial N): the radio is on.
+            _health.value = if (_dormant.value) dormantHealth() else TransportHealth.Degraded
         }
     }
 
@@ -1338,6 +1430,30 @@ class WifiAwareTransport(
     }
 
     /**
+     * What the other short-range planes say about phones that can wake this one (GitHub #44), pushed by
+     * [CompositeMeshTransport]: [near] the candidates close enough to wake for, [heard] the ones that keep this plane
+     * attached, [seesNewcomers] whether any of those planes demonstrably watches for newcomers now. A new id in [near]
+     * wakes a dormant plane; the scan going blind wakes it too, since nothing would then tell it someone came. Read by
+     * the loop's dormancy tick otherwise. Volatile writes from the composite's collector; [wake] re-checks on the handler.
+     */
+    override fun onForeignAwareCandidates(
+        near: Set<String>,
+        heard: Set<String>,
+        seesNewcomers: Boolean,
+    ) {
+        val rising = NanDormancyPolicy.risingSighting(candidatesNear, near)
+        val blind = foreignSeesNewcomers && !seesNewcomers
+        candidatesNear = near
+        candidatesHeard = heard
+        foreignSeesNewcomers = seesNewcomers
+        if (!_dormant.value) return
+        when {
+            rising -> wake(NanDormancyPolicy.Why.SIGHTING)
+            blind -> wake(NanDormancyPolicy.Why.BLIND)
+        }
+    }
+
+    /**
      * Arm an on-demand NDP toward [nodeId] for an imminent attachment transfer (see [BulkWantTracker] for why
      * this exists and what it deliberately does NOT feed). Gated on a **fresh** coordination-plane sighting
      * ([BULK_FRESH_MS], not the [REACHABLE_LINGER_MS] UI linger, which keeps ghosts for 150 s) so a NAN-dark
@@ -1347,6 +1463,7 @@ class WifiAwareTransport(
      * SETTLE, and the initiator tie-break all unchanged.
      */
     override fun expectBulkTransfer(nodeId: String): Boolean {
+        if (hasHardware && _dormant.value) return dormantBulkArm(nodeId)
         if (!hasHardware || session == null) {
             Log.d(TAG, "bulk arm $nodeId: refused (no session)")
             return false
@@ -1369,6 +1486,21 @@ class WifiAwareTransport(
         Log.d(TAG, "bulk arm $nodeId (seen ${ageMs}ms ago)")
         healSignal.trySend(Unit) // re-evaluate driveSync now instead of waiting out the idle tick
         return true
+    }
+
+    /**
+     * [expectBulkTransfer] on a dormant plane: detached on purpose, so this send rides Bluetooth (nobody tunes the bulk
+     * grace for it), and a candidate's transfer wakes the plane for the next one. A peer no other plane calls a
+     * candidate cannot wake it. Always false.
+     */
+    private fun dormantBulkArm(nodeId: String): Boolean {
+        if (nodeId in candidatesNear || nodeId in candidatesHeard) {
+            Log.d(TAG, "bulk arm $nodeId: refused (dormant — waking for an Aware candidate)")
+            wake(NanDormancyPolicy.Why.BULK)
+        } else {
+            Log.d(TAG, "bulk arm $nodeId: refused (dormant, not an Aware candidate)")
+        }
+        return false
     }
 
     /**
@@ -1487,10 +1619,7 @@ class WifiAwareTransport(
             val mgr = awareManager ?: return@onHandler
             if (!started) return@onHandler // stopped: work queued behind stop() must not open a session
             if (paused) return@onHandler // lent out; resume() attaches
-            if (!mgr.isAvailable) {
-                _health.value = TransportHealth.Unavailable // Wi-Fi Aware off (Wi-Fi off / airplane mode)
-                return@onHandler
-            }
+            if (refusedForDormancyOrRadio(mgr)) return@onHandler
             if (session != null) return@onHandler
             // Backed off, or given up, after a run of failures ([NanAttachPolicy]): on a chipset that cannot
             // give us a NAN iface at all, the loop's flat retry strands two binder objects in system_server
@@ -1528,8 +1657,12 @@ class WifiAwareTransport(
                         val attachedAt = SystemClock.elapsedRealtime()
                         band5PrimaryUsable = readBand5PrimaryUsable()
                         val cured = postCureCycledAt != 0L && attachedAt - postCureCycledAt <= POST_CURE_ATTACH_WITHIN_MS
-                        postCureSince = if (cured) attachedAt else 0L
+                        // A duty or sighting wake asks for the same one window (its stamp, the same bound).
+                        val woken = wakeIcmDemandAt != 0L && attachedAt - wakeIcmDemandAt <= POST_CURE_ATTACH_WITHIN_MS
+                        postCureSince = if (cured || woken) attachedAt else 0L
                         postCureCycledAt = 0L
+                        wakeIcmDemandAt = 0L
+                        if (dutyActive) dutyAttachedAt = attachedAt // the duty's window runs from here
                         startPublish(gen)
                         startSubscribe()
                     }
@@ -1537,7 +1670,7 @@ class WifiAwareTransport(
                     override fun onAttachFailed() {
                         attaching.set(false)
                         reattaching.set(false)
-                        _health.value = TransportHealth.Degraded
+                        _health.value = failedAttachHealth()
                         noteAttachFailed("Wi-Fi Aware attach failed")
                     }
 
@@ -1555,7 +1688,14 @@ class WifiAwareTransport(
                         // A session terminates both when the radio is switched off and when it's seized; distinguish so
                         // the UI can say "radios off" vs "radio busy". The availability receiver corrects this if it flips.
                         _health.value =
-                            if (mgr.isAvailable) TransportHealth.Degraded else TransportHealth.Unavailable
+                            when {
+                                _dormant.value -> dormantHealth()
+
+                                // a duty window's session: still idle, by evidence
+                                mgr.isAvailable -> TransportHealth.Degraded
+
+                                else -> TransportHealth.Unavailable
+                            }
                     }
                 }
             if (NanFaultInjector.shouldFailAttach()) {
@@ -1563,17 +1703,34 @@ class WifiAwareTransport(
                 // attachStartedAt is stamped so the injected run is paced by the real floor, not around it.
                 attaching.set(false)
                 reattaching.set(false)
-                _health.value = TransportHealth.Degraded
+                _health.value = failedAttachHealth()
                 noteAttachFailed("Wi-Fi Aware attach failed (debug fault)")
                 return@onHandler
             }
             runCatching { mgr.attach(cb, handler) }.onFailure {
                 attaching.set(false)
                 reattaching.set(false)
-                _health.value = TransportHealth.Degraded
+                _health.value = failedAttachHealth()
                 noteAttachFailed("Wi-Fi Aware attach threw", it)
             }
         }
+
+    /**
+     * [attach]'s refusals that write health: dormant (a wake or the duty attach attaches; the dormant health, never
+     * Degraded), or Wi-Fi Aware off (Wi-Fi off / airplane mode — a dormant plane's duty reads it by evidence instead).
+     * Handler thread.
+     */
+    private fun refusedForDormancyOrRadio(mgr: WifiAwareManager): Boolean {
+        if (_dormant.value && !dutyActive) {
+            _health.value = dormantHealth()
+            return true
+        }
+        if (!mgr.isAvailable) {
+            _health.value = if (_dormant.value) dormantHealth() else TransportHealth.Unavailable
+            return true
+        }
+        return false
+    }
 
     /**
      * Record a failed attach and push the next one out along [NanAttachPolicy]'s curve. Both failure paths
@@ -1611,6 +1768,7 @@ class WifiAwareTransport(
         attachAbandoned = true
         Log.e(TAG, "$why; no further attaches", cause)
         scope.launch { runCatching { attachJournal.setAwareGiveUpStamp(giveUpStamp) } }
+        refreshAwareEvidence() // "won't run here": the advert's flag goes up with the give-up
     }
 
     /**
@@ -1623,6 +1781,7 @@ class WifiAwareTransport(
         attachFailStreak = 0
         attachRetryAfter = 0L
         attachAbandoned = false
+        refreshAwareEvidence() // every write of [attachAbandoned] republishes "won't run here"
     }
 
     /** As [clearAttachBackoff], plus the two things only a working radio may refund. */
@@ -1926,6 +2085,8 @@ class WifiAwareTransport(
             val now = SystemClock.elapsedRealtime()
             val healDemand = healRearmOwed
             healRearmOwed = false
+            // Dormant between duties, or just gone dormant: nothing else on this tick ([dormancyTick]).
+            if (dormancyTick(now)) continue
             val rearmCooldown = rearmCooldownMs(now, healDemand)
             when {
                 !hasHardware -> {}
@@ -1947,6 +2108,9 @@ class WifiAwareTransport(
                 }
 
                 driveSync() -> {}
+
+                // A duty window's subscribe is seconds old and already hunting; a re-arm inside the 30 s would be churn.
+                dutyActive -> {}
 
                 // a sync-wanted peer we can initiate to → NDP up
                 // Re-fire discovery only when a sync is actually blocked on a missing/stale subscribe handle
@@ -1990,6 +2154,8 @@ class WifiAwareTransport(
     private fun attachAfterCycleSettle(now: Long) {
         val settleStart = sessionCycleSettleStartedAt
         if (settleStart != 0L && now - settleStart < SESSION_CYCLE_SETTLE_MS) return
+        // A wake right after a dormancy close waits out the same settle, on its own stamp (no session-cycle line).
+        if (dormantClosedAt != 0L && now - dormantClosedAt < SESSION_CYCLE_SETTLE_MS) return
         if (settleStart != 0L) {
             sessionCycleSettleStartedAt = 0L
             Log.i(TAG, "session cycle: settle elapsed — re-attaching over the wiped request cache")
@@ -2014,6 +2180,13 @@ class WifiAwareTransport(
     private fun sessionCycleWithSettle(postCure: Boolean = false) =
         onHandler {
             if (anyLinkActivity()) return@onHandler // never drop live links; the loop re-evaluates
+            // Dormant there is nothing to cycle: detached, a settle stamped now would outlive the spell (only the loop's
+            // awake detached branch clears it); in a duty window, the window's own DUTY_EMPTY close is the cure, and a
+            // settle inside it would hold that close off. Hold the plane awake first (`…debug.NANDORM --ez hold true`).
+            if (_dormant.value) {
+                Log.i(TAG, "session cycle: dormant (duty=$dutyActive) — nothing to cycle; the duty's own close cures")
+                return@onHandler
+            }
             if (!reattaching.compareAndSet(false, true)) return@onHandler
             // Callers: the discovery-loop pinned-responder branch (initiator NDI freed), checkWedge's Tier-1 responder
             // self-heal, the message-plane watchdog, the responder give-up and `…debug.NANICM --ez on` — each logs its
@@ -2022,6 +2195,7 @@ class WifiAwareTransport(
             Log.w(TAG, "session cycle: tearing down for a fresh session, settling")
             field.record(FieldEvent.NanCycle)
             if (postCure) postCureCycledAt = SystemClock.elapsedRealtime()
+            lastOwnCloseAt = SystemClock.elapsedRealtime() // its NAN-down's unavailable beat is not the radio off
             stopResponder()
             // A PeerHandle is only valid on the discovery session it was learned on, so closing subscribe
             // invalidates every entry in [discovered] — drop them with it, exactly as [rearmSubscribe] and
@@ -2074,6 +2248,354 @@ class WifiAwareTransport(
             lastRearmAt = now
             rearmSubscribe()
         }
+    }
+
+    // --- Dormancy: detached while there is nothing to do ([NanDormancyPolicy], GitHub #44) ---
+
+    /**
+     * The loop's dormancy half, once a tick. Awake: the idle clock runs on every tick that finds no reason to stay
+     * ([NanDormancyPolicy.mustStay]), and [NanDormancyPolicy.DORMANT_AFTER_MS] of it closes the session ([goDormant]). Dormant: a due duty
+     * attach starts, and a running duty window wakes, ends empty or carries on. True when the tick is the dormancy's
+     * alone, so the rest of the loop (attach, sync, re-arm, relight) sits it out. Loop thread.
+     */
+    private fun dormancyTick(now: Long): Boolean {
+        if (!hasHardware) return false
+        if (!_dormant.value) {
+            val stay = NanDormancyPolicy.mustStay(stayFacts())
+            dormantIdleSince = NanDormancyPolicy.idleSince(stay, dormantIdleSince, now)
+            if (!NanDormancyPolicy.sleepDue(dormantIdleSince, now)) return false
+            goDormant(NanDormancyPolicy.Why.IDLE)
+            return true
+        }
+        if (dutyActive) {
+            val verdict =
+                NanDormancyPolicy.duty(
+                    now = now,
+                    startedAt = dutyStartedAt,
+                    attachedAt = dutyAttachedAt,
+                    found = cueTarget.isNotEmpty() || anyLinkActivity(),
+                    attachGraceMs = ATTACH_WATCHDOG_MS,
+                    // A cycle settling in the window: its re-attach (the loop's detached branch) goes first.
+                    cycleSettling = sessionCycleSettleStartedAt != 0L,
+                )
+            return when (verdict) {
+                NanDormancyPolicy.Duty.CONTINUE -> {
+                    false
+                }
+
+                // the duty's own session: attach, discover, link as usual
+                NanDormancyPolicy.Duty.WAKE -> {
+                    wake(NanDormancyPolicy.Why.DUTY)
+                    false
+                }
+
+                NanDormancyPolicy.Duty.EMPTY -> {
+                    goDormant(NanDormancyPolicy.Why.DUTY_EMPTY)
+                    true
+                }
+            }
+        }
+        betweenDuties(now)
+        return true
+    }
+
+    /**
+     * [dormancyTick] while dormant with no duty running: a near candidate whose rising edge was lost to a queued close
+     * wakes the plane ([NanDormancyPolicy.nearWhileDormant]); else a due duty attach starts. Loop thread.
+     */
+    private fun betweenDuties(now: Long) {
+        if (NanDormancyPolicy.nearWhileDormant(candidatesNear.isNotEmpty(), lastDormancyWhy)) {
+            wake(NanDormancyPolicy.Why.SIGHTING)
+            return
+        }
+        val due =
+            NanDormancyPolicy.dutyDue(
+                now = now,
+                dueAt = dutyDueAt,
+                attachAbandoned = attachAbandoned,
+                attachRetryAfter = attachRetryAfter,
+                closedAt = dormantClosedAt,
+                settleMs = SESSION_CYCLE_SETTLE_MS,
+            )
+        if (due && session == null && !paused) startDuty()
+    }
+
+    /** One tick's reasons to stay attached, read off the live state. Loop thread (the reads are the loop's own). */
+    private fun stayFacts(): NanDormancyPolicy.StayFacts =
+        NanDormancyPolicy.StayFacts(
+            started = started,
+            attached = session != null,
+            cueTargets = cueTarget.isNotEmpty(),
+            linkActivity = anyLinkActivity(),
+            owed = initiateOwed() || bulkWanted.anyWanted() || needsIcmRelight(),
+            callLive = callLive(),
+            linkHeld = linkHolds.anyHeld(),
+            paused = paused,
+            cycleSettling = sessionCycleSettleStartedAt != 0L,
+            refilePending = responderRefile != null,
+            offScreenBlocked = offScreenBlocked,
+            // Near is a subset of heard by the sibling's own rule; read both, so a sibling that broke it cannot leave a
+            // near candidate that never rises again under a dormant plane.
+            candidatesHeard = candidatesHeard.isNotEmpty() || candidatesNear.isNotEmpty(),
+            seesNewcomers = foreignSeesNewcomers,
+            held = dormancyHeld,
+        )
+
+    /**
+     * The dormancy close: the session, publish, subscribe and the responder go, as Knit is the sole Aware client the
+     * framework takes NAN down, and with it the request cache — the same NAN-down a session cycle relies on to wipe a
+     * request left at zero data paths (7e457907). Its own close, never [sessionCycleWithSettle] (which logs
+     * `session cycle: tearing down` and records `nan_cycle`, which the trial readers count as cures) and never the
+     * NAN-down branch. It never refunds a budget: no [clearAttachBackoff], no [noteAttachSucceeded], no
+     * [lastAvailable] write, no [lastReattachAt] stamp, no [responderCycles] reset (ADR 055 — a refund this cycle could
+     * drive would be getknit/Knit#9's binder leak again). Never with a link, handshake or accept live; single-flight
+     * against a re-attach or a session cycle through [reattaching]. Handler thread.
+     */
+    private fun goDormant(why: NanDormancyPolicy.Why) =
+        onHandler {
+            if (!started || paused) return@onHandler
+            if (anyLinkActivity()) return@onHandler // never drop a live link; the next tick re-decides
+            if (sessionCycleSettleStartedAt != 0L) return@onHandler // a cycle's settle owns the next attach
+            // Decided on the loop thread; a candidate, a wake or a link may have landed since. Re-read here.
+            val stay = why == NanDormancyPolicy.Why.IDLE && NanDormancyPolicy.mustStay(stayFacts())
+            if (!NanDormancyPolicy.closeStands(why, _dormant.value, dutyActive, stay)) return@onHandler
+            if (!reattaching.compareAndSet(false, true)) return@onHandler // a re-attach or a cycle owns the session
+            val now = SystemClock.elapsedRealtime()
+            val again = _dormant.value
+            if (again) {
+                Log.i(TAG, "aware dormant: $why — duty window found nobody; next duty in ${dutyIntervalMs()}ms")
+            } else {
+                Log.i(
+                    TAG,
+                    "aware dormant: $why — nothing to do for ${if (dormantIdleSince == 0L) 0L else now - dormantIdleSince}ms " +
+                        "(heard=${candidatesHeard.size} near=${candidatesNear.size} seesNewcomers=$foreignSeesNewcomers); " +
+                        "session closed, next duty in ${dutyIntervalMs()}ms",
+                )
+            }
+            field.record(FieldEvent.NanDormant(on = true, why = why))
+            stopResponder() // at 0 NDPs; the NAN-down this close causes wipes the request (sole client)
+            ++attachGen // callbacks still in flight from the closed session are stale now
+            synchronized(lock) {
+                discovered.clear() // handles die with their sessions (ADR 2026-09.9dnk)
+                accepting = 0
+            }
+            runCatching { publishSession?.close() }
+            runCatching { subscribeSession?.close() }
+            runCatching { session?.close() }
+            publishSession = null
+            subscribeSession = null
+            session = null
+            attaching.set(false)
+            subscribing.set(false)
+            cueTarget.clear()
+            hopTable.clear()
+            msgInFlight.clear() // a send on a closed session never calls back (jjhg)
+            reassembler.clear()
+            lastSeenAt.clear()
+            reachablePeers.clear()
+            _reachable.value = emptySet()
+            postCureCycledAt = 0L
+            postCureSince = 0L
+            wakeIcmDemandAt = 0L
+            dormantClosedAt = now
+            lastOwnCloseAt = now
+            dutyActive = false
+            dutyStartedAt = 0L
+            dutyAttachedAt = 0L
+            dutyDueAt = now + dutyIntervalMs()
+            dormantIdleSince = 0L
+            if (!again) dormantSince = now
+            lastDormancyWhy = why
+            _dormant.value = true
+            _health.value = dormantHealth(now)
+            reattaching.set(false)
+            healSignal.trySend(Unit) // the loop re-derives its sleep on the dormant cadence
+        }
+
+    /**
+     * Wake a dormant plane. Clears [dormant] and pokes the loop, whose detached branch re-attaches after the close's
+     * settle ([attachAfterCycleSettle]); a duty window's session, when [why] is the duty's, is kept. As [start] does,
+     * the message-plane watchdog's and the wedge watchdog's clocks run from now, so the session that just found its
+     * peer is not cycled on counters from before the dormant spell. A sighting opens one ICM window on the attach
+     * ([wakeIcmDemandAt]); the app coming on screen does not. Never from [heal]. Handler thread.
+     */
+    private fun wake(why: NanDormancyPolicy.Why) =
+        onHandler {
+            if (!_dormant.value) return@onHandler
+            val now = SystemClock.elapsedRealtime()
+            val kept = session != null
+            _dormant.value = false
+            dutyActive = false
+            dutyStartedAt = 0L
+            dutyAttachedAt = 0L
+            dutyDueAt = 0L
+            dormantIdleSince = 0L
+            lastMsgAckAt = now
+            msgFailsSinceAck = 0
+            msgPlaneEpisodeSince = 0L
+            lastLinkOrAcceptAt = now
+            if (why == NanDormancyPolicy.Why.SIGHTING && !kept) wakeIcmDemandAt = now
+            val next = if (kept) "keeping the duty's session" else "re-attaching after the settle"
+            Log.i(TAG, "aware awake: $why (dormant ${now - dormantSince}ms; $next)")
+            field.record(FieldEvent.NanDormant(on = false, why = why))
+            lastDormancyWhy = why
+            dormantSince = 0L
+            healSignal.trySend(Unit)
+        }
+
+    /**
+     * A dormant plane's duty attach: one ordinary [attach], through every one of its gates (the 3 s floor, the
+     * streak, the lifetime cap — a failed one counts like any failed attach), held for [NanDormancyPolicy.DUTY_WINDOW_MS] from
+     * `onAttached`, so a peer whose Bluetooth is off is still found. Its peer is lonely too, so it opens one ICM
+     * window. Handler thread.
+     */
+    private fun startDuty() =
+        onHandler {
+            if (!_dormant.value || dutyActive) return@onHandler
+            if (session != null || !started || paused) return@onHandler
+            val now = SystemClock.elapsedRealtime()
+            dutyActive = true
+            dutyStartedAt = now
+            dutyAttachedAt = 0L
+            wakeIcmDemandAt = now
+            Log.i(TAG, "aware duty attach: dormant ${now - dormantSince}ms — holding ${NanDormancyPolicy.DUTY_WINDOW_MS}ms from the attach")
+            attach()
+        }
+
+    /** How long the running duty window has left: from `onAttached`, or from its start while the attach is pending. */
+    private fun dutyLeftMs(now: Long): Long =
+        if (dutyAttachedAt != 0L) {
+            NanDormancyPolicy.DUTY_WINDOW_MS - (now - dutyAttachedAt)
+        } else {
+            NanDormancyPolicy.DUTY_WINDOW_MS + ATTACH_WATCHDOG_MS - (now - dutyStartedAt)
+        }
+
+    private fun dutyIntervalMs(): Long = dutyIntervalOverrideMs ?: NanDormancyPolicy.DUTY_INTERVAL_MS
+
+    /** [stop]'s dormancy half: dormancy never survives a stop (unlike [paused]), nor does a trial's hold or interval. */
+    private fun forgetDormancy() {
+        appVisibleJob?.cancel()
+        NanFaultInjector.bindDormancy(null)
+        _dormant.value = false
+        dormantIdleSince = 0L
+        dormantSince = 0L
+        dutyActive = false
+        dutyStartedAt = 0L
+        dutyAttachedAt = 0L
+        dutyDueAt = 0L
+        wakeIcmDemandAt = 0L
+        dormancyHeld = false
+        dutyIntervalOverrideMs = null
+    }
+
+    /** What the plane can read about the radio being off now ([NanDormancyPolicy.RadioFacts]). */
+    private fun radioFacts(now: Long): NanDormancyPolicy.RadioFacts =
+        NanDormancyPolicy.RadioFacts(
+            wifiEnabled = runCatching { wifiManager?.isWifiEnabled }.getOrNull(),
+            deviceIdle = runCatching { powerManager?.isDeviceIdleMode }.getOrNull(),
+            unavailableSince = unavailableSince,
+            lastOwnCloseAt = lastOwnCloseAt,
+            now = now,
+        )
+
+    /** A dormant plane's health by the evidence ([NanDormancyPolicy.dormantHealth]): never Degraded for being dormant. */
+    private fun dormantHealth(now: Long = SystemClock.elapsedRealtime()): TransportHealth =
+        NanDormancyPolicy.dormantHealth(NanDormancyPolicy.radioOff(radioFacts(now)), attachAbandoned)
+
+    /** What a failed attach writes: Degraded, except a dormant plane's duty, which reads by the evidence. */
+    private fun failedAttachHealth(): TransportHealth = if (_dormant.value) dormantHealth() else TransportHealth.Degraded
+
+    /**
+     * Re-read whether this phone will run Wi-Fi Aware ([NanDormancyPolicy.wontRun], [wontRunHere]) and, while dormant
+     * and detached, the health that follows from the same evidence. Run on every write of [attachAbandoned], every
+     * availability broadcast and every watchdog tick, so an `isAvailable` false that has held its 30 s is read within
+     * one more. Posted to the handler from anywhere.
+     */
+    private fun refreshAwareEvidence() =
+        onHandler {
+            val now = SystemClock.elapsedRealtime()
+            val available = runCatching { awareManager?.isAvailable }.getOrNull() ?: false
+            unavailableSince = NanDormancyPolicy.unavailableSince(available, unavailableSince, now)
+            val off = NanDormancyPolicy.radioOff(radioFacts(now))
+            wontRunHere.value = !hasHardware || NanDormancyPolicy.wontRun(off, attachAbandoned)
+            if (_dormant.value && session == null) _health.value = NanDormancyPolicy.dormantHealth(off, attachAbandoned)
+        }
+
+    /** `…debug.NANDORM --ez hold`: pin the plane awake (a dormant one wakes now), or let the policy decide again. */
+    private fun debugHoldAwake(hold: Boolean): String {
+        dormancyHeld = hold
+        if (hold && _dormant.value) {
+            wake(NanDormancyPolicy.Why.FORCED)
+            return "held awake (waking)"
+        }
+        return if (hold) "held awake" else "hold released"
+    }
+
+    /** `…debug.NANDORM --ez now true`: close the session for dormancy now, whatever the idle clock says. */
+    private fun debugForceDormant(): String =
+        when {
+            !started -> {
+                "not started"
+            }
+
+            paused -> {
+                "paused (lent to a Wi-Fi Direct group)"
+            }
+
+            _dormant.value -> {
+                "already dormant"
+            }
+
+            anyLinkActivity() -> {
+                "link activity in progress"
+            }
+
+            sessionCycleSettleStartedAt != 0L -> {
+                "a session cycle is settling"
+            }
+
+            else -> {
+                dormancyHeld = false
+                goDormant(NanDormancyPolicy.Why.FORCED)
+                "going dormant"
+            }
+        }
+
+    /** `…debug.NANDORM --el duty`: the duty interval for a trial (null hands it back); a dormant plane reschedules. */
+    private fun debugSetDutyInterval(ms: Long?) =
+        onHandler {
+            dutyIntervalOverrideMs = ms?.takeIf { it > 0 }
+            if (_dormant.value && !dutyActive) {
+                dutyDueAt = dormantClosedAt + dutyIntervalMs()
+                healSignal.trySend(Unit)
+            }
+        }
+
+    /** `…debug.NANDORM`'s read-back. */
+    private fun dormancySnapshot(): NanDormancySnapshot {
+        val now = SystemClock.elapsedRealtime()
+        val facts = radioFacts(now)
+        val off = NanDormancyPolicy.radioOff(facts)
+        val dormant = _dormant.value
+        return NanDormancySnapshot(
+            dormant = dormant,
+            why = lastDormancyWhy,
+            dormantForMs = if (dormant && dormantSince != 0L) now - dormantSince else 0L,
+            nextDutyInMs = if (dormant && !dutyActive && dutyDueAt != 0L) (dutyDueAt - now).coerceAtLeast(0L) else null,
+            dutyActive = dutyActive,
+            idleForMs = if (dormantIdleSince == 0L) 0L else now - dormantIdleSince,
+            stayReason = if (dormant) null else NanDormancyPolicy.stayReason(stayFacts()),
+            candidatesNear = candidatesNear,
+            candidatesHeard = candidatesHeard,
+            seesNewcomers = foreignSeesNewcomers,
+            held = dormancyHeld,
+            dutyIntervalMs = dutyIntervalMs(),
+            available = runCatching { awareManager?.isAvailable }.getOrNull(),
+            wifiEnabled = facts.wifiEnabled,
+            deviceIdle = facts.deviceIdle,
+            radioOff = off,
+            wontRun = wontRunHere.value,
+        )
     }
 
     // --- Instant Communication Mode: the verdict ([NanIcmPolicy], GitHub #44) ---
@@ -2382,9 +2904,36 @@ class WifiAwareTransport(
         NanSyncPolicy.needsIcmRelight(snapshotPeerFacts(SystemClock.elapsedRealtime(), storeDigest.current(), includeDiscovered = false))
 
     private fun rediscoverDelayMs(): Long {
+        val now = SystemClock.elapsedRealtime()
+        // Dormant between duties: sleep to the next duty (bounded, so a lost poke costs a tick, not the spell); a wake
+        // just after the close waits out the settle rather than the attach cadence.
+        if (_dormant.value && !dutyActive && session == null) {
+            return NanDormancyPolicy.dormantTickMs(
+                now = now,
+                dueAt = dutyDueAt,
+                attachAbandoned = attachAbandoned,
+                attachRetryAfter = attachRetryAfter,
+                closedAt = dormantClosedAt,
+                settleMs = SESSION_CYCLE_SETTLE_MS,
+                idleMs = REDISCOVER_IDLE_MS,
+                floorMs = ATTACH_RETRY_MS,
+                paused = paused,
+            )
+        }
+        if (session == null && dormantClosedAt != 0L && now - dormantClosedAt < SESSION_CYCLE_SETTLE_MS) {
+            return (SESSION_CYCLE_SETTLE_MS - (now - dormantClosedAt)).coerceAtLeast(DORMANCY_TICK_FLOOR_MS)
+        }
+        val base = awakeDelayMs()
+        // The duty window's end, or the idle clock running out, is due sooner than the cadence would look again.
+        val due = if (dutyActive) dutyLeftMs(now) else NanDormancyPolicy.msUntilSleep(dormantIdleSince, now)
+        return if (due == null) base else minOf(base, due.coerceAtLeast(DORMANCY_TICK_FLOOR_MS))
+    }
+
+    private fun awakeDelayMs(): Long {
         // Detached (no Aware session): retry attach() promptly. A reattach's inline attach() often can't
-        // re-enable NAN immediately after tearing the session down (the chipset needs a beat; isAvailable is
-        // transiently false and closing our own session fires no availability broadcast), so recovery falls to
+        // re-enable NAN immediately after tearing the session down (the chipset needs a beat; isAvailable can read
+        // false for a moment, and closing our own session, as the last client, takes NAN down — its availability
+        // broadcast lands seconds later on a dark screen, "session cycle: NAN down broadcast observed"), so recovery falls to
         // the loop's `session == null -> attach()`. Without this, a pure-responder node (nothing sync-wanted to
         // *initiate*) would wait a full REDISCOVER_IDLE_MS with no responder — the 2-minute post-serve wedge.
         // ...but no sooner than the attach backoff allows, so a radio that keeps refusing lets the loop sleep
@@ -3096,7 +3645,11 @@ class WifiAwareTransport(
         val contended = anyLinkActivity() || now < lastLinkEndedAt + SETTLE_MS
         if (!contended) responderRefusals++
         val streak = responderRefusals
-        if (!contended &&
+        // Dormant (a duty window): no give-up cycle. `sessionCycleWithSettle` refuses there, so the escalation would
+        // spend the episode's budget, stamp the cooldown and log a cycle that never ran; the window's own DUTY_EMPTY
+        // close (≤ 30 s) is the NAN-down that cures the request. The ordinary re-file below keeps the window findable.
+        val mayCycle = !contended && !_dormant.value
+        if (mayCycle &&
             NanResponderPolicy.cycleSession(streak, responderCycles) &&
             now - lastReattachAt > REATTACH_COOLDOWN_MS
         ) {
@@ -3475,6 +4028,7 @@ class WifiAwareTransport(
     /** Open the SETTLE gate after a link/handshake ends and wake the loop once the NDI has been released. */
     private fun noteLinkEnded() {
         lastLinkEndedAt = SystemClock.elapsedRealtime()
+        dormantIdleSince = 0L // a sync just ran, whatever the tick saw
         scope.launch {
             delay(SETTLE_MS)
             healSignal.trySend(Unit)
@@ -3532,6 +4086,7 @@ class WifiAwareTransport(
         val now = SystemClock.elapsedRealtime()
         lastSeenAt[peer.nodeId] = now
         lastSightingAt = now
+        dormantIdleSince = 0L // someone was here: the idle clock starts again from the next quiet tick
         // Don't downgrade a fuller Peer (from an advert) to a bare one (from a cue).
         reachablePeers.merge(peer.nodeId, peer) { old, new -> if (new.protoVersion == 0 && old.protoVersion != 0) old else new }
         recomputeReachable()
@@ -3592,6 +4147,18 @@ class WifiAwareTransport(
      * re-broadcasting `true` after every refused attach, and that is not reachable from outside the app.
      */
     private fun handleAvailabilityChanged(available: Boolean) {
+        // Inside the beat after a dormancy close, a broadcast is that close's own NAN-down echo (Knit is the sole Aware
+        // client): not written into [lastAvailable] and refunding nothing, so dormant → duty → dormant cannot pay for
+        // its own attaches (ADR 055; [NanDormancyPolicy.availabilityEdge]). A real radio-off reaches a live session as
+        // its terminate, and a detached one through [attach]'s own `isAvailable` read.
+        val edge = NanDormancyPolicy.availabilityEdge(available, lastAvailable, SystemClock.elapsedRealtime(), dormantClosedAt)
+        if (!edge.record) {
+            onHandler {
+                Log.i(TAG, "aware dormant: availability=$available inside our close's beat — its echo, ignored")
+                refreshAwareEvidence()
+            }
+            return
+        }
         val wasAvailable = lastAvailable
         lastAvailable = available
         if (available) {
@@ -3610,6 +4177,9 @@ class WifiAwareTransport(
                 // and an AMS binder-object kill inside ten. A repeat of `true` is not news.
                 if (wasAvailable == false) clearAttachBackoff()
                 attach() // already on the handler; the attaching/session/floor guards no-op a redundant call
+                // A dormant plane's attach refused: it re-read the evidence and wrote the dormant health (Healthy
+                // unless the radio is off by evidence); the evidence's other readers hear it here.
+                refreshAwareEvidence()
             }
         } else {
             onHandler {
@@ -3621,7 +4191,9 @@ class WifiAwareTransport(
                     // Pixel 3 that cycle is the responder's recovery from the very STA drop being judged.
                     initiatorPolicy.noteRadioOff()
                 }
-                _health.value = TransportHealth.Unavailable // Wi-Fi Aware switched off (Wi-Fi off / airplane mode)
+                // Wi-Fi Aware switched off (Wi-Fi off / airplane mode). Dormant, only the evidence says so: a Doze edge or
+                // a broadcast this plane's own close caused must not read as Wi-Fi off ([NanDormancyPolicy.radioOff]).
+                _health.value = if (_dormant.value) dormantHealth() else TransportHealth.Unavailable
                 peers.keys.toList().forEach { teardownPeer(it) }
                 ++attachGen // invalidate in-flight discovery callbacks from the torn-down generation
                 stopResponder()
@@ -3646,6 +4218,7 @@ class WifiAwareTransport(
                 reachablePeers.clear()
                 _neighbors.value = emptySet() // symmetric with stop(); teardownPeer already recomputes it empty
                 _reachable.value = emptySet()
+                refreshAwareEvidence()
             }
         }
     }
@@ -3921,6 +4494,10 @@ class WifiAwareTransport(
         // in place of the ghost-proof recycle + flap-handshake policy. Delete (with scheduleServeReattach)
         // once the recycle has soaked a release.
         const val USE_GHOST_PROOF_RECYCLE = true
+
+        // The shortest loop sleep a dormancy deadline (the settle after its close, a duty window's end, the idle clock
+        // running out) may ask for: a deadline already past is acted on at the next tick, not in a spin.
+        const val DORMANCY_TICK_FLOOR_MS = 250L
 
         // Post-teardown settle of a deliberate session cycle before re-attaching. The framework's last-client
         // disable + onAwareDownCleanupDataPaths (the request-cache wipe) ran ~50 ms after session.close() in

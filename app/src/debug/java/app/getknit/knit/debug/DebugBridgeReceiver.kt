@@ -67,6 +67,7 @@ import app.getknit.knit.data.message.quoteSnippet
 import app.getknit.knit.data.peer.PeerEntity
 import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.photoFitBytes
+import app.getknit.knit.data.settings.AwareSwitch
 import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.KnitBoardSetup
 import app.getknit.knit.data.settings.LowPowerSwitch
@@ -114,6 +115,7 @@ import app.getknit.knit.mesh.lora.BoardSettings
 import app.getknit.knit.mesh.lora.ProvisionMode
 import app.getknit.knit.mesh.power.AppVisibility
 import app.getknit.knit.mesh.power.BatterySaverState
+import app.getknit.knit.mesh.power.LOW_POWER_OFFERED
 import app.getknit.knit.mesh.power.LowPowerSource
 import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.mesh.protocol.BodyStyle
@@ -309,11 +311,22 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   the side channel still reaches unlinked peers. Persists across restarts until cleared.
  * - [ACTION_NANOFF] — the **Wi-Fi Aware switch** Diagnostics offers in debug builds (`SettingsStore.debugNanOff`).
  *   `--ez off true` stops the plane (links, responder and session go; the mesh runs on its other radios), `--ez off
- *   false` starts it again, no extras reads. The reply is the stored `off` and the Wi-Fi Aware row's `health` /
+ *   false` starts it again, no extras reads. The reply is the stored `off`, `userSwitchOff` (the person's Settings
+ *   switch, [ACTION_AWARE], which keeps the plane off as well) and the Wi-Fi Aware row's `health` /
  *   `linked` / `nearby` (`present` false where the device has no Wi-Fi Aware plane). Applied live by the debug
  *   build's `SwitchableTransport`; persists across restarts until switched back on.
+ * - [ACTION_AWARE] — the person's **Settings › Wi-Fi Aware switch** (`AwareSwitch`, GitHub #44). `--ez on
+ *   true|false` sets it, no extras reads. The reply is the stored `on` and the Wi-Fi Aware row's `health` /
+ *   `switchedOff` / `dormant`, which follow the plane (the `SwitchableTransport` floors apply).
+ * - [ACTION_NANDORM] — Wi-Fi Aware **dormancy** (`NanDormancyPolicy`, GitHub #44). `--ez hold true` pins the plane
+ *   awake (a dormant one wakes, why FORCED), `--ez hold false` lets the policy decide again; `--ez now true` closes the
+ *   session for dormancy now; `--el duty <ms>` sets the duty interval for a trial (0 hands it back). No extras reads.
+ *   The reply carries `dormant`, `why`, `dormantForMs`, `nextDutyInMs`, `dutyActive`, `idleForMs`, `stayReason`,
+ *   `candidatesNear`, `candidatesHeard`, `seesNewcomers`, `held`, `dutyIntervalMs` and the radio evidence (`available`,
+ *   `wifiEnabled`, `deviceIdle`, `radioOff`, `wontRun`). Hold, interval and dormancy all go with the transport's stop.
  * - [ACTION_LOWPOWER] — **low-power mode** (ADR 2026-10.d44b), the user's switch (`LowPowerSwitch`). `--ez
- *   on true|false` sets it, no extras reads. The reply is `lowPower` (the stored `switch`, `batterySaver`, `charging`,
+ *   on true|false` sets it, no extras reads. The reply is `offered` (`LOW_POWER_OFFERED`: false since GitHub #44, so the
+ *   posture stays off whatever the switch says), `lowPower` (the stored `switch`, `batterySaver`, `charging`,
  *   the posture's `active` and `reason`) and the Wi-Fi Aware row's `health` / `switchedOff`. The posture also follows
  *   Battery Saver (`cmd power set-mode 1`) and lifts after a minute on the charger; `STATE` carries the same `lowPower`.
  * - [ACTION_PHY] — the **BLE Coded PHY experiment** (ADR 2026-10.yvn6; `BuildConfig.BLE_CODED_PHY`, else an error).
@@ -393,6 +406,7 @@ class DebugBridgeReceiver :
     private val settings: SettingsStore by inject()
     private val lowPower: LowPowerSource by inject()
     private val lowPowerSwitch: LowPowerSwitch by inject()
+    private val awareSwitch: AwareSwitch by inject()
     private val batterySaver: BatterySaverState by inject()
     private val powerState: PowerStateSource by inject()
     private val ticketKeys: TicketKeyStore by inject()
@@ -603,6 +617,14 @@ class DebugBridgeReceiver :
 
                         ACTION_NANMSG -> {
                             handleNanMsg(intent)
+                        }
+
+                        ACTION_NANDORM -> {
+                            handleNanDorm(intent)
+                        }
+
+                        ACTION_AWARE -> {
+                            handleAware(intent)
                         }
 
                         ACTION_BLECAP -> {
@@ -1163,6 +1185,7 @@ class DebugBridgeReceiver :
                                 .put("nearby", it.nearby)
                                 .put("initiatorHeld", it.initiatorHeld)
                                 .put("switchedOff", it.switchedOff)
+                                .put("dormant", it.dormant)
                         },
                     ),
                 ).put("neighborCount", mesh.neighborCount.value)
@@ -3569,6 +3592,8 @@ class DebugBridgeReceiver :
         return JSONObject()
             .put("status", "ok")
             .put("off", off)
+            // The person's Settings switch keeps the plane off as well; either one is enough (GitHub #44).
+            .put("userSwitchOff", !awareSwitch.on.first())
             .put("present", nan != null)
             .put("health", nan?.health?.name ?: JSONObject.NULL)
             .put("linked", nan?.linked ?: JSONObject.NULL)
@@ -3584,6 +3609,8 @@ class DebugBridgeReceiver :
         val nan = mesh.transportStatuses.value.firstOrNull { it.kind == TransportKind.WifiAware }
         return JSONObject()
             .put("status", "ok")
+            // False since GitHub #44: the posture is off whatever the switch says, and the Settings row is hidden.
+            .put("offered", LOW_POWER_OFFERED)
             .put("lowPower", lowPowerJson())
             .put("awarePresent", nan != null)
             .put("awareHealth", nan?.health?.name ?: JSONObject.NULL)
@@ -3872,6 +3899,60 @@ class DebugBridgeReceiver :
             .put("icmLitNow", s.litNow)
     }
 
+    /**
+     * [ACTION_NANDORM]: `--ez hold`, `--ez now true`, `--el duty <ms>` (any together: hold, then duty, then now), or
+     * none (a read). The reply is the dormancy snapshot after them.
+     */
+    private suspend fun handleNanDorm(intent: Intent): JSONObject {
+        if (NanFaultInjector.dormancyStatus() == null) return reply("error", "Wi-Fi Aware transport is not running")
+        val did = mutableListOf<String>()
+        if (intent.hasExtra("hold")) {
+            NanFaultInjector.holdAwake(intent.getBooleanExtra("hold", false))?.let { did += it }
+        }
+        if (intent.hasExtra("duty")) {
+            val ms = intent.getLongExtra("duty", 0L)
+            NanFaultInjector.setDutyInterval(ms.takeIf { it > 0 })
+            did += if (ms > 0) "duty interval ${ms}ms" else "duty interval handed back"
+        }
+        if (intent.getBooleanExtra("now", false)) NanFaultInjector.forceDormant()?.let { did += it }
+        if (did.isNotEmpty()) delay(NANOFF_SETTLE_MS) // the handler applies them; let them land before the read-back
+        val s = NanFaultInjector.dormancyStatus() ?: return reply("error", "Wi-Fi Aware transport is not running")
+        return reply("ok", did.joinToString("; ").ifEmpty { "dormancy state" })
+            .put("dormant", s.dormant)
+            .put("why", s.why?.name ?: JSONObject.NULL)
+            .put("dormantForMs", s.dormantForMs)
+            .put("nextDutyInMs", s.nextDutyInMs ?: JSONObject.NULL)
+            .put("dutyActive", s.dutyActive)
+            .put("idleForMs", s.idleForMs)
+            .put("stayReason", s.stayReason ?: JSONObject.NULL)
+            .put("candidatesNear", JSONArray(s.candidatesNear.sorted()))
+            .put("candidatesHeard", JSONArray(s.candidatesHeard.sorted()))
+            .put("seesNewcomers", s.seesNewcomers)
+            .put("held", s.held)
+            .put("dutyIntervalMs", s.dutyIntervalMs)
+            .put("available", s.available ?: JSONObject.NULL)
+            .put("wifiEnabled", s.wifiEnabled ?: JSONObject.NULL)
+            .put("deviceIdle", s.deviceIdle ?: JSONObject.NULL)
+            .put("radioOff", s.radioOff)
+            .put("wontRun", s.wontRun)
+    }
+
+    /** [ACTION_AWARE]: sets the person's Wi-Fi Aware switch, then reports it with the plane's row. */
+    private suspend fun handleAware(intent: Intent): JSONObject {
+        if (intent.hasExtra("on")) {
+            awareSwitch.set(intent.getBooleanExtra("on", true))
+            delay(NANOFF_SETTLE_MS) // the transport collects the key; let it land before reading the row
+        }
+        val nan = mesh.transportStatuses.value.firstOrNull { it.kind == TransportKind.WifiAware }
+        return JSONObject()
+            .put("status", "ok")
+            .put("on", awareSwitch.on.first())
+            .put("present", nan != null)
+            .put("health", nan?.health?.name ?: JSONObject.NULL)
+            .put("switchedOff", nan?.switchedOff ?: JSONObject.NULL)
+            .put("dormant", nan?.dormant ?: JSONObject.NULL)
+    }
+
     private fun handleNanMsg(intent: Intent): JSONObject {
         if (!NanFaultInjector.bound) return reply("error", "Wi-Fi Aware transport is not running")
         val what =
@@ -3977,6 +4058,8 @@ class DebugBridgeReceiver :
         const val ACTION_NANDIAL = "app.getknit.knit.debug.NANDIAL"
         const val ACTION_NANINIT = "app.getknit.knit.debug.NANINIT"
         const val ACTION_NANMSG = "app.getknit.knit.debug.NANMSG"
+        const val ACTION_NANDORM = "app.getknit.knit.debug.NANDORM"
+        const val ACTION_AWARE = "app.getknit.knit.debug.AWARE"
         const val ACTION_BLECAP = "app.getknit.knit.debug.BLECAP"
         const val ACTION_NANOFF = "app.getknit.knit.debug.NANOFF"
         const val ACTION_LOWPOWER = "app.getknit.knit.debug.LOWPOWER"

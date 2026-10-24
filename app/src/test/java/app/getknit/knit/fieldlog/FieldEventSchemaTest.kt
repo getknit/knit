@@ -22,6 +22,7 @@ import app.getknit.knit.mesh.power.LowPowerReason
 import app.getknit.knit.mesh.spool.SpoolTicketWord
 import app.getknit.knit.mesh.spool.SpoolUploadsWord
 import app.getknit.knit.mesh.spool.SpoolVerdict
+import app.getknit.knit.mesh.wifiaware.NanDormancyPolicy
 import app.getknit.knit.mesh.wifiaware.NanIcmPolicy
 import app.getknit.knit.net.InternetGate
 import app.getknit.knit.ui.BackgroundBattery
@@ -91,6 +92,20 @@ class FieldEventSchemaTest {
             """{"t":42,"e":"bt_fail","peer":"$p","reason":"TIMEOUT","dur":12000,"streak":3}""",
             line(FieldEvent.BtFail(peer, ConnectFailReason.TIMEOUT, durationMs = 12_000, streak = 3)),
         )
+    }
+
+    /** GitHub #44: Wi-Fi Aware's dormancy transitions and the person's switch. */
+    @Test
+    fun theWifiAwareDormancyAndSwitchKeepTheirLines() {
+        assertEquals(
+            """{"t":42,"e":"nan_dormant","on":true,"why":"IDLE"}""",
+            line(FieldEvent.NanDormant(on = true, why = NanDormancyPolicy.Why.IDLE)),
+        )
+        assertEquals(
+            """{"t":42,"e":"nan_dormant","on":false,"why":"SIGHTING"}""",
+            line(FieldEvent.NanDormant(on = false, why = NanDormancyPolicy.Why.SIGHTING)),
+        )
+        assertEquals("""{"t":42,"e":"aware_switch","on":false}""", line(FieldEvent.AwareSwitch(on = false)))
     }
 
     @Test

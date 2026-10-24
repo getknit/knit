@@ -28,6 +28,19 @@ class BulkWantTrackerTest {
     }
 
     @Test
+    fun anyWantedFollowsTheLiveMarksAndExpiresWithThem() {
+        // Wi-Fi Aware dormancy's reason to stay attached (NanDormancyPolicy): a mark that expired holds nothing.
+        assertFalse(tracker.anyWanted())
+        tracker.note("p")
+        assertTrue(tracker.anyWanted())
+        now = 25_000
+        assertFalse(tracker.anyWanted())
+        tracker.note("q")
+        tracker.noteFailed("q")
+        assertFalse("a failed mark is dropped, its cooldown is no want", tracker.anyWanted())
+    }
+
+    @Test
     fun reNotingSlidesTheTtl() {
         tracker.note("p")
         now = 20_000

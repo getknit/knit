@@ -81,6 +81,10 @@ internal class BleAdvertiser(
     // The newest payload asked for since the last [stop], so [reassert] can bring a set whose start failed back up.
     private var lastData: ByteArray? = null
 
+    // The live set's last data write was refused ([AdvertisingSetCallback.onAdvertisingDataSet]): [reassert] writes
+    // [lastData] again. Cleared by a write the stack takes, and with the set.
+    private var dataStale = false
+
     // The advertiser the live set was started on, so [stop] targets the same one across a post-toggle re-acquire.
     private var current: BluetoothLeAdvertiser? = null
 
@@ -119,6 +123,7 @@ internal class BleAdvertiser(
                     }
                     onStartStatus(status)
                     advertisingSet = set
+                    dataStale = false
                     liveInterval = startingInterval
                     log("advertising")
                     // Apply the newest payload that arrived while we were mid-start (a fresher cue/PSM), so the
@@ -138,11 +143,18 @@ internal class BleAdvertiser(
                 status: Int,
             ) {
                 if (status != ADVERTISE_SUCCESS) log("advertising data set failed: $status")
+                synchronized(lock) {
+                    if (set == null || set !== advertisingSet) return // a stopped or replaced set's late word
+                    // A refused write leaves the old bytes on the air. A cue change heals at the next push, but a flags
+                    // change (FLAG_NO_AWARE, GitHub #44) has no next push, so [reassert] writes the newest bytes again.
+                    dataStale = status != ADVERTISE_SUCCESS
+                }
             }
 
             override fun onAdvertisingSetStopped(set: AdvertisingSet?) {
                 synchronized(lock) {
                     advertisingSet = null
+                    dataStale = false
                     swap = Swap.NONE
                 }
             }
@@ -263,6 +275,7 @@ internal class BleAdvertiser(
                 }
 
                 set != null -> {
+                    if (dataStale) repushData(set)
                     runCatching { set.enableAdvertising(true, 0, 0) }
                         .onFailure { log("advertising enable threw: ${it.message}") }
                         .isSuccess
@@ -279,6 +292,17 @@ internal class BleAdvertiser(
                 }
             }
         }
+    }
+
+    /**
+     * Holds [lock]: writes [lastData] to the live [set] again after the stack refused the last write. Still stale until
+     * the stack says it took this one, so a refusal again is retried at the next turn, never in a loop of its own.
+     */
+    private fun repushData(set: AdvertisingSet) {
+        val data = lastData ?: return
+        log("advertising data re-pushed after a refused write")
+        runCatching { set.setAdvertisingData(dataFor(data)) }
+            .onFailure { log("advertising data update threw: ${it.message}") }
     }
 
     /**
@@ -352,6 +376,7 @@ internal class BleAdvertiser(
             starting = false
             pendingData = null
             lastData = null // a stopped set stays down: [reassert] must not raise it again
+            dataStale = false
             current = null
             swap = Swap.NONE
             liveInterval = 0

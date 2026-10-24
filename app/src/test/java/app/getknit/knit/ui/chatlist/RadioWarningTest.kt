@@ -45,6 +45,29 @@ class RadioWarningTest {
     }
 
     @Test
+    fun aDormantAwarePlane_raisesNothingWhileItsRadioIsOnAndWarnsOnceItIsOff() {
+        // GitHub #44: a plane resting while no phone nearby can use it reads Healthy; only evidence the radio is off
+        // (Wi-Fi off, deep Doze, a held unavailable) makes it Unavailable, and then the banner is right.
+        assertNull(
+            radioWarningFor(
+                listOf(
+                    status(TransportKind.Bluetooth, TransportHealth.Healthy),
+                    status(TransportKind.WifiAware, TransportHealth.Healthy).copy(dormant = true),
+                ),
+            ),
+        )
+        assertEquals(
+            RadioWarning.WifiOff,
+            radioWarningFor(
+                listOf(
+                    status(TransportKind.Bluetooth, TransportHealth.Healthy),
+                    status(TransportKind.WifiAware, TransportHealth.Unavailable).copy(dormant = true),
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun awareSwitchedOffByLowPowerMode_isNotAWifiOff() {
         // ADR 2026-10.d44b: Knit has the plane off, the phone's Wi-Fi is on, so "turn on Wi-Fi" could not help.
         assertNull(

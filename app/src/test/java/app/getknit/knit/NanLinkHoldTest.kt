@@ -27,6 +27,20 @@ class NanLinkHoldTest {
     }
 
     @Test
+    fun anyHeldIsTrueWhileOneHoldIsLive() {
+        // Wi-Fi Aware dormancy's reason to stay attached (NanDormancyPolicy): a call wants its link.
+        val holds = NanLinkHolds(clock = { now }, ttlMs = 25_000)
+        assertFalse(holds.anyHeld())
+        holds.note("p")
+        assertTrue(holds.anyHeld())
+        now += 25_000
+        assertFalse("a lapsed hold holds nothing", holds.anyHeld())
+        holds.note("q")
+        holds.clearAll()
+        assertFalse(holds.anyHeld())
+    }
+
+    @Test
     fun holdsAreCappedOldestFirstAndClearedWithTheTransport() {
         val holds = NanLinkHolds(clock = { now }, ttlMs = 25_000, maxEntries = 2)
         holds.note("a")

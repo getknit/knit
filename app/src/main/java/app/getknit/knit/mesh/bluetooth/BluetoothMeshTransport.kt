@@ -160,6 +160,10 @@ class BluetoothMeshTransport(
     private val partials: PartialBlobs,
     // The field log (ADR 2026-10.a239): each link's up, down and failed dial, as edges this transport already logs.
     private val field: FieldRecorder = FieldRecorder.NONE,
+    // "This phone won't run Wi-Fi Aware" (GitHub #44, built in `di/MeshModule`): the advert's FLAG_NO_AWARE, through
+    // [NoAwareFlag]'s asymmetric debounce. True — the bit set — for a phone without the plane, and by default: a phone
+    // that cannot say it runs Aware never makes a peer wake its own for it.
+    private val awareWontRun: StateFlow<Boolean> = MutableStateFlow(true),
 ) : MeshTransport {
     private val appContext = context.applicationContext
     private val bluetoothManager = appContext.getSystemService(BluetoothManager::class.java)
@@ -393,6 +397,30 @@ class BluetoothMeshTransport(
     private val _health = MutableStateFlow(TransportHealth.Healthy)
     override val health = _health.asStateFlow()
 
+    // The peers this phone has positive evidence run Wi-Fi Aware (GitHub #44, [AwareCandidateTracker]): near (wakes a
+    // dormant Aware plane) and heard (keeps it attached), published with [reachable] and [near] from one snapshot.
+    // [seesNewcomers]: the last presence window's scan really ran, with the adapter on — false at once on its end.
+    private val awareCandidates = AwareCandidateTracker()
+    private val _awareCandidatesNear = MutableStateFlow<Set<String>>(emptySet())
+    override val awareCandidatesNear = _awareCandidatesNear.asStateFlow()
+    private val _awareCandidatesHeard = MutableStateFlow<Set<String>>(emptySet())
+    override val awareCandidatesHeard = _awareCandidatesHeard.asStateFlow()
+    private val _seesNewcomers = MutableStateFlow(false)
+    override val seesNewcomers = _seesNewcomers.asStateFlow()
+
+    // [seesNewcomers]' off edges (adapter off, `stop()`) bump [newcomerGen] under [newcomerLock]; a window that began
+    // before the bump may not write true when it ends, so a late window end never undoes an off edge.
+    private val newcomerLock = Any()
+    private var newcomerGen = 0
+
+    // Whether the advert carries FLAG_NO_AWARE now ([NoAwareFlag] moves it); read by [readvertise] at each encode.
+    @Volatile private var noAwareAdvertised = true
+
+    // [publishReachable]'s snapshot and its writes, as one step: a sighting on the main thread and a window's end on
+    // the scan loop's would otherwise write their sets in the other order. The sets last logged, for one line per change.
+    private val publishLock = Any()
+    private var awareLogged = AwareCandidateTracker.EMPTY
+
     private val _inbound = MutableSharedFlow<InboundFrame>(extraBufferCapacity = 256)
     override val inbound = _inbound.asSharedFlow()
 
@@ -468,6 +496,7 @@ class BluetoothMeshTransport(
     private var scanJob: Job? = null
     private var connectJob: Job? = null
     private var cueJob: Job? = null
+    private var awareJob: Job? = null
     private var powerJob: Job? = null
     private var diagJob: Job? = null
     private var audioJob: Job? = null
@@ -566,6 +595,8 @@ class BluetoothMeshTransport(
             codedMode = phyMode.first() // before bringUp, so the first advert and scan already follow it
             advertKeeper.start(elapsed()) // before bringUp, so a refused first start is kept and retried
             codedKeeper.start(elapsed())
+            // Before bringUp, so the first advert already says it; the collector below moves it from here.
+            noAwareAdvertised = awareWontRun.value
             if (adapter?.isEnabled == true) bringUp() else _health.value = TransportHealth.Unavailable
             scanJob = scope.launch { scanLoop() }
             connectJob = scope.launch { connectLoop() }
@@ -580,6 +611,8 @@ class BluetoothMeshTransport(
                         readvertise()
                     }
                 }
+            // FLAG_NO_AWARE (GitHub #44): set at once, cleared after a wall-clock minute held clear; each move re-advertises in place.
+            awareJob = scope.launch { NoAwareFlag.follow(awareWontRun, { noAwareAdvertised }, ::setNoAware, elapsedWait::sleep) }
             powerJob = scope.launch { powerState.state.drop(1).collect { onPowerChange() } }
             diagJob = scope.launch { diagLoop() }
             advertJob = scope.launch { advertLoop() }
@@ -626,9 +659,11 @@ class BluetoothMeshTransport(
     }
 
     override fun stop() {
+        newcomersOff("stop") // at once: a stopped plane watches for nobody, and a window ending late cannot undo it
         scanJob?.cancel()
         connectJob?.cancel()
         cueJob?.cancel()
+        awareJob?.cancel()
         powerJob?.cancel()
         diagJob?.cancel()
         audioJob?.cancel()
@@ -647,6 +682,7 @@ class BluetoothMeshTransport(
         sideJob?.cancel()
         cancelGattRead()
         sideCapable.clear()
+        awareCandidates.clear()
         unregisterAvailability()
         unregisterAclEdges()
         audioMonitor.stop()
@@ -672,6 +708,8 @@ class BluetoothMeshTransport(
         _neighbors.value = emptySet()
         _reachable.value = emptySet()
         _near.value = emptySet()
+        _awareCandidatesNear.value = emptySet()
+        _awareCandidatesHeard.value = emptySet()
         disarmAtStop() // after the links' ends: nothing watches an ACL once the transport has stopped
     }
 
@@ -984,7 +1022,7 @@ class BluetoothMeshTransport(
         if (adapter?.isEnabled != true || currentPsm == 0 || !::localNodeId.isInitialized) return
         // FLAG_DIALS_GATT_PEERS rides the same gate as the reader, so it never claims a read this phone cannot make:
         // a lower-id iPhone waits to be dialed only by a phone that can find it (companion change A3).
-        val flags = BleAdvertPayload.flags(sideLive = sideChannel?.live == true, gattPeers = gattPeers)
+        val flags = BleAdvertPayload.flags(sideLive = sideChannel?.live == true, gattPeers = gattPeers, noAware = noAwareAdvertised)
         val payload = BleAdvertPayload.encode(localNodeId, Protocol.LOCAL_CAPABILITIES, storeDigest.current(), currentPsm, flags)
         advertiser.update(payload)
         // The same bytes on the Coded set, so its PSM and cue can never lag the presence advert's.
@@ -994,6 +1032,17 @@ class BluetoothMeshTransport(
         } else if (!codedOn()) {
             stopCodedAdvert()
         }
+    }
+
+    /**
+     * [NoAwareFlag]'s move of FLAG_NO_AWARE (GitHub #44): the advert changes in place, once. A write the stack refuses
+     * is written again on the next re-assert turn ([BleAdvertiser.reassert]), since nothing else would push it.
+     */
+    private fun setNoAware(on: Boolean) {
+        if (noAwareAdvertised == on) return
+        noAwareAdvertised = on
+        Log.i(TAG, "bt advert noAware=$on")
+        readvertise()
     }
 
     // --- Keeping the presence set on the air (#112) ---
@@ -1282,6 +1331,7 @@ class BluetoothMeshTransport(
         }
         CodedPhyDiag.publishLinkPhys(known.associate { (_, status) -> status.nodeId to status.phy })
         boosts.values.forEach(BleLinkBoost::poke) // a link on Coded is never boosted
+        publishReachable() // a step to or from Coded moves the link in or out of the Aware candidate sets (GitHub #44)
     }
 
     /**
@@ -1880,6 +1930,8 @@ class BluetoothMeshTransport(
                 ADAPTER_OFF_WAIT_MS,
             )
                 ?: return false
+        // No window runs while the adapter is off, so none would write false: say it here too (GitHub #44).
+        if (!adapterOn) newcomersOff("adapter off")
         // The pause is logged so a scanning gap (which starves presence for the whole mesh) is attributable.
         if (adapterOn && (inflight.isNotEmpty() || busy)) Log.d(TAG, "scan paused: connect in flight $inflight arbiter=$busy")
         elapsedWait.receiveWithin(scanWake, wait)
@@ -2033,19 +2085,70 @@ class BluetoothMeshTransport(
         scanner.phys = phys
         scanner.start(if (power.interactive || power.charging) ScanSettings.SCAN_MODE_BALANCED else ScanSettings.SCAN_MODE_LOW_POWER)
         val windowStart = elapsed()
+        val gen = synchronized(newcomerLock) { newcomerGen }
         val scanned = scanner.isScanning
         // The clock codedOnly is measured on runs only while 1M is heard (ADR 2026-10.yvn6).
         presence.onOneMListening(scanned && phys != ScanPhys.CODED, windowStart)
         val windowMs = PowerPolicy.dutyCycle(power).scanWindowMs
         nextWindowAt = windowStart + windowMs
+        // Whether the window ran its whole length: a dial cut it short (a hunt's only) may have kept it from hearing a peer.
+        val full: Boolean
         try {
             // A hunt's own dial ripens inside its windows, so a dial ends one; any other window runs its length (pj9w).
-            if (hunt) elapsedWait.receiveWithin(dialStarted, windowMs) else elapsedWait.sleep(windowMs)
+            full =
+                if (hunt) {
+                    elapsedWait.receiveWithin(dialStarted, windowMs) == null
+                } else {
+                    elapsedWait.sleep(windowMs)
+                    true
+                }
         } finally {
             presence.onOneMListening(false, elapsed())
         }
+        // Still registered at the end: no onScanFailed in the window, and no adapter going off under it.
+        val ranClean = scanned && scanner.isScanning && adapter?.isEnabled == true
         scanner.stop()
         if (scanned) noteQuietScan(phys, elapsed() - windowStart)
+        endWindow(windowStart, ranClean, phys, full, gen)
+    }
+
+    /**
+     * A presence window that began at [startedAt] ended (GitHub #44): whether the plane watches for newcomers follows
+     * whether its scan [ranClean], a whole window on 1M counts as a miss for every Aware candidate it did not hear, and
+     * the sets are published again, so a peer that left drops out of `reachable`, `near` and the candidate sets within
+     * the presence linger plus one gap, with no sighting to republish them (the plan's [B] finding).
+     */
+    private fun endWindow(
+        startedAt: Long,
+        ranClean: Boolean,
+        phys: ScanPhys,
+        full: Boolean,
+        gen: Int,
+    ) {
+        synchronized(newcomerLock) {
+            // An off edge since the window began has the last word: the adapter is off or the plane stopped.
+            if (gen == newcomerGen) setSeesNewcomers(ranClean, if (ranClean) "" else "scan not registered")
+        }
+        awareCandidates.onWindow(startedAt, countsAsMiss = ranClean && full && phys != ScanPhys.CODED)
+        publishReachable()
+    }
+
+    /** An off edge for [seesNewcomers] ([why]): false now, and no window that began before it may write true. */
+    private fun newcomersOff(why: String) {
+        synchronized(newcomerLock) {
+            newcomerGen++
+            setSeesNewcomers(false, why)
+        }
+    }
+
+    /** [seesNewcomers]' one writer, logging each change; callers hold [newcomerLock]. */
+    private fun setSeesNewcomers(
+        sees: Boolean,
+        why: String,
+    ) {
+        if (_seesNewcomers.value == sees) return
+        _seesNewcomers.value = sees
+        Log.i(TAG, if (sees) "bt newcomers watched" else "bt newcomers unwatched ($why)")
     }
 
     /**
@@ -2196,6 +2299,8 @@ class BluetoothMeshTransport(
             ),
             elapsed(),
         )
+        // Before the publish, which reads it: only service data carries the bit; a GATT payload's is no evidence.
+        if (viaGatt) awareCandidates.forget(parsed.nodeId) else awareCandidates.note(parsed.nodeId, parsed.noAware, !coded, elapsed())
         publishReachable()
         if (sideChannel != null) {
             // The audience, not anyCapable: a flagged peer appearing beside an all-linked clique must wake the loop.
@@ -2722,7 +2827,8 @@ class BluetoothMeshTransport(
         val address = linkAddresses.remove(fl)
         val device = linkDevices.remove(fl)
         if (address != null && device != null) orphans.onLinkEnded(address, nodeId, device, elapsed()) // its ACL may stay (#142)
-        linkPhy.remove(fl)
+        // A link that counted as Aware evidence (on 1M/2M) leaves its peer heard from its end, not from an old sighting.
+        awareCandidates.onLinkEnded(nodeId, counted = linkPhyNear(linkPhy.remove(fl)), elapsed())
         lastPace.remove(fl)
         val dropStatus =
             phyControls.remove(fl)?.let { control ->
@@ -3024,6 +3130,7 @@ class BluetoothMeshTransport(
                     BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
                         Log.i(TAG, "bluetooth adapter off")
                         _health.value = TransportHealth.Unavailable // Bluetooth switched off (or airplane mode)
+                        newcomersOff("adapter off") // at once, not at the window's end (GitHub #44)
                         scope.launch {
                             links.keys.toList().forEach { teardownLink(it, "adapter off") }
                             orphans.clear() // after the links' ends: no ACL outlives the adapter
@@ -3034,12 +3141,15 @@ class BluetoothMeshTransport(
                             gattSighted.clear()
                             codedDeviceFor.clear()
                             sideCapable.clear()
+                            awareCandidates.clear()
                             synchronized(lock) {
                                 inFlight.clear()
                                 backoffs.clear()
                             }
                             _reachable.value = emptySet()
                             _near.value = emptySet()
+                            _awareCandidatesNear.value = emptySet()
+                            _awareCandidatesHeard.value = emptySet()
                         }
                     }
                 }
@@ -3214,11 +3324,30 @@ class BluetoothMeshTransport(
      * routes sends.
      */
     private fun publishReachable(now: Long = elapsed()) {
-        val snaps = presence.snapshots(now)
-        val linkPeers = links.values.map { it.peer }
-        _reachable.value = ScanPlan.reachable(snaps, linkPeers)
-        _near.value = ScanPlan.near(snaps, linkPeers)
+        synchronized(publishLock) {
+            val snaps = presence.snapshots(now)
+            val live = links.values.toList()
+            val linkPeers = live.map { it.peer }
+            _reachable.value = ScanPlan.reachable(snaps, linkPeers)
+            _near.value = ScanPlan.near(snaps, linkPeers)
+            // The Aware candidates (GitHub #44) from the same snapshots: a link counts only on a PHY read back as 1M/2M.
+            val facts =
+                live.associate {
+                    it.nodeId to AwareCandidateTracker.LinkFacts(linkPhyNear(linkPhy[it]), DoorbellPolicy.serves(it.peer.capabilities))
+                }
+            val sets = awareCandidates.sets(now, snaps, facts)
+            _awareCandidatesNear.value = sets.near
+            _awareCandidatesHeard.value = sets.heard
+            // Log.d: a peer on the −90 line can move near once a burst; a debug build is what the trials run.
+            if (sets != awareLogged) {
+                awareLogged = sets
+                Log.d(TAG, "bt aware candidates near=${sets.near} heard=${sets.heard}")
+            }
+        }
     }
+
+    // A link's PHY as Aware evidence: read back as 1M or 2M. Coded, or no readback at all, is not (GitHub #44).
+    private fun linkPhyNear(phy: LinkPhy?): Boolean = phy == LinkPhy.ONE_M || phy == LinkPhy.TWO_M
 
     private fun localNodeIdOrEmpty(): String = if (::localNodeId.isInitialized) localNodeId else ""
 
@@ -3293,8 +3422,11 @@ class BluetoothMeshTransport(
                 (if (codedOn()) fadeDiag() else "") +
                 (sideChannel?.let { " ${it.diag()} $sideDecision" } ?: "") +
                 " linkScores=${links.values.joinToString(",") { "${it.nodeId}:${linkScore(it, rssiByNode).toInt()}" }}" +
-                // Last on the line: ble-link-trial.py reads `links=` then `reach=` at its head.
-                " near=${_near.value.map { it.nodeId }}",
+                // ble-link-trial.py reads `links=` then `reach=` at its head; near= and the fields after it carry bare ids.
+                " near=${_near.value.map { it.nodeId }}" +
+                // After near=, bare ids and booleans only: knit-ios interop.py reads every `<id>:<number>` past linkScores=.
+                " awareNear=${_awareCandidatesNear.value} awareHeard=${_awareCandidatesHeard.value} noAware=$noAwareAdvertised " +
+                "newcomers=${_seesNewcomers.value}",
         )
     }
 

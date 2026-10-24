@@ -18,6 +18,7 @@ import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.RelayStatusRepository
+import app.getknit.knit.data.settings.AwareSwitch
 import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.DirectHostStore
 import app.getknit.knit.data.settings.HomeStore
@@ -28,6 +29,7 @@ import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.data.settings.TicketKeyStore
 import app.getknit.knit.device.DeviceImage
 import app.getknit.knit.fieldlog.FIELD_LOG_SHARE_DIR
+import app.getknit.knit.fieldlog.FieldEvent
 import app.getknit.knit.fieldlog.FieldJournal
 import app.getknit.knit.fieldlog.FieldLog
 import app.getknit.knit.fieldlog.FieldLogExport
@@ -80,6 +82,7 @@ import app.getknit.knit.mesh.power.LowPowerSource
 import app.getknit.knit.mesh.power.PowerMonitor
 import app.getknit.knit.mesh.power.PowerStateSource
 import app.getknit.knit.mesh.power.awareSwitchedOff
+import app.getknit.knit.mesh.power.awareWontRun
 import app.getknit.knit.mesh.spool.AccountIssuer
 import app.getknit.knit.mesh.spool.FreeIssuers
 import app.getknit.knit.mesh.spool.OkHttpSpoolDialer
@@ -105,8 +108,13 @@ import app.getknit.knit.ui.chat.notificationLabels
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import org.koin.android.ext.koin.androidContext
 import org.koin.core.qualifier.named
@@ -141,6 +149,9 @@ val meshModule =
         // Low-power mode's switch, and Battery Saver, which PowerMonitor writes and only low-power mode reads (ADR
         // 2026-10.d44b).
         single { LowPowerSwitch(get()) }
+        // The person's Settings › Wi-Fi Aware switch (GitHub #44). Its one-time move from low-power mode is written at
+        // the first resolve; until it lands, the switch already reads that answer, so nothing attaches only to stop.
+        single { AwareSwitch(get()).also { switch -> get<CoroutineScope>().launch { runCatching { switch.migrateFromLowPower() } } } }
         // Built with the platform's answer, so the posture's first reading on a Battery Saver phone is already on.
         single { BatterySaverState(androidContext().getSystemService(PowerManager::class.java)?.isPowerSaveMode == true) }
         single { PowerMonitor(androidContext(), get(), get()) }
@@ -152,7 +163,8 @@ val meshModule =
                 batterySaver = get<BatterySaverState>().on,
                 power = get<PowerStateSource>().state,
                 scope = get<CoroutineScope>(),
-            ) { msg -> Log.i("LowPower", msg) }
+                log = { msg -> Log.i("LowPower", msg) },
+            )
         }
         // The field log (ADR 2026-10.a239): how this phone's radios behaved, kept under noBackupFilesDir and handed
         // over only by the user from Diagnostics. MeshManager drives its session half; the radios record into it.
@@ -174,6 +186,8 @@ val meshModule =
                 }
                 // The Internet route every spool line reads against, followed for each mesh session.
                 log.follower("net") { netEdges(get<InternetGate>()) }
+                // The person's Wi-Fi Aware switch (GitHub #44): with it off, the Aware lines stop on purpose.
+                log.follower("aware_switch") { get<AwareSwitch>().on.map { FieldEvent.AwareSwitch(it) } }
                 // How Android treats the app's background battery use, at each session's start and on change.
                 log.follower("battery") { batteryEdges({ readBattery(androidContext()) }) }
             }
@@ -193,6 +207,28 @@ val meshModule =
         single<MeshTransport> {
             demoTransportOrNull() ?: run {
                 val ctx = androidContext()
+                // WifiAwareTransport is @RequiresApi(31) (its NDP accept-any responder is API 31): isSupported()'s
+                // verdict, with the literal SDK_INT comparison lint reads repeated at the constructor's line below.
+                val awareSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && WifiAwareTransport.isSupported(ctx)
+                // Knit's switch for the Wi-Fi Aware plane: the person's (Settings › Wi-Fi Aware), a debug build's own
+                // (Diagnostics / the bridge's NANOFF; debugNanOff reads false in release) and low-power mode's (never,
+                // while it is not offered). Read by the plane's SwitchableTransport and by the advert's flag below.
+                val awareOff = awareSwitchedOff(get<AwareSwitch>().on, get<SettingsStore>().debugNanOff, get<LowPowerSource>().posture)
+                // The plane's own half of "won't run here" (the radio off by evidence, attaching given up), written by
+                // the plane once it is built below; the Bluetooth plane is built first, so it reads it through here.
+                val awarePlaneWontRun = MutableStateFlow(false)
+
+                // "This phone won't run Wi-Fi Aware" (GitHub #44), the Bluetooth advert's FLAG_NO_AWARE: switched off,
+                // or the plane says so — never for a plane that is merely dormant or lent to a Wi-Fi Direct group.
+                // Constant true without the plane. Starts true: the advert sets the bit at once and clears it only
+                // once it has held, so an early true only delays a peer's wake.
+                // The Bluetooth plane's constructor takes it, for the advert's flag and its debounce.
+                val awareWontRunHere: StateFlow<Boolean> =
+                    if (awareSupported) {
+                        awareWontRun(awareOff, awarePlaneWontRun).stateIn(get<CoroutineScope>(), SharingStarted.Eagerly, true)
+                    } else {
+                        MutableStateFlow(true)
+                    }
                 val children =
                     buildList {
                         // Held for Wi-Fi Aware's ICM rule (GitHub #44): its audio monitor is the one A2DP signal we have.
@@ -230,14 +266,14 @@ val meshModule =
                                     lowPower = get<LowPowerSource>().let { source -> { source.current.active } },
                                     partials = get(),
                                     field = get<FieldLog>(),
+                                    awareWontRun = awareWontRunHere,
                                 )
                             bluetooth = bt
                             add(bt)
                         }
-                        // WifiAwareTransport is @RequiresApi(31) (its NDP accept-any responder is API 31). The
-                        // explicit SDK_INT guard — redundant with isSupported()'s own — is what lint reads to
-                        // clear the @RequiresApi companion/constructor calls on this pre-31-reachable line.
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && WifiAwareTransport.isSupported(ctx)) {
+                        // The explicit SDK_INT guard — redundant with awareSupported — is what lint reads to clear the
+                        // @RequiresApi constructor call on this pre-31-reachable line.
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && awareSupported) {
                             // One store is both journals (the attach give-up and the initiator hold, ADR 055 / 2026-09.m8kc).
                             val journals = NanJournalStore(get())
                             val nan =
@@ -272,13 +308,11 @@ val meshModule =
                                     audioStreaming = bluetooth?.radioContended ?: NOT_CONTENDED,
                                     // The 5 GHz ICM picks stay debug-only until a cross-band delivery trial passes.
                                     fiveGhzRules = BuildConfig.DEBUG,
+                                    wontRunHere = awarePlaneWontRun,
                                 )
-                            // Low-power mode switches the plane off live in every build (ADR 2026-10.d44b), and a debug
-                            // build's own switch (Diagnostics / the bridge's NANOFF) does too; debugNanOff reads false in
-                            // release.
-                            val off = awareSwitchedOff(get<SettingsStore>().debugNanOff, get<LowPowerSource>().posture)
-                            // Log.i: release keeps it, so a bugreport shows the plane stopped for low-power mode.
-                            add(SwitchableTransport(nan, off, get(), { msg -> Log.i("WifiAwareTransport", msg) }))
+                            // The switch stops the plane live in every build. Log.i: release keeps it, so a bugreport
+                            // shows the plane stopped for it.
+                            add(SwitchableTransport(nan, awareOff, get(), { msg -> Log.i("WifiAwareTransport", msg) }))
                         }
                         // The LoRa (Meshtastic) plane rides LAST — lowest send-preference, fast-plane only.
                         // Gated on the flag; the classes stay in the APK but are never resolved when off.

@@ -39,9 +39,33 @@ class LowPowerTest {
             )
         for ((input, reason) in cases) {
             val (on, saver, charging) = input
-            assertEquals("$input", reason, LowPowerPolicy.posture(on, saver, charging).reason)
+            assertEquals("$input", reason, LowPowerPolicy.posture(on, saver, charging, offered = true).reason)
         }
     }
+
+    @Test
+    fun aModeNotOfferedIsOffWhateverItsInputsSay() {
+        // GitHub #44: low-power mode is not offered; the switch's key, Battery Saver and the charger all read off.
+        assertFalse(LOW_POWER_OFFERED)
+        for (on in listOf(false, true)) {
+            for (saver in listOf(false, true)) {
+                for (charging in listOf(false, true)) {
+                    assertEquals("$on $saver $charging", LowPowerPosture.OFF, LowPowerPolicy.posture(on, saver, charging))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun aSourceNotOfferedNeverComesOn() =
+        runTest(UnconfinedTestDispatcher()) {
+            val inputs = Inputs()
+            val source = LowPowerSource(inputs.switch, inputs.saver, inputs.power, backgroundScope)
+            inputs.saver.value = true
+            inputs.switch.emit(true)
+            assertEquals(LowPowerPosture.OFF, source.posture.replayCache.single())
+            assertFalse(source.current.active)
+        }
 
     @Test
     fun thePostureGivesUpAwareAndTheMotionHealTogether() {
@@ -60,7 +84,9 @@ class LowPowerTest {
         val power = MutableStateFlow(PowerState(charging = false))
     }
 
-    private fun TestScope.source(inputs: Inputs) = LowPowerSource(inputs.switch, inputs.saver, inputs.power, backgroundScope)
+    // Offered, so the mode's own rules stay pinned while it is not ([LOW_POWER_OFFERED]).
+    private fun TestScope.source(inputs: Inputs) =
+        LowPowerSource(inputs.switch, inputs.saver, inputs.power, backgroundScope, offered = true)
 
     @Test
     fun nothingIsSaidBeforeTheSwitchIsRead() =
@@ -183,19 +209,39 @@ class LowPowerTest {
         }
 
     @Test
-    fun awareIsOffWhileEitherSwitchSaysSoAndWaitsForBoth() =
+    fun awareIsOffWhileAnySwitchSaysSoAndWaitsForAll() =
         runTest(UnconfinedTestDispatcher()) {
+            val userOn = MutableSharedFlow<Boolean>(replay = 1)
             val debugOff = MutableStateFlow(false)
             val posture = MutableSharedFlow<LowPowerPosture>(replay = 1)
             val seen = mutableListOf<Boolean>()
-            backgroundScope.launch { awareSwitchedOff(debugOff, posture).collect { seen += it } }
-            assertEquals("silent until the posture is read", emptyList<Boolean>(), seen)
-
+            backgroundScope.launch { awareSwitchedOff(userOn, debugOff, posture).collect { seen += it } }
             posture.emit(LowPowerPosture.OFF)
+            assertEquals("silent until the person's switch is read", emptyList<Boolean>(), seen)
+
+            userOn.emit(true)
             debugOff.value = true
             posture.emit(LowPowerPosture(LowPowerReason.BATTERY_SAVER))
             debugOff.value = false
             posture.emit(LowPowerPosture.OFF)
-            assertEquals(listOf(false, true, false), seen)
+            userOn.emit(false) // Settings › Wi-Fi Aware off (GitHub #44)
+            userOn.emit(true)
+            assertEquals(listOf(false, true, false, true, false), seen)
+        }
+
+    @Test
+    fun awareWontRunIsTheSwitchOrThePlane() =
+        runTest(UnconfinedTestDispatcher()) {
+            val off = MutableStateFlow(false)
+            val plane = MutableStateFlow(false)
+            val seen = mutableListOf<Boolean>()
+            backgroundScope.launch { awareWontRun(off, plane).collect { seen += it } }
+            plane.value = true // the radio off by evidence, or attaching given up
+            plane.value = false
+            off.value = true // switched off
+            plane.value = true // still true: no repeat
+            off.value = false
+            plane.value = false
+            assertEquals(listOf(false, true, false, true, false), seen)
         }
 }

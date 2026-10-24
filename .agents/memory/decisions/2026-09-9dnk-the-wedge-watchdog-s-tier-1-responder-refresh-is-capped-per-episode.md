@@ -108,3 +108,11 @@ The accepted cost: on a non-exempt API 31+ phone the re-claim gate (ADR 043) pas
 the hold now refuses, so Tier 2 never fires there. Where Knit is the only Aware client, Tier 1's session cycle is
 already a NAN disable/enable and clears the ghost the kill was for; Tier 2 only adds the case where another Aware
 client holds NAN up, and Bluetooth and the coordination plane's DMs carry on meanwhile.
+
+## Amendment 2026-10-24 — the Bluetooth `near` set now ages (ADR 2026-10.2t49)
+
+The Tier-2 corroboration reads `MeshTransport.near` from the Bluetooth plane, which until now was republished only on a
+sighting or a link change, so an entry outlived its freshness for as long as nothing else happened. Since 2t49 the plane
+also republishes at the end of every presence window (`endWindow()`), so a peer that left drops out within one gap.
+A due kill therefore lands only on a check that finds the peer still near. In a gap longer than 90 s the corroboration
+can lapse between windows, which makes Tier 2 a slower last resort, never a strand: Tier 1 and its caps are unchanged.

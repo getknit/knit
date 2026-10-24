@@ -139,4 +139,27 @@ class BleAdvertPayloadTest {
             BleAdvertPayload.flags(sideLive = true, gattPeers = true),
         )
     }
+
+    @Test
+    fun theNoAwareBitIsBit2AndItsOwn() {
+        // GitHub #44: inverted polarity, set while this phone will not run Wi-Fi Aware.
+        assertEquals(0x04, BleAdvertPayload.FLAG_NO_AWARE)
+        assertEquals(BleAdvertPayload.FLAG_NO_AWARE, BleAdvertPayload.flags(sideLive = false, gattPeers = false, noAware = true))
+        val all = BleAdvertPayload.flags(sideLive = true, gattPeers = true, noAware = true)
+        assertEquals(0x07, all)
+        val p = BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, all))!!
+        assertTrue(p.noAware)
+        assertTrue(p.sideChannel)
+        assertTrue(p.dialsGattPeers)
+        val side = BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, BleAdvertPayload.FLAG_SIDE_CHANNEL))!!
+        assertFalse("the other bits never read as it", side.noAware)
+    }
+
+    @Test
+    fun anOlderBuildsAdvertReadsAsMayRunAware() {
+        // A 23-byte advert (before the flags byte) and a flags byte from a build before bit 2 both read 0: a candidate.
+        val v1 = BleAdvertPayload.encode(nodeA, 0L, 0L, 1).copyOf(BleAdvertPayload.SIZE_V1)
+        assertFalse(BleAdvertPayload.parse(v1)!!.noAware)
+        assertFalse(BleAdvertPayload.parse(BleAdvertPayload.encode(nodeA, 0L, 0L, 1, 0x03))!!.noAware)
+    }
 }

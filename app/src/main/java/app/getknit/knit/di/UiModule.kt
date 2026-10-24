@@ -15,6 +15,7 @@ import app.getknit.knit.data.crypto.IdentityKeyStore
 import app.getknit.knit.data.forward.ForwardRepository
 import app.getknit.knit.data.relay.FreeUploads
 import app.getknit.knit.data.relay.RelayStatusRepository
+import app.getknit.knit.data.settings.AwareSwitch
 import app.getknit.knit.data.settings.BadgeStore
 import app.getknit.knit.data.settings.CallPreferenceStore
 import app.getknit.knit.data.settings.IncomingCallStore
@@ -139,6 +140,7 @@ val uiModule =
                 loraFacts = get<LoraStatusRepository>().facts,
                 hostGuard = get(),
                 captureHealth = if (LIVE_CALLS_WIRED) get<CaptureHealth>() else null,
+                awareSwitchOn = get<AwareSwitch>().on,
             )
         }
         viewModel { CrashLogViewModel(get()) }
@@ -173,6 +175,7 @@ val uiModule =
                 intake = get<IncomingCallStore>().intake,
                 liveCalls = LIVE_CALLS_WIRED,
                 meshCalls = WALKIE_WIRED,
+                awareSwitch = get(),
             )
         }
         viewModel { BackupViewModel(androidContext(), get(), get()) }

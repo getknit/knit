@@ -118,6 +118,7 @@ fun DiagnosticsScreen(
     val moderationLatched by viewModel.moderationLatched.collectAsStateWithLifecycle()
     val bleLinkCap by viewModel.bleLinkCap.collectAsStateWithLifecycle()
     val nanOff by viewModel.nanOff.collectAsStateWithLifecycle()
+    val wifiAwareOn by viewModel.wifiAwareOn.collectAsStateWithLifecycle()
     val directCallsOff by viewModel.directCallsOff.collectAsStateWithLifecycle()
     val walkieClips by viewModel.walkieClips.collectAsStateWithLifecycle()
     val directHost by viewModel.directHost.collectAsStateWithLifecycle()
@@ -182,6 +183,7 @@ fun DiagnosticsScreen(
         nanSwitchOffered = viewModel.nanSwitchOffered,
         nanOff = nanOff,
         onSetNanOff = viewModel::setNanOff,
+        wifiAwareOff = !wifiAwareOn,
         directCallsSwitchOffered = viewModel.directCallsSwitchOffered,
         directCallsOff = directCallsOff,
         onSetDirectCallsOff = viewModel::setDirectCallsOff,
@@ -241,6 +243,8 @@ internal fun DiagnosticsScreenContent(
     nanSwitchOffered: Boolean = false,
     nanOff: Boolean = false,
     onSetNanOff: (Boolean) -> Unit = {},
+    // The person's Settings › Wi-Fi Aware switch is off (GitHub #44): that row's switched-off tag names it.
+    wifiAwareOff: Boolean = false,
     // The debug-only Wi-Fi Direct calls switch, defaulted off likewise: [directCallsOff] true sends calls over ICE.
     directCallsSwitchOffered: Boolean = false,
     directCallsOff: Boolean = false,
@@ -314,7 +318,7 @@ internal fun DiagnosticsScreenContent(
             }
 
             item { SectionHeader(stringResource(R.string.diagnostics_transports)) }
-            item { TransportsSection(state.transports, nanOff = nanSwitchOffered && nanOff) }
+            item { TransportsSection(state.transports, nanOff = nanSwitchOffered && nanOff, wifiAwareOff = wifiAwareOff) }
             // Under the rows it explains: the one plane that can put itself on hold says so with the way back.
             if (state.transports.any { it is TransportRow.Live && it.status.initiatorHeld }) {
                 item { InitiatorHoldSection(onRelease = onReleaseInitiatorHold) }
@@ -719,6 +723,8 @@ private fun TransportsSection(
     rows: List<TransportRow>,
     // The debug Wi-Fi Aware switch is off: that row says so rather than reading as a radio that is merely down.
     nanOff: Boolean = false,
+    // The person's Wi-Fi Aware switch is off: a switched-off Aware row says "off in Settings", not "low power".
+    wifiAwareOff: Boolean = false,
 ) {
     if (rows.isEmpty()) {
         EmptyLine(stringResource(R.string.diagnostics_none_transports))
@@ -727,8 +733,14 @@ private fun TransportsSection(
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         rows.forEach { row ->
             when (row) {
-                is TransportRow.Live -> LiveTransportRow(row, switchedOff = nanOff && row.kind == TransportKind.WifiAware)
-                is TransportRow.Absent -> AbsentTransportRow(row)
+                is TransportRow.Live -> {
+                    val aware = row.kind == TransportKind.WifiAware
+                    LiveTransportRow(row, switchedOff = nanOff && aware, userSwitchedOff = wifiAwareOff && aware)
+                }
+
+                is TransportRow.Absent -> {
+                    AbsentTransportRow(row)
+                }
             }
         }
     }
@@ -738,13 +750,14 @@ private fun TransportsSection(
 private fun LiveTransportRow(
     row: TransportRow.Live,
     switchedOff: Boolean = false,
+    userSwitchedOff: Boolean = false,
 ) {
     val status = row.status
     // The tags and the count move under the plane's name, past its dot, when they would squeeze it.
     AdaptiveRow(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         stackedIndent = DOT_INDENT,
-        trailing = { LiveTransportStatus(row, switchedOff) },
+        trailing = { LiveTransportStatus(row, switchedOff, userSwitchedOff) },
     ) {
         LiveTransportName(status)
     }
@@ -776,16 +789,22 @@ private fun LiveTransportName(status: TransportStatus) {
 private fun LiveTransportStatus(
     row: TransportRow.Live,
     switchedOff: Boolean,
+    userSwitchedOff: Boolean,
 ) {
     val status = row.status
     Row(verticalAlignment = Alignment.CenterVertically) {
         // Debug flag: the Wi-Fi Aware switch under this section has stopped the plane (its dot reads Unavailable).
-        // Otherwise a plane Knit has off is low-power mode's doing (ADR 2026-10.d44b), not a radio the user turned off.
+        // Otherwise a plane Knit has off is the person's Settings switch (GitHub #44) or low-power mode's doing (ADR
+        // 2026-10.d44b), not a radio the user turned off.
         if (switchedOff) {
             TransportTag(stringResource(R.string.diagnostics_transport_debug_off))
             Spacer(Modifier.width(8.dp))
         } else if (status.switchedOff) {
-            TransportTag(stringResource(R.string.diagnostics_transport_low_power))
+            TransportTag(
+                stringResource(
+                    if (userSwitchedOff) R.string.diagnostics_transport_switched_off else R.string.diagnostics_transport_low_power,
+                ),
+            )
             Spacer(Modifier.width(8.dp))
         }
         // Diagnostic flag: this radio reports itself contended (Bluetooth ↔ A2DP audio streaming).
@@ -807,8 +826,13 @@ private fun LiveTransportStatus(
         Text(
             text =
                 when (row.lora) {
+                    // Detached on purpose while no phone nearby can use it (GitHub #44): idle, not off; its counts are 0.
                     null -> {
-                        stringResource(R.string.diagnostics_transport_counts, status.nearby, status.linked)
+                        if (status.dormant) {
+                            stringResource(R.string.diagnostics_transport_dormant)
+                        } else {
+                            stringResource(R.string.diagnostics_transport_counts, status.nearby, status.linked)
+                        }
                     }
 
                     LoraPlane.Off -> {

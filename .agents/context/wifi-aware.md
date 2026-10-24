@@ -90,6 +90,16 @@ is in `docs/NAN_CONCURRENCY_REAUDIT.md` and `docs/DIGEST_PULL_REATTACH.md`.
   nothing; a band change pushes one `updatePublish` per demand-lit window, never under `icmKeepaliveBroken` or a live
   link. The frequency map lives in the callback object's own callbacks, never in `onStaLost` / `onStaAvailable`, and
   an unregistered or unsettled watch is unknown, never "no Wi-Fi". Tests: `NanIcmPolicyTest`.
+- **When touching `NanDormancyPolicy`, `dormancyTick` / `goDormant` / `wake` / `startDuty` / `refreshAwareEvidence`,
+  `MeshTransport.dormant` / `seesNewcomers` / `awareCandidatesNear` / `awareCandidatesHeard`, `onForeignAwareCandidates`,
+  `TransportStatus.dormant`, `AwareSwitch`, `awareSwitchedOff` / `awareWontRun`, `LOW_POWER_OFFERED`, or
+  `…debug.NANDORM` / `AWARE`:** READ ADR 2026-10.2t49 (and d44b's 2026-10-24 amendment). A started plane with nothing to
+  do and no Aware candidate heard over Bluetooth sleeps after 3 min and wakes on a candidate near, a bulk transfer, the
+  app on screen, a blind Bluetooth plane or the 12-min duty attach — never on `heal()`. The dormancy close is its own:
+  it refunds nothing of the attach budget (ADR 055), records no `nan_cycle`, and a wake re-attaches only after its
+  settle. Dormant reads Healthy unless real evidence (Wi-Fi off, deep Doze, `isAvailable` false 30 s outside the close's
+  beat) says otherwise. Without a Bluetooth plane that sees newcomers it never sleeps. Tests: `NanDormancyPolicyTest`,
+  `CompositeMeshTransportTest`, `AwareSwitchTest`.
 - **When touching `attach()`, `NanAttachPolicy`, `NanAttachJournal`, `attachFailStreak` / `attachFailTotal` /
   `attachAbandoned` / `attachStartedAt`, the availability receiver or `handleAvailabilityChanged`, or
   `…debug.NANFAIL` / `NANSTORM`:** READ ADR 052 and ADR 055. Each failed attach strands two binder objects in

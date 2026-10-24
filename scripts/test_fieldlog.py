@@ -146,6 +146,17 @@ class CheckTest(unittest.TestCase):
                          fieldlog.validate({"t": 1, "e": "nan_icm", "on": False, "why": "LONELY", "ssid": 3}))
 
 
+    def test_the_wifi_aware_dormancy_and_switch_lines_are_known_kinds(self):
+        for line in (
+            {"t": 1, "e": "nan_dormant", "on": True, "why": "IDLE"},
+            {"t": 2, "e": "nan_dormant", "on": False, "why": "SIGHTING"},
+            {"t": 3, "e": "aware_switch", "on": False},
+        ):
+            self.assertEqual([], fieldlog.validate(line), line)
+        self.assertEqual(["aware_switch: unexpected field 'why'"],
+                         fieldlog.validate({"t": 1, "e": "aware_switch", "on": True, "why": "SWITCH"}))
+
+
 class PairTest(unittest.TestCase):
     def setUp(self) -> None:
         self.folder = Path(tempfile.mkdtemp())

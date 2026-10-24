@@ -82,6 +82,8 @@ class SettingsScreenContentTest {
         onOpenUnusedPauseSettings: () -> Unit = {},
         cloneVisible: Boolean = false,
         onSignOut: () -> Unit = {},
+        wifiAwareOn: Boolean = true,
+        onToggleWifiAware: (Boolean) -> Unit = {},
     ) {
         compose.setContent {
             KnitTheme {
@@ -98,6 +100,7 @@ class SettingsScreenContentTest {
                             relay = relay,
                             lora = lora,
                             cloneVisible = cloneVisible,
+                            wifiAwareOn = wifiAwareOn,
                         ),
                     battery = battery,
                     supervision = supervision,
@@ -107,6 +110,7 @@ class SettingsScreenContentTest {
                     onSelectThemeMode = onSelectThemeMode,
                     showThemeMode = showThemeMode,
                     wifiAware = wifiAware,
+                    onToggleWifiAware = onToggleWifiAware,
                     onSelectBluetoothDownloadLimit = onSelectBluetoothDownloadLimit,
                     onToggleLinkPreviews = onToggleLinkPreviews,
                     onOpenCalls = onOpenCalls,
@@ -159,6 +163,37 @@ class SettingsScreenContentTest {
         compose.onNodeWithTag("settings_content_filtering").performScrollTo().assertIsOn()
         compose.onNodeWithTag("settings_content_filtering").performClick()
         assertEquals(false, toggled)
+    }
+
+    /** GitHub #44: Settings › Wi-Fi Aware, on by default, says what each position costs, and toggles the switch. */
+    @Test
+    fun theWifiAwareRowStatesTheTradeAndTogglesTheSwitch() {
+        var toggled: Boolean? = null
+        render(wifiAwareOn = true, onToggleWifiAware = { toggled = it })
+        compose.onNodeWithTag("settings_wifi_aware").performScrollTo().assertIsOn()
+        compose.onNodeWithText(context.getString(R.string.settings_wifi_aware_subtitle_on)).assertExists()
+        compose.onNodeWithTag("settings_wifi_aware").performClick()
+        assertEquals(false, toggled)
+    }
+
+    @Test
+    fun theWifiAwareRowOffSaysBluetoothCarriesTheMesh() {
+        render(wifiAwareOn = false)
+        compose.onNodeWithTag("settings_wifi_aware").performScrollTo().assertIsOff()
+        compose.onNodeWithText(context.getString(R.string.settings_wifi_aware_subtitle_off)).assertExists()
+    }
+
+    @Test
+    fun theWifiAwareRowIsAbsentOnAPhoneWithoutIt() {
+        render(wifiAware = false)
+        compose.onNodeWithTag("settings_wifi_aware").assertDoesNotExist()
+    }
+
+    @Test
+    fun lowPowerModeIsNotOffered() {
+        // LOW_POWER_OFFERED is false since GitHub #44: the row's code stays, the row does not show.
+        render()
+        compose.onNodeWithTag("settings_low_power").assertDoesNotExist()
     }
 
     @Test

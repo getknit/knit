@@ -75,6 +75,40 @@ class CompositeMeshTransportTest {
         override val initiatorHeld = heldState.asStateFlow()
         private val offState = MutableStateFlow(false)
         override val switchedOff = offState.asStateFlow()
+        private val dormantState = MutableStateFlow(false)
+        override val dormant = dormantState.asStateFlow()
+        private val candidatesNear = MutableStateFlow<Set<String>>(emptySet())
+        override val awareCandidatesNear = candidatesNear.asStateFlow()
+        private val candidatesHeard = MutableStateFlow<Set<String>>(emptySet())
+        override val awareCandidatesHeard = candidatesHeard.asStateFlow()
+        private val watching = MutableStateFlow(false)
+        override val seesNewcomers = watching.asStateFlow()
+
+        /** What [onForeignAwareCandidates] was handed, in order: near, heard, seesNewcomers. */
+        val candidateCalls = mutableListOf<Triple<Set<String>, Set<String>, Boolean>>()
+
+        override fun onForeignAwareCandidates(
+            near: Set<String>,
+            heard: Set<String>,
+            seesNewcomers: Boolean,
+        ) {
+            candidateCalls += Triple(near, heard, seesNewcomers)
+        }
+
+        fun setCandidates(
+            near: Set<String>,
+            heard: Set<String>,
+            sees: Boolean,
+        ) {
+            candidatesNear.value = near
+            candidatesHeard.value = heard
+            watching.value = sees
+        }
+
+        fun setDormant(dormant: Boolean) {
+            dormantState.value = dormant
+        }
+
         var releases = 0
 
         override fun releaseInitiatorHold() {
@@ -1011,6 +1045,51 @@ class CompositeMeshTransportTest {
             assertEquals("a peer leaving BT's near leaves NAN's", emptySet<String>(), nan.nearCalls.last())
         }
 
+    /** GitHub #44: what wakes, keeps and lets a dormant Wi-Fi Aware plane sleep comes from the other short-range planes. */
+    @Test
+    fun pushesTheOtherShortRangeChildrensAwareCandidatesAndTheirNewcomerWatch() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild(kind = TransportKind.Bluetooth)
+            val nan = FakeChild(hasFastPlane = true, kind = TransportKind.WifiAware)
+            val lora = FakeChild(hasFastPlane = true, kind = TransportKind.LoRa, shortRange = false)
+            CompositeMeshTransport(listOf(bt, nan, lora), backgroundScope)
+            advanceUntilIdle()
+            assertEquals(
+                "the defaults: nobody named, no watch — so a dormancy never fires on them",
+                Triple(emptySet<String>(), emptySet<String>(), false),
+                nan.candidateCalls.last(),
+            )
+
+            bt.setCandidates(near = setOf("a"), heard = setOf("a", "b"), sees = true)
+            lora.setCandidates(near = setOf("board"), heard = setOf("board"), sees = true)
+            advanceUntilIdle()
+            assertEquals(Triple(setOf("a"), setOf("a", "b"), true), nan.candidateCalls.last())
+            assertEquals(
+                "LoRa learns Bluetooth's too, as it learns its near",
+                Triple(setOf("a"), setOf("a", "b"), true),
+                lora.candidateCalls.last(),
+            )
+            assertTrue("a plane never hears its own candidates back", bt.candidateCalls.all { "a" !in it.first })
+            assertTrue(
+                "a long-range plane names no candidate and watches for no newcomer",
+                nan.candidateCalls.all { "board" !in it.first && "board" !in it.second },
+            )
+
+            bt.setCandidates(near = emptySet(), heard = setOf("b"), sees = false)
+            advanceUntilIdle()
+            assertEquals(Triple(emptySet<String>(), setOf("b"), false), nan.candidateCalls.last())
+        }
+
+    @Test
+    fun aSingleChildIsPushedNoCandidates() =
+        runTest(UnconfinedTestDispatcher()) {
+            // A NAN-only phone has nothing to watch for newcomers, so nothing is pushed and dormancy never fires.
+            val nan = FakeChild(hasFastPlane = true, kind = TransportKind.WifiAware)
+            CompositeMeshTransport(listOf(nan), backgroundScope)
+            advanceUntilIdle()
+            assertTrue(nan.candidateCalls.isEmpty())
+        }
+
     @Test
     fun shortRangeReachableExcludesTheLongRangeChild() =
         runTest(UnconfinedTestDispatcher()) {
@@ -1097,6 +1176,7 @@ class CompositeMeshTransportTest {
             val statuses = composite.statuses.value
             assertTrue(statuses.first { it.kind == TransportKind.WifiAware }.switchedOff)
             assertTrue(!statuses.first { it.kind == TransportKind.Bluetooth }.switchedOff)
+            assertFalse(statuses.any { it.dormant })
             assertEquals("Bluetooth still meshes", TransportHealth.Healthy, composite.health.value)
 
             nan.setSwitchedOff(false)
@@ -1105,6 +1185,26 @@ class CompositeMeshTransportTest {
                 !composite.statuses.value
                     .first { it.kind == TransportKind.WifiAware }
                     .switchedOff,
+            )
+        }
+
+    /** GitHub #44: a dormant plane says so on its status line, and is neither switched off nor unhealthy for it. */
+    @Test
+    fun statusesCarryADormantPlane() =
+        runTest(UnconfinedTestDispatcher()) {
+            val bt = FakeChild(kind = TransportKind.Bluetooth)
+            val nan = FakeChild(hasFastPlane = true, kind = TransportKind.WifiAware)
+            val composite = CompositeMeshTransport(listOf(bt, nan), backgroundScope)
+            nan.setDormant(true)
+            advanceUntilIdle()
+            val aware = composite.statuses.value.first { it.kind == TransportKind.WifiAware }
+            assertEquals(TransportStatus(TransportKind.WifiAware, TransportHealth.Healthy, 0, 0, dormant = true), aware)
+            nan.setDormant(false)
+            advanceUntilIdle()
+            assertFalse(
+                composite.statuses.value
+                    .first { it.kind == TransportKind.WifiAware }
+                    .dormant,
             )
         }
 

@@ -22,6 +22,11 @@ object SettingsKeys {
     // Low-power mode's switch (ADR 2026-10.d44b, `LowPowerSwitch`), backup-transient under "low_power_".
     const val LOW_POWER_MODE = "low_power_mode"
 
+    // The Wi-Fi Aware switch (Settings › Wi-Fi Aware, `AwareSwitch`, GitHub #44) and the journal of its one-time move
+    // from low-power mode, both backup-transient under "wifi_aware_".
+    const val WIFI_AWARE_ENABLED = "wifi_aware_enabled"
+    const val WIFI_AWARE_MIGRATED = "wifi_aware_migrated"
+
     // The relay list and its parked subset (`SettingsStore.spoolUrls`), here because `RelayRename` rewrites both in the
     // same edit as the per-host keys below (ADR 2026-10.qpja).
     const val SPOOL_URLS = "spool_urls"
@@ -125,7 +130,9 @@ object SettingsKeys {
      * Wi-Fi Direct host guard (`direct_host_`) and the call microphone's verdict (`call_capture_`): another phone's ROM
      * is not this one's. The supporter badges this phone holds (`badge_held…`) carry the `r` it drew for them, which
      * stays on the phone that drew it.
-     * Low-power mode (`low_power_mode`, ADR 2026-10.d44b) is about this phone's battery, not the person.
+     * Low-power mode (`low_power_mode`, ADR 2026-10.d44b) is about this phone's battery, not the person, and the Wi-Fi
+     * Aware switch (`wifi_aware_enabled`, GitHub #44) about whether this phone's Wi-Fi can spare the airtime: a restored
+     * phone starts with Aware on.
      */
     val TRANSIENT_PREFIXES: List<String> =
         listOf(
@@ -150,5 +157,6 @@ object SettingsKeys {
             CALL_CAPTURE_PREFIX,
             BADGE_HELD,
             "low_power_",
+            "wifi_aware_",
         )
 }

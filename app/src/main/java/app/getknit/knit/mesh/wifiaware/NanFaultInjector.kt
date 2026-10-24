@@ -76,6 +76,47 @@ internal data class NanIcmHooks(
 )
 
 /**
+ * What `…debug.NANDORM` reads back about dormancy ([NanDormancyPolicy], GitHub #44): whether the plane is [dormant] and
+ * the last transition's [why]; how long it has been ([dormantForMs]) and when the next duty attach may run
+ * ([nextDutyInMs], null unless dormant between duties), a duty running ([dutyActive]); awake, how long the idle clock
+ * has run ([idleForMs]) and what holds it attached ([stayReason], null when nothing does); the other planes' candidate
+ * sets and newcomer watch; the debug [held] and the [dutyIntervalMs] in force; and the radio evidence the health and
+ * the advert's flag read ([available] is `isAvailable` now — trial F samples it — [wifiEnabled], [deviceIdle],
+ * [radioOff], [wontRun]).
+ */
+internal data class NanDormancySnapshot(
+    val dormant: Boolean,
+    val why: NanDormancyPolicy.Why?,
+    val dormantForMs: Long,
+    val nextDutyInMs: Long?,
+    val dutyActive: Boolean,
+    val idleForMs: Long,
+    val stayReason: String?,
+    val candidatesNear: Set<String>,
+    val candidatesHeard: Set<String>,
+    val seesNewcomers: Boolean,
+    val held: Boolean,
+    val dutyIntervalMs: Long,
+    val available: Boolean?,
+    val wifiEnabled: Boolean?,
+    val deviceIdle: Boolean?,
+    val radioOff: Boolean,
+    val wontRun: Boolean,
+)
+
+/**
+ * `…debug.NANDORM`'s hooks: [setHold] pins the plane awake (a dormant one wakes, why FORCED) or releases it,
+ * [forceDormant] closes the session for dormancy now, [setDutyInterval] shortens the duty interval for a trial (null
+ * hands it back), [status] reads it all. Each answers with a short verdict where one is useful.
+ */
+internal data class NanDormancyHooks(
+    val setHold: (Boolean) -> String,
+    val forceDormant: () -> String,
+    val setDutyInterval: (Long?) -> Unit,
+    val status: () -> NanDormancySnapshot,
+)
+
+/**
  * Debug-only fault injection for [WifiAwareTransport]'s attach path, so getknit/Knit#9 can be reproduced on
  * hardware that does not have the bug — and, since work item #77, for its responder's `onUnavailable`, so the
  * re-file pacing of [NanResponderPolicy] can be driven on a device whose framework fulfils the request just fine.
@@ -133,6 +174,9 @@ internal object NanFaultInjector {
     @Volatile private var msgFault = NanMsgFault.NONE
 
     @Volatile private var msgPlane: (() -> NanMsgPlaneSnapshot)? = null
+
+    // `…debug.NANDORM`: dormancy's hold, its forced close, the duty interval and the read-back; bound beside [bind].
+    @Volatile private var dormancy: NanDormancyHooks? = null
 
     /** Whether a transport is running and has bound its hooks — false in release, and before `start()`. */
     val bound: Boolean get() = BuildConfig.DEBUG && availability != null
@@ -297,4 +341,25 @@ internal object NanFaultInjector {
     }
 
     fun msgPlaneStatus(): NanMsgPlaneSnapshot? = if (BuildConfig.DEBUG) msgPlane?.invoke()?.copy(fault = msgFault) else null
+
+    /** Called by [WifiAwareTransport.start] with its hooks; `null` on `stop()`, which also forgets the hold and interval. */
+    fun bindDormancy(hooks: NanDormancyHooks?) {
+        if (!BuildConfig.DEBUG) return
+        dormancy = hooks
+    }
+
+    /** Pins the running plane awake, or lets the policy decide again. `null` when no transport is bound. */
+    fun holdAwake(hold: Boolean): String? = if (BuildConfig.DEBUG) dormancy?.setHold?.invoke(hold) else null
+
+    /** Closes the running plane's session for dormancy now. `null` when no transport is bound; else a short verdict. */
+    fun forceDormant(): String? = if (BuildConfig.DEBUG) dormancy?.forceDormant?.invoke() else null
+
+    /** Sets the duty interval for a trial ([ms] null or ≤ 0 hands it back). False when no transport is bound. */
+    fun setDutyInterval(ms: Long?): Boolean {
+        val hooks = if (BuildConfig.DEBUG) dormancy else null
+        hooks?.setDutyInterval?.invoke(ms)
+        return hooks != null
+    }
+
+    fun dormancyStatus(): NanDormancySnapshot? = if (BuildConfig.DEBUG) dormancy?.status?.invoke() else null
 }

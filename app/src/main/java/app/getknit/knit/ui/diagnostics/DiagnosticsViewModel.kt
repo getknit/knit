@@ -139,6 +139,8 @@ class DiagnosticsViewModel(
     private val hostGuard: DirectHostGuard? = null,
     // Which microphone path calls record from (ADR 2026-10.kw29). Null in a build without calls, and in most tests.
     private val captureHealth: CaptureHealth? = null,
+    // The person's Settings › Wi-Fi Aware switch (`AwareSwitch`, GitHub #44), so a plane it keeps off is named so.
+    awareSwitchOn: Flow<Boolean> = flowOf(true),
 ) : ViewModel() {
     private val myNodeId = MutableStateFlow<String?>(null)
 
@@ -231,6 +233,9 @@ class DiagnosticsViewModel(
      */
     val nanOff: StateFlow<Boolean> =
         settings.debugNanOff.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /** Whether the person's Wi-Fi Aware switch is on: off, the plane's row says "off in Settings". */
+    val wifiAwareOn: StateFlow<Boolean> = awareSwitchOn.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
     /** Switches the Wi-Fi Aware plane off or back on. A no-op outside a debug build. */
     fun setNanOff(off: Boolean) {

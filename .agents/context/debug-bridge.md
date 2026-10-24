@@ -58,8 +58,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   save-and-forward loop with no UI. Replies `hash` (the row's), `plainHash`, `bytes`, `mime`; an unheld blob or a
   key that will not open it is an `error`.
 - `…debug.STATE` — self id/name, transport health, reachable peers, and mesh metrics. Each `transports[]` row carries
-  `switchedOff` (Knit has the plane off: low-power mode or `NANOFF`), and `lowPower` is low-power mode's switch and
-  posture (as `LOWPOWER` reports it). Add `--es conv <id>`
+  `switchedOff` (Knit has the plane off: the person's Settings switch, `AWARE`, low-power mode or `NANOFF`) and
+  `dormant` (Wi-Fi Aware resting, detached, while no phone nearby can use it — GitHub #44, `NANDORM`), and `lowPower`
+  is low-power mode's switch and posture (as `LOWPOWER` reports it). Add `--es conv <id>`
   to also dump that thread's latest messages (`--ei limit N`, default 20) — this is how you **verify receipt
   on the other device without a screenshot**: the body turning up in the receiver's `messages[]`. Each row
   with an attachment carries `attachmentHash` (the hash the frame names), `attachmentKeyed` (sealed or not),
@@ -563,7 +564,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `band5PrimaryUsable`, `postCure` and `icmLitNow`; each verdict change logs `icm verdict: on=… band=… why=…`. The
   pinned band **survives `--ez on` and the session cycle** and goes only with the transport's stop (`NANOFF`,
   low-power mode, a mesh stop) or a process restart, so a trial or battery arm that follows a band trial starts
-  with `--es band auto`.
+  with `--es band auto`. `--ez on`'s session cycle cannot re-attach a **dormant** plane (`NANDORM`): pin it awake
+  with `NANDORM --ez hold true` first, as `battery-trial.py`'s arms do.
   `NANDIAL --es to <peerNodeId>` initiates an NDP to a peer currently in `discovered` **regardless of the id
   tie-break**, so the smaller node can knock on the larger node's responder — the far side's HELLO check still
   closes the socket; the NDP forming (`onDataPathRequest` there) is the trial. It answers `peer not in
@@ -600,7 +602,8 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
 - `…debug.NANOFF` — the **Wi-Fi Aware switch** (debug builds' own; `SettingsStore.debugNanOff`, also a switch under
   Diagnostics' Transports), for running the mesh on Bluetooth alone without touching the phone's Wi-Fi. `--ez off true`
   stops the plane (its links, responder and session go, `neighbors`/`reachable` empty, the composite's file route
-  skips it), `--ez off false` starts it again, no extras reads. The reply carries `off`, `present` (false where the
+  skips it), `--ez off false` starts it again, no extras reads. The reply carries `off`, `userSwitchOff` (the person's
+  Settings › Wi-Fi Aware switch is off, `AWARE` — it keeps the plane off whatever `off` says), `present` (false where the
   device has no Wi-Fi Aware plane — the switch is still stored) and the Wi-Fi Aware row's `health` (`Unavailable`
   while off) / `linked` / `nearby`. Applied live by `mesh/SwitchableTransport` (which low-power mode drives in every
   build too), which logs
@@ -610,7 +613,38 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `debug switch: WifiAware off in <n>ms (floor)`; the row's `health` and `switchedOff` follow what the plane is
   doing, not what was asked, so a trial waits for `off → stopped` before it measures. It persists across restarts (a `debug_` key, never in a backup) until switched back
   on. While it is off, a NAN action that needs the live transport (`NANICM`, say) finds nothing bound.
+- `…debug.AWARE` — the person's **Settings › Wi-Fi Aware switch** (`AwareSwitch`, key `wifi_aware_enabled`, GitHub
+  #44; every build has the switch, debug builds this action). `--ez on true|false` sets it, no extras reads. The reply
+  carries `on`, `present` and the Wi-Fi Aware row's `health` / `switchedOff` / `dormant`, which follow the plane
+  through the same `SwitchableTransport` and floors as `NANOFF` (`debug switch: WifiAware off → stopped`). The field
+  log writes `aware_switch` at each session's start and change. The key is phone-bound (never in a backup); a phone
+  that had low-power mode on reads the switch off until its one-time move (`wifi_aware_migrated`) is journaled.
+- `…debug.NANDORM` — Wi-Fi Aware **dormancy** (`NanDormancyPolicy`, GitHub #44): with nothing to do for 3 min (no cue
+  target, no link, nothing owed, no Aware candidate heard by Bluetooth, and Bluetooth demonstrably watching for
+  newcomers) the plane closes its session, and NAN goes down with it (`aware dormant: IDLE — …`); a new candidate near,
+  a bulk transfer to one, Knit coming on screen, Bluetooth going blind or a duty attach that finds someone wakes it
+  (`aware awake: <why>`), and every 12 min it attaches for 30 s (`aware duty attach: …`, then `aware dormant:
+  DUTY_EMPTY` or `aware awake: DUTY`). `heal()` never wakes it. `--ez hold true` pins the plane awake (a dormant one
+  wakes, why `FORCED`), `--ez hold false` lets the policy decide again; `--ez now true` closes the session for dormancy
+  now (an error string in `message` — `link activity in progress`, `paused …`, `already dormant` — when it will not);
+  `--el duty <ms>` sets the duty interval for a trial (`0` hands it back; a dormant plane reschedules from its close).
+  With several extras: hold, then duty, then now. No extras reads. The reply carries `dormant`, `why` (the last
+  transition's: IDLE/SIGHTING/BULK/VISIBLE/DUTY/DUTY_EMPTY/BLIND/FORCED), `dormantForMs`, `nextDutyInMs` (null unless
+  dormant between duties), `dutyActive`, `idleForMs` and `stayReason` (awake: what holds it attached, null when the idle
+  clock runs), `candidatesNear` / `candidatesHeard` / `seesNewcomers` (what Bluetooth pushed), `held`,
+  `dutyIntervalMs`, and the radio evidence the dormant health and the advert's `FLAG_NO_AWARE` read: `available`
+  (`isAvailable` now — trial F samples it beside `dumpsys wifiaware`'s `mUsageEnabled`), `wifiEnabled`, `deviceIdle`,
+  `radioOff` (Wi-Fi off, deep Doze, or `isAvailable` false for 30 s outside the 30 s beat after our own close) and
+  `wontRun`. A dormant plane's row reads `Healthy` unless `radioOff`. The field log writes `nan_dormant` per
+  transition. Hold, interval and dormancy all go with the transport's stop (`NANOFF`, `AWARE`, a mesh stop). While
+  `seesNewcomers` is false (no Bluetooth plane, or one not yet reporting) the plane never goes dormant. A candidate
+  already near when `--ez now true` forces dormancy does not wake it (only a new one does, or the other triggers);
+  after any other close a near candidate wakes it on the next dormant tick. The negative
+  control is `--ez hold true`, which keeps `stayReason: "held"` for as long as it is set.
 - `…debug.LOWPOWER` — **low-power mode** (ADR 2026-10.d44b): the user's switch (`LowPowerSwitch`, the Settings row).
+  **Not offered since GitHub #44** (`LOW_POWER_OFFERED = false`): the row is hidden, the posture stays off whatever
+  the key, Battery Saver or the charger say, and the reply's `offered` is false; the rest below is what the mode does
+  when it is offered again.
   `--ez on true|false` sets it, no extras reads. The reply carries `lowPower` (`switch`, `batterySaver`, `charging`,
   the posture's `active` and `reason` SWITCH/BATTERY_SAVER, null while off) and the Wi-Fi Aware row's `awareHealth` /
   `awareSwitchedOff`, which follow the plane, not the switch (the floors under `NANOFF` apply). The posture also comes

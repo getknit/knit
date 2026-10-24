@@ -357,3 +357,13 @@ is on: `BluetoothMeshTransport` reads `LowPowerSource.current` through a `lowPow
 lever of Phase 1: the posture still gives up only Wi-Fi Aware and the motion heal, and a drop's hunt and fast advert
 are untouched. It keeps the new duty out of a phone the user or Battery Saver asked to save power.
 
+
+## Amendment 2026-10-24 — not offered for now (ADR 2026-10.2t49)
+
+The mode is dormant: `LOW_POWER_OFFERED = false` in `mesh/power/LowPower.kt` hides its Settings row and makes
+`LowPowerSource.posture` inactive whatever the switch, Battery Saver or the charger say, so nothing the person cannot
+see turns Wi-Fi Aware off or leaves the motion heal unarmed. Today its one lever, Wi-Fi Aware off, is the person's own
+Settings › Wi-Fi Aware switch (`data/settings/AwareSwitch`), and a phone with no Aware peer near now detaches by itself
+(2t49's dormancy), which is most of what the mode was for. A phone that had the mode on is moved to the switch set off,
+once. The code, the key and `…debug.LOWPOWER` (which answers `offered: false`) stay for a future posture that gives up
+more than Aware; flipping the constant brings the row and the Battery Saver trigger back together.

@@ -99,8 +99,20 @@ Bluetooth-adjacent routing that stays in `AGENTS.md`, because another subsystem 
   reading heard in the latest burst, raw on its own PHY (no Coded credit), is ≥ −90 and that are not
   `CodedPhyPolicy.codedOnly`. A stored `rssi1m` outlives 1M going silent, so freshness is the tracker's own
   latest-burst rule, shared with `smoothed()`. It is built from the same `snapshots(now)` call as `reachable` (so
-  `near ⊆ reachable`), cleared at stop and adapter off, and logged as the last field of `bt state` (`near=[…]`). No
-  wall-clock gate: nothing republishes when one expires.
+  `near ⊆ reachable`), cleared at stop and adapter off, and logged in `bt state` (`near=[…]`, with the dormancy
+  fields after it). Since ADR 2026-10.2t49 it also ages: `publishReachable()` runs at the end of every presence window
+  (`endWindow()`), so an expired entry leaves within one gap. There is still no wall-clock timer between windows.
+- **When touching `BleAdvertPayload.FLAG_NO_AWARE` / `flags(noAware)`, `NoAwareFlag`, `AwareCandidateTracker`,
+  `BluetoothMeshTransport.awareCandidatesNear` / `awareCandidatesHeard` / `seesNewcomers` / `awareWontRun`,
+  `endWindow()`, `publishLock`, or `BleAdvertiser`'s `dataStale` re-push:** READ ADR 2026-10.2t49. The flag is the
+  absence of Aware (bit 2, set while this phone will not run it), set at once and cleared only after 60 s held false, so
+  every older build reads as a candidate and Doze windows do not wake neighbours. A peer is a candidate only on a
+  service-data sighting with the bit clear; a GATT read forgets it, and a `CAP_DOORBELL` HELLO or a never-sighted link
+  never makes one. A link counts only while its readback says 1M or 2M; Coded, unknown or no readback count as Coded.
+  The heard set lapses only after 90 s and a whole 1M window without the peer, so it outlives one gap whatever the gap;
+  near ⊆ heard. `seesNewcomers` falls at once on adapter off and `stop()` and is set at each window's end from whether
+  the scan ran its length registered. A refused data write is re-pushed on the next reassert, never in a loop. Tests:
+  `AwareCandidateTrackerTest`, `NoAwareFlagTest`, `BleEndOfWindowTest`, `BleAdvertiserTest`, `BleAdvertPayloadTest`.
 - **When touching `BleAdvertiser.reassert` / `onAdvertisingEnabled`, `AdvertReassertPolicy`, or the transport's
   `advertLoop` / ACL edge receiver:** READ ADR 2026-10.9utz. The stack re-enables its advertising sets around every
   connection and the controller can refuse that (0x0d), reporting it only for a connection *to* the set — never for

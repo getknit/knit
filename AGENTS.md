@@ -273,6 +273,9 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   unarmed, the heartbeat and resume heals kept); each further lever waits for a battery arm that shows it paying
   (`scripts/battery-trial.py`). A plane Knit switched off is never a "turn on Wi-Fi" banner. Regression:
   `LowPowerTest`, `SwitchableTransportTest`, `MeshServiceMotionTest`, `RadioWarningTest`, `LowPowerSwitchTest`.
+  The mode is **not offered for now** (`LOW_POWER_OFFERED`, d44b's 2026-10-24 amendment): its row is hidden and its
+  posture inactive, and the visible control is Settings › Wi-Fi Aware (`AwareSwitch`, ADR 2026-10.2t49), whose dormancy
+  and switch route through `.agents/context/wifi-aware.md`.
 - **When touching `mesh/power/PowerPolicy` (`idleAfterScan` / `lonelyRelaxed` / the `LONELY_*` constants),
   `mesh/wifiaware/NanLonelyPolicy`, or the cadence in `BluetoothMeshTransport.scanLoop`:** READ ADR
   2026-09.kb68 and ADR 2026-09.w3xk. The shared rule is "alone ≥ 3 min, not charging"; each radio picks its

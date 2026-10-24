@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.getknit.knit.call.OwnIceServers
 import app.getknit.knit.data.relay.RelayFacts
+import app.getknit.knit.data.settings.AwareSwitch
 import app.getknit.knit.data.settings.BluetoothDownloadLimit
 import app.getknit.knit.data.settings.CallIntake
 import app.getknit.knit.data.settings.LowPowerSwitch
@@ -110,6 +111,8 @@ class SettingsViewModel(
     intake: Flow<CallIntake> = flowOf(CallIntake()),
     private val liveCalls: Boolean = true,
     private val meshCalls: Boolean = false,
+    // The person's Settings › Wi-Fi Aware switch (GitHub #44); null reads on and writes nothing (tests that skip it).
+    private val awareSwitch: AwareSwitch? = null,
 ) : ViewModel() {
     private val nodeId = MutableStateFlow("")
     private val alias = MutableStateFlow("")
@@ -207,6 +210,11 @@ class SettingsViewModel(
         combine(lowPowerSwitch.on, lowPowerPosture) { on, posture -> LowPowerSummary(on, posture.reason) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LowPowerSummary())
 
+    /** Whether Wi-Fi Aware is on (Settings › Wi-Fi Aware). On by default; off stops the plane outright. */
+    val wifiAwareOn: StateFlow<Boolean> =
+        (awareSwitch?.on ?: flowOf(true))
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
     init {
         viewModelScope.launch {
             val id = identity.nodeId()
@@ -229,6 +237,11 @@ class SettingsViewModel(
 
     fun setLowPowerMode(value: Boolean) {
         viewModelScope.launch { lowPowerSwitch.set(value) }
+    }
+
+    fun setWifiAwareOn(value: Boolean) {
+        val switch = awareSwitch ?: return
+        viewModelScope.launch { switch.set(value) }
     }
 
     fun setDynamicColor(value: Boolean) {

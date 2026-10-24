@@ -36,6 +36,8 @@
                 <action android:name="app.getknit.knit.debug.NANDIAL" />
                 <action android:name="app.getknit.knit.debug.NANINIT" />
                 <action android:name="app.getknit.knit.debug.NANMSG" />
+                <action android:name="app.getknit.knit.debug.NANDORM" />
+                <action android:name="app.getknit.knit.debug.AWARE" />
                 <action android:name="app.getknit.knit.debug.BLECAP" />
                 <action android:name="app.getknit.knit.debug.NANOFF" />
                 <action android:name="app.getknit.knit.debug.LOWPOWER" />

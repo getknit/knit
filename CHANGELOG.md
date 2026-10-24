@@ -35,6 +35,11 @@ document:
 
 - Message notifications now play Knit's own sound, a soft long-short-long chime that is K in Morse code. Only
   new installs get it, so if Knit is already on your phone, its notifications keep the sound they have now.
+- Low-power mode in Settings is now a Wi-Fi Aware switch, and Battery Saver no longer turns it on. If you had
+  Low-power mode on, Wi-Fi Aware stays off until you switch it back on.
+- Knit now turns Wi-Fi Aware off while no nearby phone can use it, and back on when one comes into Bluetooth
+  range or at its check every 12 minutes. On some phones that keeps your Wi-Fi faster and your Bluetooth
+  headphones steadier when you're alone.
 
 ## [2.10.0](https://github.com/getknit/knit/releases/tag/v2.10.0) — 2026-10-25T01:20:20Z
 

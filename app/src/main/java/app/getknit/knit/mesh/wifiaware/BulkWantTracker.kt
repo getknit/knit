@@ -56,6 +56,13 @@ internal class BulkWantTracker(
         return true
     }
 
+    /** True while any bulk transfer is pending: one of dormancy's reasons to stay attached ([NanDormancyPolicy]). */
+    @Synchronized
+    fun anyWanted(): Boolean {
+        prune(clock())
+        return wantedUntil.isNotEmpty()
+    }
+
     /**
      * An initiate to [nodeId] failed: drop its mark and refuse re-marks for [failCooldownMs], so retry
      * pressure stays with the existing digest-driven backoff instead of bulk demand stacking on top.

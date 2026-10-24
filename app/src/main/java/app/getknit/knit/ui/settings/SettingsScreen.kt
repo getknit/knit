@@ -62,6 +62,7 @@ import app.getknit.knit.data.settings.BluetoothDownloadLimit
 import app.getknit.knit.di.CALL_SETTINGS_WIRED
 import app.getknit.knit.mesh.lora.BoardBattery
 import app.getknit.knit.mesh.lora.LoraPlane
+import app.getknit.knit.mesh.power.LOW_POWER_OFFERED
 import app.getknit.knit.mesh.power.LowPowerReason
 import app.getknit.knit.ui.BackgroundBattery
 import app.getknit.knit.ui.DeviceSupervision
@@ -100,8 +101,10 @@ internal data class SettingsFormState(
     val lora: LoraSummary = LoraSummary(),
     /** The "also active on another phone" row (ADR 2026-09.ypcc), shown while the chat list's banner is. */
     val cloneVisible: Boolean = false,
-    /** Low-power mode's switch and what holds it on (ADR 2026-10.d44b). */
+    /** Low-power mode's switch and what holds it on (ADR 2026-10.d44b); its row shows only while it is offered. */
     val lowPower: LowPowerSummary = LowPowerSummary(),
+    /** Settings › Wi-Fi Aware (GitHub #44): on by default. */
+    val wifiAwareOn: Boolean = true,
 )
 
 /**
@@ -133,6 +136,7 @@ fun SettingsScreen(
     val lora by viewModel.loraSummary.collectAsStateWithLifecycle()
     val cloneVisible by viewModel.cloneVisible.collectAsStateWithLifecycle()
     val lowPower by viewModel.lowPower.collectAsStateWithLifecycle()
+    val wifiAwareOn by viewModel.wifiAwareOn.collectAsStateWithLifecycle()
     // The clone row's "Sign out here": one confirmation, then the wipe (ui/signout/SignOut).
     var showSignOut by remember { mutableStateOf(false) }
 
@@ -160,6 +164,7 @@ fun SettingsScreen(
                 lora = lora,
                 cloneVisible = cloneVisible,
                 lowPower = lowPower,
+                wifiAwareOn = wifiAwareOn,
             ),
         battery = rememberOnResume { backgroundBattery(context) },
         unusedPause = rememberOnResume { unusedAppPause(context) },
@@ -172,6 +177,7 @@ fun SettingsScreen(
         onToggleLinkPreviews = viewModel::setLinkPreviewsEnabled,
         onToggleDynamicColor = viewModel::setDynamicColor,
         onToggleLowPower = viewModel::setLowPowerMode,
+        onToggleWifiAware = viewModel::setWifiAwareOn,
         onOpenRelays = onOpenRelays,
         onOpenLora = onOpenLora,
         onOpenCalls = onOpenCalls,
@@ -200,6 +206,7 @@ internal fun SettingsScreenContent(
     onToggleLinkPreviews: (Boolean) -> Unit = {},
     onToggleDynamicColor: (Boolean) -> Unit = {},
     onToggleLowPower: (Boolean) -> Unit = {},
+    onToggleWifiAware: (Boolean) -> Unit = {},
     onOpenRelays: () -> Unit,
     onOpenLora: () -> Unit = {},
     onOpenCalls: () -> Unit = {},
@@ -224,8 +231,11 @@ internal fun SettingsScreenContent(
     // Same, for the platform's per-app night mode — a different fact that happens to carry the same
     // API level; see ui/theme/ThemeMode.kt.
     showThemeMode: Boolean = THEME_MODE_SUPPORTED,
-    // Whether this phone has Wi-Fi Aware at all, so the large-download row never promises a plane it lacks.
+    // Whether this phone has Wi-Fi Aware at all, so the large-download row never promises a plane it lacks, and the
+    // Wi-Fi Aware switch shows only where there is a plane to switch.
     wifiAware: Boolean = rememberWifiAwareSupported(),
+    // Whether low-power mode is offered (`LOW_POWER_OFFERED`, false since GitHub #44): its row stays in the code.
+    showLowPower: Boolean = LOW_POWER_OFFERED,
     onAllowBattery: () -> Unit,
     onOpenBatterySettings: () -> Unit = {},
     // Who else holds this phone's switches (a Family Link parent, an administrator). Read in the stateful
@@ -386,14 +396,30 @@ internal fun SettingsScreenContent(
                 modifier = Modifier.testTag("settings_backup"),
             )
 
-            // Low-power mode sits with the battery rows: what Knit does with less, above what Android lets it do.
-            ToggleRow(
-                title = stringResource(R.string.settings_low_power_title),
-                subtitle = lowPowerSubtitle(form.lowPower),
-                enabled = form.lowPower.switchOn,
-                onToggle = onToggleLowPower,
-                modifier = Modifier.testTag("settings_low_power"),
-            )
+            // The Wi-Fi Aware switch sits with the battery rows, where low-power mode was: what Knit asks of this phone's
+            // radios, above what Android lets it do. The subtitle states the trade (GitHub #44).
+            if (wifiAware) {
+                ToggleRow(
+                    title = stringResource(R.string.settings_wifi_aware_title),
+                    subtitle =
+                        stringResource(
+                            if (form.wifiAwareOn) R.string.settings_wifi_aware_subtitle_on else R.string.settings_wifi_aware_subtitle_off,
+                        ),
+                    enabled = form.wifiAwareOn,
+                    onToggle = onToggleWifiAware,
+                    modifier = Modifier.testTag("settings_wifi_aware"),
+                )
+            }
+
+            if (showLowPower) {
+                ToggleRow(
+                    title = stringResource(R.string.settings_low_power_title),
+                    subtitle = lowPowerSubtitle(form.lowPower),
+                    enabled = form.lowPower.switchOn,
+                    onToggle = onToggleLowPower,
+                    modifier = Modifier.testTag("settings_low_power"),
+                )
+            }
 
             BatteryOptimizationRow(battery = battery, onAllow = onAllowBattery, onOpenSettings = onOpenBatterySettings)
             UnusedAppPauseRow(unusedPause = unusedPause, onOpenSettings = onOpenUnusedPauseSettings)

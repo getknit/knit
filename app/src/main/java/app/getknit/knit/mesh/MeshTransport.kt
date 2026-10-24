@@ -78,8 +78,10 @@ enum class TransportKind { Bluetooth, WifiAware, LoRa, Other }
  * this radio's [MeshTransport.radioContended] hint (Bluetooth ↔ A2DP audio), shown as a diagnostic flag;
  * [initiatorHeld] is its [MeshTransport.initiatorHeld] (Wi-Fi Aware has stopped starting data paths from this
  * phone), shown as a flag and a Diagnostics section with the way back. [switchedOff] is its
- * [MeshTransport.switchedOff]: Knit itself has the plane off (low-power mode, or a debug build's switch), so its
- * [TransportHealth.Unavailable] is not a radio the user turned off and asks nothing of them (ADR 2026-10.d44b).
+ * [MeshTransport.switchedOff]: Knit itself has the plane off (the Settings switch, low-power mode, or a debug build's
+ * switch), so its [TransportHealth.Unavailable] is not a radio the user turned off and asks nothing of them (ADR
+ * 2026-10.d44b). [dormant] is its [MeshTransport.dormant]: the plane is up but detached because no phone that could use
+ * it is near (GitHub #44) — idle, not off, and its health says nothing worse for it.
  */
 data class TransportStatus(
     val kind: TransportKind,
@@ -89,6 +91,7 @@ data class TransportStatus(
     val contended: Boolean = false,
     val initiatorHeld: Boolean = false,
     val switchedOff: Boolean = false,
+    val dormant: Boolean = false,
 )
 
 /** Shared "never contended" default for [MeshTransport.radioContended], so a transport without the signal
@@ -100,6 +103,15 @@ internal val NEVER_HELD: StateFlow<Boolean> = MutableStateFlow(false)
 
 /** Shared "never switched off" default for [MeshTransport.switchedOff] (only `SwitchableTransport` overrides it). */
 internal val NEVER_SWITCHED_OFF: StateFlow<Boolean> = MutableStateFlow(false)
+
+/** Shared "never dormant" default for [MeshTransport.dormant] (only the Wi-Fi Aware plane overrides it). */
+internal val NEVER_DORMANT: StateFlow<Boolean> = MutableStateFlow(false)
+
+/** Shared empty default for [MeshTransport.awareCandidatesNear] / [MeshTransport.awareCandidatesHeard]. */
+internal val NO_AWARE_CANDIDATES: StateFlow<Set<String>> = MutableStateFlow(emptySet())
+
+/** Shared "no newcomer watch" default for [MeshTransport.seesNewcomers]: a plane that does not say so never counts. */
+internal val SEES_NO_NEWCOMERS: StateFlow<Boolean> = MutableStateFlow(false)
 
 /**
  * A frame received from a neighbor: the verbatim [wire] (its [WireEnvelope.signed]/[WireEnvelope.sig]
@@ -341,6 +353,37 @@ interface MeshTransport {
      */
     val switchedOff: StateFlow<Boolean> get() = NEVER_SWITCHED_OFF
 
+    /**
+     * Whether this plane is up but **detached** on purpose because nothing nearby could use it — Wi-Fi Aware's dormancy
+     * (`mesh/wifiaware/NanDormancyPolicy`, GitHub #44): attached Aware costs a screen-on phone about two thirds of its
+     * Wi-Fi throughput. Not [switchedOff]: the plane wakes by itself for a phone that can use it, and its health reads
+     * Healthy unless the radio is off by evidence. Carried as [TransportStatus.dormant]. Defaults to never
+     * ([NEVER_DORMANT]); only Wi-Fi Aware overrides it, and `SwitchableTransport` passes its child's through.
+     */
+    val dormant: StateFlow<Boolean> get() = NEVER_DORMANT
+
+    /**
+     * The peers this short-range plane has positive evidence can run Wi-Fi Aware, heard **near** enough to be worth
+     * waking a dormant Aware plane for (the Bluetooth plane: a service-data advert whose flags say Aware runs there,
+     * GitHub #44). A subset of [awareCandidatesHeard]. [CompositeMeshTransport] pushes the union of the siblings' sets
+     * through [onForeignAwareCandidates]. Default empty: a plane that cannot tell never names one.
+     */
+    val awareCandidatesNear: StateFlow<Set<String>> get() = NO_AWARE_CANDIDATES
+
+    /**
+     * As [awareCandidatesNear], but every candidate this plane still **hears**, with a linger long enough that a peer
+     * heard in every scan window never drops out between them: what keeps a dormant-able Aware plane attached. Default
+     * empty.
+     */
+    val awareCandidatesHeard: StateFlow<Set<String>> get() = NO_AWARE_CANDIDATES
+
+    /**
+     * Whether this plane demonstrably watches for newcomers right now (Bluetooth: adapter on, started, and its last scan
+     * window really ran). Wi-Fi Aware goes dormant only while some sibling says so, since that sibling is then what
+     * tells it a phone came; [CompositeMeshTransport] ORs it across the short-range siblings. Default false.
+     */
+    val seesNewcomers: StateFlow<Boolean> get() = SEES_NO_NEWCOMERS
+
     /** Frames received from neighbors (after transport-level decode, before mesh dedup/relay). */
     val inbound: Flow<InboundFrame>
 
@@ -421,6 +464,18 @@ interface MeshTransport {
      * advert) must not corroborate a process kill (ADR 2026-09.9dnk). Default no-op.
      */
     fun onForeignNear(peers: Set<String>) {}
+
+    /**
+     * The other short-range planes' word on phones that can run Wi-Fi Aware (GitHub #44): the union of their
+     * [awareCandidatesNear] ([near], what wakes a dormant Aware plane) and [awareCandidatesHeard] ([heard], what keeps
+     * it attached), and the OR of their [seesNewcomers]. Driven by [CompositeMeshTransport] beside [onForeignNear];
+     * LoRa is excluded as there. Default no-op — only Wi-Fi Aware overrides it.
+     */
+    fun onForeignAwareCandidates(
+        near: Set<String>,
+        heard: Set<String>,
+        seesNewcomers: Boolean,
+    ) {}
 
     /**
      * Hints that a **large file transfer** with [peer nodeId] is imminent (an attachment blob is about to be
