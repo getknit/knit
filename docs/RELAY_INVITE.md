@@ -84,10 +84,14 @@ without a sheet, and the sheet is built around one question — *do you trust th
   one host with the untokened one refused `4001` forever. So: a tokened invite over an untokened entry
   *replaces* it (said on the sheet); an untokened one over a tokened entry is "already in your list" and
   never downgrades the stored credential.
-- **A different secret at the same relay is a rotation.** §7.4 is one commons per spool, and a rotated
-  room "simply goes silent"; the relays screen keys rooms by URL, so a second room there would have no
-  Leave. The sheet says the old room and its history leave this phone — the same sentence the Leave dialog
-  states — and confirming leaves then joins.
+- **A different secret at the same relay is a second room** (`docs/SPOOL_PROTOCOL.md` §7.4, C-7.4-18): since
+  2026-10-24 a spool may run several, so an invite can no longer say that a room was rotated; only the spool
+  can, by leaving the room's tag out of its HELLO's `rooms`. **The app as built still reads it as a
+  rotation**, from when §7.4 was one commons per spool: the relays screen keys rooms by URL, so a second room
+  there would have no Leave, and the sheet says the old room and its history leave this phone — the same
+  sentence the Leave dialog states — and confirming leaves then joins. That is what C-7.4-18 forbids. Until
+  the follow-up joins the second room beside the first, an operator gives a second room's invite only to
+  members on a build that reads `rooms` (§7.4's note on clients that predate it).
 - A build with the commons dark (`BuildConfig.COMMONS` off) applies the relay half and ignores the room
   half without mentioning it.
 - **A customer key is a lent quota.** The sheet names the issuer's host and says what the key does: this phone

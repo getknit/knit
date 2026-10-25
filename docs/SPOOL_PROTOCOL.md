@@ -6,8 +6,8 @@
 |--------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Protocol version   | 1                                                                                                                                                                       |
 | Status             | Normative. Implemented and shipping (see Appendix A)                                                                                                                    |
-| This revision      | 2026-10-22                                                                                                                                                              |
-| Decision record    | ADR 019 (+ M4/M5/M6 amendments, ADR 020, ADR 021, ADR 042, ADR 062); §7.6–§7.7: knit-spool ADR 2026-10.bxsg, knit-spool ADR 2026-10.h6pt, knit-spool ADR 2026-10.3wdy, knit-spool ADR 2026-10.zprp                                                                                                              |
+| This revision      | 2026-10-24                                                                                                                                                              |
+| Decision record    | ADR 019 (+ M4/M5/M6 amendments, ADR 020, ADR 021, ADR 042, ADR 062); §7.4: ADR 2026-09.wx8e, ADR 2026-10.xhfr, ADR 2026-10.wqu2; §7.6–§7.7: knit-spool ADR 2026-10.bxsg, knit-spool ADR 2026-10.h6pt, knit-spool ADR 2026-10.3wdy, knit-spool ADR 2026-10.zprp                                                                                                              |
 | Client reference   | `mesh/crypto/scope/` (`ScopeCrypto`, `SpoolPow`), `mesh/spool/` (`SpoolRecords`, `ScopeFrames`, `ScopeAttachments`, `GroupRootPolicy`, `ScopeRegistry`, `ScopeSync`)    |
 | Spool reference    | [`knit-spool`](https://github.com/getknit/knit-spool) (AGPL-3.0, separate repository) + its conformance suite                                                           |
 | Executable anchors | `ScopeCryptoTest`, `ScopeVectorTest`, `SpoolPowTest`, `SpoolRecordsTest`, `ScopeAttachmentsTest`, `ScopeFramesTest`, `GroupRootPolicyTest`, `AttachmentDeferPolicyTest` |
@@ -112,7 +112,8 @@ nothing a member cannot refill.
 ### 1.4 Non-goals in v1
 
 - Carrying the plaintext Nearby broadcast room (proximity semantic, spam surface). The **commons** (§7.4)
-  is not that room: it is one keyed room per spool, private to whoever holds its invite, added on 2026-09-12.
+  is not that room: it is a keyed room on a spool, private to whoever holds its invite, added on 2026-09-12; a
+  spool may run several since 2026-10-24.
 - Contact discovery, or any server-side identity. (A pair that already holds each other's identity —
   from a card exchanged out of band — may rendezvous, §3.5; a spool still learns no identity from it.)
 - Spool-to-spool federation.
@@ -971,7 +972,7 @@ Field names are the CBOR map keys. `bstr32`/`bstr8` are byte strings of that len
 | `err`    | s→c         | `t, code: String, q?: Long, scope?: bstr32, msg?: String, retryMs?: Long`                                                    | Terminal error, connection-scoped when `q` is absent                                                                                                                                                                            |
 
 A spool's `hello` may also carry optional capability fields, each defined in its own section and each
-signalled by its presence: `commons` (§7.4), `moderation` (§7.5), `turn`, `ent`, `entGates` and `stun`
+signalled by its presence: `commons` and `rooms` (§7.4), `moderation` (§7.5), `turn`, `ent`, `entGates` and `stun`
 (§7.6), and `cast` (§7.7).
 
 **Error registry** (append-only; unknown codes are terminal-generic): `version`, `pow`,
@@ -1027,16 +1028,18 @@ signalled by its presence: `commons` (§7.4), `moderation` (§7.5), `turn`, `ent
 
 ### 7.4 The commons
 
-One optional **shared scope per spool**: a room for everyone on a private relay — a household, a team,
-one organisation — where the members hold an invite and the spool holds only the invite's hash. The
-reference daemon implements the spool half (`knit-spool commons-invite`, `SPOOL_COMMONS_*`); the
-derivations and the client half are normative here.
+Optional **shared scopes on a spool**, called rooms: each one a room for everyone on a private relay who holds
+its invite — a household, a team, one organisation — where the members hold the invite and the spool holds
+only its hash. A spool runs any number of rooms, each from an invite of its own; until the 2026-10-24
+revision it ran at most one (Appendix B). The reference daemon implements the spool half for one room
+(`knit-spool commons-invite`, `SPOOL_COMMONS_*`); the derivations and the client half are normative here.
 
 **The invite and its two halves.** The invite is `knit-commons:v1:<base64url, unpadded>` around a
 32-byte `secret`.
 
 ```
 scopeId = SHA-256(UTF8("knit/spool/v1/commons") ‖ secret)                       // the spool's half
+tag     = SHA-256(UTF8("knit/spool/v1/commons-tag") ‖ scopeId)[0…8)             // the room's name in HELLO
 sealOkm = HKDF(ikm = secret, info = "knit/spool/v1/commons-key", L = 64)         // the members' half
 sealKey = sealOkm[0…32)        nonceKey = sealOkm[32…64)
 ```
@@ -1047,22 +1050,34 @@ owns that derivation; the seal keys follow it into the same family so the two ha
 invite. A spool never learns `secret` and implements no key derivation at all, which is what makes "the
 spool cannot read its own commons" structural rather than a promise.
 
+Both halves are per secret, so two invites are two independent rooms and nothing above changes when a
+spool runs several. What a second room adds is a way for a member to find its own room in a HELLO that
+lists them all without the spool publishing any id: the **tag**, a one-way hash of the id. The spool
+computes it from the id it was configured with, a member from the id it derives, and since a `sub` takes
+the id itself, a tag lets nobody subscribe.
+
 | ID           | Requirement                                                                                                                                                                                                                                                                                                                                                                               |
 |--------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **S-7.4-1**  | A spool with a commons advertises it in HELLO as `commons: { name?, maxFrames, ttlMs, maxBlob, attach? }` (`attach` omitted when false). It MUST NOT include the scope id in any form. Presence of the field is the capability signal.                                                                                                                                                       |
-| **S-7.4-2**  | The commons' bounds are the operator's, pinned. A `sub` for it MUST apply those bounds, ignoring what the client declared, and echo the applied bounds in the `digest` (S-6.2-3 unchanged).                                                                                                                                                                                             |
-| **S-7.4-3**  | The scope exists from the spool's boot, so it is never an unknown scope: the §6.4 creation gates (proof of work, the new-scope bucket) MUST NOT apply to it, and a spool MUST NOT shed it under the storage watermark.                                                                                                                                                                       |
-| **S-7.4-4**  | Pushes into the commons are bounded by a **spool-wide** budget in addition to the per-connection one. A refusal under it is `err rate` with `retryMs`, and MUST NOT count as a strike (§6.4) — congestion on a shared room is not evidence any one member misbehaved.                                                                                                                       |
-| **S-7.4-5**  | Attachment records (§7.3) naming the commons are answered `err malformed` unless the spool advertised `attach = true` for it.                                                                                                                                                                                                                                                             |
+| **S-7.4-1**  | A spool advertises the rooms it runs in HELLO: `rooms: [ { tag: bstr8, name?, maxFrames, ttlMs, maxBlob, attach? } ]` lists every room, one entry each, and `commons: { name?, maxFrames, ttlMs, maxBlob, attach? }` repeats the first entry without its `tag` (`attach` omitted when false, in both). A spool running more than one room MUST send both fields. One running a single room SHOULD send both, and MAY send `commons` alone, the form that predates `rooms`. One running none sends neither. Neither field may carry a scope id in any form other than the one-way `tag` (B-7.4-16). Presence of the fields is the capability signal. (Amended 2026-10-24: it was `commons` alone, for one room per spool.) |
+| **S-7.4-15** | `rooms` is never empty, `commons` carries exactly the `name`, bounds and `attach` of `rooms[0]`, and no two entries share a `tag`: a spool MUST NOT run two rooms whose tags are equal.                                                                                                                                                                                                  |
+| **B-7.4-16** | A room's `tag` is `SHA-256(UTF8("knit/spool/v1/commons-tag") ‖ scopeId)[0…8)`, 8 bytes, encoded as a CBOR byte string (B-2-5). The spool computes it from the scope id it was configured with, a member from the scope id it derived from the invite.                                                                                                                                     |
+| **S-7.4-2**  | Each room's bounds are the operator's, pinned. A `sub` for a room MUST apply that room's bounds, ignoring what the client declared, and echo the applied bounds in the `digest` (S-6.2-3 unchanged).                                                                                                                                                                                      |
+| **S-7.4-3**  | Every room exists from the spool's boot, so none is ever an unknown scope: the §6.4 creation gates (proof of work, the new-scope bucket) MUST NOT apply to a room, and a spool MUST NOT shed one under the storage watermark.                                                                                                                                                              |
+| **S-7.4-4**  | Pushes into a room are bounded by a budget **per room** and by a **spool-wide** total over all its rooms, both in addition to the per-connection one. A refusal under either is `err rate` with `retryMs`, and MUST NOT count as a strike (§6.4) — congestion on a shared room is not evidence any one member misbehaved. A push refused under one budget MUST NOT be charged to the other. (Amended 2026-10-24: with one room, the spool-wide budget was the room's.) |
+| **S-7.4-5**  | Attachment records (§7.3) naming a room are answered `err malformed` unless that room's entry advertised `attach = true`.                                                                                                                                                                                                                                                                   |
+| **S-7.4-19** | A room's `name` is optional, entry by entry. A spool with no access token (S-7.1-3) SHOULD NOT advertise names: anyone who connects reads its HELLO.                                                                                                                                                                                                                                     |
+| **B-7.4-20** | §7.5's `moderation` is spool-wide: it covers every room alike. There is no per-room form: a room entry carries no moderation field, and a client reads none there.                                                                                                                                                                                                                      |
 | **C-7.4-6**  | The commons frame set: `type = profile` from any sender, and `type = commons` whose payload names *this* scope id and carries exactly one of a `chat` and a `reaction`, from a sender whose key is pinned. A `chat` carries no `enc`; an attachment it names carries its type (`attachmentMime`) and its own key (`attachmentKey`) beside the hash, so the blob is ciphertext as §4.5 requires and its address correlates with nothing outside the room. A `reaction` names its target post by a canonical frame id (C-4.4-14's shape) and an emoji or none. Both address nobody (`recipientId` and `group` unset). Nothing else — no receipts, no DM-form chat. A `chat` may also carry `s`, its body's formatting as one byte string (knit-next ADR 2026-10.p95v), which a client that does not read it skips. On the push side a member seals only its **own** frames, and pushes only its **own** attachments. |
 | **C-7.4-13** | A reaction applies latest-`sentAt`-wins per (target post, reactor), a retraction (no emoji) included, so an unordered listing and a restart's re-pull converge. It applies only to a post of the same room or to one the member does not hold yet; a target held in another conversation is someone naming an id from elsewhere, and is dropped. A member's newer reaction to a post supersedes its older one in what it pushes; the older blob ages out on the room's TTL. |
-| **C-7.4-14** | A commons attachment is fetched only through the commons scope (§9.5), never asked for over the mesh: a member reads its want from its own record of the posts it delivered, since none of them is custodied. A fetch the spool answers `total = 0` SHOULD be retried while the post is fresh — its author pushes the post and its chunks in one round — and then left to a slow recheck, because its author may never upload it. Attachment records go only to a spool whose HELLO said `attach` (S-7.4-5). |
+| **C-7.4-14** | A commons attachment is fetched only through the commons scope (§9.5), never asked for over the mesh: a member reads its want from its own record of the posts it delivered, since none of them is custodied. A fetch the spool answers `total = 0` SHOULD be retried while the post is fresh — its author pushes the post and its chunks in one round — and then left to a slow recheck, because its author may never upload it. Attachment records go only to a spool whose HELLO said `attach` for that room (S-7.4-5). |
 | **C-7.4-12** | A post's delivery receipt MUST NOT enter the commons scope. A member that wants to acknowledge one does so as it would a group message: a sealed receipt to the author, carried by the pair's own DM scope (§3.1) once a session exists.                                                                                                                                              |
 | **C-7.4-7**  | A `profile` pulled from the commons re-enters delivery through §9.4 unchanged (it pins the member). A `commons` post MUST NOT: it is delivered to the room's thread through its own door and is never custodied, originated or relayed on the mesh. §9.4 does not apply to it.                                                                                                              |
 | **C-7.4-8**  | A `commons` post whose sender is not yet pinned MUST be deferred, not quarantined (§9.3): the listing is unordered and the member's profile is on its way. The deferral MUST be bounded, after which the blob is quarantined.                                                                                                                                                              |
-| **C-7.4-9**  | Every accepted blob in a commons is accounted (§9.6), a post because custody never holds it and a profile because the member's push set is its own frames only. The accounted bound MUST clear the pinned `maxFrames`.                                                                                                                                                                      |
+| **C-7.4-9**  | Every accepted blob in a commons is accounted (§9.6), a post because custody never holds it and a profile because the member's push set is its own frames only. The accounted bound MUST clear the room's pinned `maxFrames`.                                                                                                                                                               |
 | **C-7.4-10** | A member keeps its own `profile` live in the commons: it is pushed with the member's posts, and when the spool tombstones it (count-evicted inside the member's republish window) the member MUST publish a fresh stamp rather than wait. An id the spool has tombstoned MUST be dropped from the member's local fold for that scope.                                                          |
-| **C-7.4-11** | A commons is subscribed at exactly the spool that runs it, and only once that spool's HELLO has advertised one. A member MUST NOT mine proof of work for it.                                                                                                                                                                                                                              |
+| **C-7.4-11** | A room is subscribed at exactly the spool that runs it, and only once that spool's HELLO has advertised it: an entry in `rooms` carrying the room's `tag`, or, from a spool that sends no `rooms`, a `commons`. A member MUST NOT mine proof of work for it. (Amended 2026-10-24: any advertised commons sufficed.)                                                                    |
+| **C-7.4-17** | A member reads its room from the entry whose `tag` it computes (B-7.4-16): the name, the bounds and `attach`. When HELLO carries `rooms` it MUST ignore `commons`. A tag absent from `rooms` means the spool does not run that room, and C-7.4-11 then forbids a `sub`; a tag on more than one entry MUST be read the same way for that connection. Without `rooms`, `commons` describes the one room the spool may run and does not say which; the answer to a `sub` tells (the note below). |
+| **C-7.4-18** | A member MUST NOT leave a room, or drop its history, because it took an invite to another room at the same spool: two secrets at one spool are two rooms. Whether a room it holds was rotated away is told by that spool — its tag absent from `rooms` (C-7.4-17), or, at a spool without `rooms`, the answers the note below reads — and never by an invite.                          |
 
 > **What it is not.** Not the Nearby room (§1.4): the room is keyed, private to its invite, and its authors are
 > pinned peers — the closest shape in this document is a group whose roster is "whoever the operator gave the
@@ -1077,16 +1092,60 @@ spool cannot read its own commons" structural rather than a promise.
 > of them per post inside the room would evict the posts out of a room that size, while a sealed tick in the
 > pair's DM scope costs the room nothing.
 >
+> **Several rooms on one spool.** Each invite was already an independent room, so the change is only how a
+> HELLO describes them. `commons` cannot become a list, since a decoder that predates the list fails on the
+> type, so the list is a new field and `commons` stays as its first entry for those decoders (S-7.4-1,
+> S-7.4-15). A member finds its entry by tag rather than by name, since a name is neither unique nor a trust
+> boundary, and rather than from the DIGEST, which echoes the bounds (S-6.2-3) but not `attach`, which
+> C-7.4-14 needs before any `aput`, and which comes only after subscribing an id the spool may not run.
+>
+> **Why 8 bytes.** No secret rests on the tag's width: getting the id back from a tag means inverting SHA-256
+> over a uniformly random 32-byte input, however much of the output is kept. The width sets only how often
+> two tags match by accident. A spool sees a match between its own rooms and refuses to run them (S-7.4-15);
+> a rotated room's tag matching another live room's, which no spool can see, has a chance of about R / 2⁶⁴
+> on a spool running R rooms. Eight bytes is the digest's width (B-2-7) and keeps an entry small.
+>
+> **Why two budgets (S-7.4-4).** A room's egress is its push rate times its members, and a spool's is the
+> sum of that over its rooms. A per-room budget alone lets a spool's egress grow with every room its operator
+> adds; the total bounds the box, and the per-room budget keeps one busy room from spending all of it.
+> Neither applies proof of work or strikes, as before. Since no room is shed (S-7.4-3), an operator's
+> storage watermark has to hold every room's pinned footprint at once.
+>
+> **Clients that predate `rooms` (non-normative).** A client that reads only `commons` sees `rooms[0]` on
+> every spool. In that room nothing changes. In any other room it holds:
+>
+> - it takes `rooms[0]`'s name, `attach` and bounds. The spool still pins the room's own bounds (S-7.4-2).
+>   With the wrong `attach` it either sends attachment records the room refuses (`err malformed`, answered,
+>   so nothing stalls) or never fetches the room's attachments;
+> - the reference client's rotation probe (the next note) reads a DIGEST whose `ttlMs` is anything but
+>   `commons`'s as a rotated invite. In another room that works only while the room's `ttlMs` equals
+>   `rooms[0]`'s; otherwise the client marks a live room stale on every connection, stops subscribing it and
+>   tells its user to ask for a new link. A room that really was rotated is still read correctly, since the
+>   spool then echoes the probe's own declaration;
+> - handed a second room's invite at a relay where it already holds one, the reference client as built
+>   reads it as a rotation (`docs/RELAY_INVITE.md` §3): it leaves the first room and drops that room's
+>   history, which C-7.4-18 now forbids.
+>
+> This revision documents that hazard rather than forbidding a second room: a spool cannot tell which
+> clients its members run, and the reference client still hides the commons in its release builds
+> (Appendix A), so the clients that predate `rooms` are its development and test builds. An operator who
+> adds rooms to a spool that already runs one keeps that room first, so it stays `commons`; gives every room
+> the first room's `ttlMs` while such clients are to work in the others; and gives a new room's invite only
+> to members whose clients read `rooms`.
+>
 > **Telling a rotated invite (client policy, non-normative).** The id a member derives is never advertised,
-> so a rotated invite leaves the old room silent rather than refused. Two answers give it away, both read off
-> rules above: a spool running the room answers a `sub` for it with the bounds it pinned (S-7.4-2), so the
-> reference client declares the HELLO's bounds with `ttlMs` one millisecond short and reads a DIGEST that
-> echoes its own declaration — what an ordinary scope applies — as "not this spool's commons"; and a creation
-> gate asked for it (`err pow`, `err quota`) says the same (S-7.4-3). The client then stops subscribing that
-> room on that spool for the rest of the connection, so it keeps no junk scope alive there, takes no new post
-> in it, and tells its user to ask the operator for the new link. Each new connection asks once more, so a
-> slip the operator fixes (a restart without the room's setting, a reverted invite) opens the room again. A
-> HELLO that advertises no commons at all reads the same way for every room joined there.
+> so a rotated invite leaves the old room silent rather than refused. A HELLO carrying `rooms` settles it
+> before any `sub`: the room's tag is in the list or it is not (C-7.4-17). A spool sending only `commons`
+> runs at most one room and does not say which, and there two answers give it away, both read off rules
+> above: a spool running the room answers a `sub` for it with the bounds it pinned (S-7.4-2), so the
+> reference client declares the advertised bounds with `ttlMs` one millisecond short and reads a DIGEST whose
+> `ttlMs` is anything but the advertised one — an ordinary scope applies, and echoes, what was declared — as
+> "not this spool's room"; and a creation gate asked for it (`err pow`, `err quota`) says the same (S-7.4-3).
+> Either way the client then stops subscribing that room on that spool for the rest of the connection, so it
+> keeps no junk scope alive there, takes no new post in it, and tells its user to ask the operator for the
+> new link. Each new connection asks once more, so a slip the operator fixes (a restart without the room's
+> setting, a reverted invite) opens the room again. A HELLO that advertises no room at all reads the same way
+> for every room joined there.
 >
 > **Why members are contacts (client policy, non-normative).** The invite is the trust boundary the operator
 > drew, so the reference client accepts every member it sees in the room as a contact, and bootstraps a DM
@@ -1098,7 +1157,8 @@ spool cannot read its own commons" structural rather than a promise.
 > and its room as one tappable link, `https://getknit.app/r#…`, whose body carries the spool URL (token
 > included), the same 32-byte secret and the room's name — `docs/RELAY_INVITE.md`, with its own golden
 > vectors. A daemon's `commons-invite` SHOULD print that link beside the text invite. Nothing here reaches
-> the wire: a spool never sees the link, and no §13 vector is involved.
+> the wire: a spool never sees the link, and no §13 vector is involved. A link names one room, so a spool
+> running several has one link per room.
 
 ### 7.5 Send-side moderation
 
@@ -1106,7 +1166,8 @@ An operator who answers for the people on a spool — a school, a workplace, a h
 that what members send through it has passed the client's own on-device content screen. The spool
 holds ciphertext and can screen nothing itself (§10.2); what it can do is state the requirement in
 HELLO, and a conforming client honours it before it seals. The reference daemon exposes it as
-`SPOOL_REQUIRE_MODERATION`.
+`SPOOL_REQUIRE_MODERATION`. The flag is spool-wide: it covers every scope the spool carries, every commons
+room included, and no room can opt in or out on its own (B-7.4-20).
 
 | ID          | Requirement                                                                                                                                                                                                                                                                                              |
 |-------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -1747,6 +1808,13 @@ a relay.
   Padding (C-7.7-12) and a constant-bitrate encoder keep a chunk's size from saying what was said; nothing
   hides that something was. On a spool that gates casts, the ticket rule (S-7.7-6) ties the payer's
   pseudonym to that timing, which the spool could already tie to the payer's subscriptions.
+- With the commons (§7.4), the spool's HELLO is a **directory** of its rooms: whoever completes a HELLO
+  learns how many rooms it runs, each one's pinned bounds and whether it takes attachments, and the names
+  the operator chose to advertise. On a spool with no token that is anyone, which is why S-7.4-19 keeps names
+  off such a HELLO. A tag says nothing about its room beyond staying the same for the invite's life, so a
+  former member can see whether an old room still runs, which the id they hold already lets them check. The
+  operator sees which rooms each connection subscribes to, as it does for any scope; with one room per spool
+  that was only whether a connection was in the room.
 
 ### 10.2 What it cannot do
 
@@ -1835,6 +1903,7 @@ Deliberately open, additively reachable, in no particular order.
 | ticket `kid` / `ps`             | 8 B / 16 B                                        | §7.6                                                                                     |
 | ticket lifetime / skew          | ≤ 48 h / ±300 s                                   | §7.6 (S-7.6-14)                                                                          |
 | TURN username suffix            | 10 B, 16 base32 characters                        | §7.6 (S-7.6-6, S-7.6-17)                                                                 |
+| commons room `tag`              | 8 B, a SHA-256 prefix of the room's scope id      | §7.4 (B-7.4-16) — one-way, so its width sets only the odds of an accidental match        |
 
 ### 12.2 Defaults and suggestions: operator- or config-tunable
 
@@ -1854,8 +1923,9 @@ Deliberately open, additively reachable, in no particular order.
 | default per-scope `maxAttachBytes`       | 16 MiB                                                  | §6.5 — 2× one maximal attachment, so a scope holds a little history without becoming storage                            |
 | suggested `maxAget`                      | 32                                                      | ≈1.5 MiB per batch. HELLO-advertised, spool-tunable                                                                     |
 | `pairGrace`                              | 48 h                                                    | §3.5 — a pair scope outlives our own confirmation by the spool's default retention, so the answer can still be pulled |
-| commons `maxFrames` / `ttlMs` / `maxBlob` | 500 / 24 h / the spool's `maxBlob`                     | §7.4 — the daemon's `SPOOL_COMMONS_*` defaults; pinned by the operator, echoed in the `digest`                         |
-| commons push budget                      | 20 pushes/s spool-wide, burst 4×                        | §7.4 — `SPOOL_COMMONS_RATE_PUSHES`; refused with `err rate`, never a strike                                            |
+| commons `maxFrames` / `ttlMs` / `maxBlob` | 500 / 24 h / the spool's `maxBlob`, per room            | §7.4 — the daemon's `SPOOL_COMMONS_*` defaults; pinned by the operator, echoed in the `digest`                         |
+| commons push budget, per room            | 20 pushes/s, burst 4×                                   | §7.4 (S-7.4-4) — a one-room spool's budget, unchanged (`SPOOL_COMMONS_RATE_PUSHES`); refused with `err rate`, never a strike |
+| commons push budget, spool-wide          | 40 pushes/s over all rooms, burst 4×                    | §7.4 (S-7.4-4) — bounds the commons' egress, the sum over rooms of rate × members; binds only once two rooms are busy; refused with `err rate`, never a strike |
 | commons deferral bound                   | 8 rounds                                                | §7.4 — how long a post waits for its author's profile before it is quarantined                                        |
 | `maxPairScopes`                          | 8                                                       | §3.5 — headroom under `maxScopes`                                                                                       |
 | suggested invalid / accounted set bound  | 512 ids per (spool, scope), oldest-first drop           | §9.3, §9.6 — above a full scope (`maxFrames` = 400), so eviction is the pathological case, not the ordinary one; also the C-9.1-3 listing threshold, so a listing never exceeds what the sets can hold |
@@ -1921,6 +1991,24 @@ commonsInvite   = knit-commons:v1:ChEYHyYtNDtCSVBXXmVsc3qBiI-WnaSrsrnAx87V3OM
 commonsScopeId  = a081eddb259895d4b9e26b3142e5ce0d88e08721aed57f9ead6e6eb99b10edd6
 commonsSealKey  = 31fb89763fc57db88b263cc05b47c6546a3aab33e32cd72dcb0a28bf90400c62
 commonsNonceKey = b932a11365737c35238425655e86f3febbc6fe77e1189cb9f13e8a14e565877d
+```
+
+Commons rooms (§7.4; appended 2026-10-24 — the rows above did not move). The tag of the room above; a second
+room whose secret is `fixture(32, 11)`; and a HELLO running both, minimal like `helloSpoolCommonsAttach`
+(`t`, `v`, then `commons` and `rooms` in that order): the first room `name = "Home"` with the bounds of
+`helloSpoolCommons`, the second with no name, `maxFrames = 200`, the same `ttlMs` and `maxBlob`, and
+`attach = true`. No implementation pins these yet; each picks them up with its half (Appendix A):
+
+```
+commonsTag      = b15333db903e9745
+commonsSecret2  = 0b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4
+commonsScopeId2 = ae34feaf814400c10160a8351729da34ee3c4b48ab69ecfca5eb9d168bf2c29e
+commonsTag2     = a2f73b72abeabcb1
+helloSpoolRooms = a461746568656c6c6f61760167636f6d6d6f6e73a4646e616d6564486f6d65696d61784672616d65731901
+                  f46574746c4d731a05265c00676d6178426c6f621a0001000065726f6f6d7382a56374616748b15333db
+                  903e9745646e616d6564486f6d65696d61784672616d65731901f46574746c4d731a05265c00676d6178
+                  426c6f621a00010000a56374616748a2f73b72abeabcb1696d61784672616d657318c86574746c4d731a
+                  05265c00676d6178426c6f621a0001000066617474616368f5
 ```
 
 Seal (§4; keys and scopeId are the DM values above; deterministic, so sealing twice is
@@ -2135,7 +2223,7 @@ wire.
 | §3.1 DM scopes                                  | Shipped, C-3.1-4/5 included (2026-10-16)                                                                                                    | `ScopeCrypto`, `ScopeRegistry`, `RatchetSessions.exportedRoots`  |
 | §3.2 group root, §3.3 group scopes              | Shipped                                                                                                                                    | `GroupRootPolicy`, `GroupRootStore`, `GroupKeyPayload.gr`, DB v3 |
 | §3.5 pair scopes                                | Shipped                                                                                                                                    | `ScopeCrypto.pairSecret`, `ScopeRegistry.pairs`, `IntroSync`      |
-| §7.4 the commons                                | Shipped both sides; posts, reply quotes, reactions and keyed attachments (where the spool advertises `attach`); hidden in the reference client's release builds | `ScopeCrypto.commons*`, `CommonsInvite`, `ScopeSync`, `knit-spool` |
+| §7.4 the commons                                | Shipped both sides for one room per spool; posts, reply quotes, reactions and keyed attachments (where the spool advertises `attach`); hidden in the reference client's release builds. Several rooms per spool (`rooms`, the tag, the two push budgets, C-7.4-17/18; 2026-10-24) are specified and in neither implementation yet | `ScopeCrypto.commons*`, `CommonsInvite`, `ScopeSync`, `knit-spool` |
 | §7.6 TURN credentials, tickets, STUN            | Spool side built in `knit-spool` (experimental, off by default); client half in development, not in a shipped build                     | `knit-spool`                                                     |
 | §7.7 casts                                      | Spool side built in `knit-spool` (experimental, off by default); client half in development, not in a shipped build                     | `knit-spool`                                                     |
 | §7.5 send-side moderation                       | Spool side shipped (`SPOOL_REQUIRE_MODERATION`); client half not yet implemented — a current client tolerates the field and ignores it (B-2-2) | `knit-spool`                                                     |
@@ -2197,3 +2285,4 @@ the plane itself was unaffected either time, since a spool never decodes a frame
 | 2026-10-23 | **`CTL_SCOPE_CONFIG` goes on the wire (§5; ADR 2026-10.8kfx).** The reference client decodes ctl 7 in the DM and group forms and applies it last-writer-wins on `(version, issuer)`, keeping each issuer's newest config per conversation; C-5-4 now says `version` is a clock (minutes since 2026-01-01T00:00Z) and that a receiver holds a version ahead of its own clock and reads it once its clock reaches it, never refusing one so a group member's leave drops theirs alone. It does not issue one yet. Status note and Appendix A updated | **Spools:** none; the config is a sealed ctl inside an ordinary frame. **Clients:** an older build consumes ctl 7 as the chain-advancing no-op. The mesh's `vectors/wire-v1.json` gained `messageContentScopeConfigDm` and `messageContentScopeConfigGroup`; no record, derivation or §13 vector moved |
 | 2026-10-23 | **Homes place each scope, and the client issues configs (§5 status, §5.1; ADR 2026-10.8kfx).** A DM, pair or group scope is synced at its own relays: what its config names and the phone may dial, `public-1` while a peer has never sent a config, the home for a DM, and the person's own relays. A DM config names the two homes; a group config names the group's one relay, moved by any member after a jitter when it drains. Non-normative client policy | **Spools:** none. **Clients:** a build without homes keeps syncing every scope at every relay it holds, and meets a homed peer at `public-1` while that peer has its config unread |
 | 2026-10-24 | **A commons post may carry its body's formatting (§7.4 C-7.4-6 note; knit-next ADR 2026-10.p95v).** A `chat` gains an optional `s`, its style ranges as one byte string beside the plain body | **Spools:** none — the record is opaque to them. **Clients:** an older client skips the key and shows the text plainly; `vectors/wire-v1.json` gains `chatContentStyles` |
+| 2026-10-24 | **One spool runs several commons rooms (§7.4: S-7.4-1, S-7.4-2, S-7.4-3, S-7.4-4, S-7.4-5, C-7.4-11 amended; S-7.4-15, B-7.4-16, C-7.4-17, C-7.4-18, S-7.4-19, B-7.4-20 new; ADR 2026-10.wqu2).** A new optional HELLO field, `rooms`, lists every room a spool runs, each entry led by a `tag`, the first 8 bytes of `SHA-256("knit/spool/v1/commons-tag" ‖ scopeId)`, which a spool computes from the id it holds and a member from the id it derives; `commons` stays as the first entry. Bounds, `attach` and the push budget are per room, under a second, spool-wide budget; `moderation` stays spool-wide; a spool with no token keeps names off its HELLO. A member never leaves a room on the strength of another room's invite. Notes say what a client that predates `rooms` gets in a second room, and why the hazard is documented rather than forbidden; §1.4 and §7.5 wording, a §10.1 bullet, a §12.1 row, §12.2 rows and §13 vectors appended | **Spools:** optional; a spool running one room may keep sending `commons` alone, but SHOULD add `rooms`; one running several MUST send both and enforce both budgets. **Clients:** read their room by tag where `rooms` is present, else as before; one that predates `rooms` sees the first room on every spool. No derivation or existing vector moved; §13 gains `commonsTag`, `commonsSecret2`, `commonsScopeId2`, `commonsTag2` and `helloSpoolRooms` |

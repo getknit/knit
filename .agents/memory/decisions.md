@@ -273,6 +273,7 @@ carries; never renumber an old one.
 | [2026-10.w3dw](decisions/2026-10-w3dw-a-phone-that-cannot-survive-hosting-a-wi-fi-direct-group-never-hosts-one.md) | A phone that cannot survive hosting a Wi-Fi Direct group never hosts one | wifi-direct, transfer, calls, reliability |
 | [2026-10.wbua](decisions/2026-10-wbua-calls-register-with-telecom-through-core-telecom.md) | Calls register with Telecom through core-telecom, which owns their audio route | calls, audio |
 | [2026-10.wk3m](decisions/2026-10-wk3m-a-customer-key-s-requests-carry-a-keystore-device-proof.md) | a customer key's requests carry a Keystore device proof | anywhere, tickets, keystore, privacy |
+| [2026-10.wqu2](decisions/2026-10-wqu2-one-spool-runs-several-commons-rooms.md) | One spool runs several commons rooms, each named in HELLO by a one-way tag | spool, commons |
 | [2026-10.wtyc](decisions/2026-10-wtyc-a-cut-attachment-resumes-from-the-bytes-the-receiver-kept.md) | A cut attachment resumes from the bytes the receiver kept | mesh, attachments, wire, blob-exchange |
 | [2026-10.xgwj](decisions/2026-10-xgwj-a-forced-group-rekey-retires-the-send-chain.md) | A forced group rekey retires the send chain, never reuses its epoch | crypto, groups |
 | [2026-10.xhfr](decisions/2026-10-xhfr-the-commons-takes-reactions-and-keyed-attachments-and-notices-a-rotated-invite.md) | The commons takes reactions and keyed attachments and notices a rotated invite | spool, commons |
