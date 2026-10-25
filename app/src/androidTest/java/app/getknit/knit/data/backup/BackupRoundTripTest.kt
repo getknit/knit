@@ -52,7 +52,8 @@ import java.io.File
  * other end must be the same phone: the same node id from the identity file, the same passphrase from the key
  * file, the same message from the database. The JVM half (every refusal) is `RestoreStagerTest`.
  *
- * Every directory is a sandbox ([SandboxContext]); the installed app's files are never read or written.
+ * Every directory is a sandbox ([SandboxContext]). The one exception is [setUp], which has the installed app's own
+ * [DatabaseKey] and identity mint first: the app starts in this process and mints under the same Keystore aliases.
  */
 @RunWith(AndroidJUnit4::class)
 class BackupRoundTripTest {
@@ -71,6 +72,8 @@ class BackupRoundTripTest {
         // a mint racing this test's generates a second key over the one its read-back needs. Settle the app's own first:
         // its getOrCreate is synchronized, so this waits out a mint in flight, and every later store finds the key.
         GlobalContext.get().get<DatabaseKey>().getOrCreate()
+        // Nothing in an unseeded start reads the identity today, but one eager read would race the same way.
+        GlobalContext.get().get<IdentityKeyStore>().keys()
     }
 
     @After

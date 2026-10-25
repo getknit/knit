@@ -19,6 +19,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.koin.core.context.GlobalContext
 import java.io.DataInputStream
 import java.io.File
 import java.security.SecureRandom
@@ -28,7 +29,8 @@ import java.security.SecureRandom
  * the scratch connection under a *bound* passphrase (`ATTACH … KEY ?`), copied, and reopened through the
  * driver; plus the staged-wrap check — a passphrase written by [KeystoreSecret] under [DatabaseKey]'s
  * alias and file name reads back as [DatabaseKey]'s own. Throwaway file names and a literal passphrase:
- * nothing here touches `knit.db`, `db.key` or the live aliases' files.
+ * nothing here touches `knit.db` or `db.key`, except that [setUp] has the installed app's own [DatabaseKey] mint
+ * them first, because the staged wrap is sealed under the live alias the app mints under too.
  */
 @RunWith(AndroidJUnit4::class)
 class DatabaseExportSqlCipherTest {
@@ -39,6 +41,10 @@ class DatabaseExportSqlCipherTest {
     @Before
     fun setUp() {
         System.loadLibrary("sqlcipher")
+        // The app starts in this process on a cleared package and mints under the live alias from its background
+        // launches; a store of ours racing it generates a second key over the one the staged wrap needs. Settle the
+        // app's own first: its getOrCreate is synchronized, so this waits out a mint in flight.
+        GlobalContext.get().get<DatabaseKey>().getOrCreate()
         dir = File(context.noBackupFilesDir, "export-test-${System.nanoTime()}").apply { mkdirs() }
     }
 

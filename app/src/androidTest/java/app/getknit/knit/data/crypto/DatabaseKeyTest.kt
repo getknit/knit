@@ -11,8 +11,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.koin.core.context.GlobalContext
 import java.io.File
 import java.security.KeyStore
 
@@ -26,7 +28,7 @@ import java.security.KeyStore
  * reason, under a test-only alias that is deleted afterwards.
  *
  * Sandboxed ([SandboxContext]): the database and key files are a temp directory's; the Keystore alias
- * [DatabaseKey] uses is the live one, reused and never replaced.
+ * [DatabaseKey] uses is the live one, which the installed app's own [DatabaseKey] mints first ([setUp]).
  */
 @RunWith(AndroidJUnit4::class)
 class DatabaseKeyTest {
@@ -37,6 +39,14 @@ class DatabaseKeyTest {
     private val keyFile = File(context.filesDir, DatabaseKey.KEY_FILE)
     private val lostFile = File(context.noBackupFilesDir, DatabaseKey.KEY_FILE + KeystoreSecret.LOST_SUFFIX)
     private val faults = File(root, FaultyKeystoreCipher.MARKER)
+
+    @Before
+    fun setUp() {
+        // The app starts in this process on a cleared package and mints the passphrase under the live alias from its
+        // background launches; a mint of ours racing it generates a second key over the one our wrap needs. Settle the
+        // app's own first: its getOrCreate is synchronized, so this waits out a mint in flight.
+        GlobalContext.get().get<DatabaseKey>().getOrCreate()
+    }
 
     @After
     fun tearDown() {

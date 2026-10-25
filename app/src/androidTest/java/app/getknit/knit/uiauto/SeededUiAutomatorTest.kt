@@ -16,6 +16,9 @@ import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.MainActivity
+import app.getknit.knit.demo.DemoSeeder
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -89,9 +92,12 @@ abstract class SeededUiAutomatorTest {
      * Cold-starts [MainActivity], optionally deep-linking straight to [route] via the debug `demo_route`
      * extra (e.g. `"chat/nearby"`, `"chat/samr1v00"`, `"contacts"`, `"diagnostics"`; null lands on the
      * seeded chat list), then waits for the app window to be foreground. `CLEAR_TASK` guarantees a fresh
-     * task even if a prior launch left one around.
+     * task even if a prior launch left one around. Waits for [DemoSeeder.seeded] first, as `SeededUiTest.launch`
+     * does: this suite runs in the app's own process, and the seed writes the peers long before the requests and
+     * the room's newest posts, so a list drawn early keeps reflowing under a tap.
      */
     protected fun launch(route: String? = null) {
+        runBlocking { withTimeout(SEED_TIMEOUT_MS) { DemoSeeder.seeded.await() } }
         val intent =
             Intent(context, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
@@ -314,6 +320,9 @@ abstract class SeededUiAutomatorTest {
 
         /** Foreground-window wait after a cold start. */
         const val LAUNCH_TIMEOUT_MS = 15_000L
+
+        /** How long [launch] waits for the demo seed to finish; `SeededUiTest.SEED_TIMEOUT_MS`'s value. */
+        const val SEED_TIMEOUT_MS = 60_000L
 
         /** How much of the list's height one [scrollTo] step moves: under a screen, so no row is skipped over. */
         private const val SCROLL_PERCENT = 0.6f
