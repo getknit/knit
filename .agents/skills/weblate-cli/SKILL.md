@@ -1,6 +1,12 @@
 ---
 name: weblate-cli
 description: Drive a Weblate translation project from the command line with `wlc`, Weblate's official client. Read translation progress and failing quality checks, keep Weblate's copy in step with the repository (pull, commit, push, lock), download a translation to validate or diff it locally, upload machine or offline translations safely (as suggestions once people are reviewing), and read or edit single strings. Use whenever a task mentions Weblate or `wlc`, translation progress or statistics for a language, failing translation checks, a pending Weblate commit or pull request, importing or uploading translations, adding a language on Weblate, or locking a component around a source-string refactor.
+license: MIT
+compatibility: Requires the wlc client (pip or pipx install wlc) and network access to a Weblate server's API, with an API key for more than light anonymous reads. scripts/progress.py needs Python 3.8 or later. Works in any agent that can run shell commands.
+metadata:
+  author: Jeffrey Walter Mixon
+  version: "1.0.0"
+  tested-with: "wlc 3.1.0, hosted Weblate"
 ---
 
 # Weblate from the command line (`wlc`)
