@@ -19,15 +19,19 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
 import app.getknit.knit.call.WalkiePolicy
@@ -78,20 +82,22 @@ internal fun CallDiagnostics(
                 Metric(stringResource(R.string.call_diag_heard_loss_call), percent(stats.lossPercent), Modifier.weight(1f))
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Detail(stringResource(R.string.call_diag_path), pathOf(stats))
-                Detail(stringResource(R.string.call_diag_relay), relayOf(stats))
-                Detail(stringResource(R.string.call_diag_prefer), stats.prefer?.replace('_', ' ') ?: NONE)
-                Detail(stringResource(R.string.call_diag_mic), captureOf(capture))
-                Detail(stringResource(R.string.call_diag_codec), codecOf(stats))
-                Detail(stringResource(R.string.call_diag_dtls), dtlsOf(stats))
-                Detail(stringResource(R.string.call_diag_srtp), stats.srtpCipher ?: NONE)
-                Detail(
-                    stringResource(R.string.call_diag_ice),
-                    "${stats.localCandidates} local · ${stats.remoteCandidates} remote candidates",
-                )
-                Detail(stringResource(R.string.call_diag_pairs), pairsText(stats), lines = stats.pairs.size + 1)
-            }
+            Details(
+                listOf(
+                    DetailLine(stringResource(R.string.call_diag_path), pathOf(stats)),
+                    DetailLine(stringResource(R.string.call_diag_relay), relayOf(stats)),
+                    DetailLine(stringResource(R.string.call_diag_prefer), stats.prefer?.replace('_', ' ') ?: NONE),
+                    DetailLine(stringResource(R.string.call_diag_mic), captureOf(capture)),
+                    DetailLine(stringResource(R.string.call_diag_codec), codecOf(stats)),
+                    DetailLine(stringResource(R.string.call_diag_dtls), dtlsOf(stats)),
+                    DetailLine(stringResource(R.string.call_diag_srtp), stats.srtpCipher ?: NONE),
+                    DetailLine(
+                        stringResource(R.string.call_diag_ice),
+                        "${stats.localCandidates} local · ${stats.remoteCandidates} remote candidates",
+                    ),
+                    DetailLine(stringResource(R.string.call_diag_pairs), pairsText(stats), lines = stats.pairs.size + 1),
+                ),
+            )
         }
     }
 }
@@ -124,13 +130,15 @@ internal fun WalkieDiagnostics(
                 Metric(stringResource(R.string.call_diag_buffer), ms(stats.bufferMs), Modifier.weight(1f))
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Detail(stringResource(R.string.call_diag_path), stats.path ?: NONE)
-                Detail(stringResource(R.string.call_diag_codec), WALKIE_CODEC)
-                Detail(stringResource(R.string.call_diag_chunks), chunksOf(stats))
-                Detail(stringResource(R.string.call_diag_frame), framesOf(stats))
-                Detail(stringResource(R.string.call_diag_bursts), "${stats.burstsOut} sent · ${stats.burstsIn} heard")
-            }
+            Details(
+                listOf(
+                    DetailLine(stringResource(R.string.call_diag_path), stats.path ?: NONE),
+                    DetailLine(stringResource(R.string.call_diag_codec), WALKIE_CODEC),
+                    DetailLine(stringResource(R.string.call_diag_chunks), chunksOf(stats)),
+                    DetailLine(stringResource(R.string.call_diag_frame), framesOf(stats)),
+                    DetailLine(stringResource(R.string.call_diag_bursts), "${stats.burstsOut} sent · ${stats.burstsIn} heard"),
+                ),
+            )
         }
     }
 }
@@ -168,11 +176,39 @@ private fun Metric(
     }
 }
 
+/** One row of a card's details: a translated label over a value in log notation, held to [lines]. */
+private class DetailLine(
+    val label: String,
+    val value: String,
+    val lines: Int = 2,
+)
+
+/**
+ * A card's detail rows, their values lined up behind one label column as wide as the widest label: never narrower than
+ * [DetailLabelWidth], where every English label fits, and capped at [DetailLabelMaxWidth], past which a label wraps
+ * between its words. A fixed column broke a longer translation mid-word into its value ("Retransmissor").
+ */
+@Composable
+private fun Details(details: List<DetailLine>) {
+    val measurer = rememberTextMeasurer()
+    val style = MaterialTheme.typography.labelMedium
+    val density = LocalDensity.current
+    val labelWidth =
+        remember(details.map { it.label }, style, density) {
+            val widest = details.maxOf { measurer.measure(it.label, style, maxLines = 1).size.width }
+            with(density) { widest.toDp() + DetailLabelGap }.coerceIn(DetailLabelWidth, DetailLabelMaxWidth)
+        }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        details.forEach { Detail(it.label, it.value, it.lines, labelWidth) }
+    }
+}
+
 @Composable
 private fun Detail(
     label: String,
     value: String,
-    lines: Int = 2,
+    lines: Int,
+    labelWidth: Dp,
 ) {
     val description = stringResource(R.string.call_diag_detail_description, label, value)
     Row(Modifier.clearAndSetSemantics { contentDescription = description }) {
@@ -180,7 +216,7 @@ private fun Detail(
             label,
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(DetailLabelWidth),
+            modifier = Modifier.width(labelWidth),
         )
         Text(
             value,
@@ -195,6 +231,8 @@ private fun Detail(
 }
 
 private val DetailLabelWidth = 56.dp
+private val DetailLabelMaxWidth = 112.dp
+private val DetailLabelGap = 8.dp
 private const val NONE = "—"
 private const val DB_PER_DECADE = 20.0
 private const val FINE_BELOW = 10.0
