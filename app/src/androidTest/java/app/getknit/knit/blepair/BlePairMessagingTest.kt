@@ -3,9 +3,12 @@ package app.getknit.knit.blepair
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.TextLimits
 import app.getknit.knit.data.message.Conversations
+import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.buildReplySnippet
 import app.getknit.knit.mesh.TransportKind
+import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleSpan
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -131,6 +134,43 @@ class BlePairMessagingTest : BlePairTest() {
             assertEquals("the long DM arrived changed (${theirs.body.length} chars)", longText(peer), theirs.body)
             awaitTick(mine)
         }
+
+    /**
+     * A DM and a Nearby post each carry their formatting across (ADR 2026-10.p95v): the styles ride beside the words,
+     * sealed in the DM and through the link's frame transcoder in the post, and land on the peer's row as sent.
+     */
+    @Test
+    fun h_formattingCrossesWithTheMessage() =
+        runBlocking<Unit> {
+            awaitLink()
+            val dm = body("formatted dm from $self")
+            val post = body("formatted post from $self")
+            assertTrue("sendChat refused the formatted DM", mesh.sendChat(dm, recipientId = peer, styles = formatting(dm)))
+            assertTrue("sendChat refused the formatted post", mesh.sendChat(post, recipientId = null, styles = formatting(post)))
+
+            val theirDm = awaitPeerDm("formatted dm from $peer")
+            assertEquals("the DM's formatting", formatting(theirDm.body), StyleStore.decode(theirDm.styles))
+            val theirPost =
+                awaitRow(Conversations.NEARBY, DM_TIMEOUT_MS, "the peer's formatted post") {
+                    it.senderId == peer && it.body == body("formatted post from $peer")
+                }
+            assertEquals("the post's formatting", formatting(theirPost.body), StyleStore.decode(theirPost.styles))
+            awaitTick(dm)
+            note("formatting crossed: ${theirDm.styles} on the DM, ${theirPost.styles} on the post")
+        }
+
+    /** "formatted" bold, the word after it italic, and the run tag monospace: three styles, one overlapping none. */
+    private fun formatting(text: String): List<StyleSpan> {
+        val word = text.indexOf("formatted")
+        val next = word + "formatted ".length
+        val nextEnd = text.indexOf(' ', next).takeIf { it >= 0 } ?: text.length
+        val tag = text.indexOf(run)
+        return listOf(
+            StyleSpan(tag, tag + run.length, BodyStyle.MONOSPACE),
+            StyleSpan(word, word + "formatted".length, BodyStyle.BOLD),
+            StyleSpan(next, nextEnd, BodyStyle.ITALIC),
+        ).sortedWith(compareBy({ it.start }, { it.style.code }))
+    }
 
     private fun longHead(author: String) = body("long from $author:")
 

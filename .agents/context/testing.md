@@ -1017,7 +1017,7 @@ one at a time; `KNIT_PAIR_CLASSES=<fqcn>[#method],…` runs a subset.) The class
 each on the shared `BlePairTest` base:
 
 - `BlePairMessagingTest`: the link, a DM with its ✓✓, a Nearby post, a quoted reply, a reaction, typing, a DM at
-  `TextLimits.MESSAGE` in more than ASCII.
+  `TextLimits.MESSAGE` in more than ASCII, and a formatted DM and post whose styles land as sent (ADR 2026-10.p95v).
 - `BlePairAttachmentTest`: a photo, and a file through the file door under its own name.
 - `BlePairProfileTest`: a new display name, and a profile photo the peer fetches and holds.
 - `BlePairGroupTest`: one side starts a group the way Contacts does, and both post in it.
