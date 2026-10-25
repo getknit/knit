@@ -170,11 +170,14 @@ class SpoolStatus(
     val lastError: String?,
     val scopes: List<ScopeStatus>,
     val maxAttachBytes: Int? = null,
-    // The commons this spool advertised in its HELLO (§7.4), null while disconnected or when it runs none —
-    // what the relay row's Join reads.
-    val commons: SpoolCommonsInfo? = null,
+    // The commons rooms this spool advertised in its HELLO (§7.4), null while disconnected or when it runs none:
+    // what the relay row's Join and an invite's preview read, by the room's tag.
+    val adverts: CommonsAdverts? = null,
+    // The joined commons bound here that this spool runs, by conversation id: each one's own advertised name,
+    // pinned bounds and `attach` (S-7.4-5). A stale room is not in it.
+    val rooms: Map<String, SpoolCommonsInfo> = emptyMap(),
     // The joined commons bound here that this spool does not run, by conversation id: the invite was rotated
-    // (its answers showed the room is not this spool's commons), or its HELLO advertises none. Kept across a
+    // (its answers showed the room is not this spool's commons), or its HELLO does not advertise it. Kept across a
     // disconnect for the probe's half — what the spool said stays true of the invite we hold.
     val staleCommons: Set<String> = emptySet(),
     // What this spool answered at `/source`, null until that lands and while disconnected: a build is a fact
@@ -1179,7 +1182,8 @@ class ScopeSync(
                 // Gated on the whole capability, not the single field: §7.3's three limits arrive
                 // together or not at all, and a partial set means we must send no attachment record.
                 maxAttachBytes = connection?.limits?.takeIf { it.attachments }?.maxAttachBytes,
-                commons = connection?.commons,
+                adverts = connection?.takeIf { it.isReady }?.adverts,
+                rooms = advertisedRooms(all),
                 software = connection?.let { software },
                 ent = connection?.takeIf { it.isReady }?.ent == true,
                 stun = stunUrls(),
@@ -1515,8 +1519,17 @@ class ScopeSync(
         }
 
         /**
+         * How [conn]'s HELLO speaks of the commons [scope] (C-7.4-17): by its tag in `rooms`, as the one room a spool
+         * that predates `rooms` advertises, or not at all. Absent before any HELLO, and for any other scope.
+         */
+        private fun advertOf(
+            scope: Scope,
+            conn: SpoolConnection?,
+        ): CommonsAdvert = scope.commonsTag?.let { conn?.adverts?.advertFor(it) } ?: CommonsAdvert.Absent
+
+        /**
          * The scopes this worker carries: every scope that belongs at this relay ([Scope.belongsAt]), minus a
-         * commons at a spool that advertised none — a SUB for it there would read as an unknown scope and
+         * commons its HELLO does not advertise (C-7.4-11) — a SUB for it there would read as an unknown scope and
          * meet the §6.4 creation gates (PoW, the new-scope bucket) for a room that does not exist — and minus a
          * commons this spool has shown it no longer runs ([staleCommons]), but for the one look a new connection
          * takes at it ([reprobing]).
@@ -1527,18 +1540,31 @@ class ScopeSync(
         ): List<Scope> =
             all.filter {
                 it.belongsAt(url) &&
-                    (it.commonsId == null || (conn?.commons != null && (it.idHex !in staleCommons || it.idHex in reprobing)))
+                    (it.commonsId == null || (advertOf(it, conn).info != null && (it.idHex !in staleCommons || it.idHex in reprobing)))
             }
 
         /**
          * The joined commons bound here that this spool does not run, by conversation id: one its answers marked
-         * stale ([markStale]), or any while a completed HELLO advertises no commons at all.
+         * stale ([markStale]), or any a completed HELLO does not advertise — its tag missing from `rooms`, or no room
+         * advertised at all (C-7.4-17).
          */
         private fun staleRooms(all: List<Scope>): Set<String> {
-            val noCommons = connection?.let { it.isReady && it.commons == null } == true
+            val conn = connection?.takeIf { it.isReady }
             return all
-                .filter { it.commonsId != null && it.belongsAt(url) && (noCommons || it.idHex in staleCommons) }
-                .mapNotNullTo(HashSet()) { it.commonsId }
+                .filter {
+                    it.commonsId != null &&
+                        it.belongsAt(url) &&
+                        ((conn != null && advertOf(it, conn).info == null) || it.idHex in staleCommons)
+                }.mapNotNullTo(HashSet()) { it.commonsId }
+        }
+
+        /** The joined commons bound here that this spool runs, by conversation id, each with its own advertisement. */
+        private fun advertisedRooms(all: List<Scope>): Map<String, SpoolCommonsInfo> {
+            val conn = connection?.takeIf { it.isReady } ?: return emptyMap()
+            return all
+                .filter { it.belongsAt(url) && it.idHex !in staleCommons }
+                .mapNotNull { scope -> scope.commonsId?.let { room -> advertOf(scope, conn).info?.let { room to it } } }
+                .toMap()
         }
 
         /**
@@ -1573,32 +1599,33 @@ class ScopeSync(
 
         /**
          * Whether [digest], the answer to a commons SUB, came from a spool that does not run that room: anything but the
-         * TTL its HELLO pinned (S-7.4-2) is what an ordinary scope applying our [probeTtl] echoes. No verdict without a
-         * HELLO's commons, or with a TTL too short to probe.
+         * TTL its HELLO pinned (S-7.4-2) is what an ordinary scope applying our [probeTtl] echoes. Only a spool that
+         * predates `rooms` is judged this way ([CommonsAdvert.Sole]): one that lists the room by its tag has said so
+         * already. No verdict with a TTL too short to probe.
          */
         private fun answeredAsNoCommons(
             scope: Scope,
             digest: SpoolDigest,
         ): Boolean {
-            if (scope.commonsId == null) return false
-            val advertised = connection?.commons ?: return false
+            val advertised = (advertOf(scope, connection) as? CommonsAdvert.Sole)?.info ?: return false
             return advertised.ttlMs > PROBE_SHORTFALL_MS && digest.bounds.ttlMs != advertised.ttlMs
         }
 
         /**
          * What we declare at SUB. For a commons the spool ignores the declaration and pins its own (§7.4),
-         * so we declare what its HELLO advertised — then [SpoolConnection.inboundCap] and the pinned truth agree
-         * and no honest event is dropped as oversize — except the TTL, a millisecond short: the probe that tells
-         * the room from a stale id ([probeTtl]).
+         * so we declare what its HELLO advertised for the room — then [SpoolConnection.inboundCap] and the pinned
+         * truth agree and no honest event is dropped as oversize. At a spool that predates `rooms` the TTL goes a
+         * millisecond short: the probe that tells the room from a stale id ([probeTtl]).
          */
         private fun declaredBounds(
             scope: Scope,
             conn: SpoolConnection,
-        ): ScopeBounds {
-            if (scope.commonsId == null) return scope.bounds
-            val advertised = conn.commons ?: return scope.bounds
-            return ScopeBounds(maxFrames = advertised.maxFrames, ttlMs = probeTtl(advertised), maxBlob = advertised.maxBlob)
-        }
+        ): ScopeBounds =
+            when (val advert = advertOf(scope, conn)) {
+                is CommonsAdvert.Listed -> advert.info.let { ScopeBounds(it.maxFrames, it.ttlMs, it.maxBlob) }
+                is CommonsAdvert.Sole -> advert.info.let { ScopeBounds(it.maxFrames, probeTtl(it), it.maxBlob) }
+                CommonsAdvert.Absent -> scope.bounds
+            }
 
         /** The bounds to size against: the spool's pinned truth for a commons once a DIGEST has said, else what we declared. */
         private fun boundsFor(scope: Scope): ScopeBounds =
@@ -2014,8 +2041,8 @@ class ScopeSync(
         ) {
             val blobStore = blobs ?: return
             if (conn.limits?.attachments != true) return
-            // S-7.4-5: a spool answers attachment records naming its commons `err malformed` unless its HELLO said so.
-            if (scope.commonsId != null && conn.commons?.attach != true) return
+            // S-7.4-5: a spool answers attachment records naming a room `err malformed` unless its HELLO said so for it.
+            if (scope.commonsId != null && advertOf(scope, conn).info?.attach != true) return
             val (candidates, fetchOnly) = attachmentCandidates(scope, frames, timed)
             var handled = 0
             var pending = 0

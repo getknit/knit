@@ -1,5 +1,6 @@
 package app.getknit.knit.mesh.spool
 
+import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import kotlinx.serialization.Serializable
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -224,7 +225,35 @@ class SpoolRecordsTest {
                         pow = PowStamp(n = 42L, d = 20_680L),
                     ),
                 ),
+            // Appended (§7.4, 2026-10-24): a spool running two rooms lists both by tag, and `commons` repeats the first.
+            "helloSpoolRooms" to
+                SpoolCodec.encode(
+                    SpoolHello(
+                        t = SpoolRecordType.HELLO,
+                        v = SPOOL_RECORD_VERSION,
+                        commons = HOME,
+                        rooms =
+                            listOf(
+                                SpoolCommonsRoom(
+                                    tag = tagOf(bytes(32, 10)),
+                                    name = "Home",
+                                    maxFrames = 500,
+                                    ttlMs = 86_400_000L,
+                                    maxBlob = 65_536,
+                                ),
+                                SpoolCommonsRoom(
+                                    tag = tagOf(bytes(32, 11)),
+                                    maxFrames = 200,
+                                    ttlMs = 86_400_000L,
+                                    maxBlob = 65_536,
+                                    attach = true,
+                                ),
+                            ),
+                    ),
+                ),
         )
+
+    private fun tagOf(secret: ByteArray) = ScopeCrypto.commonsTag(ScopeCrypto.commonsScopeId(secret))
 
     @Test
     fun everyRecordMatchesItsPinnedDefiniteLengthCbor() {
@@ -303,6 +332,21 @@ class SpoolRecordsTest {
         val bytes = vectors().getValue("helloSpoolCommons")
         assertTrue(String(bytes, Charsets.ISO_8859_1).contains("commons"))
         assertTrue(bytes.none { it == 0x58.toByte() }) // no CBOR byte string of 1-byte length anywhere in it
+    }
+
+    @Test
+    fun roomsAreListedByTagWithTheirOwnBoundsAndNoId() {
+        val bytes = vectors().getValue("helloSpoolRooms")
+        val hello = SpoolCodec.decode<SpoolHello>(bytes)!!
+        val rooms = hello.rooms!!
+
+        assertEquals(listOf("b15333db903e9745", "a2f73b72abeabcb1"), rooms.map { hex(it.tag) })
+        assertEquals(listOf("Home", null), rooms.map { it.name })
+        assertEquals(listOf(500, 200), rooms.map { it.maxFrames })
+        assertEquals(listOf(false, true), rooms.map { it.attach })
+        assertEquals("Home", hello.commons!!.name)
+        // Each tag is an 8-byte string (`48`), and no 32-byte id rides anywhere in the record.
+        assertTrue(bytes.none { it == 0x58.toByte() })
     }
 
     @Test
@@ -462,7 +506,16 @@ class SpoolRecordsTest {
                     "d3dae164646174615830060d141b222930373e454c535a61686f767d848b9299a0a7" +
                     "aeb5bcc3cad1d8dfe6edf4fb020910171e252c333a41484f63706f77a2616e182a61" +
                     "641950c8",
+                "helloSpoolRooms" to
+                    "a461746568656c6c6f61760167636f6d6d6f6e73a4646e616d6564486f6d65696d61" +
+                    "784672616d65731901f46574746c4d731a05265c00676d6178426c6f621a00010000" +
+                    "65726f6f6d7382a56374616748b15333db903e9745646e616d6564486f6d65696d61" +
+                    "784672616d65731901f46574746c4d731a05265c00676d6178426c6f621a00010000" +
+                    "a56374616748a2f73b72abeabcb1696d61784672616d657318c86574746c4d731a05" +
+                    "265c00676d6178426c6f621a0001000066617474616368f5",
             )
+
+        private val HOME = SpoolCommonsInfo(name = "Home", maxFrames = 500, ttlMs = 86_400_000L, maxBlob = 65_536)
     }
 }
 

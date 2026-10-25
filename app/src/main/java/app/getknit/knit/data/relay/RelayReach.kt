@@ -88,12 +88,18 @@ fun coveredLabelsOf(live: List<SpoolStatus>): Set<String> =
         .flatMap { spool -> spool.scopes.filterNot { it.retiring || it.pendingReset }.map { it.label } }
         .toSet()
 
-/** The [RelayFacts.textOnlyRooms] of the **connected** spools in [live]: a commons whose relay takes no attachment for it. */
+/**
+ * The [RelayFacts.textOnlyRooms] of the **connected** spools in [live]: a commons whose relay takes no attachment for
+ * it — that room's own `attach` (S-7.4-5), or no attachment support at all.
+ */
 fun textOnlyRoomsOf(live: List<SpoolStatus>): Set<String> =
     live
-        .filter { it.commons?.attach != true || it.maxAttachBytes == null }
-        .flatMap { spool -> spool.scopes.map { it.label }.filter { Conversations.kindFor(it) == ConversationKind.COMMONS } }
-        .toSet()
+        .flatMap { spool ->
+            spool.scopes
+                .map { it.label }
+                .filter { Conversations.kindFor(it) == ConversationKind.COMMONS }
+                .filter { spool.rooms[it]?.attach != true || spool.maxAttachBytes == null }
+        }.toSet()
 
 /**
  * The Internet plane's state as the connection header reports it: one answer for the whole device, where

@@ -8,7 +8,7 @@ topics: [spool, commons]
 
 # ADR 2026-10.wqu2 — One spool runs several commons rooms, each named in HELLO by a one-way tag
 
-Status: Accepted (2026-10-24) — spec only, `docs/SPOOL_PROTOCOL.md` §7.4 (S-7.4-1/2/3/4/5 and C-7.4-11 amended;
+Status: Accepted (2026-10-24) — spec, then the client half the same day (the amendment below); `docs/SPOOL_PROTOCOL.md` §7.4 (S-7.4-1/2/3/4/5 and C-7.4-11 amended;
 S-7.4-15, B-7.4-16, C-7.4-17, C-7.4-18, S-7.4-19, B-7.4-20 new), §7.5, §10.1, §12, §13, Appendices A and B;
 `docs/RELAY_INVITE.md` §3. Amends ADR 2026-09.wx8e's "one shared scope per spool". Neither the client nor
 knit-spool implements it yet; knit-spool follows the spec, and the client's half (a room per secret, not per URL)
@@ -63,3 +63,27 @@ daemon has to budget storage for the sum of the rooms' pinned footprints. The §
 `commonsScopeId2`, `commonsTag2`, `helloSpoolRooms`) were computed by a throwaway encoder checked against
 `helloSpoolCommons`, `helloSpoolCommonsAttach` and `commonsScopeId`; no test pins them until each implementation
 lands its half, and that test is what keeps the two in step.
+
+## Amendment 2026-10-24: the client half
+
+The reference client reads the HELLO per room. `CommonsAdverts` is the one reader of `rooms` and `commons`: built once
+per HELLO by `SpoolConnection`, each entry clamped like the old `commons`, a wrong-width tag dropped and a duplicated
+one read as absent. It answers a room by its tag (`Scope.commonsTag`, from `ScopeCrypto.commonsTag`) as `Listed`,
+`Sole` (a spool that predates the list, where the TTL probe still decides) or `Absent`. `ScopeSync` asks it for the
+subscription gate (C-7.4-11), the stale verdict (C-7.4-17: a listed spool settles it with no SUB), the declared bounds
+(a listed room declares its own exactly; only `Sole` keeps the probe's short TTL) and the attachment gate (S-7.4-5).
+`SpoolStatus.commons` is gone, so nothing can read one room's name or `attach` for another's: `SpoolStatus.adverts`
+serves an invite's preview and the relay row's Join, and `SpoolStatus.rooms` gives each joined room its own advert,
+which `textOnlyRoomsOf` reads.
+
+An invite is never a rotation (C-7.4-18): `RelayInviteApplier.Room.beside` replaces `replacesRoom`, the sheet says the
+rooms already joined stay, and `apply` never calls `leaveBoundTo` for a room. The relays screen lists every room joined
+at a relay from the database, shown while the relay is down so Leave stays reachable, with its own Leave and invite,
+and one Join while the HELLO advertises any room. The relay's own link carries its room only while exactly one is
+joined there (the person's choice); a room's stored name is set once, at join, from the link or the tag-matched entry.
+
+No migration: rooms were already keyed by secret (`c-` + the scope id) with no unique `spoolUrl`. Tests:
+`CommonsAdvertsTest`, `CommonsSyncTest`'s multi-room cases over a `FakeSpool` that lists `rooms` and refuses a room's
+attachment records without `attach`, `ScopeVectorTest` and `SpoolRecordsTest` (the new §13 rows),
+`RelayInviteApplierTest`, `InternetRelayViewModelTest` and the relay screens' content tests. Owed: a two-room trial
+against a `knit-spool` that lists `rooms`, once it does.

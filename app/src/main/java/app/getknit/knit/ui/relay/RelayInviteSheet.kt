@@ -111,10 +111,11 @@ private fun InviteFacts(preview: RelayInviteApplier.Preview) {
         lines +=
             when {
                 room.alreadyJoined -> "relay_invite_room_joined" to stringResource(R.string.relays_invite_room_joined)
-                room.replacesRoom -> "relay_invite_room_replaces" to stringResource(R.string.relays_invite_room_replaces)
                 room.name != null -> "relay_invite_room" to stringResource(R.string.relays_invite_room, room.name)
                 else -> "relay_invite_room" to stringResource(R.string.relays_invite_room_unnamed)
             }
+        // A second room joins beside the first (C-7.4-18): said, because the app once left the first for it.
+        if (room.beside) lines += "relay_invite_room_beside" to stringResource(R.string.relays_invite_room_beside)
     }
     // The key's line names the issuer and what it will be asked, about once a day (ADR 2026-10.3sk7): no price, no
     // product, no link. A held key says so; a different one says it replaces the held one.

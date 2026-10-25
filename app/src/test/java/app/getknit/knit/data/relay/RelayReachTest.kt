@@ -187,28 +187,30 @@ class RelayReachTest {
 
     @Test
     fun `a commons whose relay takes no attachments for it is text-only, and one whose relay does is not`() {
-        // S-7.4-5: the commons' own `attach`, not the relay's support for every other scope, decides.
+        // S-7.4-5: each room's own `attach`, not the relay's support for every other scope, decides.
         val room = Conversations.commonsIdFor("cd".repeat(32))
-        val scope =
-            ScopeStatus(room.removePrefix(Conversations.COMMONS_PREFIX), room, 0, 0, converged = true, invalidCount = 0, retiring = false)
+        val team = Conversations.commonsIdFor("ef".repeat(32))
+
+        fun scopeOf(id: String) =
+            ScopeStatus(id.removePrefix(Conversations.COMMONS_PREFIX), id, 0, 0, converged = true, invalidCount = 0, retiring = false)
         val dm = dmScope("dm")
 
-        fun relay(commons: SpoolCommonsInfo?) =
+        fun relay(rooms: Map<String, SpoolCommonsInfo>) =
             SpoolStatus(
                 url = "wss://relay.test/spool/v1",
                 connected = true,
                 powBits = 0,
                 lastError = null,
-                scopes = listOf(scope, dm),
+                scopes = listOf(scopeOf(room), scopeOf(team), dm),
                 maxAttachBytes = 16 * 1024 * 1024,
-                commons = commons,
+                rooms = rooms,
             )
         val info = SpoolCommonsInfo(maxFrames = 500, ttlMs = 86_400_000L, maxBlob = 65_536)
-        assertEquals(setOf(room), textOnlyRoomsOf(listOf(relay(info))))
-        assertEquals(
-            emptySet<String>(),
-            textOnlyRoomsOf(listOf(relay(SpoolCommonsInfo(maxFrames = 500, ttlMs = 86_400_000L, maxBlob = 65_536, attach = true)))),
-        )
+        val attaching = SpoolCommonsInfo(maxFrames = 500, ttlMs = 86_400_000L, maxBlob = 65_536, attach = true)
+        assertEquals(setOf(room, team), textOnlyRoomsOf(listOf(relay(mapOf(room to info)))))
+        assertEquals(emptySet<String>(), textOnlyRoomsOf(listOf(relay(mapOf(room to attaching, team to attaching)))))
+        // Two rooms on one relay: one takes attachments and the other does not.
+        assertEquals(setOf(team), textOnlyRoomsOf(listOf(relay(mapOf(room to attaching, team to info)))))
 
         val textOnly = covered.copy(coveredLabels = setOf(room, "peer-a"), textOnlyRooms = setOf(room))
         assertEquals(AttachmentRelay.Unsupported, attachmentReach(room, 1_000, textOnly))

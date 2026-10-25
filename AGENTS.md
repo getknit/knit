@@ -621,8 +621,14 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   `SpoolStatus.staleCommons`, `RelayFacts.staleRooms`):** READ ADR 2026-10.xhfr. A reaction rides the room and never
   `sendReaction` (its fallback flooded a private room's message in cleartext); an attachment is keyed like a group's,
   pushed only by its author and fetched only through the scope, so no radio path — a want, a tap, a fetch row — may
-  treat a `c-` row like a Nearby one; and a commons SUB declares a TTL one millisecond short on purpose — once per
-  connection for a room already stale, which takes no post while it stays so.
+  treat a `c-` row like a Nearby one; and at a spool that predates `rooms` a commons SUB declares a TTL one
+  millisecond short on purpose — once per connection for a room already stale, which takes no post while it stays so.
+  **Before touching how a HELLO's rooms are read — `CommonsAdverts`, `SpoolHello.rooms` / `SpoolCommonsRoom`,
+  `ScopeCrypto.commonsTag` / `Scope.commonsTag`, `SpoolStatus.adverts` / `rooms`, `RelayInviteApplier.Room.beside` or
+  the relay screen's `RelayRoom` rows:** READ ADR 2026-10.wqu2. One spool may run several rooms, each named in its
+  HELLO by an 8-byte tag of its scope id; `CommonsAdverts` is the one reader of `rooms` and `commons`, a spool that
+  lists its rooms settles a stale room with no SUB, and nothing reads one room's name or `attach` for another's. An
+  invite is never a rotation (C-7.4-18): never leave a room because another room's invite arrived at its relay.
   **Hidden in shipped builds** behind `BuildConfig.COMMONS` (on in debug, off in release, `-Pcommons=`
   overrides): the one seam is the `CommonsStore` the DI hands `MeshManager`, `InternetRelayViewModel` and
   `CommonsDetailsViewModel`, null while dark — don't add a second gate downstream of it; flip the release default

@@ -60,6 +60,9 @@ class Scope(
     /** What this scope is *of*, for diagnostics: the DM peer's node id, the group id, or the commons' thread id. */
     val label: String = peerId ?: groupId ?: commonsId.orEmpty()
 
+    /** A commons' tag, hex (spec §7.4, B-7.4-16): how its relay's HELLO names it. Null on every other scope. */
+    val commonsTag: String? = commonsId?.let { hex(ScopeCrypto.commonsTag(id)) }
+
     /** Whether [url] is a relay this scope belongs at: a commons' one relay, else its [spools], else every relay. */
     fun belongsAt(url: String): Boolean = spoolUrl?.let { it == url } ?: spools?.contains(url) ?: true
 

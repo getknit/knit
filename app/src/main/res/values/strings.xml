@@ -1575,11 +1575,14 @@
     <string name="relays_commons_label">Commons · %1$s</string>
     <string name="relays_commons_join">Join</string>
     <string name="relays_commons_leave">Leave</string>
-    <string name="relays_commons_join_title">Join %1$s</string>
-    <string name="relays_commons_join_body">This relay runs a shared room. Paste the invite its operator gave you. Everyone in the room becomes a contact, and their messages skip your requests inbox.</string>
+    <string name="relays_commons_join_title">Join a room</string>
+    <string name="relays_commons_join_body">Paste the invite the relay\'s operator gave you for one of its rooms. Everyone in that room becomes a contact, and their messages skip your requests inbox.</string>
     <string name="relays_commons_invite_label">Invite</string>
     <string name="relays_commons_invite_hint">knit-commons:v1:…</string>
     <string name="relays_commons_invite_invalid">That is not a commons invite</string>
+    <string name="relays_commons_offered">This relay runs shared rooms</string>
+    <string name="relays_commons_offered_more">Join another room here</string>
+    <string name="relays_commons_share_desc">Share an invite to %1$s</string>
     <string name="relays_commons_leave_body">The room and its history leave this phone. The people in it stay in your contacts.</string>
     <string name="relays_remove">Remove</string>
     <string name="relays_status_connected">Connected</string>
@@ -1789,10 +1792,10 @@
     <!-- Relay invite (docs/RELAY_INVITE.md): the sheet a tapped invite link raises, and the row's share actions -->
     <string name="relays_invite_title">Relay invite</string>
     <string name="relays_invite_private">A private relay. The link carries its access key, so only people who were given the link can use it.</string>
-    <string name="relays_invite_room">Joins its room, %1$s. Everyone there becomes a contact, and their messages skip your requests inbox.</string>
-    <string name="relays_invite_room_unnamed">Joins its shared room. Everyone there becomes a contact, and their messages skip your requests inbox.</string>
-    <string name="relays_invite_room_joined">You\'re already in its room.</string>
-    <string name="relays_invite_room_replaces">Replaces the room you joined here. That room and its history leave this phone; the people in it stay in your contacts.</string>
+    <string name="relays_invite_room">Joins the room %1$s. Everyone there becomes a contact, and their messages skip your requests inbox.</string>
+    <string name="relays_invite_room_unnamed">Joins one of its shared rooms. Everyone there becomes a contact, and their messages skip your requests inbox.</string>
+    <string name="relays_invite_room_joined">You\'re already in this room.</string>
+    <string name="relays_invite_room_beside">You stay in the rooms you\'ve already joined here.</string>
     <string name="relays_invite_key">Carries a ticket key, so this phone can fetch the relay\'s tickets itself. About once a day it will contact %1$s for them.</string>
     <string name="relays_invite_key_replaces">Carries a new ticket key for this relay, replacing the one this phone holds. About once a day it will contact %1$s for the relay\'s tickets.</string>
     <string name="relays_invite_key_held">This phone already has this ticket key.</string>

@@ -1122,8 +1122,8 @@ the id itself, a tag lets nobody subscribe.
 >   `rooms[0]`'s; otherwise the client marks a live room stale on every connection, stops subscribing it and
 >   tells its user to ask for a new link. A room that really was rotated is still read correctly, since the
 >   spool then echoes the probe's own declaration;
-> - handed a second room's invite at a relay where it already holds one, the reference client as built
->   reads it as a rotation (`docs/RELAY_INVITE.md` §3): it leaves the first room and drops that room's
+> - handed a second room's invite at a relay where it already holds one, a reference client built before this
+>   revision reads it as a rotation (`docs/RELAY_INVITE.md` §3): it leaves the first room and drops that room's
 >   history, which C-7.4-18 now forbids.
 >
 > This revision documents that hazard rather than forbidding a second room: a spool cannot tell which
@@ -1997,7 +1997,8 @@ Commons rooms (§7.4; appended 2026-10-24 — the rows above did not move). The 
 room whose secret is `fixture(32, 11)`; and a HELLO running both, minimal like `helloSpoolCommonsAttach`
 (`t`, `v`, then `commons` and `rooms` in that order): the first room `name = "Home"` with the bounds of
 `helloSpoolCommons`, the second with no name, `maxFrames = 200`, the same `ttlMs` and `maxBlob`, and
-`attach = true`. No implementation pins these yet; each picks them up with its half (Appendix A):
+`attach = true`. The reference client pins them (`ScopeVectorTest`, `SpoolRecordsTest`); `knit-spool` picks them up
+with its half (Appendix A):
 
 ```
 commonsTag      = b15333db903e9745
@@ -2223,7 +2224,7 @@ wire.
 | §3.1 DM scopes                                  | Shipped, C-3.1-4/5 included (2026-10-16)                                                                                                    | `ScopeCrypto`, `ScopeRegistry`, `RatchetSessions.exportedRoots`  |
 | §3.2 group root, §3.3 group scopes              | Shipped                                                                                                                                    | `GroupRootPolicy`, `GroupRootStore`, `GroupKeyPayload.gr`, DB v3 |
 | §3.5 pair scopes                                | Shipped                                                                                                                                    | `ScopeCrypto.pairSecret`, `ScopeRegistry.pairs`, `IntroSync`      |
-| §7.4 the commons                                | Shipped both sides for one room per spool; posts, reply quotes, reactions and keyed attachments (where the spool advertises `attach`); hidden in the reference client's release builds. Several rooms per spool (`rooms`, the tag, the two push budgets, C-7.4-17/18; 2026-10-24) are specified and in neither implementation yet | `ScopeCrypto.commons*`, `CommonsInvite`, `ScopeSync`, `knit-spool` |
+| §7.4 the commons                                | Shipped both sides for one room per spool; posts, reply quotes, reactions and keyed attachments (where the spool advertises `attach`); hidden in the reference client's release builds. Several rooms per spool (`rooms`, the tag, the two push budgets, C-7.4-17/18; 2026-10-24): client half built in the reference client, spool half in `knit-spool` to follow | `ScopeCrypto.commons*`, `CommonsAdverts`, `CommonsInvite`, `ScopeSync`, `knit-spool` |
 | §7.6 TURN credentials, tickets, STUN            | Spool side built in `knit-spool` (experimental, off by default); client half in development, not in a shipped build                     | `knit-spool`                                                     |
 | §7.7 casts                                      | Spool side built in `knit-spool` (experimental, off by default); client half in development, not in a shipped build                     | `knit-spool`                                                     |
 | §7.5 send-side moderation                       | Spool side shipped (`SPOOL_REQUIRE_MODERATION`); client half not yet implemented — a current client tolerates the field and ignores it (B-2-2) | `knit-spool`                                                     |

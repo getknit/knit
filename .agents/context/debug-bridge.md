@@ -193,18 +193,18 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   much of `local` is the §9.6 band — blobs the spool still holds that our custody has aged out, counted
   as held on purpose (ADR 062) so `local == spool` keeps meaning converged; a scope stuck unconverged
   with a large `accounted` means the fold or the prune is broken, not the network.
-- `…debug.COMMONS` — joins, leaves and inspects the **commons** (spec §7.4, ADR 2026-09.wx8e) — the relay
-  row's Join/Leave, for a locked lab device. `--es url <spoolUrl> --es invite <knit-commons:v1:…>` joins the
-  room that relay runs (add the relay with `…debug.SPOOL --es url` first; the reply carries the `c-…`
-  conversation id), `--es leave <c-…>` leaves one, `--es react <messageId> --es emoji <e> --es room <c-…>` toggles
+- `…debug.COMMONS` — joins, leaves and inspects the **commons** (spec §7.4, ADR 2026-09.wx8e, ADR 2026-10.wqu2) — the
+  relay row's Join/Leave, for a locked lab device. `--es url <spoolUrl> --es invite <knit-commons:v1:…>` joins the
+  invite's room at that relay, beside any other room joined there, named as the relay lists that room's tag (add
+  the relay with `…debug.SPOOL --es url` first; the reply carries the `c-…` conversation id), `--es leave <c-…>` leaves one, `--es react <messageId> --es emoji <e> --es room <c-…>` toggles
   a reaction in the room (C-7.4-13), and no extras dumps every joined room with its members, `attach` (whether the
-  room's relay takes its attachments, S-7.4-5; null while it is down) and `stale` (the relay does not run this room:
-  a rotated invite, or no commons there).
+  room's relay takes this room's attachments, S-7.4-5; null while it is down or does not run the room) and `stale`
+  (the relay does not run this room: a rotated invite, its tag missing from `rooms`, or no room there).
   `…debug.SEND --es conv <c-…>` posts into it (with `--es replyTo <id>` for a quote), `…debug.SENDIMG --es conv
   <c-…>` posts an attachment (any of its doors; keyed, and carried by the room's relay alone), `…debug.STATE --es conv
   <c-…>` reads it back (`received` flips once a member's sealed tick lands over that pair's DM scope — the
   group's route, never the room's), and `…debug.SPOOL` shows the room's scope under the **bound relay only** plus the
-  relay's advertised `commons` block. The convergence oracle is the same `local`/`spool` pair — everything a
+  relay's `roomsAdvertised` count and a `rooms` block of each joined room's own advertised name and pinned bounds. The convergence oracle is the same `local`/`spool` pair — everything a
   member pulls from a room is *accounted* (nothing is ever custodied), so `accounted` climbing to the room
   size on a restart is the expected re-pull, not a leak. Two traps from the first trial: the daemon's
   `commons-fanout` conformance check leaves a random blob in the room, which every client quarantines

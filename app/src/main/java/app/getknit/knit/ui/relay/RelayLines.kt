@@ -387,14 +387,29 @@ internal fun RelayInviteMenu(
     relay: RelayRow,
     onShare: () -> Unit,
     onCopy: () -> Unit,
+) = InviteMenu(
+    key = relay.host,
+    contentDescription = stringResource(R.string.relays_invite_share_desc, relay.host),
+    onShare = onShare,
+    onCopy = onCopy,
+    tagPrefix = "relay_invite",
+)
+
+/**
+ * A Share-and-Copy button for one invite: the relay's, or one room's on it. Its tags are `<tagPrefix>_<key>` for the
+ * button and `<tagPrefix>_share_<key>` / `<tagPrefix>_copy_<key>` for the two items.
+ */
+@Composable
+internal fun InviteMenu(
+    key: String,
+    contentDescription: String,
+    onShare: () -> Unit,
+    onCopy: () -> Unit,
+    tagPrefix: String,
 ) {
     var open by remember { mutableStateOf(false) }
-    IconButton(onClick = { open = true }, modifier = Modifier.size(48.dp).testTag("relay_invite_${relay.host}")) {
-        Icon(
-            Icons.Filled.Share,
-            contentDescription = stringResource(R.string.relays_invite_share_desc, relay.host),
-            modifier = Modifier.size(20.dp),
-        )
+    IconButton(onClick = { open = true }, modifier = Modifier.size(48.dp).testTag("${tagPrefix}_$key")) {
+        Icon(Icons.Filled.Share, contentDescription = contentDescription, modifier = Modifier.size(20.dp))
     }
     DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
         DropdownMenuItem(
@@ -403,7 +418,7 @@ internal fun RelayInviteMenu(
                 open = false
                 onShare()
             },
-            modifier = Modifier.testTag("relay_invite_share_${relay.host}"),
+            modifier = Modifier.testTag("${tagPrefix}_share_$key"),
         )
         DropdownMenuItem(
             text = { Text(stringResource(R.string.relays_invite_copy)) },
@@ -411,7 +426,7 @@ internal fun RelayInviteMenu(
                 open = false
                 onCopy()
             },
-            modifier = Modifier.testTag("relay_invite_copy_${relay.host}"),
+            modifier = Modifier.testTag("${tagPrefix}_copy_$key"),
         )
     }
 }
@@ -424,7 +439,6 @@ internal fun RelayInviteMenu(
  */
 @Composable
 internal fun JoinCommonsDialog(
-    relay: RelayRow,
     isValidInvite: (String) -> Boolean,
     onJoin: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -434,7 +448,7 @@ internal fun JoinCommonsDialog(
     val malformed = trimmed.isNotEmpty() && !isValidInvite(trimmed)
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.relays_commons_join_title, relay.commons?.name ?: stringResource(R.string.commons_title))) },
+        title = { Text(stringResource(R.string.relays_commons_join_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(

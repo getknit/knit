@@ -170,6 +170,25 @@ class SpoolCommonsInfo(
     val attach: Boolean = false,
 )
 
+/**
+ * One entry of a HELLO's `rooms` (spec §7.4, S-7.4-1): a room the spool runs, as [SpoolCommonsInfo] says it, led by
+ * its [tag] — the first 8 bytes of a hash of the room's scope id (`ScopeCrypto.commonsTag`), the only form of the id
+ * a spool may publish. A member finds its own room by computing the tag; nobody can subscribe with one. Field order
+ * matches the spec's `helloSpoolRooms` vector.
+ */
+@Serializable
+class SpoolCommonsRoom(
+    val tag: ByteArray,
+    val name: String? = null,
+    val maxFrames: Int,
+    val ttlMs: Long,
+    val maxBlob: Int,
+    val attach: Boolean = false,
+) {
+    /** The entry without its tag: what the rest of the client reads a room's advertisement as. */
+    fun info(): SpoolCommonsInfo = SpoolCommonsInfo(name, maxFrames, ttlMs, maxBlob, attach)
+}
+
 /** A mined `SpoolPow` stamp: counter [n] for UTC day [d]. */
 @Serializable
 class PowStamp(
@@ -201,7 +220,9 @@ class ScopeSub(
  * ticket's `fl` ([ticketGates] reads the pair); [stun] lists up to four `stun:`/`stuns:` URIs anyone may gather from
  * with no credential (experimental, docs/VOICE_CALLS.md §2.6). All three are absent when off: `false` and an empty
  * list are never sent. [cast] says the spool fans out [SpoolCast]s
- * within its bounds (experimental, docs/VOICE_CALLS.md §2.7), and is absent when it does not.
+ * within its bounds (experimental, docs/VOICE_CALLS.md §2.7), and is absent when it does not. [rooms] lists every
+ * commons room the spool runs, each by its tag, and [commons] then repeats the first (§7.4, S-7.4-1); a spool that
+ * predates the list sends [commons] alone. [CommonsAdverts] is the one reader of the pair.
  * Client→spool: [v] is the chosen version, everything else omitted — a client identifies itself no further
  * than that.
  */
@@ -218,6 +239,7 @@ class SpoolHello(
     val stun: List<String>? = null,
     val cast: SpoolCastInfo? = null,
     val entGates: Long? = null,
+    val rooms: List<SpoolCommonsRoom>? = null,
 ) {
     /**
      * The `fl` bits this spool requires a ticket for (S-7.6-13), mirroring knit-spool's `Hello.ticketGates`: none

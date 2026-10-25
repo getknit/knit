@@ -39,6 +39,9 @@ class ScopeVectorTest {
     // The commons (§7.4): the invite secret an operator mints, hashed by the daemon and stretched by the client.
     private val commonsSecret = bytes(32, 10)
 
+    // A second room's invite (§7.4, the rooms block): what tells two rooms on one spool apart in a HELLO.
+    private val commonsSecret2 = bytes(32, 11)
+
     // The pair scope (§3.5): fixture X25519 scalars stand in for the two identity DH keys.
     private fun pairSecret() = ScopeCrypto.pairSecret(bytes(32, 3), X25519.publicFromPrivate(bytes(32, 8)))
 
@@ -72,6 +75,12 @@ class ScopeVectorTest {
             "commonsScopeId" to ScopeCrypto.commonsScopeId(commonsSecret).toHex(),
             "commonsSealKey" to ScopeCrypto.commonsSealKeys(commonsSecret).sealKey.toHex(),
             "commonsNonceKey" to ScopeCrypto.commonsSealKeys(commonsSecret).nonceKey.toHex(),
+            // Appended (§7.4, 2026-10-24) — a room's tag, the HELLO's one-way name for it (B-7.4-16), for the room
+            // above and a second one beside it.
+            "commonsTag" to ScopeCrypto.commonsTag(ScopeCrypto.commonsScopeId(commonsSecret)).toHex(),
+            "commonsSecret2" to commonsSecret2.toHex(),
+            "commonsScopeId2" to ScopeCrypto.commonsScopeId(commonsSecret2).toHex(),
+            "commonsTag2" to ScopeCrypto.commonsTag(ScopeCrypto.commonsScopeId(commonsSecret2)).toHex(),
         )
     }
 
@@ -146,6 +155,10 @@ class ScopeVectorTest {
                 "commonsScopeId" to "a081eddb259895d4b9e26b3142e5ce0d88e08721aed57f9ead6e6eb99b10edd6",
                 "commonsSealKey" to "31fb89763fc57db88b263cc05b47c6546a3aab33e32cd72dcb0a28bf90400c62",
                 "commonsNonceKey" to "b932a11365737c35238425655e86f3febbc6fe77e1189cb9f13e8a14e565877d",
+                "commonsTag" to "b15333db903e9745",
+                "commonsSecret2" to "0b121920272e353c434a51585f666d747b828990979ea5acb3bac1c8cfd6dde4",
+                "commonsScopeId2" to "ae34feaf814400c10160a8351729da34ee3c4b48ab69ecfca5eb9d168bf2c29e",
+                "commonsTag2" to "a2f73b72abeabcb1",
             )
     }
 }

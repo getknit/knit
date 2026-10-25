@@ -176,7 +176,7 @@ object Conversations {
     const val GROUP_ID_PREFIX: String = "g-"
 
     /**
-     * Prefix marking a **commons** — a spool's shared room (docs/SPOOL_PROTOCOL.md §7.4), one per relay the
+     * Prefix marking a **commons** — a shared room on a spool (docs/SPOOL_PROTOCOL.md §7.4), one per invite the
      * user has joined, keyed as `c-` + the room's 64-hex scope id. The same hyphen trick as
      * [GROUP_ID_PREFIX]: it can never be a node id, and `c-` never collides with `g-` or `m-`.
      */

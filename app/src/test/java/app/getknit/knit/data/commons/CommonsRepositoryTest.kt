@@ -90,6 +90,25 @@ class CommonsRepositoryTest : RoomDbTest() {
             assertEquals(b, repo.find(b)?.conversationId)
         }
 
+    @Test
+    fun twoRoomsOnOneRelayAreTwoRowsAndLeavingOneKeepsTheOther() =
+        runTest {
+            // Spec §7.4: one spool may run several rooms, each from its own invite (C-7.4-18).
+            val repo = repo()
+            val home = repo.join("wss://a/spool/v1", secret, "Home", now = 1L)
+            val team = repo.join("wss://a/spool/v1", ByteArray(32) { (it + 9).toByte() }, "Team", now = 2L)
+            messages.save(row("m1", home))
+            assertEquals(listOf(home, team), repo.observeAll().first().map { it.conversationId })
+
+            repo.leave(team)
+
+            assertEquals("Home", repo.find(home)?.name)
+            assertTrue(db.messageDao().exists("m1"))
+            assertNull(repo.find(team))
+            repo.leaveBoundTo("wss://a/spool/v1")
+            assertNull(repo.find(home))
+        }
+
     private fun reaction(
         id: String,
         messageId: String,

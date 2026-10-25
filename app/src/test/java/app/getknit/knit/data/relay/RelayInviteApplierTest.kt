@@ -3,12 +3,15 @@ package app.getknit.knit.data.relay
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.mesh.MeshController
+import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
+import app.getknit.knit.mesh.spool.CommonsAdverts
 import app.getknit.knit.mesh.spool.CommonsRoom
 import app.getknit.knit.mesh.spool.CommonsRoots
 import app.getknit.knit.mesh.spool.HeldKey
 import app.getknit.knit.mesh.spool.KeyAnswer
 import app.getknit.knit.mesh.spool.KeyState
 import app.getknit.knit.mesh.spool.RelayInvite
+import app.getknit.knit.mesh.spool.SpoolCommonsInfo
 import app.getknit.knit.mesh.spool.TicketRefresherTest
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -28,7 +31,8 @@ import org.junit.Test
 /**
  * The one apply sequence on plain JVM: consent is recorded through the master switch's own write and
  * only when missing; the relay is stored, un-parked and dialled now; a room is joined, left alone when
- * already joined, or rotated with the old one left first; a relay is matched by its redacted URL so a tokened
+ * already joined, and joined beside any other room there, never as a rotation (C-7.4-18); a relay is matched by its
+ * redacted URL so a tokened
  * invite replaces an untokened entry and never the reverse; a build with no commons store ignores the
  * room half.
  */
@@ -195,7 +199,7 @@ class RelayInviteApplierTest {
             val preview = applier().preview(invite(TOKENED, secret))
             val room = preview.room!!
             assertTrue(room.alreadyJoined)
-            assertFalse(room.replacesRoom)
+            assertFalse(room.beside)
             applier().apply(preview)
             coVerifyOrder {
                 commons.join(TOKENED, secret, "Home", NOW)
@@ -211,18 +215,38 @@ class RelayInviteApplierTest {
     @Test
     fun aRoomIsJoinedWithTheLinksNameThenTheLiveOne() =
         runTest {
-            val named = applier().preview(invite(TOKENED, secret, "Ours"), liveName = "Theirs")
+            // A relay that predates `rooms`: its one commons names whichever room is asked about.
+            val theirs = CommonsAdverts.of(advert("Theirs"), rooms = null)
+            val named = applier().preview(invite(TOKENED, secret, "Ours"), live = theirs)
             assertEquals("Ours", named.room!!.name)
             applier().apply(named)
             coVerify { commons.join(TOKENED, secret, "Ours", NOW) }
 
-            val live = applier().preview(invite(TOKENED, secret), liveName = "Theirs")
+            val live = applier().preview(invite(TOKENED, secret), live = theirs)
             assertEquals("Theirs", live.room!!.name)
             assertNull(applier().preview(invite(TOKENED, secret)).room!!.name)
         }
 
     @Test
-    fun theSameRoomAgainIsANoOpUpsertAndADifferentOneIsARotation() =
+    fun theLiveNameIsTheOneTheRelayListsForThisRoomsTag() =
+        runTest {
+            // C-7.4-17: a relay running two rooms lists each by tag, and `commons` repeats only the first.
+            val live =
+                CommonsAdverts.of(
+                    advert("Home"),
+                    listOf(tagOf(secret) to advert("Home"), tagOf(otherSecret) to advert("Team")),
+                )
+            assertEquals("Team", applier().preview(invite(TOKENED, otherSecret), live = live).room!!.name)
+            // A room the relay does not list has no live name, whatever `commons` says.
+            assertNull(applier().preview(invite(TOKENED, ByteArray(32) { 9 }), live = live).room!!.name)
+        }
+
+    private fun advert(name: String) = SpoolCommonsInfo(name, maxFrames = 500, ttlMs = 86_400_000L, maxBlob = 65_536)
+
+    private fun tagOf(secret: ByteArray) = ScopeCrypto.commonsTag(ScopeCrypto.commonsScopeId(secret))
+
+    @Test
+    fun theSameRoomAgainIsANoOpUpsertAndADifferentOneJoinsBesideIt() =
         runTest {
             spoolConsented.value = true
             spoolEnabled.value = true
@@ -232,24 +256,26 @@ class RelayInviteApplierTest {
             val same = applier().preview(invite(TOKENED, secret))
             val sameRoom = same.room!!
             assertTrue(sameRoom.alreadyJoined)
-            assertFalse(sameRoom.replacesRoom)
+            assertFalse(sameRoom.beside)
             assertTrue(same.isNoOp)
             applier().apply(same)
             coVerify(exactly = 0) { commons.leaveBoundTo(any()) }
             // Not re-joined: the upsert would overwrite the name the relay advertised at join time.
             coVerify(exactly = 0) { commons.join(any(), any(), any(), any()) }
 
-            val rotated = applier().preview(invite(TOKENED, otherSecret))
-            val rotatedRoom = rotated.room!!
-            assertFalse(rotatedRoom.alreadyJoined)
-            assertTrue(rotatedRoom.replacesRoom)
-            assertFalse(rotated.isNoOp)
-            applier().apply(rotated)
+            // Two secrets at one spool are two rooms (C-7.4-18): the second joins and the first stays, history and all.
+            val second = applier().preview(invite(TOKENED, otherSecret))
+            val secondRoom = second.room!!
+            assertFalse(secondRoom.alreadyJoined)
+            assertTrue(secondRoom.beside)
+            assertFalse(second.isNoOp)
+            applier().apply(second)
             coVerifyOrder {
-                commons.leaveBoundTo(TOKENED)
                 commons.join(TOKENED, otherSecret, null, NOW)
                 mesh.refreshRelays()
             }
+            coVerify(exactly = 0) { commons.leaveBoundTo(any()) }
+            coVerify(exactly = 0) { commons.leave(any()) }
         }
 
     @Test

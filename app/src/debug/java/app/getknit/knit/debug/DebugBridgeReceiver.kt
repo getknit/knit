@@ -104,6 +104,7 @@ import app.getknit.knit.mesh.bluetooth.TunePhy
 import app.getknit.knit.mesh.bluetooth.TunePriority
 import app.getknit.knit.mesh.crypto.AttachmentCrypto
 import app.getknit.knit.mesh.crypto.b64d
+import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
 import app.getknit.knit.mesh.crypto.scope.SpoolPow
 import app.getknit.knit.mesh.indirectPeers
 import app.getknit.knit.mesh.link.FeedWindow
@@ -1882,17 +1883,24 @@ class DebugBridgeReceiver :
                     // also what makes the UI mark a photo "nearby only" — worth being able to confirm
                     // from the bridge when a field test sees that marker.
                     .put("maxAttachBytes", spool.maxAttachBytes ?: JSONObject.NULL)
-                    // The commons this spool advertised in its HELLO (§7.4), or null: bounds and a name, never the id.
+                    // The commons rooms this spool advertised in its HELLO (§7.4): how many, and each joined one's own
+                    // name and pinned bounds by thread id — never an id, and a tag only as the room matched it.
+                    .put("roomsAdvertised", spool.adverts?.count ?: 0)
                     .put(
-                        "commons",
-                        spool.commons?.let {
-                            JSONObject()
-                                .put("name", it.name ?: JSONObject.NULL)
-                                .put("maxFrames", it.maxFrames)
-                                .put("ttlMs", it.ttlMs)
-                                .put("maxBlob", it.maxBlob)
-                                .put("attach", it.attach)
-                        } ?: JSONObject.NULL,
+                        "rooms",
+                        JSONObject().apply {
+                            spool.rooms.forEach { (room, info) ->
+                                put(
+                                    room,
+                                    JSONObject()
+                                        .put("name", info.name ?: JSONObject.NULL)
+                                        .put("maxFrames", info.maxFrames)
+                                        .put("ttlMs", info.ttlMs)
+                                        .put("maxBlob", info.maxBlob)
+                                        .put("attach", info.attach),
+                                )
+                            }
+                        },
                     ).put("scopes", scopes)
                     // VOICE_CALLS.md §2.6: whether this spool takes tickets, how many STUN URIs its hello gave a call,
                     // and where this connection and the store stand with a ticket. Never the ticket itself.
@@ -2154,11 +2162,14 @@ class DebugBridgeReceiver :
         val invite = intent.getStringExtra("invite")?.takeIf { it.isNotBlank() }?.trim()
         if (url != null && invite != null) {
             val secret = CommonsInvite.decode(invite) ?: return reply("error", "not a commons invite")
+            // The name the relay advertises for this room's tag (C-7.4-17), as the relay row's Join takes it.
             val name =
                 mesh
                     .spoolStatus()
                     .firstOrNull { it.url == url }
-                    ?.commons
+                    ?.adverts
+                    ?.advertForScope(ScopeCrypto.commonsScopeId(secret))
+                    ?.info
                     ?.name
             val id = commons.join(url, secret, name, System.currentTimeMillis())
             mesh.refreshRelays()
@@ -2187,9 +2198,9 @@ class DebugBridgeReceiver :
                     .put("name", room.name ?: JSONObject.NULL)
                     .put("joinedAt", room.joinedAt)
                     .put("members", JSONArray(commons.members(room.conversationId)))
-                    // What the room's relay said: whether it takes the room's attachments (S-7.4-5), null while it is
-                    // down; and whether it runs this room at all (a rotated invite, or no commons there).
-                    .put("attach", relay?.commons?.attach ?: JSONObject.NULL)
+                    // What the room's relay said: whether it takes this room's attachments (S-7.4-5), null while it is
+                    // down or does not run the room; and whether it runs this room at all (a rotated invite, or no room).
+                    .put("attach", relay?.rooms?.get(room.conversationId)?.attach ?: JSONObject.NULL)
                     .put("stale", relay?.staleCommons?.contains(room.conversationId) == true),
             )
         }

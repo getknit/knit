@@ -5,7 +5,7 @@
 |                    |                                                                                              |
 |--------------------|----------------------------------------------------------------------------------------------|
 | Layout version     | 1                                                                                            |
-| Status             | Built 2026-09-14 (ADR 2026-09.tmbq); the issuer and customer key added 2026-10-13 (ADR 2026-10.3sk7) |
+| Status             | Built 2026-09-14 (ADR 2026-09.tmbq); the issuer and customer key added 2026-10-13 (ADR 2026-10.3sk7); several rooms per relay 2026-10-24 (ADR 2026-10.wqu2) |
 | Reference          | `mesh/spool/RelayInvite.kt` (codec), `data/relay/RelayInviteApplier` (the one apply sequence), `ui/relay/RelayInviteSheet` (the preview), `ui/relay/RelayInviteInbox` (the intent hand-off) |
 | Executable anchors | `RelayInviteTest` (golden vectors below), `RelayInviteApplierTest`, `RelayInviteInboxTest`, `InternetRelayViewModelTest`, `InternetPlaneLabTest` (the lab scenario) |
 
@@ -36,8 +36,8 @@ Body { v: 1, u: str, c?: bstr(32), n?: str, i?: str, k?: str }
   (`docs/SPOOL_PROTOCOL.md` §7.1). The token rides along **on purpose**: the link is how a private spool's
   credential is handed over. At most 256 chars, no whitespace or control characters, and the scheme rule
   is the dialer's own (`SpoolUrl.isAcceptable` — `wss://` always, `ws://` only in a debug build).
-- `c` — the commons secret (§7.4), the same 32 bytes `knit-commons:v1:…` wraps; present when the minter
-  had joined the relay's room. `n` — the room's name as the minter knew it, single-line, ≤ 32 chars.
+- `c` — the commons secret (§7.4), the same 32 bytes `knit-commons:v1:…` wraps; present when the link
+  carries one of the relay's rooms. `n` — the room's name as the minter knew it, single-line, ≤ 32 chars.
 - **Unsigned.** The contact card is signed because it asserts an identity; an invite asserts nothing —
   the URL is the capability, and a relay has no identity key to sign as. What a signature could not
   prove anyway (that the host is who the sender says it is) the sheet puts in the largest type on it.
@@ -84,14 +84,13 @@ without a sheet, and the sheet is built around one question — *do you trust th
   one host with the untokened one refused `4001` forever. So: a tokened invite over an untokened entry
   *replaces* it (said on the sheet); an untokened one over a tokened entry is "already in your list" and
   never downgrades the stored credential.
-- **A different secret at the same relay is a second room** (`docs/SPOOL_PROTOCOL.md` §7.4, C-7.4-18): since
-  2026-10-24 a spool may run several, so an invite can no longer say that a room was rotated; only the spool
-  can, by leaving the room's tag out of its HELLO's `rooms`. **The app as built still reads it as a
-  rotation**, from when §7.4 was one commons per spool: the relays screen keys rooms by URL, so a second room
-  there would have no Leave, and the sheet says the old room and its history leave this phone — the same
-  sentence the Leave dialog states — and confirming leaves then joins. That is what C-7.4-18 forbids. Until
-  the follow-up joins the second room beside the first, an operator gives a second room's invite only to
-  members on a build that reads `rooms` (§7.4's note on clients that predate it).
+- **A different secret at the same relay is a second room** (`docs/SPOOL_PROTOCOL.md` §7.4, C-7.4-18): a spool
+  may run several, so an invite never says that a room was rotated; only the spool can, by leaving the room's tag
+  out of its HELLO's `rooms` (or, at a spool that predates the list, by the probe). The sheet joins the new room
+  beside any room already joined there and says those stay; the relays screen lists each joined room with its own
+  Leave and invite. A build before 2026-10-24 read a second secret as a rotation and left the first room with its
+  history, so a member on such a build loses that room by joining another (§7.4's note on clients that predate
+  `rooms`).
 - A build with the commons dark (`BuildConfig.COMMONS` off) applies the relay half and ignores the room
   half without mentioning it.
 - **A customer key is a lent quota.** The sheet names the issuer's host and says what the key does: this phone
@@ -105,9 +104,10 @@ without a sheet, and the sheet is built around one question — *do you trust th
 
 ## 4. Minting
 
-- **On the phone:** the relay screen's Share / Copy actions mint `u` as stored (token included) plus the
-  room's `c`/`n` when this device has joined it. "Invite to my instance" means the room; a member who
-  wants to share the relay alone leaves the room first. The phone **never** writes `i` or `k`, whatever key it
+- **On the phone:** the relay screen's Share / Copy actions mint `u` as stored (token included), plus the
+  room's `c`/`n` when this device has joined exactly one room there; each joined room's own Share / Copy mints `u`
+  plus that room. One link names one room, so with two or more joined the relay's own link carries the relay
+  alone. The phone **never** writes `i` or `k`, whatever key it
   holds: a forwarded customer key lends out the customer's own quota, so `RelayInvite.mint` has no way to.
 - **By the issuer's operator** (knit-spool-coordinator, out of repo): `npm run anywhere -- account create` (and
   `rotate-key`) prints an invite with `u` the account's relay (its host must be the account's `spool_host`), `i` the

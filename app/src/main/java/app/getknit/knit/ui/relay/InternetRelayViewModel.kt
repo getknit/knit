@@ -10,6 +10,8 @@ import app.getknit.knit.data.relay.RelayInviteApplier
 import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.mesh.MeshController
+import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
+import app.getknit.knit.mesh.spool.CommonsAdverts
 import app.getknit.knit.mesh.spool.CommonsInvite
 import app.getknit.knit.mesh.spool.HeldKey
 import app.getknit.knit.mesh.spool.HeldTicket
@@ -64,9 +66,12 @@ data class RelayRow(
     val scopeCount: Int? = null,
     val carriesPhotos: Boolean? = null,
     val lastError: String? = null,
-    // The commons this relay runs (§7.4), once its HELLO has said so: the room's advertised name and, when
-    // this device has joined it, the thread it lives in. Null while disconnected or when the relay runs none.
-    val commons: RelayCommons? = null,
+    // The commons rooms this device has joined at this relay (§7.4), oldest first. Not a fact about the connection,
+    // so they show while disconnected too and a Leave is always reachable. Empty in a build without the commons.
+    val rooms: List<RelayRoom> = emptyList(),
+    // Whether the relay's HELLO advertises any room (§7.4): what offers a Join, which takes the room's invite. False
+    // while disconnected, and in a build without the commons, where a Join could not join.
+    val takesRooms: Boolean = false,
     // What this relay offers calls, once its HELLO has said so, and where this phone stands with a ticket there.
     // Null while disconnected, when it offers calls nothing, and in a build without calls.
     val calls: RelayCalls? = null,
@@ -106,11 +111,11 @@ sealed interface RelayUploads {
     data object Spent : RelayUploads
 }
 
-/** A relay's commons as the row shows it: the operator's name for it, and our thread id when joined. */
-data class RelayCommons(
+/** One room joined at a relay, as its screen shows it: the thread it lives in and the name it was joined under. */
+data class RelayRoom(
+    val conversationId: String,
     val name: String?,
-    val joinedId: String?,
-    // The room joined here is not the one this relay runs (`SpoolStatus.staleCommons`): its invite was replaced.
+    // The relay does not run this room (`SpoolStatus.staleCommons`): its invite was replaced, or it is gone.
     val stale: Boolean = false,
 )
 
@@ -228,7 +233,7 @@ sealed interface InternetRelayEvent {
  */
 class InternetRelayViewModel(
     private val settings: SettingsStore,
-    relayStatus: RelayStatusRepository,
+    private val relayStatus: RelayStatusRepository,
     // The joined commons (§7.4) and the plane to nudge when one is joined or left. Nullable and last so the
     // screen tests' two-argument rig keeps compiling; production passes a store only while
     // `BuildConfig.COMMONS` is on, and without one the row shows no room and the verbs are no-ops.
@@ -254,7 +259,7 @@ class InternetRelayViewModel(
     private val clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     val state: StateFlow<InternetRelayUiState> =
-        combine(rows(relayStatus), gate?.online ?: MutableStateFlow(true)) { rows, online -> rows.copy(offline = !online) }
+        combine(rows(), gate?.online ?: MutableStateFlow(true)) { rows, online -> rows.copy(offline = !online) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), InternetRelayUiState())
 
     /** The stored tickets and keys a relay's call details read, or null in a build without calls. */
@@ -276,7 +281,7 @@ class InternetRelayViewModel(
         )
     }
 
-    private fun rows(relayStatus: RelayStatusRepository): Flow<InternetRelayUiState> =
+    private fun rows(): Flow<InternetRelayUiState> =
         combine(
             settings.spoolEnabled,
             combine(settings.spoolUrls, settings.disabledSpoolUrls, ::Pair),
@@ -285,7 +290,7 @@ class InternetRelayViewModel(
             callStores(),
         ) { enabled, (urls, parked), statuses, rooms, stores ->
             val byUrl = statuses.associateBy { it.url }
-            val joinedByUrl = rooms.associateBy { it.spoolUrl }
+            val joinedByUrl = rooms.groupBy { it.spoolUrl }
             InternetRelayUiState(
                 enabled = enabled,
                 loaded = true,
@@ -302,20 +307,16 @@ class InternetRelayViewModel(
                             lastError = byUrl[url]?.lastError,
                             // Drawn only when this build can join one: a Join that could not join is worse
                             // than no line, so a store-less build (`BuildConfig.COMMONS` off) shows no room.
-                            commons =
+                            rooms =
                                 if (commons != null) {
-                                    live?.commons?.let {
-                                        val joined = joinedByUrl[url]?.conversationId
-                                        RelayCommons(
-                                            name = it.name,
-                                            joinedId = joined,
-                                            stale =
-                                                joined != null && joined in live.staleCommons,
-                                        )
+                                    val stale = byUrl[url]?.staleCommons.orEmpty()
+                                    joinedByUrl[url].orEmpty().map {
+                                        RelayRoom(it.conversationId, it.name, stale = it.conversationId in stale)
                                     }
                                 } else {
-                                    null
+                                    emptyList()
                                 },
+                            takesRooms = commons != null && live?.adverts?.runsAny == true,
                             calls = stores?.let { live?.let { relayCalls(it, SpoolUrl.hostname(url)?.let(stores.tickets::get), clock()) } },
                             account = stores?.let { relayAccount(SpoolUrl.hostname(url), stores.keys, stores.keyStates) },
                             freeUploads = stores?.let { SpoolUrl.hostname(url)?.let(stores.free::get) },
@@ -366,14 +367,7 @@ class InternetRelayViewModel(
             }
 
             is RelayInvite.Parsed.Invite -> {
-                viewModelScope.launch {
-                    val liveName =
-                        state.value.relays
-                            .firstOrNull { it.url == parsed.url }
-                            ?.commons
-                            ?.name
-                    _invitePreview.value = applier.preview(parsed, liveName)
-                }
+                viewModelScope.launch { _invitePreview.value = applier.preview(parsed, liveAdverts(parsed.url)) }
             }
         }
     }
@@ -395,21 +389,46 @@ class InternetRelayViewModel(
     }
 
     /**
-     * Mints the invite for [url] as stored — token included, that is the point — plus the room this device
-     * has joined there, if any (docs/RELAY_INVITE.md §4), for the share sheet.
+     * Mints the invite for [url] as stored — token included, that is the point — for the share sheet
+     * (docs/RELAY_INVITE.md §4). With a [room] it carries that room; without one, the room joined there when it is
+     * the only one, and the relay alone when there are several, since one link names one room.
      */
-    fun shareInvite(url: String) {
-        viewModelScope.launch { _events.tryEmit(InternetRelayEvent.ShareInvite(mintInvite(url))) }
+    fun shareInvite(
+        url: String,
+        room: String? = null,
+    ) {
+        viewModelScope.launch { _events.tryEmit(InternetRelayEvent.ShareInvite(mintInvite(url, room))) }
     }
 
     /** As [shareInvite], for the clipboard. */
-    fun copyInvite(url: String) {
-        viewModelScope.launch { _events.tryEmit(InternetRelayEvent.CopyInvite(mintInvite(url))) }
+    fun copyInvite(
+        url: String,
+        room: String? = null,
+    ) {
+        viewModelScope.launch { _events.tryEmit(InternetRelayEvent.CopyInvite(mintInvite(url, room))) }
     }
 
-    private suspend fun mintInvite(url: String): String {
-        val room = commons?.observeAll()?.first()?.firstOrNull { it.spoolUrl == url }
-        return RelayInvite.url(RelayInvite.mint(url, room?.secret, room?.name))
+    private suspend fun mintInvite(
+        url: String,
+        room: String?,
+    ): String {
+        val here =
+            commons
+                ?.observeAll()
+                ?.first()
+                .orEmpty()
+                .filter { it.spoolUrl == url }
+        val joined = if (room != null) here.firstOrNull { it.conversationId == room } else here.singleOrNull()
+        return RelayInvite.url(RelayInvite.mint(url, joined?.secret, joined?.name))
+    }
+
+    /** What the connected relay [url] names advertises of its rooms (§7.4), matched like an invite's relay, or null. */
+    private suspend fun liveAdverts(url: String): CommonsAdverts? {
+        val redacted = SpoolUrl.redact(SpoolUrl.canonical(url))
+        return relayStatus.statuses
+            .first()
+            .firstOrNull { it.connected && SpoolUrl.redact(it.url) == redacted }
+            ?.adverts
     }
 
     fun onToggle(on: Boolean) {
@@ -472,8 +491,10 @@ class InternetRelayViewModel(
     fun isValidInvite(invite: String): Boolean = CommonsInvite.looksLikeInvite(invite)
 
     /**
-     * Joins the commons [invite] unlocks at [url], titled with what the relay advertised. Idempotent on the
-     * secret. The plane is nudged so the room is subscribed now, not at the next reconcile tick.
+     * Joins the commons [invite] unlocks at [url], beside any other room joined there (spec C-7.4-18), titled with
+     * what the relay advertises for that room's tag. A room already joined at [url] is left as it is: `join` upserts
+     * the whole row and would reset its name and join time. The plane is nudged so the room is subscribed now, not
+     * at the next reconcile tick.
      */
     fun joinCommons(
         url: String,
@@ -482,12 +503,10 @@ class InternetRelayViewModel(
         val secret = CommonsInvite.decode(invite) ?: return
         val store = commons ?: return
         viewModelScope.launch {
-            val name =
-                state.value.relays
-                    .firstOrNull { it.url == url }
-                    ?.commons
-                    ?.name
-            store.join(url, secret, name, System.currentTimeMillis())
+            if (store.find(CommonsRepository.conversationIdFor(secret))?.spoolUrl != url) {
+                val name = liveAdverts(url)?.advertForScope(ScopeCrypto.commonsScopeId(secret))?.info?.name
+                store.join(url, secret, name, System.currentTimeMillis())
+            }
             mesh?.refreshRelays()
         }
     }

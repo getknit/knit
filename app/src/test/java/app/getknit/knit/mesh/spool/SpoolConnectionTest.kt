@@ -615,7 +615,7 @@ class SpoolConnectionTest {
             val plain = connection(RecordingLink())
             plain.onMessage(serverHello())
             assertTrue(plain.awaitReady())
-            assertNull(plain.commons)
+            assertNull(plain.adverts)
 
             val link = RecordingLink()
             val conn = connection(link)
@@ -630,7 +630,8 @@ class SpoolConnectionTest {
                 ),
             )
             assertTrue(conn.awaitReady())
-            val room = conn.commons!!
+            // A spool that predates `rooms`: its one commons answers for whichever room is asked about.
+            val room = conn.adverts!!.advertForScope(ScopeCrypto.commonsScopeId(ByteArray(32))).info!!
             assertNull("a blank name is no name", room.name)
             assertEquals(1, room.maxFrames)
             assertEquals(1L, room.ttlMs)
@@ -748,6 +749,12 @@ class SpoolConnectionTest {
             )
 
             assertTrue(conn.awaitReady())
-            assertEquals(MAX_PINNED_FRAMES, conn.commons?.maxFrames)
+            assertEquals(
+                MAX_PINNED_FRAMES,
+                conn.adverts
+                    ?.advertForScope(ScopeCrypto.commonsScopeId(ByteArray(32)))
+                    ?.info
+                    ?.maxFrames,
+            )
         }
 }

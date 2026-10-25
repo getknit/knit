@@ -56,6 +56,10 @@ class FakeSpool(
     // The commons this spool runs (§7.4): its scope id and what the HELLO advertises about it. Null = no
     // commons, the HELLO omits the field, and a SUB for one is an ordinary unknown scope.
     commons: Pair<ByteArray, SpoolCommonsInfo>? = null,
+    // The rooms a spool that reads `rooms` runs (§7.4, S-7.4-1): each scope id and what its entry advertises. Set, the
+    // HELLO lists them all by tag and repeats the first as `commons`, and [commons] is not read; null = a spool that
+    // predates the list, advertising [commons] alone.
+    rooms: List<Pair<ByteArray, SpoolCommonsInfo>>? = null,
     // The daemon's store rule for an ordinary scope: a SUB's declared bounds are applied (last writer wins) and
     // echoed in its DIGEST. Off by default, where the DIGEST carries this spool's fixed defaults; a commons always
     // answers with its pinned bounds whatever the SUB declared (S-7.4-2).
@@ -98,6 +102,13 @@ class FakeSpool(
     @Volatile
     var commons: Pair<ByteArray, SpoolCommonsInfo>? = commons
 
+    // As [commons], for a spool that lists its rooms: change it, then [dropSockets].
+    @Volatile
+    var rooms: List<Pair<ByteArray, SpoolCommonsInfo>>? = rooms
+
+    /** Attachment records refused `err malformed` because they named a room whose entry said no `attach` (S-7.4-5). */
+    val refusedRoomAttachments: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
     private class Attachment(
         val total: Int,
         val arrivedAt: Int,
@@ -118,6 +129,10 @@ class FakeSpool(
 
     // What the latest SUB for each scope declared ([echoesDeclaredBounds]).
     private val declaredBounds = ConcurrentHashMap<String, ScopeBounds>()
+
+    /** The bounds the latest SUB for [scopeHex] declared, or null when none has — what a client asked, not what was pinned. */
+    fun declaredFor(scopeHex: String): ScopeBounds? = declaredBounds[scopeHex]
+
     private val sockets = mutableListOf<FakeSocket>()
 
     /** Every PUSH the spool accepted, in order — the outbound-side assertion hook. */
@@ -148,7 +163,7 @@ class FakeSpool(
     ): Boolean {
         val scopeHex = hex(scope)
         // A commons exists from the spool's boot, so it is never an unknown scope (the daemon's rule too).
-        if (powBits <= 0 || scopes.containsKey(scopeHex) || commons?.first?.let(::hex) == scopeHex) return false
+        if (powBits <= 0 || scopes.containsKey(scopeHex) || roomFor(scopeHex) != null) return false
         if (pow != null && !rejectStamps && SpoolPow.verify(scope, pow.d, pow.n, powBits)) return false
         powRefusals.merge(scopeHex, 1, Int::plus)
         return true
@@ -200,6 +215,7 @@ class FakeSpool(
         if (blackholed) return BlackHoleSocket()
         val socket = FakeSocket()
         synchronized(sockets) { sockets.add(socket) }
+        val listed = rooms
         socket.emit(
             SpoolCodec.encode(
                 SpoolHello(
@@ -219,22 +235,34 @@ class FakeSpool(
                             maxAget = maxAget.takeIf { attachments },
                         ),
                     powBits = powBits,
-                    commons = commons?.second,
+                    commons = if (listed != null) listed.firstOrNull()?.second else commons?.second,
                     turn = true.takeIf { turn },
                     ent = true.takeIf { ent },
                     stun = stun,
                     cast = cast,
                     entGates = entGates.takeIf { ent },
+                    rooms =
+                        listed?.map { (id, info) ->
+                            SpoolCommonsRoom(ScopeCrypto.commonsTag(id), info.name, info.maxFrames, info.ttlMs, info.maxBlob, info.attach)
+                        },
                 ),
             ),
         )
         return socket
     }
 
-    private fun isCommons(scopeHex: String): Boolean = commons?.let { hex(it.first) == scopeHex } == true
+    /** What this spool pins for the room whose scope is [scopeHex], or null when it runs no such room. */
+    private fun roomFor(scopeHex: String): SpoolCommonsInfo? {
+        val listed = rooms
+        return if (listed != null) {
+            listed.firstOrNull { hex(it.first) == scopeHex }?.second
+        } else {
+            commons?.takeIf { hex(it.first) == scopeHex }?.second
+        }
+    }
 
-    /** The room's own cap for the commons, the spool-wide one for everything else. */
-    private fun maxFramesFor(scopeHex: String): Int = commons?.takeIf { isCommons(scopeHex) }?.second?.maxFrames ?: maxFrames
+    /** The room's own cap for a commons, the spool-wide one for everything else. */
+    private fun maxFramesFor(scopeHex: String): Int = roomFor(scopeHex)?.maxFrames ?: maxFrames
 
     /**
      * Says something the client never asked for. The one hostile primitive on this otherwise honest
@@ -307,12 +335,7 @@ class FakeSpool(
         val cap = maxFramesFor(scopeHex)
         // The commons answers with the bounds the operator pinned, whatever the SUB declared (§7.4).
         val bounds =
-            commons
-                ?.takeIf {
-                    isCommons(
-                        scopeHex,
-                    )
-                }?.second
+            roomFor(scopeHex)
                 ?.let { ScopeBounds(maxFrames = it.maxFrames, ttlMs = it.ttlMs, maxBlob = it.maxBlob) }
                 ?: declaredBounds[scopeHex]?.takeIf { echoesDeclaredBounds }
                 ?: ScopeBounds(maxFrames = maxFrames, ttlMs = ScopeRegistry.DEFAULT_TTL_MS, maxBlob = maxBlob)
@@ -784,10 +807,23 @@ class FakeSpool(
             skippedRecords.add(type)
         }
 
+        /** S-7.4-5: an attachment record naming a room whose entry said no `attach` is answered `err malformed`. */
+        private fun refusesRoomAttachment(
+            scope: ByteArray,
+            q: Long,
+        ): Boolean {
+            val room = roomFor(hex(scope)) ?: return false
+            if (room.attach) return false
+            refusedRoomAttachments.add(hex(scope))
+            emit(SpoolCodec.encode(SpoolErr(t = SpoolRecordType.ERR, code = SpoolErrCode.MALFORMED, q = q, scope = scope)))
+            return true
+        }
+
         private fun onAhave(ahave: SpoolAhave) {
-            val state = scopes.getOrPut(hex(ahave.scope)) { ScopeState() }
             val aidHex = hex(ahave.aid)
             presenceAsks.add(aidHex)
+            if (refusesRoomAttachment(ahave.scope, ahave.q)) return
+            val state = scopes.getOrPut(hex(ahave.scope)) { ScopeState() }
             val held = state.attachments[aidHex]
             val dead = aidHex in state.attachTombstones
             emit(
@@ -807,6 +843,7 @@ class FakeSpool(
 
         private fun onAget(aget: SpoolAget) {
             chunkGets.add("${hex(aget.aid)}:${aget.from}+${aget.n}")
+            if (refusesRoomAttachment(aget.scope, aget.q)) return
             val held = scopes[hex(aget.scope)]?.attachments?.get(hex(aget.aid))
             if (held != null) {
                 val last = minOf(aget.from + minOf(aget.n, maxAget), held.total)
@@ -871,6 +908,7 @@ class FakeSpool(
         @Suppress("ReturnCount", "CyclomaticComplexMethod", "LongMethod") // one guard per §6.5 rejection reason
         private fun onAput(aput: SpoolAput) {
             aputs.add("${hex(aput.aid)}:${aput.idx}")
+            if (refusesRoomAttachment(aput.scope, aput.q)) return
             // The daemon's order: `not_subscribed` before the files gate, the gate before PoW and the store.
             if (hex(aput.scope) !in subscribed) {
                 emit(

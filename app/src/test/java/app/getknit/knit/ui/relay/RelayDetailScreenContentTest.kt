@@ -53,6 +53,8 @@ class RelayDetailScreenContentTest {
         onLeaveCommons: (String) -> Unit = {},
         onShareInvite: () -> Unit = {},
         onCopyInvite: () -> Unit = {},
+        onShareRoomInvite: (String) -> Unit = {},
+        onCopyRoomInvite: (String) -> Unit = {},
         onSetFreeUploads: (Boolean) -> Unit = {},
     ) {
         compose.setContent {
@@ -69,6 +71,8 @@ class RelayDetailScreenContentTest {
                     isValidInvite = { CommonsInvite.looksLikeInvite(it) },
                     onShareInvite = onShareInvite,
                     onCopyInvite = onCopyInvite,
+                    onShareRoomInvite = onShareRoomInvite,
+                    onCopyRoomInvite = onCopyRoomInvite,
                     onSetFreeUploads = onSetFreeUploads,
                 )
             }
@@ -80,7 +84,8 @@ class RelayDetailScreenContentTest {
         connected: Boolean = true,
         scopeCount: Int? = if (connected) 3 else null,
         lastError: String? = null,
-        commons: RelayCommons? = null,
+        rooms: List<RelayRoom> = emptyList(),
+        takesRooms: Boolean = false,
         calls: RelayCalls? = null,
         account: RelayAccount? = null,
         freeUploads: FreeUploadChoice? = null,
@@ -96,7 +101,8 @@ class RelayDetailScreenContentTest {
         scopeCount = scopeCount,
         carriesPhotos = maxAttachBytes?.let { true } ?: if (connected) false else null,
         lastError = lastError,
-        commons = commons,
+        rooms = rooms,
+        takesRooms = takesRooms,
         calls = calls,
         account = account,
         freeUploads = freeUploads,
@@ -286,10 +292,10 @@ class RelayDetailScreenContentTest {
     }
 
     @Test
-    fun aRelayThatRunsACommonsShowsItsNameAndAJoinThatTakesOnlyARealInvite() {
+    fun aRelayThatRunsRoomsOffersAJoinThatTakesOnlyARealInvite() {
         val joined = mutableListOf<String>()
-        render(relay(commons = RelayCommons(name = "Home", joinedId = null)), onJoinCommons = { joined += it })
-        compose.onNodeWithText("Commons · Home").performScrollTo().assertIsDisplayed()
+        render(relay(takesRooms = true), onJoinCommons = { joined += it })
+        compose.onNodeWithText("This relay runs shared rooms").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("relay_commons_join_$HOST").performClick()
         // The invite is the room's whole key: a near-miss is refused at the field, never turned into a scope id.
         compose.onNodeWithTag("relay_commons_invite_field").performTextInput("knit-commons:v1:not-really")
@@ -305,13 +311,52 @@ class RelayDetailScreenContentTest {
     @Test
     fun aJoinedCommonsOffersLeaveAndNamesWhatStays() {
         val left = mutableListOf<String>()
-        render(relay(commons = RelayCommons(name = null, joinedId = "c-abc")), onLeaveCommons = { left += it })
+        render(relay(rooms = listOf(RelayRoom(conversationId = "c-abc", name = null))), onLeaveCommons = { left += it })
         // No operator name: the generic title stands in.
         compose.onNodeWithText("Commons · Commons").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("relay_commons_leave_$HOST").performClick()
+        compose.onNodeWithTag("relay_commons_leave_c-abc").performClick()
         compose.onNodeWithText("The people in it stay in your contacts.", substring = true).assertIsDisplayed()
         compose.onNodeWithTag("relay_commons_leave_confirm").performClick()
         assertEquals(listOf("c-abc"), left)
+    }
+
+    @Test
+    fun twoRoomsOnOneRelayEachLeaveAndShareThemselvesAndAJoinStaysOffered() {
+        val left = mutableListOf<String>()
+        val shared = mutableListOf<String>()
+        val copied = mutableListOf<String>()
+        render(
+            relay(
+                rooms = listOf(RelayRoom("c-home", "Home"), RelayRoom("c-team", "Team", stale = true)),
+                takesRooms = true,
+            ),
+            onLeaveCommons = { left += it },
+            onShareRoomInvite = { shared += it },
+            onCopyRoomInvite = { copied += it },
+        )
+        compose.onNodeWithText("Commons · Home").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Commons · Team").performScrollTo().assertIsDisplayed()
+        // Only the room its relay no longer runs says so.
+        compose.onNodeWithTag("relay_commons_stale_c-team").assertExists()
+        compose.onAllNodesWithTag("relay_commons_stale_c-home").assertCountEquals(0)
+        compose.onNodeWithText("Join another room here").performScrollTo().assertIsDisplayed()
+
+        compose.onNodeWithTag("relay_commons_c-team").performScrollTo().performClick()
+        compose.onNodeWithTag("relay_commons_share_c-team").performClick()
+        compose.onNodeWithTag("relay_commons_c-home").performScrollTo().performClick()
+        compose.onNodeWithTag("relay_commons_copy_c-home").performClick()
+        assertEquals(listOf("c-team"), shared)
+        assertEquals(listOf("c-home"), copied)
+
+        compose.onNodeWithTag("relay_commons_leave_c-team").performScrollTo().performClick()
+        compose.onNodeWithTag("relay_commons_leave_confirm").performClick()
+        assertEquals(listOf("c-team"), left)
+    }
+
+    @Test
+    fun aJoinedRoomStaysReachableWhileItsRelayIsDown() {
+        render(relay(connected = false, rooms = listOf(RelayRoom("c-home", "Home"))))
+        compose.onNodeWithTag("relay_commons_leave_c-home").performScrollTo().assertIsDisplayed()
     }
 
     @Test

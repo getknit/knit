@@ -290,12 +290,12 @@ class SpoolConnection(
         private set
 
     /**
-     * The commons this spool runs (§7.4), or null when it runs none — read after [awaitReady]. The bounds
-     * are what the spool will pin regardless of what a SUB declares, clamped to our own ceilings like
-     * [limits]; a spool cannot talk us into a bigger inbound record by advertising one on the room.
+     * The commons rooms this spool runs (§7.4), or null when it advertises none — read after [awaitReady]. Each
+     * room's bounds are what the spool will pin regardless of what a SUB declares, clamped to our own ceilings like
+     * [limits]; a spool cannot talk us into a bigger inbound record by advertising one on a room.
      */
     @Volatile
-    var commons: SpoolCommonsInfo? = null
+    var adverts: CommonsAdverts? = null
         private set
 
     /**
@@ -733,7 +733,7 @@ class SpoolConnection(
             return
         }
         limits = hello.limits?.clamped()
-        commons = hello.commons?.clamped(limits)
+        adverts = CommonsAdverts.of(hello.commons?.clamped(limits), hello.rooms?.map { it.tag to it.info().clamped(limits) })
         turn = hello.turn == true
         ent = hello.ent == true
         gates = hello.ticketGates

@@ -3,6 +3,8 @@ package app.getknit.knit.data.relay
 import app.getknit.knit.data.commons.CommonsRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.mesh.MeshController
+import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
+import app.getknit.knit.mesh.spool.CommonsAdverts
 import app.getknit.knit.mesh.spool.HeldKey
 import app.getknit.knit.mesh.spool.IssuerOrigin
 import app.getknit.knit.mesh.spool.RelayInvite
@@ -90,13 +92,16 @@ class RelayInviteApplier(
         val name: String?,
         /** This room (by secret) is already joined at this relay. */
         val alreadyJoined: Boolean,
-        /** A different room is joined at this relay — a rotated invite. Applying leaves it first. */
-        val replacesRoom: Boolean,
+        /**
+         * Another room is joined at this relay, and this one joins beside it: two secrets at one spool are two
+         * rooms, never a rotation (spec C-7.4-18). Only the spool can say a room is gone.
+         */
+        val beside: Boolean,
     )
 
     /**
-     * Resolves [invite] against what this device already has. [liveName] is the room name the relay's
-     * HELLO advertised, if the relay is connected — used when the link carries none.
+     * Resolves [invite] against what this device already has. [live] is what the relay's HELLO advertised, if the
+     * relay is connected: the room's name is read from the entry its tag matches when the link carries none.
      *
      * A relay is matched by its **redacted** URL: a card's hint is untokened and an operator's invite is
      * tokened, and by exact string the two would be separate rows for one host, the untokened one refused
@@ -105,7 +110,7 @@ class RelayInviteApplier(
      */
     suspend fun preview(
         invite: RelayInvite.Parsed.Invite,
-        liveName: String? = null,
+        live: CommonsAdverts? = null,
     ): Preview {
         val stored = settings.spoolUrls.first()
         val parked = settings.disabledSpoolUrls.first()
@@ -125,9 +130,9 @@ class RelayInviteApplier(
                 val joined = bound.any { it.secret.contentEquals(secret) }
                 Room(
                     secret = secret,
-                    name = invite.name ?: liveName,
+                    name = invite.name ?: live?.advertForScope(ScopeCrypto.commonsScopeId(secret))?.info?.name,
                     alreadyJoined = joined,
-                    replacesRoom = !joined && bound.isNotEmpty(),
+                    beside = !joined && bound.isNotEmpty(),
                 )
             }
         val ticketKey = ticketKeyFor(invite, url)
@@ -174,12 +179,10 @@ class RelayInviteApplier(
         if (preview.parked) settings.setSpoolUrlEnabled(preview.url, true)
         val store = commons
         val room = preview.room
-        if (store != null && room != null) {
-            if (room.replacesRoom) store.leaveBoundTo(preview.url)
-            // A room already joined is left alone: `join` upserts the whole row, and re-writing it with the
-            // link's (possibly absent) name would erase the one the relay advertised at join time.
-            if (!room.alreadyJoined) store.join(preview.url, room.secret, room.name, clock())
-        }
+        // A room already joined is left alone: `join` upserts the whole row, and re-writing it with the link's
+        // (possibly absent) name would erase the one the relay advertised at join time. Any other room joined here
+        // stays (C-7.4-18).
+        if (store != null && room != null && !room.alreadyJoined) store.join(preview.url, room.secret, room.name, clock())
         val ticketKey = preview.ticketKey
         // `putKey` is a no-op for the same key, so a re-tap never resets the refresher's schedule.
         if (keys != null && ticketKey != null) keys.putKey(ticketKey.host, ticketKey.held)

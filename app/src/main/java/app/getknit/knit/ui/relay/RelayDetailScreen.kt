@@ -97,6 +97,8 @@ fun RelayDetailScreen(
         isValidInvite = viewModel::isValidInvite,
         onShareInvite = { relay?.let { viewModel.shareInvite(it.url) } },
         onCopyInvite = { relay?.let { viewModel.copyInvite(it.url) } },
+        onShareRoomInvite = { room -> relay?.let { viewModel.shareInvite(it.url, room) } },
+        onCopyRoomInvite = { room -> relay?.let { viewModel.copyInvite(it.url, room) } },
         onSetFreeUploads = { allowed -> relay?.let { SpoolUrl.hostname(it.url) }?.let { viewModel.setFreeUploads(it, allowed) } },
         onMoveHere = { relay?.let { viewModel.moveHere(it.url) } },
     )
@@ -118,13 +120,16 @@ internal fun RelayDetailScreenContent(
     isValidInvite: (String) -> Boolean = { it.startsWith("knit-commons:v1:") },
     onShareInvite: () -> Unit = {},
     onCopyInvite: () -> Unit = {},
+    onShareRoomInvite: (String) -> Unit = {},
+    onCopyRoomInvite: (String) -> Unit = {},
     onSetFreeUploads: (Boolean) -> Unit = {},
     onMoveHere: () -> Unit = {},
 ) {
     var removing by remember { mutableStateOf(false) }
     var moving by remember { mutableStateOf(false) }
     var joining by remember { mutableStateOf(false) }
-    var leaving by remember { mutableStateOf(false) }
+    // The room whose Leave is being confirmed, by its thread id.
+    var leaving by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
         modifier = Modifier.testTag("screen_relay_detail"),
@@ -163,8 +168,14 @@ internal fun RelayDetailScreenContent(
             ConnectionSection(relay)
             CallsSection(relay)
             TicketsSection(relay, onSetFreeUploads, onMoveHere = { moving = true })
-            relay.commons?.let { room ->
-                RoomSection(relay, room, onJoin = { joining = true }, onLeave = { leaving = true })
+            if (relay.rooms.isNotEmpty() || relay.takesRooms) {
+                RoomSection(
+                    relay,
+                    onJoin = { joining = true },
+                    onLeave = { leaving = it },
+                    onShare = onShareRoomInvite,
+                    onCopy = onCopyRoomInvite,
+                )
             }
             OutlinedButton(
                 onClick = { removing = true },
@@ -183,7 +194,6 @@ internal fun RelayDetailScreenContent(
 
     if (joining) {
         JoinCommonsDialog(
-            relay = relay,
             isValidInvite = isValidInvite,
             onJoin = {
                 onJoinCommons(it)
@@ -193,17 +203,16 @@ internal fun RelayDetailScreenContent(
         )
     }
 
-    if (leaving) {
-        val joinedId = relay.commons?.joinedId
+    leaving?.let { room ->
         AlertDialog(
-            onDismissRequest = { leaving = false },
+            onDismissRequest = { leaving = null },
             title = { Text(stringResource(R.string.relays_commons_leave)) },
             text = { Text(stringResource(R.string.relays_commons_leave_body)) },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        if (joinedId != null) onLeaveCommons(joinedId)
-                        leaving = false
+                        onLeaveCommons(room)
+                        leaving = null
                     },
                     modifier = Modifier.testTag("relay_commons_leave_confirm"),
                 ) {
@@ -211,7 +220,7 @@ internal fun RelayDetailScreenContent(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { leaving = false }) {
+                TextButton(onClick = { leaving = null }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             },
@@ -468,45 +477,77 @@ private fun FreeUploadsSwitch(
     }
 }
 
-/** The relay's commons (§7.4): the room's name and one verb — Join while this phone is outside it, Leave once in. */
+/**
+ * The relay's commons rooms (§7.4): each room joined here, with its invite and a Leave, and one Join while the relay
+ * runs any — the invite says which room, so a second room joins beside the first (C-7.4-18).
+ */
 @Composable
 private fun RoomSection(
     relay: RelayRow,
-    room: RelayCommons,
     onJoin: () -> Unit,
-    onLeave: () -> Unit,
+    onLeave: (String) -> Unit,
+    onShare: (String) -> Unit,
+    onCopy: (String) -> Unit,
 ) {
     SectionHeader(stringResource(R.string.relays_detail_section_room))
     DetailCard {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = stringResource(R.string.relays_commons_label, room.name ?: stringResource(R.string.commons_title)),
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (room.joinedId == null) {
-                TextButton(onClick = onJoin, modifier = Modifier.testTag("relay_commons_join_${relay.host}")) {
-                    Text(stringResource(R.string.relays_commons_join))
-                }
-            } else {
-                TextButton(onClick = onLeave, modifier = Modifier.testTag("relay_commons_leave_${relay.host}")) {
+        for (room in relay.rooms) {
+            val name = room.name ?: stringResource(R.string.commons_title)
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(R.string.relays_commons_label, name),
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                InviteMenu(
+                    key = room.conversationId,
+                    contentDescription = stringResource(R.string.relays_commons_share_desc, name),
+                    onShare = { onShare(room.conversationId) },
+                    onCopy = { onCopy(room.conversationId) },
+                    tagPrefix = "relay_commons",
+                )
+                TextButton(
+                    onClick = { onLeave(room.conversationId) },
+                    modifier = Modifier.testTag("relay_commons_leave_${room.conversationId}"),
+                ) {
                     Text(stringResource(R.string.relays_commons_leave))
                 }
             }
+            // The room joined here is not one this relay runs: Leave, then Join with the operator's new invite.
+            if (room.stale) {
+                Text(
+                    text = stringResource(R.string.commons_stale),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier =
+                        Modifier
+                            .padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
+                            .testTag("relay_commons_stale_${room.conversationId}"),
+                )
+            }
         }
-        // The room joined here is not the one this relay runs: Leave, then Join with the operator's new invite.
-        if (room.stale) {
-            Text(
-                text = stringResource(R.string.commons_stale),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp).testTag("relay_commons_stale_${relay.host}"),
-            )
+        if (relay.takesRooms) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text =
+                        stringResource(
+                            if (relay.rooms.isEmpty()) R.string.relays_commons_offered else R.string.relays_commons_offered_more,
+                        ),
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onJoin, modifier = Modifier.testTag("relay_commons_join_${relay.host}")) {
+                    Text(stringResource(R.string.relays_commons_join))
+                }
+            }
         }
     }
 }
@@ -527,7 +568,12 @@ fun RelayDetailScreenPreview() =
                     connected = true,
                     scopeCount = 4,
                     carriesPhotos = true,
-                    commons = RelayCommons(name = "Lab", joinedId = null),
+                    rooms =
+                        listOf(
+                            RelayRoom(conversationId = "c-1", name = "Lab"),
+                            RelayRoom(conversationId = "c-2", name = "Book club", stale = true),
+                        ),
+                    takesRooms = true,
                     calls =
                         RelayCalls(
                             turn = true,

@@ -50,6 +50,18 @@ class CommonsSyncTest {
     private val conversationId = Conversations.commonsIdFor(scopeHex)
     private val advertised = SpoolCommonsInfo(name = "Home", maxFrames = 5, ttlMs = 24 * 60 * 60_000L, maxBlob = 65_536)
 
+    // A second room on the same relay (§7.4, `rooms`): its own invite, its own pinned bounds, and it takes attachments.
+    private val teamSecret = ByteArray(32) { (it + 140).toByte() }
+    private val teamId = ScopeCrypto.commonsScopeId(teamSecret)
+    private val teamHex = hex(teamId)
+    private val teamRoom = Conversations.commonsIdFor(teamHex)
+    private val teamAdvert = SpoolCommonsInfo(name = null, maxFrames = 7, ttlMs = 12 * 60 * 60_000L, maxBlob = 65_536, attach = true)
+    private val bothRooms get() = mutableListOf(CommonsRoots(conversationId, url, secret), CommonsRoots(teamRoom, url, teamSecret))
+
+    /** A spool that lists its rooms by tag (S-7.4-1): by default the room above and the team room beside it. */
+    private fun roomsSpool(rooms: List<Pair<ByteArray, SpoolCommonsInfo>> = listOf(scopeId to advertised, teamId to teamAdvert)) =
+        FakeSpool(rooms = rooms)
+
     /** The same room on a relay that takes its attachments (S-7.4-5). */
     private fun SpoolCommonsInfo.attaching() = SpoolCommonsInfo(name, maxFrames, ttlMs, maxBlob, attach = true)
 
@@ -218,8 +230,11 @@ class CommonsSyncTest {
         custody.store(profileFrame(id, self, sentAt = now), ForwardStore.ORIGIN_SELF, now)
     }
 
-    private fun Member.post(frame: CarriedFrame) {
-        commons.outbox.getOrPut(conversationId) { mutableListOf() }.add(frame)
+    private fun Member.post(
+        frame: CarriedFrame,
+        room: String = conversationId,
+    ) {
+        commons.outbox.getOrPut(room) { mutableListOf() }.add(frame)
         sync.onCustodyChanged()
     }
 
@@ -631,7 +646,7 @@ class CommonsSyncTest {
                 a.sync
                     .status()
                     .single { it.url == url }
-                    .commons
+                    .rooms[conversationId]
                     ?.name,
             )
         }
@@ -947,5 +962,136 @@ class CommonsSyncTest {
             assertEquals(1, spool.pulled.count { it == lateHex })
             tick()
             assertTrue(b.status().converged)
+        }
+
+    @Test
+    fun `two rooms on one relay are each subscribed and each reads its own advertisement`() =
+        runTest {
+            val spool = roomsSpool()
+            val a = member(spool, alice, rooms = bothRooms)
+            val b = member(spool, bob, rooms = bothRooms)
+            a.seedOwnProfile(alice)
+            b.seedOwnProfile(bob)
+            a.post(commonsFrame(fid("home1"), alice, scopeId))
+            a.post(commonsFrame(fid("team1"), alice, teamId), room = teamRoom)
+            a.sync.start(backgroundScope)
+            b.sync.start(backgroundScope)
+            pump()
+
+            assertTrue(scopeHex in spool.subscribedScopes && teamHex in spool.subscribedScopes)
+            assertEquals(setOf(fid("home1"), fid("team1")), b.posts.map { it.first.id }.toSet())
+            val relay = b.sync.status().single { it.url == url }
+            assertEquals("Home", relay.rooms[conversationId]?.name)
+            assertEquals(false, relay.rooms[conversationId]?.attach)
+            assertEquals(7, relay.rooms[teamRoom]?.maxFrames)
+            assertEquals(true, relay.rooms[teamRoom]?.attach)
+            assertEquals(emptySet<String>(), b.staleRooms())
+            assertEquals(2, relay.adverts?.count)
+            // Each SUB declares its own room's bounds exactly: a listed room is never probed with a short TTL.
+            val home = spool.declaredFor(scopeHex)!!
+            assertEquals(Triple(5, 24 * 60 * 60_000L, 65_536), Triple(home.maxFrames, home.ttlMs, home.maxBlob))
+            val team = spool.declaredFor(teamHex)!!
+            assertEquals(Triple(7, 12 * 60 * 60_000L, 65_536), Triple(team.maxFrames, team.ttlMs, team.maxBlob))
+            a.sync.stop()
+            b.sync.stop()
+        }
+
+    @Test
+    fun `each room's own attach decides whether its attachments go up`() =
+        runTest {
+            // S-7.4-5, per room: the team room takes attachments, the room beside it on the same relay does not.
+            val spool = roomsSpool()
+            val (homeHash, homeBytes) = image(90_000)
+            val (teamHash, teamBytes) = image()
+            val a = member(spool, alice, rooms = bothRooms, blobs = FakeBlobs(homeHash to homeBytes, teamHash to teamBytes))
+            a.seedOwnProfile(alice)
+            a.post(commonsFrame(fid("home1"), alice, scopeId, sentAt = now, attachmentHash = homeHash))
+            a.post(commonsFrame(fid("team1"), alice, teamId, sentAt = now, attachmentHash = teamHash), room = teamRoom)
+            a.sync.start(backgroundScope)
+            pump(rounds = 16)
+
+            val teamAid = hex(ScopeCrypto.attachmentId(ScopeCrypto.commonsSealKeys(teamSecret), teamId, unhex(teamHash)))
+            val homeAid = hex(ScopeCrypto.attachmentId(ScopeCrypto.commonsSealKeys(secret), scopeId, unhex(homeHash)))
+            assertTrue("the team room's attachment went up", spool.chunkCount(teamHex, teamAid) > 0)
+            assertTrue(spool.presenceAsks.none { it == homeAid })
+            assertTrue(spool.chunksPut.none { it.startsWith("$homeAid:") })
+            assertEquals("no record went to a room that said no attach", emptyList<String>(), spool.refusedRoomAttachments.toList())
+            a.sync.stop()
+        }
+
+    @Test
+    fun `a room its relay does not list is stale without a single sub`() =
+        runTest {
+            // C-7.4-17: a HELLO carrying `rooms` settles it before any SUB — the tag is in the list or it is not.
+            val spool = roomsSpool(rooms = listOf(teamId to teamAdvert))
+            val a = member(spool, alice)
+            a.seedOwnProfile(alice)
+            a.sync.start(backgroundScope)
+            pump()
+            tick(times = 2)
+
+            assertEquals(setOf(conversationId), a.staleRooms())
+            assertEquals(null, spool.subAttempts[scopeHex])
+            assertTrue(
+                a.sync
+                    .status()
+                    .single { it.url == url }
+                    .scopes
+                    .none { it.scopeHex == scopeHex },
+            )
+            a.sync.stop()
+        }
+
+    @Test
+    fun `a room its relay lists again is run there from the next connection`() =
+        runTest {
+            val spool = roomsSpool(rooms = listOf(teamId to teamAdvert))
+            val a = member(spool, alice)
+            val b = member(spool, bob)
+            a.seedOwnProfile(alice)
+            b.seedOwnProfile(bob)
+            a.post(commonsFrame(fid("p1"), alice, scopeId))
+            a.sync.start(backgroundScope)
+            b.sync.start(backgroundScope)
+            pump()
+            assertEquals(setOf(conversationId), b.staleRooms())
+
+            spool.rooms = listOf(scopeId to advertised, teamId to teamAdvert)
+            spool.dropSockets()
+            pump(rounds = 16)
+
+            assertEquals(emptySet<String>(), a.staleRooms())
+            assertEquals(emptySet<String>(), b.staleRooms())
+            assertEquals(listOf(fid("p1")), b.posts.map { it.first.id })
+            a.sync.stop()
+            b.sync.stop()
+        }
+
+    @Test
+    fun `leaving one of two rooms on a relay keeps the other`() =
+        runTest {
+            val spool = roomsSpool()
+            val rooms = bothRooms
+            val a = member(spool, alice, rooms = bothRooms)
+            val b = member(spool, bob, rooms = rooms)
+            a.seedOwnProfile(alice)
+            b.seedOwnProfile(bob)
+            a.sync.start(backgroundScope)
+            b.sync.start(backgroundScope)
+            pump()
+
+            rooms.removeAll { it.conversationId == conversationId }
+            b.sync.onScopeTableChanged()
+            pump(2)
+            a.post(commonsFrame(fid("home1"), alice, scopeId))
+            a.post(commonsFrame(fid("team1"), alice, teamId), room = teamRoom)
+            pump()
+
+            assertEquals(listOf(fid("team1")), b.posts.map { it.first.id })
+            val relay = b.sync.status().single { it.url == url }
+            assertEquals(listOf(teamHex), relay.scopes.filter { it.label.startsWith("c-") }.map { it.scopeHex })
+            assertEquals(setOf(teamRoom), relay.rooms.keys)
+            a.sync.stop()
+            b.sync.stop()
         }
 }

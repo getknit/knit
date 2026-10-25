@@ -113,8 +113,8 @@ class InternetRelayScreenContentTest {
     private fun room(
         name: String? = "Home",
         alreadyJoined: Boolean = false,
-        replacesRoom: Boolean = false,
-    ) = RelayInviteApplier.Room(secret = ByteArray(32), name = name, alreadyJoined = alreadyJoined, replacesRoom = replacesRoom)
+        beside: Boolean = false,
+    ) = RelayInviteApplier.Room(secret = ByteArray(32), name = name, alreadyJoined = alreadyJoined, beside = beside)
 
     private fun relay(
         host: String = "public-1.spool.getknit.app",
@@ -123,7 +123,8 @@ class InternetRelayScreenContentTest {
         scopeCount: Int? = 3,
         carriesPhotos: Boolean? = true,
         lastError: String? = null,
-        commons: RelayCommons? = null,
+        rooms: List<RelayRoom> = emptyList(),
+        takesRooms: Boolean = false,
         calls: RelayCalls? = null,
         account: RelayAccount? = null,
     ) = RelayRow(
@@ -134,7 +135,8 @@ class InternetRelayScreenContentTest {
         scopeCount = scopeCount,
         carriesPhotos = carriesPhotos,
         lastError = lastError,
-        commons = commons,
+        rooms = rooms,
+        takesRooms = takesRooms,
         calls = calls,
         account = account,
     )
@@ -377,7 +379,8 @@ class InternetRelayScreenContentTest {
                 relays =
                     listOf(
                         relay(
-                            commons = RelayCommons(name = "Home", joinedId = null),
+                            rooms = listOf(RelayRoom(conversationId = "c-1", name = "Home")),
+                            takesRooms = true,
                             calls = RelayCalls(turn = true, stunServers = 2, walkie = true, ticket = RelayTicket.None),
                             account = RelayAccount("issuer.example.org", KeyAnswer.OK, endsAt = null, failures = 0),
                         ),
@@ -405,7 +408,7 @@ class InternetRelayScreenContentTest {
         compose.onNodeWithTag("relay_invite_host").assertIsDisplayed()
         compose.onNodeWithText("home.example.org").assertIsDisplayed()
         compose.onNodeWithTag("relay_invite_private").assertIsDisplayed()
-        compose.onNodeWithText("Joins its room, Home.", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Joins the room Home.", substring = true).assertIsDisplayed()
         compose.onNodeWithText("A relay can see").assertIsDisplayed()
         compose.onNodeWithText("A relay cannot see").assertIsDisplayed()
         compose
@@ -444,13 +447,14 @@ class InternetRelayScreenContentTest {
     }
 
     @Test
-    fun aRotatedInviteSaysTheOldRoomGoes() {
+    fun aSecondRoomsInviteSaysTheRoomsAlreadyJoinedStay() {
         render(
             InternetRelayUiState(enabled = true),
-            invitePreview = preview(alreadyAdded = true, room = room(replacesRoom = true)),
+            invitePreview = preview(alreadyAdded = true, room = room(beside = true)),
         )
-        compose.onNodeWithTag("relay_invite_room_replaces").assertIsDisplayed()
-        compose.onNodeWithText("That room and its history leave this phone", substring = true).assertIsDisplayed()
+        compose.onNodeWithTag("relay_invite_room").assertIsDisplayed()
+        compose.onNodeWithTag("relay_invite_room_beside").assertIsDisplayed()
+        compose.onAllNodesWithText("leave this phone", substring = true).assertCountEquals(0)
         compose.onNodeWithTag("relay_invite_confirm").assertTextEquals("Join room")
     }
 

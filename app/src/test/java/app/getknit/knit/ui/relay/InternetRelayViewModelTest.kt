@@ -9,13 +9,17 @@ import app.getknit.knit.data.relay.RelayInviteApplier
 import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.mesh.MeshController
+import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
+import app.getknit.knit.mesh.spool.CommonsAdverts
 import app.getknit.knit.mesh.spool.CommonsInvite
+import app.getknit.knit.mesh.spool.CommonsRoom
 import app.getknit.knit.mesh.spool.HeldKey
 import app.getknit.knit.mesh.spool.KeyAnswer
 import app.getknit.knit.mesh.spool.KeyState
 import app.getknit.knit.mesh.spool.RelayInvite
 import app.getknit.knit.mesh.spool.ScopeSync
 import app.getknit.knit.mesh.spool.SpoolCastInfo
+import app.getknit.knit.mesh.spool.SpoolCommonsInfo
 import app.getknit.knit.mesh.spool.SpoolSoftware
 import app.getknit.knit.mesh.spool.SpoolStatus
 import app.getknit.knit.mesh.spool.SpoolTicket
@@ -89,6 +93,7 @@ class InternetRelayViewModelTest {
         every { settings.disabledSpoolUrls } returns flowOf(emptySet())
         every { relayStatus.statuses } returns flowOf(emptyList())
         every { commons.observeAll() } returns rooms
+        coEvery { commons.find(any()) } answers { rooms.value.firstOrNull { it.conversationId == firstArg() }?.toRoom() }
         coEvery { applier.preview(any(), any()) } returns preview
     }
 
@@ -191,6 +196,74 @@ class InternetRelayViewModelTest {
             assertEquals(OTHER, bare.url)
             assertNull(bare.secret)
             assertNull(bare.name)
+        }
+
+    @Test
+    fun withTwoRoomsJoinedTheRelaysLinkCarriesTheRelayAloneAndEachRoomItsOwn() =
+        runTest {
+            val other = ByteArray(32) { (it * 5).toByte() }
+            rooms.value =
+                listOf(
+                    CommonsEntity(conversationId = "c-1", spoolUrl = TOKENED, secret = secret, name = "Home", joinedAt = 1L),
+                    CommonsEntity(conversationId = "c-2", spoolUrl = TOKENED, secret = other, name = "Team", joinedAt = 2L),
+                )
+            val vm = vm()
+            val events = collect(vm)
+            vm.shareInvite(TOKENED)
+            vm.copyInvite(TOKENED, room = "c-2")
+            advanceUntilIdle()
+
+            // One link names one room, so the relay's own link carries none once two are joined there.
+            val relay =
+                RelayInvite.parse(
+                    (events[0] as InternetRelayEvent.ShareInvite).url,
+                    allowCleartext = false,
+                ) as RelayInvite.Parsed.Invite
+            assertEquals(TOKENED, relay.url)
+            assertNull(relay.secret)
+            val team =
+                RelayInvite.parse(
+                    (events[1] as InternetRelayEvent.CopyInvite).url,
+                    allowCleartext = false,
+                ) as RelayInvite.Parsed.Invite
+            assertArrayEquals(other, team.secret)
+            assertEquals("Team", team.name)
+        }
+
+    @Test
+    fun eachRoomJoinedAtARelayIsOnItsRowWithWhatTheRelaySaysOfIt() =
+        runTest {
+            val other = ByteArray(32) { (it * 5).toByte() }
+            rooms.value =
+                listOf(
+                    CommonsEntity(conversationId = "c-1", spoolUrl = TOKENED, secret = secret, name = "Home", joinedAt = 1L),
+                    CommonsEntity(conversationId = "c-2", spoolUrl = TOKENED, secret = other, name = null, joinedAt = 2L),
+                    CommonsEntity(conversationId = "c-3", spoolUrl = OTHER, secret = ByteArray(32), name = "Elsewhere", joinedAt = 3L),
+                )
+            every { settings.spoolUrls } returns flowOf(setOf(TOKENED, OTHER))
+            every { relayStatus.statuses } returns
+                flowOf(
+                    listOf(
+                        SpoolStatus(
+                            url = TOKENED,
+                            connected = true,
+                            powBits = 0,
+                            lastError = null,
+                            scopes = emptyList(),
+                            adverts = CommonsAdverts.of(HOME_ADVERT, rooms = null),
+                            staleCommons = setOf("c-2"),
+                        ),
+                    ),
+                )
+
+            val rows = state(vm()).relays.associateBy { it.url }
+            val home = rows.getValue(TOKENED)
+            assertEquals(listOf(RelayRoom("c-1", "Home"), RelayRoom("c-2", null, stale = true)), home.rooms)
+            assertTrue(home.takesRooms)
+            // A room whose relay is down still shows, so its Leave stays reachable; nothing new is offered there.
+            val down = rows.getValue(OTHER)
+            assertEquals(listOf(RelayRoom("c-3", "Elsewhere")), down.rooms)
+            assertFalse(down.takesRooms)
         }
 
     @Test
@@ -580,6 +653,58 @@ class InternetRelayViewModelTest {
         }
 
     @Test
+    fun aSecondRoomsInviteJoinsBesideTheFirstUnderTheNameItsRelayListsForIt() =
+        runTest {
+            val other = ByteArray(32) { (it * 5).toByte() }
+            rooms.value = listOf(CommonsEntity(conversationId = "c-1", spoolUrl = TOKENED, secret = secret, name = "Home", joinedAt = 1L))
+            val tag = { s: ByteArray -> ScopeCrypto.commonsTag(ScopeCrypto.commonsScopeId(s)) }
+            every { relayStatus.statuses } returns
+                flowOf(
+                    listOf(
+                        SpoolStatus(
+                            url = TOKENED,
+                            connected = true,
+                            powBits = 0,
+                            lastError = null,
+                            scopes = emptyList(),
+                            adverts = CommonsAdverts.of(HOME_ADVERT, listOf(tag(secret) to HOME_ADVERT, tag(other) to TEAM_ADVERT)),
+                        ),
+                    ),
+                )
+            val vm = vm()
+
+            vm.joinCommons(TOKENED, CommonsInvite.encode(other))
+            advanceUntilIdle()
+
+            coVerify { commons.join(TOKENED, other, "Team", any()) }
+            coVerify(exactly = 0) { commons.leave(any()) }
+            coVerify(exactly = 0) { commons.leaveBoundTo(any()) }
+        }
+
+    @Test
+    fun anInviteToARoomAlreadyJoinedThereRewritesNothing() =
+        runTest {
+            rooms.value =
+                listOf(
+                    CommonsEntity(
+                        conversationId = conversationIdFor(secret),
+                        spoolUrl = TOKENED,
+                        secret = secret,
+                        name = "Home",
+                        joinedAt = 1L,
+                    ),
+                )
+            val vm = vm()
+
+            vm.joinCommons(TOKENED, CommonsInvite.encode(secret))
+            advanceUntilIdle()
+
+            // `join` upserts the whole row: a second paste would reset the room's name and join time.
+            coVerify(exactly = 0) { commons.join(any(), any(), any(), any()) }
+            coVerify { mesh.refreshRelays() }
+        }
+
+    @Test
     fun textThatIsNoCommonsInviteJoinsNothing() =
         runTest {
             val vm = vm()
@@ -634,7 +759,14 @@ class InternetRelayViewModelTest {
         return events
     }
 
+    private fun CommonsEntity.toRoom() = CommonsRoom(conversationId, spoolUrl, secret, name)
+
+    private fun conversationIdFor(secret: ByteArray) = CommonsRepository.conversationIdFor(secret)
+
     private companion object {
+        val HOME_ADVERT = SpoolCommonsInfo("Home", maxFrames = 500, ttlMs = 86_400_000L, maxBlob = 65_536)
+        val TEAM_ADVERT = SpoolCommonsInfo("Team", maxFrames = 200, ttlMs = 86_400_000L, maxBlob = 65_536, attach = true)
+
         const val TOKENED = "wss://home.example.org/spool/v1?k=t0ken"
         const val OTHER = "wss://lax.spool.getknit.app/spool/v1"
         const val LAB_HOST = "lab.lax.spool.getknit.app"

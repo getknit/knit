@@ -80,6 +80,9 @@ object ScopeCrypto {
     /** The commons invite secret (spec §7.4): 32 random bytes, the daemon's `Commons.SECRET_BYTES`. */
     const val COMMONS_SECRET_BYTES = 32
 
+    /** A commons room's tag (spec §7.4, B-7.4-16): the first 8 bytes of a hash of its scope id. */
+    const val COMMONS_TAG_BYTES = 8
+
     private const val MAC = "HMACSHA256"
     private const val TAG_BITS = 128
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
@@ -106,6 +109,7 @@ object ScopeCrypto {
     private val LABEL_ANONCE = "knit/scope/v1/anonce".toByteArray()
     private val LABEL_COMMONS_ID = "knit/spool/v1/commons".toByteArray()
     private val LABEL_COMMONS_KEY = "knit/spool/v1/commons-key".toByteArray()
+    private val LABEL_COMMONS_TAG = "knit/spool/v1/commons-tag".toByteArray()
     private val AAD_PREFIX = "knit/scope/v1".toByteArray()
     private val AAD_ATTACH_PREFIX = "knit/scope/v1/attach".toByteArray()
     private val LABEL_CNONCE = "knit/scope/v1/cnonce".toByteArray()
@@ -218,6 +222,17 @@ object ScopeCrypto {
     fun commonsScopeId(secret: ByteArray): ByteArray {
         require(secret.size == COMMONS_SECRET_BYTES) { "commons secret must be $COMMONS_SECRET_BYTES bytes" }
         return sha256(LABEL_COMMONS_ID + secret)
+    }
+
+    /**
+     * A commons room's tag (spec §7.4, B-7.4-16): how a HELLO's `rooms` names the room without its id. A bare hash of
+     * the scope id under a transport-plane label, truncated, because the spool computes it too — from the id it was
+     * configured with, never the secret. One-way: a 64-bit prefix gives back nothing of a uniformly random 256-bit id,
+     * so its width sets only the odds of an accidental match.
+     */
+    fun commonsTag(scopeId: ByteArray): ByteArray {
+        require(scopeId.size == SCOPE_ID_BYTES) { "commons scope id must be $SCOPE_ID_BYTES bytes" }
+        return sha256(LABEL_COMMONS_TAG + scopeId).copyOf(COMMONS_TAG_BYTES)
     }
 
     /**
