@@ -6,8 +6,8 @@
 |--------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Protocol version   | 1                                                                                                                                                                       |
 | Status             | Normative. Implemented and shipping (see Appendix A)                                                                                                                    |
-| This revision      | 2026-10-24                                                                                                                                                              |
-| Decision record    | ADR 019 (+ M4/M5/M6 amendments, ADR 020, ADR 021, ADR 042, ADR 062); §7.4: ADR 2026-09.wx8e, ADR 2026-10.xhfr, ADR 2026-10.wqu2; §7.6–§7.7: knit-spool ADR 2026-10.bxsg, knit-spool ADR 2026-10.h6pt, knit-spool ADR 2026-10.3wdy, knit-spool ADR 2026-10.zprp                                                                                                              |
+| This revision      | 2026-10-25                                                                                                                                                              |
+| Decision record    | ADR 019 (+ M4/M5/M6 amendments, ADR 020, ADR 021, ADR 042, ADR 062); §7.4: ADR 2026-09.wx8e, ADR 2026-10.xhfr, ADR 2026-10.wqu2; §7.6–§7.7: knit-spool ADR 2026-10.bxsg, knit-spool ADR 2026-10.h6pt, knit-spool ADR 2026-10.3wdy, knit-spool ADR 2026-10.zprp, knit-spool-coordinator ADR 2026-10.w7hc                                                                                                              |
 | Client reference   | `mesh/crypto/scope/` (`ScopeCrypto`, `SpoolPow`), `mesh/spool/` (`SpoolRecords`, `ScopeFrames`, `ScopeAttachments`, `GroupRootPolicy`, `ScopeRegistry`, `ScopeSync`)    |
 | Spool reference    | [`knit-spool`](https://github.com/getknit/knit-spool) (AGPL-3.0, separate repository) + its conformance suite                                                           |
 | Executable anchors | `ScopeCryptoTest`, `ScopeVectorTest`, `SpoolPowTest`, `SpoolRecordsTest`, `ScopeAttachmentsTest`, `ScopeFramesTest`, `GroupRootPolicyTest`, `AttachmentDeferPolicyTest` |
@@ -972,8 +972,8 @@ Field names are the CBOR map keys. `bstr32`/`bstr8` are byte strings of that len
 | `err`    | s→c         | `t, code: String, q?: Long, scope?: bstr32, msg?: String, retryMs?: Long`                                                    | Terminal error, connection-scoped when `q` is absent                                                                                                                                                                            |
 
 A spool's `hello` may also carry optional capability fields, each defined in its own section and each
-signalled by its presence: `commons` and `rooms` (§7.4), `moderation` (§7.5), `turn`, `ent`, `entGates` and `stun`
-(§7.6), and `cast` (§7.7).
+signalled by its presence: `commons` and `rooms` (§7.4), `moderation` (§7.5), `turn`, `turnHosts`, `ent`, `entGates`
+and `stun` (§7.6), and `cast` (§7.7).
 
 **Error registry** (append-only; unknown codes are terminal-generic): `version`, `pow`,
 `tombstoned`,
@@ -1225,7 +1225,7 @@ were drafted before it was written, so its rows are numbered in drafting order, 
 
 | Record     | Direction | Fields                                                              | Semantics                                                                             |
 |------------|-----------|---------------------------------------------------------------------|---------------------------------------------------------------------------------------|
-| `turnreq`  | c→s       | `t, q: Long`                                                        | Ask for one TURN credential. Answered by `turncred`, or by `err`                      |
+| `turnreq`  | c→s       | `t, q: Long, host?: String`                                         | Ask for one TURN credential, for the server `host` names (S-7.6-49). Answered by `turncred`, or by `err` |
 | `turncred` | s→c       | `t, q: Long, urls: [String], user: String, pass: String, exp: Long` | The credential. `exp` is Unix **seconds**. `urls` are RFC 7065 `turn:`/`turns:` URIs |
 
 `turncred` carries `q` and is itself terminal, as `ahas` is. `not_subscribed`, `rate` and `internal`
@@ -1242,7 +1242,7 @@ cover every refusal, plus `ticket` on a spool that takes entitlement tickets.
 | **S-7.6-10** | The spool process MUST NOT relay media. TURN is a separate service that shares only the secret.                                                                                                                                                                                                                                                                            |
 | **S-7.6-25** | A spool SHOULD hand out one TURN URL per transport for each TURN server, in this order: `turn:<host>:3478?transport=udp`, then `turns:<host>:<TLS port>?transport=tcp`. A plain `turn:…?transport=tcp` URL adds an allocation per network to every call, and seldom reaches a network that the other two miss.                                                         |
 | **C-7.6-11** | A client SHOULD fetch a credential per call, or reuse a cached one only while `exp` is at least 1 h away. It MUST NOT send a credential to its peer or into any frame.                                                                                                                                                                                                    |
-| **C-7.6-12** | A client SHOULD request from every spool of the DM scope that advertises `turn` and is connected, and SHOULD offer relay candidates from at most two TURN servers, to bound ICE checks.                                                                                                                                                                                    |
+| **C-7.6-12** | A client SHOULD request from every spool of the DM scope that advertises `turn` and is connected, and SHOULD offer relay candidates from at most two TURN servers, to bound ICE checks. C-7.6-53 refines this: where a credential comes from a spool that sent `turnHosts`, the client offers one TURN server.                                                                |
 | **C-7.6-26** | A client SHOULD prune its relay allocations once one is ready: on each network, a relay that ranks below the best ready one (relay protocol first, UDP over TCP over TLS, then IPv6 over IPv4) is released. This refines C-7.6-12, which still asks up to two spools. With one spool, a pruned call holds about one allocation per network; ties are kept. |
 
 > **Why no scope.** Asking for a credential "for scope S" would tell the spool which conversation is
@@ -1268,6 +1268,63 @@ cover every refusal, plus `ticket` on a spool that takes entitlement tickets.
 > daemon's deployment guide (knit-spool `HOSTING.md`) gives a starting configuration. Without a
 > `denied-peer-ip` list covering loopback, private and link-local ranges, the relay reaches the host's own
 > network.
+
+#### Several TURN servers
+
+A spool MAY sign for up to four TURN servers, each with its own URLs and its own secret, so that a fleet of TURN
+boxes adds capacity instead of mirroring one box. The phone picks one per call, by the latency it measures from where
+it is, from the list the spool names (knit-spool-coordinator ADR 2026-10.w7hc). **Server 1** is the server a spool
+had before it named more, and the one every older client still gets. The reference daemon takes servers 2 to 4 as
+`SPOOL_TURN_2_*` to `SPOOL_TURN_4_*` beside `SPOOL_TURN_*` (`docs/VOICE_CALLS.md` §2.3).
+
+Three terms, each read from a server's URLs:
+
+- Its **UDP URL** is the first of its URLs whose scheme is `turn:` (not `turns:`) and whose `transport` is `udp` or
+  absent (RFC 7065 §3: UDP is the default).
+- A URI's **host** is its host part, compared case-insensitively. An IPv6 literal keeps its brackets.
+- Its **entry** is `host:port` of its UDP URL: the host lowercased, the port as written, or 3478 where the URI leaves
+  it out. `turn:US-West.turn.getknit.app?transport=udp` gives `us-west.turn.getknit.app:3478`, and
+  `turn:[2001:DB8::7]:3479` gives `[2001:db8::7]:3479`.
+
+| ID           | Requirement                                                                                                                                                                                                                                                                                                                                                               |
+|--------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **S-7.6-48** | A spool that advertises `turn` sends `turnHosts: [String]` beside it: the entry of each of its servers that has a UDP URL, in server order, 1 to 4 entries, all distinct. It omits `turnHosts`, never sending `[]`, when no server has a UDP URL, which can only be one server whose URLs are all `turns:` or `transport=tcp`, and MUST NOT send it without `turn`. A spool with two or more servers MUST give every one a UDP URL, and URLs that name one host, a host no other server's URLs name, so that `turnHosts` lists them all and an entry names exactly one server. The reference encoders write `turnHosts` after every other HELLO key (§13 `helloSpoolTurnHosts`). |
+| **S-7.6-49** | A `turnreq` MAY carry `host: String`. A `host` byte-for-byte equal to an entry of this spool's `turnHosts` selects that server. A spool MUST answer an absent or unmatched `host`, and any `host` on a spool that sent no `turnHosts`, from server 1: never with an error and never as a strike. A `host` that is not a text string makes the record malformed, as a mistyped field always has. A spool that predates `host` ignores it (B-2-2) and answers from its one server. |
+| **S-7.6-50** | `turncred` keeps its form. Its `urls` are the selected server's URLs only, as configured and in their order, and `pass` is signed under that server's secret (S-7.6-6). `user` follows S-7.6-6, S-7.6-7 and S-7.6-17 as for one server, so a ticketed holder's suffix is the same on every server, and `exp` follows the one `turnTtl` (S-7.6-8). S-7.6-5's budgets are shared: one per connection, one per address and one per holder, whatever `host` asks for. |
+| **C-7.6-51** | A client asking a spool that sent `turnHosts` SHOULD name, in `host`, the entry it ranks best from that spool's list. It ranks entries by ascending score (C-7.6-52), and entries within 10 ms of the best score keep the spool's order. An entry that never answered goes after every one that did, in the spool's order. An entry whose allocation was refused (C-7.6-54) goes last for 5 minutes. With no score yet, the spool's order stands. A client reads which server a credential is for from the entry of its `urls`' UDP URL. |
+| **C-7.6-52** | A client measures the union of `turnHosts` over its connected spools that would issue it TURN, each entry once: a spool that gates `turnreq` (bit 0 of `entGates`) where the client holds a ticket with bit 0 of `fl`, or one that does not gate it. It sends STUN Binding requests (RFC 8489: 20 bytes, no attributes) over UDP to the entry's host and port, on the default network, and MUST NOT use ICMP: three per entry, 200 ms apart, each with a 1 s timeout. It accepts only a Binding success response with the request's transaction ID and an XOR-MAPPED-ADDRESS. The score is the least accepted round-trip time; an entry with none never answered. It measures when the default network changes, and when a HELLO brings an entry not yet measured on this network, and never while a call waits. It keeps one ranking, for the current network, drops it when the network changes and never stores it with a network's name; a refusal mark (C-7.6-54) keeps its 5 minutes across a network change. It MUST NOT log, store or send the mapped address. |
+| **C-7.6-53** | When at least one of a call's TURN credentials comes from a spool that sent `turnHosts`, a client SHOULD hand its ICE agent exactly one TURN server: of those credentials, the one whose server ranks best, and drop the rest unused. Across spools, the lowest score ranks first; within 10 ms of it, the credential from the spool asked first in C-7.6-12's order (a ticketed spool first, C-7.6-21); and a measured server ranks before an unmeasured one. Without such a credential, C-7.6-12 applies as before. "Relay all calls" (`docs/VOICE_CALLS.md` C-3.7-3) uses the same single server, and STUN gathering (C-7.6-20) is unchanged. This refines C-7.6-12's "at most two". |
+| **C-7.6-54** | An allocation on the chosen server refused with 486 (Allocation Quota Reached) or 508 (Insufficient Capacity) marks that server refused (C-7.6-51), whenever the refusal arrives. A side of a call moves on only while its own description has not been sent, its OFFER for the caller and its ANSWER for the callee: if a refusal arrives before then and the chosen server has given that side no relay candidate, the side SHOULD gather afresh on the next server in its ranking, from a credential already in hand or else a new `turnreq` naming it, drop the refused gathering, and send its description from the new one, as the ordinary first OFFER or ANSWER of the same call. That description leaves about one gather window late, and the peer sees nothing different. A client does this at most once per call; each side does it independently. After its description has left, a side does not move on: the call connects on the peer's relay or a direct path, or fails as it would have. |
+
+> **Why one box per call.** libwebrtc allocates on every TURN URL it is handed, so a phone handed two boxes holds
+> allocations on both for the length of the call, and a second box mirrors the first instead of adding to it. It also
+> ranks relay candidates by type and transport before round-trip time, so it would not reliably settle on the nearer
+> box. One box per call is what lets a fleet grow past one box's hundred or so relaying phones. A credential the phone
+> drops costs the box nothing: coturn spends nothing on it until an Allocate.
+>
+> **Why the phone measures.** Where a spool is says nothing about where the phone is: one spool serves phones on three
+> continents. GeoIP is poor for mobile carriers, whose addresses sit behind carrier-grade NAT far from the phone, and
+> latency-steered DNS or anycast is not on offer from every host. A STUN Binding goes to the port media will use,
+> coturn answers it without a credential, and it costs at most twelve 20-byte packets per spool per network change.
+> ICMP is blocked on many mobile networks and measures a different path. The measuring runs before a call, never
+> during one, because a call is waiting. Its price is that a phone that would ask for TURN shows the boxes its address
+> on each network change, calling or not (§10.1); a phone no spool would issue TURN measures nothing.
+>
+> **Why server 1 is the fallback.** An absent or unknown `host` gets the server every client got before `turnHosts`
+> existed. So an older client keeps today's box, a client whose ranking is empty still gets a credential, and a `host`
+> naming a server the spool has since dropped costs no refusal: a call is waiting, and a credential for the default box
+> beats an error. The operator orders the list, so server 1 is the box it meant for the spool's own region, not the
+> nearest one to any phone.
+>
+> **Why only before the description leaves (C-7.6-54).** A session reads its TURN servers once, as it starts gathering:
+> in libwebrtc (m150), a changed server set takes effect only through new ICE credentials, which an ICE restart brings,
+> and an answerer cannot restart, because only an offer carries them. A side that has not yet sent its description can
+> gather afresh, and the peer never sees the first attempt. A refusal normally lands well inside that window: the relay
+> phase starts 50 ms into gathering, and the 486 or 508 comes two round trips later: the first Allocate draws the
+> server's 401, the second its refusal. Later, the only way to change servers would be a restart before the call connects, which
+> `docs/VOICE_CALLS.md` C-3.8-2 and C-3.8-4 do not allow, and which a callee could never send. A server that has
+> already given a side a relay candidate is not left: the refusal of a second allocation there marks it, and the relay
+> it gave stays in the call.
 
 #### Entitlement tickets
 
@@ -1322,7 +1379,7 @@ attachment within it still meets the spool's own (S-6.5-3). Where `files` is not
 | **C-7.6-32** | A client holding a files ticket with `am` does not send through that spool an attachment whose `total` exceeds `⌊am / aChunkBytes⌋`. A `size` refusal says only that this attachment is too large for that relay: it locks no upload there and marks no pseudonym spent. |
 | **C-7.6-30** | A client reads each gate from its own bit of `entGates` (S-7.6-13): `turnreq` needs a ticket only under bit 0, `aput` only under bit 1, a cast only under bit 3. A gate the HELLO doesn't name needs no ticket, whatever the spool's `ent`.                                                                                                                                                     |
 
-C-7.6-27 to C-7.6-29, and C-7.6-33 onward, are reserved here. They number a client's exchange with a ticket
+C-7.6-27 to C-7.6-29, and C-7.6-33 to C-7.6-46, are reserved here. They number a client's exchange with a ticket
 issuer, which is outside this protocol and is specified in `docs/VOICE_CALLS.md` §2.6; a new requirement in this
 section takes the next number neither document uses.
 
@@ -1797,7 +1854,9 @@ a relay.
   from. **The TURN server** sees both endpoint IPs of a relayed call, its duration and its byte counts,
   never its content. **Joined**, as one operator can join them, this sharpens the IP edge above: "these k
   IPs touch the same scope" becomes "these two IPs talked for 14 minutes at 09:14". Tor cannot cover it,
-  because media is UDP.
+  because media is UDP. With several TURN servers (C-7.6-52), each box the operator lists also sees, once per network
+  change, the address of every phone that would ask for TURN there, whether it calls or not; a `host` tells the spool
+  which box answered that phone fastest, which says little the phone's own address does not.
 - With entitlement tickets (§7.6), a **pseudonym per holder per day**, which lets the spool link that
   holder's connections across addresses within the day, and ties each gated upload to it.
   Where one operator runs both the ticket issuer and the spool, the issuer can link each day's `ps` to an
@@ -1903,6 +1962,7 @@ Deliberately open, additively reachable, in no particular order.
 | ticket `kid` / `ps`             | 8 B / 16 B                                        | §7.6                                                                                     |
 | ticket lifetime / skew          | ≤ 48 h / ±300 s                                   | §7.6 (S-7.6-14)                                                                          |
 | TURN username suffix            | 10 B, 16 base32 characters                        | §7.6 (S-7.6-6, S-7.6-17)                                                                 |
+| TURN servers per spool          | 1 to 4; `turnHosts` entries distinct, in server order | §7.6 (S-7.6-48) — server 1 answers an absent or unknown `host` (S-7.6-49)             |
 | commons room `tag`              | 8 B, a SHA-256 prefix of the room's scope id      | §7.4 (B-7.4-16) — one-way, so its width sets only the odds of an accidental match        |
 
 ### 12.2 Defaults and suggestions: operator- or config-tunable
@@ -1934,6 +1994,8 @@ Deliberately open, additively reachable, in no particular order.
 | intro re-send / answer floors            | 20 h / 1 h                                              | §3.5 client policy: re-send an unconfirmed intro under the 24 h custody TTL; answer an init-bearing peer at most hourly |
 | TURN credential lifetime                 | 5 min, at most 1 h                                      | §7.6 (S-7.6-8) — bounds when a credential can start relaying, not a call's length                                      |
 | suggested `turnreq` rate                 | 4 per connection per 10 min, burst 2                    | §7.6 (S-7.6-5) — and per IP                                                                                             |
+| TURN server probe                        | 3 STUN Bindings per entry, 200 ms apart, 1 s timeout     | §7.6 (C-7.6-52) — on a network change or a new entry only; the score is the least round trip                           |
+| TURN ranking tie / refusal demotion      | 10 ms / 5 min                                           | §7.6 (C-7.6-51, C-7.6-53, C-7.6-54) — ties keep the spool's order; a refused server goes last                           |
 | default ticket upload budget             | 32 MiB per pseudonym per day                            | §7.6 (S-7.6-22) — the reference daemon's; a ticket's `ab` may lower it                                                  |
 | ticket `am`                              | absent: the spool's own per-attachment limit            | §7.6 (S-7.6-31) — rounded down to whole `aChunkBytes`; it can only lower a limit                                        |
 | spool names                              | one; a second only while it is renamed                  | §7.6 (S-7.6-47) — a holder with tickets for both counts twice in every bound kept per pseudonym                         |
@@ -2225,7 +2287,7 @@ wire.
 | §3.2 group root, §3.3 group scopes              | Shipped                                                                                                                                    | `GroupRootPolicy`, `GroupRootStore`, `GroupKeyPayload.gr`, DB v3 |
 | §3.5 pair scopes                                | Shipped                                                                                                                                    | `ScopeCrypto.pairSecret`, `ScopeRegistry.pairs`, `IntroSync`      |
 | §7.4 the commons                                | Shipped both sides for one room per spool; posts, reply quotes, reactions and keyed attachments (where the spool advertises `attach`); hidden in the reference client's release builds. Several rooms per spool (`rooms`, the tag, the two push budgets, C-7.4-17/18; 2026-10-24): client half built in the reference client, spool half in `knit-spool` to follow | `ScopeCrypto.commons*`, `CommonsAdverts`, `CommonsInvite`, `ScopeSync`, `knit-spool` |
-| §7.6 TURN credentials, tickets, STUN            | Spool side built in `knit-spool` (experimental, off by default); client half in development, not in a shipped build                     | `knit-spool`                                                     |
+| §7.6 TURN credentials, tickets, STUN            | Shipped both sides: off on a spool until its operator configures it, and the reference client calls through it since 2.10.0. Several TURN servers per spool (`turnHosts`, `host`, C-7.6-51 to C-7.6-54; 2026-10-25): specified, both halves in development | `ScopeSync`, `SpoolConnection`, `call/`, `knit-spool`            |
 | §7.7 casts                                      | Spool side built in `knit-spool` (experimental, off by default); client half in development, not in a shipped build                     | `knit-spool`                                                     |
 | §7.5 send-side moderation                       | Spool side shipped (`SPOOL_REQUIRE_MODERATION`); client half not yet implemented — a current client tolerates the field and ignores it (B-2-2) | `knit-spool`                                                     |
 | §4.1–§4.4 sealing and frame rules               | Shipped                                                                                                                                    | `ScopeCrypto`, `ScopeFrames`                                     |
@@ -2287,3 +2349,4 @@ the plane itself was unaffected either time, since a spool never decodes a frame
 | 2026-10-23 | **Homes place each scope, and the client issues configs (§5 status, §5.1; ADR 2026-10.8kfx).** A DM, pair or group scope is synced at its own relays: what its config names and the phone may dial, `public-1` while a peer has never sent a config, the home for a DM, and the person's own relays. A DM config names the two homes; a group config names the group's one relay, moved by any member after a jitter when it drains. Non-normative client policy | **Spools:** none. **Clients:** a build without homes keeps syncing every scope at every relay it holds, and meets a homed peer at `public-1` while that peer has its config unread |
 | 2026-10-24 | **A commons post may carry its body's formatting (§7.4 C-7.4-6 note; knit-next ADR 2026-10.p95v).** A `chat` gains an optional `s`, its style ranges as one byte string beside the plain body | **Spools:** none — the record is opaque to them. **Clients:** an older client skips the key and shows the text plainly; `vectors/wire-v1.json` gains `chatContentStyles` |
 | 2026-10-24 | **One spool runs several commons rooms (§7.4: S-7.4-1, S-7.4-2, S-7.4-3, S-7.4-4, S-7.4-5, C-7.4-11 amended; S-7.4-15, B-7.4-16, C-7.4-17, C-7.4-18, S-7.4-19, B-7.4-20 new; ADR 2026-10.wqu2).** A new optional HELLO field, `rooms`, lists every room a spool runs, each entry led by a `tag`, the first 8 bytes of `SHA-256("knit/spool/v1/commons-tag" ‖ scopeId)`, which a spool computes from the id it holds and a member from the id it derives; `commons` stays as the first entry. Bounds, `attach` and the push budget are per room, under a second, spool-wide budget; `moderation` stays spool-wide; a spool with no token keeps names off its HELLO. A member never leaves a room on the strength of another room's invite. Notes say what a client that predates `rooms` gets in a second room, and why the hazard is documented rather than forbidden; §1.4 and §7.5 wording, a §10.1 bullet, a §12.1 row, §12.2 rows and §13 vectors appended | **Spools:** optional; a spool running one room may keep sending `commons` alone, but SHOULD add `rooms`; one running several MUST send both and enforce both budgets. Whatever its room count, a spool with no access token SHOULD drop room names from its HELLO, `commons.name` included (S-7.4-19). **Clients:** read their room by tag where `rooms` is present, else as before; one that predates `rooms` sees the first room on every spool. No derivation or existing vector moved; §13 gains `commonsTag`, `commonsSecret2`, `commonsScopeId2`, `commonsTag2` and `helloSpoolRooms` |
+| 2026-10-25 | **A spool may name several TURN servers, and a phone relays through the one nearest it (§7.6: S-7.6-48, S-7.6-49, S-7.6-50, C-7.6-51, C-7.6-52, C-7.6-53, C-7.6-54 new; C-7.6-12 refined; knit-spool-coordinator ADR 2026-10.w7hc).** A spool names up to four TURN servers in HELLO as `turnHosts`, the `host:port` of each one's UDP listener in server order. A `turnreq` may name one in `host`, and its `turncred` carries that server's URLs alone, signed under that server's secret; an absent or unknown `host` selects server 1, under budgets shared across servers. A client measures the listed servers by STUN Binding round trip over UDP when its network changes, never during a call, names the one it ranks best, and hands its ICE agent one TURN server per call instead of up to two. A refusal with 486 or 508 marks a server for 5 minutes, and a side whose description has not yet gone out gathers once more on the next one. Four notes say why one box per call, why the phone measures, why server 1 is the fallback and why a side moves on only before its description leaves; a §10.1 sentence and §12 rows | **Spools:** optional; one with a single server sends one entry, or none if it has no UDP URL, and one that predates `turnHosts` sends none and ignores `host` (B-2-2). **Clients:** one that predates `host` sends none and gets server 1, today's box; a new client facing an older spool behaves as before. No existing record, derivation or vector moved; §13 gains `helloSpoolTurnHosts` and `turnreqHost` |

@@ -41,6 +41,7 @@ A 1:1 audio call has three paths:
 | **S-7.6-1** | A spool that issues TURN credentials advertises `turn: true` in HELLO. A spool that does not MUST omit the field; `false` is never sent. Presence is the signal. |
 | **S-7.6-2** | A spool MUST NOT advertise `turn` unless it is configured with a TURN secret and at least one TURN URL.                                                           |
 | **C-7.6-3** | A client MUST NOT send `turnreq` to a spool that omitted `turn`.                                                                                                  |
+| **S-7.6-48** | A spool that advertises `turn` sends `turnHosts: [String]` beside it: the entry (§2.2) of each of its servers that has a UDP URL, in server order, 1 to 4 entries, all distinct. It omits `turnHosts`, never sending `[]`, when no server has a UDP URL, which can only be one server whose URLs are all `turns:` or `transport=tcp`, and MUST NOT send it without `turn`. A spool with two or more servers MUST give every one a UDP URL, and URLs that name one host, a host no other server's URLs name, so that `turnHosts` lists them all and an entry names exactly one server. |
 
 > **Why a gate, not a hint.** The §7.3 reasoning, reapplied: an unknown record is skipped (B-2-2), and a
 > skipped request is never answered, so a `turnreq` to an older spool would hang until the client's
@@ -50,7 +51,7 @@ A 1:1 audio call has three paths:
 
 | Record     | Direction | Fields                                                            | Semantics                                                                     |
 |------------|-----------|-------------------------------------------------------------------|-------------------------------------------------------------------------------|
-| `turnreq`  | c→s       | `t, q: Long`                                                      | Ask for one TURN credential. Answered by `turncred`, or by `err`               |
+| `turnreq`  | c→s       | `t, q: Long, host?: String`                                       | Ask for one TURN credential, for the server `host` names (S-7.6-49). Answered by `turncred`, or by `err` |
 | `turncred` | s→c       | `t, q: Long, urls: [String], user: String, pass: String, exp: Long` | The credential. `exp` is Unix **seconds**. `urls` are RFC 7065 `turn:`/`turns:` URIs |
 
 `turncred` carries `q` and is itself terminal, like `ahas`. `not_subscribed`, `rate` and `internal`
@@ -66,8 +67,8 @@ cover every refusal, plus `ticket` on a spool that takes entitlement tickets (§
 | **S-7.6-9**  | A spool MUST NOT log or persist issued credentials. Metrics MAY count issues and refusals.                                                                                                                                       |
 | **S-7.6-10** | The spool process MUST NOT relay media. TURN is a separate service that shares only the secret.                                                                                                                                  |
 | **C-7.6-11** | A client SHOULD fetch a credential per call, or reuse a cached one only while `exp` is at least 1 h away. It MUST NOT send a credential to its peer or into any frame.                                                          |
-| **C-7.6-12** | A client SHOULD request from every spool of the DM scope that advertises `turn` and is connected, and SHOULD offer relay candidates from at most two TURN servers, to bound ICE checks.                                          |
-| **C-7.6-26** | A client SHOULD prune its TURN ports once one is ready: on each network, a relay that ranks below the best ready one (relay protocol first, then address family) is released. This refines C-7.6-12, which still asks up to two spools. With one spool, a pruned call holds about one allocation per network. With two, each spool whose best relay ties the best ready one keeps a relay there, so two spools that both answer over UDP each keep one, and the second stays a backup. |
+| **C-7.6-12** | A client SHOULD request from every spool of the DM scope that advertises `turn` and is connected, and SHOULD offer relay candidates from at most two TURN servers, to bound ICE checks. C-7.6-53 refines this: where a credential comes from a spool that sent `turnHosts`, the client offers one TURN server. |
+| **C-7.6-26** | A client SHOULD prune its relay allocations once one is ready: on each network, a relay that ranks below the best ready one (relay protocol first, UDP over TCP over TLS, then IPv6 over IPv4) is released. This refines C-7.6-12, which still asks up to two spools. With one spool, a pruned call holds about one allocation per network; ties are kept. |
 
 > **Why no scope.** Asking for a credential "for scope S" would tell the spool which conversation is
 > calling, a fact it otherwise never learns. Holding *some* subscription is the whole gate: it costs a
@@ -88,9 +89,10 @@ cover every refusal, plus `ticket` on a spool that takes entitlement tickets (§
 > data, each with IPv4 and IPv6, make about 8 before pruning, and the third URL S-7.6-25 drops made up to 12. Those
 > count against the TURN server's per-user and total quotas (§2.4). libwebrtc's
 > `PortPrunePolicy.PRUNE_BASED_ON_PRIORITY` ranks a network's relays (by interface, across every server) UDP over
-> TCP over TLS to the server, then IPv6 over IPv4, and releases the lower ones. Ties are kept, which is why two spools
-> answering over UDP both keep a relay; a second spool loses its relay on a network only where it ranks lower, as a
-> TLS relay against the first's UDP one. A pruned port frees its allocation (a Refresh with lifetime 0) once it holds
+> TCP over TLS to the server, then IPv6 over IPv4, and releases the lower ones. Ties are kept, so where neither of two spools sent
+> `turnHosts` (with it, C-7.6-53 hands the call one server) and both answer over UDP, each keeps a relay and the second
+> stays a backup. A second spool loses its relay on a network only where it ranks lower, as a TLS relay against the
+> first's UDP one. A pruned port frees its allocation (a Refresh with lifetime 0) once it holds
 > no candidate pair. On the caller that is at once, because pruning happens while it gathers, before the answer. The
 > callee has the offer's candidates already, so a relay it prunes after its checks began lingers until the ICE agent
 > drops those pairs, about a minute after the call connects.
@@ -103,6 +105,26 @@ user = 1800000000:bmjbsibhfy2tyq2k
 pass = yV18C+LcL6biIfL7ZVOuV9xVuoU=
 ```
 
+**Several TURN servers.** A spool may sign for up to four, each with its own URLs and secret, and a phone relays
+through the one nearest it (knit-spool-coordinator ADR 2026-10.w7hc). Server 1 is the one a spool had before it named
+more. Three terms, each read from a server's URLs: its **UDP URL** is the first whose scheme is `turn:` and whose
+`transport` is `udp` or absent (RFC 7065 §3); a URI's **host** is its host part, compared case-insensitively, an IPv6
+literal keeping its brackets; and its **entry** is `host:port` of its UDP URL, the host lowercased and the port as
+written or 3478 (`turn:US-West.turn.getknit.app?transport=udp` gives `us-west.turn.getknit.app:3478`). S-7.6-48 is in
+§2.1.
+
+| ID           | Requirement |
+|--------------|-------------|
+| **S-7.6-49** | A `turnreq` MAY carry `host: String`. A `host` byte-for-byte equal to an entry of this spool's `turnHosts` selects that server. A spool MUST answer an absent or unmatched `host`, and any `host` on a spool that sent no `turnHosts`, from server 1: never with an error and never as a strike. A `host` that is not a text string makes the record malformed, as a mistyped field always has. A spool that predates `host` ignores it (B-2-2) and answers from its one server. |
+| **S-7.6-50** | `turncred` keeps its form. Its `urls` are the selected server's URLs only, as configured and in their order, and `pass` is signed under that server's secret (S-7.6-6). `user` follows S-7.6-6, S-7.6-7 and S-7.6-17 as for one server, so a ticketed holder's suffix is the same on every server, and `exp` follows the one `turnTtl` (S-7.6-8). S-7.6-5's budgets are shared: one per connection, one per address and one per holder, whatever `host` asks for. |
+| **C-7.6-51** | A client asking a spool that sent `turnHosts` SHOULD name, in `host`, the entry it ranks best from that spool's list. It ranks entries by ascending score (C-7.6-52), and entries within 10 ms of the best score keep the spool's order. An entry that never answered goes after every one that did, in the spool's order. An entry whose allocation was refused (C-7.6-54) goes last for 5 minutes. With no score yet, the spool's order stands. A client reads which server a credential is for from the entry of its `urls`' UDP URL. |
+| **C-7.6-52** | A client measures the union of `turnHosts` over its connected spools that would issue it TURN, each entry once: a spool that gates `turnreq` (bit 0 of `entGates`) where the client holds a ticket with bit 0 of `fl`, or one that does not gate it. It sends STUN Binding requests (RFC 8489: 20 bytes, no attributes) over UDP to the entry's host and port, on the default network, and MUST NOT use ICMP: three per entry, 200 ms apart, each with a 1 s timeout. It accepts only a Binding success response with the request's transaction ID and an XOR-MAPPED-ADDRESS. The score is the least accepted round-trip time; an entry with none never answered. It measures when the default network changes, and when a HELLO brings an entry not yet measured on this network, and never while a call waits. It keeps one ranking, for the current network, drops it when the network changes and never stores it with a network's name; a refusal mark (C-7.6-54) keeps its 5 minutes across a network change. It MUST NOT log, store or send the mapped address. |
+| **C-7.6-53** | When at least one of a call's TURN credentials comes from a spool that sent `turnHosts`, a client SHOULD hand its ICE agent exactly one TURN server: of those credentials, the one whose server ranks best, and drop the rest unused. Across spools, the lowest score ranks first; within 10 ms of it, the credential from the spool asked first in C-7.6-12's order (a ticketed spool first, C-7.6-21); and a measured server ranks before an unmeasured one. Without such a credential, C-7.6-12 applies as before. "Relay all calls" (`docs/VOICE_CALLS.md` C-3.7-3) uses the same single server, and STUN gathering (C-7.6-20) is unchanged. This refines C-7.6-12's "at most two". |
+| **C-7.6-54** | An allocation on the chosen server refused with 486 (Allocation Quota Reached) or 508 (Insufficient Capacity) marks that server refused (C-7.6-51), whenever the refusal arrives. A side of a call moves on only while its own description has not been sent, its OFFER for the caller and its ANSWER for the callee: if a refusal arrives before then and the chosen server has given that side no relay candidate, the side SHOULD gather afresh on the next server in its ranking, from a credential already in hand or else a new `turnreq` naming it, drop the refused gathering, and send its description from the new one, as the ordinary first OFFER or ANSWER of the same call. That description leaves about one gather window late, and the peer sees nothing different. A client does this at most once per call; each side does it independently. After its description has left, a side does not move on: the call connects on the peer's relay or a direct path, or fails as it would have. |
+
+> The rationale is `docs/SPOOL_PROTOCOL.md` §7.6's four notes under "Several TURN servers": why one box per call, why
+> the phone measures, why server 1 is the fallback, and why a side moves on only before its description leaves.
+
 ### 2.3 Daemon configuration
 
 Environment variables, following the house rule that an invalid value refuses to start:
@@ -113,8 +135,19 @@ Environment variables, following the house rule that an invalid value refuses to
 | `SPOOL_TURN_URLS`        | Comma-separated `turn:`/`turns:` URIs. Required when the secret is set. Two (UDP and TLS) are the recommended set (S-7.6-25) |
 | `SPOOL_TURN_TTL_S`       | Credential lifetime, default `300` (60–3600; S-7.6-8)                                                    |
 | `SPOOL_TURN_RATE`        | Issues per connection per 10 min, default `4`                                                            |
+| `SPOOL_TURN_2_SECRET`, `SPOOL_TURN_2_URLS` … `SPOOL_TURN_4_SECRET`, `SPOOL_TURN_4_URLS` | Servers 2 to 4, each a secret and its URLs as server 1's are (§2.2, "Several TURN servers"). Boot-only, like server 1's. `SPOOL_TURN_TTL_S`, `SPOOL_TURN_RATE` and `SPOOL_TICKET_TURN_RATE` apply to every server, and each still needs server 1 |
 
 `SpoolServer` gains one record handler. `ScopeStore` is untouched, because nothing is stored.
+
+The daemon refuses to start, and `check` refuses the configuration, without ever naming a secret:
+
+- always: a key of server n set while server n−1 has neither of its keys; a server with a secret and no URLs, or URLs
+  and no secret; a secret shorter than 32 characters; a URL that is not a `turn:` or `turns:` URI;
+- with two or more servers only: a server whose URLs name more than one host, two servers with the same host, and a
+  server with no UDP URL.
+
+With one server, every URL list accepted before is still accepted, and equal secrets across servers are allowed. The
+daemon counts issues per server, as `knit_spool_turn_issued_total{server="<n>"}` and its ticketed twin.
 
 | ID           | Requirement                                                                                                                                                                                                                       |
 |--------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -618,7 +651,8 @@ Each side sends an `OFFER` to the other before seeing the other's offer.
 > (`TurnSource.turnAvailable`, read as a call is placed and as an offer lands, plus any issued credential still live):
 > a live call is refused before anything is sent (`CallRefusal.NO_RELAY`), an automatic one is a walkie where the peer
 > runs one, an incoming live offer is declined `no_route` without ringing and left as a missed call that says why, and
-> a TURN fetch that still issues nothing ends the call before its OFFER or ANSWER.
+> a TURN fetch that still issues nothing ends the call before its OFFER or ANSWER. Where a spool sent `turnHosts`, the
+> switch relays through the one server every call takes (C-7.6-53), the nearest, never a second beside it.
 >
 > **Captions on Android (C-3.7-5; ADR 2026-10.nz3g, its 2026-10-16 amendment).** Where `BuildConfig.STT` and
 > `BuildConfig.LIVE_CALLS` are on (ADR 2026-10.swvp), a
