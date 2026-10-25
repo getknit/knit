@@ -2,9 +2,13 @@ package app.getknit.knit.di
 
 import app.getknit.knit.BuildConfig
 import app.getknit.knit.data.forward.ForwardDao
+import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.identity.Identity
+import app.getknit.knit.ui.devview.EventConsole
+import app.getknit.knit.ui.devview.EventConsoleViewModel
 import app.getknit.knit.ui.devview.MeshHudViewModel
 import app.getknit.knit.ui.devview.MessageInspectViewModel
+import kotlinx.coroutines.CoroutineScope
 import org.koin.core.module.Module
 import org.koin.core.module.dsl.viewModel
 import org.koin.dsl.module
@@ -27,4 +31,7 @@ private fun devViewGraph(): Module =
             MessageInspectViewModel(params.get(), get(), get(), get<ForwardDao>(), get(), get(), get(), get(), get(), get<Identity>())
         }
         viewModel { MeshHudViewModel(get(), get(), get<ForwardDao>(), get(), get()) }
+        // The event console (the ADR's slice 2): the field log's tap, following the view's switch for the process.
+        single { EventConsole().also { it.follow(get<SettingsStore>().debugDevView, get<CoroutineScope>()) } }
+        viewModel { EventConsoleViewModel(get(), get()) }
     }

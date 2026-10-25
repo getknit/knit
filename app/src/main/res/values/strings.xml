@@ -1296,6 +1296,13 @@
     <string name="diagnostics_dev_view_label">Developer view (debug)</string>
     <string name="diagnostics_dev_view_body">Adds a mesh status line over every screen, and a message\'s internals to its details. It reads what this phone holds: nothing is saved or sent.</string>
     <string name="dev_view_open_diagnostics">Open Diagnostics</string>
+    <string name="dev_view_events">Events</string>
+    <string name="dev_console_title">Mesh events</string>
+    <string name="dev_console_all">All</string>
+    <string name="dev_console_pause">Pause</string>
+    <string name="dev_console_resume">Resume</string>
+    <string name="dev_console_clear">Clear</string>
+    <string name="dev_console_empty">Nothing yet. Events are kept in memory on this phone while the developer view is on.</string>
     <string name="diagnostics_transport_debug_off">off</string>
     <!-- A plane low-power mode has switched off (ADR 2026-10.d44b), as a tag beside the transport. -->
     <string name="diagnostics_transport_low_power">low power</string>

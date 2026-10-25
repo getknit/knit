@@ -57,10 +57,11 @@ fun interface FieldRecorder {
  * The field log (ADR 2026-10.a239): a bounded record of how this phone's radios behaved, kept on the phone and
  * handed over only by the user, from Diagnostics.
  *
- * [record] is cheap and never blocks — it stamps the event and queues it. Rendering (pseudonyms) and the disk
- * write happen on [flush], which the session's minute tick runs, and on [stop]. A process death loses at most
- * the last minute. While the user has the log switched off ([enabled]) nothing is queued, and switching it off
- * deletes what was kept ([setEnabled]). It is off until the user turns it on (`SettingsStore.fieldLogEnabled`).
+ * [record] is cheap and never blocks — it stamps the event, hands it to the [tap], and queues it. Rendering
+ * (pseudonyms) and the disk write happen on [flush], which the session's minute tick runs, and on [stop]. A process
+ * death loses at most the last minute. While the user has the log switched off ([enabled]) nothing is queued, and
+ * switching it off deletes what was kept ([setEnabled]). It is off until the user turns it on
+ * (`SettingsStore.fieldLogEnabled`). The tap sees every event either way (ADR 2026-10.s7wg): it keeps nothing on disk.
  *
  * The session half ([start] / [stop]) is driven by `MeshManager`: it writes `mesh_on` / `mesh_off`, follows the
  * power state and each radio's status, and every [COUNTERS_EVERY_MS] writes what the mesh's counters moved by.
@@ -78,6 +79,8 @@ class FieldLog(
     private val staged: File? = null,
     // Low-power mode's posture (`LowPowerSource.posture`, ADR 2026-10.d44b), followed for the session like [power].
     private val lowPower: Flow<LowPowerPosture>? = null,
+    // The developer view's event console (ADR 2026-10.s7wg): handed each event ahead of [enabled], in memory only.
+    private val tap: FieldTap = FieldTap.NONE,
 ) : FieldRecorder {
     private class Pending(
         val at: Long,
@@ -125,8 +128,10 @@ class FieldLog(
     }
 
     override fun record(event: FieldEvent) {
-        if (on == false) return
         val at = clock()
+        // Ahead of the switch: the console shows what happened whether or not the person keeps a field log.
+        tap.saw(at, event)
+        if (on == false) return
         queue.add(Pending(at, relink(at, event)))
         // Bounded: a log nobody flushes (a wedged IO pool) drops its oldest rather than growing.
         if (queued.incrementAndGet() > MAX_QUEUED && queue.poll() != null) queued.decrementAndGet()

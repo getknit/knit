@@ -43,7 +43,7 @@ class FieldLogTest {
         health: TransportHealth = TransportHealth.Healthy,
     ) = TransportStatus(TransportKind.Bluetooth, health, linked, nearby)
 
-    private fun TestScope.newLog() =
+    private fun TestScope.newLog(tap: FieldTap = FieldTap.NONE) =
         FieldLog(
             journal = FieldJournal(tmp.root),
             metrics = metrics::snapshot,
@@ -53,6 +53,7 @@ class FieldLogTest {
             clock = { now },
             io = UnconfinedTestDispatcher(testScheduler),
             staged = staged,
+            tap = tap,
         )
 
     /** One mesh session's scope, cancelled as `MeshManager.stop` cancels its own, so the next start is a fresh one. */
@@ -175,6 +176,25 @@ class FieldLogTest {
             log.setEnabled(false) { enabled.value = it }
             log.record(FieldEvent.MeshOff)
 
+            assertEquals(emptyList<String>(), log.lines())
+        }
+
+    /**
+     * The developer view's event console (ADR 2026-10.s7wg) is the log's tap: it is handed each event as recorded,
+     * whatever the person's switch, while the journal goes on keeping nothing with the switch off.
+     */
+    @Test
+    fun theTapSeesEveryEventWhileTheLogIsOffAndTheJournalKeepsNone() =
+        runTest {
+            enabled.value = false
+            val seen = mutableListOf<Pair<Long, String>>()
+            val log = newLog(tap = { at, event -> seen += at to event.kind })
+            log.start(backgroundScope, statuses)
+            runCurrent()
+            log.record(FieldEvent.BtDown("abcdefghijklmnopqrstuvwxyz", BtDownReason.EOF, lifetimeMs = 5_000, links = 0))
+
+            assertEquals(listOf("mesh_on", "power", "radio", "bt_down"), seen.map { it.second })
+            assertEquals("each at the log's own clock", listOf(now), seen.map { it.first }.distinct())
             assertEquals(emptyList<String>(), log.lines())
         }
 

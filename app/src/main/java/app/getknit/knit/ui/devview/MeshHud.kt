@@ -7,6 +7,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -74,11 +75,12 @@ private val MAX_PANEL_WIDTH = 360.dp
 @Composable
 fun MeshHud(
     onOpenDiagnostics: () -> Unit,
+    onOpenEvents: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: MeshHudViewModel = koinViewModel(),
 ) {
     val reading by viewModel.reading.collectAsStateWithLifecycle()
-    MeshHudContent(reading = reading, onOpenDiagnostics = onOpenDiagnostics, modifier = modifier)
+    MeshHudContent(reading = reading, onOpenDiagnostics = onOpenDiagnostics, onOpenEvents = onOpenEvents, modifier = modifier)
 }
 
 /**
@@ -91,6 +93,7 @@ internal fun MeshHudContent(
     reading: HudReading?,
     onOpenDiagnostics: () -> Unit,
     modifier: Modifier = Modifier,
+    onOpenEvents: () -> Unit = {},
     startExpanded: Boolean = false,
 ) {
     var expanded by rememberSaveable { mutableStateOf(startExpanded) }
@@ -115,7 +118,7 @@ internal fun MeshHudContent(
 
         if (expanded && reading != null) {
             HudPanelPlacement(bubbleAt = at, bubble = bubble, margin = margin, area = area) {
-                HudPanel(reading = reading, line = line, onOpenDiagnostics = onOpenDiagnostics)
+                HudPanel(reading = reading, line = line, onOpenDiagnostics = onOpenDiagnostics, onOpenEvents = onOpenEvents)
             }
         }
         Surface(
@@ -189,6 +192,7 @@ private fun HudPanel(
     reading: HudReading,
     line: String,
     onOpenDiagnostics: () -> Unit,
+    onOpenEvents: () -> Unit,
 ) {
     Surface(
         modifier = Modifier.testTag("dev_view_hud_panel"),
@@ -208,8 +212,14 @@ private fun HudPanel(
                     titleColor = MaterialTheme.colorScheme.inversePrimary,
                 )
             }
-            TextButton(onClick = onOpenDiagnostics) {
-                Text(stringResource(R.string.dev_view_open_diagnostics), color = MaterialTheme.colorScheme.inversePrimary)
+            // A row that wraps, so a long translation moves a button down rather than breaking its label.
+            FlowRow {
+                TextButton(onClick = onOpenEvents, modifier = Modifier.testTag("dev_view_hud_events")) {
+                    Text(stringResource(R.string.dev_view_events), color = MaterialTheme.colorScheme.inversePrimary)
+                }
+                TextButton(onClick = onOpenDiagnostics) {
+                    Text(stringResource(R.string.dev_view_open_diagnostics), color = MaterialTheme.colorScheme.inversePrimary)
+                }
             }
         }
     }

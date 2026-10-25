@@ -157,3 +157,36 @@ English" in `.agents/context/translations.md`, beside the call diagnostics card.
 - contact and group inspectors;
 - deeper pages per plane;
 - a bridge action that flips the switch on the lab phones.
+
+## Amendment 2026-10-25 — slice 2: an event console, in memory only
+
+**What was asked.** The next slice: a live record of what the mesh did, on the phone, without adb. The field log keeps
+that record already, but only once its owner switches it on, it renders every peer as a pseudonym, and it is read on a
+laptop.
+
+**What changed.** The console is fed from the one door every plane's events already pass through, `FieldLog.record`.
+That door gains a tap (`fieldlog/FieldTap`), called with each event as it is recorded, ahead of the field log's own
+switch. So the console sees every event whether or not the field log is on, and the field log keeps exactly what it
+kept before.
+
+- **What it holds.** The console (`ui/devview/EventConsole`) keeps the last 2,000 events in memory, newest first, while
+  the developer view is on. It keeps nothing while the view is off, and switching the view off empties it. It is
+  never written, shared or exported, and nothing new leaves the phone.
+- **How it reads.** Each event renders through the console's own `FieldWriter`: peers by the reader's label and the
+  first eight characters of their node id, relays by host. `FieldWriter` gains no method, and no event changes its
+  line in the field log (`FieldEventSchemaTest` stands as it is).
+- **Where it is.** The HUD's panel gains an Events button that opens a full-screen console, filterable by plane (BLE,
+  NAN, LoRa, relay, calls, mesh). It can be paused while it is read, and cleared. The route exists only where the view
+  is wired.
+
+**What it does not cover.** Frame-level events (a frame delivered, relayed or dropped, and why) are not field events.
+The HUD's counters and Diagnostics' drop reasons keep that. Samplers (`bt_link`, the LoRa sample) and the counters
+line run only while the field log is on, so the console shows them only then. A Bluetooth relink time
+(`BtUp.relinkMs`) is filled in by the field log's queue, so the console's copy of a `bt_up` does not carry it.
+
+**What keeps it true.**
+
+- `FieldLogTest`: the tap sees every event while the field log is off, and the journal still keeps nothing.
+- `EventConsoleTest`: nothing kept while the view is off; the newest 2,000 kept, oldest dropped; switching off
+  empties it; the plane of each kind; and each field rendered, a peer by its label and a relay by its host.
+- The console screen's preview is a screenshot test.

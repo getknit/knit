@@ -42,6 +42,7 @@ import app.getknit.knit.badge.PeerBadges
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.settings.SettingsStore
 import app.getknit.knit.di.CALL_SETTINGS_WIRED
+import app.getknit.knit.di.DEV_VIEW_WIRED
 import app.getknit.knit.legal.License
 import app.getknit.knit.mesh.MeshController
 import app.getknit.knit.mesh.MeshService
@@ -64,6 +65,7 @@ import app.getknit.knit.ui.chatlist.ChatListScreen
 import app.getknit.knit.ui.commons.CommonsDetailsScreen
 import app.getknit.knit.ui.components.LocalPeerBadges
 import app.getknit.knit.ui.contacts.ContactsScreen
+import app.getknit.knit.ui.devview.EventConsoleScreen
 import app.getknit.knit.ui.devview.MeshHud
 import app.getknit.knit.ui.devview.rememberDevViewOn
 import app.getknit.knit.ui.diagnostics.CrashLogScreen
@@ -107,6 +109,9 @@ private object Routes {
     const val SETTINGS = "settings"
     const val PROFILE = "profile"
     const val DIAGNOSTICS = "diagnostics"
+
+    // The developer view's event console (ADR 2026-10.s7wg); registered only where the view is wired.
+    const val DEV_CONSOLE = "devConsole"
     const val YOUR_MESH = "yourMesh"
     const val CRASH_LOG = "crash"
     const val FIELD_LOG = "fieldlog"
@@ -672,6 +677,11 @@ fun KnitApp(startRoute: String? = null) {
                     onOpenFieldLog = { navController.navigate(Routes.FIELD_LOG) },
                 )
             }
+            if (DEV_VIEW_WIRED) {
+                composable(Routes.DEV_CONSOLE) {
+                    EventConsoleScreen(onBack = { navController.popBackStack() })
+                }
+            }
             composable(Routes.CRASH_LOG) {
                 CrashLogScreen(onBack = { navController.popBackStack() })
             }
@@ -728,6 +738,7 @@ fun KnitApp(startRoute: String? = null) {
         if (rememberDevViewOn()) {
             MeshHud(
                 onOpenDiagnostics = { navController.navigate(Routes.DIAGNOSTICS) { launchSingleTop = true } },
+                onOpenEvents = { navController.navigate(Routes.DEV_CONSOLE) { launchSingleTop = true } },
                 modifier =
                     Modifier
                         .fillMaxSize()

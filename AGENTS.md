@@ -349,7 +349,8 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   READ ADR 2026-10.s7wg (Proposed). It reads only what this phone already holds, and shows an absent fact as `—`,
   never inferred. The one fact it needed and the phone did not keep, the radio a frame arrived on, is recorded under
   ADR 2026-10.e42d: `InboundPipeline.planeOf` names `Bluetooth` / `WifiAware`, and every reader tests `shortRange`,
-  never `== Nearby`. It writes, logs and sends nothing, shows no key material, ticket or credential, and its rows are
+  never `== Nearby`. Its event console (the ADR's slice-2 amendment) is the field log's `FieldTap`, handed each event
+  ahead of the field log's switch, in memory only: never written, and `FieldWriter` gains nothing for it. It writes, logs and sends nothing, shows no key material, ticket or credential, and its rows are
   deliberately English. It ships only where the flag is on, and shows only while the switch, off by default, is on.
 - **When touching `legal/`, `ui/about/`, `app/src/main/assets/legal/`, `THIRD-PARTY-NOTICES.md`, or a shipped
   dependency:** READ ADR 2026-09.6eb6. The in-app Open-source licenses list is `legal/ThirdPartyNotices.kt`,

@@ -33,6 +33,7 @@ import app.getknit.knit.fieldlog.FieldEvent
 import app.getknit.knit.fieldlog.FieldJournal
 import app.getknit.knit.fieldlog.FieldLog
 import app.getknit.knit.fieldlog.FieldLogExport
+import app.getknit.knit.fieldlog.FieldTap
 import app.getknit.knit.fieldlog.batteryEdges
 import app.getknit.knit.fieldlog.netEdges
 import app.getknit.knit.fieldlog.readBattery
@@ -105,6 +106,7 @@ import app.getknit.knit.transfer.TransferFiles
 import app.getknit.knit.transfer.TransferManager
 import app.getknit.knit.transfer.TransferSignals
 import app.getknit.knit.ui.chat.notificationLabels
+import app.getknit.knit.ui.devview.EventConsole
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -177,6 +179,8 @@ val meshModule =
                 versionCode = BuildConfig.VERSION_CODE.toLong(),
                 staged = File(androidContext().cacheDir, FIELD_LOG_SHARE_DIR),
                 lowPower = get<LowPowerSource>().posture,
+                // The developer view's event console (ADR 2026-10.s7wg), only where the view is wired.
+                tap = if (DEV_VIEW_WIRED) get<EventConsole>() else FieldTap.NONE,
             ).also { log ->
                 if (BuildConfig.LORA_PLANE) {
                     // Resolved at each sample, never here: the plane's status is built from the transport, which this precedes.

@@ -1094,6 +1094,13 @@
     <string name="diagnostics_dev_view_label">Visão de desenvolvedor (debug)</string>
     <string name="diagnostics_dev_view_body">Mostra uma linha de status da rede mesh sobre todas as telas e os dados internos de cada mensagem nas suas informações. Lê o que este celular guarda: nada é salvo nem enviado.</string>
     <string name="dev_view_open_diagnostics">Abrir Diagnóstico</string>
+    <string name="dev_view_events">Eventos</string>
+    <string name="dev_console_title">Eventos da rede mesh</string>
+    <string name="dev_console_all">Todos</string>
+    <string name="dev_console_pause">Pausar</string>
+    <string name="dev_console_resume">Retomar</string>
+    <string name="dev_console_clear">Limpar</string>
+    <string name="dev_console_empty">Nada ainda. Os eventos ficam na memória deste celular enquanto a visão de desenvolvedor está ativa.</string>
     <string name="diagnostics_transport_debug_off">desligado</string>
     <string name="diagnostics_transport_low_power">baixo consumo</string>
     <string name="diagnostics_transport_switched_off">desligado em Configurações</string>

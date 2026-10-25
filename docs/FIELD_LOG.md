@@ -15,6 +15,10 @@ followed by eight hex digits, made from its URL without the `?k=` token.
 - **Recording side.** `FieldWriter` has no string field, so nothing typed can be written.
 - **Export side.** `FieldLogDocument` withholds any line holding a node-id-shaped token and counts it in the
   header.
+- **The developer view's console.** A debug build's event console (ADR 2026-10.s7wg) is the log's `FieldTap`: it is
+  handed each event as recorded, ahead of the switch, and renders it through a `FieldWriter` of its own, a peer by
+  the reader's label. It holds the newest events in memory only, while the view is on, and writes nothing. The journal
+  keeps exactly what it kept without it.
 
 ## Retention
 
