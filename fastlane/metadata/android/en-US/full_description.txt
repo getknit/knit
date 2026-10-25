@@ -1,6 +1,6 @@
 Knit is a messenger that works with no internet, no cell service, and no accounts. It connects directly to the phones around you over Wi-Fi Aware and Bluetooth, passing messages device to device.
 
-When you send a message, nearby phones receive it and pass it onward to the phones around them — so your words hop across a crowd, a building, or a campsite, far past your own range. The more people using Knit nearby, the further it travels.
+Nearby phones receive each message and pass it on to the phones around them, so your words hop across a crowd, a building, or a campsite, far past your own range. The more people using Knit nearby, the further it travels.
 
 WHY KNIT
 • No internet or mobile data required
@@ -15,7 +15,7 @@ PERFECT FOR
 • Power outages and emergencies when networks fail
 
 PRIVATE BY DESIGN
-Direct and group chats are end-to-end encrypted. Each message is sealed so only the people in it can read it — every phone that carries it onward, and every relay, sees only ciphertext. Keys are generated on your device, protected by hardware-backed Android security. Confirm who you're talking to with a safety number or a QR scan.
+Direct and group chats are end-to-end encrypted. Each message is sealed so only the people in it can read it — every phone that carries it, and every relay, sees only ciphertext. Keys are generated on your device, protected by hardware-backed Android security. Confirm who you're talking to with a safety number or a QR scan.
 
 ABOUT THE PERMISSIONS
 Knit asks for nearby-devices (location before Android 13) as Android needs it to find peers over Wi-Fi Aware and Bluetooth LE and reach a paired radio. Location is read only when you tap Send location. INTERNET is declared because Android counts the local Wi-Fi Aware socket as network access, and because relays and link previews use it once switched on. No account, no backend: a fresh install makes no network calls.
@@ -28,15 +28,16 @@ FEATURES
 • Private 1:1 messages (end-to-end encrypted)
 • Multi-member groups (end-to-end encrypted)
 • Quoted replies, emoji reactions, and @-mentions
-• Image sharing, including GIFs
+• Photos, GIFs, and short videos
+• Voice calls, phone to phone nearby or over Internet relays
 • Voice notes, files of any type, and big files phone to phone over Wi-Fi
 • Search every chat, contact, and message
 • Encrypted backup for a new phone
 • Store-and-forward: messages wait until someone is back in range
-• Add a contact from a link when you're too far apart to scan
-• Optional Meshtastic LoRa radio for far longer range (see below)
-• Optional Internet relays, off until you turn them on (see below)
-• Share the app itself to a nearby phone, no app store needed
+• Add a contact by link when you're too far apart to scan
+• Optional Meshtastic LoRa radio for far longer range
+• Optional Internet relays, off until you turn them on
+• Share the app to a nearby phone, no app store needed
 • Material 3, dark mode, and Material You dynamic colors
 
 SAFER SPACES
@@ -51,6 +52,6 @@ OPTIONAL LONG-RANGE RADIO
 Pair a Meshtastic LoRa radio over Bluetooth and the Nearby room and your direct messages ride it too, kilometres instead of metres, still with no internet or account. The radio is separate hardware you set up once; Knit works fully without one.
 
 OPTIONAL INTERNET RELAYS
-To reach a contact who is never in radio range, switch on Internet relays: Knit parks a sealed copy on a small relay server, which hands it over the next time their phone connects. Off until you turn it on, behind a one-time disclosure of what a relay can see — your IP address, when you send, roughly how much — and cannot: your messages, who you talk to, or who is in a group. Choose your relays or run your own; both are public.
+To reach a contact who is never in radio range, switch on Internet relays: Knit parks a sealed copy on a relay server, which hands it over when their phone next connects. Off until you turn it on, behind a one-time disclosure of what a relay can see — your IP address, when you send, roughly how much — and cannot: your messages, who you talk to, or who is in a group. Choose your relays or run your own; both are public.
 
 Note: with no radio paired and relays off, Knit reaches people nearby, or the crowd between you. The public Nearby room is unencrypted by design — no fixed set of recipients — and is never uploaded.

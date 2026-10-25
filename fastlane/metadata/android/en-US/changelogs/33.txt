@@ -1,0 +1,19 @@
+Call your contacts, even with no Internet, and send short videos in any chat
+
+You can now call your contacts. A call to someone nearby goes over a Wi-Fi Direct link with no Internet, a
+call to someone farther away goes over the Internet, and when neither works it becomes a walkie-talkie over
+the mesh. Short videos go in any chat now, Nearby included. Knit shrinks each one to about 3 MB and keeps the
+first 61 seconds.
+
+If you support Knit on Ko-fi or GitHub Sponsors, you now get Knit Anywhere, which carries your photos and
+files over the Internet when no phone nearby can and gets calls through that would otherwise fail, and a
+supporter badge you can show on your photo.
+Low-power mode turns Wi-Fi Aware off to save battery and switches on by itself with Battery Saver. You also
+get a notification when someone reacts to your message, and @everyone in group chats. Downloads over 1 MB
+that only Bluetooth can bring now wait for your tap, and a photo that has reached the other phone in a
+private chat no longer goes up to your relay.
+
+Fixed: Knit closing after a far-off phone left Wi-Fi Aware range, quotes of words the sender never wrote,
+group messages left unreadable after someone left or restored a backup, an iPhone in the background losing
+its Bluetooth link, a stutter after connecting to a relay, encryption resets with no reason behind them, and
+a Bluetooth link that looked connected for half an hour after it stopped working.
