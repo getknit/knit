@@ -64,6 +64,12 @@ splitting it. And where a spool is says nothing about where the phone is.
   credential is in hand.
 - A refusal after the description leaves only marks the server. The call then relies on the peer's relay or a direct
   path.
+- The fallback's `turnreq` shares the connection's TURN budget (S-7.6-5: burst 2, 4 per 10 min, and the ticketed
+  holder's), and the call already spent one issue. A phone that asked twice in the last few minutes gets `rate`
+  (the 2026-10-25 lab trial's first fallback, after test asks). The side then sends the description it has
+  (`no credential for slot K of M` in logcat). A relay-only side has no relay left, so its OFFER or ANSWER carries no
+  candidate, ICE fails and the call ends; in the trial, 12 s after the answer. Otherwise the call goes on with the
+  peer's relay or a direct path. Unchanged on purpose: a second spool, or a credential already in hand, avoids the ask.
 - A phone that would ask for TURN shows each listed box its address once per network change, calling or not.
 
 **Where it is logged.** Logcat (`KnitCall`, `ScopeSync`) and the field log name a server by its slot in its spool's

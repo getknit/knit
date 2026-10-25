@@ -1284,9 +1284,15 @@ class CallManager(
             } ?: return session to sdp
         val (chosen, code) = refused
         val ours = if (l.outgoing) "offer" else "answer"
-        val next = chosen.entry?.let { nextServer(l, it) }
-        if (next == null) {
+        val pool = mutex.withLock { l.pool }
+        val entry = chosen.entry?.let { ranking.next(pool, it) }
+        if (entry == null) {
             log("call ${l.id}: turn ${chosen.describe()} refused ($code) before our $ours, and no other server")
+            return session to sdp
+        }
+        val next = credentialFor(l, pool, entry)
+        if (next == null) {
+            log("call ${l.id}: turn ${chosen.describe()} refused ($code) before our $ours; no credential for ${slotOf(pool, entry)}")
             return session to sdp
         }
         log("call ${l.id}: turn ${chosen.describe()} refused ($code) before our $ours; gathering on ${next.describe()}")
@@ -1306,16 +1312,24 @@ class CallManager(
         return fresh to describe(fresh)
     }
 
-    // C-7.6-54's next server after [refused]: a live credential in hand for it, else a new `turnreq` naming it.
-    private suspend fun nextServer(
+    // C-7.6-54's next server [entry]: a live credential in [pool] for it, else a new `turnreq` naming it.
+    private suspend fun credentialFor(
         l: Live,
-        refused: String,
+        pool: List<TurnServer>,
+        entry: String,
     ): TurnServer? {
-        val pool = mutex.withLock { l.pool }
-        val entry = ranking.next(pool, refused) ?: return null
         val nowS = clock() / MS_PER_S
         return pool.firstOrNull { it.isTurn && it.entry == entry && it.expiresS() - CREDENTIAL_MARGIN_S > nowS }
             ?: turn.turnServerFor(l.peerId, entry)
+    }
+
+    // "slot 1 of 2": [entry]'s place in the first list of [pool] that names it, for a log line that must not name it.
+    private fun slotOf(
+        pool: List<TurnServer>,
+        entry: String,
+    ): String {
+        val hosts = pool.firstOrNull { entry in it.spoolHosts }?.spoolHosts ?: return "the next server"
+        return "slot ${hosts.indexOf(entry) + 1} of ${hosts.size}"
     }
 
     // The field log's one line per call for the TURN server it chose (C-7.6-53), once its description is out.

@@ -290,6 +290,9 @@ class CallManagerTest {
         var turnFor: suspend (String, String) -> TurnServer? = { _, _ -> null }
         val turnForAsks = Collections.synchronizedList(mutableListOf<String>())
 
+        // The manager's log lines, in order: what a lab trial reads, so a case can pin a line's wording.
+        val logs = Collections.synchronizedList(mutableListOf<String>())
+
         // "Relay all calls" (C-3.7-3), as the manager reads it at each call.
         var relay = false
 
@@ -371,6 +374,7 @@ class CallManagerTest {
                 takesIncoming = { CallIntake(live = side.takesLive, walkie = side.takesWalkie).takes(it) },
                 field = FieldRecorder { field += it },
                 ranking = ranking,
+                log = { side.logs += it },
             )
         side = Side(name, manager, media, sent, missed, logged, turnAsks, direct, walkie, field, ranking)
         net.nodes[name] = manager
@@ -2665,6 +2669,29 @@ class CallManagerTest {
         }
 
     @Test
+    fun aNextServerWithNoCredentialSaysSoAndSendsTheDescriptionItHas() =
+        runTest {
+            // The lab trial's first fallback: the spool named slot 2, but refused its `turnreq` (`rate`).
+            val (_, alice, _) = pair()
+            alice.turn = { listOf(ranked(A, hosts = listOf(A, B), asked = 0)) }
+            alice.turnFor = { _, _ -> null }
+            alice.media.refusing = mapOf(A to 486)
+            alice.media.sdp = SDP_NO_RELAY
+            alice.manager.start(BOB)
+            runCurrent()
+            assertEquals(listOf(B), alice.turnForAsks)
+            assertEquals(1, alice.media.sessions.size)
+            assertEquals(SDP_NO_RELAY, alice.sent.single { it.ph == CallPayload.PHASE_OFFER }.sdp)
+            val id = alice.state!!.id
+            assertTrue(
+                alice.logs.toString(),
+                "call $id: turn slot 1 of 2 refused (486) before our offer; no credential for slot 2 of 2" in alice.logs,
+            )
+            // Named by its slot alone: no line carries a server's host.
+            assertTrue(alice.logs.none { "example" in it })
+        }
+
+    @Test
     fun aRefusalWithNoOtherServerSendsTheDescriptionItHas() =
         runTest {
             val (_, alice, _) = pair()
@@ -2677,6 +2704,7 @@ class CallManagerTest {
             assertFalse(alice.media.last.closed)
             assertEquals(1, alice.sent.count { it.ph == CallPayload.PHASE_OFFER })
             assertFalse(alice.lines<FieldEvent.CallTurn>().single().fallback)
+            assertTrue(alice.logs.any { it.endsWith("turn slot 1 of 1 refused (486) before our offer, and no other server") })
         }
 
     // A credential from a spool that names [hosts], for the server at [entry].
