@@ -127,8 +127,9 @@ ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edg
   dedicated-slot board), and that reply is the only unicast the plane sends.
 - **When touching the plane's face — `DeliveryPlane.LoRa`, `InboundFrame.kind`, `LoraPlane`, `LoraStatus` /
   `LoraStatusRepository`, `BoardFilter`, `LoraSizeHint`, `ui/chat/LoraReach.kt` (`RoomSaturated`, `GroupUnsupported`,
-  `LoraOnlySaturated`), or `ui/lora/`:** READ ADR 040, ADR 2026-09.ursc and ADR 2026-09.6ww7. The kind is for
-  presentation only — carry, relay and convergence never read it, and it is never folded into `fromNodeId`. A notice
+  `LoraOnlySaturated`), or `ui/lora/`:** READ ADR 040 (its §1 collapse amended by ADR 2026-10.e42d), ADR
+  2026-09.ursc and ADR 2026-09.6ww7. The kind is for presentation only — carry, relay and convergence never read it,
+  and it is never folded into `fromNodeId`. A notice
   about a spent window is published on the send that spent it, and a group says LoRa will not carry it from its roster,
   never the directory. `publishStatus` is serialised on its own lock, taken outside the pacer's and the ledger's
   monitors: the field log's `LoraFieldLog` reads the order of the snapshots as the record, so a stale Ready landing

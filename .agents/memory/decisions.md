@@ -236,6 +236,7 @@ carries; never renumber an old one.
 | [2026-10.d44b](decisions/2026-10-d44b-low-power-mode-makes-the-phone-a-bluetooth-leaf.md) | Low-power mode makes the phone a Bluetooth leaf | battery, mesh, bluetooth, wifi-aware, power |
 | [2026-10.d62w](decisions/2026-10-d62w-identity-slurs-are-blocked-by-a-word-list-in-every-conversation.md) | Identity slurs are blocked by a word list in every conversation, not only the Nearby room | moderation, privacy |
 | [2026-10.dmgw](decisions/2026-10-dmgw-a-reset-s-re-seal-goes-out-twice.md) | A reset's re-seal goes out twice, the second past the routers' dedup window | crypto, custody |
+| [2026-10.e42d](decisions/2026-10-e42d-a-frame-records-the-phone-radio-it-arrived-on.md) | a frame records the phone radio it arrived on, not just Nearby | mesh, data, diagnostics |
 | [2026-10.f7gg](decisions/2026-10-f7gg-a-blob-is-asked-of-the-likeliest-holder-first.md) | A blob is asked of the likeliest holder first, then of every neighbour | mesh, attachments, blob-exchange, wifi-aware |
 | [2026-10.fcrd](decisions/2026-10-fcrd-a-switched-off-call-kind-is-answered-no-answer.md) | A switched-off call kind is answered no answer, and blocking already silences a call | calls, settings |
 | [2026-10.fw8g](decisions/2026-10-fw8g-relayed-radio-mesh-traffic-is-indirect-reach.md) | Relayed radio-mesh traffic is indirect reach | mesh, ui |
@@ -267,6 +268,7 @@ carries; never renumber an old one.
 | [2026-10.ryak](decisions/2026-10-ryak-the-ble-presence-advert-runs-at-full-power.md) | The BLE presence advert runs at full power | ble, mesh, power |
 | [2026-10.rysj](decisions/2026-10-rysj-gradle-verifies-every-downloaded-artifact-against-committed-checksums-and-keys.md) | Gradle verifies every downloaded artifact against committed checksums and keys | build, release |
 | [2026-10.s3ep](decisions/2026-10-s3ep-a-free-ticket-lets-a-phone-send-small-photos-through-a-files-gated-relay.md) | A free ticket lets a phone send small photos through a files-gated relay | calls, spool, tickets, attachments |
+| [2026-10.s7wg](decisions/2026-10-s7wg-a-developer-view-reads-only-what-this-phone-already-holds.md) | a developer view reads only what this phone already holds, behind one build flag and one switch | diagnostics, ui, privacy |
 | [2026-10.swst](decisions/2026-10-swst-art-s-whitespace-is-the-law-for-both-ports.md) | ART's whitespace is the law for both ports | text, interop, testing |
 | [2026-10.swvp](decisions/2026-10-swvp-live-calls.md) | Live calls, mesh calls, speech and Knit Anywhere are four build flags | calls, build, tickets |
 | [2026-10.t2h6](decisions/2026-10-t2h6-a-message-is-translated-on-the-reader-s-tap-by-a-model-the-phone-downloads.md) | A message is translated on the reader's tap by a model the phone downloads | ml, ui, moderation, privacy |

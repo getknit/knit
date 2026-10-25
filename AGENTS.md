@@ -344,6 +344,13 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   no string field (a peer or a relay is a salted pseudonym), so redaction holds by construction; never add one. A new event
   is a golden line in `FieldEventSchemaTest`, a row in the doc and a kind in `scripts/fieldlog.py`; a sampler
   runs on the log's tick and only reads.
+- **When building or touching the developer view** — the message inspector at the foot of Message details, the mesh
+  HUD over every screen, `BuildConfig.DEV_VIEW` / `-PdevView=`, its `di/` constant or the `debug_dev_view` switch:
+  READ ADR 2026-10.s7wg (Proposed). It reads only what this phone already holds, and shows an absent fact as `—`,
+  never inferred. The one fact it needed and the phone did not keep, the radio a frame arrived on, is recorded under
+  ADR 2026-10.e42d: `InboundPipeline.planeOf` names `Bluetooth` / `WifiAware`, and every reader tests `shortRange`,
+  never `== Nearby`. It writes, logs and sends nothing, shows no key material, ticket or credential, and its rows are
+  deliberately English. It ships only where the flag is on, and shows only while the switch, off by default, is on.
 - **When touching `legal/`, `ui/about/`, `app/src/main/assets/legal/`, `THIRD-PARTY-NOTICES.md`, or a shipped
   dependency:** READ ADR 2026-09.6eb6. The in-app Open-source licenses list is `legal/ThirdPartyNotices.kt`,
   pinned to the notices table by `ThirdPartyNoticesSyncTest` and to `app/gradle.lockfile`'s

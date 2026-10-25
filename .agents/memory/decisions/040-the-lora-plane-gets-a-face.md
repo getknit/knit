@@ -71,3 +71,11 @@ builds read code 5 as `Unknown` → "arrived nearby". Deferred, still: an in-app
 (`MeshtasticScanner`/`MeshtasticBonder` are written but unwired — device-only verifiable, and the scan must go
 through `BleConnectArbiter`), and a per-message marker for a post that was `loraTooBig` (no persisted
 evidence; the composer hint covers the sending side). Surfaces + tags: `context/lora-bridge.md`.
+
+## Amendment 2026-10-25 — the phone radios are recorded apart (ADR 2026-10.e42d, Proposed)
+
+§1's "the phone radios still collapse to `Nearby` on purpose" gives way once ADR 2026-10.e42d lands. `planeOf` will
+then record `Bluetooth` (3) and `WifiAware` (4), the codes reserved for them, because the developer view (ADR
+2026-10.s7wg) and the field log's latency lines have something to say about the difference. The chat still reads
+both as "arrived nearby", with no glyph. The rest of §1 is unchanged: carry, relay and convergence never read the
+kind.
