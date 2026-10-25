@@ -646,6 +646,9 @@ needs costs nothing:
 - **[Report a bug](https://github.com/getknit/knit/issues/new/choose) when something misbehaves.** Radios
   behave differently on every phone model, so a report from yours can turn up a problem no test phone
   shows.
+- **Ask a question or share an idea in [Discussions](https://github.com/orgs/getknit/discussions).** They
+  live at the getknit organization rather than on this repository, so Knit for Android, Knit for iOS and
+  the relay share one place to talk.
 - **Translate it on [Weblate](https://hosted.weblate.org/engage/knit/).** Native speakers review each
   language there: suggest a better word, fix a string, or ask for your language.
   [#43](https://github.com/getknit/knit/issues/43) tracks where each one stands.
