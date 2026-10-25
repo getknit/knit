@@ -753,10 +753,10 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
 ## Capabilities
 
 - RUN skills in `.agents/skills/` — `kotlin-patterns` (idiomatic Kotlin), `material-3` (Compose M3),
-  `debug-bridge` (drive and verify the app on a device), and `dotagents-standard` (maintain this AGENTS.md
-  router / `.agents/` layout). Skills are vendored in
-  the repo (real files under `.agents/skills/`, surfaced to Claude Code via `.claude/skills/` symlinks),
-  so cloners get them without any global install.
+  `debug-bridge` (drive and verify the app on a device), `weblate-cli` (Weblate through `wlc`: progress, checks,
+  sync, uploads) and `dotagents-standard` (maintain this AGENTS.md router / `.agents/` layout). Skills are
+  vendored in the repo (real files under `.agents/skills/`, surfaced to Claude Code via `.claude/skills/`
+  symlinks), so cloners get them without any global install.
 - SPAWN a reviewer persona from `.agents/personas/` when its routing bullet above says so; each hunts one class of
   defect from a catalogue of the ones this repo already shipped and fixed, and never edits. A new reviewer is a
   persona, its symlink in `.claude/agents/`, a line in `.claude/hooks/review-gate.conf` (its stage and the paths

@@ -55,6 +55,11 @@ plan. Its one component, `app`, reads `app/src/main/res/values/strings.xml` as t
 - **The translator instructions** (tone, the glossary, plurals, length) live in the project's settings on Weblate.
   Change them there.
 - A GitHub webhook to `https://hosted.weblate.org/hooks/github/` makes Weblate pull on every push to `main`.
+- **From the command line**, run the `weblate-cli` skill (`wlc`). Here the component is `knit/app` and Weblate's
+  language codes are `pt_BR`-style where the folders are `values-pt-rBR`. Once native review has started on a
+  language, machine corrections go up as suggestions (`wlc upload … --method suggest`), never into its
+  `strings.xml` directly, so they neither overwrite a reviewer's work nor conflict with Weblate's pending commit.
+  Anything that changes Weblate's state (commit, push, pull, lock, upload) is confirmed with the maintainer first.
 
 ## Writing a string
 
