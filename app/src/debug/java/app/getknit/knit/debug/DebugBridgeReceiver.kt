@@ -36,6 +36,7 @@ import app.getknit.knit.call.SttPolicy
 import app.getknit.knit.call.StunServers
 import app.getknit.knit.call.SystemCallSync
 import app.getknit.knit.call.TranscriptLine
+import app.getknit.knit.call.TurnRanking
 import app.getknit.knit.call.VoiceNoteSpeech
 import app.getknit.knit.call.WalkieStats
 import app.getknit.knit.call.WalkieTranscriber
@@ -136,6 +137,7 @@ import app.getknit.knit.mesh.spool.SpoolTicketState
 import app.getknit.knit.mesh.spool.SpoolTickets
 import app.getknit.knit.mesh.spool.SpoolUrl
 import app.getknit.knit.mesh.spool.TicketRefreshPolicy
+import app.getknit.knit.mesh.spool.TurnHosts
 import app.getknit.knit.mesh.wifiaware.NanFaultInjector
 import app.getknit.knit.mesh.wifiaware.NanIcmPolicy
 import app.getknit.knit.mesh.wifiaware.NanMsgFault
@@ -2587,7 +2589,11 @@ class DebugBridgeReceiver :
      * off|on` opens the next calls' `turns:` legs without checking the certificate, a diagnosis switch held in memory
      * (libwebrtc's own roots hold no Let's Encrypt root); `webrtc: relays …` then says whether a `tls` relay came.
      * `turnprune --es prune off|on` opens the next calls with TURN pruning off (C-7.6-26's "before", in memory); a
-     * call's `webrtc: allocations gathered N, pruned M, held K` at close is the count either way.
+     * call's `webrtc: allocations gathered N, pruned M, held K` at close is the count either way. `turnpin --es slot
+     * 1-4|off` puts the TURN server at that place in a spool's `turnHosts` first from the next call on, whatever its
+     * score or refusal (in memory, `state`'s `turnPin`): how a trial makes a call try a refusing box first and watch
+     * C-7.6-54 move it to the next. `turn` names each credential's `slot`, `of` and `score` beside its URLs, and which
+     * one a call would take (`chosen`).
      *
      * `start` and `answer` need Knit in the foreground (`am start` it first): the call's microphone service and its
      * screen can only start from there. `answer` opens the call screen, which answers, so it asks for the microphone
@@ -2747,6 +2753,17 @@ class DebugBridgeReceiver :
                 return reply("ok", "turns: certificates $what from the next call on")
             }
 
+            "turnpin" -> {
+                val ranking = getKoin().getOrNull<TurnRanking>() ?: return reply("error", "this build takes no live calls")
+                ranking.pinnedSlot =
+                    when (val slot = intent.getStringExtra("slot")) {
+                        "off" -> null
+                        else -> slot?.toIntOrNull()?.takeIf { it in 1..TurnHosts.MAX } ?: return reply("error", "slot must be 1-4 or off")
+                    }
+                val what = ranking.pinnedSlot?.let { "slot $it first" } ?: "pin off"
+                return reply("ok", "TURN $what from the next call on")
+            }
+
             "turnprune" -> {
                 WebRtcCallMedia.turnPruneOff =
                     when (intent.getStringExtra("prune")) {
@@ -2825,12 +2842,20 @@ class DebugBridgeReceiver :
                         .first()
                         .effective()
                 val source = OverridingTurnSource({ own }, getKoin().get<MeshManager>())
-                val servers = source.turnServers(peer)
+                // Asked as a call asks (C-7.6-51), so a spool that names its servers signs for the best-ranked one.
+                val ranking = getKoin().getOrNull<TurnRanking>() ?: TurnRanking()
+                val servers = source.turnServers(peer, ranking::best)
+                val chosen = ranking.choose(servers)
                 val list = JSONArray()
                 servers.forEach { server ->
                     val entry = JSONObject().put("urls", JSONArray(server.urls))
                     // A spool's credential names its expiry first; an own server's username is a name, never printed.
                     if (own.turn == null) entry.put("expires", server.user.substringBefore(':'))
+                    if (server.ranked) {
+                        entry.put("slot", server.slot).put("of", server.spoolHosts.size)
+                        entry.put("score", server.entry?.let(ranking::score) ?: JSONObject.NULL)
+                        entry.put("chosen", server === chosen)
+                    }
                     list.put(entry)
                 }
                 // C-7.6-20: the STUN URLs a call would gather from beside them, as the call picks them.
@@ -2849,6 +2874,7 @@ class DebugBridgeReceiver :
             .put("pathPref", if (DefaultPath.enabled) "android" else "off")
             .put("turnTls", if (WebRtcCallMedia.turnTlsUnchecked) "unchecked" else "checked")
             .put("turnPrune", if (WebRtcCallMedia.turnPruneOff) "off" else "on")
+            .put("turnPin", getKoin().getOrNull<TurnRanking>()?.pinnedSlot ?: "off")
             .put("directMode", if (getKoin().get<SettingsStore>().debugDirectCallsOff.first()) "off" else calls.directMode.name.lowercase())
             .put("direct", getKoin().getOrNull<DirectCallPath>()?.describe() ?: JSONObject.NULL)
             .put(

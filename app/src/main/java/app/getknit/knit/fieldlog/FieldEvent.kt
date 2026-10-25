@@ -823,6 +823,34 @@ sealed interface FieldEvent {
     }
 
     /**
+     * The TURN server a live call chose (docs/SPOOL_PROTOCOL.md C-7.6-53), once its OFFER or ANSWER is out: its [slot]
+     * in its spool's `turnHosts` [of] that many, its score on this network in ms ([scoreMs], null when unmeasured or
+     * silent), whether this side moved to it after the first one refused ([fallback], C-7.6-54), how many servers the
+     * call's spools named in all ([ranked]), and whether this phone dialled. Written only for a call whose credential
+     * came from a spool that names its servers. Never a host, a port or an address.
+     */
+    @Suppress("LongParameterList") // one field per column of the line, as CallEnd's
+    data class CallTurn(
+        val slot: Int,
+        val of: Int,
+        val scoreMs: Long?,
+        val fallback: Boolean,
+        val ranked: Int,
+        val outgoing: Boolean,
+    ) : FieldEvent {
+        override val kind get() = "call_turn"
+
+        override fun write(out: FieldWriter) {
+            out.flag("out", outgoing)
+            out.num("slot", slot.toLong())
+            out.num("of", of.toLong())
+            scoreMs?.let { out.num("score", it) }
+            out.flag("fallback", fallback)
+            out.num("ranked", ranked.toLong())
+        }
+    }
+
+    /**
      * A live call's media chose a candidate pair (§3.7), the [seq]th of its session: each end's `IceType`, the local
      * candidate's transport and network (`IceProtocol`, `IceNetwork`, null where the candidate does not say), and
      * whether the pair rides the call's Wi-Fi Direct group (§3.10). Types only, never an address.

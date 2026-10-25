@@ -222,7 +222,9 @@ class ScopeSub(
  * list are never sent. [cast] says the spool fans out [SpoolCast]s
  * within its bounds (experimental, docs/VOICE_CALLS.md §2.7), and is absent when it does not. [rooms] lists every
  * commons room the spool runs, each by its tag, and [commons] then repeats the first (§7.4, S-7.4-1); a spool that
- * predates the list sends [commons] alone. [CommonsAdverts] is the one reader of the pair.
+ * predates the list sends [commons] alone. [CommonsAdverts] is the one reader of the pair. [turnHosts] lists the
+ * `host:port` of each TURN server's UDP listener, in server order, beside [turn] (S-7.6-48): the servers a phone
+ * measures and names one of in [SpoolTurnReq.host]. Declared last, so the encoders write it after every other key.
  * Client→spool: [v] is the chosen version, everything else omitted — a client identifies itself no further
  * than that.
  */
@@ -240,6 +242,7 @@ class SpoolHello(
     val cast: SpoolCastInfo? = null,
     val entGates: Long? = null,
     val rooms: List<SpoolCommonsRoom>? = null,
+    val turnHosts: List<String>? = null,
 ) {
     /**
      * The `fl` bits this spool requires a ticket for (S-7.6-13), mirroring knit-spool's `Hello.ticketGates`: none
@@ -363,12 +366,16 @@ class SpoolAhave(
 
 /**
  * Client→spool: ask for one TURN credential (experimental, docs/VOICE_CALLS.md §2.2). Names no scope on purpose,
- * so the spool never learns which conversation is calling (S-7.6-4). Answered by [SpoolTurnCred] or `err`.
+ * so the spool never learns which conversation is calling (S-7.6-4). [host] names one entry of the spool's
+ * [SpoolHello.turnHosts], the server this phone ranks best (C-7.6-51); absent, as it always is to a spool that sent no
+ * list, the spool answers from server 1 (S-7.6-49), and the record's bytes are what they were before the field.
+ * Answered by [SpoolTurnCred] or `err`.
  */
 @Serializable
 class SpoolTurnReq(
     val t: String,
     val q: Long,
+    val host: String? = null,
 )
 
 /**

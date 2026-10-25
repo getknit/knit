@@ -1,5 +1,7 @@
 package app.getknit.knit.call
 
+import app.getknit.knit.mesh.spool.TurnHosts
+
 /**
  * The spool seam of a voice call: what the connected spools offer a call's ICE gathering (docs/VOICE_CALLS.md §2).
  *
@@ -16,6 +18,26 @@ interface TurnSource {
      * never waits long: a call is waiting on the answer.
      */
     suspend fun turnServers(peerId: String): List<TurnServer>
+
+    /**
+     * [turnServers], with each spool that names its TURN servers (HELLO `turnHosts`) asked for the one [pick] ranks
+     * best of that spool's list, in its order (C-7.6-51): what [CallManager] asks. A source with no spools behind it
+     * has no list to pick from, and answers as [turnServers] does.
+     */
+    suspend fun turnServers(
+        peerId: String,
+        pick: (List<String>) -> String?,
+    ): List<TurnServer> = turnServers(peerId)
+
+    /**
+     * One credential for the TURN server whose entry is [entry] (C-7.6-54's next server), from a spool that would issue
+     * a call with [peerId] TURN and names that server, or null when none does or none answers in time. A source with no
+     * spools behind it has none, so a call there never moves to another server.
+     */
+    suspend fun turnServerFor(
+        peerId: String,
+        entry: String,
+    ): TurnServer? = null
 
     /**
      * The credential-free STUN URIs every connected spool advertised in its HELLO (C-7.6-20), unfiltered: the call
@@ -42,17 +64,37 @@ interface TurnSource {
 /**
  * One ICE server for a call: a short-lived TURN credential (coturn's REST scheme), whose [urls] are `turn:`/`turns:`
  * URIs, or — with an empty [user] and [pass] — credential-free `stun:` URIs. A plain class, and its [toString] names
- * the URLs only, so [pass] can never reach a log line. Never sent to the peer or into any frame (C-7.6-11).
+ * a count and a slot only, so neither [pass] nor a server's host can reach a log line. Never sent to the peer or into
+ * any frame (C-7.6-11).
+ *
+ * A credential from a spool that names its servers carries that spool's list, [spoolHosts] (HELLO `turnHosts`, in
+ * server order), and where the spool came in the call's asking order, [asked] (ticketed first, C-7.6-12): what
+ * [TurnRanking] chooses the call's one server by (C-7.6-53). Which server it is for is [entry], read from its own UDP
+ * URL (C-7.6-51), and [slot] is that server's place in its spool's list, the only name a log gives it.
  */
 class TurnServer(
     val urls: List<String>,
     val user: String,
     val pass: String,
+    val spoolHosts: List<String> = emptyList(),
+    val asked: Int = 0,
 ) {
     /** A relay a call can allocate on, not the credential-free STUN entry. */
     val isTurn: Boolean get() = user.isNotEmpty()
 
-    override fun toString(): String = "TurnServer(urls=$urls)"
+    /** The entry of this credential's server (`host:port` of its UDP URL), or null when it has no UDP URL. */
+    val entry: String? = TurnHosts.entryOf(urls)
+
+    /** From a spool that names its TURN servers: a credential C-7.6-53 hands over alone. */
+    val ranked: Boolean get() = isTurn && spoolHosts.isNotEmpty()
+
+    /** This server's 1-based place in its spool's [spoolHosts], or 0 when it is not in the list. */
+    val slot: Int get() = entry?.let { spoolHosts.indexOf(it) + 1 } ?: 0
+
+    /** "slot 2 of 3" for a ranked credential's log line, else its URL count. */
+    fun describe(): String = if (ranked) "slot $slot of ${spoolHosts.size}" else "${urls.size} url(s)"
+
+    override fun toString(): String = "TurnServer(${describe()})"
 }
 
 /** "1 TURN, 1 STUN" for a log line: the credential-free STUN entry is not a relay, so it is counted apart. */

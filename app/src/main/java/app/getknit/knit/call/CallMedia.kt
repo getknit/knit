@@ -97,4 +97,13 @@ sealed interface MediaEvent {
     class DirectCandidates(
         val lines: List<String>,
     ) : MediaEvent
+
+    /**
+     * A TURN server refused an allocation (C-7.6-54): [code] 486 (Allocation Quota Reached) or 508 (Insufficient
+     * Capacity), and the server's [url] as libwebrtc rebuilt it. Never logged whole: the URL names the server's host.
+     */
+    class TurnRefused(
+        val code: Int,
+        val url: String,
+    ) : MediaEvent
 }

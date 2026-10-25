@@ -129,6 +129,7 @@ class ScopeSyncTest {
         // Where each scope lives (ADR 2026-10.8kfx); null, as before homes, puts every scope at every relay.
         placement: () -> ScopePlacement? = { null },
         onRelaysChanged: (Set<String>) -> Unit = {},
+        onTurnHosts: (List<String>) -> Unit = {},
     ): Member {
         val metrics = MeshMetrics()
         val delivered = mutableListOf<RelayEnvelope>()
@@ -171,6 +172,7 @@ class ScopeSyncTest {
                 log = log,
                 field = field,
                 onRelaysChanged = onRelaysChanged,
+                onTurnHosts = onTurnHosts,
             )
         return Member(custody, sync, metrics, delivered, blobs, obtained, wires)
     }
@@ -329,6 +331,69 @@ class ScopeSyncTest {
             assertTrue(other.sync.turnCredentials(bob).isEmpty())
             assertFalse(SpoolRecordType.TURNREQ in older.skippedRecords)
             other.sync.stop()
+        }
+
+    @Test
+    fun `a spool that names its servers is asked for the one the ranking picks, and an older one as before`() =
+        runTest {
+            // C-7.6-51: the new spool lists two servers; the old one lists none and must get today's bytes.
+            val named = FakeSpool(turn = true, turnHosts = listOf("a.example:3478", "b.example:3478"))
+            val old = FakeSpool(turn = true)
+            val urls = listOf("ws://named.test/spool/v1", "ws://old.test/spool/v1")
+            val relays = Relays(mapOf(urls[0] to named, urls[1] to old))
+            val lines = mutableListOf<String>()
+            val caller = member(named, alice, bob, dialer = relays, urls = urls, log = { lines += it })
+            caller.sync.start(backgroundScope)
+            pump()
+
+            val offered = mutableListOf<List<String>>()
+            val issues =
+                caller.sync.turnCredentials(bob) { hosts ->
+                    offered += hosts
+                    hosts.last()
+                }
+            // The picker saw the new spool's list alone, and that spool signed for the server it named.
+            assertEquals(listOf(listOf("a.example:3478", "b.example:3478")), offered)
+            assertEquals(listOf<String?>("b.example:3478"), named.turnHostsAsked)
+            assertEquals(listOf<String?>(null), old.turnHostsAsked)
+            val byList = issues.associateBy { it.hosts.isEmpty() }
+            assertEquals(listOf("turn:b.example:3478?transport=udp"), byList.getValue(false).reply.urls)
+            assertEquals(listOf("turn:spool.test:3478?transport=udp"), byList.getValue(true).reply.urls)
+            // The log names the server by its slot, never by its host.
+            assertTrue(lines.any { it.contains("TURN ask for slot 2 of 2: credential") })
+            assertTrue(lines.none { it.contains("b.example") })
+
+            // C-7.6-54's ask for one named server goes to the spool that lists it, and to no other.
+            val next = caller.sync.turnCredentialFor(bob, "a.example:3478")
+            assertEquals(listOf("turn:a.example:3478?transport=udp"), next?.reply?.urls)
+            assertEquals(listOf<String?>("b.example:3478", "a.example:3478"), named.turnHostsAsked)
+            assertEquals(1, old.turnIssued)
+            assertNull(caller.sync.turnCredentialFor(bob, "elsewhere.example:3478"))
+            caller.sync.stop()
+        }
+
+    @Test
+    fun `the servers to measure are published as hellos complete and sessions end`() =
+        runTest {
+            val named = FakeSpool(turn = true, turnHosts = listOf("a.example:3478", "b.example:3478"))
+            val other = FakeSpool(turn = true, turnHosts = listOf("b.example:3478", "c.example:3478"))
+            // A spool that gates TURN behind a ticket this phone does not hold would issue it none: not measured.
+            val gated = FakeSpool(turn = true, ent = true, entGates = SpoolTicket.FL_TURN, turnHosts = listOf("d.example:3478"))
+            val urls = listOf("ws://named.test/spool/v1", "ws://other.test/spool/v1", "ws://gated.test/spool/v1")
+            val relays = Relays(mapOf(urls[0] to named, urls[1] to other, urls[2] to gated))
+            val published = mutableListOf<List<String>>()
+            val caller = member(named, alice, bob, dialer = relays, urls = urls, onTurnHosts = { published += it })
+            caller.sync.start(backgroundScope)
+            pump()
+
+            assertEquals(setOf("a.example:3478", "b.example:3478", "c.example:3478"), published.last().toSet())
+            assertEquals(published.last().size, published.last().toSet().size)
+
+            // A session that ends takes its servers with it, until its next hello (no time passes, so no redial yet).
+            other.dropSockets()
+            runCurrent()
+            assertEquals(setOf("a.example:3478", "b.example:3478"), published.last().toSet())
+            caller.sync.stop()
         }
 
     /** Dials each relay URL to its own [FakeSpool]: several spools, one member. */

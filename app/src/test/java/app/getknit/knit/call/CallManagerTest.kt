@@ -17,6 +17,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -47,9 +48,26 @@ class CallManagerTest {
         var micOff = false
         var closed = false
 
-        override suspend fun offer(): String? = sdp()
+        override suspend fun offer(): String? = gathered()
 
-        override suspend fun answer(remoteOffer: String): String? = sdp().also { answeredOffer = remoteOffer }
+        override suspend fun answer(remoteOffer: String): String? = gathered().also { answeredOffer = remoteOffer }
+
+        // The servers whose allocations are refused, and with which code (C-7.6-54): set by [FakeMedia] at open.
+        var refusing: Map<String, Int> = emptyMap()
+
+        // C-3.6-1's window, as far as the manager can tell: a refusing server answers inside it, so the refusal is
+        // heard (its event runs) before the description is handed back.
+        private suspend fun gathered(): String? {
+            val refused = servers.firstNotNullOfOrNull { server -> server.entry?.let { refusing[it] }?.let { server to it } }
+            if (refused != null) {
+                val (server, code) = refused
+                events(MediaEvent.TurnRefused(code, "turn:${server.entry}?transport=udp"))
+                // The event's handler was launched on the manager's scope; let it run before the window closes. This
+                // picks the order a phone gets when the refusal lands inside C-3.6-1's 1.5 s, as it normally does.
+                yield()
+            }
+            return sdp()
+        }
 
         // §3.8: each restart's (or restart answer's) ICE servers, and the restart offers this side answered.
         val restarts = Collections.synchronizedList(mutableListOf<List<TurnServer>>())
@@ -92,6 +110,12 @@ class CallManagerTest {
         var sdp: String? = SDP
         var throwOnOpen = false
 
+        // Entry → the code a TURN server answers an Allocate with while it is full (C-7.6-54).
+        var refusing: Map<String, Int> = emptyMap()
+
+        // The description the session opened [index]th gathers, so a test can tell one gathering's from the next.
+        var sdpFor: (index: Int) -> String? = { sdp }
+
         val last: FakeSession get() = sessions.last()
 
         override fun open(
@@ -101,7 +125,11 @@ class CallManagerTest {
             events: (MediaEvent) -> Unit,
         ): CallSession {
             check(!throwOnOpen) { "no audio device" }
-            return FakeSession(servers, relayOnly, direct, events) { sdp }.also { sessions += it }
+            val index = sessions.size
+            return FakeSession(servers, relayOnly, direct, events) { sdpFor(index) }.also {
+                it.refusing = refusing
+                sessions += it
+            }
         }
     }
 
@@ -252,9 +280,15 @@ class CallManagerTest {
         val walkie: FakeWalkie,
         // The field log's lines this side wrote (ADR 2026-10.a239's amendment), in order.
         val field: MutableList<FieldEvent>,
+        // This side's TURN ranking (C-7.6-51), on the virtual clock: what a test scores, and reads a refusal back from.
+        val ranking: TurnRanking,
     ) {
         var fail = false
         var turn: suspend (String) -> List<TurnServer> = { emptyList() }
+
+        // C-7.6-54's ask for one named server: (peer, entry) → its credential, or none. Each ask is recorded.
+        var turnFor: suspend (String, String) -> TurnServer? = { _, _ -> null }
+        val turnForAsks = Collections.synchronizedList(mutableListOf<String>())
 
         // "Relay all calls" (C-3.7-3), as the manager reads it at each call.
         var relay = false
@@ -293,6 +327,7 @@ class CallManagerTest {
         val media = FakeMedia()
         val direct = FakeDirect(name, backgroundScope)
         val walkie = FakeWalkie()
+        val ranking = TurnRanking(clock = { testScheduler.currentTime })
         lateinit var side: Side
         val manager =
             CallManager(
@@ -308,6 +343,14 @@ class CallManagerTest {
                         override suspend fun turnServers(peerId: String): List<TurnServer> {
                             turnAsks += peerId
                             return side.turn(peerId)
+                        }
+
+                        override suspend fun turnServerFor(
+                            peerId: String,
+                            entry: String,
+                        ): TurnServer? {
+                            side.turnForAsks += entry
+                            return side.turnFor(peerId, entry)
                         }
 
                         override fun stunUrls(): List<String> = side.stun
@@ -327,8 +370,9 @@ class CallManagerTest {
                 reach = { side.reachable },
                 takesIncoming = { CallIntake(live = side.takesLive, walkie = side.takesWalkie).takes(it) },
                 field = FieldRecorder { field += it },
+                ranking = ranking,
             )
-        side = Side(name, manager, media, sent, missed, logged, turnAsks, direct, walkie, field)
+        side = Side(name, manager, media, sent, missed, logged, turnAsks, direct, walkie, field, ranking)
         net.nodes[name] = manager
         backgroundScope.launch { manager.missed.collect { missed += it } }
         backgroundScope.launch { manager.logged.collect { logged += it } }
@@ -2436,6 +2480,218 @@ class CallManagerTest {
             assertNull(end.stun)
         }
 
+    // ---- one TURN server per call, and the next one on a refusal (docs/SPOOL_PROTOCOL.md C-7.6-51 to C-7.6-54) ----
+
+    @Test
+    fun twoAnswersFromSpoolsThatNameTheirServersHandTheMediaOne() =
+        runTest {
+            val (_, alice, _) = pair()
+            val near = ranked(B, hosts = listOf(A, B), asked = 0)
+            val far = ranked(C, hosts = listOf(C), asked = 1)
+            alice.ranking.record(A, 15)
+            alice.ranking.record(B, 80)
+            alice.ranking.record(C, 20)
+            alice.turn = { listOf(near, far) }
+            alice.manager.start(BOB)
+            runCurrent()
+            // C-7.6-53: the credentials' own servers rank b at 80 and c at 20, so c alone goes to the media.
+            assertEquals(listOf(far), alice.media.last.servers)
+            val turn = alice.lines<FieldEvent.CallTurn>().single()
+            assertEquals(FieldEvent.CallTurn(slot = 1, of = 1, scoreMs = 20, fallback = false, ranked = 3, outgoing = true), turn)
+        }
+
+    @Test
+    fun withMixedSpoolsTheOneThatNamesItsServersWinsAndWithOldOnesTwoStay() =
+        runTest {
+            val (_, alice, _) = pair()
+            val old = TurnServer(listOf("turn:old.example:3478?transport=udp"), "1800000000:old", "secret")
+            val named = ranked(A, hosts = listOf(A), asked = 1)
+            alice.turn = { listOf(old, named) }
+            alice.manager.start(BOB)
+            runCurrent()
+            assertEquals(listOf(named), alice.media.last.servers)
+            alice.manager.hangUp()
+            runCurrent()
+
+            // Spools that name no servers: C-7.6-12 as before, up to two, and no line for a choice never made.
+            val second = TurnServer(listOf("turn:old2.example:3478?transport=udp"), "1800000000:old2", "secret")
+            alice.turn = { listOf(old, second) }
+            alice.manager.start(BOB)
+            runCurrent()
+            assertEquals(listOf(old, second), alice.media.last.servers)
+            assertEquals(1, alice.lines<FieldEvent.CallTurn>().size)
+        }
+
+    @Test
+    fun aReusedLiveCredentialIsOnlyTheOneTheRankingWouldChooseNow() =
+        runTest {
+            val (_, alice, _) = pair()
+            val first = ranked(A, hosts = listOf(A), asked = 0)
+            val second = ranked(C, hosts = listOf(C), asked = 1)
+            alice.ranking.record(A, 90)
+            alice.ranking.record(C, 20)
+            alice.turn = { listOf(first, second) }
+            alice.manager.start(BOB)
+            runCurrent()
+            assertEquals(listOf(second), alice.media.last.servers)
+            alice.manager.hangUp()
+            runCurrent()
+
+            // The spools are away and the network has moved on: the reuse takes what the ranking says now, not
+            // what the last call took.
+            alice.ranking.networkChanged()
+            alice.ranking.record(A, 10)
+            alice.ranking.record(C, 70)
+            alice.turn = { emptyList() }
+            alice.manager.start(BOB)
+            runCurrent()
+            assertEquals(listOf(first), alice.media.last.servers)
+        }
+
+    @Test
+    fun aRefusalBeforeTheOfferGathersOnceMoreOnTheNextServerAndTheCallConnects() =
+        runTest {
+            val (_, alice, bob) = pair()
+            val full = ranked(A, hosts = listOf(A, B), asked = 0)
+            val next = ranked(B, hosts = listOf(A, B), asked = 0)
+            alice.turn = { listOf(full) }
+            alice.turnFor = { _, entry -> next.takeIf { entry == B } }
+            alice.media.refusing = mapOf(A to 486)
+            // The refused gathering found no relay; the next server's did.
+            alice.media.sdpFor = { if (it == 0) SDP_NO_RELAY else SDP }
+            alice.manager.start(BOB)
+            runCurrent()
+
+            // The refused gathering is closed and never described; the one OFFER the peer sees is the second's, gen 0.
+            assertEquals(2, alice.media.sessions.size)
+            assertTrue(alice.media.sessions[0].closed)
+            assertEquals(listOf(next), alice.media.sessions[1].servers)
+            assertEquals(listOf(B), alice.turnForAsks)
+            val offers = alice.sent.filter { it.ph == CallPayload.PHASE_OFFER }
+            assertEquals(1, offers.size)
+            assertEquals(0, offers.single().gen)
+            assertEquals(SDP, offers.single().sdp)
+            // And the refused server is last for the next calls (C-7.6-51).
+            assertEquals(listOf(B, A), alice.ranking.rank(listOf(A, B)))
+
+            assertTrue(bob.manager.answer(bob.state!!.id))
+            runCurrent()
+            alice.media.last.events(MediaEvent.Connected)
+            bob.media.last.events(MediaEvent.Connected)
+            runCurrent()
+            assertEquals(CallPhase.Connected, alice.state!!.phase)
+            assertEquals(CallPhase.Connected, bob.state!!.phase)
+            assertEquals(SDP, bob.media.last.answeredOffer)
+            val turn = alice.lines<FieldEvent.CallTurn>().single()
+            assertEquals(2, turn.slot)
+            assertTrue(turn.fallback)
+
+            // Nothing the retired gathering says belongs to the call: its failure ends nothing, and its late
+            // candidates never reach the peer. The live session's own failure still counts (C-3.8-1).
+            alice.media.sessions[0].events(MediaEvent.Failed)
+            alice.media.sessions[0].events(MediaEvent.LateCandidates(listOf(RELAY_CAND)))
+            runCurrent()
+            assertEquals(CallPhase.Connected, alice.state!!.phase)
+            assertTrue(alice.sent.none { it.ph == CallPayload.PHASE_CANDS })
+            alice.media.sessions[1].events(MediaEvent.Disconnected)
+            runCurrent()
+            assertEquals(CallPhase.Reconnecting, alice.state!!.phase)
+        }
+
+    @Test
+    fun aCalleeWhoseServerRefusesAnswersFromTheNextOneWithOneAnswer() =
+        runTest {
+            val (_, alice, bob) = pair()
+            val full = ranked(A, hosts = listOf(A, B), asked = 0)
+            val next = ranked(B, hosts = listOf(A, B), asked = 0)
+            bob.turn = { listOf(full, next) }
+            bob.media.refusing = mapOf(A to 508)
+            bob.media.sdpFor = { if (it == 0) SDP_NO_RELAY else SDP }
+            alice.manager.start(BOB)
+            runCurrent()
+            assertTrue(bob.manager.answer(bob.state!!.id))
+            runCurrent()
+
+            // A credential for the next server was already in hand: no second turnreq, one ANSWER, from the second.
+            assertTrue(bob.turnForAsks.isEmpty())
+            assertEquals(2, bob.media.sessions.size)
+            assertTrue(bob.media.sessions[0].closed)
+            assertEquals(listOf(next), bob.media.sessions[1].servers)
+            assertEquals(SDP, bob.sent.single { it.ph == CallPayload.PHASE_ANSWER }.sdp)
+            // The second session answered the same OFFER the first did: the caller's, which saw nothing of this.
+            assertEquals(alice.sent.single { it.ph == CallPayload.PHASE_OFFER }.sdp, bob.media.sessions[1].answeredOffer)
+            alice.media.last.events(MediaEvent.Connected)
+            bob.media.last.events(MediaEvent.Connected)
+            runCurrent()
+            assertEquals(CallPhase.Connected, alice.state!!.phase)
+            assertEquals(CallPhase.Connected, bob.state!!.phase)
+        }
+
+    @Test
+    fun aRefusalAfterTheOfferLeftOnlyMarksTheServer() =
+        runTest {
+            val (_, alice, _) = pair()
+            val full = ranked(A, hosts = listOf(A, B), asked = 0)
+            alice.turn = { listOf(full) }
+            alice.turnFor = { _, entry -> ranked(entry, hosts = listOf(A, B), asked = 0) }
+            alice.media.sdp = SDP_NO_RELAY
+            alice.manager.start(BOB)
+            runCurrent()
+            assertEquals(1, alice.sent.count { it.ph == CallPayload.PHASE_OFFER })
+
+            alice.media.last.events(MediaEvent.TurnRefused(486, "turn:$A?transport=udp"))
+            runCurrent()
+            assertEquals(1, alice.media.sessions.size)
+            assertTrue(alice.turnForAsks.isEmpty())
+            assertEquals(listOf(B, A), alice.ranking.rank(listOf(A, B)))
+        }
+
+    @Test
+    fun aServerThatAlreadyGaveARelayIsKeptThoughItRefusesAnother() =
+        runTest {
+            val (_, alice, _) = pair()
+            val full = ranked(A, hosts = listOf(A, B), asked = 0)
+            alice.turn = { listOf(full) }
+            alice.turnFor = { _, entry -> ranked(entry, hosts = listOf(A, B), asked = 0) }
+            alice.media.refusing = mapOf(A to 486)
+            // The default description carries a relay candidate: one allocation there succeeded.
+            alice.manager.start(BOB)
+            runCurrent()
+            assertEquals(1, alice.media.sessions.size)
+            assertTrue(alice.turnForAsks.isEmpty())
+            assertEquals(1, alice.sent.count { it.ph == CallPayload.PHASE_OFFER })
+            // Still marked: the next call starts elsewhere.
+            assertEquals(listOf(B, A), alice.ranking.rank(listOf(A, B)))
+        }
+
+    @Test
+    fun aRefusalWithNoOtherServerSendsTheDescriptionItHas() =
+        runTest {
+            val (_, alice, _) = pair()
+            alice.turn = { listOf(ranked(A, hosts = listOf(A), asked = 0)) }
+            alice.media.refusing = mapOf(A to 486)
+            alice.media.sdp = SDP_NO_RELAY
+            alice.manager.start(BOB)
+            runCurrent()
+            assertEquals(1, alice.media.sessions.size)
+            assertFalse(alice.media.last.closed)
+            assertEquals(1, alice.sent.count { it.ph == CallPayload.PHASE_OFFER })
+            assertFalse(alice.lines<FieldEvent.CallTurn>().single().fallback)
+        }
+
+    // A credential from a spool that names [hosts], for the server at [entry].
+    private fun ranked(
+        entry: String,
+        hosts: List<String>,
+        asked: Int,
+    ) = TurnServer(
+        urls = listOf("turn:$entry?transport=udp", "turns:${entry.substringBefore(':')}:443?transport=tcp"),
+        user = "1800000000:${entry.substringBefore('.')}",
+        pass = "secret",
+        spoolHosts = hosts,
+        asked = asked,
+    )
+
     private companion object {
         const val ALICE = "alice"
         const val BOB = "bob"
@@ -2463,6 +2719,14 @@ class CallManagerTest {
             ).joinToString("\r\n")
 
         val TIMINGS = CallTimings()
+
+        // The TURN servers the C-7.6-51 cases rank.
+        const val A = "a.example:3478"
+        const val B = "b.example:3478"
+        const val C = "c.example:3478"
+
+        // A description whose gathering gave no relay candidate: what a refused server leaves (C-7.6-54).
+        val SDP_NO_RELAY = SDP.split("\r\n").filterNot { " typ relay" in it }.joinToString("\r\n")
 
         val INVITE =
             DirectInvite(

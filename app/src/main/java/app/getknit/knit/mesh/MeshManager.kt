@@ -123,6 +123,7 @@ import app.getknit.knit.mesh.spool.SpoolTickets
 import app.getknit.knit.mesh.spool.TicketIssuer
 import app.getknit.knit.mesh.spool.TicketKeyJournal
 import app.getknit.knit.mesh.spool.TicketRefresher
+import app.getknit.knit.mesh.spool.TurnIssue
 import app.getknit.knit.mesh.spool.fieldSample
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.moderation.ScopedTextModerator
@@ -221,6 +222,10 @@ class MeshManager(
     // says nothing about this one. The default never fires, which is every test and every build without
     // the plane; production wiring hands in the platform gate's stream.
     private val routeChanges: Flow<Unit> = emptyFlow(),
+    // The TURN servers this phone would measure (C-7.6-52), each time the Internet plane's set changes: the call graph's
+    // `TurnMeasure` follows them (di/CallWiring). The default listens to nothing, as every test and a build with no
+    // live calls want.
+    private val onTurnHosts: (List<String>) -> Unit = {},
     // Whether the phone has a validated Internet route this instant (`InternetGate.isOnline`): the Internet
     // plane reads it before every dial, so a relay is never dialled — and never counted as failing — over
     // no route at all. The default always says yes, which is every test and every build without the plane.
@@ -855,6 +860,7 @@ class MeshManager(
                 log = { Log.i(SPOOL_TAG, it) },
                 field = fieldLog ?: FieldRecorder.NONE,
                 onRelaysChanged = { workerRelays.value = it },
+                onTurnHosts = onTurnHosts,
             ).also { sync -> fieldLog?.sampler(SPOOL_FIELD_SAMPLER) { sync.status().map { it.fieldSample() } } }
         }
 
@@ -3836,8 +3842,26 @@ class MeshManager(
      * [TurnSource]: TURN credentials from the connected spools carrying [peerId]'s DM scope, or holding a ticket of
      * ours (ADR 2026-10.xkp4); empty without the plane.
      */
-    override suspend fun turnServers(peerId: String): List<TurnServer> =
-        scopeSync?.turnCredentials(peerId).orEmpty().map { TurnServer(urls = it.urls, user = it.user, pass = it.pass) }
+    override suspend fun turnServers(peerId: String): List<TurnServer> = turnServers(peerId) { null }
+
+    /**
+     * [TurnSource]: as [turnServers], each spool that names its TURN servers asked for the one [pick] ranks best
+     * (C-7.6-51), and each credential carrying its spool's list and asking order, which the call chooses its one
+     * server by (C-7.6-53).
+     */
+    override suspend fun turnServers(
+        peerId: String,
+        pick: (List<String>) -> String?,
+    ): List<TurnServer> = scopeSync?.turnCredentials(peerId, pick).orEmpty().mapIndexed { asked, issue -> issue.toServer(asked) }
+
+    /** [TurnSource]: a credential for the TURN server [entry] names, from a spool that lists it (C-7.6-54). */
+    override suspend fun turnServerFor(
+        peerId: String,
+        entry: String,
+    ): TurnServer? = scopeSync?.turnCredentialFor(peerId, entry)?.toServer(asked = 0)
+
+    private fun TurnIssue.toServer(asked: Int) =
+        TurnServer(urls = reply.urls, user = reply.user, pass = reply.pass, spoolHosts = hosts, asked = asked)
 
     /** [TurnSource]: the STUN URIs every connected spool advertised in its HELLO (C-7.6-20); empty without the plane. */
     override fun stunUrls(): List<String> = scopeSync?.stunUrls().orEmpty()

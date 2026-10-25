@@ -11,6 +11,7 @@ import app.getknit.knit.badge.BadgeIssuer
 import app.getknit.knit.badge.BadgeKeys
 import app.getknit.knit.call.CallManager
 import app.getknit.knit.call.CallPhase
+import app.getknit.knit.call.TurnTargets
 import app.getknit.knit.crash.ProcessExitReasons
 import app.getknit.knit.data.KnitDatabase
 import app.getknit.knit.data.MeshBlobStore
@@ -472,6 +473,8 @@ val meshModule =
                 // The platform's validated-default-network stream (net/AndroidInternetGate): a new route
                 // re-dials a relay the plane is backing off from at once (work item 50).
                 routeChanges = get<InternetGate>().routeChanges,
+                // The TURN servers to measure (C-7.6-52), for the call graph's measurer, where live calls are wired.
+                onTurnHosts = { hosts -> if (LIVE_CALLS_WIRED) getKoin().getOrNull<TurnTargets>()?.hosts?.value = hosts },
                 // ...and the snapshot the plane reads before each dial: no validated route, no dial.
                 online = get<InternetGate>()::isOnline,
                 publicChannel = { body -> get<PublicChannelSink>().postToPublicChannel(body) },

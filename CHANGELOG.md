@@ -40,6 +40,9 @@ document:
 - Knit now turns Wi-Fi Aware off while no nearby phone can use it, and back on when one comes into Bluetooth
   range or at its check every 12 minutes. On some phones that keeps your Wi-Fi faster and your Bluetooth
   headphones steadier when you're alone.
+- When an internet relay runs more than one server for calls, Knit now relays each call through the one
+  nearest you, checked whenever your network changes. If that server is full as the call starts, Knit tries
+  the next one.
 
 ## [2.10.0](https://github.com/getknit/knit/releases/tag/v2.10.0) — 2026-10-25T01:20:20Z
 

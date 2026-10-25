@@ -297,7 +297,11 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
     checking the certificate (in memory, `state`'s `turnTls`; a diagnosis switch, never a default — libwebrtc checks
     TURN/TLS against built-in roots that hold no Let's Encrypt root); `webrtc: relays udp N, tcp N, tls N` after each
     offer or answer says which legs to the TURN server allocated. `--es op turnprune --es prune off|on` opens the next
-    calls with TURN pruning off (C-7.6-26's "before"; in memory, `state`'s `turnPrune`). Each relay logs `webrtc:
+    calls with TURN pruning off (C-7.6-26's "before"; in memory, `state`'s `turnPrune`). `--es op turnpin --es slot
+    1-4|off` puts the TURN server at that place in a spool's `turnHosts` first from the next call on, whatever its score
+    or refusal (C-7.6-51; in memory, `state`'s `turnPin`): a trial pins a refusing box and watches the call move on
+    (logcat `call <id>: turn slot N of M refused (486) before our offer; gathering on slot K of M`). `--es op turn`
+    gives each credential's `slot`, `of`, `score` and whether a call would take it (`chosen`). Each relay logs `webrtc:
     relay gathered udp|tcp|tls/<wifi|cellular|vpn>#<network-id>/ipv4|ipv6|?` (the
     family is `?` under relay-only, which blanks what it is read from) and `webrtc: relays removed N (…)` when pruned, and the call ends on `webrtc:
     allocations gathered N, pruned M, held K` (with pruning on, a relay pruned the moment it was ready never surfaces,

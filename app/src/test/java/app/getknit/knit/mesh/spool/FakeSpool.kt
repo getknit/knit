@@ -95,6 +95,10 @@ class FakeSpool(
     // goes to every other subscriber of its scope and is never stored. With [ent], only on a scope some subscriber's
     // accepted ticket carries the cast flag for. Null = a spool without casts, which skips a CAST unanswered.
     private val cast: SpoolCastInfo? = null,
+    // The TURN servers HELLO names beside `turn` (S-7.6-48), as entries in server order; null omits the field, as a
+    // spool from before it did. Each server's credential carries `turn:<entry>?transport=udp` alone (S-7.6-50), and a
+    // TURNREQ naming no listed entry is answered from the first (S-7.6-49).
+    private val turnHosts: List<String>? = null,
 ) : SpoolDialer {
     // Settable, so a test can play the operator changing it — a rotated invite reverted, a restart without the
     // room's setting. A HELLO reads it as a connection opens and a DIGEST as it is answered: change it, then
@@ -241,6 +245,7 @@ class FakeSpool(
                     stun = stun,
                     cast = cast,
                     entGates = entGates.takeIf { ent },
+                    turnHosts = turnHosts?.takeIf { turn },
                     rooms =
                         listed?.map { (id, info) ->
                             SpoolCommonsRoom(ScopeCrypto.commonsTag(id), info.name, info.maxFrames, info.ttlMs, info.maxBlob, info.attach)
@@ -378,6 +383,9 @@ class FakeSpool(
     /** How many of [turnIssued] rode a ticket — the daemon's `knit_spool_turn_issued_ticketed_total`. */
     var turnIssuedTicketed = 0
         private set
+
+    /** The `host` every TURNREQ named, in order (null for one that named none). */
+    val turnHostsAsked: MutableList<String?> = Collections.synchronizedList(mutableListOf())
 
     /** The `msg` of every `err ticket` a TURNREQ got. */
     val turnRefusals: MutableList<String> = Collections.synchronizedList(mutableListOf())
@@ -769,12 +777,14 @@ class FakeSpool(
             // A TURN ticket rides the issue whether or not `turn` is gated (h6pt: it still waives the subscription gate).
             if (held != null && held.fl and SpoolTicket.FL_TURN != 0L) turnIssuedTicketed++
             turnIssued++
+            turnHostsAsked.add(req.host)
+            val server = turnHosts?.let { listed -> req.host?.takeIf { it in listed } ?: listed.first() }
             emit(
                 SpoolCodec.encode(
                     SpoolTurnCred(
                         t = SpoolRecordType.TURNCRED,
                         q = req.q,
-                        urls = listOf("turn:spool.test:3478?transport=udp"),
+                        urls = listOf(server?.let { "turn:$it?transport=udp" } ?: "turn:spool.test:3478?transport=udp"),
                         user = "1800000000:fake",
                         pass = "fake-pass",
                         exp = 1_800_000_000L,

@@ -27,7 +27,11 @@ import app.getknit.knit.call.OverridingTurnSource
 import app.getknit.knit.call.SystemCallSync
 import app.getknit.knit.call.SystemCalls
 import app.getknit.knit.call.TalkLink
+import app.getknit.knit.call.TurnMeasure
+import app.getknit.knit.call.TurnProbe
+import app.getknit.knit.call.TurnRanking
 import app.getknit.knit.call.TurnSource
+import app.getknit.knit.call.TurnTargets
 import app.getknit.knit.call.VoiceNoteSpeech
 import app.getknit.knit.call.VoiceNoteTranscriber
 import app.getknit.knit.call.WalkieTranscriber
@@ -73,6 +77,7 @@ import app.getknit.knit.ui.call.TalkPlayer
 import app.getknit.knit.ui.call.TalkRecorder
 import app.getknit.knit.ui.call.TelecomCalls
 import app.getknit.knit.ui.call.ToneGeneratorPlayer
+import app.getknit.knit.ui.call.UdpTurnProbe
 import app.getknit.knit.ui.call.WalkieTalk
 import app.getknit.knit.ui.call.WebRtcCallMedia
 import app.getknit.knit.ui.call.stt.MoonshineSpeech
@@ -223,6 +228,7 @@ private fun Scope.callManager(): CallManager {
         reach = callReach(),
         takesIncoming = get<IncomingCalls>()::takes,
         field = fieldLog(),
+        ranking = if (LIVE_CALLS_WIRED) get<TurnRanking>() else TurnRanking(),
     )
 }
 
@@ -330,6 +336,28 @@ private fun Module.liveGraph() {
             log = { Log.i(TAG, it) },
         )
     }
+    // C-7.6-51 to C-7.6-54: the ranking of the TURN servers the spools name, measured by STUN Binding on every network
+    // change and every new name a hello brings, and never while a call is being set up.
+    single { TurnRanking() }
+    single { TurnTargets() }
+    single<TurnProbe> { UdpTurnProbe(get<AndroidInternetGate>()) }
+    single {
+        val scope = get<CoroutineScope>()
+        val settingUp =
+            get<CallManager>()
+                .state
+                .map { it?.phase in SETTING_UP }
+                .stateIn(scope, SharingStarted.Eagerly, false)
+        TurnMeasure(
+            ranking = get(),
+            probe = get(),
+            targets = get<TurnTargets>().hosts,
+            routeChanges = get<InternetGate>().routeChanges,
+            callWaiting = settingUp,
+            scope = scope,
+            log = { Log.i(TAG, it) },
+        )
+    }
     // The Calls screen's Test (C-3.14-5): the same factory, and refused while a call holds it.
     if (OWN_ICE_WIRED) single<IceProbe> { get<WebRtcCallMedia>() }
     single {
@@ -346,6 +374,16 @@ private fun Module.liveGraph() {
         val spool =
             object : TurnSource {
                 override suspend fun turnServers(peerId: String) = get<MeshManager>().turnServers(peerId)
+
+                override suspend fun turnServers(
+                    peerId: String,
+                    pick: (List<String>) -> String?,
+                ) = get<MeshManager>().turnServers(peerId, pick)
+
+                override suspend fun turnServerFor(
+                    peerId: String,
+                    entry: String,
+                ) = get<MeshManager>().turnServerFor(peerId, entry)
 
                 override fun stunUrls() = get<MeshManager>().stunUrls()
 
@@ -631,6 +669,7 @@ fun startCallsIfWired(koin: Koin) {
         if (LIVE_CALLS_WIRED) runCatching { koin.get<CallToneSync>().start() }.onFailure { Log.w(TAG, "call tones not started", it) }
         if (LIVE_CALLS_WIRED) {
             runCatching { koin.get<CallMediaSampler>().start() }.onFailure { Log.w(TAG, "call media sampling not started", it) }
+            runCatching { koin.get<TurnMeasure>().start() }.onFailure { Log.w(TAG, "TURN measuring not started", it) }
         }
         runCatching { koin.get<CallController>().start() }.onFailure { Log.w(TAG, "calls not started", it) }
         runCatching { koin.get<CallLog>().start() }.onFailure { Log.w(TAG, "call records not started", it) }
@@ -649,6 +688,9 @@ fun WithCallBar(content: @Composable () -> Unit) {
 }
 
 private const val TAG = "KnitCall"
+
+/** The phases a call is being set up in: a TURN measurement waits them out (C-7.6-52). */
+private val SETTING_UP = setOf(CallPhase.Calling, CallPhase.Ringing, CallPhase.Alerting, CallPhase.Connecting)
 
 /** How often the walkie's link looks again at whether a relay would cast to its peer. */
 private const val CAST_LOOK_MS = 3_000L

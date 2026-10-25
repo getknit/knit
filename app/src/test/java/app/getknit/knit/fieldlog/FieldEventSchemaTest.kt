@@ -222,6 +222,15 @@ class FieldEventSchemaTest {
             line(FieldEvent.CallRoute(IceType.SRFLX, IceType.RELAY, IceProtocol.UDP, IceNetwork.CELLULAR, direct = false, seq = 2)),
         )
         assertEquals(
+            """{"t":42,"e":"call_turn","out":true,"slot":2,"of":3,"score":23,"fallback":true,"ranked":4}""",
+            line(FieldEvent.CallTurn(slot = 2, of = 3, scoreMs = 23, fallback = true, ranked = 4, outgoing = true)),
+        )
+        // Unmeasured: the score is left out, never written as null.
+        assertEquals(
+            """{"t":42,"e":"call_turn","out":false,"slot":1,"of":1,"fallback":false,"ranked":1}""",
+            line(FieldEvent.CallTurn(slot = 1, of = 1, scoreMs = null, fallback = false, ranked = 1, outgoing = false)),
+        )
+        assertEquals(
             """{"t":42,"e":"call_media","lost":false,"rtt":48,"jitter":6,"buffer":60,"lossIn10":12,"lossOut10":3,""" +
                 """"lossCall10":8,"send":32,"recv":31,"pkts":1500,"mic":120,"heard":90,"local":"RELAY","remote":"SRFLX",""" +
                 """"proto":"UDP","relayProto":"TLS","net":"WIFI","direct":false,"pairs":3,"pending":1,"micPath":"STANDARD",""" +

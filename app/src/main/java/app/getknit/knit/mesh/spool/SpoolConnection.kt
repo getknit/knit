@@ -307,6 +307,16 @@ class SpoolConnection(
         private set
 
     /**
+     * The TURN servers this spool names (HELLO `turnHosts`, S-7.6-48), as entries in server order — read after
+     * [awaitReady]. Only beside [turn], at most [TurnHosts.MAX], each one a `host:port` [TurnHosts.parse] reads, without
+     * repeats: what this phone measures and names one of in [turnCredential] (C-7.6-51). Empty for a spool that sent
+     * none, which [turnCredential] then asks exactly as before the list.
+     */
+    @Volatile
+    var turnHosts: List<String> = emptyList()
+        private set
+
+    /**
      * Whether this spool takes entitlement tickets (HELLO `ent`; experimental, docs/VOICE_CALLS.md §2.6) — read after
      * [awaitReady]. [present] sends nothing without it. Which verbs need one is [gates], not this.
      */
@@ -607,9 +617,17 @@ class SpoolConnection(
      * way, and asks nothing unless the live one grants TURN: a `turnreq` without one is certain to be refused, and
      * spends the spool's per-IP bucket that a ticketed ask from the same address may need (ADR 2026-10.xkp4). An `ent`
      * spool that leaves bit 0 out is asked like an unticketed one (C-7.6-30).
+     *
+     * [host] names the server to sign for (C-7.6-51), and goes out only when it is one of this spool's [turnHosts]: a
+     * spool that sent none gets the record it always got, and one that did answers an unmatched or absent name from its
+     * server 1 anyway (S-7.6-49).
      */
-    suspend fun turnCredential(timeoutMs: Long): SpoolReply {
+    suspend fun turnCredential(
+        timeoutMs: Long,
+        host: String? = null,
+    ): SpoolReply {
         if (!turn) return SpoolReply.Closed
+        val named = host?.takeIf { it in turnHosts }
         val reply =
             withTimeoutOrNull(timeoutMs) {
                 if (gated(SpoolTicket.FL_TURN)) {
@@ -618,7 +636,7 @@ class SpoolConnection(
                     if (!turnTicketLive()) return@withTimeoutOrNull SpoolReply.Closed
                 }
                 request(Pending(scopeHex = null, turn = true), timeoutMs = timeoutMs, strike = false) { q ->
-                    SpoolCodec.encode(SpoolTurnReq(t = SpoolRecordType.TURNREQ, q = q))
+                    SpoolCodec.encode(SpoolTurnReq(t = SpoolRecordType.TURNREQ, q = q, host = named))
                 }
             } ?: SpoolReply.Closed
         // The spool holds no live ticket for us, whatever our clock says: asking again before a new `ent` is accepted
@@ -735,6 +753,17 @@ class SpoolConnection(
         limits = hello.limits?.clamped()
         adverts = CommonsAdverts.of(hello.commons?.clamped(limits), hello.rooms?.map { it.tag to it.info().clamped(limits) })
         turn = hello.turn == true
+        // Bounded like [stun]: entries a probe can dial, four at most, and none without `turn` (S-7.6-48).
+        turnHosts =
+            if (turn) {
+                hello.turnHosts
+                    .orEmpty()
+                    .filter { TurnHosts.parse(it) != null }
+                    .distinct()
+                    .take(TurnHosts.MAX)
+            } else {
+                emptyList()
+            }
         ent = hello.ent == true
         gates = hello.ticketGates
         // A hostile list is bounded here, before anything holds it: four URLs a call can actually use, or none.

@@ -502,8 +502,11 @@ private class WebRtcSession(
             }
 
             override fun onIceCandidateError(event: IceCandidateErrorEvent) {
-                // The server's URL and its answer only: the local address is ours to keep out of the log.
-                log("webrtc: candidate error ${event.errorCode} ${event.errorText} from ${event.url}")
+                // A TURN server out of room (C-7.6-54): the call layer marks it and may gather on the next one.
+                if (event.errorCode in TURN_REFUSALS) events(MediaEvent.TurnRefused(event.errorCode, event.url.orEmpty()))
+                // The answer and the kind of server only: its URL names a host, which the call names by its slot, and
+                // the local address is ours to keep out of the log.
+                log("webrtc: candidate error ${event.errorCode} ${event.errorText} from ${serverKind(event.url)}")
             }
 
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) {
@@ -846,6 +849,26 @@ private class WebRtcSession(
                     .entries
                     .joinToString { "${it.key} ${it.value}" }
             return "${lines.size} candidates${if (types.isEmpty()) "" else " ($types)"}"
+        }
+
+        // RFC 8656's two answers that mean the server is full, not that the credential is wrong: 486 Allocation Quota
+        // Reached and 508 Insufficient Capacity.
+        val TURN_REFUSALS = setOf(486, 508)
+
+        /** "turn/udp", "turns/tcp" or "stun": what kind of server a candidate error came from, without its host. */
+        fun serverKind(url: String?): String {
+            val scheme = url?.substringBefore(':', missingDelimiterValue = "")?.lowercase().orEmpty()
+            val transport =
+                url
+                    ?.substringAfter("transport=", missingDelimiterValue = "")
+                    ?.substringBefore('&')
+                    ?.lowercase()
+                    .orEmpty()
+            return when {
+                scheme.isEmpty() -> "?"
+                transport.isEmpty() -> scheme
+                else -> "$scheme/$transport"
+            }
         }
     }
 }

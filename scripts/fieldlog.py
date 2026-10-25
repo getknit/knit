@@ -89,6 +89,7 @@ KINDS: dict[str, set[str] | None] = {
         "talk", "restarts", "drops", "relay", "direct", "directUp", "turn", "stun", "unreached", "unproven",
     },
     "call_route": {"local", "remote", "proto", "net", "direct", "seq"},
+    "call_turn": {"out", "slot", "of", "score", "fallback", "ranked"},
     "call_media": {
         "lost", "rtt", "jitter", "buffer", "lossIn10", "lossOut10", "lossCall10", "send", "recv", "pkts", "mic",
         "heard", "local", "remote", "proto", "relayProto", "net", "direct", "pairs", "pending", "micPath", "micHealth",
@@ -280,6 +281,11 @@ def summarise(logs: list[Log]) -> dict:
                     out["call drops / restarts"][what].append(f"{e['drops']}/{e['restarts']}")
             elif kind == "call_route":
                 out["call routes"][f"{dev} {route(e)}"].append(e["seq"])
+            elif kind == "call_turn":
+                # The slot each call relayed through, its score, and whether it got there by C-7.6-54's fallback.
+                score = f"{e['score']} ms" if "score" in e else "unmeasured"
+                moved = " after a refusal" if e["fallback"] else ""
+                out["call turn"][f"{dev} slot {e['slot']} of {e['of']}{moved}"].append(score)
             elif kind == "call_media":
                 where = f"{dev} {route(e)}"
                 if "rtt" in e:

@@ -201,6 +201,12 @@ class SpoolStatus(
     /** Whether this connection's HELLO said the spool issues TURN credentials (`turn`, docs/VOICE_CALLS.md §2.1). */
     val turn: Boolean = false,
     /**
+     * The TURN servers this connection's HELLO names, as entries in server order (`turnHosts`, S-7.6-48;
+     * [SpoolConnection.turnHosts]): what the phone measures where [turnForUs] holds (C-7.6-52). Empty while
+     * disconnected and for a spool that names none.
+     */
+    val turnHosts: List<String> = emptyList(),
+    /**
      * Whether a `turnreq` from this phone would be answered here (S-7.6-16): the spool issues TURN, and either does not
      * gate it behind a ticket or this connection holds one with bit 0 of `fl` — [TurnAsk]'s rule without its scope
      * clause, which is per peer. What "Relay all calls" is offered on. False while disconnected.
@@ -238,6 +244,16 @@ internal class TurnAsk(
     val host: String,
     val connection: SpoolConnection?,
     val ticketed: Boolean,
+)
+
+/**
+ * One TURN credential a call's ask brought back: the [reply], and the TURN servers its spool names ([hosts], HELLO
+ * `turnHosts` in server order, empty for a spool that names none) — what the call ranks it among (C-7.6-53). Kept in
+ * the order the spools were asked in, ticketed first. Never logged: the reply is a credential.
+ */
+class TurnIssue(
+    val reply: SpoolReply.Turn,
+    val hosts: List<String>,
 )
 
 /**
@@ -340,6 +356,10 @@ class ScopeSync(
     private val field: FieldRecorder = FieldRecorder.NONE,
     // The relays a worker runs for, whenever the set changes ([reconcile]): the ticket refresher's "relays in use".
     private val onRelaysChanged: (Set<String>) -> Unit = {},
+    // The TURN servers this phone would measure (C-7.6-52), whenever the set changes: the union of `turnHosts` over the
+    // connected spools that would issue it TURN ([SpoolStatus.turnForUs]), each entry once. Fired from a worker's
+    // session as its hello and ticket settle and as it ends, never on a timer.
+    private val onTurnHosts: (List<String>) -> Unit = {},
 ) {
     private val workers = ConcurrentHashMap<String, Worker>()
     private val sealCache = SealCache(SEAL_CACHE_MAX)
@@ -442,19 +462,81 @@ class ScopeSync(
      * parallel, each for at most [TURN_ASK_MS], on the connection directly and never under a worker's round lock: a
      * call is waiting. A refusal or a silence just leaves that spool out.
      */
-    suspend fun turnCredentials(peerId: String): List<SpoolReply.Turn> {
+    suspend fun turnCredentials(peerId: String): List<SpoolReply.Turn> = turnCredentials(peerId) { null }.map { it.reply }
+
+    /**
+     * [turnCredentials], each spool that names its TURN servers asked for the entry [pick] ranks best of its list
+     * (C-7.6-51), and each credential returned beside that list, in asking order. A spool that names none is asked as
+     * before, with no `host`.
+     */
+    suspend fun turnCredentials(
+        peerId: String,
+        pick: (List<String>) -> String?,
+    ): List<TurnIssue> {
+        val replies =
+            coroutineScope {
+                turnAsks(peerId)
+                    .take(MAX_TURN_SPOOLS)
+                    .map { (ask, conn) ->
+                        async {
+                            val host = conn.turnHosts.takeIf { it.isNotEmpty() }?.let(pick)
+                            Triple(ask, conn, host) to conn.turnCredential(TURN_ASK_MS, host)
+                        }
+                    }.awaitAll()
+            }
+        for ((asked, reply) in replies) logTurn(asked.first, asked.second, asked.third, reply)
+        return replies.mapNotNull { (asked, reply) -> (reply as? SpoolReply.Turn)?.let { TurnIssue(it, asked.second.turnHosts) } }
+    }
+
+    /**
+     * One credential for the TURN server [entry] names (C-7.6-54's next server): from the first spool, in asking order,
+     * that would issue a call with [peerId] TURN and lists [entry] in its `turnHosts`, asked for at most [TURN_ASK_MS].
+     * Null when none lists it or the one asked gives none.
+     */
+    suspend fun turnCredentialFor(
+        peerId: String,
+        entry: String,
+    ): TurnIssue? {
+        val (ask, conn) = turnAsks(peerId).firstOrNull { (_, conn) -> entry in conn.turnHosts } ?: return null
+        val reply = conn.turnCredential(TURN_ASK_MS, entry)
+        logTurn(ask, conn, entry, reply)
+        return (reply as? SpoolReply.Turn)?.let { TurnIssue(it, conn.turnHosts) }
+    }
+
+    // The spools a call with [peerId] would ask for TURN, ticketed first (C-7.6-12, C-7.6-21); a skipped one is logged.
+    private fun turnAsks(peerId: String): List<Pair<TurnAsk, SpoolConnection>> {
         val hexes = scopes.filter { it.peerId == peerId && !it.retiring }.map { it.idHex }
         val asks = workers.values.mapNotNull { it.turnAsk(hexes) }
         asks.filter { it.connection == null }.forEach { log("${it.host}: TURN ask skipped, no ticket (ent)") }
-        val chosen =
-            asks
-                .mapNotNull { ask ->
-                    ask.connection?.let { ask to it }
-                }.sortedByDescending { it.first.ticketed }
-                .take(MAX_TURN_SPOOLS)
-        val replies = coroutineScope { chosen.map { (ask, conn) -> async { ask to conn.turnCredential(TURN_ASK_MS) } }.awaitAll() }
-        for ((ask, reply) in replies) log("${ask.host}: TURN ask${if (ask.ticketed) " (ticketed)" else ""}: ${describeTurn(reply)}")
-        return replies.mapNotNull { it.second as? SpoolReply.Turn }
+        return asks
+            .mapNotNull { ask -> ask.connection?.let { ask to it } }
+            .sortedByDescending { it.first.ticketed }
+    }
+
+    // A TURN ask's line: the spool's host, and the server it named by its slot in that spool's list, never by its own.
+    private fun logTurn(
+        ask: TurnAsk,
+        conn: SpoolConnection,
+        named: String?,
+        reply: SpoolReply,
+    ) {
+        val slot = named?.let { " for slot ${conn.turnHosts.indexOf(it) + 1} of ${conn.turnHosts.size}" }.orEmpty()
+        log("${ask.host}: TURN ask${if (ask.ticketed) " (ticketed)" else ""}$slot: ${describeTurn(reply)}")
+    }
+
+    /** The TURN servers this phone would measure now (C-7.6-52): [SpoolStatus.turnHosts] where [SpoolStatus.turnForUs]. */
+    fun turnHosts(): List<String> = workers.values.flatMap { it.measuredTurnHosts() }.distinct()
+
+    @Volatile
+    private var lastTurnHosts: List<String> = emptyList()
+
+    /** Fires [onTurnHosts] when [turnHosts] differs from what was last published. */
+    @Synchronized
+    private fun publishTurnHosts() {
+        val current = turnHosts()
+        if (current == lastTurnHosts) return
+        lastTurnHosts = current
+        onTurnHosts(current)
     }
 
     /**
@@ -1026,6 +1108,9 @@ class ScopeSync(
         /** The STUN URIs this worker's live connection advertised; none while it has no completed hello. */
         fun stunUrls(): List<String> = connection?.takeIf { it.isReady }?.stun.orEmpty()
 
+        /** The live connection's `turnHosts` where it would issue this phone TURN ([turnForUs]); else none. */
+        fun measuredTurnHosts(): List<String> = connection?.takeIf { turnForUs() }?.turnHosts.orEmpty()
+
         /** [SpoolStatus.turnForUs] for this worker's live connection. */
         fun turnForUs(): Boolean =
             connection?.takeIf { it.isReady && it.turn }?.let { it.ticketedTurn || !it.gated(SpoolTicket.FL_TURN) } == true
@@ -1189,6 +1274,7 @@ class ScopeSync(
                 stun = stunUrls(),
                 ticket = connection?.takeIf { it.isReady }?.ticketState() ?: SpoolTicketState.None,
                 turn = connection?.takeIf { it.isReady }?.turn == true,
+                turnHosts = connection?.takeIf { it.isReady }?.turnHosts.orEmpty(),
                 turnForUs = turnForUs(),
                 cast = connection?.takeIf { it.isReady }?.cast,
                 entGates = connection?.takeIf { it.isReady }?.gates ?: 0L,
@@ -1313,13 +1399,7 @@ class ScopeSync(
                 // Off the session's own path: this is one diagnostics row, and a spool that is slow to serve
                 // an HTTP route must not hold up the heal loop it answers records on.
                 host.launch { readSoftware(conn) }
-                // C-7.6-19: the ticket goes right after the hello, ahead of the first SUB, and again whenever a
-                // different one is imported while this connection lives. Only an `ent` spool is watched for one.
-                presentTicket(conn)
-                val ticketWatch =
-                    tickets?.takeIf { conn.ent }?.let { store ->
-                        host.launch { store.changes.collect { presentTicket(conn) } }
-                    }
+                val ticketWatch = presentAndWatchTickets(conn, host)
                 subscribe(conn, mine(scopes, conn))
                 republishPresence() // a connected spool is what makes a stamped peer count
                 // The tick is a mark like any other, so a scope busy with events still gets its full pass and
@@ -1352,6 +1432,26 @@ class ScopeSync(
             val reached = endSession(socket, conn, ready)
             fieldEnd(socket, conn, ready, dialedAt, readyAt)
             return reached
+        }
+
+        /**
+         * C-7.6-19: the ticket goes right after the hello, ahead of the first SUB, and again whenever a different one
+         * is imported while this connection lives; only an `ent` spool is watched for one. Each time, the TURN servers
+         * this hello names become measurable once its ticket is on its way (C-7.6-52). The watch, on [host], or null.
+         */
+        private suspend fun presentAndWatchTickets(
+            conn: SpoolConnection,
+            host: CoroutineScope,
+        ): Job? {
+            presentTicket(conn)
+            publishTurnHosts()
+            val store = tickets?.takeIf { conn.ent } ?: return null
+            return host.launch {
+                store.changes.collect {
+                    presentTicket(conn)
+                    publishTurnHosts()
+                }
+            }
         }
 
         /** The dial [session] began at [dialedAt] got no socket at all: the URL could not be dialled. Never reached. */
@@ -1443,6 +1543,7 @@ class ScopeSync(
             if (!ready) dialFailures++
             connection = null
             republishPresence() // and a disconnected one covers nobody
+            if (ready) publishTurnHosts() // nor names a TURN server to measure (C-7.6-52)
             spoolDigests.clear()
             pinnedBounds.clear()
             // The per-connection race guard goes; the §9.6 accounted set deliberately does NOT. Dropping

@@ -8,6 +8,7 @@ import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.DirectInvite
 import app.getknit.knit.mesh.protocol.FrameId
 import app.getknit.knit.mesh.spool.ScopeRegistry
+import app.getknit.knit.mesh.spool.TurnHosts
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
 /**
@@ -196,6 +198,13 @@ data class CallTimings(
  * [FieldEvent.CallStart] as it begins and one [FieldEvent.CallEnd] as it ends — an offer refused or never rung
  * included — written beside the thread's record, never instead of it, and never on anything slower than a queue.
  *
+ * **A call relays through one TURN server, the nearest** ([ranking], docs/SPOOL_PROTOCOL.md C-7.6-51 to C-7.6-54):
+ * each spool that names its servers is asked for the one [TurnRanking] ranks best, and of the credentials that come
+ * back from such spools the media is handed one. Where that server refuses the allocation (486 or 508) before this
+ * side's OFFER or ANSWER has gone out, and gave it no relay, the side gathers once more on the next server and sends
+ * that description instead; after it, a refusal only marks the server. A call over spools that name no servers keeps
+ * up to two, as before.
+ *
  * **A connected call whose path is lost reconnects by ICE restart** (§3.8): it is [CallPhase.Reconnecting] for
  * [CallTimings.reconnectWindowMs], in which the caller — only the caller, so two restarts never cross — sends
  * `OFFER gen+1` twice at most, and the callee answers each under the same call id without ringing. A dead peer, a
@@ -220,6 +229,7 @@ class CallManager(
     private val reach: CallReach = CallReach.Assumed,
     private val takesIncoming: (walkie: Boolean) -> Boolean = { true },
     private val field: FieldRecorder = FieldRecorder.NONE,
+    private val ranking: TurnRanking = TurnRanking(),
 ) : CallControl {
     private class Live(
         val id: String,
@@ -245,7 +255,19 @@ class CallManager(
         var gen = 0
 
         // The callee's TURN prefetch, started when the offer alerts so answering does not wait for it.
-        var servers: Deferred<List<TurnServer>>? = null
+        var servers: Deferred<IceSet>? = null
+
+        // C-7.6-53/54: the one ranked TURN server the media gathers from, every credential the fetch brought, a
+        // refusal of [turn] seen before our description left (its code), whether this side has tried to move on and
+        // did, whether its field line is written, and the session a move retired, whose events are dropped.
+        var ice: List<TurnServer> = emptyList()
+        var turn: TurnServer? = null
+        var pool: List<TurnServer> = emptyList()
+        var turnRefused: Int? = null
+        var turnMoved = false
+        var turnFellBack = false
+        var turnRecorded = false
+        var retired: CallSession? = null
 
         // Whether our OFFER/ANSWER has gone out; late candidates wait for it, so a CANDS never overtakes it.
         var described = false
@@ -291,6 +313,13 @@ class CallManager(
     private class Send(
         val peerId: String,
         val payload: CallPayload,
+    )
+
+    // What a call's media gathers from ([servers]: at most one ranked TURN server, else up to two, then the STUN entry)
+    // and every TURN credential the fetch brought back ([pool]), which C-7.6-54's next server is looked for in.
+    private class IceSet(
+        val servers: List<TurnServer>,
+        val pool: List<TurnServer>,
     )
 
     // A terminal phase seen for a call id (its own [CallPayload.ph] and reason), and when on this phone's clock.
@@ -417,8 +446,11 @@ class CallManager(
     /** The last issued TURN credentials that can still allocate, by their coturn expiry in the user name. */
     private fun liveCredentials(): List<TurnServer> {
         val nowS = clock() / MS_PER_S
-        return lastServers.filter { (it.user.substringBefore(':').toLongOrNull() ?: 0L) - CREDENTIAL_MARGIN_S > nowS }
+        return lastServers.filter { it.expiresS() - CREDENTIAL_MARGIN_S > nowS }
     }
+
+    // A coturn REST credential's expiry, in Unix seconds, from its user name (S-7.6-6); 0 when it carries none.
+    private fun TurnServer.expiresS(): Long = user.substringBefore(':').toLongOrNull() ?: 0L
 
     /** Answers the call [id] is alerting for; false when it no longer is. */
     override suspend fun answer(id: String): Boolean {
@@ -940,13 +972,28 @@ class CallManager(
      * [StunServers.MAX] — one credential-free server. That is what lets a phone no spool issues TURN to offer its
      * public address, the one a paying peer's relay can permit.
      */
-    private suspend fun servers(peerId: String): List<TurnServer> {
-        val fresh = turn.turnServers(peerId)
-        val (relays, derived) = if (fresh.isNotEmpty()) fresh.also { lastServers = it } to emptyList() else fallback()
+    private suspend fun servers(peerId: String): IceSet {
+        val fresh = turn.turnServers(peerId, ranking::best)
+        val (issued, derived) = if (fresh.isNotEmpty()) fresh.also { lastServers = it } to emptyList() else fallback()
+        val relays = oneServer(issued)
         val stun = StunServers.pick(derived + turn.stunUrls())
         log("call ICE: ${relays.size} TURN server(s), ${stun.size} STUN url(s)")
-        return if (stun.isEmpty()) relays else relays + TurnServer(urls = stun, user = "", pass = "")
+        return IceSet(if (stun.isEmpty()) relays else relays + TurnServer(urls = stun, user = "", pass = ""), issued)
     }
+
+    /**
+     * C-7.6-53: where a credential in [issued] comes from a spool that names its servers, the one [ranking] chooses
+     * alone, and the rest dropped unused (no allocation is made until the media asks); else [issued] as it is. Reused
+     * live credentials go through it too, so a reuse takes only the server the ranking would choose now.
+     */
+    private fun oneServer(issued: List<TurnServer>): List<TurnServer> {
+        val chosen = ranking.choose(issued) ?: return issued
+        log("turn: ${chosen.describe()}, ${scoreOf(chosen)}")
+        return listOf(chosen)
+    }
+
+    // "score 23 ms" or "unmeasured": a server's standing on this network, by its entry, for a log line.
+    private fun scoreOf(server: TurnServer): String = server.entry?.let(ranking::score)?.let { "score $it ms" } ?: "unmeasured"
 
     /** No credential issued: the last ones while they can still allocate, else their STUN half (see [servers]). */
     private fun fallback(): Pair<List<TurnServer>, List<String>> {
@@ -1001,9 +1048,10 @@ class CallManager(
             l.invite = invite
             l.offeredWalkie = offersWalkie
         }
-        val servers = servers(l.peerId)
-        val session = openFor(l, servers) ?: return
-        val sdp = session.offer()?.let { if (l.relay) SdpGuard.stripToRelay(it) else it }
+        val ice = servers(l.peerId)
+        val opened = openFor(l, ice) ?: return
+        val (session, gathered) = afterRefusal(l, ice, opened, opened.offer()) { it.offer() } ?: return
+        val sdp = l.toPeer(gathered)
         val offer =
             mutex.withLock {
                 if (!current(l)) return
@@ -1016,7 +1064,7 @@ class CallManager(
                 if (l.relay) l.invite = null
                 withLiveMedia(CallPayload(id = l.id, ph = CallPayload.PHASE_OFFER, sdp = sdp, dw = l.invite), l.offeredWalkie)
             }
-        log("call ${l.id}: offering (${servers.iceSummary()}, relay=${l.relay}, direct=${offer.dw != null})")
+        log("call ${l.id}: offering (${l.ice.iceSummary()}, relay=${l.relay}, direct=${offer.dw != null})")
         if (!signals.sendCallSignal(l.peerId, offer)) {
             mutex.withLock { if (current(l)) finish(l, CallPayload.REASON_ERROR) }
             return
@@ -1024,6 +1072,7 @@ class CallManager(
         described(l)
     }
 
+    @Suppress("ReturnCount") // a ladder of exits, as dial's: the call ended under each slow step
     private suspend fun answerCall(l: Live) {
         mutex.withLock {
             if (!current(l)) return
@@ -1031,9 +1080,11 @@ class CallManager(
             // joins now. A relay-only answer never does.
             if (!relayAll()) commitJoin(l, prewarm = false)
         }
-        val servers = l.servers?.await() ?: servers(l.peerId)
-        val session = openFor(l, servers) ?: return
-        val sdp = session.answer(checkNotNull(l.remoteOffer))?.let { if (l.relay) SdpGuard.stripToRelay(it) else it }
+        val ice = l.servers?.await() ?: servers(l.peerId)
+        val remoteOffer = checkNotNull(l.remoteOffer)
+        val opened = openFor(l, ice) ?: return
+        val (session, gathered) = afterRefusal(l, ice, opened, opened.answer(remoteOffer)) { it.answer(remoteOffer) } ?: return
+        val sdp = l.toPeer(gathered)
         val sends =
             mutex.withLock {
                 if (!current(l)) return
@@ -1108,8 +1159,9 @@ class CallManager(
      */
     private suspend fun openFor(
         l: Live,
-        servers: List<TurnServer>,
+        ice: IceSet,
     ): CallSession? {
+        val servers = ice.servers
         val relay = relayAll()
         if (relay && servers.none(TurnServer::isTurn)) {
             log("call ${l.id}: relay all calls, but no TURN server; ending before the media")
@@ -1118,12 +1170,18 @@ class CallManager(
             return null
         }
         val goesDirect = !relay && mutex.withLock { l.invite != null }
-        val session = media.open(servers, relay, goesDirect) { event -> scope.launch { onMedia(l, event) } }
+        // Which session an event came from, so a session C-7.6-54 retired is not heard from again.
+        val from = AtomicReference<CallSession?>(null)
+        val session = media.open(servers, relay, goesDirect) { event -> scope.launch { onMedia(l, from.get(), event) } }
+        from.set(session)
         val kept =
             mutex.withLock {
                 if (!current(l)) return@withLock false
                 l.session = session
                 l.relay = relay
+                l.ice = servers
+                l.turn = servers.firstOrNull { it.ranked }
+                l.pool = ice.pool
                 // C-7.6-20's shape: TURN entries carry a credential, the one STUN entry carries its URLs and none.
                 l.turnServers = servers.count { it.user.isNotEmpty() }
                 l.stunUrls = servers.filter { it.user.isEmpty() }.sumOf { it.urls.size }
@@ -1141,7 +1199,9 @@ class CallManager(
      */
     private suspend fun restart(l: Live) {
         val session = mutex.withLock { l.session?.takeIf { current(l) && l.phase == CallPhase.Reconnecting } } ?: return
-        val servers = servers(l.peerId)
+        val ice = servers(l.peerId)
+        val servers = ice.servers
+        mutex.withLock { if (current(l) && l.session === session) l.restarted(ice) }
         val sdp = session.restart(servers)?.let { if (l.relay) SdpGuard.stripToRelay(it) else it }
         val offer =
             mutex.withLock {
@@ -1164,8 +1224,9 @@ class CallManager(
         remoteOffer: String,
     ) {
         val session = mutex.withLock { l.session?.takeIf { current(l) } } ?: return
-        val servers = servers(l.peerId)
-        val sdp = session.reanswer(remoteOffer, servers)?.let { if (l.relay) SdpGuard.stripToRelay(it) else it }
+        val ice = servers(l.peerId)
+        mutex.withLock { if (current(l) && l.session === session) l.restarted(ice) }
+        val sdp = session.reanswer(remoteOffer, ice.servers)?.let { if (l.relay) SdpGuard.stripToRelay(it) else it }
         val answer =
             mutex.withLock {
                 if (!current(l) || l.session !== session || l.gen != gen) return
@@ -1184,18 +1245,105 @@ class CallManager(
             mutex.withLock {
                 if (!current(l)) return
                 l.described = true
+                recordTurn(l)
                 l.lateCands?.let { cands(l, it) }.orEmpty()
             }
         deliver(sends)
     }
 
+    /**
+     * C-7.6-54, before [l]'s OFFER or ANSWER leaves: [sdp] is what [session] gathered. Where the chosen TURN server
+     * refused this side's allocation meanwhile and the description holds no relay candidate, this side gathers once
+     * more on the next server in its ranking — a credential in [ice]'s pool, else a new `turnreq` naming it — in a
+     * fresh session, closes the refused one, and returns the fresh session with its description. Otherwise [session]
+     * and [sdp] as they came; null when the call ended meanwhile.
+     *
+     * A fresh session, not an ICE restart: libwebrtc reads a session's TURN servers once, and an answerer cannot
+     * restart at all; nothing has gone to the peer yet, so the first description it sees is the second gathering's.
+     * The refusal is read from [Live.turnRefused], which [onMedia] writes off the media's callback: it lands a few
+     * hundred ms into C-3.6-1's 1.5 s, so it is there by now. One that lands in the window's last instant only marks
+     * the server, as a refusal after the description does.
+     */
+    @Suppress("ReturnCount") // a ladder of exits: nothing to move from, nowhere to move to, the call ended meanwhile
+    private suspend fun afterRefusal(
+        l: Live,
+        ice: IceSet,
+        session: CallSession,
+        sdp: String?,
+        describe: suspend (CallSession) -> String?,
+    ): Pair<CallSession, String?>? {
+        val refused =
+            mutex.withLock {
+                if (!current(l) || l.session !== session) return null
+                val chosen = l.turn
+                // Once per call, and never from a server that already gave this side a relay.
+                val code = l.turnRefused.takeUnless { l.turnMoved || hasRelay(sdp) }
+                if (chosen == null || code == null) return@withLock null
+                l.turnMoved = true
+                chosen to code
+            } ?: return session to sdp
+        val (chosen, code) = refused
+        val ours = if (l.outgoing) "offer" else "answer"
+        val next = chosen.entry?.let { nextServer(l, it) }
+        if (next == null) {
+            log("call ${l.id}: turn ${chosen.describe()} refused ($code) before our $ours, and no other server")
+            return session to sdp
+        }
+        log("call ${l.id}: turn ${chosen.describe()} refused ($code) before our $ours; gathering on ${next.describe()}")
+        mutex.withLock {
+            if (!current(l)) return null
+            // From here nothing the refused gathering says belongs to the call: not its late candidates, not a second
+            // refusal, which would otherwise be read against the next server once it is the call's.
+            l.retired = session
+            l.lateCands = null
+            l.turnRefused = null
+        }
+        val servers = ice.servers.map { if (it === chosen) next else it }
+        val fresh = openFor(l, IceSet(servers, ice.pool + next))
+        session.close()
+        fresh ?: return null
+        mutex.withLock { l.turnFellBack = true }
+        return fresh to describe(fresh)
+    }
+
+    // C-7.6-54's next server after [refused]: a live credential in hand for it, else a new `turnreq` naming it.
+    private suspend fun nextServer(
+        l: Live,
+        refused: String,
+    ): TurnServer? {
+        val pool = mutex.withLock { l.pool }
+        val entry = ranking.next(pool, refused) ?: return null
+        val nowS = clock() / MS_PER_S
+        return pool.firstOrNull { it.isTurn && it.entry == entry && it.expiresS() - CREDENTIAL_MARGIN_S > nowS }
+            ?: turn.turnServerFor(l.peerId, entry)
+    }
+
+    // The field log's one line per call for the TURN server it chose (C-7.6-53), once its description is out.
+    private fun recordTurn(l: Live) {
+        val chosen = l.turn ?: return
+        if (l.turnRecorded) return
+        l.turnRecorded = true
+        field.record(
+            FieldEvent.CallTurn(
+                slot = chosen.slot,
+                of = chosen.spoolHosts.size,
+                scoreMs = chosen.entry?.let(ranking::score),
+                fallback = l.turnFellBack,
+                ranked = ranking.named(l.pool),
+                outgoing = l.outgoing,
+            ),
+        )
+    }
+
     private suspend fun onMedia(
         l: Live,
+        from: CallSession?,
         event: MediaEvent,
     ) {
         val sends =
             mutex.withLock {
-                if (!mediaLive(l)) return
+                // A session C-7.6-54 replaced before its description left: nothing it says belongs to the call.
+                if (!mediaLive(l) || l.retiredFrom(from)) return
                 when (event) {
                     MediaEvent.Connected -> {
                         if (l.phase == CallPhase.Connecting) {
@@ -1231,12 +1379,51 @@ class CallManager(
                         direct.candidates(l.id, event.lines)
                         emptyList()
                     }
+
+                    is MediaEvent.TurnRefused -> {
+                        onTurnRefused(l, event)
+                        emptyList()
+                    }
                 }
             }
         deliver(sends)
     }
 
     // ---- under [mutex] ----
+
+    /**
+     * C-7.6-54: an allocation on [l]'s chosen server was refused. The server is marked whenever that comes; before this
+     * side's description has gone out it is also what [afterRefusal] moves on from. A refusal from a call that holds no
+     * ranked server (spools that name none, or a person's own) marks nothing.
+     */
+    private fun onTurnRefused(
+        l: Live,
+        event: MediaEvent.TurnRefused,
+    ) {
+        val chosen = l.turn ?: return
+        val host = TurnHosts.urlHost(event.url)
+        if (host != null && chosen.urls.none { TurnHosts.urlHost(it) == host }) return
+        chosen.entry?.let(ranking::refuse)
+        if (!l.described) l.turnRefused = event.code
+        log("call ${l.id}: turn ${chosen.describe()} refused an allocation (${event.code})")
+    }
+
+    // Whether [from] is the session C-7.6-54 retired from [this] call (null is a session not yet told its name).
+    private fun Live.retiredFrom(from: CallSession?): Boolean = from != null && from === retired
+
+    // [sdp] as it goes to the peer: relay candidates alone under "Relay all calls" (C-3.7-3).
+    private fun Live.toPeer(sdp: String?): String? = sdp?.let { if (relay) SdpGuard.stripToRelay(it) else it }
+
+    // A §3.8 restart's fresh servers: the one ranked server it gathers from now is the one a refusal marks.
+    private fun Live.restarted(ice: IceSet) {
+        this.ice = ice.servers
+        turn = ice.servers.firstOrNull { it.ranked }
+        pool = ice.pool
+    }
+
+    // Whether [sdp] already carries a relay candidate: the chosen server gave this side one, so it stays (C-7.6-54).
+    private fun hasRelay(sdp: String?): Boolean =
+        sdp?.lineSequence()?.any { it.startsWith("a=candidate:") && it.contains(" typ relay") } == true
 
     /**
      * [l]'s media lost its path — for good when [failed] (ICE gave up). A connected call reconnects (§3.8), and while

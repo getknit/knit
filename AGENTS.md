@@ -172,6 +172,14 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   that kind (an own TURN sends no `turnreq`), a stored value is re-validated on every read, the password is never
   logged, and the Test opens no microphone and never runs under a call. Debug builds only for now (`OWN_ICE_WIRED`, the
   ADR's 2026-10-20 amendment): elsewhere no server row, no Test and no `OverridingTurnSource`.
+  **Before touching `call/TurnRanking`, `TurnMeasure`, `StunBinding`, `ui/call/UdpTurnProbe`, `mesh/spool/TurnHosts`,
+  `SpoolHello.turnHosts`, `SpoolTurnReq.host`, `ScopeSync.turnCredentialFor` / `onTurnHosts`, `CallManager.oneServer` /
+  `afterRefusal`, `MediaEvent.TurnRefused` or `…debug.CALL --es op turnpin`:** READ ADR 2026-10.pfzn and
+  `docs/SPOOL_PROTOCOL.md` §7.6's "Several TURN servers" — a call hands libwebrtc one TURN server, the one its spools'
+  `turnHosts` rank best by a STUN Binding probe that runs on a network change or a new entry only (never at call time,
+  never with no target, no timer); an entry is derived exactly as knit-spool's `TurnUris` derives it; a log names a
+  server by its slot, never its host; and a refusal moves a side to the next server only before its OFFER or ANSWER
+  leaves, because libwebrtc reads a session's servers once.
   **Before touching casts — `SpoolCast`, `SpoolConnection.castOut` / `canCast` / `ticketedCast`, `ScopeSync.cast` /
   `canCast` / `handleCast`, `ScopeCrypto.sealCast` / `openCast`, `ScopeFrames.castEligible`, `CallPayload.ct` or
   `TalkLink.SPOOL`:** READ `docs/VOICE_CALLS.md` §2.7 and ADR 2026-10.79yb's sixth amendment — a chunk with no mesh path
