@@ -44,6 +44,9 @@ document:
   files take longer.
 - You now get a notification when someone reacts to one of your messages, and that chat moves to the top of
   your list with their reaction as its last line. Changing or taking back a reaction updates both.
+- Knit now comes in Brazilian Portuguese: it follows a phone set to that language, and on Android 13 and later
+  you can pick it for Knit alone in Settings › Apps › Knit › Language. Native speakers are still checking the
+  translation on Weblate, and anyone can suggest a fix there.
 
 ### Changed
 
