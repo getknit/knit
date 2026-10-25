@@ -57,7 +57,9 @@ import app.getknit.knit.ui.theme.KnitMotion
 import app.getknit.knit.ui.theme.knitColors
 import org.koin.androidx.compose.koinViewModel
 
-private const val SURFACE_ALPHA = 0.92f
+// The keys a step quieter than the values. The surfaces themselves are opaque: on a phone, a translucent bubble let the
+// text under it run into its number, and a translucent panel into its rows.
+private const val KEY_ALPHA = 0.8f
 private val BUBBLE_SIZE = 44.dp
 private val RING_WIDTH = 3.dp
 private val EDGE_MARGIN = 8.dp
@@ -140,7 +142,7 @@ internal fun MeshHudContent(
                     .semantics { contentDescription = line }
                     .testTag("dev_view_hud_bubble"),
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = SURFACE_ALPHA),
+            color = MaterialTheme.colorScheme.inverseSurface,
             contentColor = MaterialTheme.colorScheme.inverseOnSurface,
             border = BorderStroke(RING_WIDTH, ringColor(reading?.let(::hudSignal) ?: HudSignal.Off)),
         ) {
@@ -191,7 +193,7 @@ private fun HudPanel(
     Surface(
         modifier = Modifier.testTag("dev_view_hud_panel"),
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = SURFACE_ALPHA),
+        color = MaterialTheme.colorScheme.inverseSurface,
         contentColor = MaterialTheme.colorScheme.inverseOnSurface,
     ) {
         // The line and the rows scroll in whatever room the panel was given; the way to Diagnostics stays in view.
@@ -202,7 +204,7 @@ private fun HudPanel(
                     groups = HudLine.panel(reading),
                     modifier = Modifier.padding(top = 6.dp),
                     color = MaterialTheme.colorScheme.inverseOnSurface,
-                    keyColor = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = SURFACE_ALPHA),
+                    keyColor = MaterialTheme.colorScheme.inverseOnSurface.copy(alpha = KEY_ALPHA),
                     titleColor = MaterialTheme.colorScheme.inversePrimary,
                 )
             }
