@@ -136,7 +136,7 @@ Builds:
 
   - versionName: 2.10.0
     versionCode: 33
-    commit: v2.10.0
+    commit: 20696bad3554ccc03f5a6108e0d2bfd9376bfde6
     subdir: app
     gradle:
       - yes
