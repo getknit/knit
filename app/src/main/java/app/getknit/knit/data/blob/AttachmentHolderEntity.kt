@@ -61,6 +61,10 @@ interface AttachmentHolderDao {
         planes: List<Int>,
     ): Boolean
 
+    /** Every proof held for [hash], oldest first: the developer view's holder rows (ADR 2026-10.s7wg). Read only. */
+    @Query("SELECT * FROM attachment_holders WHERE hash = :hash ORDER BY provedAt ASC, holderId ASC")
+    suspend fun holdersOf(hash: String): List<AttachmentHolderEntity>
+
     @Query("DELETE FROM attachment_holders WHERE hash = :hash")
     suspend fun delete(hash: String)
 }

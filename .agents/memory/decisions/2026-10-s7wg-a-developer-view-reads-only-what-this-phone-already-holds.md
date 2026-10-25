@@ -59,8 +59,9 @@ alive at all right now? Each one needs adb today.
   in any build. Live rows (the message, its receipts, the arrivals) are flows. The rest are one-shot reads on a 2 s
   tick while the screen is started, never a table subscription: Room invalidates per table, which is ADR
   2026-09.fjcw's lesson.
-- **The mesh HUD** is a one-line pill drawn over every NavHost destination, from `KnitApp`, under the status bar. A
-  line reads like `BLE 2/5 · NAN dormant · LoRa up · relay 1/2 · cust 41 · 12↓ 3↑ 0✕ /min`:
+- **The mesh HUD** is a 44 dp bubble drawn over every NavHost destination, from `KnitApp`, inside the safe area. Its
+  ring says whether the mesh is alive (green linked, neutral searching, red down, dim off) and its number counts the
+  neighbours a short-range radio holds. A tap opens a panel whose first line reads like `BLE 2/5 · NAN dormant · LoRa up · relay 1/2 · cust 41 · 12↓ 3↑ 0✕ /min`:
   - Each plane shows its `TransportStatus` linked/nearby counts, or, when it is not healthy, its health,
     `switchedOff` or `dormant`.
   - Then the connected spools, the live custody count (`ForwardDao.count`, read every fifth tick) and the deltas of
@@ -68,11 +69,18 @@ alive at all right now? Each one needs adb today.
     dropped.
   - A stopped, paused or deferred mesh says so in place of the planes.
 
-  A tap opens a panel with one row per plane carrying every `TransportStatus` field, the neighbour and
+  Below the line, the panel has one row per plane carrying every `TransportStatus` field, the neighbour and
   indirect-reach counts, the mesh's posture (`meshEnabled`, the pause deadline, `MeshStartGate.deferred`) and a
-  button to Diagnostics. The pill can be dragged. Its position is held in memory and resets with the process. It is
-  one accessibility node, whose description is the line. It reads on a 1 s tick only while composed and started
-  (`collectAsStateWithLifecycle`). The line's formatter and the minute's rate ring are pure classes.
+  button to Diagnostics. It opens beside the bubble, toward the larger side, and scrolls inside that room, so it
+  never covers the bubble. The bubble can be dragged anywhere and settles on the nearer side edge. Its position is
+  held in memory and resets with the process. It is one accessibility node, a button whose description is the line.
+  It reads on a 1 s tick only while composed and started (`collectAsStateWithLifecycle`). The line's formatter, the
+  minute's rate ring, the ring's signal and the bubble's and panel's placement (`HudPlacement`) are pure classes.
+
+  The first build drew the line itself as a pill under the status bar. On a phone it covered the top bar's title,
+  and one line at that width cut off the frame counts. The bubble covers 44 dp and keeps the line a tap away. A strip
+  inside the layout, pushing every screen down, was set aside: it would cost every screen a row, for good, and stack
+  with the call bar.
 - **The gate** is two steps:
   - `BuildConfig.DEV_VIEW` is on in debug and off in release, and `-PdevView=` overrides it, the `commons` flag's
     pattern. It is read once, as `DEV_VIEW_WIRED` in `di/`. The two view-models' Koin definitions and the
@@ -117,7 +125,8 @@ English" in `.agents/context/translations.md`, beside the call diagnostics card.
 
 - A HUD that is on reads one SQLCipher count every 5 s and allocates one `Frames` snapshot a second. A HUD that is
   off composes nothing and runs nothing.
-- The pill covers a strip of whatever is under it. Dragging is the answer, not insets on every screen.
+- The bubble covers 44 dp of whatever is under it, and the open panel more. Dragging is the answer, not insets on
+  every screen.
 - A ratchet header read from custody is the frame's as it was sent. It says nothing about the session's state now;
   the bridge's `RATCHET` stays the answer for that.
 - A debug build's screenshots, demo films, seeded FTL suite and accessibility suite stay unchanged only while the
@@ -134,8 +143,12 @@ English" in `.agents/context/translations.md`, beside the call diagnostics card.
 - `HudLineTest` covers the line for each plane state, the minute's deltas across a counter reset (a mesh restart),
   and a stopped mesh.
 - The previews of both surfaces are screenshot tests (`scripts/gen-screenshot-tests.py`).
-- When it lands, `apkanalyzer` is run once on a release APK to confirm its dex carries no `ui.devview` class. The
-  drop is R8's work, and no test can see it.
+- The release build carries none of the view. R8 renames classes, so a class listing proves nothing: the check is
+  the view's own literals in the release dex (`compact DM ratchet`, `not held (live)`, the HUD's and the switch's
+  test tags), and none was there on 2026-10-25. The one string left is the setting's key, `debug_dev_view`:
+  `SettingsStore.debugDevView` is built in every build, and nothing collects it where the view is not wired. The
+  first build missed the switch row and Diagnostics' read of the setting, until both tested `DEV_VIEW_WIRED` first.
+  The drop is R8's work, so no unit test can see it: repeat the check after a change to the gate.
 
 **Later slices**, which this one leaves room for:
 

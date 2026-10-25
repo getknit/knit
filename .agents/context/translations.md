@@ -122,6 +122,10 @@ These are not oversights; leave them unless the plan changes.
 
 - The call diagnostics card's values (`ui/call/CallDiagnostics.kt`, `CallStats`, `TalkPath`): an engineering readout
   in log notation, pinned by `CallStatsReaderTest`. Its labels are translated.
+- The developer view's rows (`ui/devview/`, ADR 2026-10.s7wg): the message inspector's and the mesh HUD's keys are the
+  code's own names and their values log notation, built by `MessageInspection`, `HudLine` and `InspectFormat` and
+  pinned by their tests. Its chrome (the Diagnostics switch, the section header, the HUD's Diagnostics button) is
+  translated.
 - Crash and ANR reports and the issue they open (`crash/`): read by the maintainers.
 - The Meshtastic DM auto-reply (`mesh/lora/DmAutoReplyPolicy`): it goes to a stranger whose language this phone
   cannot know.

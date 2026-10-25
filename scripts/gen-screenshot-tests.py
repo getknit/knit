@@ -48,6 +48,7 @@ FILE_NAMES = {
     "callsettings": "CallSettings",
     "chatlist": "ChatList",
     "components": "Component",
+    "devview": "DevView",
     "signout": "SignOut",
     "yourmesh": "YourMesh",
 }

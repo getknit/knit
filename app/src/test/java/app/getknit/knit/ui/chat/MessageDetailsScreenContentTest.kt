@@ -1,13 +1,22 @@
 package app.getknit.knit.ui.chat
 
+import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertContentDescriptionContains
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasScrollAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.ui.theme.KnitTheme
@@ -228,6 +237,23 @@ class MessageDetailsScreenContentTest {
         render(populated())
 
         compose.onNodeWithTag("message_details_delivered_at").assertDoesNotExist()
+    }
+
+    /** The developer view's slot (ADR 2026-10.s7wg): drawn, and recomposed in, when a build switched on passes one. */
+    @Test
+    fun `the developer section shows once a build passes one`() {
+        var devView by mutableStateOf(false)
+        compose.setContent {
+            KnitTheme {
+                MessageDetailsScreenContent(
+                    state = populated(),
+                    inspector = if (devView) ({ Text("inspector", modifier = Modifier.testTag("dev_section_probe")) }) else null,
+                )
+            }
+        }
+        devView = true
+        compose.onNode(hasScrollAction()).performScrollToNode(hasTestTag("dev_section_probe"))
+        compose.onNodeWithTag("dev_section_probe").assertIsDisplayed()
     }
 
     private fun withRecipients() =

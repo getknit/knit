@@ -47,7 +47,11 @@ class KoinGraphVerifyTest {
         // Plus the voice calls' graph where this variant wires one (di/CallWiring; unit tests build the debug one, and
         // `-PliveCalls=false`, `-PmeshCalls=false`, `-Pstt=false` or `-PknitAnywhere=false` checks that build's).
         val calls = listOfNotNull(callModule()).toTypedArray()
-        module { includes(appModule, meshModule, moderationModule, uiModule, *calls) }.verify(extraTypes = extraTypes + noLiveCalls)
+        // And the developer view's (di/DevViewWiring, ADR 2026-10.s7wg) where this variant wires it.
+        val devView = listOfNotNull(devViewModule()).toTypedArray()
+        module {
+            includes(appModule, meshModule, moderationModule, uiModule, *calls, *devView)
+        }.verify(extraTypes = extraTypes + noLiveCalls)
     }
 
     private companion object {

@@ -1091,6 +1091,9 @@
     <string name="diagnostics_direct_calls_switch_body">Desative para fazer chamadas com um celular por perto pelo caminho da internet, STUN e TURN, como se ele estivesse longe. Vale a partir da próxima chamada e continua desativado até você ativar de novo.</string>
     <string name="diagnostics_walkie_clips_label">Salvar clipes do walkie (debug)</string>
     <string name="diagnostics_walkie_clips_body">Salva o áudio e a transcrição de cada fala do walkie, ouvida e falada, nos arquivos deste app em Android/data, sem criptografia, para testar o reconhecimento de fala. Desativar mantém o que já foi salvo.</string>
+    <string name="diagnostics_dev_view_label">Visão de desenvolvedor (debug)</string>
+    <string name="diagnostics_dev_view_body">Mostra uma linha de status da rede mesh sobre todas as telas e os dados internos de cada mensagem nas suas informações. Lê o que este celular guarda: nada é salvo nem enviado.</string>
+    <string name="dev_view_open_diagnostics">Abrir Diagnóstico</string>
     <string name="diagnostics_transport_debug_off">desligado</string>
     <string name="diagnostics_transport_low_power">baixo consumo</string>
     <string name="diagnostics_transport_switched_off">desligado em Configurações</string>
@@ -1672,6 +1675,7 @@
     <string name="message_details_filter_emoji">%1$s %2$d</string>
     <string name="message_details_delivered_to">Entregue a</string>
     <string name="message_details_waiting_on">Aguardando</string>
+    <string name="message_details_developer">Desenvolvedor</string>
     <string name="message_details_confirmed_delivered_to">Entrega confirmada para</string>
     <string name="message_details_room_open_list">A sala não tem lista de membros. Estes são os que responderam ao seu celular, e outras pessoas no alcance também podem ter recebido.</string>
     <string name="message_details_recipient_delivered">%1$s, entregue em %2$s</string>

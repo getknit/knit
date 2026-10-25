@@ -8,6 +8,10 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -60,6 +64,8 @@ import app.getknit.knit.ui.chatlist.ChatListScreen
 import app.getknit.knit.ui.commons.CommonsDetailsScreen
 import app.getknit.knit.ui.components.LocalPeerBadges
 import app.getknit.knit.ui.contacts.ContactsScreen
+import app.getknit.knit.ui.devview.MeshHud
+import app.getknit.knit.ui.devview.rememberDevViewOn
 import app.getknit.knit.ui.diagnostics.CrashLogScreen
 import app.getknit.knit.ui.diagnostics.DiagnosticsScreen
 import app.getknit.knit.ui.diagnostics.FieldLogScreen
@@ -715,6 +721,19 @@ fun KnitApp(startRoute: String? = null) {
                     },
                 )
             }
+        }
+        // The developer view's mesh HUD (ADR 2026-10.s7wg), a movable bubble over every screen while it is switched on.
+        // It is handed the whole safe area but takes no touch outside the bubble and its panel, so the screens under it
+        // work as before.
+        if (rememberDevViewOn()) {
+            MeshHud(
+                onOpenDiagnostics = { navController.navigate(Routes.DIAGNOSTICS) { launchSingleTop = true } },
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.safeDrawing)
+                        .semantics { testTagsAsResourceId = true },
+            )
         }
     }
 

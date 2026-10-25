@@ -1293,6 +1293,9 @@
     <!-- Debug builds only: saving walkie bursts for the speech eval (SettingsStore.debugWalkieClips, ADR 2026-10.nz3g). -->
     <string name="diagnostics_walkie_clips_label">Save walkie clips (debug)</string>
     <string name="diagnostics_walkie_clips_body">Saves the audio and transcript of every walkie burst, heard and spoken, to this app\'s files in Android/data, unencrypted, for testing speech recognition. Turning it off keeps what was saved.</string>
+    <string name="diagnostics_dev_view_label">Developer view (debug)</string>
+    <string name="diagnostics_dev_view_body">Adds a mesh status line over every screen, and a message\'s internals to its details. It reads what this phone holds: nothing is saved or sent.</string>
+    <string name="dev_view_open_diagnostics">Open Diagnostics</string>
     <string name="diagnostics_transport_debug_off">off</string>
     <!-- A plane low-power mode has switched off (ADR 2026-10.d44b), as a tag beside the transport. -->
     <string name="diagnostics_transport_low_power">low power</string>
@@ -1984,6 +1987,7 @@
     <!-- Per-recipient delivery, on a group message you sent -->
     <string name="message_details_delivered_to">Delivered to</string>
     <string name="message_details_waiting_on">Waiting on</string>
+    <string name="message_details_developer">Developer</string>
     <!-- The broadcast room has no roster, so its list is who answered, never everyone who received it -->
     <string name="message_details_confirmed_delivered_to">Confirmed delivered to</string>
     <string name="message_details_room_open_list">The room has no member list. This is who your phone has heard back from, and others in range may have received it too.</string>

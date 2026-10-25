@@ -54,6 +54,8 @@ import app.getknit.knit.location.GeoUri
 import app.getknit.knit.ui.components.Avatar
 import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.components.PeerNameText
+import app.getknit.knit.ui.devview.MessageInspectSection
+import app.getknit.knit.ui.devview.rememberDevViewOn
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
 import org.koin.androidx.compose.koinViewModel
@@ -89,10 +91,14 @@ fun MessageDetailsScreen(
         if (state.vanished) onBack()
     }
 
+    // The developer view's inspector (ADR 2026-10.s7wg), composed only while it is on, so its view-model is never built
+    // otherwise.
+    val devView = rememberDevViewOn()
     MessageDetailsScreenContent(
         state = state,
         onBack = onBack,
         onOpenProfile = onOpenProfile,
+        inspector = if (devView) ({ MessageInspectSection(messageId) }) else null,
     )
 }
 
@@ -102,6 +108,8 @@ internal fun MessageDetailsScreenContent(
     state: MessageDetailsUiState,
     onBack: () -> Unit = {},
     onOpenProfile: (nodeId: String) -> Unit = {},
+    // The developer view's inspector, last on the screen; null hides it (every caller but a debug build switched on).
+    inspector: (@Composable () -> Unit)? = null,
 ) {
     // Which emoji the chip row has selected (null = All). Pure view state: it never leaves the screen,
     // and rememberSaveable keeps the choice across a rotation.
@@ -161,6 +169,10 @@ internal fun MessageDetailsScreenContent(
                 items(shown, key = { it.nodeId }) { reactor ->
                     ReactorListRow(reactor = reactor, onOpen = onOpenProfile)
                 }
+            }
+            if (inspector != null) {
+                item { HorizontalDivider() }
+                item(key = "developer") { inspector() }
             }
         }
     }

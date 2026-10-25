@@ -5,6 +5,7 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MessageEntity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -67,6 +68,24 @@ class AttachmentHolderDaoTest : RoomDbTest() {
 
             dao.delete(H)
             assertFalse(held())
+        }
+
+    /** The developer view's holder rows (ADR 2026-10.s7wg): every proof for the hash, oldest first, and no other hash's. */
+    @Test
+    fun `the holders of a hash are listed oldest first and no other hash's`() =
+        runTest {
+            dao.record(H, PEER, DeliveryPlane.WifiAware.code, 9L)
+            dao.record(H, ME, DeliveryPlane.Bluetooth.code, 5L)
+            dao.record("H2", OTHER, DeliveryPlane.Nearby.code, 1L)
+
+            assertEquals(
+                listOf(
+                    AttachmentHolderEntity(H, ME, DeliveryPlane.Bluetooth.code, 5L),
+                    AttachmentHolderEntity(H, PEER, DeliveryPlane.WifiAware.code, 9L),
+                ),
+                dao.holdersOf(H),
+            )
+            assertEquals(emptyList<AttachmentHolderEntity>(), dao.holdersOf("H3"))
         }
 
     private fun msg(

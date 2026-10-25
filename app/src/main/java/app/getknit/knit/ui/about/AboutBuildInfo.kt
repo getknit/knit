@@ -82,6 +82,7 @@ internal val BUILD_FLAGS: List<Pair<String, Boolean>> =
         "INTERNET_PLANE" to BuildConfig.INTERNET_PLANE,
         "LORA_PLANE" to BuildConfig.LORA_PLANE,
         "COMMONS" to BuildConfig.COMMONS,
+        "DEV_VIEW" to BuildConfig.DEV_VIEW,
         "SPOOL_DIRECTORY" to BuildConfig.SPOOL_DIRECTORY,
         "BLE_SIDE_PLANE" to BuildConfig.BLE_SIDE_PLANE,
         "BLE_GATT_PEERS" to BuildConfig.BLE_GATT_PEERS,

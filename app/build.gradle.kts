@@ -92,6 +92,13 @@ val loraPlane = (project.findProperty("loraPlane") as? String)?.toBoolean()
 // when the feature is introduced, the way ADR 064 and ADR 2026-09.6gtm did for the two planes.
 val commons = (project.findProperty("commons") as? String)?.toBoolean()
 
+// The developer view (ADR 2026-10.s7wg): the message inspector at the foot of Message details and the mesh HUD over
+// every screen, both behind a Diagnostics switch that is off by default. ON in debug, OFF in a shipped artifact,
+// overridable with `-PdevView=true|false` (a testers' alpha may carry it). Read once, as `DEV_VIEW_WIRED` in `di/`;
+// its Koin definitions and the switch row sit behind it, so R8 drops the view from a build without it. The defaults
+// live in source so F-Droid's -P-free rebuild stays identical.
+val devView = (project.findProperty("devView") as? String)?.toBoolean()
+
 // The public relay directory (`hosted.getknit.app/api/v1/public-spools`, ADR 2026-10.8kfx): whether a phone with the
 // Internet plane on reads it once a day. OFF in every build until the coordinator says the endpoint is live; until then
 // a phone picks its home from the copy it ships (`PublicSpools.BAKED`). `-PspoolDirectory=true` turns it on.
@@ -324,6 +331,8 @@ android {
         buildConfigField("boolean", "LORA_PLANE", (loraPlane ?: true).toString())
         // The commons is ON here so the unit suite and the lab run the real thing; see `commons` above.
         buildConfigField("boolean", "COMMONS", (commons ?: true).toString())
+        // The developer view is ON here, so a debug build can show it once its switch is on; see `devView` above.
+        buildConfigField("boolean", "DEV_VIEW", (devView ?: true).toString())
         buildConfigField("boolean", "SPOOL_DIRECTORY", (spoolDirectory ?: false).toString())
         // The BLE side channel is ON in debug so a lab build airs and hears pages; see `bleSidePlane` above.
         buildConfigField("boolean", "BLE_SIDE_PLANE", (bleSidePlane ?: true).toString())
@@ -440,6 +449,8 @@ android {
             // The commons is not introduced yet: a shipped artifact hides it (`-Pcommons=true` lights it
             // for a maintainer build). Staging and nonMinifiedRelease inherit this through initWith.
             buildConfigField("boolean", "COMMONS", (commons ?: false).toString())
+            // The developer view is not shipped: `-PdevView=true` lights it for a testers' build.
+            buildConfigField("boolean", "DEV_VIEW", (devView ?: false).toString())
             buildConfigField("boolean", "SPOOL_DIRECTORY", (spoolDirectory ?: false).toString())
             // The BLE side channel is introduced: on in a shipped artifact.
             buildConfigField("boolean", "BLE_SIDE_PLANE", (bleSidePlane ?: true).toString())

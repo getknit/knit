@@ -11,6 +11,7 @@ import app.getknit.knit.crash.CrashReports
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.relay.RelayStatusRepository
 import app.getknit.knit.data.settings.SettingsStore
+import app.getknit.knit.di.DEV_VIEW_WIRED
 import app.getknit.knit.di.LIVE_CALLS_WIRED
 import app.getknit.knit.di.STT_WIRED
 import app.getknit.knit.di.WALKIE_WIRED
@@ -254,6 +255,20 @@ class DiagnosticsViewModel(
     fun setDirectCallsOff(off: Boolean) {
         if (!directCallsSwitchOffered) return
         viewModelScope.launch { settings.setDebugDirectCallsOff(off) }
+    }
+
+    /** Whether this build offers the developer view's switch (ADR 2026-10.s7wg): one with the view wired. */
+    val devViewOffered: Boolean = DEV_VIEW_WIRED
+
+    /** Whether the developer view shows: the message inspector and the mesh HUD. Never read in a build without it. */
+    val devView: StateFlow<Boolean> =
+        (if (DEV_VIEW_WIRED) settings.debugDevView else flowOf(false))
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    /** Shows or hides the developer view. A no-op in a build without it. */
+    fun setDevView(on: Boolean) {
+        if (!devViewOffered) return
+        viewModelScope.launch { settings.setDebugDevView(on) }
     }
 
     /** Whether this build offers the walkie clips switch — a debug build with the walkie and its transcripts. */
