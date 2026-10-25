@@ -7,7 +7,7 @@ lines. Each entry names the symbols that trigger it, the ADRs to read (`.agents/
 file, amendments included) and, where there is one, the section of `mesh-transport.md` that explains the mechanism.
 An entry is an index into its ADRs, not a substitute: where they disagree, the ADR wins and the entry is fixed.
 
-Bluetooth-adjacent routing that stays in `AGENTS.md`, because another subsystem owns it: the LoRa/Meshtastic bridge
+Bluetooth-adjacent routing that lives in another subsystem's file under `.agents/context/`, because that subsystem owns it: the LoRa/Meshtastic bridge
 (`mesh/bluetooth/meshtastic/`), the Wear status server (`mesh/bluetooth/wear/`), the lonely cadence shared with NAN
 (`PowerPolicy`, kb68/w3xk), and the blob exchange's reads of the link (`BlobExchange`, `fileInFlightTo`, 4tx5 and on).
 

@@ -72,8 +72,8 @@ wiring isn't.
 
 ## Step 1: route every touched symbol to its decisions
 
-For each class, function and constant the diff touches, `grep -n '<Symbol>' .agents/context/blobs.md AGENTS.md` (the
-plane's routing, then the router's adjacent bullets) and READ every ADR the matching bullets cite
+For each class, function and constant the diff touches, `grep -rn '<Symbol>' .agents/context/blobs.md .agents/context/` (the
+plane's routing, then the other subsystems' files) and READ every ADR the matching entries cite
 (`.agents/memory/decisions.md` maps an id to its file), amendments included, then the section of
 `.agents/context/store-and-forward.md` or `docs/PICTURE_FETCH_BLUETOOTH.md` they name, and the matching bullet of
 `.agents/rules/mesh.md`, which is binding. The invariant digest at the end of this file is an index into those, not

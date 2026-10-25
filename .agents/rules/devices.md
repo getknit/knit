@@ -4,7 +4,11 @@
 session** — installing, uninstalling, sending broadcasts, adb-driving the UI, or anything else that
 touches a real phone. The emulator is fair game per the usual rules; physical hardware (including any lab
 devices on network adb) is not a default target just because it's reachable. **Ask first each time** —
-prior authorization doesn't carry over to a new task or a new conversation.
+prior authorization doesn't carry over to a new task or a new conversation. **Never toggle Wi-Fi on a lab phone** to
+test the Wi-Fi Aware plane (`context/wifi-aware.md`).
+
+A new bridge action goes in the receiver's `when`, the debug manifest's filter, `context/debug-bridge.md` and the
+skill's index.
 
 The *how* of driving a device once authorized is the `debug-bridge` skill (`skills/debug-bridge/SKILL.md`,
 with `scripts/bridge.sh`); the per-action reference, resource-ids and cold-start navigation are in

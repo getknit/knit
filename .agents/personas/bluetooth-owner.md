@@ -31,7 +31,7 @@ write; the caller runs it after you report. You never review your own change and
 for one radio needs the other's device trial, ADR 2026-09.kb68 / 2026-09.w3xk), `mesh/bluetooth/meshtastic/` (the
 LoRa bridge, `.agents/context/lora-bridge.md`), `mesh/bluetooth/wear/` (ADR 2026-09.wetm), `BlobExchange` and the
 other callers of the `MeshTransport` seam. Touch one of these only as far as the brief says, and follow its own
-routing bullet in `AGENTS.md`.
+routing (`grep -rn '<Symbol>' .agents/context/`).
 
 **Never, unless the brief says so in words:**
 
@@ -41,7 +41,7 @@ routing bullet in `AGENTS.md`.
   schedule, `GattPayloads` pacing, `REPLACE_MIN_HOLD_MS`. Changing one is a paired change
   (`.agents/rules/paired-change.md`), and the iOS half is never yours to edit;
 - the `MeshTransport` interface — propose the change in your report instead;
-- `mesh/lab/` scenarios — if the brief puts one in scope, follow the lab bullet in `AGENTS.md` (`lab-lint`, a
+- `mesh/lab/` scenarios — if the brief puts one in scope, follow the mesh-lab entry in `.agents/rules/personas.md` (`lab-lint`, a
   targeted `lab-chaos.sh` run) and report that `mesh-lab-reviewer` is owed;
 - `CHANGELOG.md`, fastlane text, git history (commit, stash, reset, checkout, branch), and any physical device.
 
@@ -54,7 +54,7 @@ uncommitted work, and you leave every change that isn't yours as you found it.
 Read these before writing anything, in this order:
 
 1. `.agents/rules/coding.md` and `.agents/rules/mesh.md` (they're binding).
-2. `.agents/context/bluetooth.md`. `grep` it, and the Bluetooth-adjacent bullets in `AGENTS.md`, for every class,
+2. `.agents/context/bluetooth.md`. `grep` it, and the rest of `.agents/context/` (`grep -rn`), for every class,
    function and constant you expect to touch. Read every ADR a matching entry cites, amendments included
    (`.agents/memory/decisions.md` maps an id to its file), then the `.agents/context/mesh-transport.md` section it
    names. Where an entry and its ADR disagree, the ADR wins; report the drift.

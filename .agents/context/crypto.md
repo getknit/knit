@@ -11,7 +11,8 @@ points here instead of carrying these lines. Each entry names the symbols that t
 mechanism in prose is `.agents/context/e2e-encryption.md`. An entry is an index into its ADRs, not a substitute:
 where they disagree, the ADR wins and the entry is fixed.
 
-Crypto-adjacent routing that stays in `AGENTS.md`, because another subsystem owns it: at-rest secrets (`data/crypto/`
+Crypto-adjacent routing that lives in another subsystem's file under `.agents/context/` (`storage.md`, `spool.md`,
+`contacts.md`, `blobs.md`), because that subsystem owns it: at-rest secrets (`data/crypto/`
 — `DatabaseKey`, `SqlCipherKey`, `KeystoreSecret`, `IdentityKeyStore`'s load and mint; ADRs 2026-09.uzkm,
 2026-10.47rw), the spool plane's scope crypto (`mesh/crypto/scope/`, `docs/SPOOL_PROTOCOL.md`), backup and restore
 (ADR 2026-09.6mj7 — the reset set it hands this plane is qerd's, below), clone detection (2026-09.ypcc), the

@@ -6,11 +6,13 @@ The `wifi-aware-owner` reads it before it writes and the `wifi-aware-reviewer` b
 `.agents/personas/`); `AGENTS.md` points here instead of carrying these lines. Each entry names the symbols that
 trigger it, the ADRs to read (`.agents/memory/decisions.md` maps an id to its file, amendments included) and, where
 there is one, the section of `.agents/context/mesh-transport.md` that explains the mechanism. An entry is an index
-into its ADRs, not a substitute: where they disagree, the ADR wins and the entry is fixed.
+into its ADRs, not a substitute: where they disagree, the ADR wins and the entry is fixed. Never toggle Wi-Fi on a lab
+phone to test the plane.
 
-Wi-Fi Aware-adjacent routing that stays in `AGENTS.md`, because another subsystem shares it: the lonely cadence
+Wi-Fi Aware-adjacent routing that lives in another subsystem's file under `.agents/context/` (mostly `service.md`),
+because that subsystem shares it: the lonely cadence
 (`PowerPolicy`, `NanLonelyPolicy`, ADR 2026-09.kb68 / 2026-09.w3xk, shared with the BLE scan), the foreground type and
-`TransportHealth.ForegroundOnly` / `NanSessionFault` (the `MeshService` bullet's ADR 2026-09.535d paragraph), the heal
+`TransportHealth.ForegroundOnly` / `NanSessionFault` (`.agents/context/service.md`'s ADR 2026-09.535d entry), the heal
 basket that calls `transport.heal()` (`MeshManager.heal`, ADR 2026-09.6st4), the Wi-Fi Direct hand-over that calls
 `MeshTransport.pause`/`resume` (`transfer/`, `.agents/context/direct-transfer.md`), the blob exchange's reads of the
 link (`BlobExchange`, `fileInFlightTo`, 4tx5 and on) and the field log's `field.record(…)` calls (ADR 2026-10.a239).
@@ -136,8 +138,8 @@ is in `docs/NAN_CONCURRENCY_REAUDIT.md` and `docs/DIGEST_PULL_REATTACH.md`.
   livelock). A send on a closed session gets no callback ever, so it is never recorded as in flight. Tests:
   `NanMessagePlanePolicyTest`; on hardware the soak's `nan-outbound-dead` rule.
 - **When touching `onSessionDead`, the `runCatching` around `publish` / `subscribe` / `updatePublish`,
-  `onAwareSessionTerminated`, `reattach`, or `offScreenBlocked`:** READ ADR 2026-09.535d (the `MeshService` bullet in
-  `AGENTS.md`) and the "API 29–32" section of `.agents/context/mesh-transport.md`. A session call can throw when the
+  `onAwareSessionTerminated`, `reattach`, or `offScreenBlocked`:** READ ADR 2026-09.535d (the `MeshService` entries in
+  `.agents/context/service.md`) and the "API 29–32" section of `.agents/context/mesh-transport.md`. A session call can throw when the
   framework dropped our client without telling us (`invalid uid+clientId mapping`): that is the terminate we missed,
   and `onSessionDead` mirrors `onAwareSessionTerminated`'s cleanup. A location refusal on 29–32 is not a dead session
   (`NanSessionFault.classify`): hold it as `ForegroundOnly`, tear nothing down, retry on `heal()`. `reattach` is

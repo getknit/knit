@@ -346,7 +346,7 @@ metrics log, and `neighborCount`/`reachable` `StateFlow`s for the UI.
 
 The on-radio format is **layered binary CBOR**, structured so it can evolve *additively* — the
 authoritative rules live in **`docs/WIRE_COMPAT.md`** (read it before touching any wire type) and the
-"Wire format" bullet in `AGENTS.md`. Three layers, one CBOR config (`encodeDefaults = false`,
+`.agents/context/wire-format.md`. Three layers, one CBOR config (`encodeDefaults = false`,
 `ignoreUnknownKeys = true`):
 
 ```kotlin

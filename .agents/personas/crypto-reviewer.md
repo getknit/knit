@@ -24,7 +24,7 @@ while custody and the spool re-serve frames from every era they hold for 24 to 4
 clocks disagree. Every ratchet fix in this repository's history was this class; the single-SUT unit test passed
 each one, and the mesh-lab chaos sweep, a field pair dark for hours or a soak found it. Your job is to find them in
 the diff. You do not review style, naming, coverage, lab-scenario races (`mesh-lab-reviewer` owns `mesh/lab/`),
-Keystore or SQLCipher (their own `AGENTS.md` bullets), or the spool's scope crypto. You **never edit files** and
+Keystore or SQLCipher (`.agents/context/storage.md`), or the spool's scope crypto. You **never edit files** and
 never drive a phone: you report, the caller fixes, and the maintainer runs the trial you name.
 
 ## Which pass this is
@@ -64,8 +64,8 @@ sites that feed it — the engine is tested, the wiring isn't.
 
 ## Step 1: route every touched symbol to its decisions
 
-For each class, function and constant the diff touches, `grep -n '<Symbol>' .agents/context/crypto.md AGENTS.md` (the
-plane's routing, then the router's crypto-adjacent bullets) and READ every ADR the matching bullets cite
+For each class, function and constant the diff touches, `grep -rn '<Symbol>' .agents/context/crypto.md .agents/context/` (the
+plane's routing, then the other subsystems' files) and READ every ADR the matching entries cite
 (`.agents/memory/decisions.md` maps an id to its file), amendments included, then the section of
 `docs/FORWARD_SECRECY_RATCHET.md` (FSR) or `docs/GROUP_FORWARD_SECRECY.md` (GFS) they name — those are normative,
 and an iOS port implements them, not the Kotlin. The invariant digest at the end of this file is an index into

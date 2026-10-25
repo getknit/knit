@@ -7,12 +7,14 @@ The `lora-owner` reads it before it writes and the `lora-reviewer` before it jud
 `.agents/context/lora-bridge.md` that explains the mechanism. An entry is an index into its ADRs, not a substitute:
 where they disagree, the ADR wins and the entry is fixed.
 
-LoRa-adjacent routing that stays in `AGENTS.md`, because another subsystem owns it: how a Nearby-room ✓✓ gets home
+LoRa-adjacent routing that lives in another subsystem's file under `.agents/context/` (`spool.md`, `messages.md`,
+`blobs.md`, `contacts.md`, `diagnostics.md`), because that subsystem owns it: how a Nearby-room ✓✓ gets home
 (`AckSync`'s ride hold, `MeshRouter.handOn`, `coveredByInternet` — ADR 2026-09.y5f3 / 2026-09.wkbk), a link preview on
 a LoRa thread (ADR 2026-09.7x8k), a blob re-wanted at link-up (ADR 2026-09.ptv8), the presence tiers (`ui/Reach.kt`,
 ADR 2026-09.2ajk), and the field log's `FieldEvent.Lora` sample and the link edges `LoraFieldLog` follows (ADR
 2026-10.a239 and its 2026-10-18 amendment). The GATT client
-(`MeshtasticGatt`) is also Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-reviewer`.
+(`MeshtasticGatt`, the plane's only `android.bluetooth.*` importer; `mesh/lora/` is pure and JVM-tested) is also
+Bluetooth code: a change there owes `bluetooth-reviewer` as well as `lora-reviewer`.
 
 ## Entries
 

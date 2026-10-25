@@ -12,8 +12,9 @@ findings unrelated to the last round kept arriving, and the test reviewers tight
 
 ## 1. Review the design before the code
 
-- When a routing bullet says DELEGATE a change to an owner persona, the main session first spawns that subsystem's
-  reviewer on the plan: the brief it is about to send, with the files it would change. This is the **design pass**.
+- When `.agents/rules/personas.md` says DELEGATE a change to an owner persona, the main session first spawns that
+  subsystem's reviewer on the plan: the brief it is about to send, with the files it would change. This is the
+  **design pass**.
 - The design pass reads the plan and the code the plan would change, walks the plan against its catalogue, and
   reports findings in its usual form, each labelled as in section 3. It runs no tests and no sweeps, and stamps
   nothing: the gate watches code, and none has moved.

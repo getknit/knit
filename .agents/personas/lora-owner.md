@@ -34,7 +34,7 @@ tests that cover them under `app/src/test/` (`mesh/lora/`, plus `CoordinationPla
 **Read, don't redesign:** `MeshTransport` and `CompositeMeshTransport` (the seam), `AckSync`, `MeshRouter.handOn`,
 `InboundPipeline.onDeliver` / `acknowledge`, `DmAckCoalescer`, `FastFrameCodec` / `FrameTranscoder` (ADR 030 / 060),
 `mesh/FramePresence.kt`, `MeshManager`'s frame sources, `ui/lora/` and `ui/chat/LoraReach.kt`. These follow their own
-routing bullets in `AGENTS.md`; touch one only as far as the brief says.
+routing in `.agents/context/`; touch one only as far as the brief says.
 
 **Never, unless the brief says so in words:**
 
@@ -51,7 +51,7 @@ routing bullets in `AGENTS.md`; touch one only as far as the brief says.
   dedicated-slot mode's debug-only gate (ADR 067);
 - the `MeshTransport` interface — propose the change in your report instead;
 - an `android.*` import in `mesh/lora/` (it stays pure; `MeshtasticGatt` is the plane's only `android.bluetooth.*`
-  importer), and `mesh/lab/` scenarios — if the brief puts one in scope, follow the lab bullet in `AGENTS.md`
+  importer), and `mesh/lab/` scenarios — if the brief puts one in scope, follow the mesh-lab entry in `.agents/rules/personas.md`
   (`lab-lint`, a targeted `lab-chaos.sh` run of `LoraPocketLabTest` / `RoomTickPlanesLabTest`) and report that
   `mesh-lab-reviewer` is owed;
 - `CHANGELOG.md`, fastlane text, git history (commit, stash, reset, checkout, branch), any phone and any board.
@@ -65,7 +65,7 @@ the tree may hold someone else's uncommitted work, and you leave every change th
 Read these before writing anything, in this order:
 
 1. `.agents/rules/coding.md` and `.agents/rules/mesh.md` (they're binding).
-2. `.agents/context/lora.md`. `grep` it, and the LoRa-adjacent bullets in `AGENTS.md` (y5f3, wkbk, 7x8k, ptv8), for
+2. `.agents/context/lora.md`. `grep` it, and the rest of `.agents/context/` (`grep -rn`; y5f3, wkbk, 7x8k, ptv8), for
    every class, function and constant you expect to touch. Read every ADR a matching entry cites, amendments included
    (`.agents/memory/decisions.md` maps an id to its file), then the `lora-bridge.md` section it names. Where an entry
    and its ADR disagree, the ADR wins; report the drift.

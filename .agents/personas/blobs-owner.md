@@ -60,7 +60,7 @@ only as far as the brief says, and follow its own routing.
 - a database schema change without a migration and a `KnitDatabaseMigrationTest` case (ADR 008), or a new table
   without its backup classification (`BackupTables`, ADR 2026-09.6mj7; custody is never carried);
 - the `MeshTransport` interface — propose the change in your report instead;
-- `mesh/lab/` beyond the scenario the brief puts in scope — follow the lab bullet in `AGENTS.md` (`lab-lint`, a
+- `mesh/lab/` beyond the scenario the brief puts in scope — follow the mesh-lab entry in `.agents/rules/personas.md` (`lab-lint`, a
   targeted `lab-chaos.sh` run) and report that `mesh-lab-reviewer` is owed;
 - a harness's oracle: the `…debug.STORE` JSON (`allIds`, `rows`, `expired`, read by `../knit-ios/scripts/interop.py`),
   `blob ask … → … first (…)` / `… widened`, `file route:`, and `FileIntake`'s `rx … in <ms>ms` line
@@ -78,7 +78,7 @@ Read these before writing anything, in this order:
 
 1. `.agents/rules/coding.md` and `.agents/rules/mesh.md` (they're binding; its custody and blob bullets are the
    invariants this plane lives by).
-2. `.agents/context/blobs.md`. `grep` it, and the adjacent bullets it names in `AGENTS.md`, for every class,
+2. `.agents/context/blobs.md`. `grep` it, and the adjacent files it names in `.agents/context/`, for every class,
    function and constant you expect to touch. Read every ADR a matching entry cites, amendments included
    (`.agents/memory/decisions.md` maps an id to its file), then the section it names. Where an entry and its ADR
    disagree, the ADR wins; report the drift.

@@ -22,16 +22,17 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
 - **The LoRa backfill and bridge custody window** (ADRs 044, 054, 2026-09.rre4, zkma, y8pu): `.agents/context/lora.md`
   — a board carries a frame and never a blob.
 - **The spool's attachment class and its deferral** (ADRs 021, 2026-09.xmte, p7j8, e8yw, 2026-10.vy27; the accounting of ADR 062):
-  the spool bullet in `AGENTS.md` and `docs/SPOOL_PROTOCOL.md` §4.5 / §9.5. `AttachmentDeferPolicy.noteRadioArrival`
+  `.agents/context/spool.md` and `docs/SPOOL_PROTOCOL.md` §4.5 / §9.5. `AttachmentDeferPolicy.noteRadioArrival`
   is fed from `MeshManager.watchIncomingFiles` ahead of the store write, and must stay ahead of it.
 - **Receive-side screening** — `MeshBlobStore.ingest`, `BlobStore.storing`, a held-but-refused avatar (#109): the
-  receive-side screening bullet in `AGENTS.md` and `docs/CONTENT_MODERATION.md` §3. "Held" means "screened".
+  receive-side screening entry in `.agents/context/moderation.md` and `docs/CONTENT_MODERATION.md` §3. "Held" means "screened".
 - **Group-tick escalation into custody** (ADR 033) and the sealed-tick seal-once cache: `.agents/context/crypto.md`;
-  the room tick's ride hold (ADR 2026-09.y5f3) and `MeshRouter.handOn` (2026-09.wkbk): their bullet in `AGENTS.md`.
+  the room tick's ride hold (ADR 2026-09.y5f3) and `MeshRouter.handOn` (2026-09.wkbk): their entry in `.agents/context/spool.md`.
 - **The Your mesh ledger's hooks** (`onRelayed` / `onServed`, `ForwardDao.observeCarriedForOthers`, ADR
   2026-09.2v2t), **the heal basket's custody replay** (`replayUndeliveredGroupCustody`, ADR 2026-09.6st4), **the chat's
   blob-size subscription** (ADR 2026-09.fjcw), **the profile re-flood memo** (ADR 2026-09.uc8p) and **the picture's
-  bytes before they are sealed** (`ImageStrip`, ADRs 2026-10.unqn and 8hmx): their own bullets in `AGENTS.md`.
+  bytes before they are sealed** (`ImageStrip`, ADRs 2026-10.unqn and 8hmx): their own entries in `.agents/context/`
+  (`app-shell.md`, `service.md`, `messages.md`, `contacts.md`).
 
 ## Entries
 

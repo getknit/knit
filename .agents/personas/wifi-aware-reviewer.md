@@ -61,9 +61,9 @@ isn't.
 
 ## Step 1: route every touched symbol to its decisions
 
-For each class, function, field and constant the diff touches, `grep -n '<Symbol>' .agents/context/wifi-aware.md
-AGENTS.md` (the plane's routing, then the router's Wi-Fi Aware-adjacent bullets) and READ every ADR the matching
-bullets cite (`.agents/memory/decisions.md` maps an id to its file), amendments included, then the section of
+For each class, function, field and constant the diff touches, `grep -rn '<Symbol>' .agents/context/wifi-aware.md
+.agents/context/` (the plane's routing, then the other subsystems' files) and READ every ADR the matching
+entries cite (`.agents/memory/decisions.md` maps an id to its file), amendments included, then the section of
 `.agents/context/mesh-transport.md` they name. The invariant digest at the end of this file is an index into those
 ADRs, not a substitute: where they disagree, the ADR wins and the disagreement is a finding of its own (doc drift).
 A symbol no bullet names is not exempt — read its field comment, which in this file usually carries the incident

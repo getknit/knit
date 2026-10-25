@@ -31,8 +31,8 @@ before changing behaviour — this file is the map, they are the reasoning.
   answers `TransferRefusal.CannotHost` for a sender or a caller, while a receiver or a callee asks `refusal()` alone
   and is never refused for it. Two sources: a generic system image over an older vendor (`device/SystemImage`, a
   TrebleDroid GSI's `system_server` dies when a client joins its group), and a latch after two unexplained deaths
-  while hosting in one boot (`DirectHostStore`'s marker, a reboot told apart by `elapsedRealtime`). Diagnostics shows
-  which, and resets a latch.
+  while hosting in one boot (`DirectHostStore`'s marker under the `direct_host_` keys, a reboot told apart by
+  `elapsedRealtime`). Diagnostics shows which, and resets a latch.
 - `AndroidTransferFiles` — MediaStore `Downloads/Knit` with `IS_PENDING`, committed only after the trailer
   verifies.
 - Signaling is one sealed DM ctl (`MessageContent.CTL_TRANSFER` + `xf`), gated on

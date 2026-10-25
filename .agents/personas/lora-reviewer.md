@@ -60,8 +60,8 @@ is in scope with its call sites — the policy is tested, the wiring isn't.
 
 ## Step 1: route every touched symbol to its decisions
 
-For each class, function and constant the diff touches, `grep -n '<Symbol>' .agents/context/lora.md AGENTS.md` (the
-plane's routing, then the router's LoRa-adjacent bullets) and READ every ADR the matching bullets cite
+For each class, function and constant the diff touches, `grep -rn '<Symbol>' .agents/context/lora.md .agents/context/` (the
+plane's routing, then the other subsystems' files) and READ every ADR the matching entries cite
 (`.agents/memory/decisions.md` maps an id to its file), amendments included, then the section of
 `.agents/context/lora-bridge.md` they name. The invariant digest at the end of this file is an index into those ADRs,
 not a substitute: where they disagree, the ADR wins and the disagreement is a finding of its own (doc drift). A symbol

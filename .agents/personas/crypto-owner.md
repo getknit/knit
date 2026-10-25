@@ -38,11 +38,11 @@ reset, seed, key-request and roster paths (`verifyInbound`, `canCarry`'s decode,
 `GroupRepository.recordDeparture` / `recordRejoin`; and the tests that cover them under `app/src/test/`.
 
 **Read, don't redesign:** `data/crypto/` (Keystore and SQLCipher: ADRs 2026-10.47rw and 2026-09.uzkm — their own
-`AGENTS.md` bullets; the prekey privates live in `IdentityKeyStore` and survive a DB wipe), `mesh/crypto/scope/` and
+entries in `.agents/context/storage.md`; the prekey privates live in `IdentityKeyStore` and survive a DB wipe), `mesh/crypto/scope/` and
 `mesh/spool/` (the spool plane reads `exportedRoots`; `docs/SPOOL_PROTOCOL.md`), `AckSync`'s schedule (the seal-once
 rule is yours, the ride hold is y5f3's), `KeyExchange` (g64k), `data/backup/` (6mj7), `CloneWatch` (ypcc),
 `AttachmentIdentities` (mptm), `XeddsaVerify` (the LoRa plane's, ggq4). Touch one only as far as the brief says,
-and follow its own routing bullet in `AGENTS.md`.
+and follow its own routing (`grep -rn '<Symbol>' .agents/context/`).
 
 **Never, unless the brief says so in words:**
 
@@ -60,7 +60,7 @@ and follow its own routing bullet in `AGENTS.md`.
   without its backup classification (`BackupTables`, ADR 2026-09.6mj7);
 - a new primitive or a new crypto dependency: Tink's public API and the existing AES-GCM helper are the whole set
   (ADR 016 — libsignal and anything native breaks the reproducible build, ADR 014);
-- `mesh/lab/` beyond the scenario the brief puts in scope — follow the lab bullet in `AGENTS.md` (`lab-lint`, a
+- `mesh/lab/` beyond the scenario the brief puts in scope — follow the mesh-lab entry in `.agents/rules/personas.md` (`lab-lint`, a
   targeted `lab-chaos.sh` run) and report that `mesh-lab-reviewer` is owed;
 - `CHANGELOG.md`, fastlane text, git history (commit, stash, reset, checkout, branch), and any physical device.
 
@@ -74,7 +74,7 @@ you found it.
 Read these before writing anything, in this order:
 
 1. `.agents/rules/coding.md` and `.agents/rules/mesh.md` (they're binding).
-2. `.agents/context/crypto.md`. `grep` it, and the crypto-adjacent bullets in `AGENTS.md`, for every class,
+2. `.agents/context/crypto.md`. `grep` it, and the rest of `.agents/context/` (`grep -rn`), for every class,
    function and constant you expect to touch. Read every ADR a matching entry cites, amendments included
    (`.agents/memory/decisions.md` maps an id to its file), then the FSR or GFS section it names. Where an entry and
    its ADR disagree, the ADR wins; report the drift.
