@@ -163,7 +163,8 @@ class WifiAwareTransport(
     // [NanIcmPolicy]'s 5 GHz picks: BuildConfig.DEBUG in di/, the one seam the cross-band delivery trial flips.
     private val fiveGhzRules: Boolean = false,
     // Written by this plane, read by di/'s "Wi-Fi Aware won't run here" flow, which the Bluetooth advert carries
-    // (GitHub #44): the radio off by evidence, or attaching given up ([NanDormancyPolicy.wontRun]). Never dormancy.
+    // (GitHub #44): the radio off by evidence, deep idle, or attaching given up ([NanDormancyPolicy.wontRun]). Never
+    // dormancy.
     private val wontRunHere: MutableStateFlow<Boolean> = MutableStateFlow(false),
 ) : MeshTransport {
     private val appContext = context.applicationContext
@@ -171,7 +172,8 @@ class WifiAwareTransport(
     private val connectivity =
         appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-    // Read only for [NanDormancyPolicy.radioOff]'s evidence: Wi-Fi off, deep Doze. Neither needs a permission Aware lacks.
+    // Read only for the dormancy evidence ([NanDormancyPolicy.RadioFacts]): Wi-Fi off (health and advert), deep idle
+    // (the advert only). Neither needs a permission Aware lacks.
     private val wifiManager = appContext.getSystemService(WifiManager::class.java)
     private val powerManager = appContext.getSystemService(PowerManager::class.java)
 
@@ -707,6 +709,9 @@ class WifiAwareTransport(
     private var watchdogJob: Job? = null
     private var availabilityRegistered = false
 
+    // [idleReceiver]'s registration, beside [availabilityRegistered] and with the same lifetime.
+    private var idleRegistered = false
+
     private data class DiscoveredPeer(
         val advert: Protocol.PeerWire,
         val peerHandle: PeerHandle,
@@ -777,6 +782,7 @@ class WifiAwareTransport(
             }
             icmLit.reset(SystemClock.elapsedRealtime())
             registerAvailability()
+            registerIdleWatch()
             registerWifiWatch()
             // The give-up journal above is one of "won't run here"'s inputs: publish it before the first attach.
             refreshAwareEvidence()
@@ -1226,6 +1232,7 @@ class WifiAwareTransport(
         diagJob?.cancel()
         watchdogJob?.cancel()
         unregisterAvailability()
+        unregisterIdleWatch()
         unregisterWifiWatch()
         initiatorPolicy.noteWatchStopped() // a blip cannot span the watch; the strikes and the hold stay (ADR 055)
         NanFaultInjector.bind(onAvailability = null, status = null)
@@ -2508,17 +2515,20 @@ class WifiAwareTransport(
     /**
      * Re-read whether this phone will run Wi-Fi Aware ([NanDormancyPolicy.wontRun], [wontRunHere]) and, while dormant
      * and detached, the health that follows from the same evidence. Run on every write of [attachAbandoned], every
-     * availability broadcast and every watchdog tick, so an `isAvailable` false that has held its 30 s is read within
-     * one more. Posted to the handler from anywhere.
+     * availability broadcast, every deep-idle edge ([idleReceiver]) and every watchdog tick, so an `isAvailable` false
+     * that has held its 30 s is read within one more. Posted to the handler from anywhere.
      */
     private fun refreshAwareEvidence() =
         onHandler {
             val now = SystemClock.elapsedRealtime()
             val available = runCatching { awareManager?.isAvailable }.getOrNull() ?: false
             unavailableSince = NanDormancyPolicy.unavailableSince(available, unavailableSince, now)
-            val off = NanDormancyPolicy.radioOff(radioFacts(now))
-            wontRunHere.value = !hasHardware || NanDormancyPolicy.wontRun(off, attachAbandoned)
-            if (_dormant.value && session == null) _health.value = NanDormancyPolicy.dormantHealth(off, attachAbandoned)
+            val facts = radioFacts(now)
+            // Two readers of one read: the advert's (deep idle counts) and the health's (it never does).
+            wontRunHere.value = !hasHardware || NanDormancyPolicy.wontRun(facts, attachAbandoned)
+            if (_dormant.value && session == null) {
+                _health.value = NanDormancyPolicy.dormantHealth(NanDormancyPolicy.radioOff(facts), attachAbandoned)
+            }
         }
 
     /** `…debug.NANDORM --ez hold`: pin the plane awake (a dormant one wakes now), or let the policy decide again. */
@@ -4191,7 +4201,7 @@ class WifiAwareTransport(
                     // Pixel 3 that cycle is the responder's recovery from the very STA drop being judged.
                     initiatorPolicy.noteRadioOff()
                 }
-                // Wi-Fi Aware switched off (Wi-Fi off / airplane mode). Dormant, only the evidence says so: a Doze edge or
+                // Wi-Fi Aware switched off (Wi-Fi off / airplane mode). Dormant, only the evidence says so: deep idle or
                 // a broadcast this plane's own close caused must not read as Wi-Fi off ([NanDormancyPolicy.radioOff]).
                 _health.value = if (_dormant.value) dormantHealth() else TransportHealth.Unavailable
                 peers.keys.toList().forEach { teardownPeer(it) }
@@ -4250,6 +4260,50 @@ class WifiAwareTransport(
         if (!availabilityRegistered) return
         runCatching { appContext.unregisterReceiver(availabilityReceiver) }
         availabilityRegistered = false
+    }
+
+    /**
+     * Deep idle's edges, so "won't run here" ([NanDormancyPolicy.wontRun], the one reader that counts idle) follows them
+     * at once; the dormant health is re-read with it and never moves on idle alone. Without it the advert's bit followed
+     * idle only on the next watchdog tick, which Doze stretches: on the P9 the bit went up two minutes into idle (2t49's
+     * 2026-10-24 amendment). Its own receiver on purpose: an idle edge is not an availability edge, so none of
+     * [handleAvailabilityChanged]'s refunds, attaches or teardowns may run on it. Main thread; the work is posted.
+     */
+    private val idleReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(
+                context: Context,
+                intent: Intent,
+            ) {
+                onHandler {
+                    val idle = runCatching { powerManager?.isDeviceIdleMode }.getOrNull()
+                    Log.i(TAG, "aware evidence: device idle edge (idle=$idle)")
+                    refreshAwareEvidence()
+                }
+            }
+        }
+
+    /**
+     * Subscribe to deep idle's edges, as [registerAvailability] does and for the same reason guarded: losing the edge
+     * only leaves the bit to the watchdog tick, so a ROM that refuses the registration must never fail [start].
+     */
+    private fun registerIdleWatch() {
+        if (idleRegistered) return
+        idleRegistered =
+            runCatching {
+                ContextCompat.registerReceiver(
+                    appContext,
+                    idleReceiver,
+                    IntentFilter(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED),
+                    ContextCompat.RECEIVER_NOT_EXPORTED,
+                )
+            }.onFailure { Log.w(TAG, "device idle receiver registration failed", it) }.isSuccess
+    }
+
+    private fun unregisterIdleWatch() {
+        if (!idleRegistered) return
+        runCatching { appContext.unregisterReceiver(idleReceiver) }
+        idleRegistered = false
     }
 
     /**

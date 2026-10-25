@@ -132,11 +132,14 @@ Check each shape explicitly; the incidents are the evidence that each one bit th
    unless a heartbeat does. Evidence: f06937a1 (relayed profiles put a phone miles away, and a phone with no Aware
    radio, in "Directly connected"), 6cf7f3c2 (ghost peers fast-ticked the initiator forever).
 10. **Darkness: ICM, Doze, band and duty.** Instant Communication Mode lasts 30 s per config update and is relit by
-    `updatePublish(sameConfig)`; deep Doze disables Aware outright; a screen-off phone wakes for every 8th 2.4 GHz
-    discovery window and none on 5 GHz; a STA on 5 GHz cross-band time-shares with the 2.4 GHz social channel and
-    its follow-ups fail `NO_OTA_ACK` in Doze. Conversely a demand-free loop that relights ICM keeps the radio lit
-    around the clock. Every relight is demand-gated; every loop waits for its event with a bounded fallback.
-    Evidence: e276c246, 5cd5ce2a (the `updatePublish` keepalive), 612f9816 (a lonely phone kept ICM lit all day).
+    `updatePublish(sameConfig)`. Deep Doze turns Aware off on API 31 (the Pixel 3, `isAvailable` false) but not on
+    the API 37 Pixels, where `isAvailable` stays true and discovery and NDPs keep working, so `isDeviceIdleMode`
+    alone never proves the radio is off. A screen-off phone wakes for every 8th 2.4 GHz discovery window and none
+    on 5 GHz; a STA on 5 GHz cross-band time-shares with the 2.4 GHz social channel and its follow-ups fail
+    `NO_OTA_ACK` in Doze. Conversely a demand-free loop that relights ICM keeps the radio lit around the clock.
+    Every relight is demand-gated; every loop waits for its event with a bounded fallback. Evidence: e276c246,
+    5cd5ce2a (the `updatePublish` keepalive), 612f9816 (a lonely phone kept ICM lit all day), ADR 2026-10.2t49's
+    amendment (deep idle read as radio-off put the "turn on Wi-Fi" banner on every dozing dormant phone).
 11. **A framework gate that depends on the API tier, the process state or the chip.** On API 29–32
     `publish`/`subscribe` (only those) check the foreground-only location app-op, so off screen they throw a
     location `SecurityException` that is not a dead session; `maxServiceSpecificInfoLength` and
@@ -237,8 +240,10 @@ Sourced; cite these by their ADR or doc, and treat anything not here or in an AD
   it; firmware unicast can fail every follow-up while discovery works. Both clear only on a NAN restart (jjhg).
 - A peer's NAN address changes on a NAN restart, not on the 30-minute `mac_random_interval_sec` (jjhg forensics).
 - Instant Communication Mode stays on 30 s after a config update; `updatePublish`/`updateSubscribe` refresh it. Deep
-  Doze disables Aware by default (`mUsageEnabled: false`); screen-off profiles wake every 8th 2.4 GHz discovery
-  window and disable 5/6 GHz ones (e276c246, 5cd5ce2a, m8kc's trial notes).
+  Doze disables Aware on the Pixel 3 (API 31: `mUsageEnabled: false`, `isAvailable` false); on the API 37 Pixels it
+  only switches to the idle power profile and Aware keeps working (ADR 2026-10.2t49's amendment, trials N and Q).
+  Screen-off profiles wake every 8th 2.4 GHz discovery window and disable 5/6 GHz ones (e276c246, 5cd5ce2a, m8kc's
+  trial notes).
 - API 29–32: the location app-op gates `publish` and `subscribe` only, foreground-only under a while-in-use grant,
   lifted by the `location` runtime foreground-service type (and on 30–32 a start from a visible activity); from 33
   discovery rides `NEARBY_WIFI_DEVICES` (535d).

@@ -634,8 +634,10 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   clock runs), `candidatesNear` / `candidatesHeard` / `seesNewcomers` (what Bluetooth pushed), `held`,
   `dutyIntervalMs`, and the radio evidence the dormant health and the advert's `FLAG_NO_AWARE` read: `available`
   (`isAvailable` now — trial F samples it beside `dumpsys wifiaware`'s `mUsageEnabled`), `wifiEnabled`, `deviceIdle`,
-  `radioOff` (Wi-Fi off, deep Doze, or `isAvailable` false for 30 s outside the 30 s beat after our own close) and
-  `wontRun`. A dormant plane's row reads `Healthy` unless `radioOff`. The field log writes `nan_dormant` per
+  `radioOff` (the health's reader: Wi-Fi off, or `isAvailable` false for 30 s outside the 30 s beat after our own
+  close; never deep idle alone) and `wontRun` (the advert's: `radioOff`, `deviceIdle` or an abandoned attach, plus no
+  hardware). A dormant plane's row reads `Healthy` unless `radioOff`, so a dozing dormant phone reads `Healthy` with
+  `wontRun: true`; an idle edge logs `aware evidence: device idle edge (idle=…)` and re-reads both at once. The field log writes `nan_dormant` per
   transition. Hold, interval and dormancy all go with the transport's stop (`NANOFF`, `AWARE`, a mesh stop). While
   `seesNewcomers` is false (no Bluetooth plane, or one not yet reporting) the plane never goes dormant. A candidate
   already near when `--ez now true` forces dormancy does not wake it (only a new one does, or the other triggers);

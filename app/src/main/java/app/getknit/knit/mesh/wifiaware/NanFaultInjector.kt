@@ -81,8 +81,8 @@ internal data class NanIcmHooks(
  * ([nextDutyInMs], null unless dormant between duties), a duty running ([dutyActive]); awake, how long the idle clock
  * has run ([idleForMs]) and what holds it attached ([stayReason], null when nothing does); the other planes' candidate
  * sets and newcomer watch; the debug [held] and the [dutyIntervalMs] in force; and the radio evidence the health and
- * the advert's flag read ([available] is `isAvailable` now — trial F samples it — [wifiEnabled], [deviceIdle],
- * [radioOff], [wontRun]).
+ * the advert's flag read ([available] is `isAvailable` now — trial F samples it — [wifiEnabled], [deviceIdle];
+ * [radioOff] is the health's reader, never deep idle; [wontRun] the advert's, which deep idle sets).
  */
 internal data class NanDormancySnapshot(
     val dormant: Boolean,

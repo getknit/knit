@@ -21,9 +21,12 @@ import app.getknit.knit.mesh.TransportHealth
  *   fires about once a minute on transit and would undo dormancy.
  * - **Duty** ([dutyDue], [duty]): while dormant, one attach every [DUTY_INTERVAL_MS] held for [DUTY_WINDOW_MS] from
  *   `onAttached`, so a peer whose Bluetooth is off is still found. Skipped while the attach budget says no.
- * - **Health and "won't run"** ([radioOff], [dormantHealth], [wontRun]): while dormant the plane reads Healthy unless
- *   there is evidence the radio is off — Wi-Fi off, deep Doze, or `isAvailable` false held [UNAVAILABLE_HOLD_MS]
- *   outside the beat after our own close ([OWN_CLOSE_BEAT_MS]) — so our own NAN-down never reads as "Wi-Fi off".
+ * - **Health** ([radioOff], [dormantHealth]): while dormant the plane reads Healthy unless there is evidence the radio
+ *   is off — Wi-Fi off, or `isAvailable` false held [UNAVAILABLE_HOLD_MS] outside the beat after our own close
+ *   ([OWN_CLOSE_BEAT_MS]) — so our own NAN-down never reads as "Wi-Fi off". Deep idle is not that evidence: the API 37
+ *   Pixels keep Aware available and working through it (ADR 2026-10.2t49's 2026-10-24 amendment).
+ * - **"Won't run"** ([wontRun]): the advert's half, a wider reader of the same facts — the health's evidence, deep
+ *   idle, or a given-up attach. It means "don't count on my Aware right now", not "my Aware is off".
  * - **Refunds** ([availabilityEdge]): an availability broadcast inside that beat is our own close's echo, so it is
  *   not recorded as a false and its true cannot refund the attach streak (ADR 055: only a genuine edge refunds, and
  *   a refund the dormancy cycle could drive is getknit/Knit#9's binder leak).
@@ -259,7 +262,11 @@ object NanDormancyPolicy {
     data class RadioFacts(
         /** `WifiManager.isWifiEnabled`; null when the read failed (never read as off). */
         val wifiEnabled: Boolean?,
-        /** `PowerManager.isDeviceIdleMode` — deep Doze disables Aware by default; null when unread. */
+        /**
+         * `PowerManager.isDeviceIdleMode`; null when unread. Read by [wontRun] only, never by [radioOff]: AOSP's
+         * `WifiAwareStateManager` answers the idle broadcast with `reconfigure()`, and the API 37 Pixels keep Aware
+         * available and discovering through deep idle (2t49's trials N and Q).
+         */
         val deviceIdle: Boolean?,
         /** When `isAvailable` was first seen false in the current run of falses; 0 while it reads true. */
         val unavailableSince: Long,
@@ -269,16 +276,18 @@ object NanDormancyPolicy {
     )
 
     /**
-     * Whether the radio is off by evidence: Wi-Fi off, deep Doze, or `isAvailable` false held [holdMs] — counted only
-     * from the end of [beatMs] after our own close, whose NAN-down the framework may broadcast as unavailable for a
-     * moment (unmeasured: trial F samples `mUsageEnabled` across ten dormant minutes).
+     * The health's reader: whether the radio is off by evidence — Wi-Fi off, or `isAvailable` false held [holdMs],
+     * counted only from the end of [beatMs] after our own close, whose NAN-down the framework may broadcast as
+     * unavailable for a moment. Never deep idle alone ([RadioFacts.deviceIdle]): a dozing phone whose Aware works must
+     * not raise the "turn on Wi-Fi" banner (trial N); a phone whose Aware does go off in Doze (the Pixel 3, API 31)
+     * reads `isAvailable` false, which the hold covers.
      */
     fun radioOff(
         f: RadioFacts,
         holdMs: Long = UNAVAILABLE_HOLD_MS,
         beatMs: Long = OWN_CLOSE_BEAT_MS,
     ): Boolean {
-        if (f.wifiEnabled == false || f.deviceIdle == true) return true
+        if (f.wifiEnabled == false) return true
         if (f.unavailableSince == 0L) return false
         val countsFrom = if (f.lastOwnCloseAt == 0L) f.unavailableSince else maxOf(f.unavailableSince, f.lastOwnCloseAt + beatMs)
         return f.now - countsFrom >= holdMs
@@ -300,19 +309,29 @@ object NanDormancyPolicy {
         }
 
     /**
-     * This phone will not run Wi-Fi Aware, as far as the plane can tell — the Bluetooth advert's `FLAG_NO_AWARE` half
-     * that the plane owns (di/ ORs in the switches and the hardware): the radio is off by evidence, or attaching is
-     * given up. Never true for dormancy alone or a Wi-Fi Direct pause: a dormant plane wakes for a peer that asks.
+     * The advert's reader: don't count on this phone's Wi-Fi Aware right now — the Bluetooth advert's `FLAG_NO_AWARE`
+     * half that the plane owns (di/ ORs in the switches and the hardware). True on the health's evidence ([radioOff]),
+     * in deep idle, or with attaching given up. Never for dormancy alone or a Wi-Fi Direct pause: a dormant plane wakes
+     * for a peer that asks.
+     *
+     * Deep idle is here and not in [radioOff] on purpose (2t49's 2026-10-24 amendment): its Aware works on the phones
+     * measured, but not shown harmless on every phone, and a false "don't count on me" only delays a peer's wake, where
+     * a false "Wi-Fi off" banner misleads the person. On the API 37 Pixels deep idle holds until unlock, so a lit lock
+     * screen still sets the bit. The transport re-reads this on `ACTION_DEVICE_IDLE_MODE_CHANGED`, so both edges land
+     * at once; a deep maintenance window reads not-idle and starts the bit's 60 s clear (`NoAwareFlag`), so a window
+     * shorter than that leaves the bit set, and a longer one clears it until idle resumes.
      */
     fun wontRun(
-        radioOff: Boolean,
+        f: RadioFacts,
         attachAbandoned: Boolean,
-    ): Boolean = radioOff || attachAbandoned
+        holdMs: Long = UNAVAILABLE_HOLD_MS,
+        beatMs: Long = OWN_CLOSE_BEAT_MS,
+    ): Boolean = radioOff(f, holdMs, beatMs) || f.deviceIdle == true || attachAbandoned
 
     /**
-     * A dormant plane's health: Unavailable only on evidence the radio is off; Degraded only for a give-up the attach
-     * budget made (a fault dormancy did not cause, and the one the plane would read awake); Healthy otherwise. Never
-     * Degraded for being dormant, and never Unavailable for our own close's NAN-down.
+     * A dormant plane's health: Unavailable only on evidence the radio is off ([radioOff], never deep idle); Degraded
+     * only for a give-up the attach budget made (a fault dormancy did not cause, and the one the plane would read
+     * awake); Healthy otherwise. Never Degraded for being dormant, and never Unavailable for our own close's NAN-down.
      */
     fun dormantHealth(
         radioOff: Boolean,

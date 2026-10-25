@@ -64,7 +64,10 @@ but matched AOSP semantics in every behavior we observed.
   (`PARAM_ON_IDLE_DISABLE_AWARE_DEFAULT = 1`, shell-only override); screen-off drops 2.4 GHz discovery
   windows to a wake every 8th DW (~4 s worst-case latency) and **disables 5/6 GHz DWs**. The NAN discovery
   MAC re-randomizes every **1800 s** (`mac_random_interval_sec`) — a predictable ~30-min stale-handle churn
-  source that looks like "the peer restarted".
+  source that looks like "the peer restarted". *Corrected 2026-10-24 (ADR 2026-10.2t49, trials N and Q):* on AOSP main
+  and the API 37 Pixels (P7, P8, P9), deep idle only reconfigures Aware to the idle power profile, and the parameter
+  is set but never read: `mUsageEnabled` and `isAvailable` stay true and NDPs carry photos. The API 31 Pixel 3 does
+  turn Aware off in Doze (`isAvailable` false).
 - **Capabilities (E0, all three Pixels):** `maxNdiInterfaces=1, maxNdpSessions=8, maxPublishes=8,
   maxSubscribes=8, maxServiceSpecificInfoLen=255 (extended 255), maxQueuedTransmitMessages=8`; ICM
   supported on all; suspension P8+P9; NAN pairing P9 only. The follow-up message limit **is**

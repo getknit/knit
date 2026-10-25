@@ -105,7 +105,8 @@ Bluetooth-adjacent routing that stays in `AGENTS.md`, because another subsystem 
 - **When touching `BleAdvertPayload.FLAG_NO_AWARE` / `flags(noAware)`, `NoAwareFlag`, `AwareCandidateTracker`,
   `BluetoothMeshTransport.awareCandidatesNear` / `awareCandidatesHeard` / `seesNewcomers` / `awareWontRun`,
   `endWindow()`, `publishLock`, or `BleAdvertiser`'s `dataStale` re-push:** READ ADR 2026-10.2t49. The flag is the
-  absence of Aware (bit 2, set while this phone will not run it), set at once and cleared only after 60 s held false, so
+  absence of Aware (bit 2, set while a peer should not count on this phone's Aware: it will not run it, or it is in
+  deep idle — the ADR's 2026-10-24 amendment), set at once and cleared only after 60 s held false, so
   every older build reads as a candidate and Doze windows do not wake neighbours. A peer is a candidate only on a
   service-data sighting with the bit clear; a GATT read forgets it, and a `CAP_DOORBELL` HELLO or a never-sighted link
   never makes one. A link counts only while its readback says 1M or 2M; Coded, unknown or no readback count as Coded.

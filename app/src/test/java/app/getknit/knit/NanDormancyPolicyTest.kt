@@ -224,7 +224,10 @@ class NanDormancyPolicyTest {
         val now = 10_000_000L
         assertFalse(NanDormancyPolicy.radioOff(radio(now)))
         assertTrue("Wi-Fi off", NanDormancyPolicy.radioOff(radio(now, wifiEnabled = false)))
-        assertTrue("deep Doze", NanDormancyPolicy.radioOff(radio(now, deviceIdle = true)))
+        assertFalse(
+            "deep idle alone is no radio off: the API 37 Pixels keep Aware working through it (2t49 trial N)",
+            NanDormancyPolicy.radioOff(radio(now, deviceIdle = true)),
+        )
         assertFalse("an unread Wi-Fi state is never off", NanDormancyPolicy.radioOff(radio(now, wifiEnabled = null, deviceIdle = null)))
         val hold = NanDormancyPolicy.UNAVAILABLE_HOLD_MS
         assertFalse("unavailable, not yet held", NanDormancyPolicy.radioOff(radio(now, unavailableSince = now - hold + 1)))
@@ -266,10 +269,33 @@ class NanDormancyPolicyTest {
     }
 
     @Test
-    fun wontRunIsTheRadioOffOrAGiveUpNeverDormancy() {
-        assertFalse(NanDormancyPolicy.wontRun(radioOff = false, attachAbandoned = false))
-        assertTrue(NanDormancyPolicy.wontRun(radioOff = true, attachAbandoned = false))
-        assertTrue(NanDormancyPolicy.wontRun(radioOff = false, attachAbandoned = true))
+    fun wontRunIsTheRadioOffDeepIdleOrAGiveUpNeverDormancy() {
+        val now = 10_000_000L
+        val hold = NanDormancyPolicy.UNAVAILABLE_HOLD_MS
+        assertFalse(NanDormancyPolicy.wontRun(radio(now), attachAbandoned = false))
+        assertTrue("Wi-Fi off", NanDormancyPolicy.wontRun(radio(now, wifiEnabled = false), attachAbandoned = false))
+        assertTrue("unavailable, held", NanDormancyPolicy.wontRun(radio(now, unavailableSince = now - hold), attachAbandoned = false))
+        assertFalse("unavailable, not yet held", NanDormancyPolicy.wontRun(radio(now, unavailableSince = now - hold + 1), false))
+        assertTrue("deep idle: don't count on my Aware", NanDormancyPolicy.wontRun(radio(now, deviceIdle = true), attachAbandoned = false))
+        assertFalse("an unread idle state is never idle", NanDormancyPolicy.wontRun(radio(now, deviceIdle = null), attachAbandoned = false))
+        assertTrue("given up", NanDormancyPolicy.wontRun(radio(now), attachAbandoned = true))
+    }
+
+    @Test
+    fun deepIdleSetsTheAdvertsBitButNeverMakesADormantPlaneUnavailable() {
+        // The two readers of one instant, as refreshAwareEvidence reads them (2t49's 2026-10-24 amendment).
+        val dozing = radio(10_000_000L, deviceIdle = true)
+        assertTrue(NanDormancyPolicy.wontRun(dozing, attachAbandoned = false))
+        assertEquals(
+            TransportHealth.Healthy,
+            NanDormancyPolicy.dormantHealth(NanDormancyPolicy.radioOff(dozing), attachAbandoned = false),
+        )
+        // The Pixel 3 (API 31) does turn Aware off in Doze: its isAvailable false, held, is the health's evidence.
+        val p3 = radio(10_000_000L, deviceIdle = true, unavailableSince = 10_000_000L - NanDormancyPolicy.UNAVAILABLE_HOLD_MS)
+        assertEquals(
+            TransportHealth.Unavailable,
+            NanDormancyPolicy.dormantHealth(NanDormancyPolicy.radioOff(p3), attachAbandoned = false),
+        )
     }
 
     @Test

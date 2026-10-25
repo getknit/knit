@@ -101,3 +101,109 @@ bluetooth_manager`'s `A2DP Choppy` events. Trial F runs with no knit-peer harnes
 - **O. Walk-away and the edges.** A flag-clear peer carried off leaves the sets within about 90 s plus one gap; a peer
   held about −95 dBm in every window keeps a screen-off smallest node awake for 15 min; a linked Coded peer walked to
   about −95 dBm leaves the heard set.
+
+## Trial results 2026-10-24 — P9 Pro XL (API 37), P8 (API 37), P3 (API 31), all on 5ceba1c; no walking
+
+A Moto G (`fd5onyke…`, not on adb) and the P7 (`24sd5jd4…`, a translate branch) run older builds, so they advertise
+the no-Aware bit clear and stay Aware candidates: the P9 could not fall dormant by itself while they were near, and the
+single-phone trials forced dormancy with `…debug.NANDORM --ez now true` (the FORCED reason, exempt from the near
+self-heal). The P7's NAN plane was switched off (`NANOFF`) for the empty-window trials.
+
+- **F (#44), passed.** Forced dormant: `dumpsys wifiaware` shows no client and `mCurrentAwareConfiguration: null`,
+  `mUsageEnabled: true`, the row Healthy and dormant. A 300 MiB LAN pull read 760, 789 and 786 Mbit/s dormant against
+  280 and 162 awake (Wi-Fi on 5180). The natural 3-minute dormancy was not observed (the candidates above).
+- **J, passed.** Two `HEAL`s left a dormant plane dormant.
+- **Bluetooth toggles, passed.** Each adapter-off edge logged `bt newcomers unwatched (adapter off)` within 1 ms and woke
+  a dormant plane `BLIND`; the scan was watched again about 12 s after the adapter came back.
+- **I, passed.** `NANOFF` on the P3 set its bit (`bt advert noAware=true` 15:02:49), and the P9 dropped it from both sets
+  by 15:03:28. Switched back on, the bit cleared about 60 s later and the P3 rejoined the sets.
+- **Duty-window regression, passed.** With the P7's NAN off and a 60 s duty, a `NANICM --ez on` 26 s into a window was
+  refused (`session cycle: dormant (duty=true) — nothing to cycle`), the window closed `DUTY_EMPTY` at its end, there was
+  no fast-tick run, and the near-candidate self-heal then woke the plane (`SIGHTING`). The bridge's reply still says
+  "(session cycled)" for a refused cycle: cosmetic.
+- **L, passed.** `NANFAIL --ei count 40` across a duty window, its `DUTY_EMPTY` close and a `SIGHTING` wake: the attach
+  streak ran 1–4 in the window and 5–6 after the wake, the backoff grew 3.5 → 98 s, `failTotal` 6. Nothing refunded it.
+- **H, passed.** The P3 with Bluetooth off and NAN on: the dormant P9's duty attach discovered it 7 s into the window and
+  stayed awake on it (`aware awake: DUTY`, stay reason cue targets).
+- **M, passed.** A close and a wake 605 ms later re-attached after the settle; no `state=104` request in `dumpsys
+  wifiaware` afterwards.
+- **K, passed.** `AWARE --ez on false` on the P3 stopped its plane (`switchedOff`, NAN down) and the P9 dropped it from
+  its sets within 30 s; on again read Healthy.
+- **N — a defect.** Deep idle does not disable Aware on these phones. Under `dumpsys deviceidle force-idle` the P9 kept
+  `mUsageEnabled: true`, and the P8 in real deep idle (`mForceIdle=false`, `mState=IDLE`, within 20 s of its screen going
+  off) kept Aware available with its plane attached. AOSP main agrees: `WifiAwareStateManager` answers
+  `ACTION_DEVICE_IDLE_MODE_CHANGED` with `reconfigure()` (the idle power profile: every 8th 2.4 GHz window, no 5 GHz),
+  and `PARAM_ON_IDLE_DISABLE_AWARE` is set but never read. Yet this change counts deep idle as "won't run Aware": the
+  plane read Unavailable (the Wi-Fi-off banner's state) for the whole idle and up to ~20 s after it, and the advert
+  carried the no-Aware bit, so every dozing phone (on the P8, every screen-off minute) drops out of its peers' candidate
+  sets while its Aware still works. Fix owed: drop `deviceIdle` from the radio evidence; keep Wi-Fi off, an
+  `isAvailable` false held 30 s, and an abandoned attach. (Decided otherwise for the bit: see the amendment below.)
+- **P, the natural dormancy, passed** (later, with the Moto G off and the P7 and P8 out of the lab; the P9 kept
+  Bluetooth links to the P3 and an iPhone throughout). With no candidate near, the P9 slept by itself twice (`IDLE`
+  after 184 s and 180 s, `heard=0 near=0`), and each 12-minute duty window closed `DUTY_EMPTY`. The P3's screen coming
+  on woke it `SIGHTING` 82 s later: the P3 had dozed (API 31 does turn Aware off there), so its bit cleared 60 s after
+  Aware came back, and the next scan saw it. Two Aware phones then held each other awake for over 5 minutes. With the
+  P3's plane off, the P9 slept 6 min 32 s later. The candidate lapsed in 31–42 s, the cue target stayed until the
+  150 s `REACHABLE_LINGER_MS` prune, and then the 180 s idle ran. NAN was down afterwards (no client, no configuration).
+- **P in deep Doze — a latency, not a defect.** With the P9 dozing, the P3's plane coming back woke it 7 min 11 s
+  later. Knit's scanner ran no scan between 17:14:28 and 17:22:17, because a settled node's scan gap stretches with
+  sleep (ADR 2026-10.pj9w), and the first scan after the gap saw the P3 and woke the plane within 1 s. So a dozing
+  phone wakes on a sighting no sooner than its next scan, with the duty attach as the bound. Before this change its
+  attached NAN would have been found by the firmware's discovery. Messages are unaffected, since the Bluetooth link
+  stayed up. Awake again in deep idle, the P9 discovered the P3 over NAN while `wontRun` read true and its advert had
+  carried the no-Aware bit since 17:16:21. That is N again.
+- **A2DP while dormant, passed.** Pixel Buds streaming from the P9, screen on, two reps of three 60 s arms, counting
+  the stack's `A2DP Choppy` quality reports (`dumpsys bluetooth_manager`): awake (held, the P3's Aware on) 2 and 8,
+  dormant (forced, the P3's Aware off, NAN down) 0 and 0, Aware switched off 0 and 1. The two minutes of streaming
+  awake before the arms logged 14. Dormant matches Aware off, as 486r's trial had Aware off at 0 and attached at 3–9.
+  The buffer holds only the latest dozen or so reports, so the first awake arm's count may be low. The dormant and off
+  windows sit inside one dump with reports on both sides, so their counts are complete.
+- **Q, Aware in deep Doze (does N's `deviceIdle` earn its place?).** The P7 (API 37, 2.10.0-beta.0), the P8 and the
+  P9, all on battery on a 5180 STA, all in natural deep idle the whole time (the P7 past its first hour, with
+  `mNextIdleDelay` at 2 h). Each kept `mUsageEnabled: true` and an attached client. Results:
+  - **The P7 worked in deep idle.** It was discovered 3–6 s after its plane re-attached, found the P8 in 3 s, and
+    took four photos from the P9 over NAN with ICM on and off. Each photo was an NDP up 0.7–1.3 s after the arm, and
+    700 KB landed in 158–1067 ms.
+  - **The P9 was slow to be found with its screen off.** After any re-attach it found both others in 2.6–4.5 s, but
+    they took 59–99 s to find it, and the P8 never did within 140 s. With its screen on, and still in deep idle (on
+    these Pixels deep idle holds until unlock), the others found it in 5.5–9 s.
+
+  So deep idle is not the property that breaks NAN here. The P9's partial failure follows its screen, while
+  `isDeviceIdleMode` and `isAvailable` both read the same through it.
+- **R, the amendment below, passed** (20:08–20:16, on the amendment's build). The P7, still on 2.10.0-beta.0, has no
+  bit and always counts as a candidate, so both planes were forced dormant.
+  - **The P9 (API 37).** Dormant in deep idle, it read Healthy throughout, with `radioOff: false` and
+    `wontRun: true`; on 5ceba1c this read Unavailable. A stepped maintenance window logged
+    `device idle edge (idle=false)` within 3 s, and both windows ended on their own inside 30 s with the bit still
+    set. Held out of idle with `dumpsys deviceidle disable deep`, the bit cleared exactly 60 s after the edge. Forced
+    back in, `noAware=true` followed the `idle=true` edge 2 ms later.
+  - **The P3 (API 31).** Under `force-idle` its bit went up on the edge, `isAvailable` went false, and `radioOff`
+    turned true once the 30 s hold had run after the 30 s beat of the dormancy close just before. The dormant row read
+    Unavailable within the next tick, about 24 s later. Unlocked, it logged the `idle=false` edge and read available
+    and Healthy within 2 s.
+- **Not run:** G, O and the Coded and −95 dBm cells (they need phones moved).
+
+## Amendment 2026-10-24 — deep idle is in the advert's bit, not in the health
+
+Trials N and Q found deep idle harmless to Aware on the API 37 Pixels: `mUsageEnabled` and `isAvailable` stay true,
+discovery and NDPs work (four 700 KB photos to a P7 more than an hour into deep idle), and AOSP main's
+`WifiAwareStateManager` answers `ACTION_DEVICE_IDLE_MODE_CHANGED` with `reconfigure()` alone. Counting deep idle as
+"the radio is off" raised the "turn on Wi-Fi" banner on every dozing dormant phone. Not every phone was measured, so
+the evidence splits into two readers in `NanDormancyPolicy`:
+
+1. **Health** (`radioOff`, read by `dormantHealth`): Wi-Fi off, or `isAvailable` false held 30 s outside the close's
+   beat. Deep idle alone never makes a dormant plane Unavailable. A phone whose Aware does go off in Doze (the Pixel 3,
+   API 31) reads `isAvailable` false, and the hold covers it.
+2. **The advert's bit** (`wontRun`, written into "won't run here" and from there into `FLAG_NO_AWARE`): the health's
+   evidence, deep idle, or an abandoned attach. The bit now means "don't count on my Aware right now", not "my Aware is
+   off". A wrong set only delays a peer's wake, where a wrong Unavailable tells the person to fix a radio that works.
+3. **Prompt edges.** `refreshAwareEvidence` runs on the idle broadcast, through a receiver of its own registered and
+   unregistered beside the availability receiver (`ContextCompat.registerReceiver`, `RECEIVER_NOT_EXPORTED`, guarded).
+   It never goes through `handleAvailabilityChanged`, whose refunds, attaches and teardown an idle edge must not run.
+   Before this, Doze-stretched watchdog ticks raised the bit two minutes into idle on the P9, and a stale Unavailable
+   outlived idle by about 20 s.
+
+Accepted costs. On these Pixels deep idle holds until unlock, so a lit lock screen still sets the bit. A deep
+maintenance window reads not-idle, so its start begins the bit's 60 s clear (`NoAwareFlag`): a window shorter than
+that leaves the bit set, and a longer one clears it until idle resumes and sets it again. No debounce is added beyond
+`NoAwareFlag`'s.

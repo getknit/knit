@@ -97,8 +97,10 @@ is in `docs/NAN_CONCURRENCY_REAUDIT.md` and `docs/DIGEST_PULL_REATTACH.md`.
   do and no Aware candidate heard over Bluetooth sleeps after 3 min and wakes on a candidate near, a bulk transfer, the
   app on screen, a blind Bluetooth plane or the 12-min duty attach — never on `heal()`. The dormancy close is its own:
   it refunds nothing of the attach budget (ADR 055), records no `nan_cycle`, and a wake re-attaches only after its
-  settle. Dormant reads Healthy unless real evidence (Wi-Fi off, deep Doze, `isAvailable` false 30 s outside the close's
-  beat) says otherwise. Without a Bluetooth plane that sees newcomers it never sleeps. Tests: `NanDormancyPolicyTest`,
+  settle. Dormant reads Healthy unless real evidence (Wi-Fi off, or `isAvailable` false 30 s outside the close's beat)
+  says otherwise (`radioOff`); deep idle alone never does, but it sets the advert's "won't run" (`wontRun`: that
+  evidence, deep idle or an abandoned attach — "don't count on my Aware right now"), re-read on the idle broadcast
+  through a receiver of its own, never `handleAvailabilityChanged` (the ADR's 2026-10-24 amendment). Without a Bluetooth plane that sees newcomers it never sleeps. Tests: `NanDormancyPolicyTest`,
   `CompositeMeshTransportTest`, `AwareSwitchTest`.
 - **When touching `attach()`, `NanAttachPolicy`, `NanAttachJournal`, `attachFailStreak` / `attachFailTotal` /
   `attachAbandoned` / `attachStartedAt`, the availability receiver or `handleAvailabilityChanged`, or
