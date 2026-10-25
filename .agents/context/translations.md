@@ -65,7 +65,11 @@ plan. Its one component, `app`, reads `app/src/main/res/values/strings.xml` as t
   resource (`CallWordsTest`, `CallerContextTest`). Once a `values-<locale>/` lands, a test that asserts English pins
   it with `@Config(qualifiers = "en-rUS")` rather than trusting Robolectric's default.
 - Positional placeholders only (`%1$s`), a `<plurals>` for any count, and a comment above any string whose
-  placeholder or context a translator cannot guess. Never build a sentence from pieces in code: two parts join
+  placeholder or context a translator cannot guess.
+- A count a screen can show at 0 also takes a `<name>_zero` string, read through `countText` / `countLabel`
+  (`ui/util/CountText.kt`): Android picks a plural's form by CLDR, which files 0 under `one` in Portuguese and
+  French ("0 pessoa"), and a `<plurals>` cannot say otherwise. The English zero string says what the plural said at
+  0 (`CountTextTest` holds it to that). A count guarded by `count > 0` or replaced by an empty state needs none. Never build a sentence from pieces in code: two parts join
   through `joined_with_dot` (`%1$s · %2$s`), so a language can reorder them.
 - Never change case in code (`lowercase()`, `replaceFirstChar`) on a translated string.
 

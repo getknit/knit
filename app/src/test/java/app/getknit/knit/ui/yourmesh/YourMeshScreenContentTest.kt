@@ -1,5 +1,6 @@
 package app.getknit.knit.ui.yourmesh
 
+import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -7,13 +8,17 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import app.getknit.knit.R
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.ui.theme.KnitTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
@@ -98,5 +103,16 @@ class YourMeshScreenContentTest {
         compose.onNodeWithTag("your_mesh_hero").assertTextContains("1")
         compose.onNodeWithTag("your_mesh_hero").assertTextContains("person nearby")
         compose.onNodeWithTag("your_mesh_carrying").assertTextContains("1 message for other people", substring = true)
+    }
+
+    @Test
+    @Config(qualifiers = "pt-rBR")
+    fun nobodyNearbyReadsTheZeroLabelNotThePortugueseSingular() {
+        // Portuguese files 0 under the plural's `one` form ("0 pessoa por perto"), so the hero reads its zero string.
+        val resources = ApplicationProvider.getApplicationContext<Context>().resources
+        val zero = resources.getString(R.string.your_mesh_nearby_zero)
+        assertNotEquals(zero, resources.getQuantityString(R.plurals.your_mesh_nearby, 0))
+        render(YourMeshUiState())
+        compose.onNodeWithTag("your_mesh_hero").assertTextContains(zero)
     }
 }

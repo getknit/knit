@@ -48,6 +48,7 @@ import app.getknit.knit.R
 import app.getknit.knit.mesh.lora.BoardBattery
 import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.preview.KnitPreview
+import app.getknit.knit.ui.util.countText
 import org.koin.androidx.compose.koinViewModel
 
 /**
@@ -633,7 +634,7 @@ private fun StatusRow(state: LoraRadioUiState) {
             // their behalf from kilometres away — so "1 radio, 3 people" is normal, and reporting only the
             // second read as phantom hardware.
             Text(
-                text = pluralStringResource(R.plurals.lora_boards_heard, state.boardsHeard, state.boardsHeard),
+                text = countText(R.plurals.lora_boards_heard, R.string.lora_boards_heard_zero, state.boardsHeard),
                 style = detail,
                 color = muted,
                 modifier = Modifier.testTag("lora_boards_heard"),

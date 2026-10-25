@@ -94,6 +94,7 @@ import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.rememberOnResume
 import app.getknit.knit.ui.theme.knitColors
 import app.getknit.knit.ui.util.compactTimeAgo
+import app.getknit.knit.ui.util.countText
 import app.getknit.knit.ui.util.relativeTimeLabels
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import org.koin.androidx.compose.koinViewModel
@@ -806,10 +807,25 @@ private fun LiveTransportStatus(
         Text(
             text =
                 when (row.lora) {
-                    null -> stringResource(R.string.diagnostics_transport_counts, status.nearby, status.linked)
-                    LoraPlane.Off -> stringResource(R.string.lora_status_off)
-                    LoraPlane.Down -> stringResource(R.string.diagnostics_transport_lora_down)
-                    LoraPlane.Live -> pluralStringResource(R.plurals.diagnostics_transport_heard, status.nearby, status.nearby)
+                    null -> {
+                        stringResource(R.string.diagnostics_transport_counts, status.nearby, status.linked)
+                    }
+
+                    LoraPlane.Off -> {
+                        stringResource(R.string.lora_status_off)
+                    }
+
+                    LoraPlane.Down -> {
+                        stringResource(R.string.diagnostics_transport_lora_down)
+                    }
+
+                    LoraPlane.Live -> {
+                        countText(
+                            R.plurals.diagnostics_transport_heard,
+                            R.string.diagnostics_transport_heard_zero,
+                            status.nearby,
+                        )
+                    }
                 },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -31,7 +31,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
@@ -43,6 +42,7 @@ import app.getknit.knit.ui.components.RoomAvatar
 import app.getknit.knit.ui.group.GroupMemberRow
 import app.getknit.knit.ui.group.MemberRow
 import app.getknit.knit.ui.preview.KnitPreview
+import app.getknit.knit.ui.util.countText
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
 
@@ -114,7 +114,7 @@ internal fun CommonsDetailsScreenContent(
                 )
             }
             Text(
-                text = pluralStringResource(R.plurals.chat_group_member_count, state.members.size, state.members.size),
+                text = countText(R.plurals.chat_group_member_count, R.string.chat_group_member_count_zero, state.members.size),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

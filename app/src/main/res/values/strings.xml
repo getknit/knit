@@ -710,6 +710,8 @@
         <item quantity="one">%d member</item>
         <item quantity="other">%d members</item>
     </plurals>
+    <!-- Shown at 0 in place of chat_group_member_count; %d is that 0. Word it for zero. Only ever 0, so not a plural. -->
+    <string name="chat_group_member_count_zero" tools:ignore="PluralsCandidate">%d members</string>
     <string name="chat_group_rename">Rename group</string>
     <string name="chat_group_set_photo">Set group photo</string>
     <string name="chat_group_name_label">Group name</string>
@@ -1243,6 +1245,8 @@
         <item quantity="one">%1$d heard</item>
         <item quantity="other">%1$d heard</item>
     </plurals>
+    <!-- Shown at 0 in place of diagnostics_transport_heard; %1$d is that 0. Word it for zero. Only ever 0, so not a plural. -->
+    <string name="diagnostics_transport_heard_zero" tools:ignore="PluralsCandidate">%1$d heard</string>
     <!-- Where the counts go on a plane the phone cannot run, or a LoRa plane with a board that is bound but
          not up (no board at all reads lora_status_off, shared with the LoRa screen). -->
     <string name="diagnostics_transport_unsupported">Not supported by this phone</string>
@@ -1307,6 +1311,9 @@
         <item quantity="one">person nearby</item>
         <item quantity="other">people nearby</item>
     </plurals>
+    <!-- Shown in place of your_mesh_nearby when the big number is 0: word it as your language says it for zero
+         people (Android files 0 under "one" in Portuguese and French). -->
+    <string name="your_mesh_nearby_zero">people nearby</string>
     <string name="your_mesh_status_connected">Your phone is part of the mesh right now.</string>
     <string name="your_mesh_status_alone">No one in range right now. Knit keeps listening.</string>
     <string name="your_mesh_status_radios_off">Turn on Wi-Fi or Bluetooth to reach people nearby.</string>
@@ -1639,6 +1646,8 @@
         <item quantity="one">%d other radio in range</item>
         <item quantity="other">%d other radios in range</item>
     </plurals>
+    <!-- Shown at 0 in place of lora_boards_heard; %d is that 0. Word it for zero. Only ever 0, so not a plural. -->
+    <string name="lora_boards_heard_zero" tools:ignore="PluralsCandidate">%d other radios in range</string>
     <plurals name="lora_peers_heard">
         <item quantity="one">%d person reachable over LoRa</item>
         <item quantity="other">%d people reachable over LoRa</item>
@@ -1666,6 +1675,8 @@
         <item quantity="one">%d conversation</item>
         <item quantity="other">%d conversations</item>
     </plurals>
+    <!-- Shown at 0 in place of relays_scope_count; %d is that 0. Word it for zero. Only ever 0, so not a plural. -->
+    <string name="relays_scope_count_zero" tools:ignore="PluralsCandidate">%d conversations</string>
     <string name="relays_no_photos">Carries messages only — no photos</string>
     <!-- A relay's call details (experimental, docs/VOICE_CALLS.md §2), drawn only in a build with calls. TURN and STUN
          are the protocols' own names; "walkie" is the push-to-talk call. -->

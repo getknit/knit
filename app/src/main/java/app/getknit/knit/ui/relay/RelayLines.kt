@@ -33,7 +33,6 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import app.getknit.knit.R
@@ -46,6 +45,7 @@ import app.getknit.knit.mesh.spool.SpoolErrCode
 import app.getknit.knit.ui.components.noAutofillMenu
 import app.getknit.knit.ui.shareText
 import app.getknit.knit.ui.theme.knitColors
+import app.getknit.knit.ui.util.countText
 import kotlinx.coroutines.flow.Flow
 
 // What the relay list and a relay's own screen both say about one relay, so neither re-derives it.
@@ -185,7 +185,7 @@ internal fun relayStatusLine(
             stringResource(
                 R.string.joined_with_dot,
                 stringResource(R.string.relays_status_connected),
-                pluralStringResource(R.plurals.relays_scope_count, relay.scopeCount ?: 0, relay.scopeCount ?: 0),
+                countText(R.plurals.relays_scope_count, R.string.relays_scope_count_zero, relay.scopeCount ?: 0),
             )
         }
 

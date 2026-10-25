@@ -48,6 +48,7 @@ import app.getknit.knit.ui.components.BarTitle
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.preview.PREVIEW_NOW
 import app.getknit.knit.ui.theme.knitColors
+import app.getknit.knit.ui.util.countLabel
 import org.koin.androidx.compose.koinViewModel
 
 /**
@@ -158,7 +159,7 @@ private fun NearbyHero(
             )
             Spacer(Modifier.width(12.dp))
             Text(
-                text = pluralStringResource(R.plurals.your_mesh_nearby, count),
+                text = countLabel(R.plurals.your_mesh_nearby, R.string.your_mesh_nearby_zero, count),
                 style = MaterialTheme.typography.titleMedium,
             )
         }

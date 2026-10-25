@@ -273,6 +273,7 @@ import app.getknit.knit.ui.translate.TranslationBlock
 import app.getknit.knit.ui.translate.TranslationShown
 import app.getknit.knit.ui.translate.TranslationToggle
 import app.getknit.knit.ui.translate.translationShown
+import app.getknit.knit.ui.util.countText
 import app.getknit.knit.ui.util.rememberCurrentTimeMillis
 import app.getknit.knit.ui.voice.MicGate
 import app.getknit.knit.ui.voice.SpeechModelOfferDialog
@@ -1251,9 +1252,9 @@ internal fun ChatScreenContent(
                                     )
                                     Text(
                                         text =
-                                            pluralStringResource(
+                                            countText(
                                                 R.plurals.chat_group_member_count,
-                                                state.memberCount,
+                                                R.string.chat_group_member_count_zero,
                                                 state.memberCount,
                                             ),
                                         style = MaterialTheme.typography.labelMedium,

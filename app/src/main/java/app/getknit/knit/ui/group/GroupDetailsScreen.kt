@@ -50,7 +50,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
@@ -70,6 +69,7 @@ import app.getknit.knit.ui.image.BlobImage
 import app.getknit.knit.ui.preview.KnitPreview
 import app.getknit.knit.ui.profile.AvatarCropDialog
 import app.getknit.knit.ui.theme.knitColors
+import app.getknit.knit.ui.util.countText
 import org.koin.androidx.compose.koinViewModel
 import org.koin.core.parameter.parametersOf
 
@@ -230,9 +230,9 @@ internal fun GroupDetailsScreenContent(
             )
             Text(
                 text =
-                    pluralStringResource(
+                    countText(
                         R.plurals.chat_group_member_count,
-                        state.members.size,
+                        R.string.chat_group_member_count_zero,
                         state.members.size,
                     ),
                 style = MaterialTheme.typography.bodyMedium,
