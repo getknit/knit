@@ -2219,6 +2219,21 @@ turncred       = a66174687475726e637265646171076475726c738278257475726e3a73706f6
                  7556397856756f553d636578701a6b49d200
 ```
 
+Several TURN servers (§7.6; S-7.6-48, S-7.6-49): `helloSpoolTurn`'s map with
+`turnHosts = ["spool.example:3478", "[2001:db8::7]:3478"]` as its seventh key, and a `turnreq` with `q = 7` naming
+the second, in the key order `t`, `q`, `host`. Copied from knit-spool `feat/nearest-turn` @ `ee3497b`
+(`TurnRecordVectorTest`, knit-spool ADR 2026-10.u5f4), where a hand-built CBOR encoder made them, independently of
+either codec:
+
+```
+helloSpoolTurnHosts = a761746568656c6c6f617601636d696e01666c696d697473a6676d6178426c6f621a00010000696d
+                      61785265636f72641a00020000696d617853636f7065731840676d617850756c6c18406c6d617846
+                      72616d65734361701903e8686d617854746c4d731a240c840067706f774269747314647475726ef5
+                      697475726e486f737473827273706f6f6c2e6578616d706c653a33343738725b323030313a646238
+                      3a3a375d3a33343738
+turnreqHost         = a36174677475726e72657161710764686f7374725b323030313a6462383a3a375d3a33343738
+```
+
 Entitlement tickets (§7.6). The key pair is RFC 8032 §7.1 TEST 1, so the public half comes from the RFC;
 `aud = "lab.example"`, `nbf = 1800000000`, `exp = 1800086400`, `ps = 00 01 … 0f`, `fl = 1`, and the `ent` record with `q = 7`. Then the same fixture with `fl = 3` and
 `ab = 134217728`; a HELLO with `ent` and `entGates = 11`; one with `ent` and
@@ -2272,8 +2287,9 @@ castSeal  = 0486dfeaff6b30c3cebc549d35183a43023f9b0c354d6f49d5cc1bac81def2774409
 ```
 
 The §7.6 and §7.7 vectors are pinned by knit-spool's `TurnRecordVectorTest`, `TicketVectorTest` and
-`CastRecordVectorTest`, and `castSeal` by the reference client's cast seal tests. This client pins none of
-them until its half of those sections lands (Appendix A).
+`CastRecordVectorTest`, and `castSeal` by the reference client's cast seal tests. The reference client pins the TURN
+records, `helloSpoolTurnHosts` and `turnreqHost` among them, in `SpoolTurnRecordsTest`, and the ticket records in
+`SpoolTicketRecordsTest`.
 
 ## Appendix A. Implementation status
 
