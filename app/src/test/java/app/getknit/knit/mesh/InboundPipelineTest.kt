@@ -307,6 +307,9 @@ class InboundPipelineTest {
         // What the voice-call hook saw (CTL_CALL, call/CallManager).
         val callSignals = mutableListOf<Triple<String, CallPayload, Long>>()
 
+        // What the walkie hook saw (handleTalk): each chunk's author, the hop it named and the link's transport.
+        val talkHops = mutableListOf<Triple<String, String?, TransportKind>>()
+
         // The publish stamps of our own profile looping back — what the clone watch is handed (ADR 2026-09.ypcc).
         val selfProfileStamps = mutableListOf<Long>()
         var admitTransfer = true
@@ -550,6 +553,7 @@ class InboundPipelineTest {
                         admitTransfer
                     },
                     onCallCtl = { sender, cl, at -> callSignals += Triple(sender, cl, at) },
+                    onCallTalk = { sender, _, _, _, hop, kind -> talkHops += Triple(sender, hop, kind) },
                     onSelfProfile = { selfProfileStamps += it },
                 )
         }
@@ -1578,8 +1582,41 @@ class InboundPipelineTest {
             rig.deliver(alice, rig.dmChat(alice, rig.self, id = "in-ble", body = "from next door"), kind = TransportKind.Bluetooth)
 
             assertEquals(DeliveryPlane.LoRa, rig.msgMap["in-lora"]?.receivedPlane)
-            // The phone radios still collapse to Nearby on purpose — the UI has nothing different to say about them.
-            assertEquals(DeliveryPlane.Nearby, rig.msgMap["in-ble"]?.receivedPlane)
+            assertEquals(DeliveryPlane.Bluetooth, rig.msgMap["in-ble"]?.receivedPlane)
+        }
+
+    /**
+     * ADR 2026-10.e42d: each phone radio records itself, for the developer view and the field log's latency lines, and a
+     * kind that names no radio (a fake, the demo transport, the lab) still records Nearby.
+     */
+    @Test
+    fun eachPhoneRadioRecordsItselfAndAnUnnamedKindRecordsNearby() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "in-ble", body = "a"), kind = TransportKind.Bluetooth)
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "in-nan", body = "b"), kind = TransportKind.WifiAware)
+            rig.deliver(alice, rig.dmChat(alice, rig.self, id = "in-other", body = "c"), kind = TransportKind.Other)
+
+            assertEquals(DeliveryPlane.Bluetooth, rig.msgMap["in-ble"]?.receivedPlane)
+            assertEquals(DeliveryPlane.WifiAware, rig.msgMap["in-nan"]?.receivedPlane)
+            assertEquals(DeliveryPlane.Nearby, rig.msgMap["in-other"]?.receivedPlane)
+        }
+
+    @Test
+    fun aReceiptHeardOverWifiAwareMarksTheTickAndTheAckerRowWifiAware() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            rig.msgMap["m1"] = MessageEntity(id = "m1", senderId = rig.self.nodeId, recipientId = alice.nodeId, body = "", sentAt = 1L)
+
+            rig.deliver(alice, rig.receipt(alice, ackId = "m1"), kind = TransportKind.WifiAware)
+
+            coVerify { rig.messages.markReceived("m1", DeliveryPlane.WifiAware) }
+            assertEquals(DeliveryPlane.WifiAware.code, rig.receiptMap["m1" to alice.nodeId]?.via)
         }
 
     @Test
@@ -6238,6 +6275,49 @@ class InboundPipelineTest {
             assertEquals("the same frames as chat do prove the session broken", before + 1, rig.resetsSent())
         }
 
+    /**
+     * A walkie chunk names its hop only when a short-range radio handed it over (docs/VOICE_CALLS.md §3.11): that is the
+     * link-bound evidence `TalkRadioPaths` keeps. Since each phone radio records itself (ADR 2026-10.e42d) the test is
+     * `shortRange`, never `== Nearby`, or a chunk over either radio would name no hop at all.
+     */
+    @Test
+    fun aTalkChunkNamesItsHopOverEitherPhoneRadioAndNoneOverTheLongRangePlanes() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pinRatchetCapable(alice, RatchetCrypto.generateKeyPair().pub)
+            // An accepted contact, or handleTalk would refuse the frame before it ever tried to open it.
+            rig.peerMap[alice.nodeId] = rig.peerMap.getValue(alice.nodeId).copy(verified = true)
+            val author = V2Author(alice, rig)
+
+            fun talk(id: String): RelayEnvelope {
+                val chat = author.dm(id, "chunk")
+                return RelayEnvelope(
+                    type = FrameType.TALK,
+                    id = chat.id,
+                    senderId = chat.senderId,
+                    sentAt = chat.sentAt,
+                    recipientId = chat.recipientId,
+                    payload = chat.payload,
+                )
+            }
+
+            rig.deliver(alice, talk("t-ble"), kind = TransportKind.Bluetooth)
+            rig.deliver(alice, talk("t-nan"), kind = TransportKind.WifiAware)
+            rig.deliver(alice, talk("t-lora"), kind = TransportKind.LoRa)
+            rig.deliver(alice, talk("t-spool"), from = ScopeSync.SPOOL_SOURCE_PREFIX + "spool.example")
+
+            assertEquals(
+                listOf(
+                    Triple(alice.nodeId, alice.nodeId, TransportKind.Bluetooth),
+                    Triple(alice.nodeId, alice.nodeId, TransportKind.WifiAware),
+                    Triple(alice.nodeId, null, TransportKind.LoRa),
+                    Triple(alice.nodeId, null, TransportKind.Other),
+                ),
+                rig.talkHops,
+            )
+        }
+
     @Test
     fun anInboundResetReplacesTheSessionAndTriggersTheUnackedReseal() =
         runTest {
@@ -7827,7 +7907,7 @@ class InboundPipelineTest {
             val tick = V2Author(alice, rig).dm("tick-1", "", ctl = MessageContent.CTL_RECEIPT, ack = dmOut, v3 = true)
             rig.pipeline.onDeliver(unsigned(tick), tick, alice.nodeId, TransportKind.Bluetooth)
 
-            coVerify(exactly = 1) { rig.messages.markReceived(dmOut, DeliveryPlane.Nearby) }
+            coVerify(exactly = 1) { rig.messages.markReceived(dmOut, DeliveryPlane.Bluetooth) }
             assertEquals(0L, rig.drops(DropReason.UNSIGNED_REFUSED))
             assertEquals(0L, rig.drops(DropReason.SIG_INVALID))
             // A ctl frame, so no row, no ack-of-an-ack, and — being relay = false — nothing custodied.
@@ -7968,8 +8048,8 @@ class InboundPipelineTest {
             rig.deliver(alice, frame, kind = TransportKind.Bluetooth)
 
             assertEquals("compact hello", rig.msgMap[dmId]?.body)
-            coVerify(exactly = 1) { rig.messages.markReceived(mine1, DeliveryPlane.Nearby) }
-            coVerify(exactly = 1) { rig.messages.markReceived(mine2, DeliveryPlane.Nearby) }
+            coVerify(exactly = 1) { rig.messages.markReceived(mine1, DeliveryPlane.Bluetooth) }
+            coVerify(exactly = 1) { rig.messages.markReceived(mine2, DeliveryPlane.Bluetooth) }
             // The instant receipt back to a v3 author seals v3 — and, being originated, stays signed and custodied.
             val receipt = rig.originated.single { it.type == FrameType.CHAT && it.recipientId == alice.nodeId }
             val receiptEnc = checkNotNull(WireCodec.decodePayload<ChatContent>(receipt.payload)?.enc)

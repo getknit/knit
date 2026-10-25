@@ -467,7 +467,7 @@ class InboundPipeline(
             FrameType.COMMONS -> {}
 
             FrameType.TALK -> {
-                handleTalk(env, frameBytes = wire.signed.size, hop = fromNodeId.takeIf { plane == DeliveryPlane.Nearby }, kind = kind)
+                handleTalk(env, frameBytes = wire.signed.size, hop = fromNodeId.takeIf { plane.shortRange }, kind = kind)
             }
 
             else -> {}
@@ -598,10 +598,12 @@ class InboundPipeline(
      *
      * A spool-tagged source names the Internet plane (it is never a neighbour, so the tag lives in the
      * source id); a frame off the LoRa board names [DeliveryPlane.LoRa] (ADR 040 — kilometre-range, slow,
-     * photo-less: worth saying); every other radio collapses to [DeliveryPlane.Nearby] on purpose. The kind
-     * is known now, so returning [DeliveryPlane.Bluetooth]/[DeliveryPlane.WifiAware] here is a one-line
-     * change if the UI ever has something different to say about them. Keep this map in the pipeline —
-     * `data/` must not learn `mesh/`'s [TransportKind].
+     * photo-less: worth saying); each phone radio names itself, [DeliveryPlane.Bluetooth] or
+     * [DeliveryPlane.WifiAware] (ADR 2026-10.e42d: the developer view and the field log's latency lines tell
+     * them apart, the chat reads both as nearby). A kind that names no radio ([TransportKind.Other]: fakes,
+     * the demo transport, the lab) stays [DeliveryPlane.Nearby]. A reader that means "a short-range radio"
+     * asks [DeliveryPlane.shortRange], never `== Nearby`. Keep this map in the pipeline — `data/` must not
+     * learn `mesh/`'s [TransportKind].
      */
     private fun planeOf(
         fromNodeId: String,
@@ -610,6 +612,8 @@ class InboundPipeline(
         when {
             ScopeSync.isSpoolSource(fromNodeId) -> DeliveryPlane.Internet
             kind == TransportKind.LoRa -> DeliveryPlane.LoRa
+            kind == TransportKind.Bluetooth -> DeliveryPlane.Bluetooth
+            kind == TransportKind.WifiAware -> DeliveryPlane.WifiAware
             else -> DeliveryPlane.Nearby
         }
 

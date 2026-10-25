@@ -54,4 +54,27 @@ class FieldLogDocumentTest {
             summary,
         )
     }
+
+    /** ADR 2026-10.e42d: rows written since name their radio, rows from before stay Nearby, and each gets its own line. */
+    @Test
+    fun eachPhoneRadioGetsItsOwnLineBesideTheOlderNearbyRows() {
+        val delays =
+            listOf(
+                PlaneDelay(DeliveryPlane.WifiAware.code, 300L),
+                PlaneDelay(DeliveryPlane.Nearby.code, 2_000L),
+                PlaneDelay(DeliveryPlane.Bluetooth.code, 700L),
+                PlaneDelay(DeliveryPlane.WifiAware.code, 100L),
+            )
+
+        val summary = FieldLogDocument.latency(LatencyDirection.ACK, delays)
+
+        assertEquals(
+            listOf(
+                FieldEvent.Latency(LatencyDirection.ACK, DeliveryPlane.Nearby, 1, p50Ms = 2_000, p90Ms = 2_000, maxMs = 2_000),
+                FieldEvent.Latency(LatencyDirection.ACK, DeliveryPlane.Bluetooth, 1, p50Ms = 700, p90Ms = 700, maxMs = 700),
+                FieldEvent.Latency(LatencyDirection.ACK, DeliveryPlane.WifiAware, 2, p50Ms = 100, p90Ms = 100, maxMs = 300),
+            ),
+            summary,
+        )
+    }
 }

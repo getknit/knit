@@ -89,7 +89,7 @@ Schema 1. A new field is additive. Renaming or removing a field, or changing a f
 | `call_direct` | A call's Wi-Fi Direct leg ended (§3.10) | `host`, `end` CALL/BYE/CLOSED/SILENT/NO_LANE/RADIO/LANE_FAILED, from the leg's start `group` and `lane` (up) ms, `life` ms, `tries` (joins) |
 | `talk` | A walkie burst (§3.11) went out or played to its end | `dir` OUT/IN; OUT: `chunks`, `ms` of speech, `sent` (chunks a link took), `path` (WIFI_AWARE/BLUETOOTH_CODED/BLUETOOTH/FADING/FLOODED/SPOOL/CAST_UNSEEN/NONE), `held` (Aware link held); IN: `chunks`, `lost` (skipped), `wait` (first arrival → playing), `spread` (first → last arrival) ms |
 | `walkie_end` | A walkie session ended | `burstsOut`, `burstsIn`, `chunksOut`, `failed` (no link took it), `chunksIn`, `lost`; medians of the latest chunks: `transit` (two clocks, skew included), `jitter`, `hand` (cut → radio) ms; `frameOut`, `frameIn` average `talk` frame bytes |
-| `latency` | At export, per plane | `dir` IN (others' messages reaching us; includes clock skew) or ACK (receipts for ours; one clock), `plane`, `n`, `p50`, `p90`, `max` ms |
+| `latency` | At export, per plane | `dir` IN (others' messages reaching us; includes clock skew) or ACK (receipts for ours; one clock), `plane` (`Bluetooth` or `WifiAware` for a phone radio, `Nearby` for rows written before ADR 2026-10.e42d recorded which; `Internet`, `LoRa`), `n`, `p50`, `p90`, `max` ms |
 
 A spool's `reason` and `code` are `SpoolVerdict`: NONE (the socket went with nothing said), the client's own verdicts
 UNREACHABLE, NO_HELLO, UNRESPONSIVE, OVERLONG_LISTING, CLOSED (with the close `code`), HTTP (with the status),

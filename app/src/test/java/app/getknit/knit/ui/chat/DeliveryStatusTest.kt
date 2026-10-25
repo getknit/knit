@@ -33,10 +33,13 @@ class DeliveryStatusTest {
             DeliveryText(R.string.chat_status_sent),
             deliveryLabel(DeliveryStatus.Sent, DeliveryPlane.Unknown, mine = true),
         )
-        assertEquals(
-            DeliveryText(R.string.chat_status_delivered),
-            deliveryLabel(DeliveryStatus.Delivered, DeliveryPlane.Nearby, mine = true),
-        )
+        // A receipt over either phone radio reads exactly as Nearby does (ADR 2026-10.e42d records which one).
+        for (plane in listOf(DeliveryPlane.Nearby, DeliveryPlane.Bluetooth, DeliveryPlane.WifiAware)) {
+            assertEquals(
+                DeliveryText(R.string.chat_status_delivered),
+                deliveryLabel(DeliveryStatus.Delivered, plane, mine = true),
+            )
+        }
         assertEquals(
             DeliveryText(R.string.chat_status_delivered_internet),
             deliveryLabel(DeliveryStatus.Delivered, DeliveryPlane.Internet, mine = true),

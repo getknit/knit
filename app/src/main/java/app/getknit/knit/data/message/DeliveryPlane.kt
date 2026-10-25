@@ -10,13 +10,13 @@ package app.getknit.knit.data.message
  * of [MessageEntity] keeps its small closed sets (`moderation`, `kind`). Codes are frozen — append new
  * planes, never renumber.
  *
- * [Bluetooth] and [WifiAware] are the finer split of [Nearby], reserved so attributing a delivery to a
- * specific radio stays a pure addition. **Nothing writes them yet:** `MeshTransport.InboundFrame` now
- * carries the child transport's `TransportKind` (stamped by `CompositeMeshTransport`), so the inbound path
- * *could* tell them apart, but it still collapses both phone radios to [Nearby] on purpose — the UI has
- * nothing different to say about them — and a reader must treat all three as "arrived nearby". [LoRa] is
- * the one radio that earns its own code: a delivery over a Meshtastic board (ADR 038/039) is
- * kilometre-range, slow, and photo-less, which the tick is worth saying.
+ * [Bluetooth] and [WifiAware] are the finer split of [Nearby]. The inbound path records them from the child
+ * transport's `TransportKind` that `CompositeMeshTransport` stamps on each `InboundFrame` (ADR 2026-10.e42d),
+ * for the developer view and the field log's latency lines. [Nearby] remains for rows written before that
+ * and for a frame whose kind names no radio. The chat has nothing different to say about the three, so a
+ * reader treats them all as "arrived nearby" and asks [shortRange], never `== Nearby`. [LoRa] earns its own
+ * face: a delivery over a Meshtastic board (ADR 038/039) is kilometre-range, slow, and photo-less, which the
+ * tick is worth saying.
  */
 @Suppress("MagicNumber") // the literals ARE the frozen stored codes; naming each one would only restate it
 enum class DeliveryPlane(
@@ -25,16 +25,16 @@ enum class DeliveryPlane(
     /** No plane recorded — a row acked by a build older than the column, or a code we don't know. */
     Unknown(0),
 
-    /** A radio (Wi-Fi Aware or Bluetooth LE — which one isn't recorded). */
+    /** A phone radio, which one not recorded: a row written before ADR 2026-10.e42d, or a frame whose kind names none. */
     Nearby(1),
 
     /** The Internet plane: the receipt was pulled off a spool (`docs/SPOOL_PROTOCOL.md`). */
     Internet(2),
 
-    /** Reserved: a Bluetooth LE delivery, once inbound frames carry their radio. */
+    /** A Bluetooth LE delivery: a link or the side channel, which one not recorded (ADR 2026-10.e42d). */
     Bluetooth(3),
 
-    /** Reserved: a Wi-Fi Aware delivery, once inbound frames carry their radio. */
+    /** A Wi-Fi Aware delivery: a data path or the message plane, which one not recorded (ADR 2026-10.e42d). */
     WifiAware(4),
 
     /** The LoRa plane: the frame (or the receipt) reached us over a Meshtastic board (ADR 038/039). */
