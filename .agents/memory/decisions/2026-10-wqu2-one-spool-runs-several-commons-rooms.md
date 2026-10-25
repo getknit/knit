@@ -43,7 +43,8 @@ scope id "in any form", which left a member with no way to tell its own room's e
   ignore under B-2-2.
 - **The directory.** A room list in HELLO tells whoever connects how many rooms there are and their names. Names
   are optional per room, and a spool with no access token should not advertise them (S-7.4-19); the invite link
-  carries its room's name anyway. §10.1 gains the bullet, including that the operator now sees which room each
+  carries its room's name anyway. The rule is about any name in the HELLO, not only the list: a one-room spool with
+  no token drops `commons.name` too, because a name there was always public (the token check runs before HELLO). §10.1 gains the bullet, including that the operator now sees which room each
   connection is in, where it used to see only in or out.
 - **An invite is never a rotation** (C-7.4-18). The app as built reads a second secret at the same relay as the
   room rotated and leaves the first room with its history (`docs/RELAY_INVITE.md` §3). With several rooms that
