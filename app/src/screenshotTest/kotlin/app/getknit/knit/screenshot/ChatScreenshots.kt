@@ -21,6 +21,7 @@ import app.getknit.knit.ui.chat.LinkPreviewLoadingRowPreview
 import app.getknit.knit.ui.chat.LocationCardPreview
 import app.getknit.knit.ui.chat.LoraNoticePreview
 import app.getknit.knit.ui.chat.MessageBubbleEmojiPreview
+import app.getknit.knit.ui.chat.MessageBubbleFormattingPreview
 import app.getknit.knit.ui.chat.MessageBubbleLinkPreview
 import app.getknit.knit.ui.chat.MessageBubbleMinePreview
 import app.getknit.knit.ui.chat.MessageBubbleMineViaInternetPreview
@@ -153,6 +154,11 @@ fun SystemNotice() = SystemNoticePreview()
 @ComponentShots
 @Composable
 fun MessageBubbleLink() = MessageBubbleLinkPreview()
+
+@PreviewTest
+@ComponentShots
+@Composable
+fun MessageBubbleFormatting() = MessageBubbleFormattingPreview()
 
 @PreviewTest
 @ScreenShots

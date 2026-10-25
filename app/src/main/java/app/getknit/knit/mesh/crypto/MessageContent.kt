@@ -1,7 +1,10 @@
+@file:OptIn(ExperimentalSerializationApi::class) // @ByteString on the styles field is an experimental kotlinx API
+
 package app.getknit.knit.mesh.crypto
 
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.replyRef
 import app.getknit.knit.data.message.videoInfo
 import app.getknit.knit.mesh.protocol.AttachmentName
@@ -12,10 +15,14 @@ import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.ScopeConfigPayload
+import app.getknit.knit.mesh.protocol.StyleRunsSerializer
+import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.VideoInfo
 import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.ByteString
 import kotlinx.serialization.decodeFromByteArray
 import kotlinx.serialization.encodeToByteArray
 
@@ -94,6 +101,14 @@ data class MessageContent(
     // A scope's relays and bounds for [CTL_SCOPE_CONFIG] (additive; docs/SPOOL_PROTOCOL.md §5). Named layout only:
     // the compact v3 codec refuses it, as it does `gk`, `xf` and `cl`.
     val sc: ScopeConfigPayload? = null,
+    // The body's formatting as ranges (additive; ADR 2026-10.p95v): one CBOR byte string under "s", absent while
+    // empty, so an unformatted message seals to the bytes it did before styles existed. Conversational: mapped by
+    // [sealedContent], never set on a ctl. Label 17 in the compact layout ([MessageContentV2]). Normalised against
+    // the clamped body on delivery (`InboundPipeline.deliverChat`), never trusted as sent.
+    @SerialName("s")
+    @ByteString
+    @Serializable(with = StyleRunsSerializer::class)
+    val styles: List<StyleSpan> = emptyList(),
 ) {
     @OptIn(ExperimentalSerializationApi::class)
     fun encode(): ByteArray = cryptoCbor.encodeToByteArray(this)
@@ -197,4 +212,5 @@ internal fun MessageEntity.sealedContent(): MessageContent =
         attachmentSize = attachmentSize,
         video = videoInfo(),
         replyTo = replyRef(),
+        styles = StyleStore.decode(styles),
     )

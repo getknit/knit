@@ -2,9 +2,12 @@ package app.getknit.knit.mesh.crypto
 
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.message.withVideo
+import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.CallPayload
+import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.DirectInvite
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.GroupKeyPayload
@@ -15,8 +18,12 @@ import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.ScopeConfigPayload
+import app.getknit.knit.mesh.protocol.StyleKey
+import app.getknit.knit.mesh.protocol.StyleSpan
+import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.VideoInfo
+import app.getknit.knit.mesh.protocol.WireCodec
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.elementNames
@@ -71,6 +78,7 @@ class MessageContentTest {
                 attachmentKey = "key",
                 attachmentName = "quarterly-report.pdf",
                 attachmentSize = 1_400_000L,
+                styles = StyleStore.encode(listOf(StyleSpan(4, 10, BodyStyle.BOLD))),
             ).withReply(ReplyRef(messageId = "m0", authorId = "bob00000", author = "Bob", snippet = "send it?"))
                 .withVideo(VideoInfo(durationMs = 30_000L, width = 480, height = 854, poster = byteArrayOf(1, 2, 3)))
 
@@ -95,6 +103,7 @@ class MessageContentTest {
         assertEquals(listOf(Mention("bob00000", "Bob")), content.mentions)
         assertEquals("m0", content.replyTo?.messageId)
         assertEquals(VideoInfo(30_000L, 480, 854, byteArrayOf(1, 2, 3)), content.video)
+        assertEquals(listOf(StyleSpan(4, 10, BodyStyle.BOLD)), content.styles)
     }
 
     /** A video's description survives the named layout byte for byte, poster included (ADR 2026-10.hmfe). */
@@ -114,6 +123,50 @@ class MessageContentTest {
     @Test
     fun aFutureContentSchemaVersionIsNotSupported() {
         assertFalse(MessageContent(v = MessageContent.MAX_SUPPORTED + 1, body = "hi").isSupported())
+    }
+
+    /**
+     * ADR 2026-10.p95v's hard requirement: an unformatted message is the bytes it was before styles existed, in the
+     * named sealed layout and in a room post, and a styled one adds only `"s"` and one CBOR byte string (major type 2,
+     * never an integer array). Hand-written hex, so neither half can drift with the codec.
+     */
+    @Test
+    fun anUnformattedMessageIsTheOldBytesAndAStyledOneAddsOneByteString() {
+        // {"body": "make it bold"}: what every build before styles wrote.
+        val plain = "a1" + "64626f6479" + "6c6d616b6520697420626f6c64"
+        assertEquals(plain, hex(MessageContent(body = "make it bold").encode()))
+        assertEquals(plain, hex(WireCodec.encodePayload(ChatContent(body = "make it bold"))))
+        // + "s": h'08 20' — bold from 8, four units: delta 8, (4 << 3) | 0.
+        val styled = "a2" + "64626f6479" + "6c6d616b6520697420626f6c64" + "6173" + "420820"
+        val bold = listOf(StyleSpan(8, 12, BodyStyle.BOLD))
+        assertEquals(styled, hex(MessageContent(body = "make it bold", styles = bold).encode()))
+        assertEquals(styled, hex(WireCodec.encodePayload(ChatContent(body = "make it bold", styles = bold))))
+        assertEquals(StyleSpans.wireCost(bold, StyleKey.NAMED), (styled.length - plain.length) / 2)
+        assertEquals(bold, MessageContent.decode(unhex(styled))?.styles)
+        assertEquals(bold, WireCodec.decodePayload<ChatContent>(unhex(styled))?.styles)
+        assertEquals(emptyList<StyleSpan>(), MessageContent.decode(unhex(plain))?.styles)
+    }
+
+    /** A build that predates styles skips the key and reads the same body; iOS's named decoder must do the same. */
+    @Test
+    fun aBuildWithoutStylesReadsAStyledMessagesBody() {
+        val bytes = MessageContent(body = "make it bold", styles = listOf(StyleSpan(8, 12, BodyStyle.BOLD))).encode()
+        assertEquals("make it bold", WireCodec.decodePayload<OlderContent>(bytes)?.body)
+    }
+
+    /**
+     * The value's type is frozen (ADR 2026-10.p95v): `"s"` holding anything but a byte string fails the typed decode,
+     * as a wrong-typed `video` does, while malformed bytes inside a byte string never throw.
+     */
+    @Test
+    fun aWrongTypedStylesValueFailsTheDecodeAndMalformedBytesDoNot() {
+        // {"body": "hi", "s": [0, 16]}
+        val array = unhex("a2" + "64626f6479" + "626869" + "6173" + "820010")
+        assertNull(MessageContent.decode(array))
+        assertNull(WireCodec.decodePayload<ChatContent>(array))
+        // {"body": "hi", "s": h'00 10 80'}: one span, then a truncated uvarint.
+        val truncated = unhex("a2" + "64626f6479" + "626869" + "6173" + "43001080")
+        assertEquals(listOf(StyleSpan(0, 2, BodyStyle.BOLD)), MessageContent.decode(truncated)?.styles)
     }
 
     @Test
@@ -482,6 +535,16 @@ class MessageContentTest {
         val partial = offer.copy(dw = DirectInvite(s = "DIRECT-kn-abcdefgh"))
         assertEquals(partial, MessageContent.decode(MessageContent(body = "", ctl = MessageContent.CTL_CALL, cl = partial).encode())!!.cl)
     }
+
+    /** The named layout as a build before ADR 2026-10.p95v decoded it: no `"s"`. */
+    @Serializable
+    private class OlderContent(
+        val body: String,
+    )
+
+    private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+
+    private fun unhex(text: String): ByteArray = ByteArray(text.length / 2) { text.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
 
     private companion object {
         /**

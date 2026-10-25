@@ -1,6 +1,7 @@
 package app.getknit.knit.mesh.crypto
 
 import app.getknit.knit.identity.NodeId
+import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameId
@@ -10,8 +11,15 @@ import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.ScopeConfigPayload
+import app.getknit.knit.mesh.protocol.StyleKey
+import app.getknit.knit.mesh.protocol.StyleSpan
+import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.VideoInfo
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.descriptors.elementNames
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -235,5 +243,82 @@ class MessageContentV2Test {
                 attachmentName = "../../etc/passwd",
             )
         assertEquals("....etcpasswd", roundTrip(hostile).attachmentName)
+    }
+
+    /**
+     * ADR 2026-10.p95v in the compact layout: an unformatted message is still exactly `{1: body}`, and a styled one adds
+     * label 17 and one byte string — 4 bytes for one bold word. Hand-written hex.
+     */
+    @Test
+    fun stylesTakeLabelSeventeenAsOneByteStringAndAPlainMessageIsUnchanged() {
+        val plain = MessageContent(body = "make it bold")
+        assertEquals("a1" + "01" + "6c6d616b6520697420626f6c64", hex(checkNotNull(MessageContentV2.encodeOrNull(plain))))
+        val bold = listOf(StyleSpan(8, 12, BodyStyle.BOLD))
+        val styled = plain.copy(styles = bold)
+        assertEquals(
+            "a2" + "01" + "6c6d616b6520697420626f6c64" + "11" + "420820",
+            hex(checkNotNull(MessageContentV2.encodeOrNull(styled))),
+        )
+        assertEquals(StyleSpans.wireCost(bold, StyleKey.LABEL), 4)
+        assertEquals(bold, roundTrip(styled).styles)
+        // The same entries as the named layout's "s", byte for byte.
+        val overlapping = plain.copy(styles = listOf(StyleSpan(0, 12, BodyStyle.ITALIC), StyleSpan(130, 150, BodyStyle.MONOSPACE)))
+        assertEquals(overlapping.styles, roundTrip(overlapping).styles)
+    }
+
+    /**
+     * The compact layout's drift guard: every [MessageContent] field either survives a round trip through this codec
+     * or is named in [NAMED_ONLY] (the codec refuses a content holding one, so it seals named). A field added to
+     * [MessageContent] and never given a label here would otherwise be silently dropped from every v3 frame.
+     */
+    @OptIn(ExperimentalSerializationApi::class)
+    @Test
+    fun everyMessageContentFieldRoundTripsOrIsNamedOnly() {
+        val full =
+            MessageContent(
+                body = "hello",
+                mentions = listOf(Mention(nodeId, "Alice")),
+                attachmentHash = hash,
+                attachmentMime = "application/pdf",
+                attachmentKey = key,
+                attachmentName = "a.pdf",
+                attachmentSize = 1_400_000L,
+                video = VideoInfo(durationMs = 1_000L, width = 2, height = 3, poster = byteArrayOf(4)),
+                replyTo = ReplyRef(messageId = FrameId.new(), authorId = nodeId, author = "Alice", snippet = "s"),
+                ctl = MessageContent.CTL_RECEIPT,
+                ack = FrameId.new(),
+                rp = ReactionPayload(messageId = FrameId.new(), emoji = "🔥"),
+                pr = ProfilePayload(name = "Alice", status = "out", version = 5L),
+                acks = listOf(FrameId.new()),
+                styles = listOf(StyleSpan(0, 5, BodyStyle.BOLD)),
+            )
+        val set = JSON.encodeToJsonElement(MessageContent.serializer(), full).jsonObject.keys
+        val fields =
+            MessageContent
+                .serializer()
+                .descriptor.elementNames
+                .toSet()
+        assertEquals("a new MessageContent field must be set here and given a label, or named in NAMED_ONLY", fields - NAMED_ONLY, set)
+        assertEquals(full, roundTrip(full))
+        for (named in listOf(
+            full.copy(gk = GroupKeyPayload(groupId = "g")),
+            full.copy(xf = TransferPayload(id = "t", phase = 1)),
+            full.copy(cl = CallPayload(id = "c", ph = CallPayload.PHASE_OFFER)),
+            full.copy(
+                sc = ScopeConfigPayload(spools = listOf("wss://a.example/spool/v1"), maxFrames = 1, ttlMs = 1L, maxBlob = 1, version = 1),
+            ),
+        )) {
+            assertNull("a named-only payload refuses the compact form", MessageContentV2.encodeOrNull(named))
+        }
+    }
+
+    private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+
+    private companion object {
+        /** The schema version (elided while default) and the payloads [MessageContentV2] has no label for. */
+        val NAMED_ONLY = setOf("v", "gk", "xf", "cl", "sc")
+
+        /** Omits what equals its default, as the CBOR codec does, so the keys left are the fields the fixture set. */
+        val JSON = Json { encodeDefaults = false }
     }
 }

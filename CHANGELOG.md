@@ -28,6 +28,8 @@ document:
 - Knit now comes in Brazilian Portuguese: it follows a phone set to that language, and on Android 13 and later
   you can pick it for Knit alone in Settings › Apps › Knit › Language. Native speakers are still checking the
   translation on Weblate, and anyone can suggest a fix there.
+- Select words in a message you're writing to make them bold, italic, struck through or monospace. Older
+  versions of Knit, and Knit for iPhone for now, show the message as plain text.
 
 ### Changed
 

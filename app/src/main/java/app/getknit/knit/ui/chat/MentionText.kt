@@ -6,6 +6,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.OutputTransformation
 import androidx.compose.foundation.text.input.TextFieldBuffer
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.LinkInteractionListener
@@ -13,7 +14,10 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
+import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.Mention
+import app.getknit.knit.mesh.protocol.StyleSpan
 
 /** The "@token" the cursor currently sits inside (see [activeMentionQuery]). */
 data class MentionQuery(
@@ -349,8 +353,10 @@ private fun trimTrailing(
 }
 
 /**
- * Builds the chat-bubble text: @-mentions highlighted with [mentionStyle] (see [highlightMentions])
- * and detected URLs (see [findUrls]) turned into links styled with [linkStyle]. Tapping a link calls
+ * Builds the chat-bubble text: @-mentions highlighted with [mentionStyle] (see [highlightMentions]), the
+ * message's formatting [styles] drawn over them ([bubbleSpanStyle], monospace on [codeBackground]; ADR
+ * 2026-10.p95v), and detected URLs (see [findUrls]) turned into links styled with [linkStyle]. A link inside
+ * struck words keeps [linkStyle]'s decoration and adds the line through ([linkPieces]). Tapping a link calls
  * [onLinkClick] with the resolved target; when it is null the link opens via the ambient UriHandler.
  */
 fun annotateMessageBody(
@@ -359,12 +365,28 @@ fun annotateMessageBody(
     mentionStyle: SpanStyle,
     linkStyle: SpanStyle,
     onLinkClick: ((String) -> Unit)? = null,
+    styles: List<StyleSpan> = emptyList(),
+    codeBackground: Color = Color.Unspecified,
 ): AnnotatedString =
     buildAnnotatedString {
         append(highlightMentions(body, mentions, mentionStyle))
-        val styles = TextLinkStyles(style = linkStyle)
+        // After the mentions, so a bold span over a mention is bold rather than the mention's semibold.
+        for (span in styles) addStyle(bubbleSpanStyle(span.style, codeBackground), span.start, span.end)
+        val struck = styles.filter { it.style == BodyStyle.STRIKETHROUGH }
+        val plain = TextLinkStyles(style = linkStyle)
+        val crossed =
+            TextLinkStyles(
+                style =
+                    linkStyle.copy(
+                        textDecoration =
+                            linkStyle.textDecoration?.let { TextDecoration.combine(listOf(it, TextDecoration.LineThrough)) }
+                                ?: TextDecoration.LineThrough,
+                    ),
+            )
         for (span in findUrls(body)) {
             val listener = onLinkClick?.let { cb -> LinkInteractionListener { cb(span.url) } }
-            addLink(LinkAnnotation.Url(span.url, styles, listener), span.start, span.end)
+            for (piece in linkPieces(span.start, span.end, struck)) {
+                addLink(LinkAnnotation.Url(span.url, if (piece.struck) crossed else plain, listener), piece.start, piece.end)
+            }
         }
     }

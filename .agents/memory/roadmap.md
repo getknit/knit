@@ -132,6 +132,20 @@ doc). **Don't start a deferred item without explicit direction.**
 
 ## Still deferred (by design)
 
+- **Message formatting past its first four styles** (ADR 2026-10.p95v, 2026-10-24). v1 sends bold, italic,
+  strikethrough and monospace as style ranges beside a plain body, picked from the composer's selection toolbar.
+  Left out on purpose:
+  - **Markdown-lite shortcuts** (`**bold**`, `_italic_`, `~~strike~~`, `` `code` ``). These are an input method,
+    never a format: a `MarkdownShortcuts` `InputTransformation`, chained after `MentionChips`, turns a closed marker
+    pair into a range as it is typed. A pure `MarkdownLite.parse` does the same at send for the notification's
+    inline reply and the debug bridge. Receivers never parse markdown.
+  - **Spoilers.** Code 4 is reserved. A spoiler needs a `CAP_*` send gate (a v1 receiver shows it in the clear,
+    and the Nearby room cannot be gated), tap-to-reveal, and masking on every surface built from the body: the
+    chat-list preview, notifications, quote snippets and search snippets.
+  - **Formatting beyond the bubble:** styled notifications (`MessagingStyle` takes a `CharSequence`), quotes, and
+    HTML on the clipboard so a copy keeps its styles.
+  - **The iOS half,** a knit-pair change against the ADR and the `vectors/` entries.
+
 - **A MeshCore board kind on the LoRa plane** (ADR 2026-10.jend, scope decided 2026-10-18 from a two-board spike on
   MeshCore companion v1.18.0; nothing built). The scope: people's room posts and reactions flood, plus a profile
   before the first post, scoped to the board's region and budgeted as every repeater's airtime. Everything DM-form

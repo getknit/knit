@@ -2,6 +2,8 @@
 
 package app.getknit.knit.data.draft
 
+import app.getknit.knit.mesh.protocol.BodyStyle
+import app.getknit.knit.mesh.protocol.StyleSpan
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,17 +31,21 @@ class DraftRepositoryTest {
 
         fun stampOf(conversationId: String): Long? = stored.value[conversationId]?.updatedAt
 
-        override suspend fun find(conversationId: String): String? = stored.value[conversationId]?.text
+        fun stylesOf(conversationId: String): String? = stored.value[conversationId]?.styles
+
+        override suspend fun find(conversationId: String): DraftContent? =
+            stored.value[conversationId]?.let { DraftContent(it.text, it.styles) }
 
         override fun observeAll(): Flow<List<DraftEntity>> = stored.map { it.values.toList() }
 
         override suspend fun upsert(
             conversationId: String,
             text: String,
+            styles: String?,
             updatedAt: Long,
         ) {
             upserts++
-            stored.value = stored.value + (conversationId to DraftEntity(conversationId, text, updatedAt))
+            stored.value = stored.value + (conversationId to DraftEntity(conversationId, text, updatedAt, styles))
         }
 
         override suspend fun deleteFor(conversationId: String) {
@@ -69,7 +75,7 @@ class DraftRepositoryTest {
         runTest {
             val drafts = repo()
 
-            "half a sentence".forEachIndexed { i, _ -> drafts.save(CHAT, "half a sentence".take(i + 1)) }
+            "half a sentence".forEachIndexed { i, _ -> drafts.save(CHAT, Draft("half a sentence".take(i + 1))) }
             typingPause()
 
             assertEquals(1, dao.upserts)
@@ -81,7 +87,7 @@ class DraftRepositoryTest {
         runTest {
             val drafts = repo()
 
-            drafts.save(CHAT, "hi")
+            drafts.save(CHAT, Draft("hi"))
             testScheduler.advanceTimeBy(DEBOUNCE_MS - 1)
             assertNull("nothing written mid-word", dao.rows[CHAT])
 
@@ -94,9 +100,9 @@ class DraftRepositoryTest {
         runTest {
             val drafts = repo()
 
-            drafts.save(CHAT, "hi")
+            drafts.save(CHAT, Draft("hi"))
             typingPause()
-            drafts.save(CHAT, "   ")
+            drafts.save(CHAT, Draft("   "))
             typingPause()
 
             assertNull(dao.rows[CHAT])
@@ -107,7 +113,7 @@ class DraftRepositoryTest {
         runTest {
             val drafts = repo()
 
-            drafts.save(CHAT, "sent already")
+            drafts.save(CHAT, Draft("sent already"))
             drafts.clear(CHAT) // the send beat the typing pause
             typingPause()
 
@@ -120,8 +126,8 @@ class DraftRepositoryTest {
         runTest {
             val drafts = repo()
 
-            drafts.save(CHAT, "mine")
-            drafts.save(OTHER, "theirs")
+            drafts.save(CHAT, Draft("mine"))
+            drafts.save(OTHER, Draft("theirs"))
             typingPause()
             drafts.clear(CHAT)
             typingPause()
@@ -135,11 +141,35 @@ class DraftRepositoryTest {
         runTest {
             val drafts = repo()
 
-            drafts.save(CHAT, "half a sentence")
+            drafts.save(CHAT, Draft("half a sentence"))
             typingPause()
 
-            assertEquals("half a sentence", drafts.load(CHAT))
-            assertEquals("", drafts.load(OTHER))
+            assertEquals(Draft("half a sentence"), drafts.load(CHAT))
+            assertEquals(Draft.EMPTY, drafts.load(OTHER))
+        }
+
+    @Test
+    fun `a draft's formatting is written beside its text and read back with it`() =
+        runTest {
+            val drafts = repo()
+            val bold = listOf(StyleSpan(0, 4, BodyStyle.BOLD))
+
+            drafts.save(CHAT, Draft("half a sentence", bold))
+            typingPause()
+
+            assertEquals("[[0,4,0]]", dao.stylesOf(CHAT))
+            assertEquals(Draft("half a sentence", bold), drafts.load(CHAT))
+        }
+
+    @Test
+    fun `a draft without formatting stores no styles`() =
+        runTest {
+            val drafts = repo()
+
+            drafts.save(CHAT, Draft("plain"))
+            typingPause()
+
+            assertNull(dao.stylesOf(CHAT))
         }
 
     @Test
@@ -147,12 +177,12 @@ class DraftRepositoryTest {
         runTest {
             val drafts = repo()
 
-            drafts.save(CHAT, "hi")
+            drafts.save(CHAT, Draft("hi"))
             typingPause()
             assertEquals(1_000L, dao.stampOf(CHAT))
 
             clock = 2_000L
-            drafts.save(CHAT, "hi again")
+            drafts.save(CHAT, Draft("hi again"))
             typingPause()
             assertEquals("the chat list compares this against the newest message", 2_000L, dao.stampOf(CHAT))
         }
@@ -162,8 +192,8 @@ class DraftRepositoryTest {
         runTest {
             val drafts = repo()
 
-            drafts.save(CHAT, "mine")
-            drafts.save(OTHER, "theirs")
+            drafts.save(CHAT, Draft("mine"))
+            drafts.save(OTHER, Draft("theirs"))
             typingPause()
 
             val byConversation = drafts.all.first()

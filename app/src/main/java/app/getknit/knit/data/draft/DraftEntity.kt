@@ -24,4 +24,6 @@ data class DraftEntity(
     @PrimaryKey val conversationId: String,
     val text: String,
     val updatedAt: Long,
+    /** The draft's formatting, as `StyleStore` writes `messages.styles` (ADR 2026-10.p95v); null for none. */
+    val styles: String? = null,
 )

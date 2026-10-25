@@ -200,6 +200,14 @@
     <string name="chat_loading_older">Loading earlier messages…</string>
     <string name="chat_scroll_to_bottom">Scroll to newest message</string>
     <string name="chat_message_hint">Knit Message</string>
+    <!-- The composer's text-selection toolbar: each makes the selected words bold, italic, struck through or
+         monospaced, and takes the style off again when the whole selection already has it. -->
+    <string name="chat_format_bold">Bold</string>
+    <string name="chat_format_italic">Italic</string>
+    <string name="chat_format_strikethrough">Strikethrough</string>
+    <string name="chat_format_monospace">Monospace</string>
+    <!-- Removes every style from the selected words. -->
+    <string name="chat_format_clear">Clear formatting</string>
     <string name="chat_typing">%1$s is typing</string>
     <string name="chat_typing_multiple">%1$s and others are typing</string>
     <string name="chat_loading_photo">Photo appears once a device that has it is reachable</string>

@@ -150,6 +150,12 @@ LoRa plane (2026-09.ggq4).
   and re-sent verbatim on a backoff — re-sealing per retry burns chain keys and starves the receiver's skipped-key
   budget. The sealed profile carries presentation fields only, ordered by the profile version, never `pubKey` or
   `prekey`, and never inserts a peer row.
+- **When touching `MessageContent.styles` / `MessageContentV2` label 17, `MessageEntity.sealedContent`'s styles,
+  `InboundPipeline.plaintextContent`'s styles or the normalise in `deliverChat`:** READ ADR 2026-10.p95v and
+  `docs/WIRE_COMPAT.md`'s formatting precedent. A sealed message's styles come from its plaintext alone, never the
+  cleartext shell; `sealedContent` is their only builder, so a re-seal carries them and a ctl never does. The value is a
+  CBOR byte string forever: a wrong-typed `"s"` or label 17 fails the plaintext decode (`DECRYPT_FAILED`, nothing
+  committed), malformed bytes inside it never throw. An unformatted message seals to the bytes it did before the field.
 - **When touching `CTL_SCOPE_CONFIG`, `MessageContent.sc` / `ScopeConfigPayload`, `InboundPipeline.applyScopeConfig`
   / `commitGroupCtl`, `ScopeConfigPolicy`, `ScopeConfigRepository`, `MeshManager.sendScopeConfig`, `RatchetSessions.sealDm`'s
   `confirmedOnly`, or the scope-config row `GroupRepository.recordDeparture` drops:** READ ADR 2026-10.m4fk (draft),

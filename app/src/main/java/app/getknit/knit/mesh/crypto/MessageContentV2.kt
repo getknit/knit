@@ -11,6 +11,7 @@ import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ProfilePayload
 import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.mesh.protocol.VideoInfo
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
@@ -96,6 +97,7 @@ internal object MessageContentV2 {
                         badges = it.badges?.map { badge -> BadgeV2(w = badge.w, r = badge.r) },
                     )
                 },
+            st = StyleSpans.pack(content.styles),
         )
 
     private fun replyRefOf(ref: ReplyRef): ReplyRefV2 =
@@ -156,6 +158,7 @@ internal object MessageContentV2 {
                             badges = it.badges?.map { badge -> BadgeEntry(w = badge.w, r = badge.r) },
                         )
                     },
+                styles = StyleSpans.unpack(w.st),
             )
         }.getOrNull()?.normalized()
 
@@ -171,7 +174,9 @@ internal object MessageContentV2 {
      * since `ignoreUnknownKeys` skips a label it does not model: a new label is additive, a new *form* (the
      * group form) is a new envelope version. `14`/`15` are the file attachment's name and byte count (ADR
      * 2026-09.qq2r), which took the next free labels rather than the reserved pair, and `16` a short video's
-     * duration, size and poster (ADR 2026-10.hmfe). Never recycle a label.
+     * duration, size and poster (ADR 2026-10.hmfe), and `17` the body's styles (ADR 2026-10.p95v): one byte string of
+     * the same entries the named layouts carry under `"s"`, absent while there are none. Its type is a byte string
+     * forever; a new style rides inside the bytes. Never recycle a label.
      * The nested layouts are append-only too: `ProfileV2`'s label 5 is the open-to-chat flag (defaulted, so
      * elided while off — a profile without it decodes as before), label 6 the bound LoRa board's node
      * number (nullable, elided while unbound) and label 7 that board's signing key (32 raw bytes here, base64
@@ -211,6 +216,8 @@ internal object MessageContentV2 {
         val attachmentSize: Long? = null,
         @CborLabel(16)
         val video: VideoV2? = null,
+        @CborLabel(17)
+        val st: ByteArray? = null,
     )
 
     /** [VideoInfo] (label 16, ADR 2026-10.hmfe): its own layout, like every nested type here. */

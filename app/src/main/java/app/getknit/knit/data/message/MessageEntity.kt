@@ -3,8 +3,10 @@ package app.getknit.knit.data.message
 import androidx.room3.Entity
 import androidx.room3.Index
 import androidx.room3.PrimaryKey
+import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.VideoInfo
 import kotlinx.serialization.json.Json
 import java.util.Base64
@@ -268,6 +270,13 @@ data class MessageEntity(
      * **Local only.**
      */
     val voiceTranscript: String? = null,
+    /**
+     * The body's formatting (ADR 2026-10.p95v): [StyleStore]'s readable JSON triples `[[start, length, code], …]` in
+     * UTF-16 units over [body], or null for an unformatted message (every row before v25). Inbound rows hold the
+     * spans normalised against the clamped body; our own hold what was sealed, and a re-seal reads them back
+     * (`sealedContent`). On the wire as one byte string (`StyleSpans`), never this text.
+     */
+    val styles: String? = null,
 ) {
     companion object {
         // [originSigned] values. Append-only like every other registry here: the value is stored on the row.
@@ -390,6 +399,37 @@ object MentionStore {
         if (stored.isBlank() || stored == "[]") return emptyList()
         return runCatching { json.decodeFromString<List<Mention>>(stored) }.getOrDefault(emptyList())
     }
+}
+
+/**
+ * Encodes/decodes the [MessageEntity.styles] (and `DraftEntity.styles`) column: JSON triples `[[start, length, code],
+ * …]`, legible in a debug-bridge dump, where the wire's packed bytes would not be. Null for none, so an unformatted
+ * row stores nothing. A malformed value, a triple that is no span, or a code this build does not know decodes to
+ * nothing rather than crashing rendering.
+ */
+object StyleStore {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    /** [spans] as the column's text, or null when there are none. */
+    fun encode(spans: List<StyleSpan>): String? =
+        if (spans.isEmpty()) {
+            null
+        } else {
+            json.encodeToString(spans.map { listOf(it.start, it.end - it.start, it.style.code) })
+        }
+
+    fun decode(stored: String?): List<StyleSpan> {
+        // Nearly every row is unformatted: no parse for those on the chat fold.
+        if (stored.isNullOrBlank()) return emptyList()
+        val triples = runCatching { json.decodeFromString<List<List<Int>>>(stored) }.getOrNull() ?: return emptyList()
+        return triples.mapNotNull { triple ->
+            val (start, length, code) = triple.takeIf { it.size == TRIPLE } ?: return@mapNotNull null
+            val style = BodyStyle.ofCode(code) ?: return@mapNotNull null
+            if (start < 0 || length <= 0 || start > Int.MAX_VALUE - length) null else StyleSpan(start, start + length, style)
+        }
+    }
+
+    private const val TRIPLE = 3
 }
 
 /**

@@ -399,8 +399,17 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   it is message text), written debounced on the *application* scope, and handed to the composer exactly
   once by `consumeRestoredDraft()`; nothing is persisted before that hand-over, because the field reports
   itself empty the moment it composes. The list shows it in place of the preview only while
-  `updatedAt` beats the newest message, and never touches the row's time or sort. Text only: the staged
-  attachment, the reply quote and the mention bindings stay draft-local to the screen.
+  `updatedAt` beats the newest message, and never touches the row's time or sort. Text and its style ranges only
+  (the 2026-10-24 amendment): the staged attachment, the reply quote and the mention bindings stay draft-local to the
+  screen.
+- **When touching message formatting — `mesh/protocol/StyleSpans` (`BodyStyle`, `StyleSpan`, `StyleRunsSerializer`),
+  `ChatContent.styles` / `MessageContent.styles` (key `"s"`), `MessageContentV2` label 17, `messages.styles` /
+  `drafts.styles` / `StyleStore`, `ui/chat/ComposerStyles`, or the styles `annotateMessageBody` draws:** READ ADR
+  2026-10.p95v. Formatting is UTF-16 style ranges beside a plain body, carried as one CBOR byte string of LEB128
+  varints whose type is frozen. An unformatted message costs zero bytes, and a test pins it. The receiver normalises
+  once, in `deliverChat`, against the clamped body, and takes a sealed message's styles only from its plaintext.
+  Only the bubble draws them; every other surface reads the plain body. Markdown-lite (deferred) is a composer input
+  method, so receivers never parse markdown. There is no capability bit; a spoiler (code 4, reserved) would need one.
 - **When touching `saved_files` / `data/blob/SavedFileEntity`, `ChatViewModel.openAttachment` /
   `saveAttachmentTo`, or what a file bubble's tap does:** READ ADR 2026-09.7ad3. A received file opens from the
   copy the user saved it to (a persisted read grant on the picker's document, recorded by blob hash) and never

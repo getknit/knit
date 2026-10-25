@@ -159,6 +159,11 @@
     <string name="chat_loading_older">Carregando mensagens anteriores…</string>
     <string name="chat_scroll_to_bottom">Ir para a mensagem mais recente</string>
     <string name="chat_message_hint">Mensagem do Knit</string>
+    <string name="chat_format_bold">Negrito</string>
+    <string name="chat_format_italic">Itálico</string>
+    <string name="chat_format_strikethrough">Tachado</string>
+    <string name="chat_format_monospace">Monoespaçado</string>
+    <string name="chat_format_clear">Limpar formatação</string>
     <string name="chat_typing">%1$s está digitando</string>
     <string name="chat_typing_multiple">%1$s e outros estão digitando</string>
     <string name="chat_loading_photo">A foto aparece quando um dispositivo que a tem estiver ao alcance</string>

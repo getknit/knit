@@ -44,7 +44,9 @@ import app.getknit.knit.mesh.crypto.ratchet.RatchetCrypto
 import app.getknit.knit.mesh.crypto.ratchet.RatchetEngine
 import app.getknit.knit.mesh.crypto.ratchet.RatchetSessions
 import app.getknit.knit.mesh.crypto.scope.ScopeCrypto
+import app.getknit.knit.mesh.lora.LoraSizeHint
 import app.getknit.knit.mesh.protocol.BlobReqContent
+import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.CommonsPost
@@ -62,6 +64,7 @@ import app.getknit.knit.mesh.protocol.RatchetHeader
 import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
@@ -886,6 +889,131 @@ class MeshManagerTest {
             assertTrue(rig.transport.fastFanouts.isEmpty())
             assertTrue(rig.forwardStore.frames().isEmpty())
             assertTrue(rig.saved.isEmpty())
+        }
+
+    // --- formatting (ADR 2026-10.p95v) ---
+
+    private val bold = listOf(StyleSpan(8, 12, BodyStyle.BOLD))
+
+    @Test
+    fun aRoomPostsStylesAreStoredAndRideTheRoomField() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+
+            assertTrue(rig.manager.sendChat("make it bold", styles = bold + StyleSpan(40, 50, BodyStyle.ITALIC)))
+            advanceUntilIdle()
+
+            assertEquals("normalised against the text: the span past its end is gone", "[[8,4,0]]", rig.saved.single().styles)
+            assertEquals(bold, WireCodec.decodePayload<ChatContent>(rig.sentChatFrames().single().payload)!!.styles)
+        }
+
+    @Test
+    fun anUnformattedSendStoresAndCarriesNoStyles() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+
+            assertTrue(rig.manager.sendChat("make it bold"))
+            advanceUntilIdle()
+
+            assertNull(rig.saved.single().styles)
+            val payload = rig.sentChatFrames().single().payload
+            assertEquals(emptyList<StyleSpan>(), WireCodec.decodePayload<ChatContent>(payload)!!.styles)
+            assertArrayEquals("the room payload is the bytes it was", WireCodec.encodePayload(ChatContent(body = "make it bold")), payload)
+        }
+
+    /**
+     * `sendChat` takes spans indexed against exactly the text it is handed and never rebases them: the caller trims and
+     * rebases first. Spans given against the final text land unchanged, and only what runs past its end is clipped.
+     */
+    @Test
+    fun aDmsStylesAreSealedNeverOnTheShellAndIndexedAgainstTheTextAsGiven() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.pin(rig.bob)
+            val text = "  make it bold"
+            val styles = listOf(StyleSpan(0, 2, BodyStyle.ITALIC), StyleSpan(10, 30, BodyStyle.BOLD))
+
+            assertTrue(rig.manager.sendChat(text, recipientId = rig.bob.nodeId, styles = styles))
+            advanceUntilIdle()
+
+            val expected = listOf(StyleSpan(0, 2, BodyStyle.ITALIC), StyleSpan(10, 14, BodyStyle.BOLD))
+            assertEquals("[[0,2,1],[10,4,0]]", rig.saved.single().styles)
+            val frame = rig.sentChatFrames().single()
+            val content = WireCodec.decodePayload<ChatContent>(frame.payload)!!
+            assertEquals("the cleartext shell carries none", emptyList<StyleSpan>(), content.styles)
+            val header = MessageCrypto.header(frame.id, rig.me.nodeId, frame.sentAt, rig.bob.nodeId)
+            assertEquals(
+                expected,
+                rig.bob.crypto
+                    .open(content.enc!!, header, rig.bob.nodeId)!!
+                    .styles,
+            )
+        }
+
+    /** A reset's re-seal reads the row back through `sealedContent`, so it carries the styles the first seal did. */
+    @Test
+    fun aResealCarriesTheRowsStyles() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.pin(rig.bob)
+            assertTrue(rig.manager.sendChat("make it bold", recipientId = rig.bob.nodeId, styles = bold))
+            advanceUntilIdle()
+            val row = rig.saved.single()
+            rig.transport.sent.clear()
+
+            coEvery { rig.messages.unackedDmsTo(rig.bob.nodeId, rig.me.nodeId, any()) } returns listOf(row)
+            rig.manager.resealRecentDmsTo(rig.bob.nodeId)
+            advanceUntilIdle()
+
+            val again = rig.sentChatFrames().single()
+            assertEquals("the re-seal goes out under the original id", row.id, again.id)
+            val enc = WireCodec.decodePayload<ChatContent>(again.payload)!!.enc!!
+            val header = MessageCrypto.header(again.id, rig.me.nodeId, again.sentAt, rig.bob.nodeId)
+            assertEquals(
+                bold,
+                rig.bob.crypto
+                    .open(enc, header, rig.bob.nodeId)!!
+                    .styles,
+            )
+        }
+
+    /** ADR 054's room is counted with the styles' bytes: a body that leaves room for exactly one ack leaves none styled. */
+    @Test
+    fun aStyledDmsInlineAckRoomCountsItsStyles() =
+        runTest(UnconfinedTestDispatcher()) {
+            val rig = Rig(backgroundScope)
+            rig.pinRatchetCapable(rig.bob, RatchetCrypto.generateKeyPair().pub)
+            val text = "x".repeat(LoraSizeHint.DM_BODY_BYTES - INLINE_ACK_BYTES)
+
+            rig.manager.dmAcks.hold(rig.bob.nodeId, "in-1".padEnd(22, 'x'))
+            assertTrue(rig.manager.sendChat(text, recipientId = rig.bob.nodeId))
+            advanceUntilIdle()
+            assertTrue(
+                "unstyled, the one ack fits",
+                rig.manager.dmAcks
+                    .pending(rig.bob.nodeId)
+                    .isEmpty(),
+            )
+
+            rig.manager.dmAcks.hold(rig.bob.nodeId, "in-2".padEnd(22, 'x'))
+            assertTrue(rig.manager.sendChat(text, recipientId = rig.bob.nodeId, styles = listOf(StyleSpan(0, 4, BodyStyle.BOLD))))
+            advanceUntilIdle()
+            assertEquals("styled, it waits for its own tick", listOf("in-2".padEnd(22, 'x')), rig.manager.dmAcks.pending(rig.bob.nodeId))
+        }
+
+    @Test
+    fun aCommonsPostsStylesRideItsChatAndItsRow() =
+        runTest(UnconfinedTestDispatcher()) {
+            val store = FakeCommonsStore(roomId, roomSecret)
+            val rig = Rig(backgroundScope, commons = store)
+
+            assertTrue(rig.manager.sendCommons(roomId, "make it bold", emptyList(), null, styles = bold))
+            advanceUntilIdle()
+
+            val (row, _, signed) = store.posted.single()
+            assertEquals("[[8,4,0]]", row.styles)
+            val post = checkNotNull(WireCodec.decodePayload<CommonsPost>(checkNotNull(WireCodec.decodeEnvelope(signed)).payload))
+            assertEquals(bold, checkNotNull(post.chat).styles)
         }
 
     @Test

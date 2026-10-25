@@ -210,6 +210,7 @@ import app.getknit.knit.call.SttModelState
 import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.data.FileTypes
 import app.getknit.knit.data.VoiceAudio
+import app.getknit.knit.data.draft.Draft
 import app.getknit.knit.data.emoji.EmojiCatalogLoader
 import app.getknit.knit.data.emoji.RecentReactions
 import app.getknit.knit.data.message.Conversations
@@ -234,9 +235,13 @@ import app.getknit.knit.location.GeoUri
 import app.getknit.knit.mesh.ArrivingFile
 import app.getknit.knit.mesh.TransportHealth
 import app.getknit.knit.mesh.lora.LoraSizeHint
+import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleKey
+import app.getknit.knit.mesh.protocol.StyleSpan
+import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.translate.TranslateDirection
 import app.getknit.knit.translate.TranslateLang
 import app.getknit.knit.ui.camera.PhotoCapture
@@ -350,7 +355,8 @@ fun ChatScreen(
     var translateMetered by remember { mutableStateOf<Pair<ChatRow, TranslateDirection>?>(null) }
     val arrivals by viewModel.arrivals.collectAsStateWithLifecycle()
     val recentReactions by viewModel.recentReactions.collectAsStateWithLifecycle()
-    val inputState = rememberTextFieldState()
+    // Saved with its formatting: the stock saver keeps the words and drops their styles (ADR 2026-10.p95v).
+    val inputState = rememberComposerState()
     val shareInbox = koinInject<ShareInbox>()
     // Warm the emoji catalog (parse + per-glyph font check, once per process, off the main thread) as soon as
     // a chat is open, so the reaction picker's sheet composes its grid on its first frame instead of a skeleton.
@@ -367,6 +373,8 @@ fun ChatScreen(
     var draftTranslatedFrom by remember { mutableStateOf<TranslateLang?>(null) }
     var draftTranslatedGuessed by remember { mutableStateOf(false) }
     var draftOriginal by remember { mutableStateOf<String?>(null) }
+    // The original's formatting, which a translation drops (its words moved) and Undo puts back with the text.
+    var draftOriginalSpans by remember { mutableStateOf<List<StyleSpan>>(emptyList()) }
     LaunchedEffect(draftTranslation) {
         val done = draftTranslation as? ChatViewModel.DraftTranslation.Done ?: return@LaunchedEffect
         inputState.setTextAndPlaceCursorAtEnd(done.text)
@@ -537,7 +545,8 @@ fun ChatScreen(
     // the ViewModel knows the text it handed over and treats that report as no edit (no cue, no re-save).
     LaunchedEffect(Unit) {
         val restored = viewModel.consumeRestoredDraft()
-        if (restored.isNotEmpty() && inputState.text.isEmpty()) inputState.setTextAndPlaceCursorAtEnd(restored)
+        // Text and styles in one edit, so the restore reports as the row it came from (ADR 2026-09.qtg9).
+        if (restored.text.isNotEmpty() && inputState.text.isEmpty()) inputState.setTextAndBodySpans(restored.text, restored.spans)
     }
     // Debug trailer director: on the Nearby room, drive the REAL composer from scripted DemoComposer
     // commands — type char-by-char (which fires the real typing cue via MessageInput's snapshotFlow) then
@@ -606,7 +615,7 @@ fun ChatScreen(
             val applied = mentionsStillIn(text, pendingMentions)
             // Don't clear here: a message blocked for abuse must keep the draft. The ViewModel
             // emits clearInput only once a message is actually accepted (see the collector above).
-            viewModel.send(text, applied, replyingTo)
+            viewModel.send(text, applied, replyingTo, styles = inputState.bodySpans())
         },
         showPublicConsent = showPublicConsent,
         onAcceptPublicConsent = viewModel::acceptPublicConsent,
@@ -664,6 +673,7 @@ fun ChatScreen(
                 )
             },
         onTranslateDraft = { from ->
+            draftOriginalSpans = inputState.bodySpans()
             viewModel.translateDraft(
                 inputState.text.toString(),
                 mentionSpans(inputState.text, pendingMentions).map { it.start until it.end },
@@ -671,8 +681,9 @@ fun ChatScreen(
             )
         },
         onUndoDraftTranslation = {
-            draftOriginal?.let(inputState::setTextAndPlaceCursorAtEnd)
+            draftOriginal?.let { inputState.setTextAndBodySpans(it, draftOriginalSpans) }
             draftOriginal = null
+            draftOriginalSpans = emptyList()
             draftTranslatedFrom = null
         },
         // The guess was wrong: the original, again, from the other language.
@@ -929,7 +940,7 @@ internal fun ChatScreenContent(
     onReceiveImage: (Uri) -> Unit,
     onTyping: (String) -> Unit,
     // Every edit of the draft, so a link in it can grow a preview card; defaulted for the @Preview and test call sites.
-    onDraftChanged: (String) -> Unit = {},
+    onDraftChanged: (Draft) -> Unit = {},
     // Translating the draft before it is sent (ADR 2026-10.t2h6's amendment): null where translation is not wired.
     draftTranslate: DraftTranslateUi? = null,
     onTranslateDraft: (from: TranslateLang?) -> Unit = {},
@@ -1504,6 +1515,7 @@ internal fun ChatScreenContent(
                         onSend = onSend,
                         onTyping = onTyping,
                         onDraftChanged = onDraftChanged,
+                        formatting = !state.isBridged,
                         draftTranslate = draftTranslate,
                         onTranslateDraft = onTranslateDraft,
                         onUndoDraftTranslation = onUndoDraftTranslation,
@@ -2861,8 +2873,9 @@ private fun MessageBubble(
                                 // A short emoji-only message renders enlarged (Signal-style), scaling
                                 // down as the count grows. annotateMessageBody is a no-op on it (an
                                 // all-emoji body has no mentions/URLs), so the call stays shared.
+                                val emojiCount = emojiOnlyCount(shownBody)
                                 val bodyStyle =
-                                    when (emojiOnlyCount(shownBody)) {
+                                    when (emojiCount) {
                                         0 -> MaterialTheme.typography.bodyLarge
                                         1 -> MaterialTheme.typography.bodyLarge.copy(fontSize = 44.sp, lineHeight = 52.sp)
                                         in 2..3 -> MaterialTheme.typography.bodyLarge.copy(fontSize = 34.sp, lineHeight = 42.sp)
@@ -2895,6 +2908,12 @@ private fun MessageBubble(
                                         )
                                     }
                                 } else {
+                                    // The sender's formatting (ADR 2026-10.p95v); a translation above is drawn plain, since the
+                                    // ranges index the original's words.
+                                    val shownStyles =
+                                        remember(row.body, shownBody, row.styles, emojiCount) {
+                                            bubbleStyles(row.body, shownBody, row.styles, emojiOnly = emojiCount > 0)
+                                        }
                                     Text(
                                         text =
                                             annotateMessageBody(
@@ -2903,6 +2922,8 @@ private fun MessageBubble(
                                                 mentionStyle,
                                                 linkStyle,
                                                 onLinkClick = { url -> openUrl(context, url) },
+                                                styles = shownStyles,
+                                                codeBackground = LocalContentColor.current.copy(alpha = CODE_WASH_ALPHA),
                                             ),
                                         style = bodyStyle,
                                     )
@@ -4242,7 +4263,10 @@ private fun MessageInput(
     onReceiveImage: (Uri) -> Unit,
     onSend: () -> Unit,
     onTyping: (String) -> Unit = {},
-    onDraftChanged: (String) -> Unit = {},
+    onDraftChanged: (Draft) -> Unit = {},
+    // Whether the text toolbar offers Bold, Italic, Strikethrough and Monospace (ADR 2026-10.p95v). Off in the
+    // Meshtastic room, whose line goes to other clients as plain text.
+    formatting: Boolean = false,
     // Translating the draft before it is sent (ADR 2026-10.t2h6's amendment): null where translation is not wired.
     draftTranslate: DraftTranslateUi? = null,
     onTranslateDraft: (from: TranslateLang?) -> Unit = {},
@@ -4353,8 +4377,9 @@ private fun MessageInput(
     // that already holds a link when the input composes can grow its card. The ViewModel ignores a report
     // that matches what it already keeps, so the restore and a recomposition's re-report stay unpersisted.
     LaunchedEffect(state) {
-        snapshotFlow { state.text.toString() }.collect(onDraftChanged)
+        snapshotFlow { Draft(state.text.toString(), state.bodySpans()) }.collect(onDraftChanged)
     }
+    val formattingLabels = formattingLabels()
     val filtered =
         remember(activeQuery, candidates) {
             activeQuery?.let { filterCandidates(candidates, it.query) }.orEmpty()
@@ -4538,7 +4563,12 @@ private fun MessageInput(
             }
             if (loraBudget != null) {
                 // Derived so the row recomposes only when the draft crosses the budget, not per keystroke.
-                val overLora by remember(loraBudget) { derivedStateOf { LoraSizeHint.utf8Length(state.text) > loraBudget } }
+                // The formatting rides the frame beside the body, so its bytes count too (named key: the larger).
+                val overLora by remember(loraBudget) {
+                    derivedStateOf {
+                        LoraSizeHint.utf8Length(state.text) + StyleSpans.wireCost(state.bodySpans(), StyleKey.NAMED) > loraBudget
+                    }
+                }
                 if (overLora) {
                     Text(
                         text = stringResource(R.string.chat_lora_long_message),
@@ -4650,6 +4680,7 @@ private fun MessageInput(
                                         ).testTag("chat_input")
                                         .semantics { contentDescription = messageHint }
                                         .noAutofillMenu()
+                                        .then(if (formatting) Modifier.formattingMenu(state, formattingLabels) else Modifier)
                                         // Ctrl+Enter sends from a hardware keyboard, the one place a
                                         // keyboard-only send is expected. Preview, so the field's own Enter
                                         // handling never sees it and puts a newline in the draft first.
@@ -5797,6 +5828,78 @@ fun MessageBubbleLinkPreview() =
             onCopy = {},
         )
     }
+
+// The four styles (ADR 2026-10.p95v), on both bubble fills: monospace on its wash, and a link half struck keeping its
+// underline under the line through.
+@Preview(showBackground = true)
+@Composable
+fun MessageBubbleFormattingPreview() =
+    KnitPreview {
+        val theirs = "Bring the charger, not the cable. The gate code is 4821.\nOld plan: https://osm.org/go/xyz"
+        val mine = "On my way, running late"
+        Column {
+            MessageBubble(
+                row =
+                    ChatRow(
+                        id = "f1",
+                        body = theirs,
+                        mine = false,
+                        senderName = "Ada Lovelace",
+                        senderNodeId = "node-ada",
+                        avatarHash = null,
+                        sentAt = PREVIEW_NOW - 12 * 60_000L,
+                        received = false,
+                        styles =
+                            listOf(
+                                previewSpan(theirs, "charger", BodyStyle.BOLD),
+                                previewSpan(theirs, "not", BodyStyle.ITALIC),
+                                previewSpan(theirs, "4821", BodyStyle.MONOSPACE),
+                                previewSpan(theirs, "Old plan: https://osm.org", BodyStyle.STRIKETHROUGH),
+                            ),
+                    ),
+                now = PREVIEW_NOW,
+                showSenderName = true,
+                onImageClick = {},
+                onOpenProfile = {},
+                onReact = { _, _ -> },
+                onDelete = {},
+                onBlock = {},
+                onCopy = {},
+            )
+            MessageBubble(
+                row =
+                    ChatRow(
+                        id = "f2",
+                        body = mine,
+                        mine = true,
+                        senderName = "You",
+                        senderNodeId = "me",
+                        avatarHash = null,
+                        sentAt = PREVIEW_NOW - 10 * 60_000L,
+                        received = true,
+                        styles =
+                            listOf(
+                                previewSpan(mine, "running late", BodyStyle.BOLD),
+                                previewSpan(mine, "running late", BodyStyle.ITALIC),
+                            ),
+                    ),
+                now = PREVIEW_NOW,
+                showSenderName = false,
+                onImageClick = {},
+                onOpenProfile = {},
+                onReact = { _, _ -> },
+                onDelete = {},
+                onBlock = {},
+                onCopy = {},
+            )
+        }
+    }
+
+private fun previewSpan(
+    body: String,
+    words: String,
+    style: BodyStyle,
+): StyleSpan = body.indexOf(words).let { StyleSpan(it, it + words.length, style) }
 
 // The image itself stays blank (Coil/BlobImage has no DB-backed bytes in a preview); this shows the
 // black scrim + sender/time/overflow top bar.

@@ -19,21 +19,24 @@ class DraftDaoTest : RoomDbTest() {
     @Test
     fun `a first write inserts, and a second to the same conversation updates that row in place`() =
         runTest {
-            dao.upsert(CHAT, "half a", updatedAt = 1L)
+            dao.upsert(CHAT, "half a", styles = null, updatedAt = 1L)
             val rowid = rowidOf(CHAT)
 
-            dao.upsert(CHAT, "half a sentence", updatedAt = 2L)
+            dao.upsert(CHAT, "half a sentence", styles = "[[0,4,0]]", updatedAt = 2L)
 
-            assertEquals(listOf(DraftEntity(CHAT, "half a sentence", 2L)), dao.observeAll().first())
+            assertEquals(listOf(DraftEntity(CHAT, "half a sentence", 2L, "[[0,4,0]]")), dao.observeAll().first())
             assertEquals("updated where it sat, not deleted and re-inserted", rowid, rowidOf(CHAT))
-            assertEquals("half a sentence", dao.find(CHAT))
+            assertEquals(DraftContent("half a sentence", "[[0,4,0]]"), dao.find(CHAT))
+
+            dao.upsert(CHAT, "half a sentence", styles = null, updatedAt = 3L)
+            assertEquals("formatting taken off is taken off the row", DraftContent("half a sentence", null), dao.find(CHAT))
         }
 
     @Test
     fun `writes to different conversations keep their own rows`() =
         runTest {
-            dao.upsert(CHAT, "mine", updatedAt = 1L)
-            dao.upsert(OTHER, "theirs", updatedAt = 1L)
+            dao.upsert(CHAT, "mine", styles = null, updatedAt = 1L)
+            dao.upsert(OTHER, "theirs", styles = null, updatedAt = 1L)
             dao.deleteFor(CHAT)
 
             assertEquals(listOf(DraftEntity(OTHER, "theirs", 1L)), dao.observeAll().first())

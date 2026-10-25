@@ -61,6 +61,7 @@ import app.getknit.knit.mesh.protocol.BlobHasContent
 import app.getknit.knit.mesh.protocol.BlobHasItem
 import app.getknit.knit.mesh.protocol.BlobHaveContent
 import app.getknit.knit.mesh.protocol.BlobReqContent
+import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.CallPayload
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.CommonsPost
@@ -87,6 +88,7 @@ import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.ScopeConfigPayload
+import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.TranscriptJson
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.TypingContent
@@ -4743,6 +4745,122 @@ class InboundPipelineTest {
             assertEquals(TextLimits.MESSAGE, rig.msgMap["big"]?.body?.length)
         }
 
+    // --- Formatting (ADR 2026-10.p95v): every door's styles are normalised once, against the stored body ---
+
+    @Test
+    fun aRoomPostsStylesLandNormalisedAgainstItsBody() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val body = "so 👍 good"
+            val sent =
+                listOf(
+                    StyleSpan(9, 13, BodyStyle.ITALIC),
+                    // Ends inside the 👍 pair (units 3 and 4): snaps on to 5.
+                    StyleSpan(3, 4, BodyStyle.BOLD),
+                    StyleSpan(0, 2, BodyStyle.BOLD),
+                    // Touches the bold before it: merges.
+                    StyleSpan(2, 3, BodyStyle.BOLD),
+                    // Past the body: dropped.
+                    StyleSpan(40, 50, BodyStyle.MONOSPACE),
+                )
+            val env =
+                RelayEnvelope(
+                    type = FrameType.CHAT,
+                    id = "styled",
+                    senderId = alice.nodeId,
+                    sentAt = 5L,
+                    payload = WireCodec.encodePayload(ChatContent(body = body, styles = sent)),
+                )
+
+            rig.deliver(alice, env)
+            rig.deliver(alice, rig.broadcastChat(alice, id = "plain", body = "plain"))
+
+            assertEquals("[[0,5,0],[9,1,1]]", rig.msgMap["styled"]?.styles)
+            assertNull("an unformatted post stores nothing", rig.msgMap["plain"]?.styles)
+        }
+
+    @Test
+    fun theClampClipsAStyleRunningPastIt() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val limit = TextLimits.MESSAGE
+            val styles =
+                listOf(StyleSpan(limit - 5, limit + 100, BodyStyle.BOLD), StyleSpan(limit + 10, limit + 20, BodyStyle.ITALIC))
+            val env =
+                RelayEnvelope(
+                    type = FrameType.CHAT,
+                    id = "long",
+                    senderId = alice.nodeId,
+                    sentAt = 5L,
+                    payload = WireCodec.encodePayload(ChatContent(body = "x".repeat(limit * 2), styles = styles)),
+                )
+
+            rig.deliver(alice, env)
+
+            assertEquals("[[${limit - 5},5,0]]", rig.msgMap["long"]?.styles)
+        }
+
+    @Test
+    fun aSealedDmsStylesComeFromThePlaintextNeverTheShell() =
+        runTest {
+            for (v3 in listOf(true, false)) {
+                val rig = Rig(backgroundScope)
+                val alice = party()
+                rig.pin(alice)
+                val author = V2Author(alice, rig)
+
+                rig.deliver(
+                    alice,
+                    author.dm(
+                        "dm-styled",
+                        "make it bold",
+                        v3 = v3,
+                        styles = listOf(StyleSpan(8, 12, BodyStyle.BOLD)),
+                        shellStyles = listOf(StyleSpan(0, 4, BodyStyle.STRIKETHROUGH)),
+                    ),
+                )
+                rig.deliver(alice, author.dm("dm-plain", "plain words", v3 = v3, shellStyles = listOf(StyleSpan(0, 5, BodyStyle.BOLD))))
+
+                assertEquals("v3=$v3", "[[8,4,0]]", rig.msgMap["dm-styled"]?.styles)
+                assertNull("v3=$v3: a shell's styles never format a sealed message", rig.msgMap["dm-plain"]?.styles)
+            }
+        }
+
+    @Test
+    fun aGroupRatchetMessagesStylesLand() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val alice = party()
+            rig.pin(alice)
+            val group = rig.seedRatchetGroup(alice)
+            val author = GroupRatchetAuthor(alice, group.id)
+            val seed = GroupKeyPayload(group.id, keys = listOf(author.seed()))
+            rig.deliver(alice, V2Author(alice, rig).dm("seed1", "", ctl = MessageContent.CTL_GROUP_KEY, gk = seed))
+
+            val code = listOf(StyleSpan(11, 15, BodyStyle.MONOSPACE))
+            rig.deliver(alice, author.groupFrame(group, id = "gm-styled", body = "team, code here", styles = code))
+
+            assertEquals("[[11,4,3]]", rig.msgMap["gm-styled"]?.styles)
+        }
+
+    @Test
+    fun aHeardMeshtasticPostCarriesNoStyles() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            rig.pipeline.deliverMeshPost(heardPost("**not bold** to a Meshtastic client"))
+            advanceUntilIdle()
+
+            assertNull(
+                rig.msgMap.values
+                    .single()
+                    .styles,
+            )
+        }
+
     @Test
     fun aFutureDatedInboundSentAtIsClampedForLocalOrdering() =
         runTest {
@@ -5451,6 +5569,10 @@ class InboundPipelineTest {
             sentAt: Long = 5L,
             /** Seal crypto scheme v3 (derived nonce, compact plaintext, header-bound AAD) instead of v2. */
             v3: Boolean = false,
+            /** The sealed body's styles (ADR 2026-10.p95v). */
+            styles: List<StyleSpan> = emptyList(),
+            /** Styles put on the cleartext shell beside the seal — what no honest sender does, and no receiver reads. */
+            shellStyles: List<StyleSpan> = emptyList(),
             /** Overrides the envelope's nonce field after sealing — the malformed-shape tests. */
             nonceOverride: ByteArray? = null,
             mutateHeader: (RatchetHeader) -> RatchetHeader = { it },
@@ -5469,6 +5591,7 @@ class InboundPipelineTest {
                     xf = xf,
                     cl = cl,
                     sc = sc,
+                    styles = styles,
                 ).sealBytes(v3)
             check(!v3 || scheme == EncEnvelope.VERSION_DM_V3) { "fixture asked for v3 but the content has no compact form" }
             val sealed = checkNotNull(engine.seal(session, plain, aad, rig.selfSpk.pub, now = 5L, v3 = v3))
@@ -5502,6 +5625,7 @@ class InboundPipelineTest {
                                     keys = emptyList(),
                                     r = header,
                                 ),
+                            styles = shellStyles,
                         ),
                     ),
             )
@@ -7521,9 +7645,11 @@ class InboundPipelineTest {
             ctl: Int? = null,
             rp: ReactionPayload? = null,
             sc: ScopeConfigPayload? = null,
+            styles: List<StyleSpan> = emptyList(),
         ): RelayEnvelope {
             val aad = MessageCrypto.header(id, party.nodeId, sentAt, groupId)
-            val sealed = checkNotNull(engine.seal(chain, MessageContent(body = body, ctl = ctl, rp = rp, sc = sc).encode(), aad))
+            val plain = MessageContent(body = body, ctl = ctl, rp = rp, sc = sc, styles = styles).encode()
+            val sealed = checkNotNull(engine.seal(chain, plain, aad))
             chain = sealed.chain
             return RelayEnvelope(
                 type = FrameType.CHAT,

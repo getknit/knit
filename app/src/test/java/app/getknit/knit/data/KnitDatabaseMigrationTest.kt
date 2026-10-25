@@ -47,7 +47,7 @@ class KnitDatabaseMigrationTest {
         )
 
     @Test
-    fun `the current schema (v24) creates and opens from the exported JSON`() =
+    fun `the current schema (v25) creates and opens from the exported JSON`() =
         runTest {
             helper.createDatabase(CURRENT_VERSION).close()
         }
@@ -939,23 +939,27 @@ class KnitDatabaseMigrationTest {
         }
 
     @Test
-    fun `a lab database stamped 27 walks back down to the current schema and keeps every row`() =
+    fun `migrate 24 to 25 keeps every message and draft and leaves their styles null`() =
         runTest {
-            // The fold's pre-merge numbering put v22's schema at v27; only the stamp differs, so the way down is
-            // every step since v22.
-            helper.createDatabase(22).use { c ->
-                c.execSQL("INSERT INTO attachment_holders (hash, holderId, plane, provedAt) VALUES ('h1', 'p1', 1, 5)")
-                c.execSQL("PRAGMA user_version = 27")
+            helper.createDatabase(24).use { c ->
+                c.execSQL(
+                    INSERT_V21.replace(") ", ", replyCheck, replyToFlagged, attachmentFetchApproved, videoPosterFlagged) ") +
+                        "VALUES ('m1','n1','peer-1','plain words',1,1,0,'[]',0,0,0,0,0,0,0,0,0,0,0)",
+                )
+                c.execSQL("INSERT INTO drafts (conversationId, text, updatedAt) VALUES ('peer-1', 'half a thought', 9)")
             }
-            // What the builder registers, so a shim dropped from `build` goes red here.
-            helper.runMigrationsAndValidate(CURRENT_VERSION, KnitMigrations.REGISTERED.toList()).use { c ->
-                c.prepare("SELECT COUNT(*) FROM attachment_holders").use { s ->
+            helper.runMigrationsAndValidate(25, listOf(KnitMigrations.MIGRATION_24_25)).use { c ->
+                c.prepare("SELECT body, styles FROM messages WHERE id = 'm1'").use { s ->
                     assertTrue(s.step())
-                    assertEquals(1L, s.getLong(0))
+                    assertEquals("plain words", s.getText(0))
+                    // ADR 2026-10.p95v: nothing before this build sent a style, so every row is unformatted.
+                    assertTrue(s.isNull(1))
                 }
-                c.prepare("PRAGMA user_version").use { s ->
+                c.prepare("SELECT text, updatedAt, styles FROM drafts WHERE conversationId = 'peer-1'").use { s ->
                     assertTrue(s.step())
-                    assertEquals(CURRENT_VERSION.toLong(), s.getLong(0))
+                    assertEquals("half a thought", s.getText(0))
+                    assertEquals(9L, s.getLong(1))
+                    assertTrue(s.isNull(2))
                 }
             }
         }
@@ -965,7 +969,7 @@ class KnitDatabaseMigrationTest {
          * KnitDatabase `@Database(version = …)` — bump alongside the DB (its retention is CLASS, so the version
          * can't be read reflectively). A missing schemas/<db>/<version>.json fails the smoke test.
          */
-        const val CURRENT_VERSION = 24
+        const val CURRENT_VERSION = 25
 
         /** The v16 column list with an attachment — MIGRATION_16_17's test seeds rows through it. */
         const val INSERT_V16 =

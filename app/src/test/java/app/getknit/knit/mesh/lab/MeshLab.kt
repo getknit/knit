@@ -93,6 +93,7 @@ import app.getknit.knit.mesh.lora.LoraGossipPolicy
 import app.getknit.knit.mesh.lora.LoraMeshTransport
 import app.getknit.knit.mesh.lora.LoraPacePolicy
 import app.getknit.knit.mesh.protocol.ChatContent
+import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.PrekeyInfo
 import app.getknit.knit.mesh.protocol.ProfileContent
@@ -100,6 +101,7 @@ import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.ScopeConfigPayload
+import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.VideoInfo
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
@@ -1550,11 +1552,12 @@ class LabNode internal constructor(
         }
     }
 
-    /** Posts in the Nearby room, quoting [replyTo] when given; the frame the app's composer would send. */
+    /** Posts in the Nearby room, quoting [replyTo] when given, formatted by [styles]; the frame the app's composer would send. */
     suspend fun sendRoom(
         text: String,
         replyTo: ReplyRef? = null,
-    ): Boolean = spaced { manager.sendChat(text = text, replyTo = replyTo) }
+        styles: List<StyleSpan> = emptyList(),
+    ): Boolean = spaced { manager.sendChat(text = text, replyTo = replyTo, styles = styles) }
 
     /** The call ids whose end this node's call layer has written to its settings file (C-3.4-3). */
     suspend fun savedCallTombs(): Set<String> = CallTombStore(dataStore).load().mapTo(HashSet()) { it.id }
@@ -1578,11 +1581,26 @@ class LabNode internal constructor(
         castToo: Boolean = false,
     ): Boolean = spaced { manager.sendCallTalk(to.nodeId, chunk, castToo = castToo) != null }
 
-    /** Sends a DM; the frame the app's composer would send. */
+    /** Sends a DM, formatted by [styles]; the frame the app's composer would send. */
     suspend fun sendDm(
         to: LabNode,
         text: String,
-    ): Boolean = spaced { manager.sendChat(text = text, recipientId = to.nodeId) }
+        styles: List<StyleSpan> = emptyList(),
+    ): Boolean = spaced { manager.sendChat(text = text, recipientId = to.nodeId, styles = styles) }
+
+    /**
+     * Makes this node seal its DMs to [peer] in the named v2 layout, as it does toward a build without crypto scheme
+     * v3 (ADR 059): clears `CAP_CRYPTO_V3` on the pinned row, the bit `CryptoScheme` reads. [v3] true puts it back. A
+     * later profile frame from [peer] carries the bit back too, so call it once the pair is acquainted.
+     */
+    suspend fun sealToAsOlderBuild(
+        peer: LabNode,
+        v3: Boolean = false,
+    ) {
+        val row = checkNotNull(peers.find(peer.nodeId)) { "$name has no pin for ${peer.name}" }
+        val caps = row.capabilities ?: 0L
+        peers.upsert(row.copy(capabilities = if (v3) caps or Protocol.CAP_CRYPTO_V3 else caps and Protocol.CAP_CRYPTO_V3.inv()))
+    }
 
     /**
      * Makes this node answer [author]'s DMs with the legacy cleartext receipt, as it answers an author that cannot
@@ -1692,9 +1710,10 @@ class LabNode internal constructor(
         groupId: String,
         text: String,
         replyTo: ReplyRef? = null,
+        styles: List<StyleSpan> = emptyList(),
     ): Boolean {
         val group = checkNotNull(groups.find(groupId)) { "$name holds no group $groupId" }
-        return spaced { manager.sendChat(text = text, group = group.toGroupInfo(), replyTo = replyTo) }
+        return spaced { manager.sendChat(text = text, group = group.toGroupInfo(), replyTo = replyTo, styles = styles) }
     }
 
     /**
@@ -2148,6 +2167,13 @@ class LabNode internal constructor(
 
     /** How many inbound frames this node refused for [reason] this session. */
     fun drops(reason: DropReason): Long = metrics.frames().dropsByReason[reason] ?: 0L
+
+    /** The sealed envelope of [messageId]'s copy in this node's custody — which form it went out in — or null. */
+    suspend fun custodiedSeal(messageId: String): EncEnvelope? =
+        forwardStore
+            .liveFrames(now())
+            .firstOrNull { it.envelope.id == messageId }
+            ?.let { WireCodec.decodePayload<ChatContent>(it.envelope.payload)?.enc }
 
     /** The custody store's live id set, as the digest exchange advertises it. */
     suspend fun custodyIds(): Set<String> = forwardStore.liveIds(now()).toSet()

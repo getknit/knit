@@ -632,18 +632,15 @@ object KnitMigrations {
         }
 
     /**
-     * Lab only, and temporary: walks a development database stamped v27 back down to v22. Before the fold above, the
-     * post-2.9.0 schema was numbered v22…v27 and the lab phones installed it at v27; Room throws at every open on a
-     * `user_version` above the app's, but takes a registered descending path — and only one that never passes below
-     * its target, so it lands on the current version directly. v27 *is* the folded v22 (Room hashes schema content, not
-     * the version), so the body is every step since v22 ([MIGRATION_22_23], [MIGRATION_23_24]). Delete it once every lab
-     * phone has opened its database on a build that carries it. Not in [ALL], which is the upgrade chain.
+     * v25 — `messages.styles` and `drafts.styles`: a message's and a draft's formatting as style ranges beside the
+     * plain body (ADR 2026-10.p95v), `StyleStore`'s JSON triples. Null on every existing row, which is an unformatted
+     * message. The SQL must stay byte-equivalent to what Room generates for `app/schemas/**/25.json`.
      */
-    val LAB_DOWNGRADE_27_24 =
-        object : Migration(27, 24) {
+    val MIGRATION_24_25 =
+        object : Migration(24, 25) {
             override suspend fun migrate(connection: SQLiteConnection) {
-                MIGRATION_22_23.migrate(connection)
-                MIGRATION_23_24.migrate(connection)
+                connection.execSQL("ALTER TABLE `messages` ADD COLUMN `styles` TEXT DEFAULT NULL")
+                connection.execSQL("ALTER TABLE `drafts` ADD COLUMN `styles` TEXT DEFAULT NULL")
             }
         }
 
@@ -673,8 +670,6 @@ object KnitMigrations {
             MIGRATION_21_22,
             MIGRATION_22_23,
             MIGRATION_23_24,
+            MIGRATION_24_25,
         )
-
-    /** What [KnitDatabase.build] registers: the upgrade chain plus the temporary lab downgrade. */
-    val REGISTERED: Array<Migration> = ALL + LAB_DOWNGRADE_27_24
 }

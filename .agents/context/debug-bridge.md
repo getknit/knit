@@ -31,6 +31,9 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   on-device shell**: `adb` re-parses the command on the device, so a bare `--es text "hi there"` is
   word-split and truncated to `hi`. Wrap the whole remote command in double quotes and single-quote the
   value (see the example).
+  `--es styles <start,length,code,…>` formats it (ADR 2026-10.p95v): triples over the text as sent, codes 0 bold,
+  1 italic, 2 strikethrough, 3 monospace, normalised by `sendChat` as the composer's are. A malformed list is an
+  `error`, and the Meshtastic room ignores it.
 - `…debug.SENDIMG` — sends a real **image attachment** with no UI (a locked device can't drive the photo
   picker): `--es path <file the app can read>` plus the same `conv`/`to` targeting as SEND and optional
   `--es text`. `--ez fit true` fits a photo to the relays' ticket `am` as the composer does (ADR 2026-10.s3ep); the
@@ -70,6 +73,7 @@ carries `-f 0x20` (`FLAG_INCLUDE_STOPPED_PACKAGES`); `scripts/bridge.sh` always 
   `replyToId` / `replyToAuthor` / `replyToSnippet` and the receiver's verdict on the quote (ADR 2026-10.gpa3):
   `replyCheck` (0 unchecked — the original is not here, 1 verified and rebuilt from it, 2 mismatch) and
   `replyToFlagged` (the quoted words are flagged on this phone, which hides the reply under content filtering).
+  `styles` is the row's formatting as stored, `[[start, length, code], …]`, or null for none (ADR 2026-10.p95v).
   `badges` maps each peer node id to the supporter badges this phone would draw for it now (`[{b, exp}]`, verified at
   this phone's clock against this build's pinned keys), and `ownBadge` is our own side: `show` (the "Show my supporter
   badge" switch) and `held` (`[{b, exp, verifies}]`). Never an `r`, a `sub` or a wrapper (docs/SUPPORTER_BADGE.md).

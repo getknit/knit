@@ -115,7 +115,9 @@ import app.getknit.knit.mesh.power.AppVisibility
 import app.getknit.knit.mesh.power.BatterySaverState
 import app.getknit.knit.mesh.power.LowPowerSource
 import app.getknit.knit.mesh.power.PowerStateSource
+import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.sha256Hex
 import app.getknit.knit.mesh.spool.AccountStamp
 import app.getknit.knit.mesh.spool.CommonsInvite
@@ -669,6 +671,16 @@ class DebugBridgeReceiver :
         }
     }
 
+    /** `start,length,code` triples ([BodyStyle] codes) as [StyleSpan]s, or null when [raw] is not whole triples. */
+    private fun parseStyleTriples(raw: String): List<StyleSpan>? {
+        val numbers = raw.split(',').map { it.trim().toIntOrNull() ?: return null }
+        if (numbers.size % 3 != 0) return null
+        return numbers.chunked(3).map { (start, length, code) ->
+            val style = BodyStyle.entries.firstOrNull { it.code == code } ?: return null
+            StyleSpan(start, start + length, style)
+        }
+    }
+
     private suspend fun handleSend(
         context: Context,
         intent: Intent,
@@ -706,24 +718,32 @@ class DebugBridgeReceiver :
                     hasAttachment = quoteHasAttachment(row.attachmentHash, row.attachmentMime),
                 )
             }
+        // Optional formatting (ADR 2026-10.p95v): --es styles "start,length,code,…" triples over `text` as sent, codes
+        // 0 bold, 1 italic, 2 strikethrough, 3 monospace. `sendChat` normalises them as it would the composer's.
+        val styles =
+            intent
+                .getStringExtra(EXTRA_STYLES)
+                ?.let { raw ->
+                    parseStyleTriples(raw) ?: return reply("error", "bad 'styles' extra (start,length,code triples): $raw")
+                }.orEmpty()
         // Route exactly as ChatViewModel.send does, resolving the thread kind from its id.
         val sent =
             when (Conversations.kindFor(conv)) {
                 ConversationKind.NEARBY -> {
-                    mesh.sendChat(text, recipientId = null, group = null, replyTo = replyTo)
+                    mesh.sendChat(text, recipientId = null, group = null, replyTo = replyTo, styles = styles)
                 }
 
                 ConversationKind.DM -> {
-                    mesh.sendChat(text, recipientId = conv, replyTo = replyTo)
+                    mesh.sendChat(text, recipientId = conv, replyTo = replyTo, styles = styles)
                 }
 
                 ConversationKind.GROUP -> {
-                    groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo(), replyTo = replyTo) }
+                    groups.find(conv)?.let { mesh.sendChat(text, group = it.toGroupInfo(), replyTo = replyTo, styles = styles) }
                 }
 
                 // A commons post goes to the relay that runs the room, never a radio (§7.4).
                 ConversationKind.COMMONS -> {
-                    mesh.sendCommons(conv, text, emptyList(), replyTo)
+                    mesh.sendCommons(conv, text, emptyList(), replyTo, styles = styles)
                 }
 
                 // The Meshtastic room posts through this phone's own board, and the outcome says why not.
@@ -1198,6 +1218,8 @@ class DebugBridgeReceiver :
                     .put("fromName", from)
                     .put("mine", m.senderId == selfId)
                     .put("body", m.body)
+                    // The formatting as stored ([[start, length, code], …]; ADR 2026-10.p95v), or null for none.
+                    .put("styles", m.styles ?: JSONObject.NULL)
                     .put("sentAt", m.sentAt)
                     .put("received", m.received)
                     .put("reactions", rx)
@@ -3947,6 +3969,7 @@ class DebugBridgeReceiver :
         const val EXTRA_CONV = "conv"
         const val EXTRA_TO = "to"
         const val EXTRA_REPLY_TO = "replyTo"
+        const val EXTRA_STYLES = "styles"
         const val EXTRA_ID = "id"
         const val EXTRA_EMOJI = "emoji"
         const val EXTRA_LIMIT = "limit"

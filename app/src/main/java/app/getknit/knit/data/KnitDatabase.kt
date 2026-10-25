@@ -59,7 +59,7 @@ import net.zetetic.database.sqlcipher.driver.SQLCipherDriver
  * The `@Database` version, as a top-level constant so the annotation and [KnitDatabase.SCHEMA_VERSION] read
  * one number (an annotation argument cannot name the class's own companion).
  */
-internal const val KNIT_DB_SCHEMA_VERSION = 24
+internal const val KNIT_DB_SCHEMA_VERSION = 25
 
 @Database(
     entities = [
@@ -236,6 +236,8 @@ internal const val KNIT_DB_SCHEMA_VERSION = 24
     //     a group member's leave drops their rows alone), and `spool_declared`, the nodes that
     //     have sent one. Both empty on arrival and carried in a backup (no ack, so a restored phone could never ask
     //     again). Migrated by KnitMigrations.MIGRATION_23_24.
+    // v25: `messages.styles` and `drafts.styles` — a message's and a draft's formatting as style ranges beside the plain
+    //     body (ADR 2026-10.p95v), JSON triples; null on existing rows. Migrated by KnitMigrations.MIGRATION_24_25.
     version = KNIT_DB_SCHEMA_VERSION,
     // Export the schema JSON to app/schemas/ (location set by the androidx.room Gradle plugin's
     // room { schemaDirectory(...) } in app/build.gradle.kts). Keeps the schema diffable in review and feeds
@@ -323,7 +325,7 @@ abstract class KnitDatabase : RoomDatabase() {
                 // Every schema change from here ships a tested KnitMigrations entry; a version bump with no
                 // matching migration makes Room throw at open time (caught by KnitDatabaseMigrationTest) — a loud
                 // failure in CI, never a silent wipe of a user's messages/custody/pins in production.
-                .addMigrations(*KnitMigrations.REGISTERED)
+                .addMigrations(*KnitMigrations.ALL)
                 .build()
         }
     }

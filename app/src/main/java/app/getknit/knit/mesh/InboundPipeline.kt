@@ -29,6 +29,7 @@ import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
 import app.getknit.knit.data.message.REPLY_SNIPPET_MAX
 import app.getknit.knit.data.message.StatusNotices
+import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.hiddenByFilter
 import app.getknit.knit.data.message.reactionSnippet
 import app.getknit.knit.data.message.videoInfo
@@ -90,6 +91,7 @@ import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.ScopeConfigPayload
+import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.mesh.protocol.TalkSeal
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.TypingContent
@@ -1159,6 +1161,9 @@ class InboundPipeline(
             // The room's own fields, never read off an encrypted frame's shell: a DM's size and video ride sealed.
             attachmentSize = null,
             video = null,
+            // Only the plaintext's styles: a shell's cleartext "s" is the carrier-visible half and never formats a
+            // sealed message (ADR 2026-10.p95v).
+            styles = plain.styles,
         )
 
     /**
@@ -3169,16 +3174,17 @@ class InboundPipeline(
         val (declaredSize, video) = deliveredDescription(content, sealed)
         // No radio fetch for a commons attachment, so no fetch rule to judge it by.
         val fetch = if (commons) DeliveredFetch.PLAIN else deliveredFetch(hash, declaredSize, isNew, env, me)
+        // Clamp the inbound body: our sender-side TextLimits.MESSAGE only bounds what we originate, not what a peer
+        // floods (otherwise bounded only by the 512 KiB record cap → unbounded local growth). Mirrors the profile
+        // name/status clamp in handleProfile.
+        val body = content.body.clampToUtf16(TextLimits.MESSAGE)
         val built =
             MessageEntity(
                 id = env.id,
                 senderId = env.senderId,
                 recipientId = env.recipientId,
                 conversationId = conversationId,
-                // Clamp the inbound body: our sender-side TextLimits.MESSAGE only bounds what we originate, not
-                // what a peer floods (otherwise bounded only by the 512 KiB record cap → unbounded local growth).
-                // Mirrors the profile name/status clamp in handleProfile.
-                body = content.body.clampToUtf16(TextLimits.MESSAGE),
+                body = body,
                 // Clamp a future-dated sentAt for local ordering so a bogus far-future frame can't pin itself to
                 // the top of the conversation forever (the local-display complement of ForwardRepository's custody
                 // guard). Honest clock skew within the window is kept as-is.
@@ -3209,6 +3215,10 @@ class InboundPipeline(
                 originViaMqtt = origin?.viaMqtt == true,
                 originPeerId = origin?.peerId,
                 originSigned = origin?.signed ?: MessageEntity.ORIGIN_UNSIGNED,
+                // The one normalisation of every door's styles (room, commons, each sealed form), against the body as
+                // stored, so the clamp clips them and the sender's ranges are never trusted as sent (ADR 2026-10.p95v).
+                // A heard Meshtastic post builds a content with none.
+                styles = StyleStore.encode(StyleSpans.normalize(body, content.styles)),
             ).withReply(admitReply(content.replyTo))
         val stored = persistQuoted(built.withVideo(video), isNew, me, conversationId, persist)
         screenPoster(stored, fresh = isNew, own = env.senderId == me)

@@ -796,6 +796,25 @@ moved. *Metadata cost:* in the room, the poster and length are as public as the 
 but not the fact that a poster rides along: the seal does not pad, so a video DM is about 6.5 KB longer than another
 attachment DM, and its length shows a carrier it is a video.
 
+**Precedent — a body's formatting as style ranges (`ChatContent.styles` / `MessageContent.styles` under `"s"`,
+`MessageContentV2` label 17, ADR 2026-10.p95v).** Bold, italic, strikethrough and monospace are ranges beside a plain
+body, never markup in it, so every surface built from the body (and every older reader) sees the same text. They ride as
+one CBOR byte string whose bytes are the same in all three layouts: per span, `uvarint(startDelta)
+uvarint((length << 3) | code)` (`StyleSpans`), so a typical span is 2 bytes and one bold word costs a v3 message 4 and a
+room post 5. The field defaults to empty and `encodeDefaults = false` leaves it out, so an unformatted message is the
+bytes it was in every layout — pinned by hand-written hex in `MessageContentTest` / `MessageContentV2Test` and by no
+vector moving. **The value's type is frozen as a byte string, forever:** every extension rides inside the bytes (a new
+style code, the code-7 escape), never as a new type at the key. A malformed byte string never throws (a truncated or
+over-long uvarint ends the read), but a value of another CBOR type fails the typed decode, as with `video`: a sealed
+message is dropped `DECRYPT_FAILED` and a room post is not carried by new builds — only a buggy sender's own message
+is lost. A receiver normalises the spans once against the clamped body (`InboundPipeline.deliverChat`) and never takes
+them off a sealed frame's cleartext shell (`plaintextContent`). An older reader skips the key and shows the text
+plainly, so there is no capability bit; the reserved spoiler code (4), whose plain fallback is not harmless, will need
+one. `FrameTranscoder` passes `"s"` through as an unknown text key (schema 1 never learns it), and `FastFrameCodec`
+carries `signed` verbatim. No version bump; `vectors/wire-v1.json` gained `messageContentStyles`,
+`messageContentV2Styles` and `chatContentStyles`, and nothing moved. *Metadata cost:* in the room the styles are as
+public as the post; sealed, the seal does not pad, so a styled message is a few bytes longer than the same words plain.
+
 **Precedent — the reserved ctl spent (`CTL_SCOPE_CONFIG = 7`, `MessageContent.sc`, docs/SPOOL_PROTOCOL.md §5,
 ADR 2026-10.8kfx).** The value the `CTL_PROFILE` precedent above held back is now on the wire: `sc:
 ScopeConfigPayload?` beside `ctl = 7`, naming a conversation's relays and bounds, sealed in the DM form or the group

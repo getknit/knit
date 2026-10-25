@@ -3,6 +3,7 @@
 package app.getknit.knit.mesh.protocol
 
 import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
 import kotlinx.serialization.cbor.Cbor
@@ -239,6 +240,14 @@ data class ChatContent(
     // same picture cannot compute it and ask the radios who else does. Cleartext only inside the room's seal; a
     // Nearby room post is key-less by design and never sets it.
     val attachmentKey: String? = null,
+    // The body's formatting as ranges (additive; ADR 2026-10.p95v): one CBOR byte string under "s", left off while
+    // empty, so an unformatted post is the bytes it was before styles existed. Room and commons only: a sealed
+    // frame's shell never sets it (the styles ride sealed in `MessageContent.styles`), and `plaintextContent` never
+    // reads it off one. Normalised against the clamped body on delivery, never trusted as sent.
+    @SerialName("s")
+    @ByteString
+    @Serializable(with = StyleRunsSerializer::class)
+    val styles: List<StyleSpan> = emptyList(),
 )
 
 /**

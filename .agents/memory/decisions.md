@@ -256,6 +256,7 @@ carries; never renumber an old one.
 | [2026-10.nsr7](decisions/2026-10-nsr7-a-file-s-receiver-reports-its-progress.md) | A file's receiver reports its progress, and the holder times parked asks by it | ble, mesh, blobs |
 | [2026-10.nxfb](decisions/2026-10-nxfb-a-blob-is-not-asked-of-a-peer-streaming-to-us.md) | A blob is not asked of a peer streaming to us, and a fed file stays in flight while its link keeps feeding | mesh, attachments, blob-exchange, bluetooth |
 | [2026-10.nz3g](decisions/2026-10-nz3g-walkie-bursts-are-transcribed-on-the-receiver-by-a-model-it-downloads.md) | Walkie bursts are transcribed on the receiver by a model it downloads | calls, voice, ml |
+| [2026-10.p95v](decisions/2026-10-p95v-a-message-s-formatting-is-style-ranges-beside-a-plain-body.md) | A message's formatting is style ranges beside a plain body | wire, ui, data, crypto |
 | [2026-10.pj9w](decisions/2026-10-pj9w-ble-discovery-waits-run-on-the-elapsed-clock.md) | BLE discovery waits run on the elapsed clock, and a dial wakes when its dwell ripens | ble, transport, power |
 | [2026-10.qjap](decisions/2026-10-qjap-android-refuses-a-signed-envelope-whose-text-isn-t-utf-8.md) | Android refuses a signed envelope whose text isn't UTF-8, as iOS does | wire, crypto, interop |
 | [2026-10.qpja](decisions/2026-10-qpja-a-renamed-house-relay-is-folded-to-its-new-name-on-every-start.md) | A renamed house relay is folded to its new name on every start | spool, anywhere, settings |

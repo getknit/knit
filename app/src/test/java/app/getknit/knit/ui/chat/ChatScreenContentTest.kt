@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.assertCountEquals
@@ -28,10 +29,12 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.pressKey
 import androidx.compose.ui.test.requestFocus
 import androidx.compose.ui.test.withKeyDown
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.getknit.knit.data.AttachmentStore
+import app.getknit.knit.data.draft.Draft
 import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.message.MessageEntity
@@ -39,9 +42,11 @@ import app.getknit.knit.data.message.TransferPhase
 import app.getknit.knit.location.GeoPoint
 import app.getknit.knit.location.LocationFix
 import app.getknit.knit.location.LocationPrecision
+import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.LinkCard
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.ui.theme.KnitTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -82,7 +87,7 @@ class ChatScreenContentTest {
         pendingAttachment: AttachmentStore.Ingested? = null,
         linkPreviewLoading: Boolean = false,
         stagedLocation: ChatViewModel.StagedLocation? = null,
-        onDraftChanged: (String) -> Unit = {},
+        onDraftChanged: (Draft) -> Unit = {},
         showTransferConsent: TransferConsent? = null,
         onLoadOlder: () -> Unit = {},
         // A search hit to open the thread on, and the reveal it asks for when the window has not reached it.
@@ -746,10 +751,10 @@ class ChatScreenContentTest {
 
     @Test
     fun theLoadingLineShowsWhileNothingIsStagedAndTheDraftReachesTheCallback() {
-        val drafts = ArrayList<String>()
+        val drafts = ArrayList<Draft>()
         compose.setContent(content(input = "https://example.com/a", linkPreviewLoading = true, onDraftChanged = { drafts += it }))
         compose.onNodeWithTag("chat_link_preview_loading").assertIsDisplayed()
-        assertEquals(listOf("https://example.com/a"), drafts)
+        assertEquals(listOf(Draft("https://example.com/a")), drafts)
     }
 
     @Test
@@ -797,6 +802,22 @@ class ChatScreenContentTest {
         )
         compose.onNodeWithTag("chat_location_card").assertIsDisplayed()
         compose.onNodeWithText("geo:", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun aFormattedBodyIsDrawnWithItsStylesAndAPositionLeavesThemOnTheWords() {
+        // "gate" bold over a body that ends on a position: the card takes the token's line, the bold stays on its word.
+        val row = locationRow().copy(styles = listOf(StyleSpan(15, 19, BodyStyle.BOLD)))
+        compose.setContent(content(input = "", state = ChatUiState(isRoom = true, myNodeId = "me", rows = listOf(row))))
+
+        val text =
+            compose
+                .onNodeWithText("See you at the gate", useUnmergedTree = true)
+                .fetchSemanticsNode()
+                .config[SemanticsProperties.Text]
+                .single()
+        val bold = text.spanStyles.single { it.item.fontWeight == FontWeight.Bold }
+        assertEquals("gate", text.text.substring(bold.start, bold.end))
     }
 
     @Test

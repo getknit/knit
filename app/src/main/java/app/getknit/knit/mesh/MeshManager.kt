@@ -33,6 +33,7 @@ import app.getknit.knit.data.message.Conversations
 import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.withReply
 import app.getknit.knit.data.message.withVideo
 import app.getknit.knit.data.peer.MetPeerRepository
@@ -85,6 +86,9 @@ import app.getknit.knit.mesh.protocol.ReactionPayload
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
 import app.getknit.knit.mesh.protocol.ScopeConfigPayload
+import app.getknit.knit.mesh.protocol.StyleKey
+import app.getknit.knit.mesh.protocol.StyleSpan
+import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.mesh.protocol.TalkSeal
 import app.getknit.knit.mesh.protocol.TransferPayload
 import app.getknit.knit.mesh.protocol.TypingContent
@@ -1439,9 +1443,12 @@ class MeshManager(
         recipientId: String?,
         group: GroupInfo?,
         replyTo: ReplyRef?,
+        styles: List<StyleSpan>,
     ): Boolean {
         val isRoom = recipientId == null && group == null
         if (isRoom && isTextFlagged(text, "outgoing", isRoom = true)) return false
+        // Indexed by the caller against exactly this text (it rebases across its own trim): normalised, never shifted.
+        val spans = StyleSpans.normalize(text, styles)
         val me = identity.nodeId()
         val id = FrameId.new()
         val sentAt = clock()
@@ -1476,6 +1483,7 @@ class MeshManager(
                     // column: they are how the same original, picked again, finds this post (ADR 2026-10.mptm).
                     attachmentSourceHash = attachment?.sourceHash,
                     attachmentSize = roomSize,
+                    styles = StyleStore.encode(spans),
                 ).withReply(replyTo)
                     .withVideo(attachment?.video),
             )
@@ -1490,6 +1498,8 @@ class MeshManager(
                     // downloads" judges (ADR 2026-10.js2p), and a video's description for its bubble.
                     attachmentSize = roomSize,
                     video = attachment?.video,
+                    // Cleartext in the room like the body (ADR 2026-10.p95v); absent while empty.
+                    styles = spans,
                 )
             originateSigned(chatEnvelope(id, me, sentAt, recipientId = null, group = null, content))
             return true
@@ -1541,13 +1551,15 @@ class MeshManager(
                 attachmentPlainHash = attachment?.hash?.takeIf { sealedAttachment?.key != null },
                 attachmentSourceHash = attachment?.sourceHash,
                 pendingKey = false,
+                // Sealed off the row with the rest ([sealedContent]); the shell below never carries them.
+                styles = StyleStore.encode(spans),
             ).withReply(replyTo)
                 // A video's duration, size and poster, sealed with the rest (ADR 2026-10.hmfe).
                 .withVideo(attachment?.video)
         // The piggyback (ADR 054): a DM to a peer that reads inline acks carries the receipts we still owe
         // it for DMs that came over the board, in place of a standalone tick that would cost ~3 s of LoRa
         // air. Attached only in the v2 arm of the seal; a v1 fallback or a parked DM gives them back.
-        val inlineAcks = inlineAcksFor(recipientId, group, text, replying = replyTo != null, attached = attachment != null)
+        val inlineAcks = inlineAcksFor(recipientId, group, text, spans, replying = replyTo != null, attached = attachment != null)
         val inlineIds = inlineAcks.ids
         val envelope = sealEnvelopeFor(id, me, sentAt, recipientId, group, row.sealedContent(), inlineIds)
         if (inlineIds.isNotEmpty() && recipientId != null) {
@@ -2376,6 +2388,7 @@ class MeshManager(
         recipientId: String?,
         group: GroupInfo?,
         text: String,
+        styles: List<StyleSpan>,
         replying: Boolean,
         attached: Boolean,
     ): InlineAcks {
@@ -2384,7 +2397,11 @@ class MeshManager(
         if (waiting == 0) return InlineAcks()
         val peer = peers.find(recipientId) ?: return InlineAcks()
         if ((peer.capabilities ?: 0L) and Protocol.CAP_INLINE_ACK == 0L) return InlineAcks()
-        val room = LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying, attached) - LoraSizeHint.utf8Length(text)
+        // A styled body's ranges ride in the same frame (ADR 2026-10.p95v), counted at the named layout's two-byte key:
+        // the larger of the two seal forms, so a fallback to v2 never overflows.
+        val room =
+            LoraSizeHint.budget(LoraSizeHint.DM_BODY_BYTES, replying, attached) - LoraSizeHint.utf8Length(text) -
+                StyleSpans.wireCost(styles, StyleKey.NAMED)
         val fit = (room / INLINE_ACK_BYTES).coerceIn(0, MAX_INLINE_ACKS)
         if (fit == 0) return InlineAcks()
         // DM acks take the slots first: someone is waiting on each of those and this ride is the only path
@@ -4094,8 +4111,10 @@ class MeshManager(
         mentions: List<Mention>,
         replyTo: ReplyRef?,
         attachment: AttachmentStore.Ingested?,
+        styles: List<StyleSpan>,
     ): Boolean {
         val room = commons?.find(conversationId) ?: return false
+        val spans = StyleSpans.normalize(text, styles)
         val me = identity.nodeId()
         val id = FrameId.new()
         val sentAt = clock()
@@ -4129,6 +4148,7 @@ class MeshManager(
                                     video = attachment?.video,
                                     attachmentName = attachment?.name,
                                     attachmentKey = sealedAttachment?.key,
+                                    styles = spans,
                                 ),
                         ),
                     ),
@@ -4156,6 +4176,7 @@ class MeshManager(
                 // What a later forward or repeat of this file finds it by (ADR 2026-10.mptm), as the sealed path keeps.
                 attachmentPlainHash = attachment?.hash?.takeIf { sealedAttachment?.key != null },
                 attachmentSourceHash = attachment?.sourceHash,
+                styles = StyleStore.encode(spans),
             ).withReply(replyTo)
                 .withVideo(attachment?.video),
             sig = wire.sig,

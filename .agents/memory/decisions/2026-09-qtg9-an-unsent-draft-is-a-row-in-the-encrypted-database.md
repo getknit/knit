@@ -202,3 +202,17 @@ re-stamp was the half that showed. Fixed build, same script: the row stays on th
 untouched re-open, after a rotation inside the chat, and after a profile screen popped off it; no cue in any
 of the three (`…debug.STATE`'s `typing` map on the P7, which the bridge's own `…debug.TYPING` proved live);
 one typed character then cues and reads `Draft: …`, and clearing the field hands the row back.
+
+## Amended 2026-10-24 — a draft keeps its formatting
+
+A draft now carries its style ranges as well as its text (ADR 2026-10.p95v): `drafts.styles`, DB v25, which uses
+the same JSON triples as `messages.styles`. "What it does not cover" above still holds for the rest. The staged
+attachment, the reply quote and the mention bindings stay draft-local. Styles are kept and bindings are not,
+because a style describes the text itself, while a binding ties a token to a person. Formatting that vanished on
+leaving the chat and coming back would look like a bug.
+
+The report rule (a report that matches the row is not an edit) now compares the pair. The composer reports
+`snapshotFlow { text to spans }`, and `persisted` holds the `Draft(text, spans)` the row holds. The restore sets
+text and styles in one `edit {}`. Setting the text first and the styles second would send an intermediate (text,
+no styles) report that is not the row, so it would be saved, re-stamping `updatedAt` and bringing #42 back.
+`ChatViewModelTest` pins both: a change to the styles alone is saved, and the restore's echo with styles is not.

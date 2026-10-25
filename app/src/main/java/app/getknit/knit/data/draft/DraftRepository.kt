@@ -1,5 +1,6 @@
 package app.getknit.knit.data.draft
 
+import app.getknit.knit.data.message.StyleStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -48,22 +49,23 @@ class DraftRepository(
     val all: Flow<Map<String, DraftEntity>> =
         dao.observeAll().map { rows -> rows.associateBy { it.conversationId } }
 
-    /** The text [conversationId]'s composer was left with, or empty if there is none. */
-    suspend fun load(conversationId: String): String = dao.find(conversationId).orEmpty()
+    /** What [conversationId]'s composer was left with, formatting included, or [Draft.EMPTY] if there is none. */
+    suspend fun load(conversationId: String): Draft =
+        dao.find(conversationId)?.let { Draft(it.text, StyleStore.decode(it.styles)) } ?: Draft.EMPTY
 
-    /** Records an edit. Blank text deletes the row rather than storing an empty one. */
+    /** Records an edit. Blank text deletes the row rather than storing an empty one, whatever its styles. */
     fun save(
         conversationId: String,
-        text: String,
+        draft: Draft,
     ) {
         writes.remove(conversationId)?.cancel()
         writes[conversationId] =
             scope.launch(dispatcher) {
                 delay(debounceMs)
-                if (text.isBlank()) {
+                if (draft.text.isBlank()) {
                     dao.deleteFor(conversationId)
                 } else {
-                    dao.upsert(conversationId, text, now())
+                    dao.upsert(conversationId, draft.text, StyleStore.encode(draft.spans), now())
                 }
             }
     }

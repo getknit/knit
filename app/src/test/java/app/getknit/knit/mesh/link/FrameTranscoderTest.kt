@@ -3,6 +3,7 @@ package app.getknit.knit.mesh.link
 import app.getknit.knit.identity.NodeId
 import app.getknit.knit.mesh.crypto.PublicKeyBundle
 import app.getknit.knit.mesh.protocol.BlobReqContent
+import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.ChatContent
 import app.getknit.knit.mesh.protocol.EncEnvelope
 import app.getknit.knit.mesh.protocol.FrameId
@@ -21,6 +22,8 @@ import app.getknit.knit.mesh.protocol.ReactionContent
 import app.getknit.knit.mesh.protocol.ReceiptContent
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleSpan
+import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.mesh.protocol.TypingContent
 import app.getknit.knit.mesh.protocol.WireCodec
 import app.getknit.knit.mesh.protocol.WireEnvelope
@@ -364,6 +367,23 @@ class FrameTranscoderTest {
         // 44 characters is past CBOR's one-byte text header: `78 2c` then the base64.
         val tstr44 = byteArrayOf(0x78, key.length.toByte()) + key.encodeToByteArray()
         assertTrue("the key travels as text key + tstr(44)", contains(compact, tstr("loraKey") + tstr44))
+    }
+
+    /**
+     * A room post's styles (ADR 2026-10.p95v) are outside the frozen label map on purpose: `"s"` rides as its text key
+     * plus its byte string, exact on rebuild, and schema 1 never learns it.
+     */
+    @Test
+    fun aStyledRoomPostRidesAsTextKeyPlusByteStringAndRebuildsExact() {
+        val styles = listOf(StyleSpan(0, 4, BodyStyle.BOLD), StyleSpan(130, 150, BodyStyle.MONOSPACE))
+        val signed = chat(ChatContent(body = "bold".padEnd(160, ' '), mentions = listOf(Mention(nodeId(4), "Bo")), styles = styles))
+        val compact = checkNotNull(FrameTranscoder.transcode(signed))
+        assertArrayEquals(signed, FrameTranscoder.rebuild(compact))
+        val packed = checkNotNull(StyleSpans.pack(styles))
+        assertTrue(
+            "the styles travel as text key + bstr",
+            contains(compact, tstr("s") + byteArrayOf((0x40 + packed.size).toByte()) + packed),
+        )
     }
 
     @Test

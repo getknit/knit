@@ -4,6 +4,7 @@ import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.spool.MoveResult
 import app.getknit.knit.mesh.spool.SpoolStatus
 import kotlinx.coroutines.flow.Flow
@@ -174,6 +175,10 @@ interface MeshController {
      * Composes a chat message (optionally with an ingested image [attachment]), stores it locally, and
      * floods it. [recipientId] null + null [group] is the broadcast room; a node id is a 1:1 DM; a non-null
      * [group] is a group message. Returns false without sending if on-device filtering flags [text].
+     *
+     * [styles] is the body's formatting (ADR 2026-10.p95v), indexed against exactly this [text]: the send normalises
+     * it against [text] and never rebases it, so a caller that trims or clamps the draft rebases first
+     * (`StyleSpans.rebase`).
      */
     suspend fun sendChat(
         text: String,
@@ -182,6 +187,7 @@ interface MeshController {
         recipientId: String? = null,
         group: GroupInfo? = null,
         replyTo: ReplyRef? = null,
+        styles: List<StyleSpan> = emptyList(),
     ): Boolean
 
     /**
@@ -200,7 +206,7 @@ interface MeshController {
      * Posts [text] in the commons [conversationId] (docs/SPOOL_PROTOCOL.md §7.4): signed, stored, and handed
      * to the Internet plane for the one relay that runs the room — never the radios. An [attachment] goes key-less,
      * its bytes sealed under the room's key chunk by chunk (§4.5) and pushed by the room's own pass. False when the
-     * room is not one this device has joined.
+     * room is not one this device has joined. [styles] as [sendChat] takes them, indexed against [text].
      */
     suspend fun sendCommons(
         conversationId: String,
@@ -208,6 +214,7 @@ interface MeshController {
         mentions: List<Mention>,
         replyTo: ReplyRef?,
         attachment: AttachmentStore.Ingested? = null,
+        styles: List<StyleSpan> = emptyList(),
     ): Boolean = false
 
     /**

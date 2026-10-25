@@ -22,6 +22,7 @@ import app.getknit.knit.data.MessageReceiptRepository
 import app.getknit.knit.data.MessageRepository
 import app.getknit.knit.data.PeerRepository
 import app.getknit.knit.data.ReactionRepository
+import app.getknit.knit.data.draft.Draft
 import app.getknit.knit.data.draft.DraftRepository
 import app.getknit.knit.data.emoji.RecentReactions
 import app.getknit.knit.data.group.GroupEntity
@@ -59,11 +60,13 @@ import app.getknit.knit.mesh.crypto.b64
 import app.getknit.knit.mesh.lora.LoraFacts
 import app.getknit.knit.mesh.lora.LoraPlane
 import app.getknit.knit.mesh.lora.PublicPostPolicy
+import app.getknit.knit.mesh.protocol.BodyStyle
 import app.getknit.knit.mesh.protocol.LinkCard
 import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.protocol.VideoInfo
 import app.getknit.knit.mesh.sha256Hex
 import app.getknit.knit.mesh.spool.FreeKeyJournal
@@ -179,6 +182,8 @@ class ChatViewModelTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
+        // A relaxed mock would hand back a mocked Draft, which equals no report, so every echo would look like an edit.
+        coEvery { drafts.load(any()) } returns Draft.EMPTY
         coEvery { identity.nodeId() } returns "me"
         stubThread(Conversations.NEARBY)
         every { reactions.observeReactionsIn(any()) } returns reactionsFlow
@@ -1713,39 +1718,56 @@ class ChatViewModelTest {
     @Test
     fun theStoredDraftIsHandedOverOnceAndOnlyThenAreEditsKept() =
         runTest {
-            coEvery { drafts.load(Conversations.NEARBY) } returns "half a sentence"
+            coEvery { drafts.load(Conversations.NEARBY) } returns Draft("half a sentence")
             val vm = vm()
 
             // The composer reports its empty field the moment it composes — before the stored draft has been
             // taken. Persisting that would erase the very draft the screen is about to put back.
-            vm.onDraftChanged("")
+            vm.onDraftChanged(Draft(""))
             advanceUntilIdle()
             verify(exactly = 0) { drafts.save(any(), any()) }
 
-            assertEquals("half a sentence", vm.consumeRestoredDraft())
+            assertEquals(Draft("half a sentence"), vm.consumeRestoredDraft())
             // A rotation re-runs the screen's restore effect; a draft since cleared must not come back.
-            assertEquals("", vm.consumeRestoredDraft())
+            assertEquals(Draft.EMPTY, vm.consumeRestoredDraft())
 
             // The restore itself comes back through the composer's collector, indistinguishable from a
             // keystroke. It is not one: the row already holds this text, and saving it again would re-stamp
             // `updatedAt` and float "Draft: …" back over a message that landed after it.
-            vm.onDraftChanged("half a sentence")
+            vm.onDraftChanged(Draft("half a sentence"))
             verify(exactly = 0) { drafts.save(any(), any()) }
 
-            vm.onDraftChanged("half a sentence more")
-            verify(exactly = 1) { drafts.save(Conversations.NEARBY, "half a sentence more") }
+            vm.onDraftChanged(Draft("half a sentence more"))
+            verify(exactly = 1) { drafts.save(Conversations.NEARBY, Draft("half a sentence more")) }
             // A recomposition (rotation, a screen popped off the chat) re-reports the unchanged text.
-            vm.onDraftChanged("half a sentence more")
+            vm.onDraftChanged(Draft("half a sentence more"))
             verify(exactly = 1) { drafts.save(any(), any()) }
+        }
+
+    @Test
+    fun aDraftsFormattingComesBackWithItAndAChangeToTheFormattingAloneIsKept() =
+        runTest {
+            val bold = listOf(StyleSpan(0, 4, BodyStyle.BOLD))
+            coEvery { drafts.load(Conversations.NEARBY) } returns Draft("half a sentence", bold)
+            val vm = vm()
+
+            assertEquals(Draft("half a sentence", bold), vm.consumeRestoredDraft())
+            // The restore's echo carries the styles the row holds: no edit, so no write and no new stamp.
+            vm.onDraftChanged(Draft("half a sentence", bold))
+            verify(exactly = 0) { drafts.save(any(), any()) }
+
+            // The same words with the bold taken off are a different draft.
+            vm.onDraftChanged(Draft("half a sentence"))
+            verify(exactly = 1) { drafts.save(Conversations.NEARBY, Draft("half a sentence")) }
         }
 
     @Test
     fun aRestoredDraftIsNotATypingCue() =
         runTest {
-            coEvery { drafts.load(Conversations.NEARBY) } returns "half a sentence"
+            coEvery { drafts.load(Conversations.NEARBY) } returns Draft("half a sentence")
             val vm = vm()
             vm.onChatForeground()
-            assertEquals("half a sentence", vm.consumeRestoredDraft())
+            assertEquals(Draft("half a sentence"), vm.consumeRestoredDraft())
 
             // The screen's typing collector reports the restore the way it reports a typed character — on a
             // warm device the collectors are already running when the read lands. The peer must not see
@@ -1763,25 +1785,25 @@ class ChatViewModelTest {
     @Test
     fun withNoStoredDraftTheComposersEmptyReportIsNotASaveAndTheFirstKeystrokeIs() =
         runTest {
-            val vm = vm() // the relaxed repository loads ""
-            assertEquals("", vm.consumeRestoredDraft())
+            val vm = vm() // setUp stubs the repository to load Draft.EMPTY
+            assertEquals(Draft.EMPTY, vm.consumeRestoredDraft())
 
             // The composer's initial snapshot, now that the (empty) draft has been taken: nothing to keep.
-            vm.onDraftChanged("")
+            vm.onDraftChanged(Draft(""))
             verify(exactly = 0) { drafts.save(any(), any()) }
 
-            vm.onDraftChanged("h")
-            verify(exactly = 1) { drafts.save(Conversations.NEARBY, "h") }
+            vm.onDraftChanged(Draft("h"))
+            verify(exactly = 1) { drafts.save(Conversations.NEARBY, Draft("h")) }
 
             // After an accepted send the row is dropped directly; the field's own empty report that follows
             // matches what the row now holds, and the next keystroke starts a fresh draft.
             vm.send("h")
             advanceUntilIdle()
             verify { drafts.clear(Conversations.NEARBY) }
-            vm.onDraftChanged("")
+            vm.onDraftChanged(Draft(""))
             verify(exactly = 1) { drafts.save(any(), any()) }
-            vm.onDraftChanged("again")
-            verify(exactly = 1) { drafts.save(Conversations.NEARBY, "again") }
+            vm.onDraftChanged(Draft("again"))
+            verify(exactly = 1) { drafts.save(Conversations.NEARBY, Draft("again")) }
         }
 
     @Test
@@ -3070,7 +3092,7 @@ class ChatViewModelTest {
         runTest {
             aCardIsAvailable()
             val vm = vm()
-            vm.onDraftChanged("look https://example.com/a")
+            vm.onDraftChanged(Draft("look https://example.com/a"))
             advanceUntilIdle()
             assertEquals(staged, vm.pendingAttachment.value)
             assertFalse(vm.linkPreviewLoading.value)
@@ -3094,13 +3116,13 @@ class ChatViewModelTest {
             aCardIsAvailable()
             linkPreviewsEnabledFlow.value = false
             val vm = vm()
-            vm.onDraftChanged("look https://example.com/a")
+            vm.onDraftChanged(Draft("look https://example.com/a"))
             advanceUntilIdle()
             coVerify(exactly = 0) { linkPreviews.fetchCard(any(), any()) }
 
             linkPreviewsEnabledFlow.value = true
             onlineFlow.value = false
-            vm.onDraftChanged("look https://example.com/a now")
+            vm.onDraftChanged(Draft("look https://example.com/a now"))
             advanceUntilIdle()
             coVerify(exactly = 0) { linkPreviews.fetchCard(any(), any()) }
 
@@ -3121,17 +3143,17 @@ class ChatViewModelTest {
             val vm = vm()
             vm.attachCaptured(byteArrayOf(1))
             advanceUntilIdle()
-            vm.onDraftChanged("look https://example.com/a")
+            vm.onDraftChanged(Draft("look https://example.com/a"))
             advanceUntilIdle()
             coVerify(exactly = 0) { linkPreviews.fetchCard(any(), any()) }
             assertEquals(photo, vm.pendingAttachment.value)
 
             vm.clearAttachment()
-            vm.onDraftChanged("look https://example.com/a !")
+            vm.onDraftChanged(Draft("look https://example.com/a !"))
             advanceUntilIdle()
             assertEquals(staged, vm.pendingAttachment.value)
 
-            vm.onDraftChanged("no link any more")
+            vm.onDraftChanged(Draft("no link any more"))
             advanceUntilIdle()
             assertNull(vm.pendingAttachment.value)
             coVerify { blobs.deleteIfUnreferenced("h-card") }
@@ -3142,26 +3164,26 @@ class ChatViewModelTest {
         runTest {
             aCardIsAvailable()
             val vm = vm()
-            vm.onDraftChanged("look https://example.com/a")
+            vm.onDraftChanged(Draft("look https://example.com/a"))
             advanceUntilIdle()
             assertEquals(staged, vm.pendingAttachment.value)
             vm.clearAttachment()
-            vm.onDraftChanged("look https://example.com/a again")
+            vm.onDraftChanged(Draft("look https://example.com/a again"))
             advanceUntilIdle()
             assertNull("the removed card does not come back while the draft lives", vm.pendingAttachment.value)
             coVerify(exactly = 1) { linkPreviews.fetchCard(cardUrl, any()) }
 
-            vm.onDraftChanged("")
-            vm.onDraftChanged("https://example.com/a")
+            vm.onDraftChanged(Draft(""))
+            vm.onDraftChanged(Draft("https://example.com/a"))
             advanceUntilIdle()
             coVerify(exactly = 2) { linkPreviews.fetchCard(cardUrl, any()) }
 
             coEvery { linkPreviews.fetchCard("https://example.com/none", any()) } returns LinkPreviewService.CardResult.NoCard
             vm.clearAttachment()
-            vm.onDraftChanged("")
-            vm.onDraftChanged("see https://example.com/none")
+            vm.onDraftChanged(Draft(""))
+            vm.onDraftChanged(Draft("see https://example.com/none"))
             advanceUntilIdle()
-            vm.onDraftChanged("see https://example.com/none please")
+            vm.onDraftChanged(Draft("see https://example.com/none please"))
             advanceUntilIdle()
             coVerify(exactly = 1) { linkPreviews.fetchCard("https://example.com/none", any()) }
         }
@@ -3174,14 +3196,14 @@ class ChatViewModelTest {
             coEvery { peers.find("sam") } returns peer("sam", "Sam", capabilities = Protocol.LOCAL_CAPABILITIES)
             coEvery { peers.find("priya") } returns peer("priya", "Priya", capabilities = Protocol.CAP_FILES)
             val vm = vm(GROUP)
-            vm.onDraftChanged("look https://example.com/a")
+            vm.onDraftChanged(Draft("look https://example.com/a"))
             advanceUntilIdle()
             coVerify(exactly = 0) { linkPreviews.fetchCard(any(), any()) }
 
             // The loop reacts to the draft, not to a peer's profile arriving: the next draft picks the bit up.
             coEvery { peers.find("priya") } returns peer("priya", "Priya", capabilities = Protocol.LOCAL_CAPABILITIES)
-            vm.onDraftChanged("")
-            vm.onDraftChanged("look https://example.com/a")
+            vm.onDraftChanged(Draft(""))
+            vm.onDraftChanged(Draft("look https://example.com/a"))
             advanceUntilIdle()
             coVerify(exactly = 1) { linkPreviews.fetchCard(cardUrl, isRoom = false) }
         }
@@ -3190,7 +3212,7 @@ class ChatViewModelTest {
     private fun TestScope.screenClearsTheFieldOnSend(vm: ChatViewModel) {
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
             vm.clearInput.collect {
-                vm.onDraftChanged("")
+                vm.onDraftChanged(Draft(""))
                 vm.onInputCleared()
             }
         }
@@ -3207,7 +3229,7 @@ class ChatViewModelTest {
             val vm = vm()
             screenClearsTheFieldOnSend(vm)
             // The share-sheet shape: the link lands whole, and Send is the next tap — inside the fetch.
-            vm.onDraftChanged("https://example.com/a")
+            vm.onDraftChanged(Draft("https://example.com/a"))
             advanceTimeBy(1_000)
             assertTrue(vm.linkPreviewLoading.value)
             vm.send("https://example.com/a")
@@ -3225,7 +3247,7 @@ class ChatViewModelTest {
             aCardIsAvailable()
             val vm = vm()
             screenClearsTheFieldOnSend(vm)
-            vm.onDraftChanged("https://example.com/a")
+            vm.onDraftChanged(Draft("https://example.com/a"))
             vm.send("https://example.com/a")
             advanceUntilIdle()
             assertEquals(staged, mesh.sentChats.single().attachment)
@@ -3242,7 +3264,7 @@ class ChatViewModelTest {
             }
             val vm = vm()
             screenClearsTheFieldOnSend(vm)
-            vm.onDraftChanged("https://example.com/a")
+            vm.onDraftChanged(Draft("https://example.com/a"))
             vm.send("https://example.com/a")
             advanceTimeBy(4_000)
             assertTrue(mesh.sentChats.isEmpty())
@@ -3259,7 +3281,7 @@ class ChatViewModelTest {
             aCardIsAvailable()
             val vm = vm()
             screenClearsTheFieldOnSend(vm)
-            vm.onDraftChanged("https://example.com/a")
+            vm.onDraftChanged(Draft("https://example.com/a"))
             advanceUntilIdle()
             assertEquals(staged, vm.pendingAttachment.value)
             vm.clearAttachment()
@@ -3278,7 +3300,7 @@ class ChatViewModelTest {
             backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.state.collect {} }
             advanceUntilIdle()
             assertEquals("the room rides the board", LoraCarry.Room, vm.state.value.loraCarry)
-            vm.onDraftChanged("https://example.com/a")
+            vm.onDraftChanged(Draft("https://example.com/a"))
             advanceUntilIdle()
             assertEquals(staged, vm.pendingAttachment.value)
         }
@@ -3591,6 +3613,43 @@ class ChatViewModelTest {
                 body.length <= app.getknit.knit.TextLimits.MESSAGE,
             )
             assertTrue(body.endsWith("\ngeo:37.421998,-122.084000;u=12"))
+        }
+
+    @Test
+    fun sendMovesTheFormattingPastTheTrimmedBlanksAndStopsItShortOfThePosition() =
+        runTest {
+            stubDm("bob")
+            coEvery { groups.find("bob") } returns null
+            val vm = vm("bob")
+            vm.startLocation()
+            locationSource.readings.tryEmit(reading(accuracy = 12f))
+            runCurrent()
+
+            // "See" bold, and "gate" italic with the span running on into the trailing blanks the send trims.
+            val draft = "  See you at the gate  "
+            vm.send(draft, styles = listOf(StyleSpan(2, 5, BodyStyle.BOLD), StyleSpan(17, 23, BodyStyle.ITALIC)))
+            runCurrent()
+
+            val sent = mesh.sentChats.single()
+            assertEquals("See you at the gate\ngeo:37.421998,-122.084000;u=12", sent.text)
+            assertEquals(
+                "indexed against the body sent, and never over the position's line",
+                listOf(StyleSpan(0, 3, BodyStyle.BOLD), StyleSpan(15, 19, BodyStyle.ITALIC)),
+                sent.styles,
+            )
+        }
+
+    @Test
+    fun aDraftWithoutFormattingSendsNone() =
+        runTest {
+            stubDm("bob")
+            coEvery { groups.find("bob") } returns null
+            val vm = vm("bob")
+
+            vm.send("plain words")
+            runCurrent()
+
+            assertEquals(emptyList<StyleSpan>(), mesh.sentChats.single().styles)
         }
 
     @Test

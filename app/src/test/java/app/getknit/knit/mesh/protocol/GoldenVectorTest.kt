@@ -37,6 +37,7 @@ import org.junit.Test
  * [KeyedVectorTest]; frames the iOS port emits are checked by [IosEmittedVectorTest].
  */
 @OptIn(ExperimentalSerializationApi::class)
+@Suppress("LargeClass") // one fixture per wire type over one frozen file: it grows by an entry per additive field, by design
 class GoldenVectorTest {
     private fun bytes(
         n: Int,
@@ -583,6 +584,13 @@ class GoldenVectorTest {
                         video = VideoInfo(durationMs = 30_000L, width = 854, height = 480, poster = bytes(6, 14)),
                     ),
                 ),
+            // Formatting (ADR 2026-10.p95v): style ranges beside the plain body, one byte string under label 17 in the
+            // compact layout and "s" in the named one and a room post, the same entries in all three. Overlapping styles,
+            // a length past 15 (a two-byte entry) and a start delta of 128 (a two-byte uvarint). Every fixture above stays
+            // byte-identical: the field is absent while there are no styles.
+            "messageContentStyles" to MessageContent(body = STYLED_BODY, styles = STYLED_SPANS).encode(),
+            "messageContentV2Styles" to compact(MessageContent(body = STYLED_BODY, styles = STYLED_SPANS)),
+            "chatContentStyles" to WireCodec.encodePayload(ChatContent(body = STYLED_BODY, styles = STYLED_SPANS)),
             // Link-preview cards: the container a card attachment's blob holds. Its own type under its own MIME,
             // so no fixture above moves; `v` is required and always emitted (an elided version cannot gate), and
             // the text-only shape pins that an absent picture costs no bytes at all.
@@ -726,6 +734,21 @@ class GoldenVectorTest {
 
         // A call fixture's SDP: its bytes are what is pinned, not its sense; the real one is 2–5 KB (§3.6).
         const val CALL_SDP = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
+
+        // A styled fixture's body (160 units) and its spans, normalised: bold and italic overlapping at the front (an
+        // eighteen-unit italic, a two-byte entry), monospace 128 units on (a two-byte delta), a short strike after it.
+        val STYLED_BODY =
+            (
+                "Bold and italic overlap here, then a long stretch of plain words follows so that the next span " +
+                    "sits more than 128 units on: run make then stop."
+            ).padEnd(160, '.')
+        val STYLED_SPANS =
+            listOf(
+                StyleSpan(0, 4, BodyStyle.BOLD),
+                StyleSpan(2, 20, BodyStyle.ITALIC),
+                StyleSpan(130, 140, BodyStyle.MONOSPACE),
+                StyleSpan(150, 152, BodyStyle.STRIKETHROUGH),
+            )
         const val ABOUT =
             "Knit's frozen v1 wire: the definite-length CBOR of one fixed instance of every wire type, and the raw-key " +
                 "bundle probe. GoldenVectorTest builds each fixture and compares it with these bytes. See vectors/README.md."

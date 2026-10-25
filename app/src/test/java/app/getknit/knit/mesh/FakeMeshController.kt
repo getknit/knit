@@ -4,6 +4,7 @@ import app.getknit.knit.data.AttachmentStore
 import app.getknit.knit.mesh.protocol.GroupInfo
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleSpan
 import app.getknit.knit.mesh.spool.SpoolStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -53,6 +54,7 @@ class FakeMeshController : MeshController {
         val recipientId: String?,
         val group: GroupInfo?,
         val replyTo: ReplyRef?,
+        val styles: List<StyleSpan> = emptyList(),
     )
 
     val sentChats = mutableListOf<SentChat>()
@@ -122,8 +124,9 @@ class FakeMeshController : MeshController {
         recipientId: String?,
         group: GroupInfo?,
         replyTo: ReplyRef?,
+        styles: List<StyleSpan>,
     ): Boolean {
-        sentChats += SentChat(text, attachment, mentions, recipientId, group, replyTo)
+        sentChats += SentChat(text, attachment, mentions, recipientId, group, replyTo, styles)
         return sendChatResult
     }
 
@@ -142,14 +145,19 @@ class FakeMeshController : MeshController {
         mentions: List<Mention>,
         replyTo: ReplyRef?,
         attachment: AttachmentStore.Ingested?,
+        styles: List<StyleSpan>,
     ): Boolean {
         sentCommons += conversationId to text
         sentCommonsAttachments += attachment
+        sentCommonsStyles += listOf(styles)
         return sendCommonsResult
     }
 
     /** The attachment each [sendCommons] carried, in order (null for text alone). */
     val sentCommonsAttachments = mutableListOf<AttachmentStore.Ingested?>()
+
+    /** The styles each [sendCommons] carried, in order (empty for an unformatted post). */
+    val sentCommonsStyles = mutableListOf<List<StyleSpan>>()
 
     /** Whether a screen asked the plane to re-derive its scope table (a commons joined or left). */
     var relaysRefreshed = false

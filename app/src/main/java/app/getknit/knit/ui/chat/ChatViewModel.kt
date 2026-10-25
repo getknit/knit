@@ -30,6 +30,7 @@ import app.getknit.knit.data.ReactionRepository
 import app.getknit.knit.data.VoiceAudio
 import app.getknit.knit.data.commons.CommonsEntity
 import app.getknit.knit.data.commons.CommonsRepository
+import app.getknit.knit.data.draft.Draft
 import app.getknit.knit.data.draft.DraftRepository
 import app.getknit.knit.data.emoji.RecentReactions
 import app.getknit.knit.data.group.GroupEntity
@@ -42,6 +43,7 @@ import app.getknit.knit.data.message.DeliveryPlane
 import app.getknit.knit.data.message.GroupFace
 import app.getknit.knit.data.message.MentionStore
 import app.getknit.knit.data.message.MessageEntity
+import app.getknit.knit.data.message.StyleStore
 import app.getknit.knit.data.message.TransferRecord
 import app.getknit.knit.data.message.groupFaces
 import app.getknit.knit.data.message.groupTitle
@@ -96,6 +98,8 @@ import app.getknit.knit.mesh.protocol.LinkPreviewBlob
 import app.getknit.knit.mesh.protocol.Mention
 import app.getknit.knit.mesh.protocol.Protocol
 import app.getknit.knit.mesh.protocol.ReplyRef
+import app.getknit.knit.mesh.protocol.StyleSpan
+import app.getknit.knit.mesh.protocol.StyleSpans
 import app.getknit.knit.moderation.ImageScreeningService
 import app.getknit.knit.notifications.Notifier
 import app.getknit.knit.transfer.OfferOutcome
@@ -305,6 +309,9 @@ data class ChatRow(
     // when the model heard no speech. Never on the wire.
     val voiceTranscript: String? = null,
     val mentions: List<Mention> = emptyList(),
+    // The sender's formatting over [body] (ADR 2026-10.p95v), canonical as the receiver stored it; the bubble draws
+    // it ([bubbleStyles]), and every other surface reads the plain body.
+    val styles: List<StyleSpan> = emptyList(),
     val reactions: List<ReactionSummary> = emptyList(),
     // The message this row quotes (Signal-style reply), or null when it isn't a reply: what the reader may be
     // shown of it, and how far it could be checked against the original (ADR 2026-10.gpa3). See [quoteViewFor].
@@ -644,7 +651,7 @@ class ChatViewModel(
      * because the screen has to *wait* for it: the composer reports its empty field the moment it composes,
      * and persisting that report before this read lands would erase the very draft it is fetching.
      */
-    private val storedDraft: Deferred<String> = viewModelScope.async { drafts.load(conversationId) }
+    private val storedDraft: Deferred<Draft> = viewModelScope.async { drafts.load(conversationId) }
 
     /**
      * The text this thread's drafts row holds — or is scheduled to hold, since writes are debounced — and
@@ -657,7 +664,7 @@ class ChatViewModel(
      * rotation, a profile screen popped off the chat). Persisting either would re-stamp the row's `updatedAt`
      * and float `Draft: …` back over a message that landed after it. Main-thread-confined, like [dismissedUrl].
      */
-    private var persisted: String? = null
+    private var persisted: Draft? = null
 
     /**
      * The text [consumeRestoredDraft] handed to the composer, until the user types past it. Read and cleared
@@ -1411,6 +1418,7 @@ class ChatViewModel(
                         linkCard = linkCardFor(m, cards),
                         location = GeoUri.find(m.body),
                         mentions = MentionStore.decode(m.mentions),
+                        styles = StyleStore.decode(m.styles),
                         reactions = tallies,
                         quote = quoteViewFor(m, mine, me, selfLabel) { label(it).text },
                         origin = origin,
@@ -1783,8 +1791,9 @@ class ChatViewModel(
         translation?.download(direction)
     }
 
-    /** The screen reports every edit of the draft here; a blank draft resets the per-draft memory. */
-    fun onDraftChanged(text: String) {
+    /** The screen reports every edit of the draft here, text and formatting; a blank draft resets the per-draft memory. */
+    fun onDraftChanged(report: Draft) {
+        val text = report.text
         draft.value = text
         // A failure says nothing about the next edit.
         if (_draftTranslation.value is DraftTranslation.Failed) _draftTranslation.value = null
@@ -1794,11 +1803,11 @@ class ChatViewModel(
         }
         // Keep it for next time (debounced, on the application scope). Blank text drops the row, so emptying
         // the field is how a draft is thrown away deliberately. Text the row already holds is not an edit —
-        // see [persisted] for the two ways it comes back.
+        // see [persisted] for the two ways it comes back. Formatting alone changing is an edit (ADR 2026-09.qtg9).
         val held = persisted ?: return
-        if (text == held) return
-        persisted = text
-        drafts.save(conversationId, text)
+        if (report == held) return
+        persisted = report
+        drafts.save(conversationId, report)
     }
 
     /**
@@ -1806,12 +1815,12 @@ class ChatViewModel(
      * rotation re-runs the screen's restore effect, and a draft the user has since cleared must not come
      * back with it. Taking it is also what starts persisting edits: see [onDraftChanged].
      */
-    suspend fun consumeRestoredDraft(): String {
-        if (persisted != null) return ""
-        val text = storedDraft.await()
-        persisted = text
-        restored = text.ifEmpty { null }
-        return text
+    suspend fun consumeRestoredDraft(): Draft {
+        if (persisted != null) return Draft.EMPTY
+        val stored = storedDraft.await()
+        persisted = stored
+        restored = stored.text.ifEmpty { null }
+        return stored
     }
 
     /**
@@ -1994,7 +2003,7 @@ class ChatViewModel(
                         draftEpoch.value++
                         // The post is away; what is about to be cleared from the field is not a draft any more.
                         drafts.clear(conversationId)
-                        if (persisted != null) persisted = ""
+                        if (persisted != null) persisted = Draft.EMPTY
                         _clearInput.tryEmit(Unit)
                     }
 
@@ -2231,13 +2240,36 @@ class ChatViewModel(
             _events.tryEmit(R.string.chat_location_not_ready)
             return null
         }
-        return listOf(text.clampToUtf16(TextLimits.MESSAGE - token.length - 1), token).filter { it.isNotEmpty() }.joinToString("\n")
+        return listOf(textBeforeLocation(text, token), token).filter { it.isNotEmpty() }.joinToString("\n")
     }
+
+    /**
+     * The composer's [styles], which index the untrimmed [draft], as `sendChat` takes them: against the body it is
+     * handed (ADR 2026-10.p95v). They move left by the whitespace `trim()` took and stop where the words do, short of a
+     * position's own line, so a span never covers the `geo:` token.
+     */
+    private fun spansForBody(
+        draft: String,
+        trimmed: String,
+        staged: StagedLocation?,
+        styles: List<StyleSpan>,
+    ): List<StyleSpan> {
+        if (styles.isEmpty()) return emptyList()
+        val kept = staged?.token?.let { textBeforeLocation(trimmed, it).length } ?: trimmed.length
+        return StyleSpans.rebase(styles, dropLeading = draft.length - draft.trimStart().length, length = kept)
+    }
+
+    /** What of [text] [bodyWithLocation] keeps ahead of [token]'s line: cut so the token fits under the cap. */
+    private fun textBeforeLocation(
+        text: String,
+        token: String,
+    ): String = text.clampToUtf16(TextLimits.MESSAGE - token.length - 1)
 
     fun send(
         text: String,
         mentions: List<Mention> = emptyList(),
         replyTo: ReplyRef? = null,
+        styles: List<StyleSpan> = emptyList(),
     ) {
         val trimmed = text.trim().clampToUtf16(TextLimits.MESSAGE)
         val staged = _stagedLocation.value
@@ -2253,6 +2285,8 @@ class ChatViewModel(
             return
         }
         val body = bodyWithLocation(trimmed, staged) ?: return
+        // The bridged room above sends no formatting: its line goes to other clients as plain text.
+        val spans = spansForBody(text, trimmed, staged, styles)
         // Ignore re-entrant taps while a send is in flight, and — on success — until the field is
         // actually cleared, so a tap landing in the gap between sendChat returning and clearText running
         // can't re-send the same draft. Released in the blocked branch and in onInputCleared().
@@ -2273,7 +2307,7 @@ class ChatViewModel(
                     _events.tryEmit(R.string.chat_gone)
                     return@launch
                 }
-                val sent = route(body, attachmentForSend(body), mentions, outgoingReply)
+                val sent = route(body, attachmentForSend(body), mentions, outgoingReply, spans)
                 // MeshManager applies block-on-send. Clear the input/attachment only once a message is
                 // accepted; a blocked message keeps the draft and surfaces a toast so the user can edit.
                 if (sent) {
@@ -2295,7 +2329,7 @@ class ChatViewModel(
                     // Dropped here rather than left to the field's own empty report, which a user who sends
                     // and immediately leaves never gives us — and which, when it does come, now matches the row.
                     drafts.clear(conversationId)
-                    if (persisted != null) persisted = ""
+                    if (persisted != null) persisted = Draft.EMPTY
                     // Guard stays held until the screen reports the field cleared (onInputCleared), so no
                     // duplicate can slip through the tryEmit -> collect -> clearText hop.
                     _clearInput.tryEmit(Unit)
@@ -2321,15 +2355,24 @@ class ChatViewModel(
         attachment: AttachmentStore.Ingested?,
         mentions: List<Mention>,
         replyTo: ReplyRef?,
+        styles: List<StyleSpan>,
     ): Boolean {
-        if (isCommons) return meshManager.sendCommons(conversationId, body, mentions, replyTo, attachment)
+        if (isCommons) return meshManager.sendCommons(conversationId, body, mentions, replyTo, attachment, styles = styles)
         val group = if (isRoom) null else groups.find(conversationId)
         if (group != null) {
-            return meshManager.sendChat(body, attachment, mentions, recipientId = null, group = group.toGroupInfo(), replyTo = replyTo)
+            return meshManager.sendChat(
+                body,
+                attachment,
+                mentions,
+                recipientId = null,
+                group = group.toGroupInfo(),
+                replyTo = replyTo,
+                styles = styles,
+            )
         }
         // Broadcast room -> no recipient; a DM thread is keyed by the peer's node id.
         val recipientId = if (isRoom) null else conversationId
-        return meshManager.sendChat(body, attachment, mentions, recipientId, replyTo = replyTo)
+        return meshManager.sendChat(body, attachment, mentions, recipientId, replyTo = replyTo, styles = styles)
     }
 
     /**
