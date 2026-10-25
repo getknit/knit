@@ -13,10 +13,10 @@ nearest-turn contract (revision 2) and specified in `docs/SPOOL_PROTOCOL.md` §7
 half is knit-spool ADR 2026-10.u5f4. Calls ship in release (ADR 2026-10.swvp), so this runs in every build with live
 calls.
 
-**What was observed.** One TURN box, `us-west`, holds about 100 relaying phones at 2 to 4 allocations each (knit-spool-coordinator
-ADR 2026-10.szw7). A second box only adds capacity if each phone allocates on one box. libwebrtc
-allocates on every TURN URL it is handed, so listing both boxes in one credential (which the spool already allowed)
-would mirror the load instead of splitting it. And where a spool is says nothing about where the phone is.
+**What was observed.** A TURN box holds what its quota allows, and each relaying phone takes 2 to 4 allocations
+of it. A second box adds capacity only if each phone allocates on one box. libwebrtc allocates on every TURN URL it is
+handed, so listing both boxes in one credential (which the spool already allowed) would mirror the load instead of
+splitting it. And where a spool is says nothing about where the phone is.
 
 **What changed.**
 

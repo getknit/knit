@@ -1283,7 +1283,7 @@ Three terms, each read from a server's URLs:
   absent (RFC 7065 §3: UDP is the default).
 - A URI's **host** is its host part, compared case-insensitively. An IPv6 literal keeps its brackets.
 - Its **entry** is `host:port` of its UDP URL: the host lowercased, the port as written, or 3478 where the URI leaves
-  it out. `turn:US-West.turn.getknit.app?transport=udp` gives `us-west.turn.getknit.app:3478`, and
+  it out. `turn:US-West.turn.example?transport=udp` gives `us-west.turn.example:3478`, and
   `turn:[2001:DB8::7]:3479` gives `[2001:db8::7]:3479`.
 
 | ID           | Requirement                                                                                                                                                                                                                                                                                                                                                               |
@@ -1299,7 +1299,7 @@ Three terms, each read from a server's URLs:
 > **Why one box per call.** libwebrtc allocates on every TURN URL it is handed, so a phone handed two boxes holds
 > allocations on both for the length of the call, and a second box mirrors the first instead of adding to it. It also
 > ranks relay candidates by type and transport before round-trip time, so it would not reliably settle on the nearer
-> box. One box per call is what lets a fleet grow past one box's hundred or so relaying phones. A credential the phone
+> box. One box per call is what lets a fleet grow past what one box can hold. A credential the phone
 > drops costs the box nothing: coturn spends nothing on it until an Allocate.
 >
 > **Why the phone measures.** Where a spool is says nothing about where the phone is: one spool serves phones on three

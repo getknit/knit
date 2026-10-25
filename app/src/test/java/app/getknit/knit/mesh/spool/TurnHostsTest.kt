@@ -9,7 +9,7 @@ class TurnHostsTest {
     @Test
     fun theSpecsExamplesGiveTheirEntries() {
         // The two examples the spec and the contract give, verbatim.
-        assertEquals("us-west.turn.getknit.app:3478", TurnHosts.udpEntry("turn:US-West.turn.getknit.app?transport=udp"))
+        assertEquals("us-west.turn.example:3478", TurnHosts.udpEntry("turn:US-West.turn.example?transport=udp"))
         assertEquals("[2001:db8::7]:3479", TurnHosts.udpEntry("turn:[2001:DB8::7]:3479"))
     }
 
