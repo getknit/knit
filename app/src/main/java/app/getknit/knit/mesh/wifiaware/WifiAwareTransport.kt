@@ -2747,12 +2747,13 @@ class WifiAwareTransport(
 
     /**
      * Whether channel 149 (5745 MHz) is usable for Aware here, for the 5 GHz rule's 5220 case. Read only while the
-     * 5 GHz picks are live, on API 33+ (the call wants NEARBY_WIFI_DEVICES), best-effort: it can throw
-     * `UnsupportedOperationException` or `SecurityException`, and it cannot pass the framework's hidden instant-mode
-     * filter, so it approximates what `getAwareInstantCommunicationChannel` will pick.
+     * 5 GHz picks are live, on API 34+ (where `getUsableChannels` and `WifiAvailableChannel` became public; the call
+     * wants NEARBY_WIFI_DEVICES), best-effort: it can throw `UnsupportedOperationException` or `SecurityException`,
+     * and it cannot pass the framework's hidden instant-mode filter, so it approximates what
+     * `getAwareInstantCommunicationChannel` will pick. Below 34 it answers null, so a 5220 STA stays on 2.4 GHz.
      */
     private fun readBand5PrimaryUsable(): Boolean? {
-        if (!fiveGhzRules || Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null
+        if (!fiveGhzRules || Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return null
         val wifi = appContext.getSystemService(WifiManager::class.java) ?: return null
         return runCatching {
             wifi
