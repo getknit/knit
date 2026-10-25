@@ -15,6 +15,7 @@ Phones talk straight to each other over Wi-Fi Aware and Bluetooth LE, relaying f
 ![Encryption](https://img.shields.io/badge/DMs%20%26%20groups-E2E%20%2B%20forward%20secrecy-2EA043?logo=signal&logoColor=white)
 ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)
 [![Latest release](https://img.shields.io/github/v/release/getknit/knit?label=release&color=E55E4C)](https://github.com/getknit/knit/releases/latest)
+[![Translation status on Weblate](https://hosted.weblate.org/widget/knit/svg-badge.svg)](https://hosted.weblate.org/engage/knit/)
 [![Knit changelog on whatsnew.fyi](https://whatsnew.fyi/product/knit/badge.svg)](https://whatsnew.fyi/product/knit)
 [![Knit changelog grade on whatsnew.fyi](https://whatsnew.fyi/product/knit/grade.svg)](https://whatsnew.fyi/product/knit#changelog-grade)
 
@@ -645,6 +646,9 @@ needs costs nothing:
 - **[Report a bug](https://github.com/getknit/knit/issues/new/choose) when something misbehaves.** Radios
   behave differently on every phone model, so a report from yours can turn up a problem no test phone
   shows.
+- **Translate it on [Weblate](https://hosted.weblate.org/engage/knit/).** Native speakers review each
+  language there: suggest a better word, fix a string, or ask for your language.
+  [#43](https://github.com/getknit/knit/issues/43) tracks where each one stands.
 
 If you'd also like to chip in money, Knit is funded entirely by tips. You can leave a one-off tip on
 Ko-fi or set up a recurring one on Liberapay or GitHub Sponsors. Supporting Knit on Ko-fi or GitHub Sponsors
