@@ -8,9 +8,9 @@ topics: [turn, calls, spool, anywhere]
 
 # ADR 2026-10.pfzn — a phone relays through the TURN box nearest it
 
-Status: Accepted (2026-10-25). The client half of knit-spool-coordinator ADR 2026-10.w7hc, built against the
-nearest-turn contract (revision 2) and specified in `docs/SPOOL_PROTOCOL.md` §7.6 (S-7.6-48 to C-7.6-54). The spool
-half is knit-spool ADR 2026-10.u5f4. Calls ship in release (ADR 2026-10.swvp), so this runs in every build with live
+Status: Accepted (2026-10-25). The client half of a phone choosing its TURN server, built against the nearest-turn
+contract (revision 2) and specified in `docs/SPOOL_PROTOCOL.md` §7.6 (S-7.6-48 to C-7.6-54). The spool half is
+knit-spool ADR 2026-10.u5f4. Calls ship in release (ADR 2026-10.swvp), so this runs in every build with live
 calls.
 
 **What was observed.** A TURN box holds what its quota allows, and each relaying phone takes 2 to 4 allocations

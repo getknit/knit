@@ -106,8 +106,8 @@ pass = yV18C+LcL6biIfL7ZVOuV9xVuoU=
 ```
 
 **Several TURN servers.** A spool may sign for up to four, each with its own URLs and secret, and a phone relays
-through the one nearest it (knit-spool-coordinator ADR 2026-10.w7hc). Server 1 is the one a spool had before it named
-more. Three terms, each read from a server's URLs: its **UDP URL** is the first whose scheme is `turn:` and whose
+through the one nearest it (ADR 2026-10.pfzn, knit-spool ADR 2026-10.u5f4). Server 1 is the one a spool had before it
+named more. Three terms, each read from a server's URLs: its **UDP URL** is the first whose scheme is `turn:` and whose
 `transport` is `udp` or absent (RFC 7065 §3); a URI's **host** is its host part, compared case-insensitively, an IPv6
 literal keeping its brackets; and its **entry** is `host:port` of its UDP URL, the host lowercased and the port as
 written or 3478 (`turn:US-West.turn.example?transport=udp` gives `us-west.turn.example:3478`). S-7.6-48 is in
