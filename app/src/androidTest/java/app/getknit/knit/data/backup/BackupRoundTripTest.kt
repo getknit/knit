@@ -39,6 +39,7 @@ import org.junit.Assume.assumeFalse
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.koin.core.context.GlobalContext
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -66,6 +67,10 @@ class BackupRoundTripTest {
         // this test's read-back needs; run it from an unseeded build.
         assumeFalse("a seeded build mints its own identity under the same Keystore alias", BuildConfig.SEED_DEMO)
         System.loadLibrary("sqlcipher")
+        // An unseeded start mints the database passphrase under the live alias too (a cleared package has no key), and
+        // a mint racing this test's generates a second key over the one its read-back needs. Settle the app's own first:
+        // its getOrCreate is synchronized, so this waits out a mint in flight, and every later store finds the key.
+        GlobalContext.get().get<DatabaseKey>().getOrCreate()
     }
 
     @After
