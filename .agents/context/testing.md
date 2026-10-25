@@ -134,6 +134,42 @@ had happened.
 - **Seams are constructor parameters with a production default** (`clock`, `random`, `newPort`, a dispatcher),
   not reflection or widened visibility.
 
+## Instrumented tests that hold on an emulator
+
+`app/src/androidTest/` is reviewed by the same `unit-test-reviewer` persona, against the shapes and rules above and
+the five below (I1–I5), which a JVM test never meets. CI runs it on headless aosp-atd emulators (the advisory "Instrumented
+tests" job): one Gradle call per package, `ui` and `uiauto` from a seeded build, `data`, `moderation`, `notifications`
+and `text` from an unseeded one, `a11y` seeded on API 34. `blepair` needs a second phone and never runs there.
+
+- **I1. The app runs beside the test.** The instrumentation process is the app's: `KnitApplication.onCreate` starts
+  Koin and launches background work (`startCallsIfWired`, the relay seed, the commons rename) that builds the graph,
+  opens the real database and mints under the live Keystore aliases while the test runs. `SandboxContext` moves
+  `filesDir`, `noBackupFilesDir` and the database path; it does not move a Keystore alias or a Koin single. Two
+  `KeystoreSecret`s that both find no key both generate, and the later one replaces the earlier's key:
+  `BackupRoundTripTest`'s read-back lost that race to the app's own `DatabaseKey` (CI run 40166809040,
+  `56fe6d539`). Settle the app's own instance first, through `GlobalContext.get().get<…>()` (its lock waits out a
+  mint already running), or use an alias of the test's own when the live one is not the point.
+- **I2. Every test is a first run.** The orchestrator with `clearPackageData=true` gives each test a fresh, empty app,
+  so a first-run path (a mint, a wipe, the seed) runs before every test, not once per suite. Nothing one test writes
+  reaches the next; a test that needs state builds it.
+- **I3. Seeded and unseeded are different apps.** `BuildConfig.SEED_DEMO` is inlined into the test DEX, a seeded start
+  mints its own identity and fills the database, and CI picks a test's build by its package. A test that needs a
+  clean slate skips in a seeded build (`assumeFalse(SEED_DEMO)`, run 38830030015) and must sit in a package the
+  unseeded pass runs; the seeded suite fails loudly on a mis-build (`check(SEED_DEMO)`), never skips.
+- **I4. Emulator time.** A software-rendered emulator on a shared runner is slower than any phone the suites were
+  written on: a Keystore call or a SQLCipher keying can take a second, and `KeystoreSecret`'s retries add two.
+  Wait on the condition (`waitUntil`, a polled read) under a bound sized for the emulator, never a `sleep`, and
+  widen a race window's estimate to match.
+- **I5. A skip reads green.** The report lists an `assume*` skip as a `<failure>`, and Gradle counts it as skipped.
+  Several skip in CI by design (no clips pushed, no `videoPath`, the notification shade on a headless emulator). A
+  test the change is about must not be one of them, or the change has no CI coverage: name where it does run (FTL,
+  one lab phone by hand under `rules/devices.md`).
+
+There is no stress script for these. The reviewer reads them and names the run the change owes, one class per Gradle
+call (under the orchestrator a comma-separated list ran only the first):
+`./gradlew :app:pixel7api33DebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=<fqcn>`, with
+`-PseedDemo=true` for a seeded package. It never runs one on the lab phones.
+
 ## Mesh in a box (`app/src/test/…/mesh/lab/`)
 
 `MeshLab` runs **N complete, real Knit stacks in one JVM** — the real `MeshManager` (so the real
@@ -634,7 +670,8 @@ before "simplifying":
   wipe-on-proven-loss, never-on-refusal contract, the refusal injected by the debug `FaultyKeystoreCipher` over
   the real Keystore) run there too, through `SandboxContext`, which moves `filesDir`,
   `noBackupFilesDir` and the database path under a temp root, so the live aliases are reused but the
-  installed app's files are never read or written. Run them on the managed emulator
+  installed app's files are never read or written, except that `BackupRoundTripTest` lets the app's own
+  `DatabaseKey` mint first (shape I1 under "Instrumented tests that hold on an emulator"). Run them on the managed emulator
   (`:app:pixel8api34DebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=…`), one class per
   run: under the orchestrator, a comma-separated class list ran only the first. Their JVM half is
   `RestoreStagerTest`, every refusal over a stand-in wrap (`RestoreStager`'s `secretAt` seam), because

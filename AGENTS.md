@@ -718,6 +718,12 @@ over cleverness. Start with `.agents/context/architecture.md` for the subsystem 
   passed review and local runs, and CI's one-vCPU runner found it. It walks each test for the catalogue's flake shapes
   and for tests that cannot fail, and stress-runs the changed classes (`scripts/unit-stress.sh`). A Stop hook enforces
   the review.
+- **When creating or modifying an instrumented test** — anything under `app/src/androidTest/`: READ the
+  "Instrumented tests that hold on an emulator" section of `.agents/context/testing.md` beside the slow-runner one,
+  then ADOPT the same `unit-test-reviewer` persona — the test runs in the app's own process, beside its startup, and
+  a fresh, empty app comes up for every test (`BackupRoundTripTest` lost the Keystore alias to the app's own mint). It
+  reads for the emulator's shapes too and names the managed-device run the change owes rather than running it. The
+  same Stop hook enforces the review.
 - **When creating or modifying anything under `mesh/bluetooth/` (its `meshtastic/` and `wear/` included),
   `mesh/link/FramedLink.kt`, `mesh/power/ElapsedWait.kt` or `mesh/power/PowerState.kt` (`PowerPolicy`):** ADOPT (Claude Code:
   spawn) the `bluetooth-reviewer` persona in `.agents/personas/bluetooth-reviewer.md` before calling the change

@@ -15,7 +15,7 @@
 #   - mesh-lab-reviewer: lab-lint on the changed scenarios, then a 20-run chaos sweep of the changed *LabTest classes
 #     (a fixture-only change sweeps the whole package at 3 runs);
 #   - unit-test-reviewer: an 8-run stress of the changed test classes, the regression check against <base>
-#     (unit-prefix.sh) and the changed :wear tests once.
+#     (unit-prefix.sh), the changed :wear tests once, and a compile of changed instrumented sources.
 # Every check's verdict is a line in <out>/checks.md and its log is <out>/<check>.log. A failing check never stops the
 # others, and the script exits 0 unless it could not run at all: a red check is a finding for the reviewer to read.
 #
@@ -131,6 +131,7 @@ fi
 if is_owed unit-test-reviewer; then
   mapfile -t app_tests < <(owed unit-test-reviewer | grep '^app/src/test/.*Test\.kt$' | present | fqcn)
   mapfile -t wear_tests < <(owed unit-test-reviewer | grep '^wear/src/test/.*Test\.kt$' | present | fqcn)
+  mapfile -t instrumented < <(owed unit-test-reviewer | grep '^app/src/androidTest/' | present)
   if ((${#app_tests[@]})); then
     args=()
     for c in "${app_tests[@]}"; do args+=(--tests "$c"); done
@@ -147,7 +148,12 @@ if is_owed unit-test-reviewer; then
     check wear-tests "Changed :wear tests, once" \
       timeout 1800 ./gradlew -Pknit.wear=true :wear:testDebugUnitTest --console=plain "${args[@]}"
   fi
-  if ((${#app_tests[@]} + ${#wear_tests[@]} == 0)); then
+  if ((${#instrumented[@]})); then
+    # No managed device here: the reviewer names the emulator run the change owes; this only proves it builds.
+    check instrumented-compile "Changed instrumented sources compile" \
+      timeout 1800 ./gradlew :app:compileDebugAndroidTestKotlin --console=plain
+  fi
+  if ((${#app_tests[@]} + ${#wear_tests[@]} + ${#instrumented[@]} == 0)); then
     echo "- Only rigs, fakes or resources changed under the test trees: nothing to stress." >>"$summary"
   fi
 fi
