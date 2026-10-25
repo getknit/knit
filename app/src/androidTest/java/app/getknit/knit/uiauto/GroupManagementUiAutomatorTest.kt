@@ -58,24 +58,15 @@ class GroupManagementUiAutomatorTest : SeededUiAutomatorTest() {
     }
 
     /**
-     * Chat list → the "Trailhead Crew" group row → the top-bar group avatar → the group-details screen.
-     * The chat-list row tap can race the async seed still reflowing rows (the captured tap coordinate goes
-     * stale as the row shifts, so the tap misses and no chat opens), so retry from a fresh cold start until
-     * the group chat actually opens — detected by its top-bar avatar appearing.
+     * Chat list → the "Trailhead Crew" group row → the top-bar group avatar → the group-details screen. One
+     * attempt: [launch] waits out the seed, so the list has stopped reflowing before the tap, and a missed tap is a
+     * failure worth seeing.
      */
     private fun openGroupDetails() {
-        repeat(GROUP_OPEN_ATTEMPTS) {
-            launch()
-            requireTag("chat_row_nearby") // the seeded list is populated before we tap (seed is async)
-            requireDesc(GROUP_NAME).click()
-            waitTag("chat_group_avatar", GROUP_OPEN_POLL_MS)?.let { avatar ->
-                avatar.click()
-                assertText(str(R.string.group_details_title)) // "Group info" — we're on the details screen
-                return
-            }
-            // The row tap didn't open the group chat — cold-start and try again.
-        }
-        error("group details unreachable from the '$GROUP_NAME' chat-list row after $GROUP_OPEN_ATTEMPTS attempts")
+        launch()
+        requireDesc(GROUP_NAME).click()
+        requireTag("chat_group_avatar").click()
+        assertText(str(R.string.group_details_title)) // "Group info" — we're on the details screen
     }
 
     /** Opens the group-details top-bar overflow (the MoreVert icon, addressed by its contentDescription). */
@@ -86,10 +77,5 @@ class GroupManagementUiAutomatorTest : SeededUiAutomatorTest() {
     private companion object {
         const val GROUP_NAME = "Trailhead Crew"
         const val NEW_NAME = "Summit Squad"
-
-        // Cold-start + row-tap retries to absorb the async-seed row reflow; the poll is generous so a real
-        // chat-open is always detected (no spurious retry) before giving up.
-        const val GROUP_OPEN_ATTEMPTS = 3
-        const val GROUP_OPEN_POLL_MS = 12_000L
     }
 }

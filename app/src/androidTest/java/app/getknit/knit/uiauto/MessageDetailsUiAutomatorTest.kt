@@ -50,19 +50,13 @@ class MessageDetailsUiAutomatorTest : SeededUiAutomatorTest() {
     }
 
     /**
-     * Chat list → the "Trailhead Crew" row → the group chat. Same cold-start retry as
-     * [GroupManagementUiAutomatorTest.openGroupDetails]: the row tap can race the async seed still
-     * reflowing rows, so the captured coordinate goes stale and the tap misses.
+     * Chat list → the "Trailhead Crew" row → the group chat, proven by its top-bar avatar. One attempt: [launch]
+     * waits out the seed, so the list has stopped reflowing before the tap.
      */
     private fun openGroupChat() {
-        repeat(OPEN_ATTEMPTS) {
-            launch()
-            requireTag("chat_row_nearby") // the seeded list is populated before we tap (seed is async)
-            requireDesc(GROUP_NAME).click()
-            if (waitTag("chat_group_avatar", OPEN_POLL_MS) != null) return
-            // The row tap didn't open the group chat — cold-start and try again.
-        }
-        error("the '$GROUP_NAME' group chat was unreachable after $OPEN_ATTEMPTS attempts")
+        launch()
+        requireDesc(GROUP_NAME).click()
+        assertTag("chat_group_avatar")
     }
 
     private companion object {
@@ -82,8 +76,5 @@ class MessageDetailsUiAutomatorTest : SeededUiAutomatorTest() {
          * `theod001`) is a different person and was never seeded, so don't copy it back from there.
          */
         const val THEO = "theob123"
-
-        const val OPEN_ATTEMPTS = 3
-        const val OPEN_POLL_MS = 12_000L
     }
 }

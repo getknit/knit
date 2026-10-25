@@ -63,25 +63,17 @@ class ContactRemovalUiAutomatorTest : SeededUiAutomatorTest() {
     }
 
     /**
-     * Chat list → [nodeId]'s DM row → the header avatar → their profile. The row tap can race the async seed
-     * still reflowing rows, so a cold start is retried until the DM actually opens.
+     * Chat list → [nodeId]'s DM row → the header avatar → their profile. One attempt: [launch] waits out the seed,
+     * so the list has stopped reflowing before the tap, and a missed tap is a failure worth seeing.
      */
     private fun openProfileFromDm(
         nodeId: String,
         name: String,
     ) {
-        val viewProfile = str(R.string.chat_view_profile).format(name)
-        repeat(OPEN_ATTEMPTS) {
-            launch()
-            requireTag("chat_row_nearby") // the seeded list is populated before we tap (seed is async)
-            requireTag("chat_row_$nodeId").click()
-            waitDesc(viewProfile, OPEN_POLL_MS)?.let { avatar ->
-                avatar.click()
-                assertTag("screen_profile_details")
-                return
-            }
-        }
-        error("$name's profile was unreachable from the chat list after $OPEN_ATTEMPTS attempts")
+        launch()
+        requireTag("chat_row_$nodeId").click()
+        requireDesc(str(R.string.chat_view_profile).format(name)).click()
+        assertTag("screen_profile_details")
     }
 
     private fun openOverflow() {
@@ -101,8 +93,5 @@ class ContactRemovalUiAutomatorTest : SeededUiAutomatorTest() {
         const val DANI_NAME = "Dani Cho"
         const val PRIYA = "priyan07"
         const val GROUP_NAME = "Trailhead Crew"
-
-        const val OPEN_ATTEMPTS = 3
-        const val OPEN_POLL_MS = 12_000L
     }
 }
