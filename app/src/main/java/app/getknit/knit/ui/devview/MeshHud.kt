@@ -118,7 +118,20 @@ internal fun MeshHudContent(
 
         if (expanded && reading != null) {
             HudPanelPlacement(bubbleAt = at, bubble = bubble, margin = margin, area = area) {
-                HudPanel(reading = reading, line = line, onOpenDiagnostics = onOpenDiagnostics, onOpenEvents = onOpenEvents)
+                // Each button closes the panel as it leaves: on the Pixel 9 an open panel followed the person onto the console
+                // and covered it.
+                HudPanel(
+                    reading = reading,
+                    line = line,
+                    onOpenDiagnostics = {
+                        expanded = false
+                        onOpenDiagnostics()
+                    },
+                    onOpenEvents = {
+                        expanded = false
+                        onOpenEvents()
+                    },
+                )
             }
         }
         Surface(
@@ -217,7 +230,7 @@ private fun HudPanel(
                 TextButton(onClick = onOpenEvents, modifier = Modifier.testTag("dev_view_hud_events")) {
                     Text(stringResource(R.string.dev_view_events), color = MaterialTheme.colorScheme.inversePrimary)
                 }
-                TextButton(onClick = onOpenDiagnostics) {
+                TextButton(onClick = onOpenDiagnostics, modifier = Modifier.testTag("dev_view_hud_diagnostics")) {
                     Text(stringResource(R.string.dev_view_open_diagnostics), color = MaterialTheme.colorScheme.inversePrimary)
                 }
             }
