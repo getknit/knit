@@ -25,9 +25,9 @@ document:
 - In the US, Australia and New Zealand, you can now set a LoRa board up on a frequency only Knit boards use.
   Knit then uses the full airtime your region allows, but other people's Meshtastic radios no longer pass
   your messages on.
-- Knit now comes in Brazilian Portuguese: it follows a phone set to that language, and on Android 13 and later
-  you can pick it for Knit alone in Settings › Apps › Knit › Language. Native speakers are still checking the
-  translation on Weblate, and anyone can suggest a fix there.
+- Knit now comes in Brazilian Portuguese and Spanish: it follows a phone set to either language, and on
+  Android 13 and later you can pick one for Knit alone in Settings › Apps › Knit › Language. Native speakers
+  are still checking both translations on Weblate, and anyone can suggest a fix there.
 - Select words in a message you're writing to make them bold, italic, struck through or monospace. Older
   versions of Knit, and Knit for iPhone for now, show the message as plain text.
 

@@ -1,0 +1,57 @@
+Knit es una app de mensajería que funciona sin internet, sin señal móvil y sin cuentas. Se conecta directamente a los teléfonos cercanos por Wi-Fi Aware y Bluetooth, y pasa los mensajes de uno a otro.
+
+Cada teléfono que recibe un mensaje lo pasa a los de su alrededor, así tus palabras cruzan una multitud, un edificio o un campamento, mucho más allá de tu alcance. Cuanta más gente use Knit cerca, más lejos llega.
+
+POR QUÉ KNIT
+• Sin internet ni datos móviles
+• Sin cuenta, número de teléfono ni correo
+• Sin servidor central: nada que apagar, vigilar o filtrar
+• Sin anuncios, rastreo, analíticas ni Google Play Services
+• Software libre: cualquiera puede leer lo que hace la app
+
+IDEAL PARA
+• Festivales y lugares llenos donde no hay señal
+• Viajes, vuelos, barcos, campamentos y montaña
+• Apagones y emergencias
+
+PRIVADO DESDE EL DISEÑO
+Los chats directos y de grupo están cifrados de extremo a extremo. Solo quienes están en el chat leen cada mensaje: los teléfonos que lo llevan, y los retransmisores, solo ven texto cifrado. Las claves se crean en tu dispositivo, protegidas por la seguridad de hardware de Android. Confirma con quién hablas con un número de seguridad o un código QR.
+
+SOBRE LOS PERMISOS
+Knit pide Dispositivos cercanos (Ubicación antes de Android 13) porque Android lo exige para encontrar otros teléfonos por Wi-Fi Aware y Bluetooth LE y llegar a una radio vinculada. La ubicación solo se lee cuando tocas Enviar ubicación. INTERNET se declara porque Android cuenta el socket local de Wi-Fi Aware como red, y porque los retransmisores y las vistas previas de enlaces lo usan al activarlos. Una instalación nueva no hace conexiones de red.
+
+SOFTWARE LIBRE
+Knit se publica bajo la GNU General Public License v3 o posterior; el código está en github.com/getknit/knit.
+
+FUNCIONES
+• Sala pública "Cerca" para todos a tu alcance
+• Mensajes privados 1:1 (cifrado de extremo a extremo)
+• Grupos (cifrado de extremo a extremo)
+• Respuestas con cita, reacciones y @menciones
+• Fotos, GIF y videos cortos
+• Llamadas de voz, cerca o por retransmisores
+• Notas de voz, archivos de cualquier tipo y archivos grandes por Wi-Fi
+• Busca en todos los chats, contactos y mensajes
+• Copia de seguridad cifrada para un teléfono nuevo
+• Los mensajes esperan a que alguien vuelva al alcance
+• Agrega un contacto por enlace si están lejos
+• Radio LoRa Meshtastic opcional para mucho más alcance
+• Retransmisores por internet opcionales, apagados hasta que los actives
+• Pasa la app a un teléfono cercano, sin tienda
+• Material 3, modo oscuro y colores de Material You
+
+ESPACIOS MÁS SEGUROS
+Un filtro en el dispositivo bloquea textos abusivos e imágenes explícitas, sin conexión y sin enviar nada. El contenido sensible se difumina hasta que lo tocas, y cualquier remitente está a un toque de ser bloqueado.
+
+Knit vive de sus colaboradores: github.com/sponsors/getknit, ko-fi.com/knit. Liberapay.com/zaventh apoya solo a su desarrollador.
+
+CÓMO FUNCIONA
+Knit usa Wi-Fi Aware y Bluetooth Low Energy a la vez, así que funciona en teléfonos con solo uno. Conviene dejarla en segundo plano. Requiere Android 10 o posterior.
+
+RADIO DE LARGO ALCANCE
+Vincula una radio LoRa Meshtastic por Bluetooth y la sala Cerca y tus mensajes directos también viajan por ella: kilómetros en vez de metros, sin internet. La radio es un aparato aparte; Knit funciona por completo sin ella.
+
+RETRANSMISORES POR INTERNET
+Para llegar a un contacto que nunca está a tu alcance, activa los retransmisores: Knit deja una copia sellada en un servidor, que la entrega cuando su teléfono se conecte. Apagados hasta que los actives, tras un aviso de lo que un retransmisor ve (tu IP, cuándo y cuánto envías, más o menos) y lo que no: tus mensajes, con quién hablas o quién está en un grupo. Elige tus retransmisores o monta el tuyo.
+
+Sin radio ni retransmisores, Knit llega a quien está cerca o a la multitud entre ustedes. La sala pública Cerca no está cifrada, pues no tiene destinatarios fijos, y nunca se sube a internet.

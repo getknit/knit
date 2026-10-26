@@ -3,9 +3,9 @@
 # cell lists the renderings that count, separated by |, each matched as a case-insensitive substring (write a
 # stem, like "bloque" for bloquear / bloqueado / desbloquear). keep=yes: every locale writes the term as is, and
 # the same-as-English check ignores it. Mirror a change into the translator instructions on Weblate.
-en	keep	pt-BR	note
-Knit Anywhere	yes			product name
-Knit	yes			product name
+en	keep	pt-BR	es	note
+Knit Anywhere	yes				product name
+Knit	yes				product name
 Meshtastic	yes
 Wi-Fi Aware	yes
 Wi-Fi Direct	yes
@@ -23,39 +23,39 @@ STUN	yes
 NAN	yes
 BLE	yes
 PHY	yes
-Coded	yes			the Bluetooth PHY's name
+Coded	yes				the Bluetooth PHY's name
 walkie-talkie	yes
 backup	yes
-spool	yes			diagnostics only
-mesh	yes			"a rede mesh", short "a mesh"
-Nearby room		Por perto	the public room's name
-relay invite		convite de retransmissor|convites de retransmissor
-relay		retransmissor	an Internet server that carries messages
-commons		sala comum|salas comuns	a private relay's group chat
-message request		solicitaç
-contact		contato
-verif		verific
-block		bloque
-group		grupo
-direct message		mensagem direta|mensagens diretas
-chat list		lista de conversas
-phone		celular	a device, not a call
-board		placa	a Meshtastic / LoRa board
-live call		ao vivo
-mesh call		pela mesh
-voice note		mensagem de voz|mensagens de voz
-transcri		transcri
-attachment		anexo
-end-to-end		de ponta a ponta
-end to end		de ponta a ponta
-Diagnostics		Diagnóstico
-field log		registro de campo|registros de campo
-Low-power mode		baixo consumo
-Content filtering		Filtro de conteúdo
-Open to chat		a conversas
-supporter badge		selo de apoiador
-supporter perks		vantagens de apoiador|vantagens para apoiadores	Knit Anywhere and the badge, a thank-you: never a plan, account or purchase
-supporter		apoiador|apoiadora	someone who gives money: never "doação" or "doador"
-ticket		passe	Knit Anywhere access
-recovery key		chave de recuperação
-restore		restaur
+spool	yes				diagnostics only
+mesh	yes				pt "a rede mesh", short "a mesh"; es "la red mesh", short "la mesh"
+Nearby room		Por perto	Cerca	the public room's name
+relay invite		convite de retransmissor|convites de retransmissor	invitación de retransmisor|invitaciones de retransmisor
+relay		retransmissor	retransmisor	an Internet server that carries messages
+commons		sala comum|salas comuns	sala común|salas comunes	a private relay's group chat
+message request		solicitaç	solicitud
+contact		contato	contacto
+verif		verific	verific
+block		bloque	bloque
+group		grupo	grupo
+direct message		mensagem direta|mensagens diretas	mensaje directo|mensajes directos
+chat list		lista de conversas	lista de chats
+phone		celular	teléfono	a device, not a call
+board		placa	placa	a Meshtastic / LoRa board
+live call		ao vivo	en vivo
+mesh call		pela mesh	mesh
+voice note		mensagem de voz|mensagens de voz	nota de voz|notas de voz
+transcri		transcri	transcri
+attachment		anexo	adjunt
+end-to-end		de ponta a ponta	de extremo a extremo
+end to end		de ponta a ponta	de extremo a extremo
+Diagnostics		Diagnóstico	Diagnóstico
+field log		registro de campo|registros de campo	registro de campo|registros de campo
+Low-power mode		baixo consumo	bajo consumo
+Content filtering		Filtro de conteúdo	Filtro de contenido
+Open to chat		a conversas	para chatear
+supporter badge		selo de apoiador	insignia de colaborador
+supporter perks		vantagens de apoiador|vantagens para apoiadores	ventajas de colaborador|ventajas para colaboradores	Knit Anywhere and the badge, a thank-you: never a plan, account or purchase
+supporter		apoiador|apoiadora	colabora	someone who gives money: never "doação" or "doador"
+ticket		passe	pase	Knit Anywhere access
+recovery key		chave de recuperação	clave de recuperación
+restore		restaur	restaur

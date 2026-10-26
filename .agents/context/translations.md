@@ -1,8 +1,10 @@
 # Translations
 
 How Knit's text reaches other languages. English is the source; Brazilian Portuguese (`values-pt-rBR/`, machine pass
-2026-10-22 and a second machine review 2026-10-24, awaiting native review) is the first translation. Progress per
-language is GitHub issue #43.
+2026-10-22 and a second machine review 2026-10-24, awaiting native review) is the first translation. Spanish
+(`values-es/`, machine pass 2026-10-26, awaiting native review) is the second: a neutral base every Spanish speaker
+falls back to, written with tú and ustedes and no regional words (teléfono, not celular or móvil), so a region can
+later override only the strings it says differently. Progress per language is GitHub issue #43.
 
 ## The plan: one language at a time, complete or not at all
 
@@ -20,7 +22,8 @@ language is GitHub issue #43.
   `<plurals>` carries every quantity lint names for the language (`MissingQuantity`): Portuguese, Spanish, French and
   Italian need a `many` beside `one` and `other`, the same words as `other` (it only covers numbers like a million).
   The store listing goes in `fastlane/metadata/android/<locale>/` (Play's caps: 30 characters title, 80 short, 4000
-  full); Play's copy is pasted into the Console by hand, and F-Droid reads the folder at the built commit.
+  full); Play's copy is pasted into the Console by hand (Play has no plain `es`: the `es/` listing goes into both
+  `es-419` and `es-ES`), and F-Droid reads the folder at the built commit.
 - **`scripts/translation-check.py`** reads the XML alone, in a second, and names what lint would fail and what a
   reader notices first: a missing or extra string, a placeholder that moved, an unescaped apostrophe, a plural the
   language doesn't use (errors), and text left in English, a short label more than twice its English length, a
