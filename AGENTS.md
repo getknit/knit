@@ -29,8 +29,8 @@ Build, tooling and process:
 - **Before touching release signing, `packaging`/`ndk`, `.gitattributes` or anything that changes release-APK
   bytes:** READ `.agents/context/distribution.md` (F-Droid byte-reproduces the release).
 - **When editing any Kotlin/Compose/data code:** obey `.agents/rules/coding.md`.
-- **When adding or changing user-facing text, a string resource or a `values-<locale>/` file:** READ
-  `.agents/context/translations.md`.
+- **When adding or changing user-facing text, a string resource or a `values-<locale>/` file, or syncing Weblate's
+  screenshots:** READ `.agents/context/translations.md`.
 - **When renaming/moving/removing a symbol, file or ADR, or editing `.agents/` or `docs/`:** RUN
   `python3 scripts/doc-lint.py` and fix what it names (an intended old name carries
   `<!-- doc-lint: allow <name> — <why> -->`).

@@ -376,6 +376,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Checker unit tests
         run: python3 -m unittest scripts/test_translation_check.py
+      - name: Weblate screenshot sync unit tests
+        run: python3 -m unittest scripts/test_weblate_screenshots.py
       - name: Check the translations
         run: python3 scripts/translation-check.py
 

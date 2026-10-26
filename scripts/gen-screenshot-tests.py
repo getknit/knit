@@ -3,6 +3,7 @@
 
     python3 scripts/gen-screenshot-tests.py          # rewrite the wrapper files
     python3 scripts/gen-screenshot-tests.py --check  # fail if they are stale (a preview has no test)
+    python3 scripts/gen-screenshot-tests.py --manifest PATH  # list every preview as JSON, for weblate-screenshots.py
 
 Then re-render the references with `./gradlew :app:updateDebugScreenshotTest` and review the PNG diff.
 
@@ -27,6 +28,7 @@ settled under `LocalInspectionMode` (see `EncryptionSection`'s QR) or accept the
 """
 
 import collections
+import json
 import os
 import re
 import sys
@@ -103,7 +105,7 @@ PREVIEW = re.compile(r"@Preview[^\n]*\n(?:@[^\n]*\n)*(private )?fun (\w+)\(\)")
 
 
 def collect():
-    """{package: [(preview function, draws a screen)]} in source order."""
+    """{package: [(preview function, draws a screen, the JVM class it compiles into)]} in source order."""
     by_pkg = collections.OrderedDict()
     for dirpath, _, files in sorted(os.walk(SRC)):
         for f in sorted(files):
@@ -122,8 +124,8 @@ def collect():
                 nxt = src.find("@Preview", m.end())
                 body = src[m.end() : m.end() + 400 if nxt < 0 else min(nxt, m.end() + 400)]
                 screen = bool(SCREEN_CALLS.search(body)) or (pkg.endswith(".onboarding") and "Page" in name)
-                by_pkg.setdefault(pkg, []).append((name, screen))
-    wrappers = [n.removesuffix("Preview") for v in by_pkg.values() for n, _ in v]
+                by_pkg.setdefault(pkg, []).append((name, screen, f"{pkg}.{Path(f).stem}Kt"))
+    wrappers = [n.removesuffix("Preview") for v in by_pkg.values() for n, *_ in v]
     dupes = sorted(n for n, c in collections.Counter(wrappers).items() if c > 1)
     if dupes:
         sys.exit(f"two previews would share a wrapper name: {', '.join(dupes)}")
@@ -132,13 +134,13 @@ def collect():
 
 def render(pkg, previews):
     imports = {"androidx.compose.runtime.Composable", "com.android.tools.screenshot.PreviewTest"}
-    if any(n in CUSTOM or n in EXTRA for n, _ in previews):
+    if any(n in CUSTOM or n in EXTRA for n, *_ in previews):
         imports |= {"android.content.res.Configuration", "androidx.compose.ui.tooling.preview.Preview"}
-    imports |= {f"{pkg}.{n}" for n, _ in previews}
+    imports |= {f"{pkg}.{n}" for n, *_ in previews}
     out = ["package app.getknit.knit.screenshot", ""]
     out += [f"import {i}" for i in sorted(imports)]
     out += ["", f"// Screenshot tests over the previews in `{pkg.removeprefix('app.getknit.knit.')}`.", ""]
-    for n, screen in previews:
+    for n, screen, _ in previews:
         w = n.removesuffix("Preview")
         out.append("@PreviewTest")
         out += CUSTOM.get(n, ["@ScreenShots" if screen else "@ComponentShots"])
@@ -160,12 +162,31 @@ def render(pkg, previews):
     return "\n".join(out).rstrip() + "\n"
 
 
+def file_stem(pkg):
+    """`app.getknit.knit.ui.yourmesh` -> `YourMesh`: the wrapper file is `<stem>Screenshots.kt`."""
+    seg = pkg.rsplit(".", 1)[1]
+    return FILE_NAMES.get(seg, seg[:1].upper() + seg[1:])
+
+
+def write_manifest(path):
+    """One entry per wrapped preview: what `PreviewStringsTest` invokes and where its references live."""
+    entries = [
+        {"wrapper": n.removesuffix("Preview"), "class": cls, "method": n, "screen": screen, "stem": file_stem(pkg)}
+        for pkg, previews in collect().items()
+        for n, screen, cls in previews
+    ]
+    Path(path).write_text(json.dumps(entries, indent=1) + "\n", encoding="utf-8")
+    print(f"✓ wrote {len(entries)} previews to {path}")
+
+
 def main():
-    check = "--check" in sys.argv[1:]
+    args = sys.argv[1:]
+    if "--manifest" in args:
+        return write_manifest(args[args.index("--manifest") + 1])
+    check = "--check" in args
     wanted = {}
     for pkg, previews in collect().items():
-        seg = pkg.rsplit(".", 1)[1]
-        wanted[f"{FILE_NAMES.get(seg, seg[:1].upper() + seg[1:])}Screenshots.kt"] = render(pkg, previews)
+        wanted[f"{file_stem(pkg)}Screenshots.kt"] = render(pkg, previews)
     present = {f for f in os.listdir(OUT) if f.endswith(".kt") and f not in HAND_WRITTEN}
     stale = sorted(
         f

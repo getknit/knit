@@ -582,6 +582,7 @@ android {
                 .get()
         val labChaos = providers.gradleProperty("knit.labChaos").orNull
         val labChaosRuns = providers.gradleProperty("knit.labChaosRuns").orNull
+        val previewStrings = providers.gradleProperty("knit.previewStrings").orNull
         val wireVectors = rootProject.layout.projectDirectory.dir("vectors")
         val writeVectors = providers.environmentVariable("KNIT_WRITE_VECTORS").orElse("")
         // Run instrumentation tests under Android Test Orchestrator (each test in its own process; combined
@@ -610,6 +611,13 @@ android {
                 // failed testDebugUnitTest, and never produced a report; test:mesh-lab already runs them
                 // three times uninstrumented. `--tests` cannot express an exclude, hence the property.
                 if (skipMeshLab) test.filter.excludeTestsMatching("app.getknit.knit.mesh.lab.*")
+                // `-Pknit.previewStrings=<dir>` runs PreviewStringsTest, which records the strings each preview reads
+                // for scripts/weblate-screenshots.py; it is no check, so every other run leaves it out.
+                if (previewStrings == null) {
+                    test.filter.excludeTestsMatching("app.getknit.knit.ui.preview.PreviewStringsTest")
+                } else {
+                    test.systemProperty("knit.previewStrings", previewStrings)
+                }
                 // `-Pknit.labChaos=<seed|random>` (+ `-Pknit.labChaosRuns=<n>`) turns on the mesh lab's seeded
                 // scheduling noise (mesh/lab/LabChaos.kt; scripts/lab-chaos.sh). A system property is a Test
                 // input, so a chaos run is never answered from a plain run's up-to-date or cached result.
@@ -931,7 +939,13 @@ if (labChaosShards > 0) {
             systemProperty("knit.labChaos", seed.toString())
             systemProperty("knit.labChaosRuns", runs.toString())
             useJUnit()
-            filter { patterns.forEach(::includeTestsMatching) }
+            filter {
+                patterns.forEach(::includeTestsMatching)
+                // The recorder runs only under -Pknit.previewStrings (unitTests.all leaves it out of the variant tasks).
+                if (!providers.gradleProperty("knit.previewStrings").isPresent) {
+                    excludeTestsMatching("app.getknit.knit.ui.preview.PreviewStringsTest")
+                }
+            }
             outputs.upToDateWhen { false }
         }
     }
@@ -968,7 +982,13 @@ if (unitStressShards > 0) {
             maxHeapSize = base.maxHeapSize
             systemProperties(base.systemProperties)
             useJUnit()
-            filter { patterns.forEach(::includeTestsMatching) }
+            filter {
+                patterns.forEach(::includeTestsMatching)
+                // The recorder runs only under -Pknit.previewStrings (unitTests.all leaves it out of the variant tasks).
+                if (!providers.gradleProperty("knit.previewStrings").isPresent) {
+                    excludeTestsMatching("app.getknit.knit.ui.preview.PreviewStringsTest")
+                }
+            }
             outputs.upToDateWhen { false }
         }
     }

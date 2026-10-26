@@ -395,6 +395,7 @@ verify:translation-check:
   allow_failure: true
   script:
     - python3 -m unittest scripts/test_translation_check.py
+    - python3 -m unittest scripts/test_weblate_screenshots.py
     - python3 scripts/translation-check.py
 
 # The Bluetooth drain trial's snoop analyser (scripts/btsnoop-drain.py, #120) reads HCI snoops with the standard library;
