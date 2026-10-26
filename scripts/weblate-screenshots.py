@@ -22,7 +22,9 @@ WHAT IT DOES.
 A dry run unless `--apply`: anything that changes Weblate's state is confirmed with the maintainer first
 (.agents/context/translations.md). It honours the API's rate limit (5,000 requests an hour on Hosted Weblate),
 sleeping when it runs low, and every run is a fresh difference, so an interrupted `--apply` resumes by running it
-again. The API key comes from wlc's configuration (`~/.config/weblate`, `[keys]`) and is never printed. The
+again. The API key comes from `WEBLATE_API_KEY` (CI: a project token whose only role is "Manage screenshots") or
+else wlc's configuration (`~/.config/weblate`, `[keys]`), and is never printed. GitHub CI runs it with `--apply
+--prune` on every push to `main` that touches what it reads (ci.yml's `weblate-screenshots`). The
 references are Git LFS, so Weblate's own "screenshot file mask" stays empty: it would read pointer files.
 Weblate refuses an image past 2,000 px a side, so the screen renders are scaled to fit, with Pillow; everything
 else is stdlib. Tests: `python3 -m unittest scripts/test_weblate_screenshots.py`.
@@ -158,7 +160,13 @@ def make_plan(
     """What turns Weblate's screenshots into the previews': `units` maps a source key to its unit id, `changed`
     names the existing screenshots whose image differs from the render."""
     plan = Plan()
-    by_name = {shot.name: shot for shot in shots}
+    by_name = {}
+    for shot in sorted(shots, key=lambda s: s.id):
+        if shot.name not in by_name:
+            by_name[shot.name] = shot
+        elif ours(shot.name) and (only is None or shot.name in only):  # two runs raced to create it: keep the first
+            plan.delete.append(shot)
+    shots = list(by_name.values())
     wanted = set()
     for preview in previews:
         wanted.add(preview.wrapper)
@@ -185,9 +193,18 @@ def make_plan(
         plan.link += [(shot, unit) for unit in ids if unit not in shot.units]
         plan.unlink += [(shot, unit) for unit in sorted(shot.units - set(ids))]
     for shot in shots:
-        if shot.name not in wanted and (only is None or shot.name in only):
+        if shot.name not in wanted and ours(shot.name) and (only is None or shot.name in only):
             (plan.delete if prune else plan.orphans).append(shot)
     return plan
+
+
+PREVIEW_NAME = re.compile(r"[A-Z][A-Za-z0-9]*")
+
+
+def ours(name: str) -> bool:
+    """A screenshot this script made is named for a wrapper (`AboutScreen`). One uploaded by hand on Weblate has a
+    file name or a description, with a space, a dot or an underscore, and nothing here ever deletes it."""
+    return PREVIEW_NAME.fullmatch(name) is not None
 
 
 def coverage(previews: list[Preview], units: dict[str, int]) -> tuple[set[str], dict[str, int]]:
@@ -201,7 +218,10 @@ def coverage(previews: list[Preview], units: dict[str, int]) -> tuple[set[str], 
 
 
 def api_key(url: str) -> str:
-    """The key wlc keeps for `url`. `[keys]` holds URLs as option names, so `:` must not split a line."""
+    """`WEBLATE_API_KEY`, else the key wlc keeps for `url`. `[keys]` holds URLs as option names, so `:` must not
+    split a line."""
+    if os.environ.get("WEBLATE_API_KEY", "").strip():
+        return os.environ["WEBLATE_API_KEY"].strip()  # a key pasted from a file keeps its newline
     config = configparser.ConfigParser(delimiters=("=",), interpolation=None)
     config.read(os.path.expanduser("~/.config/weblate"))
     keys = config["keys"] if config.has_section("keys") else {}

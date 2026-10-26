@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import struct
 import sys
 import tempfile
 import unittest
 import zlib
 from pathlib import Path
+from unittest import mock
 
 _SPEC = importlib.util.spec_from_file_location("weblate_screenshots", Path(__file__).with_name("weblate-screenshots.py"))
 sync = importlib.util.module_from_spec(_SPEC)
@@ -116,6 +118,23 @@ class PlanTest(unittest.TestCase):
         self.assertEqual([p.wrapper for p, _ in plan.create], ["Chat"])
         self.assertEqual(plan.delete, [])
 
+
+    def test_a_screenshot_uploaded_by_hand_is_never_pruned(self):
+        shots = [sync.Shot(3, "Screenshot_20261026.png", {1}), sync.Shot(4, "chat list, dark", {2})]
+        plan = sync.make_plan([], UNITS, shots, set(), prune=True)
+        self.assertEqual((plan.delete, plan.orphans), ([], []))
+
+    def test_a_duplicate_from_two_racing_runs_is_deleted_and_the_first_kept(self):
+        shots = [sync.Shot(12, "Chat", {3}), sync.Shot(8, "Chat", {3})]
+        plan = sync.make_plan([preview("Chat", ["chat_send"])], UNITS, shots, set(), prune=False)
+        self.assertEqual([s.id for s in plan.delete], [12])
+        self.assertEqual(plan.create + plan.link + plan.unlink, [])
+
+
+class ApiKeyTest(unittest.TestCase):
+    def test_the_environment_wins_over_the_wlc_config(self):
+        with mock.patch.dict(os.environ, {"WEBLATE_API_KEY": "from-env"}):
+            self.assertEqual(sync.api_key("https://hosted.weblate.org/api/"), "from-env")
 
 class CoverageTest(unittest.TestCase):
     def test_counts_source_keys_drawn_by_a_preview_with_a_render(self):

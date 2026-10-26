@@ -813,9 +813,9 @@ and compares it, pixel for pixel, with a PNG committed under `app/src/screenshot
 - **Scale and cost:** 254 subjects, 1,013 images (about 59 MB in LFS). A warm `validate` takes about two minutes.
   Renaming a preview re-keys its images without new LFS storage, since an unchanged PNG keeps its object id.
 - **The Light references are also Weblate's screenshots.** `scripts/weblate-screenshots.py` uploads each one with
-  the strings its preview reads (`PreviewStringsTest`), so translators see where a string lands. Re-run it after
-  the references change; a renamed or removed preview leaves its old screenshot on Weblate until `--prune`. Its
-  "Screenshots" bullet in `context/translations.md` has the rest.
+  the strings its preview reads (`PreviewStringsTest`), so translators see where a string lands. GitHub CI's
+  `weblate-screenshots` job re-syncs them after every push to `main` that `screenshot-tests` validates, pruning a
+  renamed or removed preview's old one; the "Screenshots" bullet in `context/translations.md` has the rest.
 - **The render fork runs on a 2 GiB heap** (`app/build.gradle.kts`): the renderer keeps ~1.2 MiB of every
   preview reachable, so a heap too small for the run dies with an OutOfMemoryError (as a few failed renders) near
   its end. 1 GiB held 467 images and ran out at 929. Raise the heap if the preview count outgrows it; don't reach

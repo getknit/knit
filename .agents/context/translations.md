@@ -56,15 +56,22 @@ plan. Its one component, `app`, reads `app/src/main/res/values/strings.xml` as t
   Change them there.
 - A GitHub webhook to `https://hosted.weblate.org/hooks/github/` makes Weblate pull on every push to `main`.
 - **Screenshots** show a translator where each string lands: every preview's English Light reference
-  (`app/src/screenshotTestDebug/reference/`), linked to the strings that preview reads. `python3 -I
-  scripts/weblate-screenshots.py` regenerates the record (`PreviewStringsTest` composes each preview under
-  Robolectric with a `Resources` that notes every string asked for, about 90 seconds), then prints what it would
-  create, re-image, link and unlink. `--apply` makes those changes; `--only A,B` limits them to some previews and
-  `--prune` deletes screenshots whose preview is gone. Run it after `updateDebugScreenshotTest` changes the
-  references, and before a release. A preview reading no translatable string gets no screenshot, and keys only a
-  notification, a service or an error path uses get none at all, so coverage stays partial (44 % at first).
-  Weblate refuses an image past 2,000 px a side, so the screen renders go up scaled to fit (Pillow). Leave the
-  component's screenshot file mask empty: the references are Git LFS, and Weblate would read pointer files.
+  (`app/src/screenshotTestDebug/reference/`), linked to the strings that preview reads.
+  `scripts/weblate-screenshots.py` records those strings (`PreviewStringsTest` composes each preview under
+  Robolectric with a `Resources` that notes every string asked for), then creates, re-images, links and unlinks to
+  match. **GitHub CI keeps it in step**: `ci.yml`'s `weblate-screenshots` job runs it with `--apply --prune` on
+  every push to `main` that touches `app/src/main`, the references or the tooling, once `screenshot-tests` has
+  validated the references (a stale one would pair an old picture with new strings). A new string's picture so
+  reaches Weblate when the string does, at merge, not at release. The job reads the `WEBLATE_API_KEY` secret: a
+  Knit project token in a team whose only role is "Manage screenshots", never a personal key. Without it the job
+  skips with a notice. By hand, `python3 -I scripts/weblate-screenshots.py` is a dry run (`--apply` writes, `--only
+  A,B` limits it); the key comes from `WEBLATE_API_KEY` or wlc's config. `--prune` deletes only screenshots named
+  like a preview (`AboutScreen`), so one a translator uploads is never touched. A preview reading no translatable
+  string gets no screenshot, and a key only a notification, a service or an error path uses gets none at all, so
+  coverage stays partial (44 % at first). Weblate refuses an image past 2,000 px a side, so the screen renders go
+  up scaled to fit, with Pillow pinned at the CI's version (another encoder would re-upload every screen once).
+  Leave the component's screenshot file mask empty: the references are Git LFS, and Weblate would read pointer
+  files.
 - **From the command line**, run the `weblate-cli` skill (`wlc`). Here the component is `knit/app` and Weblate's
   language codes are `pt_BR`-style where the folders are `values-pt-rBR`. Once native review has started on a
   language, machine corrections go up as suggestions (`wlc upload … --method suggest`), never into its

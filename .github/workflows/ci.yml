@@ -139,6 +139,9 @@ jobs:
     # report (self-contained, every image inlined), the renders and the diffs — enough to tell a real
     # regression from a runner rendering differently. Then make it enforced, like mesh-lab.
     continue-on-error: true
+    # A job-level continue-on-error reports the job a success either way, so weblate-screenshots reads the step.
+    outputs:
+      validated: ${{ steps.validate.outcome }}
     steps:
       - uses: actions/checkout@v7
       # The references are the repo's only Git LFS objects (.gitattributes). Fetched through a cache keyed on
@@ -161,6 +164,7 @@ jobs:
           packages: platform-tools # NOT the default `tools platform-tools` — see ACTION PINS above
       - uses: gradle/actions/setup-gradle@v5
       - name: Validate the previews against their references
+        id: validate
         run: ./gradlew :app:validateDebugScreenshotTest --stacktrace --console=plain
       - name: Upload screenshot report, renders and diffs
         if: failure()
@@ -171,6 +175,83 @@ jobs:
             app/build/reports/screenshotTest/preview/debug/
             app/build/outputs/screenshotTest-results/preview/debug/
           if-no-files-found: ignore
+
+  weblate-screenshots:
+    name: Weblate screenshots
+    runs-on: ubuntu-latest
+    # Keeps the translators' screenshots on Weblate in step with main: every preview's English render, linked to the
+    # strings it reads (scripts/weblate-screenshots.py, .agents/context/translations.md). Weblate pulls main on
+    # every push, so a new string reaches translators at merge time, and its picture goes with it. Only on a push
+    # to main (the token is a secret, and a pull request's previews are not Weblate's yet), only once
+    # screenshot-tests has validated the references against the code (a stale reference would put an old picture
+    # beside new strings), and only when something the sync reads changed. Its own concurrency group queues a
+    # second merge behind the first instead of racing it to create the same screenshot. Nothing needs this job:
+    # a failure costs translators context, never a build.
+    needs: screenshot-tests
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.screenshot-tests.outputs.validated == 'success' }}
+    continue-on-error: true
+    concurrency:
+      group: weblate-screenshots
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - id: changed
+        name: Did anything the screenshots read change?
+        env:
+          BEFORE: ${{ github.event.before }}
+          HAS_KEY: ${{ secrets.WEBLATE_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          read_paths=(app/src/main app/src/screenshotTestDebug/reference app/src/test/java/app/getknit/knit/ui/preview
+                      scripts/weblate-screenshots.py scripts/gen-screenshot-tests.py)
+          if [ "$HAS_KEY" != true ]; then
+            echo "::notice::No WEBLATE_API_KEY secret (a Knit project token with the Manage screenshots role); skipping"
+            run=false
+          elif ! git fetch --quiet --depth=1 origin "$BEFORE"; then
+            run=true # the first push, or a rewritten main: no base to compare with
+          elif git diff --quiet "$BEFORE" HEAD -- "${read_paths[@]}"; then
+            run=false
+          else
+            run=true
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+      - name: List the LFS objects
+        if: steps.changed.outputs.run == 'true'
+        run: git lfs ls-files --long | cut -d ' ' -f1 | sort > .lfs-ids
+      - if: steps.changed.outputs.run == 'true'
+        uses: actions/cache@v6
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-ids') }}
+          restore-keys: lfs-
+      - name: Fetch the screenshot references
+        if: steps.changed.outputs.run == 'true'
+        run: git lfs pull
+      - if: steps.changed.outputs.run == 'true'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - if: steps.changed.outputs.run == 'true'
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools # NOT the default `tools platform-tools` — see ACTION PINS above
+      - if: steps.changed.outputs.run == 'true'
+        uses: gradle/actions/setup-gradle@v5
+      # A tool-cache Python, so pip can install (the runner's is PEP 668 externally managed). Pillow scales the screen
+      # renders to Weblate's 2,000 px limit; pinned because its encoder decides the bytes, and a different version
+      # would re-upload every screen once.
+      - if: steps.changed.outputs.run == 'true'
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+      - name: Sync the screenshots
+        if: steps.changed.outputs.run == 'true'
+        env:
+          WEBLATE_API_KEY: ${{ secrets.WEBLATE_API_KEY }}
+        run: |
+          pip install --quiet pillow==12.3.0
+          python -I scripts/weblate-screenshots.py --apply --prune
 
   instrumented:
     name: Instrumented tests on emulators (advisory)
