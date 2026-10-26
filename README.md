@@ -16,8 +16,7 @@ Phones talk straight to each other over Wi-Fi Aware and Bluetooth LE, relaying f
 ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)
 [![Latest release](https://img.shields.io/github/v/release/getknit/knit?label=release&color=E55E4C)](https://github.com/getknit/knit/releases/latest)
 [![Translation status on Weblate](https://hosted.weblate.org/widget/knit/svg-badge.svg)](https://hosted.weblate.org/engage/knit/)
-[![Knit changelog on whatsnew.fyi](https://whatsnew.fyi/product/knit/badge.svg)](https://whatsnew.fyi/product/knit)
-[![Knit changelog grade on whatsnew.fyi](https://whatsnew.fyi/product/knit/grade.svg)](https://whatsnew.fyi/product/knit#changelog-grade)
+[![Knit changelog and changelog grade on whatsnew.fyi](https://whatsnew.fyi/product/knit/badge-graded.svg)](https://whatsnew.fyi/product/knit#changelog-grade)
 
 <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/01_chat-nearby.png"
      alt="Knit's Nearby broadcast room: a header reading &quot;Connected to 3 mesh nodes&quot;, a line carried in over a LoRa board, a photo attachment, and a link-preview card the sender fetched and sent with the link"
