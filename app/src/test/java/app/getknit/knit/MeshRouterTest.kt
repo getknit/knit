@@ -233,6 +233,33 @@ class MeshRouterTest {
         }
 
     /**
+     * The blob traffic is point-to-point by type: a copy marked for relay is handed to the pipeline (which refuses it)
+     * and flooded nowhere. A chat in the same wrapper, from the same neighbour, is relayed: the router would have.
+     */
+    @Test
+    fun neverFloodsTheUnsignedBlobTrafficWhateverItsWrapperSays() =
+        runTest {
+            val transport = RecordingTransport(setOf("b", "c"))
+            val delivered = mutableListOf<String>()
+            val router = MeshRouter(transport, this, jitter = { 0L }) { _, env, _, _ -> delivered += env.type }
+            val blobTypes =
+                listOf(FrameType.BLOB_REQ, FrameType.BLOB_HAVE, FrameType.BLOB_HAS, FrameType.BLOB_PROGRESS, FrameType.BLOB_CANCEL)
+
+            blobTypes.forEach { type ->
+                val (wire, env) = frame("flooded-$type", relay = true, type = type)
+                router.handleInbound(wire, env, fromNodeId = "b")
+            }
+            advanceUntilIdle()
+
+            assertEquals(blobTypes, delivered)
+            assertEquals(0, transport.sent.size)
+            val (wire, env) = frame("control", relay = true)
+            router.handleInbound(wire, env, fromNodeId = "b")
+            advanceUntilIdle()
+            assertEquals(listOf("c"), transport.sent.map { it.second?.nodeId })
+        }
+
+    /**
      * Issue #48: a point-to-point frame is never flooded, but it is not finished either. Addressed to a peer
      * this node holds a **live link** to, it takes that one hop — which is how a far pocket's ✓✓ reaches a
      * board-less author sitting behind the gateway that heard it off the air.

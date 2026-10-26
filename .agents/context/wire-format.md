@@ -35,7 +35,7 @@ can evolve *additively* without another break. The three layers:
 
 **One signature authenticates every type**: `WireEnvelope.sig` is raw Ed25519 over `signed` (which
 binds `type`/`id`/`senderId`), verified byte-exact in `MeshManager.verifyInbound`; the blob traffic — `blobreq`,
-`blobhave`, `blobhas`, `blobprog`, `blobcancel`, each with `relay = false` (`FrameType.isUnsignedPointToPoint`) — and the v3 live-link delivery tick (ADR 059 — a `relay = false` DM-form chat addressed to
+`blobhave`, `blobhas`, `blobprog`, `blobcancel`, each with `relay = false` (`FrameType.isUnsignedPointToPoint`; a copy marked for relay is refused by `verifyInbound`, counted as `POINT_TO_POINT_FLOODED`, and never flooded by `MeshRouter.scheduleRelay`) — and the v3 live-link delivery tick (ADR 059 — a `relay = false` DM-form chat addressed to
 us, authenticated by its ratchet AEAD) are the only unsigned frames. `MeshManager` signs on origination; `verifyInbound` drops
 any flooded frame whose signature is missing/invalid or whose key doesn't derive to `senderId`, but
 the router still relays unknown/unverifiable frames verbatim so an old build is never a black hole.

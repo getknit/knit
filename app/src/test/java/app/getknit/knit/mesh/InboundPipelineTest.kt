@@ -866,6 +866,7 @@ class InboundPipelineTest {
         fun blobReqWire(
             fromNodeId: String,
             hash: String,
+            relay: Boolean = false,
         ): Pair<WireEnvelope, RelayEnvelope> {
             val env =
                 RelayEnvelope(
@@ -875,7 +876,7 @@ class InboundPipelineTest {
                     sentAt = 7L,
                     payload = WireCodec.encodePayload(BlobReqContent(hash = hash)),
                 )
-            return WireEnvelope(relay = false, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env)) to env
+            return WireEnvelope(relay = relay, sig = ByteArray(0), signed = WireCodec.encodeEnvelope(env)) to env
         }
 
         /** The blob holder query and its answer (ADR 2026-10.6e5t): unsigned and point-to-point, like a blob request. */
@@ -2042,6 +2043,28 @@ class InboundPipelineTest {
 
             // onRequest consults the store to decide whether to serve — proves the arm ran (blobreq is unsigned).
             coVerify { rig.blobStore.fileFor("bhash") }
+        }
+
+    /**
+     * A blob frame marked for relay is nobody's: refused at the door and counted, so a flooded ask is neither served
+     * nor pulled through at the hop that took it. The same ask point-to-point is served.
+     */
+    @Test
+    fun aFloodedBlobRequestIsNeitherServedNorWanted() =
+        runTest {
+            val rig = Rig(backgroundScope)
+            val requester = party()
+            val (flooded, floodedEnv) = rig.blobReqWire(requester.nodeId, hash = "bhash", relay = true)
+
+            rig.pipeline.onDeliver(flooded, floodedEnv, requester.nodeId)
+
+            coVerify(exactly = 0) { rig.blobExchange.onRequest(any(), any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { rig.blobStore.fileFor(any()) }
+            assertEquals(1L, rig.drops(DropReason.POINT_TO_POINT_FLOODED))
+            val (ask, askEnv) = rig.blobReqWire(requester.nodeId, hash = "bhash")
+            rig.pipeline.onDeliver(ask, askEnv, requester.nodeId)
+            coVerify(exactly = 1) { rig.blobExchange.onRequest("bhash", requester.nodeId, any(), any(), any(), any()) }
+            assertEquals(1L, rig.drops(DropReason.POINT_TO_POINT_FLOODED))
         }
 
     @Test

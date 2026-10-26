@@ -767,9 +767,10 @@ class InboundPipeline(
      * received [WireEnvelope.signed]) against a public-key bundle that derives back to the
      * [RelayEnvelope.senderId]. A profile carries that bundle in-band (first contact arrives before any
      * pin); every other type uses the sender's pinned key, so a frame from a peer whose profile we
-     * haven't received yet is dropped. The point-to-point blob request is unsigned by design, and so is the v3 live-link delivery
-     * tick (ADR 059) — for that one only its *shape* is judged here ([isUnsignedTickShape]); its ratchet AEAD
-     * is the authenticator, enforced in [decryptAndDeliver]. An unknown
+     * haven't received yet is dropped. The blob traffic is unsigned by design and taken point-to-point only
+     * ([FrameType.isUnsignedPointToPoint]), and so is the v3 live-link delivery tick (ADR 059) — for that one
+     * only its *shape* is judged here ([isUnsignedTickShape]); its ratchet AEAD is the authenticator, enforced
+     * in [decryptAndDeliver]. An unknown
      * future type falls through to the pinned-key path: if it verifies we still don't deliver it (the
      * [onDeliver] dispatch has no handler) but the router relays it onward.
      *
@@ -783,11 +784,16 @@ class InboundPipeline(
         kind: TransportKind,
     ): Boolean =
         runCatching {
-            if (env.type == FrameType.BLOB_REQ) return true
-            // The holder query and its answer are unsigned like the ask (ADR 2026-10.6e5t), and point-to-point only: a
-            // flooded copy is nobody's query. Ahead of the key path, so neither ever spends a key request.
-            // The receiver's progress report and the asker's cancel ride the same way (ADR 2026-10.nsr7).
-            if (FrameType.isUnsignedPointToPoint(env.type)) return !wire.relay
+            // The blob traffic is unsigned and point-to-point only: the ask, the holder query and its answer (ADR
+            // 2026-10.6e5t), the receiver's progress report and the asker's cancel (ADR 2026-10.nsr7). No build marks one
+            // for relay, so a flooded copy is nobody's: an ask honoured at every hop it reached would have each holder
+            // serve the blob to the neighbour that handed it on, and each other node pull it through. Ahead of the key
+            // path, so none ever spends a key request; the router never floods one either (MeshRouter.scheduleRelay).
+            if (FrameType.isUnsignedPointToPoint(env.type)) {
+                if (!wire.relay) return true
+                metrics.onDropped(DropReason.POINT_TO_POINT_FLOODED)
+                return false
+            }
             // A self frame — one of OUR own frames looping back, after a neighbor carried it and (once our SeenSet
             // window lapsed) re-served it — is authenticated like any other via [verifierBundle], which resolves
             // our identity's own bundle for it. It USED to be dropped here as a silent no-op ("we already have

@@ -238,7 +238,9 @@ free). Two invariants that are easy to break:
   puller's ask opens a due cycle before it marks the puller. A state the reader does not know is never HAVE —
   `PARTIAL` is reserved, and its serve will need a request-side gate (`BlobReqContent.end`), never the bit alone.
   Both types are unsigned and point-to-point: `FrameType.isUnsignedPointToPoint` keeps them out of presence
-  evidence, the key path and custody; `DoorbellPolicy.UPKEEP` keeps them from ringing an iPhone.
+  evidence, the key path, custody and the flood (a copy marked for relay is refused by `verifyInbound`, counted as
+  `POINT_TO_POINT_FLOODED`, and never relayed by `MeshRouter.scheduleRelay`); `DoorbellPolicy.UPKEEP` keeps them
+  from ringing an iPhone.
 - **A picture goes to its linked recipient first, one Bluetooth copy at a time** (ADR 2026-10.g24x). A carrier holds
   back the pull of a DM's attachment while the DM's recipient is a live neighbour, for at most
   `CarrierPullPolicy.DEFER_MS` from custody: a delay, never a veto. The tick's custody re-read ends it, and a

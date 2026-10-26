@@ -2,6 +2,7 @@ package app.getknit.knit.mesh
 
 import app.getknit.knit.mesh.protocol.DEFAULT_TTL
 import app.getknit.knit.mesh.protocol.FrameId
+import app.getknit.knit.mesh.protocol.FrameType
 import app.getknit.knit.mesh.protocol.RelayEnvelope
 import app.getknit.knit.mesh.protocol.WireEnvelope
 import app.getknit.knit.mesh.spool.ScopeSync
@@ -173,6 +174,10 @@ class MeshRouter(
         fromNodeId: String,
     ) {
         val id = envelope.id
+        // The blob traffic is point-to-point by type, whatever its wrapper says: no build marks one for relay, and a
+        // flooded ask would have every node it reached serve or pull the blob for the neighbour that handed it on
+        // (`InboundPipeline.verifyInbound` refuses that copy). The iOS port's router does the same.
+        if (FrameType.isUnsignedPointToPoint(envelope.type)) return
         // Point-to-point control frames are never flooded; they propagate hop-by-hop, and [handOn] is the
         // one hop this node can take on their behalf.
         if (!wire.relay) return handOn(wire, envelope, fromNodeId)

@@ -127,6 +127,13 @@ enum class DropReason {
      * session.
      */
     SCOPE_CONFIG_REFUSED,
+
+    /**
+     * A blob frame (`FrameType.isUnsignedPointToPoint`) marked for relay — refused by `InboundPipeline.verifyInbound`
+     * and never flooded by [MeshRouter]. Every build sends the blob traffic point-to-point, so a count here is a crafted
+     * frame.
+     */
+    POINT_TO_POINT_FLOODED,
 }
 
 /**

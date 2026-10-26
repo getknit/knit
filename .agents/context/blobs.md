@@ -62,8 +62,8 @@ Adjacent routing that stays where its owner is, because another subsystem owns i
   `PhotoProofLabTest.aPhotoItsRecipientHoldsNeverGoesUpEvenAfterThePeersPart`; unit: `BlobHolderQueryTest`'s
   proof cases.
 - **Before touching the holder query — `BlobExchange.onHaveQuery` / `onHaveAnswer` / `decide` / `wantAll`,
-  `FrameType.BLOB_HAVE` / `BLOB_HAS` / `isUnsignedPointToPoint`, `BlobHaveContent` / `BlobHasContent`,
-  `Protocol.CAP_BLOB_HAVE`, `BlobStore.servable`, `MeshTransport.feedingLoad` / `slowLinkTo`, or
+  `FrameType.BLOB_HAVE` / `BLOB_HAS` / `isUnsignedPointToPoint` (and its flood guard in `MeshRouter.scheduleRelay`),
+  `BlobHaveContent` / `BlobHasContent`, `Protocol.CAP_BLOB_HAVE`, `BlobStore.servable`, `MeshTransport.feedingLoad` / `slowLinkTo`, or
   `BuildConfig.BLOB_QUERY`:** READ ADR 2026-10.6e5t — a neighbour whose link carries the bit is queried first, the
   best holder by plane and load asked alone, a silent one confirmed then held to its ask's floor (the amendment of
   2026-10-06, #140: only a no, a gone link or the floor moves on; waits stretch to the neighbour's measured round
