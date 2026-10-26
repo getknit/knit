@@ -11,7 +11,8 @@ import org.junit.Test
  *   candidate sets with no sighting to republish them (without it the sets froze until the next sighting of anyone, and
  *   a dormant-able Aware plane stayed up for a phone long gone, or a wake fired for one);
  * - the window's end counts the miss before that publish reads it;
- * - `seesNewcomers` goes false at once on the adapter's off edge and at `stop()`, not at a window's end.
+ * - `seesNewcomers` goes false at once on the adapter's off edge and at `stop()`, not at a window's end, through
+ *   [app.getknit.knit.mesh.bluetooth.NewcomerWatch] (whose guard [NewcomerWatchTest] pins).
  */
 class BleEndOfWindowTest {
     private val source = repoFile("app/src/main/java/app/getknit/knit/mesh/bluetooth/BluetoothMeshTransport.kt").readText()
@@ -49,10 +50,13 @@ class BleEndOfWindowTest {
         val off = source.substringAfter("BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF ->")
         val inline = off.substringBefore("scope.launch")
         assertTrue("the off edge clears it inline, before the teardown launches", "newcomersOff(" in inline)
-        val edge = body("private fun newcomersOff(")
-        assertTrue("an off edge bumps the generation", "newcomerGen++" in edge)
+        // The generation guard itself is NewcomerWatchTest's; here, only that the transport goes through it.
+        assertTrue("an off edge goes through the watch", "newcomers.off(" in body("private fun newcomersOff("))
+        val window = body("private suspend fun scanWindow(")
+        val begin = window.indexOf("newcomers.begin()")
+        assertTrue("a window takes its token as it starts, before it waits", begin >= 0 && begin < window.indexOf("elapsedWait."))
         val endWindow = body("private fun endWindow(")
-        assertTrue("a window's end writes only under an unchanged generation", "gen == newcomerGen" in endWindow)
+        assertTrue("a window's end hands its own token back", "newcomers.end(window, ranClean)" in endWindow)
         assertTrue("an adapter found off before a window says so", "newcomersOff(" in body("private suspend fun waitedBeforeWindow("))
     }
 }

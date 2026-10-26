@@ -405,13 +405,12 @@ class BluetoothMeshTransport(
     override val awareCandidatesNear = _awareCandidatesNear.asStateFlow()
     private val _awareCandidatesHeard = MutableStateFlow<Set<String>>(emptySet())
     override val awareCandidatesHeard = _awareCandidatesHeard.asStateFlow()
-    private val _seesNewcomers = MutableStateFlow(false)
-    override val seesNewcomers = _seesNewcomers.asStateFlow()
 
-    // [seesNewcomers]' off edges (adapter off, `stop()`) bump [newcomerGen] under [newcomerLock]; a window that began
-    // before the bump may not write true when it ends, so a late window end never undoes an off edge.
-    private val newcomerLock = Any()
-    private var newcomerGen = 0
+    // [seesNewcomers]' one writer: an off edge (adapter off, `stop()`) has the last word over any window that began
+    // before it, so a late window end never undoes one ([NewcomerWatch]). Each change is logged, under its lock.
+    private val newcomers =
+        NewcomerWatch { sees, why -> Log.i(TAG, if (sees) "bt newcomers watched" else "bt newcomers unwatched ($why)") }
+    override val seesNewcomers = newcomers.sees
 
     // Whether the advert carries FLAG_NO_AWARE now ([NoAwareFlag] moves it); read by [readvertise] at each encode.
     @Volatile private var noAwareAdvertised = true
@@ -2085,7 +2084,7 @@ class BluetoothMeshTransport(
         scanner.phys = phys
         scanner.start(if (power.interactive || power.charging) ScanSettings.SCAN_MODE_BALANCED else ScanSettings.SCAN_MODE_LOW_POWER)
         val windowStart = elapsed()
-        val gen = synchronized(newcomerLock) { newcomerGen }
+        val window = newcomers.begin()
         val scanned = scanner.isScanning
         // The clock codedOnly is measured on runs only while 1M is heard (ADR 2026-10.yvn6).
         presence.onOneMListening(scanned && phys != ScanPhys.CODED, windowStart)
@@ -2109,7 +2108,7 @@ class BluetoothMeshTransport(
         val ranClean = scanned && scanner.isScanning && adapter?.isEnabled == true
         scanner.stop()
         if (scanned) noteQuietScan(phys, elapsed() - windowStart)
-        endWindow(windowStart, ranClean, phys, full, gen)
+        endWindow(windowStart, ranClean, phys, full, window)
     }
 
     /**
@@ -2123,32 +2122,17 @@ class BluetoothMeshTransport(
         ranClean: Boolean,
         phys: ScanPhys,
         full: Boolean,
-        gen: Int,
+        window: NewcomerWatch.Window,
     ) {
-        synchronized(newcomerLock) {
-            // An off edge since the window began has the last word: the adapter is off or the plane stopped.
-            if (gen == newcomerGen) setSeesNewcomers(ranClean, if (ranClean) "" else "scan not registered")
-        }
+        // An off edge since the window began has the last word: the adapter is off or the plane stopped.
+        newcomers.end(window, ranClean)
         awareCandidates.onWindow(startedAt, countsAsMiss = ranClean && full && phys != ScanPhys.CODED)
         publishReachable()
     }
 
     /** An off edge for [seesNewcomers] ([why]): false now, and no window that began before it may write true. */
     private fun newcomersOff(why: String) {
-        synchronized(newcomerLock) {
-            newcomerGen++
-            setSeesNewcomers(false, why)
-        }
-    }
-
-    /** [seesNewcomers]' one writer, logging each change; callers hold [newcomerLock]. */
-    private fun setSeesNewcomers(
-        sees: Boolean,
-        why: String,
-    ) {
-        if (_seesNewcomers.value == sees) return
-        _seesNewcomers.value = sees
-        Log.i(TAG, if (sees) "bt newcomers watched" else "bt newcomers unwatched ($why)")
+        newcomers.off(why)
     }
 
     /**
@@ -3426,7 +3410,7 @@ class BluetoothMeshTransport(
                 " near=${_near.value.map { it.nodeId }}" +
                 // After near=, bare ids and booleans only: knit-ios interop.py reads every `<id>:<number>` past linkScores=.
                 " awareNear=${_awareCandidatesNear.value} awareHeard=${_awareCandidatesHeard.value} noAware=$noAwareAdvertised " +
-                "newcomers=${_seesNewcomers.value}",
+                "newcomers=${newcomers.sees.value}",
         )
     }
 
